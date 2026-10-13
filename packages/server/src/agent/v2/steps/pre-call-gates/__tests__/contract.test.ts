@@ -49,12 +49,19 @@ const checkAndCompactSpy = vi.fn(async () => ({ leafCreated: 0, condensedCreated
 const estimateAssembledTokensSpy = vi.fn(async () => ({
   total: 1000, summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
 }));
-const getUncompactedGapCountSpy = vi.fn(() => 0);
 vi.mock('../../../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../../memory/compaction.js')>()),
   checkAndCompact: (...a: unknown[]) => checkAndCompactSpy(...(a as [])),
   estimateAssembledTokens: (...a: unknown[]) => estimateAssembledTokensSpy(...(a as [])),
-  getUncompactedGapCount: (...a: unknown[]) => getUncompactedGapCountSpy(...(a as [])),
+}));
+// t140: the routine arm's trigger is no longer a row-gap count (`getUncompactedGapCount`, deleted)
+// but the tail horizon's answer to "which rows are about to leave the live view". The door is the
+// same shape: a DB reader this unit test stands in for. `null` = nothing leaving (the old 0).
+const LEAVING = { cause: 'ceiling' as const, throughSeq: 500, rowsLeaving: 160 };
+const rowsLeavingViewSpy = vi.fn((): typeof LEAVING | null => null);
+vi.mock('../../../../../memory/tail-horizon.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../../memory/tail-horizon.js')>()),
+  rowsLeavingView: (...a: unknown[]) => rowsLeavingViewSpy(...(a as [])),
 }));
 
 const insertMessageIfAbsentSpy = vi.fn(() => null);
@@ -152,15 +159,15 @@ beforeEach(() => {
   // promise via `mockImplementation` and only ever resolves the ONE instance it captured; any
   // later test in file order that reaches a real `await checkAndCompact(...)` call then hangs
   // on somebody else's leftover promise. Re-arming the default here is what
-  // `estimateAssembledTokensSpy` and `getUncompactedGapCountSpy` already do one line down —
+  // `estimateAssembledTokensSpy` and `rowsLeavingViewSpy` already do one line down —
   // this spy was the odd one out.
   checkAndCompactSpy.mockImplementation(async () => ({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
   estimateAssembledTokensSpy.mockClear();
   estimateAssembledTokensSpy.mockImplementation(async () => ({
     total: 1000, summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
   }));
-  getUncompactedGapCountSpy.mockClear();
-  getUncompactedGapCountSpy.mockImplementation(() => 0);
+  rowsLeavingViewSpy.mockClear();
+  rowsLeavingViewSpy.mockImplementation(() => null);
   insertMessageIfAbsentSpy.mockClear();
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
@@ -299,18 +306,18 @@ describe('A STEP THAT ASKS TO EXIT STOPS', () => {
     expect(out.directive).toBe('exit');
     expect(ctx.detectTaskThrashing).not.toHaveBeenCalled();
     expect(estimateAssembledTokensSpy).not.toHaveBeenCalled();
-    expect(getUncompactedGapCountSpy).not.toHaveBeenCalled();
+    expect(rowsLeavingViewSpy).not.toHaveBeenCalled();
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
   });
 
-  it('the compaction gate\'s emergency exit does not fall through to the gap drain', async () => {
+  it('the compaction gate\'s emergency exit does not fall through to the routine condense', async () => {
     atUtilisation(0.98);
-    getUncompactedGapCountSpy.mockImplementation(() => 10_000);
+    rowsLeavingViewSpy.mockImplementation(() => LEAVING);
 
     const out = await runPreCallGates(stateInStep(), makeCtx());
 
     expect(out.directive).toBe('exit');
-    expect(getUncompactedGapCountSpy).not.toHaveBeenCalled();
+    expect(rowsLeavingViewSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -379,9 +386,9 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
   });
 });
 
-describe('the background gap-drain stays fire-and-forget', () => {
-  it('a backlog kicks off a drain and the step returns without waiting for it', async () => {
-    getUncompactedGapCountSpy.mockImplementation(() => 10_000);
+describe('the background condense stays fire-and-forget', () => {
+  it('rows leaving the view kick off a condense and the step returns without waiting for it', async () => {
+    rowsLeavingViewSpy.mockImplementation(() => LEAVING);
     let resolveDrain: (() => void) | null = null;
     checkAndCompactSpy.mockImplementation(() => new Promise((res) => {
       resolveDrain = () => res({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
@@ -397,8 +404,8 @@ describe('the background gap-drain stays fire-and-forget', () => {
     resolveDrain!();
   });
 
-  it('one drain at a time — a drain already in flight is not re-entered', async () => {
-    getUncompactedGapCountSpy.mockImplementation(() => 10_000);
+  it('one condense at a time — a condense already in flight is not re-entered', async () => {
+    rowsLeavingViewSpy.mockImplementation(() => LEAVING);
     backgroundDrains.add(AGENT);
 
     const out = await runPreCallGates(stateInStep(), makeCtx());

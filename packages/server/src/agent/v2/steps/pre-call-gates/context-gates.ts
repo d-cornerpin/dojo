@@ -1,8 +1,9 @@
 // ════════════════════════════════════════
 // PHASE-6 T3 — preCallGates, part 3 of 3: THE CONTEXT GATES.
 //
-// The pre-call compaction gate and the routine gap-based drain. Relocated verbatim
-// from `agent/v2/loop.ts` (`:3015`–`:3164` at `c1ad4d5`).
+// The pre-call compaction gate and the routine condense of rows leaving the live view.
+// Relocated from `agent/v2/loop.ts` (`:3015`–`:3164` at `c1ad4d5`); the routine arm rewritten
+// at t140 (see the block above it).
 //
 // The four decisions and their thresholds are the contract and they are copied, not
 // re-derived: <90% noop · 90–96% warn (every WARN is a v2 architecture bug, so it
@@ -10,17 +11,26 @@
 // numerator is deliberately COMPRESSIBLE-only against a compressible BUDGET (FA-M1),
 // so compaction can never no-op-loop on bloat it cannot shrink.
 //
-// The drain below it is fire-and-forget on purpose (v2.5.14): it used to be awaited
-// through a summarizer call whose only bound was an SDK default, so a hung summarizer
-// blocked the turn for up to ten minutes with no error and no log line. It now runs
-// in the background under its own wall-clock abort, one in flight per agent.
+// The routine condense below it is fire-and-forget on purpose (v2.5.14): it used to be
+// awaited through a summarizer call whose only bound was an SDK default, so a hung summarizer
+// blocked the turn for up to ten minutes with no error and no log line. It runs in the
+// background under its own wall-clock abort, one in flight per agent.
+//
+// t140: EVERY ARM MEASURES THE WINDOW OF THE MODEL THIS ITERATION WILL DIAL. On an auto-routed
+// turn whose tool loop has locked a model, that is the locked model, not the turn's provisional
+// `'__auto__'` window (which is the roomiest routed pick — `agent/model.ts`'s
+// `routedContextWindow`). Before the lock, the provisional window is the best fact there is,
+// and `reassemble-for-fit` sizes the array down to the real pick before dial.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import {
-  checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, forcedCompactionOptions,
+  checkAndCompact, estimateAssembledTokens, forcedCompactionOptions, liveViewIsFull,
 } from '../../../../memory/compaction.js';
+import { rowsLeavingView } from '../../../../memory/tail-horizon.js';
+import { getFreshTailCount } from '../../../../memory/budget.js';
+import { getContextWindow } from '../../../model.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { backgroundDrains, queueSelfWake } from '../../../shared-state.js';
 import { compactionGate } from '../../classifiers/compaction.js';
@@ -31,6 +41,23 @@ import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 const logger = createLogger('v2-loop');
 
 /**
+ * t140: the system prompt each agent's assembler last produced, in tokens. The first gate of a
+ * turn runs before that turn's first assembly, so its own measurement is still 0; the system
+ * prompt is static per agent (the cache-preservation tenet is what keeps it so), so the last
+ * measurement stands in for it rather than letting the view-full check run blind for one call.
+ */
+const lastSystemPromptTokens = new Map<string, number>();
+
+/**
+ * The routine condense's bounds: the most leaf chunks one background run may summarise and its
+ * wall-clock abort. A ceiling fold is one step of rows (half the row ceiling), which is a
+ * handful of 30K-token chunks at most; ten chunks and three minutes are the old catch-up
+ * drain's own bounds, kept rather than re-derived.
+ */
+const ROUTINE_CONDENSE_MAX_CHUNKS = 10;
+const ROUTINE_CONDENSE_WALL_CLOCK_MS = 180_000;
+
+/**
  * The context gates. Returns `proceed` when the assembled context still fits, and
  * ends the turn on the two arms that cannot continue into a model call.
  */
@@ -39,9 +66,13 @@ export async function runContextGates(
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
   const {
-    agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
+    agentId, turnNumber, contextWindow: turnWindow, contextModelId, isAutoRouted,
     assemblerOverheadTokens, broadcast, stashContinuationIfHuman,
   } = ctx;
+  // The model this iteration will dial, and its window (see the header).
+  const lockedModelId = isAutoRouted ? state.lockedModelId : null;
+  const dialModelId = lockedModelId ?? contextModelId;
+  const contextWindow = lockedModelId ? getContextWindow(lockedModelId) : turnWindow;
 
   // ── Pre-call compaction gate (Part V) ──
   // Check assembled context utilization BEFORE the model call. v2's
@@ -50,7 +81,7 @@ export async function runContextGates(
   //   90–96% warn (log + chat:warning broadcast, every WARN is a v2 architecture bug)
   //   96–99% emergency compact (force checkAndCompact + queue wakeup)
   //   ≥99%   block (surrender turn, recovery cascade re-runs)
-  const assembledEstimate = await estimateAssembledTokens(agentId, contextWindow, contextModelId);
+  const assembledEstimate = await estimateAssembledTokens(agentId, contextWindow, dialModelId);
   // FA-M1: gate the compressible total against the compressible BUDGET (window
   // minus the non-compressible overhead the assembler produced), not the full
   // window. The numerator stays compressible-only so compaction still never
@@ -84,8 +115,7 @@ export async function runContextGates(
       agentId, ratio: gateResult.ratio,
     }, agentId);
     try {
-      const effectiveModel = isAutoRouted ? configuredModelId : configuredModelId;
-      await checkAndCompact(agentId, effectiveModel, contextWindow, forcedCompactionOptions());
+      await checkAndCompact(agentId, dialModelId, contextWindow, forcedCompactionOptions());
     } catch (compErr) {
       logger.warn('v2: emergency compaction failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
@@ -117,80 +147,69 @@ export async function runContextGates(
     });
     // Force compaction then wakeup so we recover next turn
     try {
-      await checkAndCompact(agentId, configuredModelId, contextWindow, forcedCompactionOptions());
+      await checkAndCompact(agentId, dialModelId, contextWindow, forcedCompactionOptions());
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'context-gate-rebuild');
     return requestExit(state, 'context-full' satisfies PreCallGatesExitReason);
   }
 
-  // ── v2.5.11, Routine gap-based compaction trigger ──
-  // The token gate above only fires at high utilization. Long-running
-  // agents whose fresh tail stays bounded never trip it, so messages
-  // silently fall outside the fresh tail without ever being summarized.
-  // This check fires when too many uncompacted messages have accumulated
-  // outside the fresh tail, regardless of token level.
+  // ── t140: THE ROUTINE ARM CONDENSES ONLY ROWS LEAVING THE LIVE VIEW ──────────────────────
   //
-  // v2.5.12, Per-call cap: maxChunksPerRun=1 so a backlog drains
-  // incrementally instead of all at once. skipContinuityBrief=true so
-  // routine drains don't pay brief cost or spam chat with dividers.
+  // OWNER RULING (OR-V333-SET (1), decision #16 re-opened and reversed 2026-10-12): condense
+  // only when the working view is getting full for the model actually used, or messages are
+  // about to leave view — and then only the messages leaving view, never what the agent is
+  // reading.
   //
-  // v2.5.14, CRITICAL: fire-and-forget. Previously the agent's turn
-  // awaited checkAndCompact, which awaited a summarizer LLM call, which
-  // had only the OpenAI SDK's 10-minute default timeout. A hung
-  // summarizer call would block the turn for up to 10 minutes with no
-  // error and no logs. Now: kick off the drain in the background with
-  // a 60s wall-clock abort, and the agent's turn proceeds immediately.
-  // backgroundDrains flag prevents re-entry while a drain is in-flight
-  // for this agent (so slow drains can't pile up; one in-flight max).
-  if (gateResult.decision === 'noop') {
-    const gapCount = getUncompactedGapCount(agentId, contextWindow);
-    if (gapCount > UNCOMPACTED_GAP_THRESHOLD && !backgroundDrains.has(agentId)) {
-      backgroundDrains.add(agentId);
-      // Catch-up: a normal turn leaves only a few messages uncompacted, so 1
-      // chunk/turn keeps up. But a freshly imported/migrated agent (or one
-      // whose summarizer was broken for a while) can carry a huge backlog, 
-      // at 1 chunk/turn that takes dozens of turns to clear, which reads as
-      // "compacting constantly". Scale throughput (and the wall-clock budget)
-      // to the backlog so a big gap drains in a few turns, then settles back
-      // to 1. Still background + abortable, so turns never block on it.
-      const big = gapCount > UNCOMPACTED_GAP_THRESHOLD * 4;
-      const maxChunksPerRun = big ? Math.min(10, Math.ceil(gapCount / UNCOMPACTED_GAP_THRESHOLD)) : 1;
-      const wallClockTimeoutMs = big ? 180_000 : 60_000;
-      const drainAbort = new AbortController();
-      const drainTimeout = setTimeout(() => {
-        logger.warn('v2: background drain wall-clock timeout, aborting', {
-          agentId, wallClockTimeoutMs,
-        }, agentId);
-        drainAbort.abort();
-      }, wallClockTimeoutMs);
-      logger.info('v2: kicking off background gap-drain (fire-and-forget)', {
-        agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
-        maxChunksPerRun, wallClockTimeoutMs, catchUp: big,
+  // STRIP: what stood here was the v2.5.11 row-gap drain — more than 30 unsummarised rows
+  // outside the newest row cap fired a summarise "regardless of token level". After t94 the
+  // live view is every row since the boundary, so it folded rows the model was reading word for
+  // word, moved the boundary and broke the cache behind the summaries lane; a busy mailbox
+  // crossed 30 rows within a few small asks. requirement preserved: "summaries exist before a
+  // row leaves the view" — `rowsLeavingView` answers which rows are leaving, with the tail
+  // horizon's ceiling as the single owner of that number, and folds them BEFORE the cut.
+  //
+  // "Full" is measured against the admission budget of the window this iteration will dial
+  // (`liveViewIsFull`, off the same dry run as the gate above). The noop AND warn arms both
+  // reach here: warn means the view is filling, and the rows leaving it are owed their fold.
+  // Still fire-and-forget (v2.5.14), still one in flight per agent, still under a wall clock.
+  const measuredSystemTokens = Math.max(0, assemblerOverheadTokens - (assembledEstimate.reserveTokens ?? 0));
+  if (assemblerOverheadTokens > 0) lastSystemPromptTokens.set(agentId, measuredSystemTokens);
+  const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
+  const viewFull = liveViewIsFull(assembledEstimate, systemPromptTokens);
+  const leaving = rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull });
+  if (leaving && !backgroundDrains.has(agentId)) {
+    backgroundDrains.add(agentId);
+    const condenseAbort = new AbortController();
+    const condenseTimeout = setTimeout(() => {
+      logger.warn('v2: background condense wall-clock timeout, aborting', {
+        agentId, wallClockTimeoutMs: ROUTINE_CONDENSE_WALL_CLOCK_MS,
       }, agentId);
-      checkAndCompact(agentId, configuredModelId, contextWindow, {
-        maxChunksPerRun,
-        skipContinuityBrief: true,
-        abortSignal: drainAbort.signal,
+      condenseAbort.abort();
+    }, ROUTINE_CONDENSE_WALL_CLOCK_MS);
+    logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
+      agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
+      dialModelId, contextWindow,
+    }, agentId);
+    checkAndCompact(agentId, dialModelId, contextWindow, {
+      leaving,
+      maxChunksPerRun: ROUTINE_CONDENSE_MAX_CHUNKS,
+      abortSignal: condenseAbort.signal,
+    })
+      .then((result) => {
+        logger.info('v2: background condense complete', {
+          agentId, leafCreated: result.leafCreated, cause: leaving.cause,
+        }, agentId);
       })
-        .then((result) => {
-          logger.info('v2: background gap-drain complete', {
-            agentId,
-            leafCreated: result.leafCreated,
-            tokensReclaimed: result.tokensReclaimed,
-          }, agentId);
-        })
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger.warn('v2: background gap-drain failed or aborted', {
-            agentId, error: msg,
-          }, agentId);
-        })
-        .finally(() => {
-          clearTimeout(drainTimeout);
-          backgroundDrains.delete(agentId);
-        });
-    }
+      .catch((err) => {
+        logger.warn('v2: background condense failed or aborted', {
+          agentId, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      })
+      .finally(() => {
+        clearTimeout(condenseTimeout);
+        backgroundDrains.delete(agentId);
+      });
   }
 
   return proceed(state);

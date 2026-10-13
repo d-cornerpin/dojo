@@ -246,10 +246,17 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
   return rows.map(rowToMessage);
 }
 
-// Canonical model-aware fresh-tail window size: MOVED to memory/budget.ts at PHASE-3 T2,
+// Canonical model-aware fresh-tail ROW FLOOR: MOVED to memory/budget.ts at PHASE-3 T2,
 // unchanged. It is a row budget and it belongs with the token budget; keeping it here made
-// budget.ts cyclic with its own consumers. Requirement preserved (FA-M3): the assembler's
-// tail-shown count and compaction's inside-tail count are the SAME number, from one owner.
+// budget.ts cyclic with its own consumers.
+//
+// t140: the FA-M3 sentence that stood here — "the assembler's tail-shown count and
+// compaction's inside-tail count are the SAME number" — stopped being true at t94, when the
+// assembler's live view became every row since the compaction boundary (`tail-horizon.ts`)
+// rather than the newest N. What is still one number from one owner is the FLOOR: the newest
+// `getFreshTailCount` rows, which no compaction folds and which `getMessagesOutsideFreshTail`
+// above excludes by exactly the key `getRecentMessages` orders by. Which rows ABOVE the floor
+// are leaving the view, and so owed a summary, is `tail-horizon.ts`'s `rowsLeavingView`.
 
 /** Resolve message ids to rows, in insertion order.
  *

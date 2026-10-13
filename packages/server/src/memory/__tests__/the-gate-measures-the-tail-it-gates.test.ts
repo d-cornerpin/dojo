@@ -15,8 +15,11 @@
 // Two decisions read this one estimate, and both read it LOW while the row cap stood:
 //   * the TOKEN trigger in `runCheckAndCompact` (`total > 0.96 × window`), and
 //   * `context-gates.ts`'s warn / compact / block rungs, which run before the call.
-// The ROW-GAP trigger (`UNCOMPACTED_GAP_THRESHOLD = 30` rows past the cap) is not token-based
-// and kept firing on schedule, which is what stopped the blindness being a freeze. But the
+// The ROW-GAP trigger (`UNCOMPACTED_GAP_THRESHOLD = 30` rows past the cap) was not token-based
+// and kept firing on schedule, which is what stopped the blindness being a freeze. (t140
+// deleted it: it folded rows the model was still reading. Its successor, the tail horizon's
+// `rowsLeavingView`, is shut on this fixture for the same reason the gap was — 68 rows is
+// nowhere near the row ceiling — so the clauses below still isolate the token trigger.) But the
 // gap trigger cannot see WEIGHT. An agent whose span sits just under the gap threshold while
 // its rows are heavy — a tool-heavy run, a few long pastes — is exactly the shape where the
 // token trigger is the only one that can act, and it was the one reading a 40-row slice of a
@@ -77,7 +80,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import {
-  checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD,
+  checkAndCompact, estimateAssembledTokens,
 } from '../compaction.js';
 // Module state, keyed by agent id: without the reset a pass in one clause brakes the next
 // clause's gate for fifteen minutes and the second one silently measures a tree with
@@ -85,7 +88,7 @@ import {
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { contextWindowPolicy, CONTEXT_THRESHOLD, getFreshTailCount } from '../budget.js';
-import { freshTailHorizon } from '../tail-horizon.js';
+import { freshTailHorizon, rowsLeavingView } from '../tail-horizon.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -176,9 +179,9 @@ afterEach(() => {
 //
 //   * 34 turns × 2 rows × 600 tokens = 68 rows, 40,800 tokens. Over 30,720.
 //   * the newest 40 of those rows — the row cap's view — are 24,000 tokens. Under 30,720.
-//   * the ROW-GAP trigger cannot help: 68 − 40 = 28 uncompacted rows outside the tail, and
-//     the gap threshold is 30. So the token trigger is the ONLY door, which is the condition
-//     this clause exists for.
+//   * no ROW trigger can help: 68 rows is nowhere near the row ceiling's lead (t140's
+//     `rowsLeavingView`, which replaced the 30-row gap trigger). So the token trigger is the
+//     ONLY door, which is the condition this clause exists for.
 //
 // Post-seam the gate reads 40,800, the trigger fires and a leaf summary is written. Pre-seam
 // it read 24,000, nothing fired, and the assembler went on to front-trim the tail to fit —
@@ -191,8 +194,8 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
   function seedHeavyRunPastTheCap(cap: number): void {
     for (let t = 1; t <= 34; t++) appendTurn(600);
     expect(rowCapViewTokens(cap)).toBeLessThan(TOKEN_TRIGGER);          // 24,000 < 30,720
-    // And the row-gap trigger is genuinely shut, so nothing but the token trigger can act.
-    expect(getUncompactedGapCount(AGENT, WINDOW)).toBeLessThanOrEqual(UNCOMPACTED_GAP_THRESHOLD);
+    // And the row trigger is genuinely shut, so nothing but the token trigger can act.
+    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, { viewFull: false })).toBeNull();
   }
 
   it('the gate measures the whole span, and that reading is over the trigger', async () => {
@@ -251,7 +254,7 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
     expect(est.freshTailCount).toBe(30);                                 // every row there is
     expect(est.total).toBeLessThan(TOKEN_TRIGGER);                       // 18,000 < 30,720
-    expect(getUncompactedGapCount(AGENT, WINDOW)).toBe(0);
+    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, { viewFull: false })).toBeNull();
 
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, {
       maxChunksPerRun: 1, skipContinuityBrief: true,

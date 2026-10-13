@@ -162,12 +162,112 @@ afterEach(() => {
 });
 
 describe('t140 W2 — a small ask on an aged, busy agent condenses nothing', () => {
-  it.fails('RED at 00a2b34d: 150 tiny rows, no token pressure, and the gate still fires a summarise', async () => {
+  it('RED at 00a2b34d: 150 tiny rows, no token pressure, and the gate still fires a summarise', async () => {
     seedBusyHistory(150);
     const out = await runPreCallGates(freshState(), makeCtx());
     expect(out.directive).toBe('proceed');
     await settle();
     expect(generateSummarySpy, 'no summariser call: the view is nowhere near full and nothing is leaving it').not.toHaveBeenCalled();
     expect(summaryCount()).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE TWO CAUSES THAT DO CONDENSE — each folds exactly the rows leaving the view.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Rows a summary covers, by seq order: the first N seqs of the agent's history, or not. */
+function summarisedSeqs(agentId: string): number[] {
+  return (db().prepare(
+    `SELECT m.seq AS seq FROM messages m JOIN summary_messages sm ON sm.message_id = m.id
+      WHERE m.agent_id = ? ORDER BY m.seq`,
+  ).all(agentId) as Array<{ seq: number }>).map((r) => r.seq);
+}
+function allSeqs(agentId: string): number[] {
+  return (db().prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq').all(agentId) as Array<{ seq: number }>)
+    .map((r) => r.seq);
+}
+
+describe('t140 — rows ABOUT TO LEAVE the view are folded before the ceiling cuts them', () => {
+  it('one trim block short of the row ceiling, the gate folds exactly the step the ceiling would cut, and nothing newer', async () => {
+    // 200K window: row floor 80, ceiling 640, ceiling step 320, lead one block (40 rows).
+    // 610 tiny rows: the view is nowhere near full, so the CEILING is the only cause.
+    seedBusyHistory(610);
+    const out = await runPreCallGates(freshState(), makeCtx());
+    expect(out.directive).toBe('proceed');
+    await settle();
+
+    const seqs = allSeqs(AGENT);
+    const folded = summarisedSeqs(AGENT);
+    expect(folded, 'exactly the rows the ceiling\'s next cut would skip: the oldest 320').toEqual(seqs.slice(0, 320));
+    // The 290 newest rows — everything the agent is still reading — are untouched.
+    expect(folded.some((q) => q > seqs[319])).toBe(false);
+  });
+
+  it('BACKWARDS LIFECYCLE — a box upgraded with a 1,000-row unsummarised backlog catches up in ONE fold of what the ceiling is already cutting', async () => {
+    // Past the ceiling already (640 on this window): the horizon is cutting 640 rows today
+    // (`ceilingSkipRows(1000)`), so those rows have left the view and are owed their summary.
+    seedBusyHistory(1000);
+    await runPreCallGates(freshState(), makeCtx());
+    await settle();
+    const seqs = allSeqs(AGENT);
+    expect(summarisedSeqs(AGENT)).toEqual(seqs.slice(0, 640));
+    // And the next gate finds nothing more leaving: 360 rows is under the ceiling's lead.
+    generateSummarySpy.mockClear();
+    await runPreCallGates(freshState(), makeCtx());
+    await settle();
+    expect(generateSummarySpy).not.toHaveBeenCalled();
+  });
+
+  it('far from the ceiling and with room in the window, the same gate folds nothing', async () => {
+    seedBusyHistory(300);
+    await runPreCallGates(freshState(), makeCtx());
+    await settle();
+    expect(summarisedSeqs(AGENT)).toEqual([]);
+  });
+});
+
+describe('t140 — when the view is FULL for the dialed window, only the rows the trim would take are folded', () => {
+  const SMALL_AGENT = 'agent-t140-small-window';
+  const SMALL_MODEL = 'm-t140-32k';
+  const SMALL_WINDOW = 32_000;   // row floor 40, trim block 20
+
+  function seedSmallAgent(rows: number): void {
+    db().prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled)
+       VALUES (?, 'p-t140', 'Snug', 'snug', '["text","tools"]', ?, 4096, 1)`,
+    ).run(SMALL_MODEL, SMALL_WINDOW);
+    db().prepare(
+      `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Snug Desk', ?, 'idle', '{}', datetime('now'))`,
+    ).run(SMALL_AGENT, SMALL_MODEL);
+    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(12);
+    for (let i = 0; i < rows; i++) {
+      insertMessage({
+        agentId: SMALL_AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner',
+        senderId: i % 2 === 0 ? 'owner' : null, content: `[row ${i}] ${body}`, turnNumber: 1 + Math.floor(i / 2),
+      });
+    }
+  }
+
+  it('a full 32K view folds the front half in whole blocks — 40 of 100 rows — and keeps the newest 60 verbatim', async () => {
+    seedSmallAgent(100);   // ~25K tokens of live tail against a ~13K content budget: full
+    const state = advance(initState({
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
+      turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
+      lastUserMessageContent: 'tally?', lastUserMessageId: null,
+      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
+    const ctx = Object.assign(makeCtx(), {
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
+    });
+    const out = await runPreCallGates(state, ctx);
+    expect(out.directive).toBe('proceed');
+    for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+
+    const seqs = allSeqs(SMALL_AGENT);
+    const folded = summarisedSeqs(SMALL_AGENT);
+    // maxTrimUnits(100 rows, block 20) = floor(50 / 20) × 20 = 40: the token trim's own bound.
+    expect(folded).toEqual(seqs.slice(0, 40));
+    expect(folded.some((q) => q > seqs[39]), 'the newest 60 rows are the live view and stay raw').toBe(false);
   });
 });

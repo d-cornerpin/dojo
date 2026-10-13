@@ -93,17 +93,17 @@ vi.mock('../../agent/model.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import {
-  checkAndCompact, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, estimateAssembledTokens,
+  checkAndCompact, estimateAssembledTokens, liveViewIsFull,
 } from '../compaction.js';
 // The 15-minute low-yield backoff is MODULE state keyed by agent id, so without this reset
 // one probe's compaction run brakes the next probe's and the second one silently measures a
 // tree with compaction switched off. Found the hard way: the "writer down" probe read zero
 // summariser calls in the full file and one in isolation.
 import { __resetBrakesForTests } from '../compaction-brakes.js';
-import { getFreshTailCount, contextWindowPolicy } from '../budget.js';
+import { getFreshTailCount, contextWindowPolicy, estimateTokens } from '../budget.js';
 import {
   TAIL_HORIZON_CEILING_MULTIPLE, tailCeilingStepRows, tailTrimBlockGroups,
-  groupsToDropForBudget, freshTailHorizon,
+  groupsToDropForBudget, freshTailHorizon, rowsLeavingView,
 } from '../tail-horizon.js';
 // t100 §9's floor fixture: the deep-compaction state is built by hand, so a leaf summary is
 // written directly rather than driven out of a pass whose divider is throttled.
@@ -192,16 +192,25 @@ function appendTurn(): void {
  *  discontinuities could see the cadence change and not know which number moved it. */
 const passLog: Array<{ turn: number; leafCreated: number; tokensReclaimed: number }> = [];
 
+/** The system prompt the last assembly produced, in tokens — what production's gate reads off
+ *  the assembler's measured overhead (`context-gates.ts`). 0 before the first assembly. */
+let lastSystemTokens = 0;
+
 /** The production pre-call gate's ROUTINE arm, as `agent/v2/steps/pre-call-gates/
- *  context-gates.ts` runs it: a gap over the threshold drains one chunk. Awaited here
- *  (production fires and forgets) so the run is deterministic. Returns the pass's own result
- *  when it compacted, and null otherwise — the boolean it used to return is `!== null`. */
+ *  context-gates.ts` runs it. t140: the row-gap drain is gone; the arm asks the tail horizon
+ *  which rows are about to leave the live view (the ceiling lead, or the view full for this
+ *  window) and folds exactly those. Awaited here (production fires and forgets) so the run is
+ *  deterministic. Returns the pass's own result when it compacted, and null otherwise. */
 async function runRoutineCompactionGate(): Promise<{ leafCreated: number; tokensReclaimed: number } | null> {
-  const gap = getUncompactedGapCount(AGENT, windowNow.value);
-  if (gap <= UNCOMPACTED_GAP_THRESHOLD) return null;
+  const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
+  const leaving = rowsLeavingView(
+    AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
+    { viewFull: liveViewIsFull(est, lastSystemTokens) },
+  );
+  if (!leaving) return null;
   try {
     const r = await checkAndCompact(AGENT, MODEL, windowNow.value, {
-      maxChunksPerRun: 1, skipContinuityBrief: true,
+      leaving, maxChunksPerRun: 10,
     });
     return r.leafCreated > 0 || r.condensedCreated > 0
       ? { leafCreated: r.leafCreated, tokensReclaimed: r.tokensReclaimed }
@@ -228,6 +237,7 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
     if (pass) { passLog.push({ turn: t, ...pass }); note = 'compaction ran'; }
     if (opts.between) await opts.between(t);
     const ctx = await assembleContext(AGENT, MODEL);
+    lastSystemTokens = estimateTokens(ctx.systemPrompt);
     snaps.push({
       turn: t,
       messages: JSON.parse(JSON.stringify(ctx.messages)) as unknown[],
@@ -240,6 +250,7 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
 
 beforeEach(() => {
   turnNo = 0;
+  lastSystemTokens = 0;
   passLog.length = 0;
   __resetBrakesForTests();
   summariser.up = true;
@@ -312,14 +323,41 @@ describe('t94 §0 — the instrument aligns by CONTENT, never by position', () =
 // ── §1 THE OWNER'S SHAPE, AND THAT IT IS GONE ───────────────────────────────────────────
 
 describe('t94 §1 — a long run is append-only between compaction boundaries', () => {
-  it('48 turns: every turn append-only except the compaction boundaries', async () => {
+  it('48 turns on a window with room: NOTHING is condensed and every turn is a pure append (t140)', async () => {
+    // t140 (OR-V333-SET (1)): before the owner's ruling this run reached a compaction inside 48
+    // turns because the routine gate drained whenever 30 rows sat outside the row cap — rows
+    // the model was still reading. The view here never fills the 32K window and nothing nears
+    // the row ceiling, so the right number of condenses is ZERO, and so is the re-prefill waste.
     const snaps = await driveRun({ turns: 48 });
+    const deltas = runDeltas(snaps);
+
+    // eslint-disable-next-line no-console
+    console.log(renderTable(
+      't94 D0 / t140 — 48 fictional turns, 32K window (row cap 40), routine gate on, view never full',
+      deltas, abridge(deltas),
+    ));
+
+    expect(passLog, 'no condense: the view is not full and nothing is leaving it').toEqual([]);
+    expect(discontinuities(deltas)).toEqual([]);
+    for (const d of deltas) {
+      expect(
+        { turn: d.turn, appendOnly: d.appendOnly, dropped: d.droppedFromFront, moved: d.firstMovedIndex },
+      ).toEqual({ turn: d.turn, appendOnly: true, dropped: 0, moved: null });
+    }
+  }, 120_000);
+
+  it('220 turns: every turn append-only except the condense boundaries, and those are RARE', async () => {
+    // Long enough that the live view genuinely fills the 32K window (measured: the first fold
+    // lands near turn 134, the second near 193). The t94 property is unchanged — the prefix
+    // moves only when a condense moves the boundary — and t140 makes the condenses rarer: they
+    // happen only when the view is full or rows are about to leave it.
+    const snaps = await driveRun({ turns: 220 });
     const deltas = runDeltas(snaps);
     const bad = discontinuities(deltas);
 
     // eslint-disable-next-line no-console
     console.log(renderTable(
-      't94 D0 — 48 fictional turns, 32K window (row cap 40), routine compaction on',
+      't94 D0 / t140 — 220 fictional turns, 32K window (row cap 40), routine gate on',
       deltas, abridge(deltas),
     ));
 
@@ -330,15 +368,15 @@ describe('t94 §1 — a long run is append-only between compaction boundaries', 
         { turn: d.turn, appendOnly: d.appendOnly, dropped: d.droppedFromFront, moved: d.firstMovedIndex },
       ).toEqual({ turn: d.turn, appendOnly: true, dropped: 0, moved: null });
     }
-
-    // PRE-FIX this run front-trimmed on ~28 of 47 turns. Every discontinuity that remains
-    // has to be a compaction boundary, and there has to be at least one (otherwise the run
-    // never reached the pressure the clause is about).
+    // Every discontinuity is a condense boundary, and the run did reach one.
     expect(bad.length).toBeGreaterThan(0);
     for (const d of bad) expect(d.note).toBe('compaction ran');
-    // LARGE AND RARE, measured: fewer than one discontinuity per ten turns.
-    expect(bad.length).toBeLessThanOrEqual(Math.ceil(deltas.length / 10));
-  }, 120_000);
+    // AND NO ROW LEFT THE VIEW UNSUMMARISED: the token trim never had to cut, because the
+    // condense folded the rows it would have taken one block before it would have taken them.
+    expect(deltas.filter((d) => (d.note ?? '').includes('freshTailDropped')).map((d) => d.turn)).toEqual([]);
+    // LARGE AND RARE, measured: fewer than one discontinuity per fifty turns.
+    expect(bad.length).toBeLessThanOrEqual(Math.ceil(deltas.length / 50));
+  }, 300_000);
 
   it('the front of the conversation does not move between boundaries', async () => {
     const snaps = await driveRun({ turns: 30 });
@@ -432,6 +470,11 @@ describe('t94 §2 — the lifecycle probes', () => {
     db().prepare('UPDATE models SET context_window = 24000 WHERE id = ?').run(MODEL);
     const after = await driveRun({ turns: 10 });
 
+    // t140: the count is now ZERO. Before t140 the single discontinuity was a routine drain
+    // firing because the smaller cap pushed the row gap past 30 — a fold of rows still in view.
+    // The smaller window still has room for this conversation, so nothing condenses and the
+    // whole run is append-only. (The paragraph below is the t94 record of the switch itself.)
+    //
     // REVIEW M1 asked for a COUNT here, and the count turned out better than the claim the
     // first clause made. I expected the switch turn to be the discontinuity; it is not one at
     // all. THE SWITCH ITSELF COSTS NOTHING, and the reason is the policy: the tail's front is
@@ -451,8 +494,8 @@ describe('t94 §2 — the lifecycle probes', () => {
     const across = runDeltas([before[before.length - 1], ...after]);
     const bad = discontinuities(across);
     expect(across[0].appendOnly).toBe(true);              // the switch turn itself
-    expect(bad.length).toBe(1);
-    expect(bad[0].note).toBe('compaction ran');
+    expect(bad).toEqual([]);
+    expect(passLog).toEqual([]);
     expect(before.length + after.length).toBe(34);
   }, 120_000);
 });
@@ -669,70 +712,52 @@ describe('t94 §6 — the budget, named, with its unit', () => {
 // the prefix moves only when COMPACTION moves, and both discontinuities are compactions, with
 // every other turn append-only. What changed is the compaction cadence, which is the thing
 // §7's own opening paragraph says this clause hands to `memory/compaction.ts` to decide.
+//
+// ── RE-AIMED BY t140 ─────────────────────────────────────────────────────────────────────
+// The row-gap drain this section measured is deleted (it folded rows the model was reading).
+// A backlog is now caught by the tail horizon's own ceiling: 300 rows since the boundary on a
+// 32K box is one trim block short of the 320-row ceiling, so `rowsLeavingView` names the rows
+// the ceiling's next cut would skip — exactly one step, 160 rows — and the condense folds
+// those and nothing else. The measured result is ONE discontinuity where the drain cost two,
+// and the 24 turns after it are pure appends with no second fold.
 describe('t94 §7 — the seam: a compaction backlog drains across consecutive turns', () => {
-  it('a 300-row backlog costs one discontinuity per drain, never one per turn', async () => {
+  it('a 300-row backlog costs exactly one discontinuity: one fold of the rows the ceiling would cut', async () => {
     // The backlog arrives while the writer is down — exactly the state §2 ends in. Two turns
-    // are driven first so there is a snapshot to compare the drain against.
+    // are driven first so there is a snapshot to compare the fold against.
     summariser.up = false;
     for (let t = 1; t <= 148; t++) appendTurn();
     const before = await driveRun({ turns: 2 });
     __resetBrakesForTests();
 
-    // The writer comes back. Every turn now runs the production routine gate. The pass log is
-    // cleared here so it holds the DRAIN's passes only (the writer-down turns threw and
-    // compacted nothing, but the clause should not depend on that to read its own numbers).
     passLog.length = 0;
     summariser.up = true;
     const after = await driveRun({ turns: 25 });
     const deltas = runDeltas([...before.slice(-1), ...after]);
     const bad = discontinuities(deltas);
-    const compactions = deltas.filter((d) => d.note === 'compaction ran').length;
 
     // eslint-disable-next-line no-console
     console.log(renderTable(
-      't94 D3 — the backlog drain: a 300-row gap, writer back up, 25 turns after',
+      't94 D3 / t140 — the backlog: 300 rows since the boundary, writer back up, 25 turns after',
       deltas, abridge(deltas),
     ));
-
-    const gapAtEnd = getUncompactedGapCount(AGENT, windowNow.value);
     // eslint-disable-next-line no-console
-    console.log(`t100 §7 — drains: ${JSON.stringify(passLog)} · uncompacted gap at the last turn: ${gapAtEnd} (threshold ${UNCOMPACTED_GAP_THRESHOLD})`);
+    console.log(`t140 §7 — folds: ${JSON.stringify(passLog)}`);
 
-    // THE MEASUREMENT. The drain happened and it rewrote the prefix on the turn it ran.
-    expect(compactions).toBeGreaterThan(0);
-
-    // ONE DISCONTINUITY PER DRAIN, AND EVERY DISCONTINUITY IS A DRAIN — the policy's single
-    // legitimate cause. Equalities, so a third discontinuity, or a scrolling tail, reds this.
-    expect(bad.map((d) => d.note)).toEqual(['compaction ran', 'compaction ran']);
-    expect(bad.map((d) => d.turn)).toEqual([1, 17]);
-    // "NEVER ONE PER TURN" is the claim that matters, so it is asserted as a cadence and not
-    // left implied by the turn list above: the drains are far apart.
-    expect(bad[1].turn - bad[0].turn).toBeGreaterThanOrEqual(15);
-    // And every other turn is a pure append. The run length is asserted directly, replacing
-    // the tautology review M1 found here (`deltas.length - bad.length === deltas.length - 1`
-    // asserts nothing once `bad.length` has been checked).
+    // ONE DISCONTINUITY, AND IT IS THE FOLD. Equalities, so a second fold, a trim or a
+    // scrolling tail reds this.
+    expect(bad.map((d) => ({ turn: d.turn, note: d.note }))).toEqual([{ turn: 1, note: 'compaction ran' }]);
+    expect(passLog.map((p) => p.turn)).toEqual([1]);
     expect(deltas.length).toBe(25);
-    expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - bad.length);
+    expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - 1);
 
-    // AND THE NUMBER THAT DECIDES THE CADENCE, which is the seam itself (see the header).
-    // `compaction.ts` arms a 15-minute backoff on `tokensReclaimed < 2000 && leafCreated <= 1`,
-    // and `tokensReclaimed` is a subtraction of two `estimateAssembledTokens` readings. Now
-    // that those readings see the span the assembler admits, the first drain reports its real
-    // yield, the backoff does not arm, and the second drain runs when the gap re-accumulates.
-    // Pre-seam both terms were 40-row readings of a 160-row tail and the same pass reported a
-    // yield under the floor — braking itself for a quarter of an hour on its own blind spot.
-    //
-    // MEASURED, both drains: turn 1 reclaims 10,664 tokens and turn 17 reclaims 1,293. So the
-    // brake is not weakened by the seam — it is finally reading the truth. It declines to arm
-    // on the pass that reclaimed ten thousand tokens and DOES arm on the pass that reclaimed
-    // thirteen hundred, which is the predicate's whole intent; the run ends quiet because of
-    // the second one, not because the first was misjudged.
-    expect(passLog.map((p) => p.turn)).toEqual([1, 17]);
-    expect(passLog[0].tokensReclaimed).toBeGreaterThan(2000);
-    expect(passLog[1].tokensReclaimed).toBeLessThan(2000);
-    // After the second drain the gap is back UNDER the threshold, which is why the run ends
-    // quiet: the tail grows append-only from there, exactly as §1's healthy path does.
-    expect(gapAtEnd).toBeLessThanOrEqual(UNCOMPACTED_GAP_THRESHOLD);
+    // THE FOLD WAS EXACTLY THE ROWS THE CEILING WOULD HAVE CUT: one step from the boundary.
+    // (The writer-down turns summarised nothing, so every summarised row is this fold's.)
+    const summarised = (db().prepare(
+      `SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?`,
+    ).get(AGENT) as { n: number }).n;
+    expect(summarised).toBe(CEILING_STEP_ROWS);
+    // And the ceiling never had to cut: no turn in the run carried a horizon skip.
+    expect(deltas.filter((d) => (d.note ?? '').includes('freshTailDropped')).map((d) => d.turn)).toEqual([]);
   }, 300_000);
 });
 
@@ -929,7 +954,10 @@ describe('t94 §10 — a compaction with its divider throttled still costs ONE d
       db().prepare("DELETE FROM messages WHERE agent_id = ? AND content LIKE '%Memory Compacted%'")
         .run(AGENT);
     };
-    const snaps = await driveRun({ turns: 48, between: dropDivider });
+    // t140: a condense now happens only when the view is full or rows are leaving it, so the
+    // run is driven past the point where this 32K view fills (measured: near turn 134) rather
+    // than relying on the deleted 30-row drain to fire inside 48 turns.
+    const snaps = await driveRun({ turns: 150, between: dropDivider });
     const deltas = runDeltas(snaps);
     const bad = discontinuities(deltas);
 
@@ -944,11 +972,13 @@ describe('t94 §10 — a compaction with its divider throttled still costs ONE d
     expect(bad.map((d) => d.note)).toEqual(['compaction ran']);
 
     // And the direct statement of the same thing, on the compaction turn's own array: the
-    // live tail holds the row cap, and holds NO row that `summary_messages` already covers.
+    // live tail holds at least the row cap, and holds NO row that `summary_messages` already
+    // covers. (t140: a fold of the rows leaving the view leaves MORE than the cap in view —
+    // the rest of the live conversation — where the deleted drain left exactly the cap.)
     const compactionTurn = bad[0].turn;
     const arr = snaps[compactionTurn - 1].messages as Array<{ content: unknown }>;
     const conversationRows = arr.filter((m) => JSON.stringify(m.content).includes('[t'));
-    expect(conversationRows.length).toBe(cap);
+    expect(conversationRows.length).toBeGreaterThanOrEqual(cap);
 
     const summarised = db().prepare(
       `SELECT m.content AS content FROM messages m
@@ -998,10 +1028,18 @@ describe('t94 §10 — a compaction with its divider throttled still costs ONE d
 // messages costs the same as dropping 200."*
 describe('t109 §11 — the deep-compaction floor re-anchors instead of trimming per turn', () => {
   it('⚠ E: a mid-session switch to a LARGER window is append-only for every turn after it', async () => {
-    // Enough turns to compact at least once, so there IS a boundary to anchor to.
-    const before = await driveRun({ turns: 40 });
-    expect(passLog.length, 'precondition: a compaction ran, so a boundary exists')
+    // A boundary to anchor to, left by a DEEP compaction — the state this section is named for.
+    // t140: the routine gate no longer folds a quiet 40-turn run (that was the deleted row-gap
+    // drain), so the deep compaction is the PRESSURE path's, forced as the emergency arm forces
+    // it: everything outside the row floor is folded and `rows_since` lands at the cap.
+    await driveRun({ turns: 40, compaction: false });
+    const forced = await checkAndCompact(AGENT, MODEL, windowNow.value, { force: true, maxChunksPerRun: 10, skipContinuityBrief: true });
+    passLog.push({ turn: 40, leafCreated: forced.leafCreated, tokensReclaimed: forced.tokensReclaimed });
+    expect(passLog[0].leafCreated, 'precondition: a compaction ran, so a boundary exists')
       .toBeGreaterThan(0);
+    // One quiet turn on the old window AFTER the compaction, so the comparison below starts
+    // from the post-compaction array and measures the window switch alone.
+    const before = await driveRun({ turns: 1, compaction: false });
 
     // THE DOOR: a LARGER box. 32K -> 128K steps `getFreshTailCount` 40 -> 64, so the cap
     // lands above `rows_since` and the horizon enters its floor with room to spare.

@@ -78,13 +78,18 @@ const logger = createLogger('memory-tail-horizon');
  *
  * Why a multiple and not a constant: the row cap is already the one number in this subsystem
  * that is a function of the window (24 rows at 8K, 80 at 200K), and a constant ceiling would
- * mean a 200K box and an 8K box tolerate the same backlog. ×8 is chosen against the thing the
- * ceiling actually protects — compaction's own backlog. The routine gap drain fires at
- * `UNCOMPACTED_GAP_THRESHOLD = 30` rows past the cap and drains one chunk per turn, so a
- * HEALTHY agent lives at `cap + ~30` rows and never comes near ×8 (320 rows on a 32K box,
- * 512 on a 128K one). Reaching the ceiling therefore means compaction has been failing for
- * hundreds of rows, which is the condition this ceiling exists for and not a condition it
- * should be tuned to make comfortable.
+ * mean a 200K box and an 8K box tolerate the same backlog. ×8 (320 rows on a 32K box, 640 on a
+ * 200K one) is the largest live view this subsystem will carry between two condenses.
+ *
+ * t140: THIS NUMBER NOW HAS TWO READERS AND ONE OWNER. The cut below (`freshTailHorizon`) and
+ * the condense trigger (`rowsLeavingView`) both read the ceiling and its step from here, so the
+ * trigger can never disagree with the cut about which rows go next. The trigger fires one trim
+ * block ahead of the ceiling (`ceilingLeadRows`) and folds exactly the rows the next cut would
+ * skip, so on a box whose summary writer works the cut never fires at all: the rows it would
+ * have dropped already have a summary and the boundary has moved past them. Reaching the
+ * ceiling therefore still means compaction has been failing for a long time, which is the
+ * condition this ceiling exists for. (Before t140 the routine row-gap drain kept a healthy agent
+ * at `cap + ~30` rows by summarising rows the model was still reading; that drain is gone.)
  */
 export const TAIL_HORIZON_CEILING_MULTIPLE = 8;
 
@@ -109,6 +114,33 @@ export const TAIL_HORIZON_CEILING_MULTIPLE = 8;
  */
 export function tailCeilingStepRows(freshTailCount: number): number {
   return Math.max(1, Math.floor((freshTailCount * TAIL_HORIZON_CEILING_MULTIPLE) / 2));
+}
+
+/**
+ * THE CEILING'S CUT, in rows skipped past the boundary, for a span of `rowsSinceBoundary`.
+ * 0 at or under the ceiling. Above it, a whole number of STEPS that takes the span down to
+ * about half the ceiling — see `freshTailHorizon` for why the front moves this way. ONE
+ * function, read by the cut itself AND by `rowsLeavingView`, so the condense trigger and the
+ * cut cannot come to disagree about which rows leave next.
+ */
+export function ceilingSkipRows(rowsSinceBoundary: number, freshTailCount: number): number {
+  const cap = Math.max(1, freshTailCount);
+  const ceiling = cap * TAIL_HORIZON_CEILING_MULTIPLE;
+  if (rowsSinceBoundary <= ceiling) return 0;
+  const step = tailCeilingStepRows(cap);
+  return (Math.floor(rowsSinceBoundary / step) - 1) * step;
+}
+
+/**
+ * t140 — HOW FAR AHEAD OF THE CEILING THE CONDENSE TRIGGER FIRES: one token-trim block of
+ * rows. The lead is the room a background condense has to finish before the cut would fire;
+ * one block is the trim's own granularity (half a row cap — 20 rows on a 32K box, 40 on a 200K
+ * one), which is several tool calls of growth, while a condense of one step is a handful of
+ * summariser calls. Larger would fold rows the agent is reading sooner than the cut needs;
+ * smaller would race the cut.
+ */
+export function ceilingLeadRows(freshTailCount: number): number {
+  return tailTrimBlockGroups(freshTailCount);
 }
 
 /**
@@ -289,7 +321,7 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
   // and then holds still for half a ceiling of turns. Measured from the FRONT (the boundary),
   // never from the back, because a quantity measured from the back is a scrolling window by
   // definition. `rows_since > ceiling = 2 × step`, so this is always at least one whole step.
-  const skip = (Math.floor(boundary.rows_since / step) - 1) * step;
+  const skip = ceilingSkipRows(boundary.rows_since, cap);
   let keepFromSeq = 0;
   try {
     keepFromSeq = seqAfterSkip(agentId, boundary.anchor, skip);
@@ -337,6 +369,16 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
  * small to hold one block of conversation; it was unstable before this function existed and it
  * is the reason the warn is there.
  */
+/**
+ * THE MOST A TOKEN TRIM MAY TAKE OFF THE FRONT, in units (groups for the trim, rows for the
+ * trigger): half the live conversation, rounded DOWN to whole blocks. One function so the trim
+ * and the condense trigger (`rowsLeavingView`, cause `full`) share one law.
+ */
+export function maxTrimUnits(units: number, blockUnits: number): number {
+  const block = Math.max(1, Math.floor(blockUnits));
+  return Math.floor(Math.floor(Math.max(0, units) / 2) / block) * block;
+}
+
 export function groupsToDropForBudget(
   groupTokens: readonly number[],
   availableTokens: number,
@@ -357,7 +399,7 @@ export function groupsToDropForBudget(
   // the loud minimum-fit path on exactly the healthy body it was meant to serve. It is a
   // function of the group count, but a coarsely quantised one (it only changes when the count
   // crosses a multiple of 2 × block), so it does not reintroduce a scrolling front.
-  const maxDrop = Math.floor(Math.floor(n / 2) / block) * block;
+  const maxDrop = maxTrimUnits(n, block);
   // CUT THE WHOLE BOUND — not the smallest multiple that fits, and not that plus one block of
   // margin (review I2: "a safe doubling inside your own proof"). The cadence is set by how much
   // a cut FREES. `maxDrop` frees half the tail, and `maxDrop` itself only changes when the
@@ -388,4 +430,118 @@ export function groupsToDropForBudget(
   let drop = maxDrop;
   while (drop < n - 1 && suffix[drop] > availableTokens) drop++;
   return drop;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t140 — WHICH ROWS ARE ABOUT TO LEAVE THE LIVE VIEW. THE CONDENSE TRIGGER'S ONE QUESTION.
+// (Tracker #13; decision #16 re-opened and reversed, OR-V333-SET (1).)
+//
+// THE RULING: condense only when the working view is getting full for the model actually used,
+// or messages are about to leave view — and then only the messages leaving view, never what the
+// agent is reading.
+//
+// WHAT STOOD BEFORE: a row-count drain. When more than 30 unsummarised rows sat outside the
+// newest row cap it summarised them, "regardless of token level". After t94 the live view is
+// every row since the boundary, so those rows were IN VIEW: the model was reading them word for
+// word while they were folded, the boundary moved, and the cache broke behind the summaries lane
+// — on a busy mailbox every few small asks. That drain is deleted. This answers the question it
+// should have been asking.
+//
+// TWO WAYS A ROW LEAVES THE VIEW, and this module owns the arithmetic of both:
+//   'ceiling' — the span since the boundary is within one trim block of the row ceiling. The
+//               rows that leave are the ones the ceiling's next cut would skip
+//               (`ceilingSkipRows`), and they are folded BEFORE the cut, so on a healthy box the
+//               cut never fires and no row ever leaves the view without a summary.
+//   'full'    — the caller has measured that the view is full for the dialed window (the
+//               token trim is setting rows aside). The rows that leave are the ones that trim
+//               takes off the front: half the span, in whole blocks (`maxTrimUnits`). Folding
+//               them moves the boundary to where the trim's front already is, so the live tail
+//               does not move at all — only the summaries lane above it changes.
+//
+// AND THE FLOOR NEITHER MAY CROSS: the newest `freshTailCount` rows never leave (the same floor
+// every compaction has always kept, and the one `freshTailHorizon`'s header relies on). A fold
+// that would reach into it is clamped short of it; one that cannot fold anything answers null.
+//
+// The answer is a SEQ, not a row list: compaction folds every not-yet-summarised row of this
+// session with `seq <= throughSeq`. That includes rows stranded before the boundary by an
+// earlier refused chunk — they left the view long ago and are owed a summary too.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+export type LeavingCause = 'ceiling' | 'full';
+
+export interface LeavingView {
+  cause: LeavingCause;
+  /** Fold every unsummarised row of this session with `seq <= throughSeq`. */
+  throughSeq: number;
+  /** Rows after the boundary that leave (stranded pre-boundary rows are not counted here). */
+  rowsLeaving: number;
+}
+
+/** True when the row at `seq` is followed by its tool result, so a fold ending at `seq` would
+ *  split a tool_use from its tool_result. */
+function seqOfPairedToolResult(agentId: string, seq: number): number | null {
+  const row = getDb().prepare(`
+    SELECT m.seq AS seq, m.role AS role
+      FROM messages m
+     WHERE m.agent_id = @agentId AND m.seq > @seq
+     ORDER BY m.seq ASC
+     LIMIT 1
+  `).get({ agentId, seq }) as { seq: number; role: string } | undefined;
+  return row && row.role === 'tool' ? row.seq : null;
+}
+
+/**
+ * The rows about to leave this agent's live view, or null when nothing is leaving.
+ *
+ * `viewFull` is the caller's measurement that the view no longer fits the dialed window
+ * (`memory/compaction.ts`'s `liveViewIsFull`, off the same dry run the pre-call gate reads).
+ * Without it only the ceiling can make rows leave.
+ *
+ * Never throws: a trigger is not the place to discover a broken read. Failure answers null —
+ * condense nothing — which is the direction the ruling prefers over condensing on a guess.
+ */
+export function rowsLeavingView(
+  agentId: string,
+  policy: Pick<ContextWindowPolicy, 'freshTailCount'>,
+  opts: { viewFull: boolean },
+): LeavingView | null {
+  const cap = Math.max(1, policy.freshTailCount);
+  let boundary: BoundaryRow;
+  try {
+    boundary = readBoundary(agentId);
+  } catch {
+    return null;
+  }
+  const rowsSince = boundary.rows_since;
+  const room = rowsSince - cap;   // the most that may leave without crossing the floor
+  if (room <= 0) return null;
+
+  const ceiling = cap * TAIL_HORIZON_CEILING_MULTIPLE;
+  let cause: LeavingCause | null = null;
+  let leaving = 0;
+  if (rowsSince >= ceiling - ceilingLeadRows(cap)) {
+    // The rows the next cut would skip: at the lead point the span has not crossed yet, so ask
+    // the cut what it would take one row past the ceiling — or now, if it already has.
+    cause = 'ceiling';
+    leaving = ceilingSkipRows(Math.max(rowsSince, ceiling + 1), cap);
+  } else if (opts.viewFull) {
+    cause = 'full';
+    leaving = Math.max(tailTrimBlockGroups(cap), maxTrimUnits(rowsSince, tailTrimBlockGroups(cap)));
+  }
+  if (cause === null) return null;
+  leaving = Math.min(leaving, room);
+  if (leaving <= 0) return null;
+
+  let throughSeq = 0;
+  try {
+    throughSeq = seqAfterSkip(agentId, boundary.anchor, leaving - 1);
+    if (throughSeq <= 0) return null;
+    // Never end a fold between a tool_use and its tool_result: the pair is one atom to every
+    // reader of this tail. One row further keeps it whole; the floor clamp above leaves room.
+    const pairedResult = leaving < room ? seqOfPairedToolResult(agentId, throughSeq) : null;
+    if (pairedResult !== null) { throughSeq = pairedResult; leaving += 1; }
+  } catch {
+    return null;
+  }
+  return { cause, throughSeq, rowsLeaving: leaving };
 }
