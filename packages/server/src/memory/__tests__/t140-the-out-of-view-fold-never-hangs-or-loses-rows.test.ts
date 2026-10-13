@@ -554,3 +554,48 @@ describe('t140 round 4 — F1: the turn sets a routine background fold aside to 
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a preempted call is not the writer\'s failure').toBe(OWN);
   }, 8_000);
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 4, part 2 — A NOTE IS KNOWN BY A COLUMN, NEVER BY ITS TEXT. A model summary (or an imported
+// or hand-written memory) can carry any text, including the note's own heading; identity that is
+// content can be forged by content. Only `writeUncondensedPlaceholders` marks a row as a note.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('t140 round 4 — a note is identified structurally, never by its heading', () => {
+  it.fails('a REAL model summary that happens to start with the heading survives the replacement, untouched and unsuperseded', async () => {
+    seedACut();
+    const rows = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq LIMIT 6').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
+    const { createLeafSummary } = await import('../dag.js');
+    const forged = '[Not yet condensed] is how the crew labelled the unsorted crates; the rest were filed by bay.';
+    const real = createLeafSummary(AGENT, forged, 30, rows, '2026-01-01T00:00:00.000Z', '2026-01-01T00:05:00.000Z');
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    writers.calls = [];
+    await replaceUncondensedPlaceholders(AGENT);
+    const after = db().prepare('SELECT content FROM summaries WHERE id = ?').get(real.id) as { content: string } | undefined;
+    expect(after?.content, 'a real summary was rewritten or deleted because of its words').toBe(forged);
+    expect(writers.calls, 'nothing to replace').toEqual([]);
+    expect((db().prepare('SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id = ?').get(real.id) as { n: number }).n).toBe(rows.length);
+  }, 5_000);
+
+  it.fails('census: no shipped reader identifies a note by its heading text', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const SRC = path.resolve(__dirname, '../..');
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(full); continue; }
+        if (!/\.ts$/.test(e.name)) continue;
+        const code = fs.readFileSync(full, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+        // A READER of the heading: the prefix predicate, a prefix SQL test, or the constant used anywhere
+        // but the one place that WRITES the note's text.
+        const uses = (code.match(/UNCONDENSED_PLACEHOLDER_HEAD/g) ?? []).length;
+        const writes = /export const UNCONDENSED_PLACEHOLDER_HEAD = /.test(code) ? 1 : 0;
+        const inText = (code.match(/`\$\{UNCONDENSED_PLACEHOLDER_HEAD\} \$\{n\} message/g) ?? []).length;
+        if (uses - writes - inText > 0 || /isUncondensedPlaceholder\(|Not yet condensed%|reservedHeadRefusal/.test(code)) offenders.push(path.relative(SRC, full));
+      }
+    };
+    walk(SRC);
+    expect(offenders).toEqual([]);
+  });
+});

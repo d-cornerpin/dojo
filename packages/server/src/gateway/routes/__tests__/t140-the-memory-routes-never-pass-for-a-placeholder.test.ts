@@ -78,10 +78,13 @@ afterEach(() => {
 });
 
 describe('t140 — the manual summary routes never pass a summary off as a placeholder note', () => {
-  it('an injected memory that begins with the reserved head is refused, so no replacement can delete it as an empty note', async () => {
-    const res = await call('POST', `/${AGENT}/inject`, { content: `${UNCONDENSED_PLACEHOLDER_HEAD} remember: the vault key is in the blue binder.` });
-    expect(res.status).toBe(400);
-    expect(summaryContents()).toEqual([]);
+  it.fails('a user may write ANY text: an injected memory that begins with the note\'s heading is accepted and survives a replacement', async () => {
+    const text = `${UNCONDENSED_PLACEHOLDER_HEAD} remember: the vault key is in the blue binder.`;
+    const res = await call('POST', `/${AGENT}/inject`, { content: text });
+    expect(res.status).toBe(200);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(summaryContents()).toEqual([text]);
+    expect(writer.calls).toBe(0);
   });
 
   it('an ordinary injected memory survives a placeholder replacement untouched', async () => {
@@ -92,12 +95,16 @@ describe('t140 — the manual summary routes never pass a summary off as a place
     expect(writer.calls).toBe(0);
   });
 
-  it('an edit that keeps the reserved head is refused, so the replacement can never overwrite the owner\'s words', async () => {
+  it.fails('an edit of a note is the owner\'s own words whatever they say — even the heading — and the replacement leaves it alone', async () => {
     const last = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
     expect(writeUncondensedPlaceholders(AGENT, last - 2)).toBeGreaterThan(0);
     const id = (db().prepare('SELECT id FROM summaries WHERE agent_id = ?').get(AGENT) as { id: string }).id;
-    const res = await call('PUT', `/${AGENT}/summary/${id}`, { content: `${UNCONDENSED_PLACEHOLDER_HEAD} my own notes about the ledger.` });
-    expect(res.status).toBe(400);
+    const text = `${UNCONDENSED_PLACEHOLDER_HEAD} my own notes about the ledger.`;
+    const res = await call('PUT', `/${AGENT}/summary/${id}`, { content: text });
+    expect(res.status).toBe(200);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(summaryContents()).toEqual([text]);
+    expect(writer.calls).toBe(0);
   });
 
   it('an edit that turns a note into the owner\'s own words makes it a real summary of those rows, which the replacement leaves alone', async () => {
