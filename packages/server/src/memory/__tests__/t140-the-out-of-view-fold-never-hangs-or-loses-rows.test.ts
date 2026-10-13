@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t140 round 3 — THE OUT-OF-VIEW FOLD WHEN THE SUMMARY WRITER FAILS (re-review 2 §2, R-V333-10).
 //
-// The engine's assembly door (`compaction.ts`'s `assembleWithNothingOutOfViewUnsummarised`)
+// The engine's assembly door (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`)
 // summarises the rows its assembly took out of the view before the turn is dialed. Round 2 made
 // that exact; this file is what happens when the model writing the summary does not answer:
 //
@@ -81,6 +81,8 @@ vi.mock('../../agent/model.js', async () => {
 });
 
 import * as compaction from '../compaction.js';
+import * as door_ from '../out-of-view-fold.js';
+import { __resetSummaryWriterHealthForTests, WRITER_COOLDOWN_MS } from '../summary-writer-health.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, noteLowYield } from '../compaction-brakes.js';
@@ -98,7 +100,7 @@ const db = (): Database.Database => mockDb.current!;
 
 /** Short bounds so a clause measures the bound, not the default (round 3 picks the real one). */
 const BOUNDS = { wallClockMs: 600, perWriterMs: 200 };
-const hooks = compaction as unknown as { __setOutOfViewFoldBoundsForTests?: (b: typeof BOUNDS | null) => void };
+const hooks = door_ as unknown as { __setOutOfViewFoldBoundsForTests?: (b: typeof BOUNDS | null) => void };
 
 const LARGE = 'Manifest line: crate, bay, weight, seal number, inspector initials, remarks. '.repeat(620);
 
@@ -133,7 +135,7 @@ function seedACut(): void {
 }
 
 function door(stop?: AbortSignal): ReturnType<typeof assembleContext> {
-  const p = (compaction.assembleWithNothingOutOfViewUnsummarised as unknown as (
+  const p = (door_.assembleWithNothingOutOfViewUnsummarised as unknown as (
     a: string, w: number, f: () => ReturnType<typeof assembleContext>, o?: { abortSignal?: AbortSignal },
   ) => ReturnType<typeof assembleContext>)(AGENT, writers.windowNow, () => assembleContext(AGENT, OWN), { abortSignal: stop });
   // A door that outlives its clause (a hang the clause timed out on) must not surface later as an
@@ -169,13 +171,14 @@ beforeEach(() => {
   owner.cards.length = 0;
   __resetBrakesForTests();
   __resetBreakersForTests();
-  (compaction as unknown as { __resetSummaryWriterHealthForTests?: () => void }).__resetSummaryWriterHealthForTests?.();
+  __resetSummaryWriterHealthForTests();
   hooks.__setOutOfViewFoldBoundsForTests?.(BOUNDS);
   mockDb.current = new Database(':memory:');
   runMigrations();
   seed();
 });
 afterEach(async () => {
+  vi.useRealTimers();
   // The transport watchdog's job, done at once: no hung call outlives its clause.
   for (const fail of writers.hung.splice(0)) fail();
   // Nothing may hold this agent's compaction lock into the next clause.
@@ -187,7 +190,7 @@ afterEach(async () => {
 
 describe('t140 round 3 — a failing writer is passed over for the next one, within the door\'s own bound', () => {
   for (const mode of ['hang', 'empty', '402'] as Mode[]) {
-    it.fails(`the agent's own writer ${mode === 'hang' ? 'times out' : mode === 'empty' ? 'answers empty' : 'answers 402'}: the next writer folds the rows, nothing is lost, the turn returns within the bound`, async () => {
+    it(`the agent's own writer ${mode === 'hang' ? 'times out' : mode === 'empty' ? 'answers empty' : 'answers 402'}: the next writer folds the rows, nothing is lost, the turn returns within the bound`, async () => {
       seedACut();
       writers.mode[OWN] = mode;
       const started = Date.now();
@@ -205,7 +208,7 @@ describe('t140 round 3 — a failing writer is passed over for the next one, wit
 });
 
 describe('t140 round 3 — every writer down: the rows are still represented, and the owner is told once', () => {
-  it.fails('placeholders cover exactly the cut rows, carry no outside text, and ONE card is raised across three failing turns', async () => {
+  it('placeholders cover exactly the cut rows, carry no outside text, and ONE card is raised across three failing turns', async () => {
     writers.mode = { [OWN]: 'hang', [CHEAP]: 'empty', [NEXT]: 'hang' };
     seedACut();
     for (let extra = 0; extra < 3; extra++) {
@@ -231,24 +234,28 @@ describe('t140 round 3 — every writer down: the rows are still represented, an
 });
 
 describe('t140 round 3 — recovery: a real summary replaces the placeholder, and the brake does not stop it', () => {
-  it.fails('after every writer failed, a writer answers: the placeholders are replaced by real summaries, even with the 15-minute brake armed', async () => {
+  it('after every writer failed, a writer answers: the placeholders are replaced by real summaries, even with the 15-minute brake armed', async () => {
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
     seedACut();
     await door();
     expect(placeholders().length).toBeGreaterThan(0);
     noteLowYield(AGENT);   // the brake a pressure pass would arm
     writers.mode = {};
+    // The writers come back, and the few minutes they are passed over for have gone by.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() + WRITER_COOLDOWN_MS + 1_000));
     const ph = await import('../uncondensed-placeholder.js') as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
     expect(placeholders(), 'no placeholder left once a writer answers').toEqual([]);
     const ctx = await assembleContext(AGENT, OWN);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    vi.useRealTimers();
   }, 10_000);
 });
 
 describe('t140 round 3 — Stop during the fold', () => {
-  it.fails('Stop ends the fold at once; the rows are represented; the writer is not blamed; no card', async () => {
+  it('Stop ends the fold at once; the rows are represented; the writer is not blamed; no card', async () => {
     writers.mode[OWN] = 'hang';
     seedACut();
     const stop = new AbortController();
@@ -263,7 +270,7 @@ describe('t140 round 3 — Stop during the fold', () => {
 });
 
 describe('t140 round 3 — a backlog is capped per turn', () => {
-  it.fails('300 unsummarised turns, then the window drops to 32K: at most two summariser calls inside the turn, nothing lost', async () => {
+  it('300 unsummarised turns, then the window drops to 32K: at most two summariser calls inside the turn, nothing lost', async () => {
     writers.windowNow = 200_000;
     for (let t = 1; t <= 300; t++) appendTurn(false, 60);   // ~600 rows, many leaf chunks
     writers.windowNow = 32_000;
@@ -277,7 +284,7 @@ describe('t140 round 3 — a backlog is capped per turn', () => {
 });
 
 describe('t140 round 3 — the brake and a busy lock', () => {
-  it.fails('the 15-minute brake does not block the out-of-view fold', async () => {
+  it('the 15-minute brake does not block the out-of-view fold', async () => {
     seedACut();
     noteLowYield(AGENT);
     const ctx = await door();

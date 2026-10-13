@@ -36,7 +36,7 @@
 
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
 import { estimateTokens } from '../../../../memory/budget.js';
-import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/compaction.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/out-of-view-fold.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
@@ -249,7 +249,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
   }
   // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
-  // rows the trim took are folded (awaited) and the context assembled again (`compaction.ts`).
+  // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view-fold.ts`).
   const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, contextWindow,
     () => assembleContext(agentId, contextModelId, sharedTurnContext));
   // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──

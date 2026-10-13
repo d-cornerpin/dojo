@@ -79,7 +79,7 @@
 
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
+import { createCondensedSummary, getLeafSummariesNotCondensed, isUncondensedPlaceholder, UNCONDENSED_PLACEHOLDER_HEAD, type Summary } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
@@ -160,11 +160,12 @@ function topLevelByDepth(agentId: string): TopLevelRow[] {
     return getDb().prepare(
       `SELECT s.depth AS depth, COUNT(*) AS n, COALESCE(MAX(s.token_count), 0) AS maxTok
          FROM summaries s
-        WHERE s.agent_id = ?
+        WHERE s.agent_id = @agentId
           AND s.id NOT IN (SELECT parent_id FROM summary_parents)
+          AND substr(s.content, 1, length(@head)) != @head
         GROUP BY s.depth
         ORDER BY s.depth ASC`,
-    ).all(agentId) as TopLevelRow[];
+    ).all({ agentId, head: UNCONDENSED_PLACEHOLDER_HEAD }) as TopLevelRow[];
   } catch {
     return [];
   }
@@ -200,7 +201,8 @@ export function rawContextSummaryTokens(agentId: string): number {
  */
 function topLevelRows(agentId: string): Summary[] {
   const rows: Summary[] = [];
-  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth));
+  // t140 round 3: a not-yet-condensed placeholder is never merged (`dag.ts`), here as in the count.
+  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth).filter((r) => !isUncondensedPlaceholder(r.content)));
   return rows;
 }
 

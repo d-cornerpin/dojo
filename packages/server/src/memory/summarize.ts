@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
+import { noteSummaryWriterOutcome } from './summary-writer-health.js';
 
 const logger = createLogger('memory-summarize');
 
@@ -210,7 +211,16 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
   return null;
 }
 
-export async function generateSummary(params: {
+/** t140 round 3: every summary call's outcome is recorded against its writer's provider, so a
+ *  writer that timed out, answered empty or errored is passed over for a few minutes
+ *  (`summary-writer-health.ts`). One wrapper rather than a line at each return below. */
+export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
+  const result = await writeSummary(params);
+  noteSummaryWriterOutcome(params.modelId, result.ok, params.abortSignal);
+  return result;
+}
+
+async function writeSummary(params: {
   content: string;
   depth: number;
   targetTokens: number;

@@ -435,7 +435,7 @@ export interface AssembledContext {
    * view — the token trim's front cut (`budgetFreshTail`) or the horizon's row-ceiling skip,
    * whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
    * below it is out of view with no summary, which the engine's assembly door
-   * (`compaction.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
+   * (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
    * Read off the trim's own result, so the fold covers exactly what the trim took.
    */
   outOfViewThroughSeq?: number;

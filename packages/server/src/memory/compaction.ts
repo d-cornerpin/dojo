@@ -23,6 +23,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS } from './assembler.js';
+import { summaryWriterCandidates, eligibleSummaryWriters } from './summary-writer-health.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -392,8 +393,13 @@ function getContextThreshold(): number {
   return CONTEXT_THRESHOLD;
 }
 
-function getLeafChunkTokens(): number {
+export function getLeafChunkTokens(): number {
   return DEFAULTS.leafChunkTokens;
+}
+
+/** The leaf summary's target size — what `replaceUncondensedPlaceholders` asks for too. */
+export function getLeafTargetTokens(): number {
+  return DEFAULTS.leafTargetTokens;
 }
 
 // Model-aware row floor for compaction: getFreshTailCount (memory/budget.ts). No compaction
@@ -520,29 +526,14 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
 // summaries with the same (cheap) model choice. Returns null when no
 // text-capable model exists at all.
 export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string): string | null {
-  const db = getDb();
-  const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%'";
-  const isUsableTextModel = (id: string): boolean => !!db
-    .prepare(`SELECT 1 FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ? AND m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}`)
-    .get(id);
-  const cheapestTextModel = (): string | undefined => (db
-    .prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER} ORDER BY COALESCE(m.input_cost_per_m, 0) ASC, m.id ASC LIMIT 1`)
-    .get() as { id: string } | undefined)?.id;
-
-  const explicit = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
-
-  if (explicit && isUsableTextModel(explicit)) {
-    logger.info('Resolved summary-writer model (explicit setting)', { resolvedModelId: explicit }, agentId);
-    return explicit;
-  }
-  if (!preferredModelId || preferredModelId === 'auto' || preferredModelId === '__auto__' || !isUsableTextModel(preferredModelId)) {
-    const cheapest = cheapestTextModel();
-    if (!cheapest) return null;
-    logger.info('Resolved summary-writer model (cheapest text-capable)', { resolvedModelId: cheapest }, agentId);
-    return cheapest;
-  }
-  // The caller's preferred model is text-capable, keep it.
-  return preferredModelId;
+  // t140 round 3: the order above, with writers whose provider is broken or failed a summary in
+  // the last few minutes passed over (`summary-writer-health.ts`) — so an unreachable cheapest
+  // model is not picked again and again. When every writer is passed over, the first in order is
+  // still returned: the pressure path has its own brake, and "no writer" would be a false defect.
+  const all = summaryWriterCandidates(preferredModelId);
+  const pick = eligibleSummaryWriters(preferredModelId)[0] ?? all[0] ?? null;
+  if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
+  return pick;
 }
 
 // ── Main Entry Point ──
@@ -988,19 +979,24 @@ async function condenseOnlyPass(
  * fold of leaving rows is not pressure. No backoff is ARMED by a small yield either — the span
  * is leaving the view whatever it reclaims — but an existing brake is honoured, so a summary
  * writer that keeps failing is not dialed again every turn.
+ *
+ * t140 round 3 (R-V333-10 item 5): EXCEPT cause 'out-of-view' — rows the view has already dropped
+ * are owed their fold now; the brake (built for low-yield pressure passes) neither blocks it nor is
+ * armed or reset by it. Its own bound, writer fallback and placeholders live in its door.
  */
-async function leavingViewPass(
+export async function leavingViewPass(
   agentId: string, modelId: string, contextWindow: number, leaving: LeavingView,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
-  if (compactionIsBraked(agentId, false)) return NO_COMPACTION;
+  const outOfView = leaving.cause === 'out-of-view';
+  if (!outOfView && compactionIsBraked(agentId, false)) return NO_COMPACTION;
   logger.info('Condensing rows leaving the live view', {
     cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
   }, agentId);
 
   const archiveHighWater = getArchiveHighWaterMark(agentId);
   const compactedIds = getCompactedMessageIds(agentId);
-  const floorRows = leaving.cause === 'out-of-view' ? 1 : getFreshTailCount(contextWindow);
+  const floorRows = outOfView ? 1 : getFreshTailCount(contextWindow);
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
   const toArchive = span.filter(m => archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater);
@@ -1023,7 +1019,7 @@ async function leavingViewPass(
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
-  notePassOutcome(agentId, false, result);
+  if (!outOfView) notePassOutcome(agentId, false, result);
   broadcast({ type: 'memory:compaction', agentId, ...result });
   if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
     insertCompactionDivider(agentId, {
@@ -1034,71 +1030,8 @@ async function leavingViewPass(
   return result;
 }
 
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t140 round 2 (re-review C1) — NO ROW IS EVER OUT OF VIEW WITHOUT A SUMMARY COVERING IT.
-//
-// The routine gate's folds are PRESSURE folds: they run ahead of need, in the background, in whole
-// trim blocks above the newest-row floor (I4's rule), so on a roomy window the trim never has to
-// cut. On a small window one large row (a file read, a long paste) makes the token trim cut THIS
-// assembly — floor rows included when the floor itself does not fit — and no fold started earlier
-// can know which rows. So the assembly the turn dials is checked against itself: the assembler
-// reports the newest seq it took out of view (`outOfViewThroughSeq`, read off the trim's own
-// result), and every unsummarised row at or below it is folded NOW, awaited, then the context is
-// assembled again — which may cut again (the new summary costs room), so it recurses, bounded, as
-// OR-COMPACT-1 requires. The low-yield brake bounds it the way it bounds every fold: a pass that
-// folds nothing ends the recursion and is reported as a repairable defect, never a silent loss.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** Recursion bound: each pass folds everything the last assembly cut; a re-assembly can only cut
- *  again by the room the new summary took, so this is never reached on a healthy writer. */
-const OUT_OF_VIEW_FOLD_PASSES = 4;
-
-/** Unsummarised rows of this session at or below `throughSeq` — the same reader (and session
- *  boundary) the fold itself selects from, so "owed" and "folded" can never disagree. */
-function unsummarisedThrough(agentId: string, throughSeq: number): number {
-  const compacted = getCompactedMessageIds(agentId);
-  return getMessagesOutsideFreshTail(agentId, 1)
-    .filter((m) => !compacted.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= throughSeq).length;
-}
-
-/**
- * THE ENGINE'S ASSEMBLY DOOR. `assemble` is the one assembly this turn will dial (the assemble
- * step's, or a re-fit's for a smaller pick); `contextWindow` is that assembly's window. The fold is
- * written by the agent's own summary writer, under the same per-agent lock as every compaction —
- * WAITING for one already running (the gate's background fold may be covering these very rows).
- */
-export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOfViewThroughSeq?: number }>(
-  agentId: string, contextWindow: number, assemble: () => Promise<T>,
-): Promise<T> {
-  let assembled = await assemble();
-  for (let pass = 0; pass < OUT_OF_VIEW_FOLD_PASSES; pass++) {
-    const throughSeq = assembled.outOfViewThroughSeq ?? 0;
-    if (throughSeq <= 0 || unsummarisedThrough(agentId, throughSeq) === 0) return assembled;
-    const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
-      { model_id: string | null } | undefined)?.model_id ?? undefined;
-    const writer = resolveSummaryWriterModel(agentId, configured);
-    const covered = writer === null ? 0 : await withLock(`compact:${agentId}`, async () => {
-      const owed = unsummarisedThrough(agentId, throughSeq);
-      if (owed === 0) return 0;
-      await leavingViewPass(agentId, writer, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: owed });
-      return owed - unsummarisedThrough(agentId, throughSeq);
-    }, { ifBusy: 'wait' }) ?? 0;
-    if (covered <= 0 && unsummarisedThrough(agentId, throughSeq) > 0) {
-      logger.error('DEFECT: rows are out of the live view with no summary, and the fold covering them did not run', {
-        throughSeq, owed: unsummarisedThrough(agentId, throughSeq), writer,
-        repair: writer === null ? 'no text-capable model can write summaries for this agent' : 'the summary writer failed or is braked; see the compaction defect line',
-      }, agentId);
-      return assembled;
-    }
-    assembled = await assemble();
-  }
-  if ((assembled.outOfViewThroughSeq ?? 0) > 0 && unsummarisedThrough(agentId, assembled.outOfViewThroughSeq ?? 0) > 0) {
-    logger.error('DEFECT: the out-of-view fold did not converge within its bound', {
-      passes: OUT_OF_VIEW_FOLD_PASSES, throughSeq: assembled.outOfViewThroughSeq,
-    }, agentId);
-  }
-  return assembled;
-}
+// t140 round 3: the engine's out-of-view assembly door moved to `memory/out-of-view-fold.ts`, with
+// its own bound, a writer fallback and placeholders; it calls `leavingViewPass` below.
 
 // ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
 //
@@ -1554,7 +1487,7 @@ export function condenseToolJsonForSummary(content: string): string {
   }
 }
 
-function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
+export function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
   const chunks: Message[][] = [];
   let currentChunk: Message[] = [];
   let currentTokens = 0;

@@ -157,7 +157,7 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     // The re-fit's own background fold (fix round 1's M3) is gone: it folded above the floor only.
     expect(filesWith(/\bfoldWhatTheRefitSetAside\b/)).toEqual([]);
     expect(filesWith(/\bassembleWithNothingOutOfViewUnsummarised[<(]/)).toEqual([
-      `${ENGINE_STEPS_REL}/assemble/index.ts`, REFIT_REL, 'memory/compaction.ts',
+      `${ENGINE_STEPS_REL}/assemble/index.ts`, REFIT_REL, 'memory/out-of-view-fold.ts',
     ]);
   });
 
