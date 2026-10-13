@@ -65,6 +65,18 @@ vi.mock('../../agent/model.js', async () => {
           p.abortSignal?.addEventListener('abort', fail, { once: true });
         });
       }
+      if (mode.startsWith('slow:')) {
+        // A writer that WORKS, but takes this long: answers unless it is cut first.
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, Number(mode.slice(5)));
+          const fail = () => { clearTimeout(t); reject(new Error('The operation was aborted.')); };
+          writers.hung.push(fail);
+          if (p.abortSignal?.aborted) fail();
+          p.abortSignal?.addEventListener('abort', fail, { once: true });
+        });
+        writers.written++;
+        return { content: `Summary number ${writers.written}: the crew counted the depot and filed the manifests.`, toolCalls: [], usage: {} };
+      }
       if (mode === 'empty') return { content: '', toolCalls: [], usage: {} };
       if (mode === '402') {
         throw Object.assign(new Error('OpenAI call failed: 402 Payment Required'), {
@@ -329,4 +341,187 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE '[Not yet condensed]%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
       'a placeholder was merged into a parent').toBe(0);
   }, 10_000);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 4 (re-review 3: F1–F4, card noise, ruling R-V333-12).
+// ════════════════════════════════════════════════════════════════════════════════════════
+const coverCounts = (): number[] => (db().prepare(
+  `SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id
+    WHERE s.agent_id = ? GROUP BY sm.message_id HAVING n > 1`,
+).all(AGENT) as Array<{ n: number }>).map((r) => r.n);
+const placeholderCoveredSeqs = (): number[] => (db().prepare(
+  `SELECT m.seq AS seq FROM messages m JOIN summary_messages sm ON sm.message_id = m.id JOIN summaries s ON s.id = sm.summary_id
+    WHERE s.agent_id = ? AND s.content LIKE '[Not yet condensed]%'`,
+).all(AGENT) as Array<{ seq: number }>).map((r) => r.seq);
+const coolAll = async (...ids: string[]) => {
+  const h = await import('../summary-writer-health.js') as unknown as { noteSummaryWriterOutcome: (m: string, ok: boolean) => void };
+  for (const id of ids) h.noteSummaryWriterOutcome(id, false);
+};
+
+describe('t140 round 4 — F1: never two notes for one row', () => {
+  it.fails('a background fold that lands on rows the door covered with placeholders while it held the lock: every row ends with exactly one covering summary', async () => {
+    // Enough history that rows ABOVE the newest-row floor are cut too: those the routine fold may take.
+    for (let t = 1; t <= 40; t++) appendTurn(false);
+    appendTurn(true);
+    const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
+    expect(throughSeq).toBeGreaterThan(0);
+    writers.mode = { [OWN]: 'slow:1500', [CHEAP]: 'slow:1500', [NEXT]: 'slow:1500' };
+    // A routine fold of the same rows, already running and holding the lock (not launched by the gate).
+    const pressure = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 } });
+    await new Promise((r) => setTimeout(r, 20));
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    await pressure;
+    expect(coverCounts(), 'a row linked to two summaries').toEqual([]);
+    const after = await assembleContext(AGENT, OWN);
+    expect(lostRows(JSON.stringify(after.messages))).toEqual([]);
+  }, 10_000);
+});
+
+describe('t140 round 4 — F2: placeholder rows reach the vault archive', () => {
+  it.fails('an outage of several turns with every writer cooling: every placeholder-covered row is archived', async () => {
+    seedACut();
+    await coolAll(OWN, CHEAP, NEXT);
+    for (let t = 0; t < 4; t++) { await door(); appendTurn(t % 2 === 0); }
+    await door();
+    const covered = placeholderCoveredSeqs();
+    expect(covered.length).toBeGreaterThan(0);
+    const { getArchiveHighWaterMark } = await import('../../vault/archive.js');
+    const hw = getArchiveHighWaterMark(AGENT) ?? 0;
+    expect(covered.filter((s) => s > hw), 'placeholder rows never archived').toEqual([]);
+  }, 10_000);
+});
+
+describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed', () => {
+  it('R2 per-writer limit: a hung first writer leaves room for a fallback that needs 100 ms', async () => {
+    writers.mode = { [OWN]: 'hang', [CHEAP]: 'slow:100' };
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(placeholders(), 'the fallback folded the rows').toEqual([]);
+  }, 5_000);
+
+  it('R4 breaker open: a writer whose provider breaker is open is skipped, never dialed', async () => {
+    const { recordPermanentFailure } = await import('../../providers/billing-breaker.js');
+    recordPermanentFailure('p-own', 'no_balance', '402', AGENT);
+    recordPermanentFailure('p-own', 'no_balance', '402', AGENT);
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls, 'the broken provider was dialed').not.toContain(OWN);
+    expect(placeholders(), 'the next writer folded the rows').toEqual([]);
+  }, 5_000);
+
+  it('R6 no writer left: placeholders, and the owner is told', async () => {
+    await coolAll(OWN, CHEAP, NEXT);
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls, 'nothing dialed').toEqual([]);
+    expect(placeholders().length).toBeGreaterThan(0);
+    expect(failingCards()).toBe(1);
+  }, 5_000);
+
+  it('R7 Stop after a writer already failed: no card', async () => {
+    writers.mode = { [OWN]: 'empty', [CHEAP]: 'hang', [NEXT]: 'hang' };
+    seedACut();
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 80);
+    const ctx = await door(stop.signal);
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls[0]).toBe(OWN);
+    expect(failingCards(), 'a Stop is not a failure, even after one').toBe(0);
+  }, 5_000);
+
+  it('R8 lock-wait limit: a lock held far past the clock does not hold the door', async () => {
+    seedACut();
+    let release!: () => void;
+    const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
+    const started = Date.now();
+    const ctx = await door();
+    expect(Date.now() - started, 'the door returned within its own bound').toBeLessThan(BOUNDS.wallClockMs + 1_500);
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    release();
+    await held;
+  }, 6_000);
+
+  it('R9 a placeholder whose rows a real summary already covers is dropped, not re-summarised', async () => {
+    writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
+    seedACut();
+    await door();
+    const ph = placeholders();
+    expect(ph.length).toBeGreaterThan(0);
+    // A real leaf over the same rows (the shape a race left behind before round 4).
+    const rows = db().prepare('SELECT message_id FROM summary_messages WHERE summary_id = ?').all(ph[0].id) as Array<{ message_id: string }>;
+    db().prepare("INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, created_at) VALUES ('sum-real', ?, 0, 'leaf', 'A real summary of those rows.', 8, '2026-01-01', '2026-01-01', ?, datetime('now'))").run(AGENT, rows.length);
+    const link = db().prepare("INSERT INTO summary_messages (summary_id, message_id) VALUES ('sum-real', ?)");
+    for (const r of rows) link.run(r.message_id);
+    writers.mode = {};
+    __resetSummaryWriterHealthForTests();
+    writers.calls = [];
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(placeholders().find((p) => p.id === ph[0].id), 'the covered placeholder is gone').toBeUndefined();
+    expect(writers.calls.length, 'one call per OTHER placeholder, none for the covered one').toBe(ph.length - 1);
+  }, 6_000);
+});
+
+describe('t140 round 4 — F4: the in-turn limit is not a writer failure', () => {
+  it.fails('a writer slower than the in-turn slice is not benched and raises no card; the background replacement uses it', async () => {
+    writers.mode = { [OWN]: 'slow:400', [CHEAP]: 'slow:400', [NEXT]: 'slow:400' };
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(placeholders().length, 'nobody answered inside the slice').toBeGreaterThan(0);
+    expect(failingCards(), 'slow is not failing').toBe(0);
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a slow writer is not benched').toBe(OWN);
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    writers.calls = [];
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(placeholders()).toEqual([]);
+    expect(writers.calls[0], 'the background used the agent\'s own writer, with the longer bound').toBe(OWN);
+  }, 10_000);
+});
+
+describe('t140 round 4 — card noise: one card per incident', () => {
+  it.fails('a flaky writer that fails, recovers and fails again within the hour raises ONE card', async () => {
+    writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
+    seedACut();
+    await door();
+    expect(failingCards()).toBe(1);
+    writers.mode = {};
+    __resetSummaryWriterHealthForTests();
+    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
+    await replaceUncondensedPlaceholders(AGENT);   // a real recovery: no placeholder left
+    expect(placeholders()).toEqual([]);
+    writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
+    for (let t = 0; t < 14; t++) appendTurn(false);
+    appendTurn(true);
+    await door();
+    expect(placeholders().length).toBeGreaterThan(0);
+    expect(failingCards(), 'a second card for the same flaky writer inside the hour').toBe(1);
+  }, 10_000);
+});
+
+describe('t140 round 4 — R-V333-12: the fallback never widens who sees the conversation', () => {
+  it.fails('with a Settings writer: Settings writer, then the agent\'s own model — never a third provider', async () => {
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
+    writers.mode = { [NEXT]: 'empty', [OWN]: 'empty', [CHEAP]: 'ok' };
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls.slice(0, 2)).toEqual([NEXT, OWN]);
+    expect(writers.calls, 'the cheapest model on a provider nobody chose was sent the conversation').not.toContain(CHEAP);
+    expect(placeholders().length, 'placeholders, not a wider audience').toBeGreaterThan(0);
+  }, 5_000);
+
+  it('with NO Settings writer: the agent\'s own model, then (as before) the cheapest eligible text model', async () => {
+    writers.mode = { [OWN]: 'empty' };
+    seedACut();
+    const ctx = await door();
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(writers.calls.slice(0, 2)).toEqual([OWN, CHEAP]);
+    expect(placeholders()).toEqual([]);
+  }, 5_000);
 });
