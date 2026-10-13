@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 describe('the owner card arrives and stays until he dismisses it', () => {
-  it.fails('a platform frame becomes a card with his words; an hour later it is still there; X takes it away', () => {
+  it('a platform frame becomes a card with his words; an hour later it is still there; X takes it away', () => {
     mount();
     ownerAlert(BUDGET);
     expect(screen.getByText(BUDGET)).toBeTruthy();
@@ -100,7 +100,7 @@ describe('the owner card arrives and stays until he dismisses it', () => {
     expect(screen.queryByText(BUDGET)).toBeNull();
   });
 
-  it.fails('an agent recovering elsewhere sweeps its own error cards, never the owner card', () => {
+  it('an agent recovering elsewhere sweeps its own error cards, never the owner card', () => {
     mount();
     ownerAlert('Helper has been paused after repeated errors. Open the dashboard to investigate.', 'error');
     fireEvent.click(screen.getByText('post plain error'));
@@ -112,7 +112,7 @@ describe('the owner card arrives and stays until he dismisses it', () => {
 });
 
 describe('one alert = one card', () => {
-  it.fails('the same words while the card is up are ONE card; after dismissal they are a new card', () => {
+  it('the same words while the card is up are ONE card; after dismissal they are a new card', () => {
     mount();
     ownerAlert(BUDGET);
     ownerAlert(BUDGET);
@@ -122,7 +122,7 @@ describe('one alert = one card', () => {
     expect(screen.getAllByText(BUDGET)).toHaveLength(1);
   });
 
-  it.fails('two different alerts are two cards', () => {
+  it('two different alerts are two cards', () => {
     mount();
     ownerAlert(BUDGET);
     ownerAlert('OpenRouter balance is $2.00, at or below your $5 warning threshold.');
@@ -137,7 +137,7 @@ describe('what is NOT an owner card here', () => {
     expect(screen.queryByText('Agent paused after repeated errors.')).toBeNull();
   });
 
-  it.fails('a cost:alert frame makes no card: the old fading budget toast is gone', () => {
+  it('a cost:alert frame makes no card: the old fading budget toast is gone', () => {
     mount();
     act(() => { emitFrame('cost:alert', { data: { scope: 'global', percentage: 90, currentSpend: 9.2, limitUsd: 10 } }); });
     expect(dismissButtons()).toHaveLength(0);

@@ -95,14 +95,15 @@ export function Dojo3Notifications() {
 
   // Engine recovery clears blocking errors automatically (the other half of
   // "both": dismiss OR recovery). The server emits chat:error with code
-  // AGENT_RECOVERED / info severity when an agent recovers.
+  // AGENT_RECOVERED / info severity when an agent recovers. A sticky card (an
+  // owner alert, a decision) is not an agent's error and waits for its X.
   const toastsRef = useRef(toasts);
   toastsRef.current = toasts;
   useEffect(() => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.code === 'AGENT_RECOVERED' || e.severity === 'info') {
-        for (const t of toastsRef.current) if (t.level === 'error') removeToast(t.id);
+        for (const t of toastsRef.current) if (t.level === 'error' && !t.sticky) removeToast(t.id);
       }
     });
     return unsub;

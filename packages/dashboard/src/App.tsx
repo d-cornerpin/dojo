@@ -3,7 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
 import { ToastProvider, useToast } from './hooks/useToast';
-import type { WsEvent } from '@dojo/shared';
+import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Chat } from './pages/Chat';
@@ -258,6 +258,9 @@ const AppRoutes = () => {
 
 // ── Global WebSocket-driven alerts (uses the shared toast system) ──
 
+/** The server's `PLATFORM_SENDER` (agent/v2/outbound.ts): the platform, not an agent, speaking. */
+const PLATFORM_SPEAKER = 'platform';
+
 export const GlobalAlerts = () => {
   const { subscribe } = useWebSocket();
   const toast = useToast();
@@ -270,17 +273,19 @@ export const GlobalAlerts = () => {
   // useToast for other features; this consumer is removed. HealerVitals keeps its
   // own healer:proposal subscription, so the WS frames are still emitted.
 
+  // Every text the Dojo sends the owner (the server's owner-notice door, `sendAlert`) also
+  // arrives here, in the same words, as a `chat:error` spoken by the platform rather than an
+  // agent. It is pinned (sticky) until he dismisses it, so a missed text is not a missed
+  // warning; the same words already on screen stay one card. It replaces the budget's old
+  // `cost:alert` toast, which faded at 50% and 75% (t138 round 2).
   useEffect(() => {
-    const unsub = subscribe('cost:alert', (event: WsEvent) => {
-      const e = event as { type: string; data: { scope: string; percentage: number; currentSpend: number; limitUsd: number } };
-      const pct = e.data.percentage;
-      if (pct >= 90) {
-        toast.error(`Resources nearly depleted (90%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`);
-      } else if (pct >= 75) {
-        toast.warning('Resources running low (75%)');
-      } else {
-        toast.info(`Resources at half strength (50%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`);
-      }
+    const unsub = subscribe('chat:error', (event: WsEvent) => {
+      const e = event as ChatErrorEvent;
+      if (e.agentId !== PLATFORM_SPEAKER) return;
+      toast.addActionToast({
+        title: '', message: e.error, actions: [], dedupeKey: `owner-alert:${e.error}`,
+        level: e.severity === 'error' ? 'error' : 'warning',
+      });
     });
 
     const unsub2 = subscribe('resource:warning', (event: WsEvent) => {
