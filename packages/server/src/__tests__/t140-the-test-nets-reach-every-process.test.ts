@@ -50,11 +50,11 @@ function grandchild(code: string): string {
 }
 
 describe('t140 round 5 — the CLI net asks what program is started, not what words are on the line', () => {
-  it.fails('an ordinary command whose ARGUMENT is the word claude runs', () => {
+  it('an ordinary command whose ARGUMENT is the word claude runs', () => {
     expect(String(childProcess.execSync('echo claude')).trim()).toBe('claude');
   });
 
-  it.fails('the CLI under a different case is still refused, and nothing is launched', () => {
+  it('the CLI under a different case is still refused, and nothing is launched', () => {
     fs.rmSync(marker, { force: true });
     expect(() => childProcess.spawnSync(path.join(scratch, 'Claude'), ['--version'], { env: { ...process.env, T140_MARKER: marker } })).toThrow(CLI_NET);
     expect(fs.existsSync(marker), 'the fake CLI ran').toBe(false);
@@ -62,7 +62,7 @@ describe('t140 round 5 — the CLI net asks what program is started, not what wo
 });
 
 describe('t140 round 5 — the nets reach every Node process the suite starts', () => {
-  it.fails('a process a test starts cannot start the CLI either', () => {
+  it('a process a test starts cannot start the CLI either', () => {
     fs.rmSync(marker, { force: true });
     const said = grandchild(`
       try { require('child_process').spawnSync('claude', ['--version'], { env: process.env }); process.stdout.write('NOT-STOPPED'); }
@@ -83,7 +83,7 @@ describe('t140 round 5 — the network net', () => {
   });
   afterAll(async () => { await new Promise<void>((r) => server.close(() => r())); });
 
-  it.fails('an outbound connection to anything but this machine is refused at once, by name', async () => {
+  it('an outbound connection to anything but this machine is refused at once, by name', async () => {
     const started = Date.now();
     let message = '';
     try {
@@ -97,7 +97,7 @@ describe('t140 round 5 — the network net', () => {
     expect(Date.now() - started, 'refused, not timed out').toBeLessThan(2_000);
   });
 
-  it.fails('…and from a process a test starts', () => {
+  it('…and from a process a test starts', () => {
     const said = grandchild(`
       fetch('http://203.0.113.7:81/', { signal: AbortSignal.timeout(5000) })
         .then(() => process.stdout.write('REACHED'))

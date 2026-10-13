@@ -112,16 +112,17 @@ Object.defineProperty(os, 'homedir', {
 //   2. THE PACKAGE, MOCKED SUITE-WIDE TO THROW BY NAME. A file that needs a scripted transport
 //      mocks the in-tree `providers/anthropic-sdk.js` instead (t140's two files and the two
 //      agent-sdk transport files do), so nothing legitimate needs the package.
-//   3. THE SPAWN DOOR — even the REAL package (vi.importActual, or a mock that misses) cannot
-//      start the CLI: child_process's spawning functions refuse any command line that names the
-//      Claude CLI or the Agent SDK, loudly. `syncBuiltinESMExports` carries the patch to ESM
-//      named imports, which is how the SDK imports `spawn`.
-// `src/__tests__/t140-no-test-reaches-a-real-agent-cli.test.ts` plants each attempt and asserts
-// it fails loudly.
+//   3. THE SPAWN DOOR AND THE NETWORK — `vitest.test-nets.cjs` (round 5). Even the REAL package
+//      (vi.importActual, or a mock that misses) cannot start the CLI: child_process refuses any
+//      call that starts the Claude CLI or the Agent SDK's CLI, loudly; and no connection may leave
+//      this machine. That file is loaded here AND carried into every Node process the suite starts
+//      (NODE_OPTIONS `--require`), so a process a test starts is netted too.
+// `src/__tests__/t140-no-test-reaches-a-real-agent-cli.test.ts` and
+// `src/__tests__/t140-the-test-nets-reach-every-process.test.ts` plant each attempt and assert it
+// fails loudly.
 // ════════════════════════════════════════
 
-import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire } from 'node:module';
 import { vi } from 'vitest';
 
 const SCRUBBED_ENV = /^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|OPENAI_|OPENROUTER_|DEEPSEEK_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_APPLICATION_CREDENTIALS$|MISTRAL_|GROQ_|XAI_|AWS_ACCESS_KEY_ID$|AWS_SECRET_ACCESS_KEY$|AWS_SESSION_TOKEN$)/;
@@ -129,7 +130,7 @@ for (const key of Object.keys(process.env)) {
   if (SCRUBBED_ENV.test(key)) delete process.env[key];
 }
 
-const AGENT_CLI_NET_MESSAGE = 'TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead.';
+const { AGENT_CLI_NET_MESSAGE } = createRequire(import.meta.url)('./vitest.test-nets.cjs') as { AGENT_CLI_NET_MESSAGE: string };
 
 // A test whose SUBJECT is the in-tree transport itself (it must see the exact `query()` options
 // the transport builds) scripts the package through THIS one mock rather than a per-file
@@ -144,19 +145,3 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
     throw new Error(AGENT_CLI_NET_MESSAGE);
   },
 }));
-
-// Case-SENSITIVE on purpose: the CLI binary is lowercase `claude`, while a checkout can sit under
-// a folder like "Claude Code Projects" — matching that would refuse every ordinary subprocess.
-const AGENT_CLI = /claude-agent-sdk|@anthropic-ai[\\/]claude-code|(^|[\s\\/])claude(\.exe|\.cmd)?(\s|$)/;
-function refuseAgentCli<T extends (...args: never[]) => unknown>(name: string, real: T): T {
-  return function guarded(this: unknown, ...args: unknown[]) {
-    const line = args.flatMap((a) => (Array.isArray(a) ? a : [a]))
-      .filter((a): a is string => typeof a === 'string').join(' ');
-    if (AGENT_CLI.test(line)) throw new Error(`${AGENT_CLI_NET_MESSAGE} (child_process.${name}: ${line.slice(0, 120)})`);
-    return (real as unknown as (...a: unknown[]) => unknown).apply(this, args);
-  } as unknown as T;
-}
-for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'] as const) {
-  (childProcess as unknown as Record<string, unknown>)[name] = refuseAgentCli(name, childProcess[name] as never);
-}
-syncBuiltinESMExports();
