@@ -112,14 +112,6 @@ export async function finalizeTurnRecord(
       : state.identicalCallRefusedThisTurn ? 'identical_call'
       : 'no_reply_intended';
     const outcome = exitReason;
-    // t139 round 2 (I4): THE ENGINE'S OWN JUDGEMENT, never the reply's text. The multistep
-    // classifier decided at loop 1 that this turn's request is WORK (`inboundClassifiedAsWork`,
-    // the decision that also arms the start-ack steer), and the turn then performed nothing
-    // (zero effectful calls). Its bubble was the start line: the ask goes back OWED
-    // (`settleAsksAtTurnFinalize`) and the work it touched is not parked "waiting on the owner"
-    // (`pauseDriveWorkWaitingOnOwner`). Driven both timer branches in
-    // `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`.
-    const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
     if (answerRow && !terminalDeliveryId) {
       logger.warn('v2: the turn recorded an ANSWER with no delivery receipt behind it — the answered edge has only one of its two halves for this turn', {
         agentId, turnNumber, answerMessageId: answerRow.id, exitReason,
@@ -131,6 +123,14 @@ export async function finalizeTurnRecord(
       // only when the turn produced no answer AND executed zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
+    // t139 round 2 (I4): THE ENGINE'S OWN JUDGEMENT, never the reply's text. The multistep
+    // classifier decided at loop 1 that this turn's request is WORK (`inboundClassifiedAsWork`,
+    // the decision that also arms the start-ack steer), and the turn then performed nothing
+    // (zero effectful calls). Its bubble was the start line: the ask goes back OWED
+    // (`settleAsksAtTurnFinalize`) and the work it touched is not parked "waiting on the owner"
+    // (`pauseDriveWorkWaitingOnOwner`). Driven both timer branches in
+    // `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`.
+    const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
     // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK ──
     // Two columns and no judgment, for the marker below.
     //
