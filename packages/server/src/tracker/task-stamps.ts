@@ -20,7 +20,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
-import { turnWorkIds } from '../work/engine-checkpoint-note.js';
+import { turnWorkIds } from '../work/task-freshness.js';
 // T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
 // never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';

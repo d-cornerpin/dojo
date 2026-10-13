@@ -57,6 +57,7 @@ import { recordPoke } from './poke-ladder.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
 import { turnContext } from '../agent/turn-context.js';
+import { turnWorkIds, carryJobWork } from './task-freshness.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
  *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
@@ -79,27 +80,6 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
 // has no trigger of its own). The T79a guarantee — the job's own task is never read as abandoned
 // across a park — is kept, now for exactly that task.
 
-/** The job's work, handed from a park to the continuation it queues. In memory on purpose: a
- *  restart ends the job's turn, and nothing should inherit it after that. */
-const jobWork = new Map<string, { forTurn: number; ids: string[] }>();
-
-/** The tasks the CURRENT turn of this agent structurally serves (see the header above). */
-export function turnWorkIds(agentId: string): string[] {
-  const ctx = turnContext(agentId);
-  if (!ctx || ctx.turnNumber === undefined) return [];
-  const carried = jobWork.get(agentId);
-  const inherited = !ctx.root && !ctx.servedWork && carried?.forTurn === ctx.turnNumber ? carried.ids : [];
-  const named = [...inherited, ...(ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [])];
-  const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
-  const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
-  const list = named.length > 0 ? named.map(() => '?').join(', ') : 'NULL';
-  const rows = getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND (
-      w.id IN (${list}) OR w.source_message_id = ? OR w.a2a_thread_id = ? OR w.origin_turn = ?
-      OR w.parent_id IN (SELECT p.id FROM work p WHERE p.id IN (${list}) OR p.source_message_id = ?))`)
-    .all(agentId, ...named, ask, thread, ctx.turnNumber, ...named, ask) as Array<{ id: string }>;
-  return rows.map((r) => r.id);
-}
-
 /**
  * Call immediately before an engine-forced checkpoint schedules its self-continuation.
  *
@@ -112,7 +92,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   const now = Date.now();
   const tied = turnWorkIds(agentId);
   const turn = turnContext(agentId)?.turnNumber;
-  if (turn !== undefined) jobWork.set(agentId, { forTurn: turn + 1, ids: tied });
+  if (turn !== undefined) carryJobWork(agentId, turn + 1, tied);
   if (tied.length === 0) return 0;
   const ids = tied.map(() => '?').join(', ');
 
