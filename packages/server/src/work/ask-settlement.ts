@@ -202,6 +202,14 @@ export interface SettlementContext {
    *                     or the ladder's relay of the peers' own text. The rule is shared below
    *                     rather than copied, so the two cannot drift. */
   basis?: 'compiled' | 'engine-relay' | 'late-answer';
+  /**
+   * FINALIZE ONLY (t139 round 3, R-V333-8): the finished turn ended with the engine CONTINUING
+   * the same work — a queued self-continuation (the turn-budget park, the tool-loop cap, a
+   * context rebuild), the same recorded exit fact the engine pause reads. On such a turn the
+   * line the model held back with its tool call ("On it.") and the finalize recovery delivered is
+   * the job's opening, not its answer. Keyed on the exit, never a classifier or the prose.
+   */
+  continuing?: boolean;
 }
 
 interface AskRow {
@@ -478,6 +486,28 @@ export function recordOwedInterruptSubjects(
  * Scoped to the turn being adjudicated: an ask another turn settled is that turn's business
  * and is not re-opened by this boundary.
  */
+/**
+ * R-V333-8: the ask's receipt is the HELD-BACK OPENING LINE of this turn — the model bubble the
+ * turn's record names as its answer (`turns.answer_message_id`, which the finalize recovery sets
+ * when it delivers the text that rode with a tool call) with no tool result of the turn after it.
+ * Row order and the turn record only. A live-ask answer delivered mid-turn is followed by its own
+ * tool results, so it is never this.
+ */
+function receiptIsHeldOpeningLine(ask: AskRow, turnNumber: number | null): boolean {
+  if (turnNumber == null || ask.result_delivery_id == null) return false;
+  return getDb().prepare(
+    `SELECT 1 AS hit FROM deliveries d
+       JOIN messages m ON m.id = d.message_id
+       JOIN turns t ON t.agent_id = d.agent_id AND t.turn_number = d.turn_number
+      WHERE d.id = ? AND d.agent_id = ? AND d.turn_number = ?
+        AND m.role = 'assistant' AND m.display_kind = 'agent-text' AND t.answer_message_id = m.id
+        AND NOT EXISTS (SELECT 1 FROM messages x
+                         WHERE x.agent_id = d.agent_id AND x.turn_number = d.turn_number
+                           AND x.role = 'tool' AND x.seq > m.seq)
+      LIMIT 1`,
+  ).get(ask.result_delivery_id, ask.agent_id, turnNumber) !== undefined;
+}
+
 function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boolean {
   if (turnNumber == null || ask.result_delivery_id == null) return false;
   return getDb().prepare(
@@ -663,6 +693,30 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
       return held.verdict === 'unchanged'
         ? out('reopened', 'handed back after a close-then-delegate turn')
         : held;
+    }
+  }
+
+  // ── R-V333-8 (t139 round 3): THE HELD-BACK OPENING LINE OF A CONTINUING TURN IS NOT AN ANSWER.
+  // The turn did not finish — the engine queued its continuation — and the ask was closed on the
+  // bubble the finalize recovery made of the text that rode with a tool call. The ask goes back
+  // OWED for the continuation, which closes it when it delivers. No rung is spent: the engine,
+  // not the model, ended the turn. A turn that genuinely ends (no continuation) never reaches here
+  // and settles exactly as before; a live-ask answer delivered mid-turn is not touched (tool
+  // results follow it, see `receiptIsHeldOpeningLine`).
+  if (ask.state === 'done' && ctx.at === 'finalize' && ctx.continuing === true
+      && receiptIsHeldOpeningLine(ask, ctx.turnNumber)) {
+    const reason = `handed back: turn ${ctx.turnNumber ?? '?'} ended with the engine continuing the same work, `
+      + 'so the opening line it held back and delivered at the boundary is not the answer — the ask '
+      + 'stays owed and closes when the continuation delivers';
+    const undo = transition(workId, {
+      to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
+      evidenceRef: ask.result_delivery_id ?? undefined, clearResultDelivery: true, reason,
+    });
+    if (undo.kind === 'applied') {
+      logger.info('ask handed back: closed on a continuing turn\'s held-back opening line', {
+        agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber,
+      }, ask.agent_id);
+      return out('reopened', reason);
     }
   }
 
@@ -1155,6 +1209,8 @@ export interface FinalizeSettlementInput {
    *  the final assembly. Rows arriving AFTER it are deliberately absent (OPEN-12: a genuinely
    *  newer message gets its own turn) — that exclusion lives in the read, not here. */
   assembled?: AssembledAsk[];
+  /** t139 round 3 (R-V333-8) — see `SettlementContext.continuing`. */
+  continuing?: boolean;
 }
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
@@ -1210,7 +1266,9 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
   for (const r of [...claimed, ...closedByThisTurn]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
-    tally(settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize' }).verdict);
+    tally(settleAsk(r.id, {
+      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', continuing: p.continuing,
+    }).verdict);
   }
   for (const a of p.assembled ?? []) {
     if (seen.has(a.workId)) continue;

@@ -130,6 +130,12 @@ export async function finalizeTurnRecord(
     // reverted in round 3 (R-V333-8, re-review B1: it held genuinely answered asks for ever); the
     // ask side is now keyed on the turn's recorded exit — see `continuing` below.
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
+    // t137 + t139 round 3 (R-V333-8): THE RECORDED EXIT — the engine queued this turn's own
+    // continuation (every engine auto-continue writes the C3 stash, consumed by the next
+    // preflight, so it is THIS turn's; the latch covers the non-human arm; a stop refuses the
+    // wake). The same expression the pause reads (written out there, where t137's census pins it);
+    // here it tells settlement that a continuing turn's held-back opening line is not the answer.
+    const continuing = !isStopFenced(agentId) && (continuationContext.has(agentId) || toolLoopCapReached);
     // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK ──
     // Two columns and no judgment, for the marker below.
     //
@@ -170,7 +176,7 @@ export async function finalizeTurnRecord(
       const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled });
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),

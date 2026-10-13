@@ -399,6 +399,7 @@ import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { unvalidatedPauseExpr } from '../../../work/tracker-view.js';
+import { transition } from '../../../work/store.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
 import { pendingCirclingVerdict } from '../../../tracker/effort-governor.js';
 import { engineSources, SERVER_SRC } from './engine-sources.js';
@@ -528,6 +529,20 @@ async function readOnlyTurnAcrossTheCheckpoint(
   } finally {
     clock.restore();
   }
+}
+
+/**
+ * t139 round 3 (R-V333-8) — the park no longer closes the owner's ask on the narration it held
+ * back: that line is the job's opening, not its answer, so the ask stays OWED for the
+ * continuation. These clauses are about the OTHER shape — a continuation with NOBODY waiting —
+ * which used to be produced by exactly that close. The owner now withdraws the request through
+ * the spine's own door, which is the honest way to have nobody waiting.
+ */
+function ownerWithdrawsTheAsk(): void {
+  const ask = mockDb.current!.prepare(`SELECT id, state FROM work WHERE kind = 'ask'`).get() as { id: string; state: string };
+  expect(ask.state).toBe('open');   // R-V333-8: still owed after the park
+  const r = transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'open', reason: 'the owner withdrew it' });
+  expect(r.kind).toBe('applied');
 }
 
 /** The task the agent claimed for this job, in the drive state, touched just now. */
@@ -749,12 +764,14 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
 describe('t137 (a): a continuation that ends quietly after its tools ends quietly', () => {
   it('the parked job\'s continuation reads, returns nothing, and exits `no_reply_intended` — no retry, no steer, no "empty reply" notice', async () => {
     seedInFlightTask();
-    // The owner's ask turn speaks (so the ask is served and nobody is left waiting), then parks.
+    // The owner's ask turn speaks, then parks. (Round 3, R-V333-8: the held-back narration no
+    // longer closes the ask; the owner withdraws it so nobody is left waiting — this clause's shape.)
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
+    ownerWithdrawsTheAsk();
     // The real preflight shape of the next turn: a C3 continuation with NO waiting conversation,
     // so `triggerRow` is `waitingConvs[0]?.oldest` = undefined.
     expect(continuationContext.has('primary')).toBe(true);
-    expect(mockDb.current!.prepare(`SELECT state FROM work WHERE kind = 'ask'`).all()).toEqual([{ state: 'done' }]);
+    expect(mockDb.current!.prepare(`SELECT state FROM work WHERE kind = 'ask'`).all()).toEqual([{ state: 'abandoned' }]);
     pendingWakeups.clear();
     enqueueSteerSpy.mockClear();
 
@@ -851,6 +868,7 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
   it('the close-out gate still arms on a genuinely stale second task on the continuation, and never names the in-flight one', async () => {
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
+    ownerWithdrawsTheAsk();   // round 3 (R-V333-8): see the helper
     expect(continuationContext.has('primary')).toBe(true);
     pendingWakeups.clear();
     // Planted AFTER the park, so the checkpoint's tracker touch could not have reached it.

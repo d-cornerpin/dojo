@@ -502,7 +502,7 @@ describe('t139 — every multi-step request lands on the task list with its word
   const askStateOf = (msgId: string): string =>
     (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${msgId}`) as { state: string }).state;
 
-  it.fails('a long job that parks after "On it." keeps the ask owed; the continuation\'s delivery closes it', async () => {
+  it('a long job that parks after "On it." keeps the ask owed; the continuation\'s delivery closes it', async () => {
     // A one-verb request the start-ack classifier does not arm on, so "On it." riding with the
     // tool call is HELD BACK (not promoted as a start line) — the shape the t137 reviewer found
     // delivered as the answer at the park.
