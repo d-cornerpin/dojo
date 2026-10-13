@@ -148,9 +148,7 @@ export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'o
     const msg = errorType === 'rate_limit'
       ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
       : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
-    // Agent trouble (OR-V333-SET (3)); reached only at strike 3 of the rate-limit retry, and
-    // throttled per agent above.
-    sendAlert(msg, 'notice');
+    sendAlert(msg, 'notice'); // agent trouble, OR-V333-SET (3): strike 3 only, throttled above
   } catch (err) {
     logger.warn('Failed to send rate limit iMessage alert', { agentId, error: err instanceof Error ? err.message : String(err) });
   }

@@ -2247,27 +2247,16 @@ export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
 
-/**
- * The dashboard half of the owner-notice door. Its component name is what the Vitals log view
- * filters on; its WARN level is what puts it on the dashboard's live log feed and in the
- * persisted log the same view reads back.
- */
+/** The door's dashboard half: a WARN `owner-notice` entry (live log feed + Vitals log view). */
 const ownerNoticeLog = createLogger('owner-notice');
 
 /**
- * THE OWNER-NOTICE DOOR — the one place the PLATFORM, rather than an agent, speaks to the owner.
- *
- * Severity contract:
- *   - `critical` and `notice` go to the owner's phone (critical with a "[CRITICAL]" prefix,
- *     notice without). When there is no phone channel, or the send fails, the same words land
- *     on the dashboard as an `owner-notice` entry, so the owner is never left with nothing.
- *   - `warning` and `info` never reach the phone (v2.3.19, owner: "I only want true blockers or
- *     true issues the user needs to be aware of to go to imessage"). They are logged only.
- *
- * Who may call it is ruled, not chosen here: the platform telling the owner the platform is in
- * trouble (ruling 10(a)), plus budget alerts and a broken/silent agent (OR-V333-SET (3)). Every
- * caller's class and severity is pinned by `services/__tests__/t138-every-owner-notice-has-a-class.test.ts`;
- * a caller with the wrong severity is fixed at the call site, never by widening this filter.
+ * THE OWNER-NOTICE DOOR — where the PLATFORM, not an agent, speaks to the owner. `critical`
+ * (sent with a "[CRITICAL]" prefix) and `notice` (no prefix) go to the phone, or, with no phone
+ * channel or a failed send, to the dashboard. `warning`/`info` never reach the phone (v2.3.19,
+ * owner: "I only want true blockers or true issues the user needs to be aware of to go to
+ * imessage"). Allowed callers are ruled (10(a) + OR-V333-SET (3)) and pinned by class in
+ * t138-every-owner-notice-has-a-class.test.ts; fix a wrong severity at the call site, never here.
  */
 export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice'): void {
   try {
