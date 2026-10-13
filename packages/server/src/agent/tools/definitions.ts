@@ -54,6 +54,7 @@ import { microsoftReadToolDefinitions } from '../../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions } from '../../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions } from '../../microsoft/tools-office.js';
 import { unifiedToolDefinitions } from '../../tools/unified-read.js';
+import { TOLD_ABOUT_TASK_PROPERTY } from './told-about-task.js';
 
 
 /**
@@ -1772,6 +1773,7 @@ export const toolDefinitions: ToolDefinition[] = [
           items: { type: 'string' },
           description: 'Optional array of absolute local file paths to send as iMessage attachments (images, PDFs, etc.). The message text rides with the first file; additional files arrive as separate bubbles.',
         },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message'],
     },
@@ -1796,6 +1798,7 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Optional. Specific Twilio number to send from (must be one the owner has configured). Defaults to the configured default number.',
         },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to', 'body'],
     },
@@ -1824,6 +1827,7 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Optional. Specific Twilio number to call from. Defaults to the configured default number.',
         },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to'],
     },

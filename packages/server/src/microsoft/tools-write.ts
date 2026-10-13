@@ -17,6 +17,7 @@ import {
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
 import { homeDir } from '../home.js';
+import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
 // ── Tool Definitions ──
 
@@ -34,6 +35,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Email body text' },
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to', 'subject', 'body'],
     },
@@ -53,6 +55,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'body'],
     },
@@ -69,6 +72,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach IN ADDITION to the original message\'s attachments (which Graph preserves automatically). Files ≤3MB inline; larger spill to OneDrive link.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'to'],
     },
@@ -205,6 +209,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       properties: {
         chat_id: { type: 'string', description: 'Teams chat ID (from teams_read_messages or teams_create_chat)' },
         message: { type: 'string', description: 'Message text to send' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['chat_id', 'message'],
     },
@@ -403,6 +408,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         team_id: { type: 'string', description: 'Team ID (from teams_list_teams)' },
         channel_id: { type: 'string', description: 'Channel ID (from teams_list_channels)' },
         message: { type: 'string', description: 'Message text to post' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['team_id', 'channel_id', 'message'],
     },

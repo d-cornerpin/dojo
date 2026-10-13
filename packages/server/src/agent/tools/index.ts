@@ -64,8 +64,12 @@ import { createLogger } from '../../logger.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import {
-  withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
+  withOutboundAsync, withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
+  currentOutboundDeliveryId,
 } from '../v2/outbound.js';
+import { TOLD_ABOUT_TASK_ARG } from './told-about-task.js';
+import { recordPersonTold } from '../../work/validation-drive.js';
+import { resolveTaskId } from '../../tracker/schema.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { sharePathGuard, pdfInputPaths } from '../path-guards.js';
@@ -189,14 +193,26 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
   // transport writes no row at all.
   const sendChannel = outboundChannelForTool(resolved.name);
   if (sendChannel !== null) {
-    return withOutboundAsyncIfAbsent(
-      {
-        agentId, tool: resolved.name, channel: sendChannel,
-        recipientId: outboundRecipientForTool(resolved.name, resolved.args as Record<string, unknown>),
-        conversationId: turnContext(agentId)?.root?.conversationId ?? null,
-      },
-      () => dispatchResolved(agentId, toolCall, resolved),
-    );
+    const intent = {
+      agentId, tool: resolved.name, channel: sendChannel,
+      recipientId: outboundRecipientForTool(resolved.name, resolved.args as Record<string, unknown>),
+      conversationId: turnContext(agentId)?.root?.conversationId ?? null,
+    };
+    // t146: a send whose ARGUMENTS name its task (`task_id`, ./told-about-task.ts) opens its OWN
+    // scope, and the person is recorded as told about that task from the row THIS send wrote.
+    // The record itself refuses anyone but the owner or the row's requester. No argument, no
+    // record: never inferred from the words or from what the turn was serving.
+    const named = (resolved.args as Record<string, unknown>)[TOLD_ABOUT_TASK_ARG];
+    if (typeof named !== 'string' || named.trim() === '') {
+      return withOutboundAsyncIfAbsent(intent, () => dispatchResolved(agentId, toolCall, resolved));
+    }
+    return withOutboundAsync(intent, async () => {
+      const r = await dispatchResolved(agentId, toolCall, resolved);
+      const deliveryId = currentOutboundDeliveryId();
+      const task = resolveTaskId(named);
+      if (!r.isError && deliveryId && task.ok) recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
+      return r;
+    });
   }
   return dispatchResolved(agentId, toolCall, resolved);
 }

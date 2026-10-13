@@ -225,7 +225,7 @@ describe('§1 the owner-notice door records that the owner was told about the ro
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§2 an agent text that names its task records that the owner was told', () => {
-  it.fails('RED at 4cb9ed61: the agent raised the block with the owner, naming the task, and the ladder raises it again', async () => {
+  it('RED at 4cb9ed61: the agent raised the block with the owner, naming the task, and the ladder raises it again', async () => {
     seedBlocked('t-raised');
     const r = await agentTexts(OWNER_PHONE, 'Heads up: the greenhouse firmware task is stuck on a checksum error.', { task_id: 't-raised' });
     expect(r.kind, JSON.stringify(r)).not.toBe('error');
@@ -238,7 +238,7 @@ describe('§2 an agent text that names its task records that the owner was told'
     expect(toldEvents('t-raised'), 'because the dispatch door wrote the told record').toEqual([{ actor: PRIMARY, via: 'send_tool' }]);
   });
 
-  it.fails('a task id given as an 8+ character prefix resolves to the row, as the work tools resolve it', async () => {
+  it('a task id given as an 8+ character prefix resolves to the row, as the work tools resolve it', async () => {
     const id = '9f3c2a71-5d1e-4b8a-a0c4-2e6f1b7d9c03';
     seedBlocked(id);
     await agentTexts(OWNER_PHONE, 'The greenhouse firmware task is stuck.', { task_id: id.slice(0, 8) });
@@ -269,7 +269,7 @@ describe('§3 the record refuses what is not a tell to the owner or the requeste
     expect(steersOn('t-unnamed')).toBeGreaterThanOrEqual(1);
   });
 
-  it.fails('the row\'s own person-requester counts as told', async () => {
+  it('the row\'s own person-requester counts as told', async () => {
     seedBlocked('t-requested', { requester: 'watcher', requester_id: NEIGHBOUR_PHONE });
     await agentTexts(NEIGHBOUR_PHONE, 'Your greenhouse firmware task is stuck on a checksum error.', { task_id: 't-requested' });
     expect(toldEvents('t-requested')).toEqual([{ actor: PRIMARY, via: 'send_tool' }]);

@@ -16,6 +16,7 @@ import {
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
 import { homeDir } from '../home.js';
+import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -41,6 +42,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
         bcc: { type: 'string', description: 'BCC recipients (comma-separated)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach (e.g., ["/Users/me/.dojo/uploads/<agent-id>/report.pdf"]). Combined cap of 25MB inline; larger spill to Drive automatically.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['to', 'subject', 'body'],
     },
@@ -60,6 +62,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Combined cap of 25MB inline; larger spill to Drive automatically.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'body'],
     },
@@ -76,6 +79,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach ALONGSIDE the original message\'s attachments. Combined cap of 25MB inline; larger spill to Drive automatically.' },
+        task_id: TOLD_ABOUT_TASK_PROPERTY,
       },
       required: ['message_id', 'to'],
     },
