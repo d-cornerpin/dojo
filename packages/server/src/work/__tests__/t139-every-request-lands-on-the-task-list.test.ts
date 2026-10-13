@@ -73,6 +73,22 @@ vi.mock('../../agent/tools/index.js', async () => {
     getFilteredTools: () => [],
   };
 });
+// ROUND 3 (re-review): THE HARNESS MAY NEVER ABORT A TURN SILENTLY AGAIN. Round 1's canned tool
+// results lacked a name, every turn threw after its first non-tracker call, the recovery path
+// swallowed it, and the silent logger hid it — shapes "passed" on aborted turns. Every entry into
+// the turn's recovery path is recorded here, and `afterEach` fails the clause that caused one.
+const recoveries: string[] = [];
+vi.mock('../../agent/v2/steps/teardown/index.js', async () => {
+  const actual = await vi.importActual<typeof import('../../agent/v2/steps/teardown/index.js')>('../../agent/v2/steps/teardown/index.js');
+  return {
+    ...actual,
+    runTurnRecovery: (...args: Parameters<typeof actual.runTurnRecovery>) => {
+      const err = args[2] as unknown;
+      recoveries.push(err instanceof Error ? err.message : String(err));
+      return actual.runTurnRecovery(...args);
+    },
+  };
+});
 vi.mock('../../agent/runtime.js', () => ({
   injectAttachmentBlocks: vi.fn(),
   enforceModelCapabilities: () => ({ useTools: true }),
@@ -304,8 +320,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  const hit = recoveries.splice(0);
   mockDb.current?.close();
   mockDb.current = null;
+  expect(hit, 'a driven turn entered the recovery path (it threw); the clause ran on an aborted turn').toEqual([]);
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
