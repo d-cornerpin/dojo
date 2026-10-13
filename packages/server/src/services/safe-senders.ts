@@ -9,11 +9,13 @@
 // list (the bridge texted an owner the record then refused). This module imports only the
 // database, the logger and the recipient comparison, so every reader can share it.
 //
-// THE RULE (`ownerIMessageRecord`): the starred record — `parseSafeSenders` guarantees exactly
+// TWO QUESTIONS, TWO ANSWERS. "Which address do I send to?" (`ownerIMessageRecord`): the starred record — `parseSafeSenders` guarantees exactly
 // one in any non-empty list (none starred → the record matching the legacy key, else the first;
 // a legacy bare-string list → its first entry) — and, only when there are no records at all,
-// the legacy `imessage_default_sender` key. Readers: the bridge's `getDefaultSender` (where
-// every owner notice goes), the refusal gate's owner check, and the told record.
+// the legacy `imessage_default_sender` key; the bridge's `getDefaultSender` (where every owner
+// notice goes) reads it. "Is this address the owner?" (`isOwnerIMessageRecipient`): EVERY record
+// flagged as the owner, and the legacy key only when no records are saved; the refusal gate and
+// the told record read it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -240,16 +242,49 @@ export function ownerIMessageRecord(records: readonly SafeSender[] = storedSafeS
   return legacy ? { address: legacy, name: legacy } : null;
 }
 
-/** Is `recipient` (an address, or the owner's record name) the owner on iMessage? Unknown means
- *  NOT the owner: phone- and case-tolerant through the canonical recipient comparison. */
+/**
+ * Every address that IS the owner on iMessage — a different question from "which address do I
+ * send to" (`ownerIMessageRecord`, one answer). Every record flagged `is_primary` counts (an
+ * owner may flag his phone and his Apple ID, as before t146), plus the record `parseSafeSenders`
+ * promotes when nobody is flagged; the legacy `imessage_default_sender` key counts only when no
+ * records are saved at all.
+ */
+export function ownerIMessageRecords(): Array<{ address: string; name: string }> {
+  const out: Array<{ address: string; name: string }> = [];
+  let raw: string | null = null;
+  try {
+    const row = getDb().prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
+    raw = row?.value ?? null;
+  } catch { /* unreadable config: nobody is known */ }
+  const records = parseSafeSenders(raw);
+  for (const r of records) if (r.is_primary) out.push({ address: r.address, name: r.name });
+  try {
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (Array.isArray(parsed)) {
+      for (const r of parsed) {
+        const rec = r as { address?: unknown; name?: unknown; is_primary?: unknown } | null;
+        if (rec && rec.is_primary === true && typeof rec.address === 'string' && !out.some((o) => o.address === rec.address)) {
+          out.push({ address: rec.address, name: typeof rec.name === 'string' && rec.name ? rec.name : rec.address });
+        }
+      }
+    }
+  } catch { /* not JSON: the parsed list above is the answer */ }
+  if (records.length === 0) {
+    const legacy = readLegacyDefaultSender();
+    if (legacy) out.push({ address: legacy, name: legacy });
+  }
+  return out;
+}
+
+/** Is `recipient` (an address, or an owner record's name) the owner on iMessage? Any of
+ *  `ownerIMessageRecords`. Unknown means NOT the owner: phone- and case-tolerant through the
+ *  canonical recipient comparison. */
 export function isOwnerIMessageRecipient(recipient: string | null | undefined): boolean {
   if (!recipient) return false;
   try {
-    const owner = ownerIMessageRecord();
-    if (!owner) return false;
-    return recipient === owner.address
+    return ownerIMessageRecords().some((owner) => recipient === owner.address
       || recipientIdsMatch(recipient, owner.address)
-      || recipientIdsMatch(recipient, owner.name);
+      || recipientIdsMatch(recipient, owner.name));
   } catch {
     return false;
   }

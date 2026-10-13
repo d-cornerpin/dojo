@@ -325,8 +325,8 @@ export const NOTICE_DOOR_SENDER = 'platform';
 /**
  * Is this delivery's recipient the owner? The dashboard/voice counterparty sentinel `'owner'`
  * (`agent/v2/deliveries.ts` resolves those channels to it), or the owner on iMessage by the ONE
- * rule every reader shares (`services/safe-senders.ts:isOwnerIMessageRecipient`, t146 — the
- * address the bridge sends his notices to). Unknown means NOT the owner: the cost is the owner
+ * rule every reader shares (`services/safe-senders.ts:isOwnerIMessageRecipient`, t146 — any
+ * address flagged as the owner, which includes the one the bridge sends his notices to). Unknown means NOT the owner: the cost is the owner
  * possibly told again, never a tell invented.
  */
 function isOwnerRecipient(recipientId: string): boolean {

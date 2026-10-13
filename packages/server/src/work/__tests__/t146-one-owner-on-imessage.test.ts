@@ -137,5 +137,27 @@ describe('the owner the bridge texts is the owner the told record recognises', (
   });
 });
 
+describe('round 3: "is this address the owner?" and "which address do I send to?" are two questions', () => {
+  const toldTo = (to: string) => withOutbound(
+    { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: to },
+    () => { recordAtDoor({ outcome: 'delivered', channel: 'imessage' }); return recordPersonTold('t-1', { deliveryId: currentOutboundDeliveryId()!, via: 'owner_notice' }); },
+  );
+
+  it('an owner with two flagged addresses: BOTH are the owner, and notices still go to the first', () => {
+    setConfig('imessage_approved_senders', JSON.stringify([
+      { address: FIRST, name: 'First', is_primary: true }, { address: SECOND, name: 'Second', is_primary: true },
+    ]));
+    expect(getDefaultSender()).toBe(FIRST);
+    expect(toldTo(FIRST).kind).toBe('applied');
+    expect(toldTo(SECOND).kind).toBe('applied');
+  });
+
+  it('the legacy key counts as the owner only when no records are saved', () => {
+    setConfig('imessage_approved_senders', JSON.stringify([{ address: FIRST, name: 'First', is_primary: true }]));
+    setConfig('imessage_default_sender', SECOND);
+    expect(toldTo(SECOND)).toMatchObject({ kind: 'refused', reason: 'not-the-owner-or-requester' });
+  });
+});
+
 // The refusal gate's reminder lane reads the same owner: driven beside that module, in
 // `agent/v2/steps/execute/__tests__/t146-the-reminder-lane-asks-the-one-owner.test.ts`.
