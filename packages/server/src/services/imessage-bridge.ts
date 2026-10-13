@@ -22,7 +22,8 @@ import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/mes
 import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
-import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { recordAtDoor, withOutbound, withOutboundIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { recordPersonTold } from '../work/validation-drive.js';
 import { ownerCardFrame, ownerCardEnded } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
 import {
@@ -2065,8 +2066,12 @@ const ownerNoticeLog = createLogger('owner-notice');
  * answers. `warning`/`info` reach neither (v2.3.19, owner: "I only want true blockers or true
  * issues ... to go to imessage"). Callers are ruled (10(a) + OR-V333-SET (3)) and pinned by
  * class in t138-every-owner-notice-has-a-class.test.ts; fix a wrong severity at the call site.
+ * `aboutWorkId` (t146): a notice ABOUT a work row says so, and the door records that the owner
+ * was told (`recordPersonTold`, via `owner_notice`) from the delivery its own scope wrote — so the
+ * escalation ladder does not raise the same row with him again. The id is data the caller holds,
+ * never read from the words.
  */
-export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string } = {}): void {
+export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string } = {}): void {
   try {
     const scrubbed = scrubTechnicalDetail(message);
 
@@ -2082,18 +2087,27 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
 
     // The card is born where the text is (services/owner-card-frames.ts); an all-clear ends one.
+    // A status line and an all-clear raise none BY DESIGN (R-V333-13); the record below says which.
+    const card = opts.clears !== undefined || opts.card === false ? 'none_by_design' : 'raised';
     if (opts.clears !== undefined) ownerCardEnded(opts.clears);
     else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning');
 
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
     // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
-    // trigger it would put watchdog-class traffic inside that agent's own ledger.
-    const sent = recipient !== null && withOutboundIfAbsent(
+    // trigger it would put watchdog-class traffic inside that agent's own ledger. So the door
+    // opens its OWN scope (t146: never the `IfAbsent` form, which folded a notice fired inside an
+    // agent's send into that send's row), and a told record reads this scope's row and no other.
+    const sent = recipient !== null && withOutbound(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
-      () => sendIMessage(recipient, fullMessage),
+      () => {
+        const ok = sendIMessage(recipient, fullMessage);
+        const deliveryId = currentOutboundDeliveryId();
+        if (ok && opts.aboutWorkId && deliveryId) recordPersonTold(opts.aboutWorkId, { deliveryId, via: 'owner_notice' });
+        return ok;
+      },
     );
-    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up' });
+    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

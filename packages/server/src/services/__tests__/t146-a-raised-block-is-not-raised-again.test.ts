@@ -189,7 +189,7 @@ afterEach(() => { stopIMBridge(); });
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 the owner-notice door records that the owner was told about the row', () => {
-  it.fails('RED at 4cb9ed61: a notice about the blocked task reaches the owner, then the ladder raises it again', async () => {
+  it('RED at 4cb9ed61: a notice about the blocked task reaches the owner, then the ladder raises it again', async () => {
     seedBlocked('t-door');
     noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-door');
 
@@ -209,7 +209,7 @@ describe('§1 the owner-notice door records that the owner was told about the ro
     expect(steersOn('t-door-untold')).toBeGreaterThanOrEqual(1);
   });
 
-  it.fails('a notice fired INSIDE an agent send opens its own scope: its own platform row, and the record names it', async () => {
+  it('a notice fired INSIDE an agent send opens its own scope: its own platform row, and the record names it', async () => {
     seedBlocked('t-door-nested');
     await withOutboundAsync(
       { agentId: PRIMARY, tool: 'imessage_send', channel: 'imessage', recipientId: NEIGHBOUR_PHONE },
@@ -301,7 +301,7 @@ describe('§4 the owner-notice record says whether a dashboard card was raised',
   };
   const noPhone = (): void => { db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run(); };
 
-  it.fails('no phone: a notice that raises a card says so; a status line and an all-clear say "none by design"', async () => {
+  it('no phone: a notice that raises a card says so; a status line and an all-clear say "none by design"', async () => {
     stopIMBridge();
     noPhone();
     const raised = await ownerNoticeEntries(() => sendAlert('The greenhouse agent is paused after repeated errors.', 'notice'));
