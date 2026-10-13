@@ -7759,6 +7759,13 @@
       "to": 252,
       "by": "t141 round 3 — the one label neutraliser lives with the labels it guards",
       "why": "New in t141 (the row label + its helpers moved OUT of memory/assembler.ts), 238 lines after round 1/2 compression; round 3 adds `labelText` (the ONE neutraliser for outside text inside a label, re-review N-1, 6 lines), the `THREAD_PEER_SQL` constant whose EXPLAIN is pinned (m-c, 4 lines), the N-2 HANDLED predicate (2 lines) and their reasons. Splitting the neutraliser away from the writers it guards would make the census that holds every label writer to it span two files. Pinned decrease-only from 252."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2851,
+      "to": 2856,
+      "by": "v3.3.3 merge — t139 and t141 combined (rebase-then-ff)",
+      "why": "2851 -> 2856 (+5). No new lines: this is the two lanes' own argued raises landing in one file. t139 round 6 (R-V333-14) took 2811 -> 2816 (+5, the board read moved below integration-status) and t141 took 2811 -> 2851 (+40 across its three entries); each lane pinned from the shared base 2811, so the merged file is 2811 + 5 + 40 = 2856, measured with `wc -l` at the rebased head. t141's assembler change content is identical to its accepted head 206c9c2a and t139's board block is intact. From 2856 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7964,7 +7971,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2851,
+    "packages/server/src/memory/assembler.ts": 2856,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
