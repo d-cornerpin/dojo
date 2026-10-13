@@ -3753,26 +3753,22 @@ export async function trackerValidatePause(
   // Check whether revert_count just crossed the stalemate threshold.
   await maybeTriggerStalemate(taskId, pmAgentId);
 
-  // Direct A2A message to the assigned agent so they see the rejection on
-  // their next turn. Fire-and-forget; if delivery fails, log and continue -
-  // PM has done its part by reverting the status.
+  // t143 r2: the agent is told on its own events lane, in a row that NAMES the task (its next turn
+  // serves it), and is woken: a re-drive that owes the PM no reply (OR-LONG-JOBS, OR-PM-1).
   if (task.assigned_to) {
     try {
-      const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
       const directive =
         `Your pause on "${task.title}" (${taskId.slice(0, 8)}) was lifted back to in_progress, PM didn't see a real wait condition. This is a routine check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes, PM will reject again.`;
+        `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes, PM will reject again. No reply to the PM is needed.`;
       const { v4: uuidv4 } = await import('uuid');
-      await deliverA2ANotice({
-        intent: 'QUESTION',
-        threadId: uuidv4(),
-        requiresResponse: true,
-        payload: directive,
-        toAgent: task.assigned_to,
-        fromAgent: pmAgentId,
-      }, 'Pause-rejection notice to the agent', { taskId, assignedTo: task.assigned_to }, pmAgentId);
+      insertEngineEventIfAbsent({ id: uuidv4(), agentId: task.assigned_to, content: directive, sourceAgentId: pmAgentId,
+        originIntent: 'tracker', work: { taskId, runId: null, rootKind: 'task', rootId: taskId } });
+      getAgentRuntime().handleMessage(task.assigned_to, directive).catch((err: unknown) => {
+        logger.warn('Pause-rejection wake failed; the notice row stands for the next drain', {
+          taskId, error: err instanceof Error ? err.message : String(err) }, pmAgentId);
+      });
     } catch (err) {
       logger.warn('Failed to send pause-rejection notice to agent', {
         taskId, assignedTo: task.assigned_to,
@@ -3785,7 +3781,7 @@ export async function trackerValidatePause(
   return (
     `[OK] Pause rejected on "${task.title}" (${taskId}). Task reverted to in_progress. ` +
     `Rejection reason recorded: "${rejectReason}". ` +
-    `${task.assigned_to ? `Notified ${task.assigned_to} via send_to_agent.` : 'Task has no assigned agent to notify.'}`
+    `${task.assigned_to ? `Notified ${task.assigned_to}; it picks the task back up (no reply owed).` : 'Task has no assigned agent to notify.'}`
   );
 }
 
