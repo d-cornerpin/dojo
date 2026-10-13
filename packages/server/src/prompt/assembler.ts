@@ -1429,7 +1429,7 @@ export function renderCurrentTimeMessage(): string {
   // the model what the brackets mean, licenses subtraction for "how long"
   // questions, and heads off the model imitating the stamp in its own replies.
   // Lives here in the volatile lane, so it costs nothing against the cached prefix.
-  return `[Current time: ${localStr} (${now.toISOString()}). Bracketed times like [Jul 16, 2026, 11:41 AM] before earlier messages are when EACH message happened; subtract from the current time for any "how long ago / how long have I been at this" question instead of guessing. Never prefix your own replies with a bracketed time.]`;
+  return `[Current time: ${localStr} (${now.toISOString()}). Bracketed times like [Jul 16, 2026, 11:41 AM UTC-07:00] before earlier messages are when EACH message happened; subtract from the current time for any "how long ago / how long have I been at this" question instead of guessing. Never prefix your own replies with a bracketed time.]`;
 }
 
 /** The `precedence-ladder` slot. Defines the instruction-precedence order so a

@@ -18,7 +18,7 @@
 // The model loses nothing, because `msg.current-time` is the LAST message in the tail and
 // its legend already tells the model to do exactly this subtraction, naming this format:
 //
-//     "Bracketed times like [Jul 16, 2026, 11:41 AM] before earlier messages are when EACH
+//     "Bracketed times like [Jul 16, 2026, 11:41 AM UTC-07:00] before earlier messages are when EACH
 //      message happened; subtract from the current time for any 'how long ago' question
 //      instead of guessing."
 //
