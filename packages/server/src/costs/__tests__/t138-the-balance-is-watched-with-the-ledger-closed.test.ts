@@ -249,6 +249,28 @@ describe('once per real crossing', () => {
   });
 });
 
+describe('fix round 1 (M1): a hung provider never holds the scheduler', () => {
+  it('a balance API that never answers: the tick still returns, the next tick runs, and nothing piles up', async () => {
+    // The provider accepts the request and never answers (and ignores the abort signal).
+    vi.stubGlobal('fetch', vi.fn((url: string | URL) => {
+      fetchCalls.push(String(url));
+      return new Promise<Response>(() => { /* never */ });
+    }));
+    const clock = await (async () => { vi.resetModules(); return import('../../scheduler/clock.js'); })();
+    const within = <T>(p: Promise<T>, ms: number): Promise<T | 'held'> =>
+      Promise.race([p, new Promise<'held'>((res) => setTimeout(() => res('held'), ms))]);
+
+    expect(await within(clock.runSchedulerTick(), 20_000), 'the first tick returned').toBe('ran');
+    // Let the kicked check reach its (hung) provider call.
+    for (let i = 0; i < 200 && fetchCalls.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    expect(fetchCalls.length, 'the check is out, waiting on the provider').toBe(1);
+
+    expect(await within(clock.runSchedulerTick(), 20_000), 'the next tick is not skipped').toBe('ran');
+    expect(clock.schedulerClockState().overlapsSkipped).toBe(0);
+    expect(fetchCalls.length, 'no second call stacked on the hung one').toBe(1);
+  });
+});
+
 describe('backwards lifecycle', () => {
   it('threshold lowered below the balance after an alert: silent re-arm', async () => {
     let { tick, route } = await boot();
