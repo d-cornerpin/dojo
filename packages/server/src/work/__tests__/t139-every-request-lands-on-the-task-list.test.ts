@@ -312,6 +312,22 @@ afterEach(() => {
 // #7 C1 — THE FLOOR NO LONGER TITLES A TASK FROM THE TURN'S MESSAGE
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+describe('t139 round 2 (I5) — the floor names its task from ENGINE FACTS, never the message', () => {
+  it.fails('the title states the calls the floor counted, the most-used tool and the turn\'s start, and the note invites a rename', async () => {
+    ownerSays('msg-ping-i5', 'You there?');
+    script([{ toolCalls: imageCalls(9) }, { content: 'Yes, here.' }]);
+    await runV2Turn(PRIMARY);
+
+    const row = openTasks()[0];
+    expect(row.title).toMatch(/^Multi-step task — 9 calls: image_create \[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2} [AP]M\]$/);
+    expect(row.title).not.toMatch(/you there/i);
+    const note = mockDb.current!.prepare(
+      "SELECT content FROM messages WHERE role = 'system' AND content LIKE '[System] The engine opened tracker task%' ORDER BY seq DESC LIMIT 1",
+    ).get() as { content: string };
+    expect(note.content).toContain('rename it with work_update(action="edit", title=');
+  });
+});
+
 describe('t139 — a presence ping is never turned into a task title', () => {
   it('RED at v3.3.2: nine untracked calls on a "You there?" turn do not open a task titled from the ping', async () => {
     ownerSays('msg-ping', 'You there?');
