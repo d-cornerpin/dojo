@@ -233,6 +233,33 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     expect(block.indexOf('Live job')).toBeLessThan(block.indexOf('Conference flights'));
   });
 
+  // ROUND 3 (re-review minor): `status_before_pause` is written for EVERY pause, so a task the
+  // OWNER paused himself read "waiting on <owner> to answer". Who paused it is the transition's
+  // own `by`, and an owner's pause is not a question waiting on his answer.
+  it.fails('a task the OWNER paused is labelled as paused by the owner, never "waiting on <owner> to answer"', async () => {
+    ownerSays('msg-ownerpause', 'Book the photographer for the launch.', DAY_ONE - 60_000);
+    const id = task('Photographer', undefined, 'msg-ownerpause');
+    expect(setTrackerStatus(id, 'paused', { by: 'owner', actorId: 'owner', reason: 'owner paused it' }).kind).toBe('applied');
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toMatch(/Status: paused since \[[^\]]+\] — paused by the owner/);
+    expect(block).not.toMatch(/to answer/);
+  });
+
+  it('CONTROL: the engine\'s own waiting-on-owner pause still says whose answer it waits for', async () => {
+    ownerSays('msg-enginepause', 'Draft the newsletter intro.', DAY_ONE - 60_000);
+    const id = task('Newsletter', undefined, 'msg-enginepause');
+    // The engine's pause cites the delivery it is keyed on (G6), exactly as the disposition does.
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+       VALUES ('dl-x', ?, 1, 'dashboard', 'dashboard', 'delivered', datetime('now'))`,
+    ).run(AGENT);
+    expect(setTrackerStatus(id, 'paused', { by: 'engine', actorId: AGENT, evidenceRef: 'dl-x', reason: 'waiting on the person' }).kind).toBe('applied');
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toMatch(/waiting on [^\n]+ to answer/);
+  });
+
   it('a task scheduled for later (on_deck) is not current work and is not listed', async () => {
     ownerSays('msg-later', 'Next month, remind me to renew the domain.', DAY_ONE - 60_000);
     const id = task('Renew the domain', undefined, 'msg-later');
