@@ -13,7 +13,6 @@ import {
   deleteSummary,
 } from '../../memory/dag.js';
 import { checkAndCompact } from '../../memory/compaction.js';
-import { reservedHeadRefusal } from '../../memory/uncondensed-head.js';
 import { getContextWindow } from '../../agent/model.js';
 import {
   generateBriefing,
@@ -161,7 +160,6 @@ memoryRouter.put('/:agentId/summary/:summaryId', async (c) => {
     if (!body.content || typeof body.content !== 'string') {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
-    if (reservedHeadRefusal(body.content)) return c.json({ ok: false, error: reservedHeadRefusal(body.content) }, 400);
 
     const summary = getSummary(summaryId);
     if (!summary) {
@@ -217,7 +215,6 @@ memoryRouter.post('/:agentId/inject', async (c) => {
     if (!body.content || typeof body.content !== 'string') {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
-    if (reservedHeadRefusal(body.content)) return c.json({ ok: false, error: reservedHeadRefusal(body.content) }, 400);
 
     const now = new Date().toISOString();
     const tokenCount = estimateTokens(body.content);

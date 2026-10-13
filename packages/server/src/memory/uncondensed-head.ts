@@ -6,8 +6,8 @@
 // condenser can recognise a note and the leaf fold can supersede one without importing the
 // placeholder machinery in `uncondensed-placeholder.ts`.
 //
-//   · THE HEAD marks a placeholder row. Condensation never merges one: it would bury the note where
-//     its replacement cannot find it.
+//   · THE KIND (`summaries.kind = 'uncondensed'`) is what makes a row a note — never its text.
+//     Condensation never merges one: it would bury the note where its replacement cannot find it.
 //   · THE TEXT is built from stored columns only — a count, a fixed channel/lane word, a UTC range —
 //     so nothing a sender wrote or was called reaches it.
 //   · ONE NOTE PER ROW (round 4, re-review 3 F1). Whenever a REAL leaf summary is written over rows
@@ -21,17 +21,13 @@ import { getMessagesByIds } from './store.js';
 import { estimateTokens } from './budget.js';
 import type { Message } from '@dojo/shared';
 
+/** THE IDENTITY of a note — `summaries.kind`, set ONLY by `writeUncondensedPlaceholders`. Never the
+ *  text: a model summary or a hand-written memory can say anything, the heading included. Any other
+ *  writer of a summary's text (`dag.ts`'s `updateSummaryContent`: the replacement, an owner's edit)
+ *  turns the row into a real leaf. */
+export const UNCONDENSED_KIND = 'uncondensed';
+/** The note's human-readable heading. WRITTEN, never read: nothing identifies a note by it. */
 export const UNCONDENSED_PLACEHOLDER_HEAD = '[Not yet condensed]';
-export const isUncondensedPlaceholder = (content: string): boolean => content.startsWith(UNCONDENSED_PLACEHOLDER_HEAD);
-
-/** For a HAND-WRITTEN summary (the memory routes' inject and edit): the reason it is refused when it
- *  borrows the head, else null. The engine replaces notes with model summaries and drops ones with no
- *  rows, so an owner's text wearing the head would be overwritten or deleted. */
-export function reservedHeadRefusal(content: string): string | null {
-  return isUncondensedPlaceholder(content.trimStart())
-    ? `A summary may not begin with "${UNCONDENSED_PLACEHOLDER_HEAD}": that heading marks the engine's own not-yet-condensed notes.`
-    : null;
-}
 
 /** The ONLY words a note uses to say where its messages came from. Own-property lookups only. */
 const CHANNEL_WORDS: Readonly<Record<string, string>> = {
@@ -85,8 +81,8 @@ export function supersedeUncondensedPlaceholders(agentId: string, messageIds: re
   const marks = ids.map(() => '?').join(',');
   const notes = (db.prepare(
     `SELECT DISTINCT sm.summary_id AS id FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id
-      WHERE s.agent_id = ? AND substr(s.content, 1, length(?)) = ? AND sm.message_id IN (${marks})`,
-  ).all(agentId, UNCONDENSED_PLACEHOLDER_HEAD, UNCONDENSED_PLACEHOLDER_HEAD, ...ids) as Array<{ id: string }>).map((r) => r.id);
+      WHERE s.agent_id = ? AND s.kind = ? AND sm.message_id IN (${marks})`,
+  ).all(agentId, UNCONDENSED_KIND, ...ids) as Array<{ id: string }>).map((r) => r.id);
   for (const id of notes) {
     db.transaction(() => {
       db.prepare(`DELETE FROM summary_messages WHERE summary_id = ? AND message_id IN (${marks})`).run(id, ...ids);

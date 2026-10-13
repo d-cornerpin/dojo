@@ -288,7 +288,7 @@ export function getDescendantMessages(summaryId: string): Message[] {
   const summary = getSummary(summaryId);
   if (!summary) return [];
 
-  if (summary.kind === 'leaf') {
+  if (summary.kind !== 'condensed') {   // a leaf, or a not-yet-condensed note: its own source rows
     return getSummarySourceMessages(summaryId);
   }
 
@@ -326,7 +326,7 @@ export function getDescendantMessages(summaryId: string): Message[] {
 export function updateSummaryContent(id: string, content: string, tokenCount: number): void {
   const db = getDb();
   db.prepare(`
-    UPDATE summaries SET content = ?, token_count = ? WHERE id = ?
+    UPDATE summaries SET content = ?, token_count = ?, kind = CASE kind WHEN 'uncondensed' THEN 'leaf' ELSE kind END WHERE id = ?
   `).run(content, tokenCount, id);
 
   logger.info('Updated summary content', { summaryId: id, tokenCount });

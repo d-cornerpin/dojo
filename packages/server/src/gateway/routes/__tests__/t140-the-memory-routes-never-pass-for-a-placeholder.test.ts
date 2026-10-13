@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 describe('t140 — the manual summary routes never pass a summary off as a placeholder note', () => {
-  it.fails('a user may write ANY text: an injected memory that begins with the note\'s heading is accepted and survives a replacement', async () => {
+  it('a user may write ANY text: an injected memory that begins with the note\'s heading is accepted and survives a replacement', async () => {
     const text = `${UNCONDENSED_PLACEHOLDER_HEAD} remember: the vault key is in the blue binder.`;
     const res = await call('POST', `/${AGENT}/inject`, { content: text });
     expect(res.status).toBe(200);
@@ -95,7 +95,7 @@ describe('t140 — the manual summary routes never pass a summary off as a place
     expect(writer.calls).toBe(0);
   });
 
-  it.fails('an edit of a note is the owner\'s own words whatever they say — even the heading — and the replacement leaves it alone', async () => {
+  it('an edit of a note is the owner\'s own words whatever they say — even the heading — and the replacement leaves it alone', async () => {
     const last = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
     expect(writeUncondensedPlaceholders(AGENT, last - 2)).toBeGreaterThan(0);
     const id = (db().prepare('SELECT id FROM summaries WHERE agent_id = ?').get(AGENT) as { id: string }).id;

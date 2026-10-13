@@ -80,7 +80,7 @@
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
-import { isUncondensedPlaceholder, UNCONDENSED_PLACEHOLDER_HEAD } from './uncondensed-head.js';
+import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { generateSummary } from './summarize.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
@@ -162,10 +162,10 @@ function topLevelByDepth(agentId: string): TopLevelRow[] {
       `SELECT s.depth AS depth, COUNT(*) AS n, COALESCE(MAX(s.token_count), 0) AS maxTok
          FROM summaries s
         WHERE s.agent_id = @agentId
-          AND s.id NOT IN (SELECT parent_id FROM summary_parents) AND substr(s.content, 1, length(@head)) != @head
+          AND s.id NOT IN (SELECT parent_id FROM summary_parents) AND s.kind != @noteKind
         GROUP BY s.depth
         ORDER BY s.depth ASC`,
-    ).all({ agentId, head: UNCONDENSED_PLACEHOLDER_HEAD }) as TopLevelRow[];
+    ).all({ agentId, noteKind: UNCONDENSED_KIND }) as TopLevelRow[];
   } catch {
     return [];
   }
@@ -201,7 +201,7 @@ export function rawContextSummaryTokens(agentId: string): number {
  */
 function topLevelRows(agentId: string): Summary[] {
   const rows: Summary[] = [];
-  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth).filter((r) => !isUncondensedPlaceholder(r.content)));
+  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth).filter((r) => r.kind !== UNCONDENSED_KIND));
   return rows;
 }
 

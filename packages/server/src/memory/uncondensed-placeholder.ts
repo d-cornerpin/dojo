@@ -8,8 +8,8 @@
 // searchable. No model writes it, and no outside text is copied into it: the conversation is named
 // from a fixed vocabulary of channel words, never by a sender's name or a message's words.
 //
-// A placeholder is a leaf summary row whose content starts with `UNCONDENSED_PLACEHOLDER_HEAD`
-// (`uncondensed-head.ts`), one per leaf chunk. Condensation never merges one. When a writer answers again the
+// A placeholder is a summary row of kind `UNCONDENSED_KIND` (`uncondensed-head.ts`) — never known by
+// its text — one per leaf chunk. Condensation never merges one. When a writer answers again the
 // placeholder's own row is REWRITTEN in place with a real summary of exactly its rows — the links
 // never move — in the background, and the 15-minute low-yield brake does not hold it back.
 //
@@ -24,7 +24,7 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { getMessagesOutsideFreshTail } from './store.js';
 import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
-import { UNCONDENSED_PLACEHOLDER_HEAD, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
+import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, getLeafTargetTokens, rebuildContextItems,
   NO_CONVERSATION_PLACEHOLDER,
@@ -61,7 +61,10 @@ export function writeUncondensedPlaceholders(agentId: string, throughSeq: number
   for (const chunk of chunkMessages(owed, getLeafChunkTokens())) {
     if (chunk.length === 0) continue;
     const text = placeholderText(chunk);
-    createLeafSummary(agentId, text, estimateTokens(text), chunk.map((m) => m.id), chunk[0].createdAt, chunk[chunk.length - 1].createdAt);
+    getDb().transaction(() => {
+      const note = createLeafSummary(agentId, text, estimateTokens(text), chunk.map((m) => m.id), chunk[0].createdAt, chunk[chunk.length - 1].createdAt);
+      getDb().prepare('UPDATE summaries SET kind = ? WHERE id = ?').run(UNCONDENSED_KIND, note.id);   // the ONE writer of the kind
+    })();
   }
   rebuildContextItems(agentId);
   logger.warn('Rows left the live view with no summary written in time; placeholders stand in until one is', {
@@ -71,8 +74,7 @@ export function writeUncondensedPlaceholders(agentId: string, throughSeq: number
 }
 
 export function hasUncondensedPlaceholders(agentId: string): boolean {
-  return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND substr(content, 1, length(?)) = ? LIMIT 1')
-    .get(agentId, UNCONDENSED_PLACEHOLDER_HEAD, UNCONDENSED_PLACEHOLDER_HEAD);
+  return !!getDb().prepare('SELECT 1 FROM summaries WHERE agent_id = ? AND kind = ? LIMIT 1').get(agentId, UNCONDENSED_KIND);
 }
 
 function configuredModel(agentId: string): string | undefined {
@@ -83,8 +85,8 @@ function configuredModel(agentId: string): string | undefined {
 function coveredElsewhere(messageId: string, placeholderId: string): boolean {
   return !!getDb().prepare(
     `SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id
-      WHERE sm.message_id = ? AND sm.summary_id != ? AND substr(s.content, 1, length(?)) != ? LIMIT 1`,
-  ).get(messageId, placeholderId, UNCONDENSED_PLACEHOLDER_HEAD, UNCONDENSED_PLACEHOLDER_HEAD);
+      WHERE sm.message_id = ? AND sm.summary_id != ? AND s.kind != ? LIMIT 1`,
+  ).get(messageId, placeholderId, UNCONDENSED_KIND);
 }
 
 /**
@@ -101,8 +103,8 @@ export async function replaceUncondensedPlaceholders(
 
 async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal; maxChunks?: number }): Promise<number> {
   const ids = (getDb().prepare(
-    'SELECT id FROM summaries WHERE agent_id = ? AND substr(content, 1, length(?)) = ? ORDER BY earliest_at ASC, id ASC',
-  ).all(agentId, UNCONDENSED_PLACEHOLDER_HEAD, UNCONDENSED_PLACEHOLDER_HEAD) as Array<{ id: string }>)
+    'SELECT id FROM summaries WHERE agent_id = ? AND kind = ? ORDER BY earliest_at ASC, id ASC',
+  ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>)
     .slice(0, opts.maxChunks ?? Number.POSITIVE_INFINITY);
   const preferred = configuredModel(agentId);
   let replaced = 0;

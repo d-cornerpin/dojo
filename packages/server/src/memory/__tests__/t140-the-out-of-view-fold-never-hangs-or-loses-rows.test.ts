@@ -171,7 +171,7 @@ function lostRows(view: string): string[] {
 }
 
 const placeholders = (): Array<{ id: string; content: string }> =>
-  db().prepare("SELECT id, content FROM summaries WHERE agent_id = ? AND content LIKE '%not yet condensed%'").all(AGENT) as Array<{ id: string; content: string }>;
+  db().prepare("SELECT id, content FROM summaries WHERE agent_id = ? AND kind = 'uncondensed'").all(AGENT) as Array<{ id: string; content: string }>;
 const failingCards = (): number => owner.cards.filter((c) => c.code === 'COMPACTION_FAILING').length;
 
 beforeEach(() => {
@@ -240,7 +240,7 @@ describe('t140 round 3 — every writer down: the rows are still represented, an
     }
     // Exactly the rows the cut took: every placeholder-covered row is out of the live tail.
     const covered = db().prepare(
-      "SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ? AND s.content LIKE '%not yet condensed%'",
+      "SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ? AND s.kind = 'uncondensed'",
     ).get(AGENT) as { n: number };
     expect(covered.n).toBeGreaterThan(0);
     expect(failingCards(), 'one card per incident, not per turn').toBe(1);
@@ -340,7 +340,7 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     const merged = (sql: string) => (db().prepare(sql).get(AGENT) as { n: number }).n;
     expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE 'Real summary%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
       'precondition: the pass did condense the real summaries').toBeGreaterThan(0);
-    expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE '[Not yet condensed]%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
+    expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.kind = 'uncondensed' AND s.id IN (SELECT parent_id FROM summary_parents)"),
       'a placeholder was merged into a parent').toBe(0);
   }, 10_000);
 });
@@ -354,7 +354,7 @@ const coverCounts = (): number[] => (db().prepare(
 ).all(AGENT) as Array<{ n: number }>).map((r) => r.n);
 const placeholderCoveredSeqs = (): number[] => (db().prepare(
   `SELECT m.seq AS seq FROM messages m JOIN summary_messages sm ON sm.message_id = m.id JOIN summaries s ON s.id = sm.summary_id
-    WHERE s.agent_id = ? AND s.content LIKE '[Not yet condensed]%'`,
+    WHERE s.agent_id = ? AND s.kind = 'uncondensed'`,
 ).all(AGENT) as Array<{ seq: number }>).map((r) => r.seq);
 const coolAll = async (...ids: string[]) => {
   const h = await import('../summary-writer-health.js') as unknown as { noteSummaryWriterOutcome: (m: string, ok: boolean) => void };
@@ -561,7 +561,7 @@ describe('t140 round 4 — F1: the turn sets a routine background fold aside to 
 // content can be forged by content. Only `writeUncondensedPlaceholders` marks a row as a note.
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('t140 round 4 — a note is identified structurally, never by its heading', () => {
-  it.fails('a REAL model summary that happens to start with the heading survives the replacement, untouched and unsuperseded', async () => {
+  it('a REAL model summary that happens to start with the heading survives the replacement, untouched and unsuperseded', async () => {
     seedACut();
     const rows = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq LIMIT 6').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
     const { createLeafSummary } = await import('../dag.js');
@@ -576,7 +576,7 @@ describe('t140 round 4 — a note is identified structurally, never by its headi
     expect((db().prepare('SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id = ?').get(real.id) as { n: number }).n).toBe(rows.length);
   }, 5_000);
 
-  it.fails('census: no shipped reader identifies a note by its heading text', async () => {
+  it('census: no shipped reader identifies a note by its heading text', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const SRC = path.resolve(__dirname, '../..');
