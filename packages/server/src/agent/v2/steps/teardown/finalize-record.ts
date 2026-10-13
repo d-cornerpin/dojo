@@ -112,6 +112,14 @@ export async function finalizeTurnRecord(
       : state.identicalCallRefusedThisTurn ? 'identical_call'
       : 'no_reply_intended';
     const outcome = exitReason;
+    // t139 round 2 (I4): THE ENGINE'S OWN JUDGEMENT, never the reply's text. The multistep
+    // classifier decided at loop 1 that this turn's request is WORK (`inboundClassifiedAsWork`,
+    // the decision that also arms the start-ack steer), and the turn then performed nothing
+    // (zero effectful calls). Its bubble was the start line: the ask goes back OWED
+    // (`settleAsksAtTurnFinalize`) and the work it touched is not parked "waiting on the owner"
+    // (`pauseDriveWorkWaitingOnOwner`). Driven both timer branches in
+    // `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`.
+    const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
     if (answerRow && !terminalDeliveryId) {
       logger.warn('v2: the turn recorded an ANSWER with no delivery receipt behind it — the answered edge has only one of its two halves for this turn', {
         agentId, turnNumber, answerMessageId: answerRow.id, exitReason,
@@ -163,7 +171,7 @@ export async function finalizeTurnRecord(
       const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled });
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, startLineOnly });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
@@ -192,6 +200,9 @@ export async function finalizeTurnRecord(
           delegatedThisTurn,
           // t137: every engine auto-continue writes the C3 stash (consumed by the next preflight,
           // so it is THIS turn's); the latch covers the non-human arm; a stop refuses the wake.
+          startLineOnly,
+          trackerWriteThisTurn: state.trackerWriteThisTurn,
+          servedSourceMessageId: turnCtx.root?.sourceMessageId ?? null,
           queuedOwnContinuation: !isStopFenced(agentId)
             && (continuationContext.has(agentId) || toolLoopCapReached),
           // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to

@@ -595,6 +595,58 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
   });
 });
 
+describe('t139 round 2 — the engine pause fires only on work linked to the request the turn answered', () => {
+  // With the reopen edge deleted, a pause is undone only by the agent, so a misfire strands work.
+  const answeredTurn = (): void => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+  };
+  const stateOf = (id: string): string =>
+    (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
+
+  it('POSITIVE (requirement preserved): work linked to the served request, opened earlier, is paused', () => {
+    answeredTurn();
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-x' }).paused).toBe(1);
+    expect(stateOf('t-1')).toBe('paused');
+  });
+
+  it('work linked to a DIFFERENT request is not paused (a status question never parks the job)', () => {
+    answeredTurn();
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-status' }).paused).toBe(0);
+    expect(stateOf('t-1')).toBe('claimed');
+  });
+
+  it('a turn that served no request pauses nothing', () => {
+    answeredTurn();
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: null }).paused).toBe(0);
+  });
+
+  it('a task this very turn opened is never parked by its own turn', () => {
+    answeredTurn();
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 6 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-x' }).paused).toBe(0);
+  });
+
+  it('a turn that wrote to the tracker, or only said it was starting engine-judged work, pauses nothing', () => {
+    answeredTurn();
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-x', trackerWriteThisTurn: true }).paused).toBe(0);
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { servedSourceMessageId: 'msg-x', startLineOnly: true }).paused).toBe(0);
+    expect(stateOf('t-1')).toBe('claimed');
+  });
+
+  it('a turn whose record says it served nothing (subject none) pauses nothing', () => {
+    seedTurn(7, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0,
+      kind: null, subject_kind: 'none', subject_id: null, root_kind: null, conv_key: null });
+    seedDelivery('d2', { turn_number: 7 });
+    seedLegacyTask('t-1', { source_message_id: 'msg-x', origin_turn: 2 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 7, {}).paused).toBe(0);
+  });
+});
+
 describe('THE REOPEN EDGE IS DELETED (R-V333-5, t139) — the paused work stays paused and visible', () => {
   // The two clauses that stood here drove `resumeWorkOnOwnerAsk`: any owner message flipped
   // engine-paused work of any age back to in-progress. R-V333-5 deleted the edge (it resumed a

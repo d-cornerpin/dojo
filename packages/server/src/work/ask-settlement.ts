@@ -202,6 +202,15 @@ export interface SettlementContext {
    *                     or the ladder's relay of the peers' own text. The rule is shared below
    *                     rather than copied, so the two cannot drift. */
   basis?: 'compiled' | 'engine-relay' | 'late-answer';
+  /**
+   * FINALIZE ONLY (t139 round 2, I4): the finished turn served a request the ENGINE judged to be
+   * multi-step work (`turnCtx.inboundClassifiedAsWork`, decided at loop 1 by the multistep
+   * classifier, which arms the start-ack steer) and made ZERO effectful calls. On such a turn
+   * the model's bubble is the start line, not the answer — by the engine's own judgement,
+   * never by its text — so no bubble of this turn closes the ask, and a close already made on
+   * one goes back OWED through CT0's hand-back (a rung of the re-serve ladder).
+   */
+  startLineOnly?: boolean;
 }
 
 interface AskRow {
@@ -478,6 +487,62 @@ export function recordOwedInterruptSubjects(
  * Scoped to the turn being adjudicated: an ask another turn settled is that turn's business
  * and is not re-opened by this boundary.
  */
+/** I4: the ask's receipt is a MODEL BUBBLE (an `agent-text` assistant row) this very turn
+ *  delivered — the thing a start-line-only turn says is not an answer. */
+function receiptIsThisTurnsModelBubble(ask: AskRow, turnNumber: number | null): boolean {
+  if (turnNumber == null || ask.result_delivery_id == null) return false;
+  return isThisTurnsModelBubble(ask.result_delivery_id, ask.agent_id, turnNumber);
+}
+
+function isThisTurnsModelBubble(deliveryId: string, agentId: string, turnNumber: number): boolean {
+  return getDb().prepare(
+    `SELECT 1 AS hit FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE d.id = ? AND d.agent_id = ? AND d.turn_number = ?
+        AND m.role = 'assistant' AND m.display_kind = 'agent-text' LIMIT 1`,
+  ).get(deliveryId, agentId, turnNumber) !== undefined;
+}
+
+/** I4: keep a qualifying delivery only when it is NOT one of this turn's model bubbles. */
+function nonBubbleDelivery<T extends { id: string }>(d: T | null | undefined, turnNumber: number | null): T | null {
+  if (!d) return null;
+  if (turnNumber == null) return d;
+  const row = getDb().prepare('SELECT agent_id FROM deliveries WHERE id = ?').get(d.id) as { agent_id: string } | undefined;
+  return row && isThisTurnsModelBubble(d.id, row.agent_id, turnNumber) ? null : d;
+}
+
+/**
+ * I4 — HOLD, NOT RE-SERVE. The ask is OWED (the person asked for work and it has not begun), so
+ * it may not read `done`; but the turn's bubble may have been a genuine question back to them
+ * (the engine cannot tell — it never reads the prose), so it is NOT handed back `open` for the
+ * drain to serve again, which would put the same line in front of the person a second time
+ * ("repeats answers", #7). `blocked` is the existing OWED state the open-work surface renders
+ * and the drain does not serve; the next turn in that conversation that DELIVERS settles it
+ * through the ordinary close arm, because the ask is in that turn's assembled context.
+ */
+function holdStartLineOnly(
+  ask: AskRow, ctx: SettlementContext, actorId: string,
+  out: (v: AskSettlementVerdict, d: string, id?: string | null) => AskSettlementOutcome,
+): AskSettlementOutcome {
+  const reason = `held owed: the engine judged this request to be multi-step work and turn `
+    + `${ctx.turnNumber ?? '?'} only said it was starting (no effectful call) — not an answer, so `
+    + 'the ask stays owed and visible; held rather than re-served so the person is not asked twice';
+  if (ask.state === 'done') {
+    const undo = transition(ask.id, {
+      to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
+      evidenceRef: ask.result_delivery_id ?? undefined, clearResultDelivery: true, reason,
+    });
+    if (undo.kind !== 'applied') return out('unchanged', `start-line hold refused: ${undo.kind}`);
+  }
+  const r = transition(ask.id, {
+    to: 'blocked', by: 'agent', actorId, expectedState: ask.state === 'done' ? 'open' : ask.state, reason,
+  });
+  if (r.kind !== 'applied') return out('unchanged', `start-line hold refused: ${r.kind}`);
+  logger.info('ask held owed: the turn only said it was starting engine-judged work', {
+    agentId: ask.agent_id, workId: ask.id, turnNumber: ctx.turnNumber,
+  }, ask.agent_id);
+  return out('held', reason);
+}
+
 function receiptIsASupersededBubble(ask: AskRow, turnNumber: number | null): boolean {
   if (turnNumber == null || ask.result_delivery_id == null) return false;
   return getDb().prepare(
@@ -685,6 +750,10 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // ⚠ The same rider the ordering arm carries applies here: the `done` transition already
   // happened and STAYS in the history. The row is honest from the boundary onward, never
   // retroactively — undoing the RECORD would be the forgery this spine exists to refuse.
+  if (ask.state === 'done' && ctx.at === 'finalize' && ctx.startLineOnly === true
+      && receiptIsThisTurnsModelBubble(ask, ctx.turnNumber)) {
+    return holdStartLineOnly(ask, ctx, actorId, out);
+  }
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot')
       && receiptIsASupersededBubble(ask, ctx.turnNumber)) {
     const answer = qualifyingDelivery(ask, ctx.turnNumber);
@@ -756,7 +825,12 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   }
 
   // ── CLOSE. Something was DELIVERED for it — never because a model said so. ──
-  const evidence = qualifyingDelivery(ask, ctx.turnNumber);
+  // I4: a start-line-only turn's own bubbles are not evidence (see `startLineOnly`).
+  const startLineOnly = ctx.startLineOnly === true && ctx.at === 'finalize';
+  const evidence = startLineOnly
+    ? nonBubbleDelivery(qualifyingDelivery(ask, ctx.turnNumber), ctx.turnNumber)
+    : qualifyingDelivery(ask, ctx.turnNumber);
+  if (!evidence && startLineOnly && ask.state === 'claimed') return holdStartLineOnly(ask, ctx, actorId, out);
   if (evidence) {
     const r = transition(workId, {
       to: 'done', by: 'agent', actorId, resultDeliveryId: evidence.id,
@@ -1155,6 +1229,8 @@ export interface FinalizeSettlementInput {
    *  the final assembly. Rows arriving AFTER it are deliberately absent (OPEN-12: a genuinely
    *  newer message gets its own turn) — that exclusion lives in the read, not here. */
   assembled?: AssembledAsk[];
+  /** t139 round 2, I4 — see `SettlementContext.startLineOnly`. */
+  startLineOnly?: boolean;
 }
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
@@ -1210,13 +1286,16 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
   for (const r of [...claimed, ...closedByThisTurn]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
-    tally(settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize' }).verdict);
+    tally(settleAsk(r.id, {
+      agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', startLineOnly: p.startLineOnly,
+    }).verdict);
   }
   for (const a of p.assembled ?? []) {
     if (seen.has(a.workId)) continue;
     seen.add(a.workId);
     tally(settleAsk(a.workId, {
       agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize', rowid: a.rowid,
+      startLineOnly: p.startLineOnly,
     }).verdict);
   }
   if (result.closed > 0 || result.held > 0 || result.reopened > 0) {

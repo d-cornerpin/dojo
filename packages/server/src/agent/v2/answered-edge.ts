@@ -698,6 +698,15 @@ export function pauseDriveWorkWaitingOnOwner(
     delegatedThisTurn?: boolean;
     /** t137: the engine queued this turn's own continuation (engine state, never prose). */
     queuedOwnContinuation?: boolean;
+    /** t139 round 2, I4: the engine itself judged this turn's request multi-step work and the
+     *  turn made no effectful call — its bubble was the START LINE (engine state, never prose). */
+    startLineOnly?: boolean;
+    /** t139 round 2: the agent wrote to the tracker this turn (a note, an edit, an open). */
+    trackerWriteThisTurn?: boolean;
+    /** t139 round 2: the message row this turn SERVED (`turnCtx.root.sourceMessageId`). Only
+     *  work linked to that request can be waiting on its sender's answer. Omitted only in the
+     *  unit tests that predate the link. */
+    servedSourceMessageId?: string | null;
   },
 ): PauseResult {
   const none: PauseResult = { paused: 0, ids: [] };
@@ -726,6 +735,18 @@ export function pauseDriveWorkWaitingOnOwner(
   // rejected as vague (#9). requirement preserved: adjudication #2 still fires for a turn that
   // answered, did nothing and STOPPED — narrowed for working turns, never removed.
   if (opts?.queuedOwnContinuation) return none;
+  // ⚠ t139 round 2 (I4): a turn whose request the ENGINE judged to be multi-step work, and which
+  // then only said it was starting, did not hand the ball to the owner — the next move is the
+  // agent's, and its ask goes back OWED in the same finalize (`work/ask-settlement.ts`
+  // `startLineOnly`). Parking the task "waiting on the owner" took the owner's request off the
+  // live list while the work had not begun. requirement preserved: a turn that answered, did
+  // nothing, and was NOT judged work by the engine is paused exactly as before.
+  if (opts?.startLineOnly) return none;
+  // ⚠ t139 round 2: the same refusal `transitionedThisTurn` makes for a status change, widened
+  // to every tracker write — a turn that recorded a note or an edit on its work ACTED on it by
+  // its own record (driven: an owner's change of plan, recorded as an edit and acknowledged,
+  // parked the task "waiting on the owner" and took his words off the live list).
+  if (opts?.trackerWriteThisTurn) return none;
   const outcome = turnOutcome(agentId, turnNumber);
   if (!outcome || !outcome.answered) return none;
   if (outcome.effectfulCalls > 0) return none;
@@ -734,14 +755,40 @@ export function pauseDriveWorkWaitingOnOwner(
   const db = getDb();
   const since = opts?.touchedSince ?? null;
   const sinceMs = since == null ? null : tsToMs(since);
+  // ⚠ t139 round 2: a turn that SERVED NOTHING (its record's subject is 'none' — e.g. the wake a
+  // delegate's reply causes) answered no one's message, so it cannot have handed the ball back
+  // to a person. And a task THIS turn OPENED is the agent's own record that it took the work on;
+  // parking it "waiting on the owner" in the same breath contradicts that record. Both are
+  // recorded facts (the turn row, `work.origin_turn`), never a reading of the reply. Both matter
+  // now that a waiting task carries a pointer instead of the owner's words on the task list.
+  // requirement preserved: work an earlier turn opened, touched by a turn that answered a
+  // person and performed nothing, is paused exactly as before.
+  const served = db.prepare('SELECT subject_kind FROM turns WHERE agent_id = ? AND turn_number = ?')
+    .get(agentId, turnNumber) as { subject_kind: string | null } | undefined;
+  if (served && served.subject_kind === 'none') return none;
+  // ⚠ t139 round 2 — ONLY WORK LINKED TO THE REQUEST THIS TURN ANSWERED. With the automatic
+  // reopen edge deleted (R-V333-5), a pause is undone only by the agent, so a pause that misfires
+  // now STRANDS work. Driven: "What are you working on?" answered in words parked the very job it
+  // asked about, and a change of plan recorded and acknowledged parked it too. The candidate set
+  // was "everything this turn touched"; it is now the work whose `source_message_id` is the row
+  // this turn served — the one request whose sender the reply could be waiting on. `undefined`
+  // keeps the pre-link behaviour for the unit tests that call this directly.
+  const servedId = opts?.servedSourceMessageId;
+  if (servedId === null) return none;
+  const linkClause = servedId !== undefined ? 'AND w.source_message_id = ?' : '';
+  const params: unknown[] = [agentId, turnNumber ?? -1];
+  if (servedId !== undefined) params.push(servedId);
+  if (sinceMs != null) params.push(sinceMs);
   const rows = db.prepare(
     `SELECT w.id AS id, w.state AS state FROM work w
       WHERE ${taskScope('w')}
         AND w.agent_id = ? AND w.state IN (${DRIVE_STATES.join(', ')})
         AND w.is_paused = 0 AND w.repeat_interval IS NULL
+        AND (w.origin_turn IS NULL OR w.origin_turn <> ?)
+        ${linkClause}
         ${sinceMs != null ? 'AND w.updated_at >= ?' : ''}
       ORDER BY w.updated_at DESC LIMIT 10`,
-  ).all(...(sinceMs != null ? [agentId, sinceMs] : [agentId])) as Array<{ id: string; state: string }>;
+  ).all(...params) as Array<{ id: string; state: string }>;
   if (rows.length === 0) return none;
 
   // The receipt this whole disposition is keyed on, resolved once: it is both the reason the

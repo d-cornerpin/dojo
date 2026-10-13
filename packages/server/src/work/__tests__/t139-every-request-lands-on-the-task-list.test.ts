@@ -189,6 +189,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
+import { setTrackerStatus } from '../tracker-store.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
@@ -487,17 +488,19 @@ describe('t139 — every multi-step request lands on the task list with its word
     "SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'system' AND content LIKE '[Engine hint: the user has not heard anything%'",
   ).get(PRIMARY, turn);
 
-  it.fails('a multi-step request ACKNOWLEDGED without work stays OWED (timer branch: chat-shaped, no tools)', async () => {
+  it('a multi-step request ACKNOWLEDGED without work stays OWED (timer branch: chat-shaped, no tools)', async () => {
     const ask = longAsk(900, 'ACKED');
     ownerSays('msg-acked', ask);
     script([{ content: 'On it — I will work through the venues and report back.' }]);
     await runV2Turn(PRIMARY);
 
     expect(engineJudgedWork(1)).toBe(true);           // the engine's own record, not the prose
-    expect(askStateOf('msg-acked')).not.toBe('done');
+    // HELD owed — visible on the open-work surface, and NOT handed back `open` for the drain to
+    // serve again (the bubble may have been a question; serving it again asks it twice).
+    expect(askStateOf('msg-acked')).toBe('blocked');
   });
 
-  it.fails('acknowledged with only a READ (timer branch: tools started past the threshold) stays OWED', async () => {
+  it('acknowledged with only a READ (timer branch: tools started past the threshold) stays OWED', async () => {
     const ask = longAsk(900, 'ACKREAD');
     ownerSays('msg-ackread', ask);
     const realNow = Date.now.bind(Date);
@@ -739,6 +742,18 @@ function backdate(taskId: string, msgId: string, days: number): void {
   db.prepare('UPDATE messages SET created_at = created_at - ? WHERE id = ?').run(ms, msgId);
 }
 
+/** The engine's pause, through the same door and with the same words `pauseDriveWorkWaitingOnOwner`
+ *  uses. Round 2 narrowed WHEN the engine pauses (never a task opened in the same turn, never on a
+ *  turn that served nothing or wrote to the tracker), so these clauses — which are about what
+ *  happens to work that IS waiting — put it there directly. */
+function parkWaitingOnOwner(taskId: string): void {
+  const r = setTrackerStatus(taskId, 'paused', {
+    by: 'agent', actorId: PRIMARY, expectedState: 'claimed',
+    reason: 'turn 1 delivered a reply to the person and executed no effectful call; the work is waiting on them',
+  });
+  expect(r.kind).toBe('applied');
+}
+
 describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
   it('RED at base: an owner message on an agent with a month-old engine-paused task leaves it paused', async () => {
     const ask = 'Make nine square headshots for the team page in the same soft studio style.';
@@ -746,9 +761,10 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
     script([{ toolCalls: [openTask('wo-old-hs', 'Team headshots', 'Headshots delivered to the owner')] }, { content: 'Starting on them.' }]);
     await runV2Turn(PRIMARY);
     const id = taskIdTitled('Team headshots');
+    parkWaitingOnOwner(id);
     const paused = mockDb.current!.prepare('SELECT state, status_before_pause FROM work WHERE id = ?').get(id) as { state: string; status_before_pause: string | null };
-    expect(paused.state).toBe('paused');                 // the engine parked it, waiting on the owner
-    expect(paused.status_before_pause).not.toBeNull();   // ...by its own record
+    expect(paused.state).toBe('paused');                 // parked, waiting on the owner
+    expect(paused.status_before_pause).not.toBeNull();   // ...with the pause record the reopen keyed on
     backdate(id, 'msg-old-hs', 30);
 
     ownerSays('msg-ping-2', 'You there?');
@@ -774,6 +790,7 @@ describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
     script([{ toolCalls: [openTask('wo-q', 'Newsletter intro', 'An intro the owner approved')] }, { content: 'Do you want it formal or casual?' }]);
     await runV2Turn(PRIMARY);
     const id = taskIdTitled('Newsletter intro');
+    parkWaitingOnOwner(id);
     expect((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state).toBe('paused');
 
     ownerSays('msg-a', 'Casual, please.');
