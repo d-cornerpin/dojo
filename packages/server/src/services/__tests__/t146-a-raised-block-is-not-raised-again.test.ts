@@ -21,6 +21,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -351,10 +353,16 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run();
   };
 
+  const CARD_WORDS = 'The greenhouse firmware task is blocked: the controller rejects every upload.';
+  /** A card that LASTS: the owner-notices list (GET /api/config/owner-notices) re-derives it. */
+  const standing = async (words: string[]): Promise<void> =>
+    (await import('../owner-card-frames.js')).registerStandingOwnerCards(() => words.map((w) => ({ words: w })));
+
   it('a card raised for a notice about the blocked task records the tell, and the ladder does not raise it again', async () => {
     seedBlocked('t-card');
     noPhone();
-    noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-card');
+    await standing([CARD_WORDS]);
+    noticeAbout(CARD_WORDS, 't-card');
     await driveLadderToTheEnd();
     expect(steersOn('t-card'), 'the card told him; nobody is steered to tell him again').toBe(0);
     expect(toldEvents('t-card')).toEqual([{ actor: 'platform', via: 'owner_card' }]);
@@ -365,6 +373,21 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     ).get();
     expect(row, 'the card is on the ledger as a platform dashboard delivery to the owner')
       .toEqual({ agent_id: 'platform', channel: 'dashboard', recipient_id: 'owner', outcome: 'delivered' });
+  });
+
+  it('round 3 (I1): a card that is only a live frame (the list would not re-derive it) records nothing, and the ladder still runs', async () => {
+    seedBlocked('t-live-only');
+    noPhone();
+    await standing(['Some other standing card.']);
+    noticeAbout(CARD_WORDS, 't-live-only');
+    expect(toldEvents('t-live-only'), 'a frame lost with the dashboard closed is not the owner told').toEqual([]);
+    await driveLadderToTheEnd();
+    expect(steersOn('t-live-only')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('round 3 (I1): the owner-notices list is registered as the source of lasting cards', () => {
+    const route = fs.readFileSync(path.join(__dirname, '../../gateway/routes/config.ts'), 'utf8');
+    expect(route).toMatch(/registerStandingOwnerCards\(ownerCards\)/);
   });
 
   it('a status line or an all-clear about the row raises no card and records nothing', () => {

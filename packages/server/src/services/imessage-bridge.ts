@@ -24,7 +24,7 @@ import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutbound, withOutboundIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
 import { recordPersonTold } from '../work/validation-drive.js';
-import { ownerCardFrame, ownerCardEnded } from './owner-card-frames.js';
+import { ownerCardFrame, ownerCardEnded, ownerCardStands } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
 import {
   type SafeSender, parseSafeSenders, findSafeSenderByAddress, ownerIMessageRecord,
@@ -2117,8 +2117,10 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
     // t146 round 2: with no phone carrying it, the CARD is the owner told (t138's cards). It goes
     // on the ledger as a platform dashboard delivery to the owner, and the tell is recorded from
-    // that row. A status line or an all-clear raises no card, so it records nothing.
-    if (!sent && card === 'raised' && opts.aboutWorkId) {
+    // that row. A status line or an all-clear raises no card, so it records nothing. Round 3: only
+    // a LASTING card counts — one the owner-notices list re-derives, so he sees it on his next
+    // dashboard load; a card that was only a live frame may have reached nobody.
+    if (!sent && card === 'raised' && opts.aboutWorkId && ownerCardStands(scrubbed)) {
       const workId = opts.aboutWorkId;
       withOutbound({ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' }, () => {
         if (recordAtDoor({ outcome: 'delivered', channel: 'dashboard', recipientId: 'owner' }).kind === 'applied') {

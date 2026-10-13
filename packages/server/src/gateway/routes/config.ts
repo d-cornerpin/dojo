@@ -22,7 +22,7 @@ import { memoryOwnerCards } from '../../services/memory-low-notice.js';
 import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
-import { ownerCardEnded } from '../../services/owner-card-frames.js';
+import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
@@ -2746,6 +2746,10 @@ const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
   ...accountOwnerCards(), ...watcherOwnerCards(),
 ].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words) }));
+
+// The owner-notice door asks this list whether a card LASTS (t146): a card it would not re-derive
+// is a live frame only, and is not the owner told about a work row.
+registerStandingOwnerCards(ownerCards);
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
 configRouter.get('/owner-notices', (c) => {
