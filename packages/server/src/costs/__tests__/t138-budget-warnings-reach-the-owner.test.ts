@@ -278,6 +278,46 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
   });
 });
 
+describe('fix round 1 (I1): at most ONE text per threshold per budget window', () => {
+  // The review's case: a $10 day spent in $0.25 calls, hovering at the 90% line. A record
+  // ageing out of the rolling day drops spend $0.25 (2.5 points) and the next call brings it
+  // back. With a 2-point re-arm band that is a fresh text every turn; the owner asked for
+  // true blockers only.
+  it.fails('steady spend near the line: one text, however many times it dips and returns', async () => {
+    const { recordCost, budget } = await boot();
+    budget.setGlobalBudget(10);
+    const seedRow = db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens,
+                                    output_tokens, cost_usd, created_at)
+                                  VALUES (?, 'ag', 'mdl', 'prov', 0, 0, 0.25, datetime('now', ?))`);
+    // 35 x $0.25 = $8.75 already spent today, oldest first.
+    for (let i = 0; i < 35; i++) seedRow.run(`seed-${i}`, `-${23 * 60 - i} minutes`);
+    spend(recordCost, 0.25); // $9.00: 90% (and 50/75) crossed in one check
+    expect(ownerTexts()).toHaveLength(1);
+
+    for (let turn = 0; turn < 8; turn++) {
+      // The oldest record leaves the rolling day: $8.75, 87.5%.
+      db().prepare(`UPDATE cost_records SET created_at = datetime('now', '-2 days')
+                    WHERE id = (SELECT id FROM cost_records WHERE created_at >= datetime('now', '-1 day')
+                                ORDER BY created_at ASC LIMIT 1)`).run();
+      // Real turns are more than the daily-spend cache's 5 s apart; expire it as time would.
+      (await import('../tracker.js')).invalidateDailySpendCache();
+      expect(budget.checkBudget('ag', 0.01).allowed).toBe(true); // the next turn's pre-call check
+      spend(recordCost, 0.25); // back to $9.00
+    }
+    expect(ownerTexts(), 'one text for the 90% line in this window').toHaveLength(1);
+  });
+
+  it('saving the SAME limit again is not a change: no re-arm, no second text', async () => {
+    const { recordCost, budget } = await boot();
+    budget.setGlobalBudget(10);
+    spend(recordCost, 9.2);
+    budget.setGlobalBudget(10);
+    budget.checkBudget('ag', 0.01);
+    spend(recordCost, 0.1);
+    expect(ownerTexts()).toHaveLength(1);
+  });
+});
+
 describe('backwards lifecycle', () => {
   it('limit raised above current spend after an alert: silent re-arm; lowered again: told once', async () => {
     const { recordCost, budget } = await boot();
