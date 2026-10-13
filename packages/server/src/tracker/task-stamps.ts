@@ -111,9 +111,23 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
     // the summary names it once.
     const unique = [...new Set(names)];
     if (unique.length > 0) parts.push(`file ${unique.join(', ')}`);
+    // t139 round 2 (I3): an `a2a` delivery is a HANDOVER only when it went BACK to the agent who
+    // asked on that thread — the requester. A delegation (the ASSIGN this agent sent a helper)
+    // is recorded as `a2a`/`delivered` too, and counting it closed the delegating turn's own
+    // task at the strike-0 boundary and stamped it "delivered" while the work was still out
+    // (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`). The thread
+    // comes from the delivered row itself; the requester from the inbound row on that thread.
+    // Excluding `a2a` outright would stop an A2A-ASSIGNED task closing on its DELIVERABLE back.
     const chans = db.prepare(
-      `SELECT DISTINCT channel FROM deliveries
-        WHERE agent_id = ? AND turn_number = ? AND outcome = 'delivered' AND channel NOT IN ('dashboard', 'voice')`,
+      `SELECT DISTINCT d.channel AS channel FROM deliveries d
+        WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered'
+          AND d.channel NOT IN ('dashboard', 'voice')
+          AND (d.channel <> 'a2a' OR EXISTS (
+                SELECT 1 FROM messages sent
+                  JOIN messages asked ON asked.a2a_thread_id = sent.a2a_thread_id
+                 WHERE sent.id = d.message_id AND sent.a2a_thread_id IS NOT NULL
+                   AND asked.agent_id = d.agent_id AND asked.source_agent_id = d.recipient_id
+                   AND asked.a2a_intent IN ('ASSIGN', 'QUESTION', 'BLOCK')))`,
     ).all(agentId, turnNumber) as Array<{ channel: string }>;
     if (chans.length > 0) parts.push(`via ${chans.map((c) => c.channel).join('/')}`);
     if (parts.length > 0) return parts.join('; ').slice(0, 120);

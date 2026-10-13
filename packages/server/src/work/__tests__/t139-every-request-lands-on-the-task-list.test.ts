@@ -189,6 +189,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
+import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
@@ -540,15 +541,12 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(askStateOf('msg-didwork')).toBe('done');
   });
 
-  // ⚠ RED, HANDED UP (outside t139's fence). The task the agent opened for the owner's request
-  // is CLOSED at the end of the delegating turn by the engine's strike-0 "delivery-receipt
-  // close (same-turn boundary)" (`agent/v2/steps/teardown/finalize-record.ts`), because the
-  // ASSIGN sent to the helper counts as a tangible delivery ("via a2a",
-  // `tracker/task-stamps.ts` `isTangibleDeliverySummary`). A delegation is not a handover to
-  // the person who asked: the ask itself is correctly HELD blocked, but its task — and the
-  // owner's words with it — leaves the list while the work is outstanding. Flip to `it` when
-  // that close stops counting a delegation as the answer.
-  it.fails('delegated, then held while the delegated work runs: the task is linked, open, and shows the words throughout', async () => {
+  // ROUND 2, I3 (was RED and handed up in round 1). The task the agent opened for the owner's
+  // request was CLOSED at the end of the delegating turn by the strike-0 receipt close, because
+  // the ASSIGN sent to the helper counted as a tangible delivery ("via a2a"). An a2a delivery now
+  // counts only when it went back to the agent who asked on that thread
+  // (`tracker/task-stamps.ts` `composeTurnDeliverySummary`).
+  it('delegated, then held while the delegated work runs: the task is linked, open, and shows the words throughout', async () => {
     const ask = 'Get the helper to draft the venue shortlist, then you check it against my calendar and send me the final pick.';
     ownerSays('msg-deleg', ask);
     script([
@@ -568,6 +566,31 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(held.length).toBe(1);
     expect(held[0].source_message_id).toBe('msg-deleg');
     expect(await taskList()).toContain(ask);
+  });
+
+  it('CONTROL (I3): an A2A-assigned job answered back to its ASSIGNER is still a handover ("via a2a")', async () => {
+    const r = await deliverA2AMessage({
+      intent: 'ASSIGN', threadId: 'thread-t139-back', requiresResponse: true,
+      payload: 'Please list the three cheapest venues near the station.', toAgent: PRIMARY, fromAgent: 'helper',
+    });
+    expect(r.delivered).toBe(true);
+    script([
+      { toolCalls: [call('sa-back', 'send_to_agent', { agent: 'Helper', intent: 'DELIVERABLE', thread_id: 'thread-t139-back', payload: 'Dock 700; Ferry 640; Elm Hall 850.' })] },
+      { content: '[no-reply]' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const turn = (mockDb.current!.prepare('SELECT MAX(turn_number) AS t FROM turns WHERE agent_id = ?').get(PRIMARY) as { t: number }).t;
+    expect(composeTurnDeliverySummary(PRIMARY, turn)).toBe('via a2a');
+  });
+
+  it('CONTROL (I3): the delegating turn\'s own ASSIGN is not a handover', async () => {
+    ownerSays('msg-deleg-sum', 'Get the helper to draft a venue shortlist and then send me the final pick.');
+    script([
+      { toolCalls: [call('sa-sum', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Draft a venue shortlist of three options.' })] },
+      { content: 'I have asked Helper for a shortlist.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    expect(composeTurnDeliverySummary(PRIMARY, 1)).not.toContain('a2a');
   });
 
   it('delegated to one helper, whose reply the engine relays, with the task opened on the turn that reply woke: linked to the owner\'s ask', async () => {
