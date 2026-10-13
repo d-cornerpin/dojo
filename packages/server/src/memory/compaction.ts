@@ -532,7 +532,7 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
   // answering, no dial). A forced pass still gets the first in order: it has its own brake, and "no
   // writer" there would be a false defect.
   const all = summaryWriterCandidates(preferredModelId);
-  const pick = eligibleSummaryWriters(preferredModelId)[0] ?? (opts?.background ? null : all[0] ?? null);
+  const pick = eligibleSummaryWriters(preferredModelId, agentId)[0] ?? (opts?.background ? null : all[0] ?? null);
   if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
   return pick;
 }

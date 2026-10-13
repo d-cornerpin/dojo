@@ -105,7 +105,7 @@ function gate(window: number): Promise<unknown> {
   const s: AgentTurnState = advance(initState({
     agentId: AGENT, contextWindow: window, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber: 400, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
-    lastUserMessageContent: 'is the dock open?', lastUserMessageId: null,
+    lastUserMessageContent: 'is the dock open?', lastUserMessageId: 'msg-t140-person',   // round 7: a person's message started this turn
     inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
   }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
   const ctx = {

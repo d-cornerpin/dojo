@@ -122,7 +122,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     const content = buildLeafSummaryInput(source);
     let done = content.trim().length === 0;
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
-    for (const writer of eligibleSummaryWriters(preferred)) {
+    for (const writer of eligibleSummaryWriters(preferred, agentId)) {
       if (done || opts.abortSignal?.aborted) break;
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
       if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
@@ -168,7 +168,7 @@ export function preemptBackgroundCompaction(agentId: string): boolean {
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
-    if (eligibleSummaryWriters(configuredModel(agentId)).length === 0) return false;   // none answering: no dial
+    if (eligibleSummaryWriters(configuredModel(agentId), agentId).length === 0) return false;   // none answering: no dial
   } catch {
     return false;   // a read that failed starts nothing; the gate never fails a turn over this
   }

@@ -127,7 +127,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('t140 round 7 — only a person\'s fresh message to this agent re-arms a failed writer', () => {
-  it.fails('the reviewer\'s probe: one person\'s message, then ten turn starts that are not (self-wakes, continuations, scheduled) — the base level of calls, not twenty', async () => {
+  it('the reviewer\'s probe: one person\'s message, then ten turn starts that are not (self-wakes, continuations, scheduled) — the base level of calls, not twenty', async () => {
     await gate(AGENT, 500, 1, true);                         // a person writes: each writer tried once
     const afterPerson = summariser.calls.length;
     for (let t = 501; t <= 510; t++) await gate(AGENT, t, 1, false);   // turn starts nobody sent
@@ -135,7 +135,7 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(summariser.calls.length, `writer calls: ${summariser.calls.join(', ')}`).toBe(WRITERS.length);
   });
 
-  it.fails('one agent\'s person does not re-arm the writers for another agent', async () => {
+  it('one agent\'s person does not re-arm the writers for another agent', async () => {
     await gate(OTHER, 600, 1, true);                         // the other agent's writers fail
     summariser.calls = [];
     await gate(AGENT, 700, 1, true);                         // a person writes to THIS agent: it retries…
@@ -146,7 +146,7 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(summariser.calls, 'the other agent dialled nothing').toEqual([]);
   });
 
-  it.fails('the writer answering any call re-arms it (its provider is back)', async () => {
+  it('the writer answering any call re-arms it (its provider is back)', async () => {
     await gate(AGENT, 800, 1, true);                         // both writers fail and are passed over
     summariser.answering = true;
     summariser.calls = [];
@@ -156,7 +156,7 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(hasUncondensedPlaceholders(AGENT)).toBe(false);
   });
 
-  it.fails('the owner changing the Settings writer re-arms it', async () => {
+  it('the owner changing the Settings writer re-arms it', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
     await gate(AGENT, 900, 1, true);                         // the Settings writer fails
     // The owner picks another model on the same provider in Settings.

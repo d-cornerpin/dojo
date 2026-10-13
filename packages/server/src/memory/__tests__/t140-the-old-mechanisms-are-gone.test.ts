@@ -219,7 +219,7 @@ describe('t140 census, round 5 — no fixed number cuts a working writer or caps
     expect(gate).not.toMatch(/setTimeout\(/);
     const ph = FILES.find((f) => f.rel === 'memory/uncondensed-placeholder.ts')!.code;
     expect(ph).not.toMatch(/setTimeout\(/);
-    expect(ph).toMatch(/for \(const writer of eligibleSummaryWriters\(preferred\)\) \{/);   // round 6: answering writers only
+    expect(ph).toMatch(/for \(const writer of eligibleSummaryWriters\(preferred, agentId\)\) \{/);   // round 6: answering writers only; round 7: for this agent
   });
 });
 
@@ -259,5 +259,16 @@ describe('t140 census, round 6 (H2) — the router\'s own pick is passed over li
     expect(step).toMatch(/agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,/);
     expect(step).toMatch(/const next = nextRoutedPick\(routerTier, agentId, \[\.\.\.excludedModels, \.\.\.passedOver\], \['tools'\]\);/);
     expect(step).toMatch(/const called = await callWithRetryAndFallback\(state, pick, \{/);
+  });
+});
+
+describe('t140 census, round 7 — the change signals that re-arm a failed writer', () => {
+  it('a person\'s fresh message re-arms for THAT agent; a provider answering re-arms it; nothing else does', () => {
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
+    expect(gate).toMatch(/if \(state\.loopCount === 1 && state\.lastUserMessageId\) noteAPersonSpoke\(agentId\);/);
+    expect(filesWith(/\bnoteAPersonSpoke\(/)).toEqual([GATE_REL, 'memory/summary-writer-health.ts']);
+    expect(filesWith(/\bnoteProviderAnswered\(/)).toEqual([`${ENGINE_STEPS_REL}/call-llm/index.ts`, 'memory/summary-writer-health.ts']);
+    const health = FILES.find((f) => f.rel === 'memory/summary-writer-health.ts')!.code;
+    expect(health, 'no global clear of the writers left').not.toMatch(/notAnsweringSince\.clear\(\);\s*logger/);
   });
 });

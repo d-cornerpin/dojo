@@ -260,7 +260,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     writers.calls.length = 0;
     appendTurn(false);
     writeUncondensedPlaceholders(AGENT, (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ? AND seq < (SELECT MAX(seq) - 40 FROM messages WHERE agent_id = ?)').get(AGENT, AGENT) as { s: number }).s);
-    noteAPersonSpoke();   // a person's new turn: the change that earns the writer another try
+    noteAPersonSpoke(AGENT);   // a person's new turn: the change that earns the writer another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(writers.calls[0], 'the background tried the agent\'s own writer first').toBe(OWN);
     writers.calls.length = 0;
@@ -304,7 +304,7 @@ describe('t140 round 5 — a writer that failed is used again the moment it answ
     expect(placeholders(), 'precondition: placeholder notes').toBeGreaterThan(0);
     writers.mode = {};
     expect(replacePlaceholdersInBackground(AGENT), 'no writer answering: nothing is dialled').toBe(false);
-    noteAPersonSpoke();
+    noteAPersonSpoke(AGENT);
     expect(replacePlaceholdersInBackground(AGENT), 'a person spoke: the writer gets another try').toBe(true);
     for (let t = 0; t < 60 && backgroundDrains.has(AGENT); t++) await vi.advanceTimersByTimeAsync(1_000);
     expect(placeholders(), 'no note left: the writers answered and were used').toBe(0);

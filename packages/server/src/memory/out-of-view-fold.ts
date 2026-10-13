@@ -124,7 +124,7 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
         if (owed === 0) break;
         const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
           { model_id: string | null } | undefined)?.model_id ?? undefined;
-        const eligible = eligibleSummaryWriters(configured);
+        const eligible = eligibleSummaryWriters(configured, agentId);
         if (eligible.length === 0) { noWriter = true; break; }
         // Each eligible writer once per turn — the list is the bound, not a count of tries.
         const writer = eligible.find((w) => !budget.tried.has(w));

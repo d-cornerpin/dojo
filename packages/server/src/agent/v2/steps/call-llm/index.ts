@@ -50,6 +50,7 @@ import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
 import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
 import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
+import { noteProviderAnswered } from '../../../../memory/summary-writer-health.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -187,6 +188,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
     volatileFrom, assemblyTurnContext,
   });
   if (called.abandoned) return called.abandoned as CallLLMOutcome;
+  noteProviderAnswered(called.modelId);   // t140 round 7: its provider answered; a writer there is back
   state = called.state;
   const { result } = called;
   const modelId = called.modelId;

@@ -8,10 +8,11 @@
 //   · NOT ANSWERING — its last summary call failed (its transport's patience ran out, empty text, an
 //     error), or it did not answer within a turn's patience. No clock (owner ruling 2026-10-13, no
 //     hard limits). Round 6 (final review I1, R-V333-15): it is not dialled again — by a turn OR by
-//     the background — until something has CHANGED: a person starts a new turn (`noteAPersonSpoke`),
-//     the owner picks another writer in Settings (a writer never marked is simply eligible), or the
-//     writer answers. Round 5 let the background try every writer on every gate; with writers
-//     answering empty that paid all of them on every tool-loop iteration (40 calls where v3.3.2 made 4).
+//     the background — until something has CHANGED. Round 7 (re-review I1') named the changes
+//     exactly: a person's FRESH message to an agent re-arms it for THAT agent only
+//     (`noteAPersonSpoke`); its provider answering any call re-arms it for everyone
+//     (`noteProviderAnswered`); the owner changing the Settings writer re-arms it. Not a scheduled
+//     turn, a self-wake, a continuation — round 6 re-armed on those, and for every agent at once.
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
 // no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
 // are that order without broken or not-answering ones; when none is left, nothing is dialled and
@@ -37,7 +38,23 @@ export const FOLD_PREEMPTED = 'fold-preempted-by-the-turn';
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT, FOLD_PREEMPTED]);
 
 /** Providers whose writer has not answered since it last failed or ran past a turn's patience. */
-const notAnsweringSince = new Map<string, number>();
+/** Providers not answering: the moment (an ordinal) they failed, and the Settings writer then. */
+const notAnsweringSince = new Map<string, { at: number; settingsWriter: string | null }>();
+/** Per agent: the moment (same ordinal) a person last wrote to it. */
+const personSpokeAt = new Map<string, number>();
+/** An ordinal, not a clock: "a person spoke after the writer failed" must be exact, never a tie. */
+let moment = 0;
+
+function settingsWriter(): string | null {
+  try {
+    return (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+function markNotAnswering(key: string): void {
+  notAnsweringSince.set(key, { at: ++moment, settingsWriter: settingsWriter() });
+}
 
 function providerKey(modelId: string): string {
   try {
@@ -62,20 +79,31 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
     if (notAnsweringSince.delete(key)) logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key });
     return;
   }
-  notAnsweringSince.set(key, Date.now());
-  logger.warn('Summary writer failed; turns pass it over until it answers again', { modelId, providerKey: key });
+  markNotAnswering(key);
+  logger.warn('Summary writer failed; it is passed over until it answers, a person writes, or Settings change', { modelId, providerKey: key });
 }
 
 /** The turn's patience ran out on this writer's call: no failure, but no turn waits on it again
  *  until it has answered (the background keeps trying it). */
 export function noteDidNotAnswerInTurn(modelId: string): void {
   const key = providerKey(modelId);
-  if (!notAnsweringSince.has(key)) notAnsweringSince.set(key, Date.now());
+  if (!notAnsweringSince.has(key)) markNotAnswering(key);
   logger.info('Summary writer did not answer within the turn\'s patience; turns pass it over until it answers', { modelId, providerKey: key });
 }
 
-function notAnswering(modelId: string): boolean {
-  return notAnsweringSince.has(providerKey(modelId));
+/** Not answering, and nothing has changed since — for this agent, when one is named. */
+function notAnswering(modelId: string, agentId?: string): boolean {
+  const mark = notAnsweringSince.get(providerKey(modelId));
+  if (!mark) return false;
+  if (mark.settingsWriter !== settingsWriter()) return false;                        // Settings changed
+  if (agentId !== undefined && (personSpokeAt.get(agentId) ?? 0) > mark.at) return false;   // a person wrote to it since
+  return true;
+}
+
+/** The writer's provider answered a call (any call): it is back, for every agent. */
+export function noteProviderAnswered(modelId: string): void {
+  const key = providerKey(modelId);
+  if (notAnsweringSince.delete(key)) logger.info('A summary writer\'s provider answered a call; it is used again', { modelId, providerKey: key });
 }
 
 /**
@@ -109,19 +137,18 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   return [...new Set(list)];
 }
 
-/** The writers anything may dial now, turn or background: no open breaker, and answering. */
-export function eligibleSummaryWriters(preferredModelId?: string): string[] {
-  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !notAnswering(id));
+/** The writers anything may dial now for `agentId`, turn or background: no open breaker, answering. */
+export function eligibleSummaryWriters(preferredModelId?: string, agentId?: string): string[] {
+  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !notAnswering(id, agentId));
 }
 
-/** A person has started a new turn: something has changed, so every writer gets one more try. */
-export function noteAPersonSpoke(): void {
-  if (notAnsweringSince.size === 0) return;
-  notAnsweringSince.clear();
-  logger.info('A person started a new turn: summary writers that were not answering are tried again');
+/** A person's fresh message started this agent's turn: its failed writers get one more try, for it. */
+export function noteAPersonSpoke(agentId: string): void {
+  personSpokeAt.set(agentId, ++moment);
 }
 
 /** Test-only reset; the map is per-process. */
 export function __resetSummaryWriterHealthForTests(): void {
   notAnsweringSince.clear();
+  personSpokeAt.clear();
 }

@@ -180,8 +180,8 @@ export async function runContextGates(
   const measuredSystemTokens = Math.max(0, assemblerOverheadTokens - (assembledEstimate.reserveTokens ?? 0));
   if (assemblerOverheadTokens > 0) lastSystemPromptTokens.set(agentId, measuredSystemTokens);
   const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
-  // t140 round 6 (R-V333-15): a person's new turn is the change that earns every writer another try.
-  if (state.loopCount === 1 && ctx.counterparty?.kind === 'user') noteAPersonSpoke();
+  // t140 round 7: a person's FRESH message (the turn's trigger row) earns this agent's writers a retry.
+  if (state.loopCount === 1 && state.lastUserMessageId) noteAPersonSpoke(agentId);
   // t140 round 3: placeholders are replaced first, in the background, when a writer is answering.
   const replacing = replacePlaceholdersInBackground(agentId);
   // Round 5: an auto-routed iteration with nothing locked has no dialed model yet (header).

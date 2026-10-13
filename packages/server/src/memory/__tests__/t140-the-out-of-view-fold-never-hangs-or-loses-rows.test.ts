@@ -238,7 +238,7 @@ describe('t140 round 3 — a failing writer is passed over for the next one, wit
       // person's new turn earns it another try. No clock decides it.
       expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again').not.toBe(OWN);
       expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'nor does the background').not.toBe(OWN);
-      noteAPersonSpoke();
+      noteAPersonSpoke(AGENT);
       expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'a person spoke: it is tried again').toBe(OWN);
     }, 5_000);
   }
@@ -279,7 +279,7 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
     noteLowYield(AGENT);   // the brake a pressure pass would arm
     writers.mode = {};
     // The writers come back; a person's next turn is the change that earns them a retry (round 6).
-    noteAPersonSpoke();
+    noteAPersonSpoke(AGENT);
     const ph = await import('../uncondensed-placeholder.js') as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
@@ -514,7 +514,7 @@ describe('t140 round 4 (re-aimed round 5) — F4: running past the turn\'s patie
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
     const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     writers.calls = [];
-    noteAPersonSpoke();   // round 6: the change that earns it another try
+    noteAPersonSpoke(AGENT);   // round 6: the change that earns it another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(placeholders()).toEqual([]);
     expect(writers.calls[0], 'the background used the agent\'s own writer, and nothing cut it').toBe(OWN);
