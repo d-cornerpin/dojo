@@ -27,6 +27,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 const callModelSpy = vi.fn();
@@ -285,7 +287,7 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('t139 — a presence ping is never turned into a task title', () => {
-  it.fails('RED at v3.3.2: nine untracked calls on a "You there?" turn do not open a task titled from the ping', async () => {
+  it('RED at v3.3.2: nine untracked calls on a "You there?" turn do not open a task titled from the ping', async () => {
     ownerSays('msg-ping', 'You there?');
     script([{ toolCalls: imageCalls(9) }, { content: 'Yes, here.' }]);
 
@@ -326,5 +328,98 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(rows.length).toBe(1);
     expect(rows[0].source_message_id).toBe('msg-long');
     expect(await taskList()).toContain(ask);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE CENSUS (G4): no writer of a work row's words takes them from the turn's message text
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const SRC = path.join(__dirname, '..', '..');
+
+/** Source with comments removed and string/template literals kept, so a clause can be
+ *  satisfied neither by the prose that explains a rule nor tripped by a URL in a string. */
+function stripComments(src: string): string {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === '/' && n === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+    if (c === '/' && n === '*') { i += 2; while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c; out += c; i++;
+      while (i < src.length && src[i] !== q) { if (src[i] === '\\') { out += src[i]; i++; } out += src[i]; i++; }
+      out += src[i] ?? ''; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+function productFiles(dir: string, acc: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') productFiles(p, acc); }
+    else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts') && !e.name.endsWith('.d.ts')) acc.push(p);
+  }
+  return acc;
+}
+
+/** The argument text of every call to a work-row WRITER, by file. */
+function writerCalls(): Array<{ file: string; args: string }> {
+  const WRITER = /\b(openTrackerTask|openTrackerProject|createTask|createProject|updateTask)\(/g;
+  const calls: Array<{ file: string; args: string }> = [];
+  for (const f of productFiles(SRC)) {
+    const code = stripComments(fs.readFileSync(f, 'utf8'));
+    for (const m of code.matchAll(WRITER)) {
+      const before = code.slice(Math.max(0, m.index! - 9), m.index!);
+      if (/function\s*$/.test(before)) continue;            // the declaration, not a call
+      let depth = 0; let j = m.index! + m[0].length - 1;
+      const start = j;
+      for (; j < code.length; j++) {
+        if (code[j] === '(') depth++;
+        else if (code[j] === ')') { depth--; if (depth === 0) break; }
+      }
+      calls.push({ file: path.relative(SRC, f), args: code.slice(start, j + 1) });
+    }
+  }
+  return calls;
+}
+
+describe('t139 census — the floor\'s titling from the message is gone', () => {
+  it('no work-row writer is handed the turn\'s message text, and every writer is counted', () => {
+    const calls = writerCalls();
+    for (const c of calls) {
+      expect(c.args, `${c.file} writes a work row from the turn's message text`).not.toMatch(/lastUserMessageContent/);
+    }
+    // BOTH DIRECTIONS: the writers this census read, by file. A new writer (or a moved one)
+    // changes this table, so it is looked at instead of passing a clause it never met.
+    const byFile: Record<string, number> = {};
+    for (const c of calls) byFile[c.file] = (byFile[c.file] ?? 0) + 1;
+    expect(byFile).toEqual({
+      'agent/v2/steps/execute/tracker-floors.ts': 1,
+      'gateway/routes/tracker.ts': 3,
+      'tracker/schema.ts': 4,
+      'tracker/tools.ts': 4,
+    });
+  });
+
+  it('the floor writes a fixed title and no description, and links the served row', () => {
+    const code = stripComments(fs.readFileSync(path.join(SRC, 'agent/v2/steps/execute/tracker-floors.ts'), 'utf8'));
+    expect(code).not.toMatch(/lastUserMessageContent/);
+    const call = writerCalls().find((c) => c.file === 'agent/v2/steps/execute/tracker-floors.ts')!;
+    expect(call.args).toMatch(/title:\s*scaffoldName/);
+    expect(code).toMatch(/const scaffoldName = SCAFFOLD_TITLE;/);
+    expect(call.args).not.toMatch(/description\s*:/);
+    expect(call.args).toMatch(/sourceMessageId:\s*state\.lastUserMessageId/);
+  });
+
+  it('the PM rename handoff and the message-derived title are deleted, not orphaned', () => {
+    expect(fs.existsSync(path.join(SRC, 'agent/v2/steps/execute/scaffold-title.ts'))).toBe(false);
+    for (const f of productFiles(SRC)) {
+      const code = stripComments(fs.readFileSync(f, 'utf8'));
+      expect(code, path.relative(SRC, f)).not.toMatch(/deriveScaffoldTitle|dispatchPMRenameHandoff/);
+    }
   });
 });

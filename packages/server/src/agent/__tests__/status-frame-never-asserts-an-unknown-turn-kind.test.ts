@@ -60,7 +60,6 @@ vi.mock('../runtime.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { setAgentStatus } from '../agent-status.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
-import { dispatchPMRenameHandoff } from '../v2/steps/execute/scaffold-title.js';
 
 const AGENT = 'agent-t7';
 const SRC = path.join(__dirname, '..', '..');
@@ -222,29 +221,11 @@ describe('T7 — the status seam stops fabricating a turn kind', () => {
     expect(CHAT_TSX).toMatch(/e\.turnKind\s*\?\?\s*'user'/);
   });
 
-  // ── THE SIBLING: THE PM RENAME HANDOFF'S WIRE FRAME ─────────────────────────────────
-  it('RED: the PM rename broadcast carries the stored row\'s own truth, not a hand-built `role: user`', async () => {
-    await dispatchPMRenameHandoff({
-      callingAgentId: AGENT, taskId: 'task-1', taskTitle: 'Some interim slice',
-      originalPrompt: 'go and do the multi-step thing',
-    });
-    const row = mockDb.current!.prepare(
-      `SELECT id, role, lane, display_kind, origin_intent FROM messages WHERE origin_intent = 'pm_rename'`,
-    ).get() as { id: string; role: string; lane: string; display_kind: string; origin_intent: string };
-    expect(row, 'the handoff persists an events-lane engine row').toBeTruthy();
-    expect(row.lane).toBe('events');
-    expect(row.display_kind).toBe('engine-note');
-
-    const frame = frames.find((f) => f.type === 'chat:message') as
-      { message: { id: string; role: string; displayKind?: string | null } } | undefined;
-    expect(frame, 'the handoff broadcasts the row').toBeTruthy();
-    expect(frame!.message.id).toBe(row.id);
-    expect(frame!.message.role, 'the wire role is the row\'s role').toBe(row.role);
-    expect(
-      frame!.message.displayKind,
-      'the store knows this is engine traffic; the wire frame must say so too',
-    ).toBe(row.display_kind);
-  });
+  // ── THE SIBLING: THE PM RENAME HANDOFF'S WIRE FRAME — DELETED WITH ITS SUBJECT (t139) ──
+  // This clause drove `dispatchPMRenameHandoff` and held its broadcast to the stored row's own
+  // role/displayKind. t139 deleted the handoff (`agent/v2/steps/execute/scaffold-title.ts`): it
+  // asked the PM to name an engine-opened task from whatever message the turn served, which on
+  // the owner's box was a presence ping. No sender, no frame, nothing left to hold.
 
   // ── THE RIDER, MEASURED ─────────────────────────────────────────────────────────────
   it('rider: v1\'s heartbeat is dead code, so it is left alone — pinned so a revival must align it', () => {

@@ -46,8 +46,9 @@ vi.mock('../../../../../gateway/ws.js', () => ({
   broadcast: vi.fn(),
 }));
 
-// The PM rename handoff is fire-and-forget and wakes a real runtime. Stub the wake; the
-// ROW it writes (`origin_intent='pm_rename'`) is read below, so the handoff itself is real.
+// The PM rename handoff used to wake a real runtime; t139 deleted it. The wake stays stubbed
+// so a revived handoff could not reach a real runtime, and its ROW (`origin_intent='pm_rename'`)
+// is asserted ABSENT below.
 vi.mock('../../../../runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => undefined }),
 }));
@@ -278,7 +279,10 @@ describe('T1 — an answered, delivered turn clears its untracked-work debt', ()
     expect(scaffoldRows()[0].title.length).toBeGreaterThan(0);
   });
 
-  it('negative control: the engine note and the PM rename request carry BOTH counters and cannot contradict each other', async () => {
+  // t139: the PM rename request this clause also read is DELETED (it asked a model to name the
+  // work from whatever message the turn served). The note is now the one statement of why the
+  // floor fired, so the clause keeps its half; the absence of the handoff is asserted instead.
+  it('negative control: the engine note carries BOTH counters, and no PM rename request is sent', async () => {
     await runTurn(5002, { calls: 7, prompt: 'build me a comparison write-up', answered: true });
     const note = engineNote();
     expect(note, 'the floor fired, so it wrote its note').not.toBeNull();
@@ -287,12 +291,7 @@ describe('T1 — an answered, delivered turn clears its untracked-work debt', ()
     expect(note).toMatch(/this turn: 7/);
     expect(note).toMatch(/total untracked in this conversation: 7/);
 
-    const rename = pmRenameRequest();
-    expect(rename, 'the floor dispatched its PM rename handoff').not.toBeNull();
-    // `scaffold-title.ts` used to hardcode the prose "6+ work calls". A hardcoded number
-    // beside a printed counter is how the two strings contradicted each other.
-    expect(rename).not.toMatch(/6\+ work calls/);
-    expect(rename).toMatch(/7/);
+    expect(pmRenameRequest(), 'the PM rename handoff no longer exists').toBeNull();
   });
 
   // ── T53 (owner ruling 5): ONE MODEL-FACING CHANNEL ──────────────────────────────────

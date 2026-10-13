@@ -52,9 +52,9 @@ vi.mock('../../../../../gateway/ws.js', () => ({
   broadcast: (e: unknown) => { broadcasts.push(e); },
 }));
 
-// The PM rename handoff is fire-and-forget and wakes a real runtime. The WAKE is stubbed, but
-// its text is captured — the handoff shipping the raw prompt across a model boundary is one
-// of the four surfaces this clause covers — and the ROW it writes is read from the DB.
+// The PM rename handoff USED TO wake a real runtime with the raw prompt (one of the four
+// surfaces this file covered). t139 deleted it; the wake stays stubbed and CAPTURED so a revived
+// handoff is caught here (`pmWakes` must stay empty) instead of reaching a real runtime.
 const pmWakes: string[] = [];
 vi.mock('../../../../runtime.js', () => ({
   getAgentRuntime: () => ({
@@ -66,13 +66,13 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { openTurnContext, endTurnContext, type TurnContext } from '../../../../turn-context.js';
 import { untrackedWorkAcrossTurns } from '../../../../turn-state.js';
 import {
-  noteHandedCredentialValues, forgetHandedCredentialValues, redactedPlaceholderFor,
+  noteHandedCredentialValues, forgetHandedCredentialValues,
 } from '../../../../../credentials/secret-values.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import { nextSteer } from '../../../steer-queue.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import { countTrackerWorkThisIteration } from '../tracker-counting.js';
-import { runTrackerFloors } from '../tracker-floors.js';
+import { runTrackerFloors, SCAFFOLD_TITLE } from '../tracker-floors.js';
 import type { ExecuteContext } from '../index.js';
 
 const AGENT = 'agent-t118';
@@ -159,19 +159,18 @@ async function runFloorTurn(
 
 type ScaffoldRow = {
   id: string; title: string; description: string | null;
-  original_description: string | null; goal: string | null;
+  original_description: string | null; goal: string | null; source_message_id: string | null;
 };
 
 const scaffoldRows = (): ScaffoldRow[] =>
   db().prepare(
-    `SELECT id, title, description, original_description, goal FROM work
+    `SELECT id, title, description, original_description, goal, source_message_id FROM work
       WHERE root_kind = 'engine_scaffold' AND agent_id = ?`,
   ).all(AGENT) as ScaffoldRow[];
 
-/** THE HANDOFF IS FIRE-AND-FORGET (`void dispatchPMRenameHandoff`), so its row lands on a
- *  later microtask than the floor's return. Polled, not slept on and not assumed: an
- *  assertion that raced would be a clause that passes when the handoff never ran, which is
- *  the one thing this file exists to disprove. */
+/** THE HANDOFF WAS FIRE-AND-FORGET, so its row would land on a later microtask than the
+ *  floor's return. Polled, not assumed: since t139 the clauses assert it NEVER lands, and a
+ *  poll is what makes "never" mean "not within the window a real one took". */
 async function settledPmRename(): Promise<string | null> {
   for (let i = 0; i < 200; i++) {
     const r = pmRenameRequest();
@@ -270,13 +269,12 @@ describe('§1 the floor fires with a credential in the triggering message (descr
     expect(steer).toContain('The engine opened tracker task');
 
     const row = rows[0];
-    // THE LEAK, CLOSED. `description` was a byte-for-byte copy of the owner's message.
-    expect(row.description).not.toContain(FAKE_KEY);
-    expect(row.description).toContain(redactedPlaceholderFor(AGENT, FAKE_KEY));
-    // THE MARKER, NOT THE VALUE — and the rest of the sentence survives, so the row is still
-    // a usable description of the work and not a blanked-out field.
-    expect(row.description).toContain('Connect the billing provider');
-    expect(row.description).toContain("pull this month's invoices");
+    // THE LEAK, CLOSED — t139 closed it by construction. `description` was a byte-for-byte
+    // copy of the owner's message (t118 redacted it); since t139 the floor writes NO prose from
+    // the message at all: the row is LINKED to the message it served, and the task list shows
+    // that message's words through the link, so the work spine never holds a copy.
+    expect(row.description).toBeNull();
+    expect(row.source_message_id).toBe('msg-9001');
 
     // No sibling column took the value instead.
     expect(row.title).not.toContain(FAKE_KEY);
@@ -294,19 +292,17 @@ describe('§1 the floor fires with a credential in the triggering message (descr
     expect(sweepForValue(FAKE_KEY)).toEqual([]);
   });
 
-  it('the two MODEL-BOUNDARY surfaces are clean too: the PM rename handoff and the engine note', async () => {
+  it('the MODEL-BOUNDARY surfaces are clean too: no PM rename handoff exists, and the engine note', async () => {
     noteHandedCredentialValues(AGENT, [FAKE_KEY]);
     await runFloorTurn(9003, { calls: 6, prompt: PROMPT });
 
-    // The handoff embeds `originalPrompt.slice(0, 1500)` in a system-model prompt and wakes
-    // the PM with it. Both the persisted row and the wake text are checked, because they are
-    // two copies of one string and a fix that caught only one would be half a fix.
+    // The handoff embedded `originalPrompt.slice(0, 1500)` in a system-model prompt and woke
+    // the PM with it. t139 deleted it (it asked a model to name work from whatever the turn
+    // served — on a presence ping, nothing), so the boundary is clean by absence: no row and
+    // no wake. Polled, so a handoff that still ran on a later microtask is caught.
     const rename = await settledPmRename();
-    expect(rename, 'the floor dispatched its PM rename handoff').not.toBeNull();
-    expect(rename!).not.toContain(FAKE_KEY);
-    expect(rename!).toContain(redactedPlaceholderFor(AGENT, FAKE_KEY));
-    expect(pmWakes.length).toBeGreaterThan(0);
-    for (const w of pmWakes) expect(w).not.toContain(FAKE_KEY);
+    expect(rename, 'no PM rename handoff is dispatched any more').toBeNull();
+    expect(pmWakes).toEqual([]);
 
     const note = engineNote();
     expect(note).not.toBeNull();
@@ -335,20 +331,16 @@ describe('§2 a credential early in the message cannot reach the row TITLE', () 
     expect(rows.length).toBe(1);
     const row = rows[0];
 
-    // The title is derived from the first line within ~50 chars, so with the value at char 4
-    // the placeholder is what lands there. This is the assertion the task names explicitly:
-    // the scaffolded row's description AND title carry the redaction marker, not the value.
-    expect(row.title).not.toContain(FAKE_SECOND);
-    expect(row.title).toContain(redactedPlaceholderFor(AGENT, FAKE_SECOND));
-    expect(row.description).not.toContain(FAKE_SECOND);
-    expect(row.description).toContain(redactedPlaceholderFor(AGENT, FAKE_SECOND));
+    // The title used to be derived from the first line within ~50 chars, so with the value at
+    // char 4 the placeholder is what landed there. t139: the title is the floor's fixed label
+    // and the description is empty — nothing from the message is written to the row at all.
+    expect(row.title).toBe(SCAFFOLD_TITLE);
+    expect(row.description).toBeNull();
 
     expect(steer).toContain('The engine opened tracker task');
     expect(sweepForValue(FAKE_SECOND)).toEqual([]);
     expect(JSON.stringify(broadcasts)).not.toContain(FAKE_SECOND);
-    const rename2 = await settledPmRename();
-    expect(rename2, 'the floor dispatched its PM rename handoff').not.toBeNull();
-    expect(rename2!).not.toContain(FAKE_SECOND);
+    expect(await settledPmRename(), 'no PM rename handoff is dispatched any more').toBeNull();
   });
 
   it('TWO handled values in one message are both replaced (the longest-first ordering holds)', async () => {
@@ -364,33 +356,38 @@ describe('§2 a credential early in the message cannot reach the row TITLE', () 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — WHAT THE FIX MAY NOT COST. A redaction that returns a different string when there is
-//      nothing to redact would move assembled prompt bytes (G2) and would rewrite every
-//      ordinary scaffold title on the kanban. The redactor documents returning its input BY
-//      REFERENCE on a miss; this is that promise, driven through the floor.
+// §3 — WHAT THE FIX MAY NOT COST. This section pinned the pre-redaction title/description so
+//      t118's redactor could not move them on an ordinary turn. t139 removed the message from
+//      the row altogether (see the clauses), so what it pins now is the row's new shape.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§3 the ordinary turn is byte-identical', () => {
+describe('§3 the ordinary turn: the row is linked, never described from the message', () => {
   const ORDINARY = 'Go through my inbox and put together a list of everything that needs a reply today.';
 
-  it('an agent that has handled NO credential gets exactly the title and description it did before', async () => {
+  // t139 CHANGED THIS SECTION'S SUBJECT, deliberately. It pinned the pre-t118 title and
+  // description ('Go through my inbox and put together a list of' / the message verbatim)
+  // so a redaction could not move them. Since t139 the floor writes neither from the message:
+  // the title is its fixed label, the description is empty, and the row is LINKED to the
+  // message it served — the task list shows the words through that link.
+  it('an ordinary turn\'s row carries the fixed label, no description, and the link to its message', async () => {
     await runFloorTurn(9006, { calls: 6, prompt: ORDINARY });
 
     const rows = scaffoldRows();
     expect(rows.length).toBe(1);
-    // The pre-fix values, written out rather than recomputed, so a change to either
-    // derivation has to be looked at by a person instead of tracking itself.
-    expect(rows[0].title).toBe('Go through my inbox and put together a list of');
-    expect(rows[0].description).toBe(ORDINARY);
+    expect(rows[0].title).toBe(SCAFFOLD_TITLE);
+    expect(rows[0].title).toBe('Multi-step task');   // written out: a change has to be looked at
+    expect(rows[0].description).toBeNull();
+    expect(rows[0].source_message_id).toBe('msg-9006');
   });
 
-  it('a credential handled by a DIFFERENT agent does not rewrite this agent\'s row', async () => {
+  it('a credential handled by a DIFFERENT agent changes nothing about the row', async () => {
     noteHandedCredentialValues('some-other-agent', [FAKE_KEY]);
     await runFloorTurn(9007, { calls: 6, prompt: ORDINARY });
 
     const rows = scaffoldRows();
     expect(rows.length).toBe(1);
-    expect(rows[0].description).toBe(ORDINARY);
+    expect(rows[0].title).toBe(SCAFFOLD_TITLE);
+    expect(rows[0].description).toBeNull();
   });
 });
 

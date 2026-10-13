@@ -11,7 +11,6 @@
 // ════════════════════════════════════════
 
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
-import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { clearUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns } from '../../../turn-state.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND } from '../../../../work/tracker-view.js';
 import { persistEngineSteer } from '../../engine-steer.js';
@@ -23,8 +22,21 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
-import { deriveScaffoldTitle, dispatchPMRenameHandoff } from './scaffold-title.js';
 import type { ExecuteContext } from './index.js';
+
+/**
+ * t139 (#7 C1) — THE FLOOR'S TITLE IS A FIXED LABEL, NEVER THE TURN'S MESSAGE.
+ *
+ * The floor used to title (and describe) the row it opens from `state.lastUserMessageContent`
+ * — whatever text the turn happened to be serving — and then hand that text to the PM to
+ * "give it a proper name". On the owner's box a "You there?" turn that went on to make nine
+ * untracked calls became a task titled "You there", which the PM was then asked to dress up as
+ * a real piece of work. The floor cannot know what work was asked for; only the request can say.
+ * So the row carries no words of its own: it is LINKED to the row the turn served
+ * (`source_message_id`), and the task list shows that row's words, dated and labelled with its
+ * conversation (`memory/work-board-lane.ts`). This is the floor's own pre-existing fallback name.
+ */
+export const SCAFFOLD_TITLE = 'Multi-step task';
 
 export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContext): Promise<AgentTurnState> {
   const {
@@ -135,7 +147,9 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       // work (zero in_progress tasks) reaches the engine floor here.
       !hasAnyInProgressTask &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
-      state.lastUserMessageContent &&
+      // t139: the floor opens a row only for a turn that serves a REQUEST it can link to. With
+      // no served row there is nothing to link, and the floor refuses to invent one.
+      state.lastUserMessageId &&
       !isPMAgent(agentId) &&
       // P2b: the Dreamer's batch turns make dozens of vault_remember work
       // calls, so this >=6 floor fired EVERY batch and auto-created a tracker
@@ -152,32 +166,13 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       // work is tracked on the weakest model regardless of what it chooses.
       try {
         const { openTrackerTask } = await import('../../../../work/tracker-store.js');
-        // F12.5: cleaned interim name (strip filler, word-boundary truncate,
-        // capitalize) instead of a mangled raw slice. Capture the prompt now (narrowed to
-        // string by the enclosing guard) so the rename dispatch below still has it after
-        // the state reassignments that follow.
-        //
-        // ── t118 — THE SCAFFOLD PROMPT IS REDACTED AT ITS SOURCE, NOT AT ITS SINKS ──
-        // This capture was the owner's RAW inbound message, and FOUR surfaces derive from
-        // it on the lines below: the row's `description` (the `.slice(0, 2000)` persisted in
-        // the clear in an unencrypted column), the row's `title` via `deriveScaffoldTitle`
-        // (broadcast to the dashboard AND handed to the PM), the engine note, and the PM
-        // rename handoff, which ships `originalPrompt` across a model boundary. A draw that
-        // crossed this floor with a credential in the triggering message put that credential
-        // at rest in `work.description` in plaintext — the credential subsystems behaved
-        // exactly as designed and the leak was into the work spine.
-        //
-        // REDACTED HERE, ONCE, BECAUSE THIS IS THE ONE PLACE ALL FOUR SURFACES SHARE. The
-        // alternative — a redact call at each sink — is how this defect survived from
-        // 2026-05-08: the helper has been one import away from this line since the day the
-        // line was written, and nothing noticed because nothing drove the floor with a
-        // registered credential. A sink-side fix would leave the next sink to be forgotten.
-        // `redactHandedCredentials` is the tree's ONE redactor (its own doc says so, and the
-        // 15+ other persist/broadcast seams use it); it returns the input BY REFERENCE when
-        // the agent has handled nothing, so the ordinary turn pays one map lookup and the
-        // assembled bytes cannot move (G2).
-        const scaffoldPrompt: string = redactHandedCredentials(agentId, state.lastUserMessageContent);
-        const scaffoldName = deriveScaffoldTitle(scaffoldPrompt) || 'Multi-step task';
+        // t118's redaction of the scaffold prompt is GONE WITH THE PROMPT: the floor no longer
+        // captures the turn's message text at all, so none of the four surfaces t118 named (the
+        // row's title and description, the engine note, the PM rename handoff) can carry it.
+        // requirement preserved: no handed credential reaches the work spine from this floor —
+        // now by construction, since nothing from the message is written here
+        // (`the-scaffold-floor-never-persists-a-credential.test.ts`).
+        const scaffoldName = SCAFFOLD_TITLE;
         // ── ONE TASK, NOT A PROJECT-AND-A-TASK (PHASE-2 T8c item 3, DECIDED D4) ──
         // The floor used to call `createProject`, which opened a project row, a first
         // task under it, and — because the project's description carried a prose
@@ -190,7 +185,6 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // could truncate away.
         const scaffoldTaskId = openTrackerTask({
           title: scaffoldName,
-          description: scaffoldPrompt.slice(0, 2000),
           assignedTo: agentId,
           createdBy: agentId,
           status: 'in_progress',
@@ -274,20 +268,10 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           // says it is on it mid-work, in its own words.
           turnCtx.startAckSteerRequested = true;
         }
-        // F12.5: the interim name is a cleaned slice of the prompt, so the PM gives it
-        // a proper one. ONE row to rename now, not a project and a task, so the handoff
-        // asks for one title instead of two distinct ones.
-        void dispatchPMRenameHandoff({
-          callingAgentId: agentId,
-          taskId: scaffoldTaskId,
-          taskTitle: scaffoldName,
-          originalPrompt: scaffoldPrompt,
-          // UX-REPAIR T1: the same two numbers the note carries, so the handoff and the
-          // note can never state different reasons for the same firing again.
-          untrackedInConversation: effectiveUntracked,
-          untrackedThisTurn: state.nonTrackerToolCalls,
-          floor: TRACKER_AUTO_SCAFFOLD_AT,
-        });
+        // t139: the PM RENAME HANDOFF IS GONE. It shipped the turn's message to the PM and asked
+        // for "a short 3-6 word name" describing "the WHOLE effort the user asked for" — a model
+        // inventing a description of work from whatever the turn served, which on a presence
+        // ping is nothing. What was asked is now on the task list verbatim, through the link.
       } catch (err) {
         logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
           agentId, err: err instanceof Error ? err.message : String(err),

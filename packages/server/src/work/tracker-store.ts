@@ -109,9 +109,10 @@ const requesterOf = (createdBy: string): string => (createdBy === 'user' ? 'owne
 // t118 — THE WORK SPINE'S TEXT COLUMNS ARE REDACTED AT THE DOOR
 //
 // WHY HERE AND NOT AT THE CALLERS. The tracker-scaffold leak was one caller holding a raw
-// owner message, and it is fixed at its own source (`tracker-floors.ts`), because that path
-// has sinks this door cannot see (a dashboard broadcast and the PM rename handoff, neither
-// of which is a column). But the census that fix demanded found the SAME SHAPE in eight more
+// owner message, and it was fixed at its own source (`tracker-floors.ts`), because that path
+// had sinks this door cannot see (a dashboard broadcast and the PM rename handoff, neither
+// of which is a column). t139 removed the message from that floor altogether — it writes no
+// prose from the turn's message and the handoff is deleted. But the census that fix demanded found the SAME SHAPE in eight more
 // writers into the same four columns — the A2A ASSIGN payload becoming a task's
 // title/description/goal (`tracker/schema.ts`), model-authored tool arguments on create and
 // edit, an apprentice's completion summary (`agent/spawner.ts`), engine-rendered delivery
