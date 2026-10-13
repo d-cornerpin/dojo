@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 describe('t140 — the manual summary routes never pass a summary off as a placeholder note', () => {
-  it.fails('an injected memory that begins with the reserved head is refused, so no replacement can delete it as an empty note', async () => {
+  it('an injected memory that begins with the reserved head is refused, so no replacement can delete it as an empty note', async () => {
     const res = await call('POST', `/${AGENT}/inject`, { content: `${UNCONDENSED_PLACEHOLDER_HEAD} remember: the vault key is in the blue binder.` });
     expect(res.status).toBe(400);
     expect(summaryContents()).toEqual([]);
@@ -92,7 +92,7 @@ describe('t140 — the manual summary routes never pass a summary off as a place
     expect(writer.calls).toBe(0);
   });
 
-  it.fails('an edit that keeps the reserved head is refused, so the replacement can never overwrite the owner\'s words', async () => {
+  it('an edit that keeps the reserved head is refused, so the replacement can never overwrite the owner\'s words', async () => {
     const last = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
     expect(writeUncondensedPlaceholders(AGENT, last - 2)).toBeGreaterThan(0);
     const id = (db().prepare('SELECT id FROM summaries WHERE agent_id = ?').get(AGENT) as { id: string }).id;

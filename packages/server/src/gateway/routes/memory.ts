@@ -13,6 +13,13 @@ import {
   deleteSummary,
 } from '../../memory/dag.js';
 import { checkAndCompact } from '../../memory/compaction.js';
+import { isUncondensedPlaceholder, UNCONDENSED_PLACEHOLDER_HEAD } from '../../memory/uncondensed-head.js';
+
+// t140: a summary whose text starts with this head IS a not-yet-condensed note to the engine, which
+// replaces notes with model summaries (and drops ones with no rows). A hand-written summary may not
+// borrow it, or the owner's own words would be overwritten or deleted. (An injected memory links no
+// rows, so it never shares a row with a note; an edit that drops the head makes a note a real summary.)
+const RESERVED_HEAD_ERROR = `A summary may not begin with "${UNCONDENSED_PLACEHOLDER_HEAD}": that heading marks the engine's own not-yet-condensed notes.`;
 import { getContextWindow } from '../../agent/model.js';
 import {
   generateBriefing,
@@ -160,6 +167,7 @@ memoryRouter.put('/:agentId/summary/:summaryId', async (c) => {
     if (!body.content || typeof body.content !== 'string') {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
+    if (isUncondensedPlaceholder(body.content.trimStart())) return c.json({ ok: false, error: RESERVED_HEAD_ERROR }, 400);
 
     const summary = getSummary(summaryId);
     if (!summary) {
@@ -215,6 +223,7 @@ memoryRouter.post('/:agentId/inject', async (c) => {
     if (!body.content || typeof body.content !== 'string') {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
+    if (isUncondensedPlaceholder(body.content.trimStart())) return c.json({ ok: false, error: RESERVED_HEAD_ERROR }, 400);
 
     const now = new Date().toISOString();
     const tokenCount = estimateTokens(body.content);
