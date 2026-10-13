@@ -7808,6 +7808,34 @@
       "to": 1165,
       "by": "t138 round 4 (2026-10-13), orchestrator ruling 3: notice the clearing when it actually happens",
       "why": "+2: one import and one call. The Healer's self-watchdog already looks at the Healer's own row every five minutes; the call hands that observation to healer/owner-notices.ts, which ends the owner's 'Healer is missing' card (and re-arms its text) when the row is present, and 'Healer is broken' when it is not in error, and broadcasts the card's removal. Before it, those conditions were seen to end only at the NEXT injury of some other agent, so a Healer restored on a quiet box left a stale card and a dead latch (witnessed RED). REFUSED: a new timer for the re-check (ruling 3: no new timer when an existing clock fits; this one is the Healer's own) and moving the observation into owner-notices.ts (it would need a second reader of the Healer's row on a second clock). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 391,
+      "to": 520,
+      "by": "t140 — condense only when needed (#13; decision #16 reversed; OR-COMPACT-1 kept)",
+      "why": "391 -> 520 (+129: 69 code, 50 comment, 10 blank). The condense trigger that REPLACES the deleted row-gap drain (compaction.ts -156 net in the same lane) lives here because this module is the single owner of the number it needs: rowsLeavingView answers which rows are about to leave the live view (the ceiling's next cut, one trim block ahead of it, or the token trim's front half when the caller measured the view full) and clamps at the row floor and at a tool pair. ceilingSkipRows and maxTrimUnits are the ceiling's cut and the trim's half-bound lifted out of freshTailHorizon and groupsToDropForBudget so the cut, the trim AND the trigger read one function each (the t140 census pins each at exactly three call sites). THE 50 COMMENT LINES state the ruling (OR-V333-SET (1)), why the trigger leads the ceiling by one block, and why the ceiling multiple's old rationale (the 30-row drain kept a healthy agent at cap+30) no longer holds. A NEW module was not available: t140's fence names this file and no new product module."
+    },
+    {
+      "path": "packages/server/src/memory/assembly-validation.ts",
+      "from": 624,
+      "to": 703,
+      "by": "t140 — condense only when needed (#13; decision #16 reversed; OR-COMPACT-1 kept)",
+      "why": "624 -> 703 (+79: 51 code, 25 comment, 3 blank). The boundary repair may no longer drop lane.fresh-tail (the live conversation): it refuses with code LIVE_CONVERSATION_PROTECTED instead of shipping a call without the conversation (#13's flat-45K run), and refuseAndCondense writes the durable sink record, the named log line, and starts a forced condense against the dialed window so the refusal is a repairable defect with the repair under way (OR-COMPACT-1), never a dead end. Also toolsSent: a tools:false dial (the summariser) is no longer charged the agent's tool payload, which on a 16K window was the entire budget ('33 tokens against 0'). The code lines are the AssemblyRefusalCode type and field, the droppable filter, the named refusal, the catch at the boundary and the 30-line sink+log+condense function; the comment lines say why the rung is gone and what replaces it."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3942,
+      "to": 3994,
+      "by": "t140 — condense only when needed (#13; decision #16 reversed; OR-COMPACT-1 kept)",
+      "why": "3942 -> 3994 (+52: 28 code, 19 comment, 5 blank). Window resolution only (t140's fence in this file): getContextWindow('__auto__'|'auto') answered a 200K stand-in for every auto-routed turn; it now answers the largest effective window among the enabled routed picks (routedContextWindow, ROUTED_TIERS, isAutoRouteSentinel), and a stored context_window of 0 reads as the one named DEFAULT_CONTEXT_WINDOW (declaredContextWindow) instead of a window of nothing. The boundary call passes toolsSent. The 19 comment lines are one block stating both defects and why LARGEST (reassemble-for-fit sizes down to the actual pick, never up). The t140 prose was already condensed once in-lane (73 -> 52) before this raise."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 197,
+      "to": 216,
+      "by": "t140 — condense only when needed (#13; decision #16 reversed; OR-COMPACT-1 kept)",
+      "why": "197 -> 216 (+19: 4 code, 13 comment, 2 blank). The 49-line v2.5.11 row-gap drain was DELETED and its fire-and-forget body replaced, nearly line for line, by the leaving-view condense (net +4 code: the dialed-window resolution for a locked auto-routed tool loop, and the per-agent remembered system-prompt size the view-full check needs on a turn's first gate). The +13 comment lines are the STRIP record of the drain (what it did, why it was wrong after t94, which requirement moved where) and the owner's ruling it implements."
     }
   ],
   "maxNewFileLines": 400,
@@ -7872,7 +7900,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3942,
+    "packages/server/src/agent/model.ts": 3994,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -7961,7 +7989,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 216,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8015,10 +8043,10 @@
     "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2856,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
-    "packages/server/src/memory/assembly-validation.ts": 624,
+    "packages/server/src/memory/assembly-validation.ts": 703,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1650,
+    "packages/server/src/memory/compaction.ts": 1494,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
@@ -8036,7 +8064,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
-    "packages/server/src/memory/tail-horizon.ts": 391,
+    "packages/server/src/memory/tail-horizon.ts": 520,
     "packages/server/src/memory/work-board-lane.ts": 779,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
