@@ -83,7 +83,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
 import { reassembleForFitIfNeeded } from '../reassemble-for-fit.js';
 import { callModel, getContextWindow } from '../../../../model.js';
-import { __resetAssemblyValidationCounters } from '../../../../../memory/assembly-validation.js';
+import { __resetAssemblyValidationCounters, AssemblyValidationError } from '../../../../../memory/assembly-validation.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 import { SystemPromptTooLargeError } from '../../../../../memory/budget.js';
 
@@ -106,6 +106,10 @@ const REPLY = 'Counted another stack on the north dock; the running total is wri
  *  fallback pick or a mis-set override can still name it). */
 const TINY = 'm-too-small';
 const TINY_WINDOW = 8_192;
+/** A roomy model the router never picks: an array assembled for it is the shape of a stale
+ *  array reaching a smaller pick's boundary unchanged — the backstop case. */
+const ROOMY = 'm-roomy-unrouted';
+const ROOMY_WINDOW = 200_000;
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -121,6 +125,7 @@ function seedRoutedBox(): void {
   model.run(HEAVY, 'Routed Heavy', HEAVY_WINDOW);
   model.run(LIGHT, 'Routed Light', LIGHT_WINDOW);
   model.run(TINY, 'Too Small', TINY_WINDOW);
+  model.run(ROOMY, 'Roomy, Unrouted', ROOMY_WINDOW);
   const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
   tier.run('heavy', HEAVY);
   tier.run('standard', HEAVY);
@@ -217,5 +222,42 @@ describe('t140 W1 — a routed pick below the 200K stand-in still receives the l
       assemblyTurnContext: undefined as unknown as PromptTurnContext,
     })).rejects.toBeInstanceOf(SystemPromptTooLargeError);
     expect(provider.requests.length).toBe(0);
+  });
+});
+
+describe('t140 — the provider boundary never ships an assembly without the live conversation', () => {
+  /** Rows a summary now covers, polled because the condense the boundary starts runs in the
+   *  background (it calls a model, and a dial must not wait on it). */
+  async function summarisedRows(minimum: number): Promise<number> {
+    for (let i = 0; i < 400; i++) {
+      const n = (db().prepare(
+        'SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?',
+      ).get(AGENT) as { n: number }).n;
+      if (n >= minimum) return n;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return 0;
+  }
+
+  it.fails('RED at 00a2b34d: an array too big for the dialed window is lane-repaired down to no conversation and SENT', async () => {
+    seedConversation(250);
+    // Assembled for a 200K model, dialed on the 32K heavy pick with no re-assembly in between:
+    // the boundary is the only thing left between this array and the provider.
+    const assembled = await assembleContext(AGENT, ROOMY);
+    const before = provider.requests.length;
+    let thrown: unknown = null;
+    try {
+      await callModel({ agentId: AGENT, modelId: HEAVY, messages: assembled.messages as never, systemPrompt: assembled.systemPrompt, tools: true });
+    } catch (e) { thrown = e; }
+
+    // FAIL LOUD, BY NAME. A repair that would need the live conversation is not a repair.
+    expect(thrown, 'the dial must refuse rather than send').toBeInstanceOf(AssemblyValidationError);
+    expect((thrown as AssemblyValidationError).code).toBe('LIVE_CONVERSATION_PROTECTED');
+    // NOTHING WAS SHIPPED WITHOUT IT: the turn's dial never reached the provider.
+    const turnRequests = provider.requests.slice(before).filter((r) => shown(r).includes('Dock Counter') || shown(r).includes('Runtime Information'));
+    expect(turnRequests.length).toBe(0);
+    // NO DEAD END (OR-COMPACT-1): the refusal starts condensing against the dialed window, so
+    // the next assembly is smaller. Rows outside the 32K pick's live floor get a summary.
+    expect(await summarisedRows(1)).toBeGreaterThan(0);
   });
 });
