@@ -8053,6 +8053,13 @@
       "to": 2024,
       "by": "t146 (2026-10-13) — the send tools carry the optional task_id",
       "why": "+4 (2020 -> 2024): one import and one `task_id: TOLD_ABOUT_TASK_PROPERTY,` line in each of gmail_send, gmail_reply and gmail_forward (the user_ twins copy the base schema). From 2024 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/safe-senders.ts",
+      "from": 0,
+      "to": 256,
+      "by": "t146 (2026-10-13) — the safe-sender records move out of the iMessage bridge with the one owner rule",
+      "why": "New file at 256, pinned decrease-only (growth detector: crossed 60% of the new-file cap). 196 of its lines are the safe-sender section moved BYTE-FOR-BYTE out of services/imessage-bridge.ts (proved by a containment check against 4cb9ed61's bytes; the bridge's pin drops 2322 -> 2142 in the same series), plus a 16-line header and the owner rule (ownerIMessageRecord, isOwnerIMessageRecipient, the stored-records read). It exists because the told record (work/validation-drive.ts) could not import the bridge without a cycle and so kept its own owner parse, which disagreed with the bridge. REFUSED: leaving the parse in the bridge with a second minimal copy beside the rule (two parsers of one record is the defect being removed). From 256 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8315,6 +8322,7 @@
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
+    "packages/server/src/services/safe-senders.ts": 256,
     "packages/server/src/services/teams-watcher.ts": 464,
     "packages/server/src/services/transcription.ts": 447,
     "packages/server/src/services/tunnel.ts": 730,
