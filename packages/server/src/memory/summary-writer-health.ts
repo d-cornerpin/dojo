@@ -16,8 +16,8 @@
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
 // no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
 // are that order without broken or not-answering ones; when none is left, nothing is dialled and
-// placeholder notes stay, labelled. A call the OWNER stopped, or set aside for the turn's fold, is
-// not the writer's failure.
+// placeholder notes stay, labelled. A call the OWNER stopped, or cut by the turn's patience, is not
+// the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -32,10 +32,8 @@ export const FOLD_STOPPED_BY_OWNER = 'fold-stopped-by-owner';
  *  declared patience, see `out-of-view-fold.ts`). Not a failure — no card — but the turn will not
  *  wait on that writer again until it answers (`noteDidNotAnswerInTurn`). */
 export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
-/** Round 4: a routine background fold was set aside so the turn's own fold could run. */
-export const FOLD_PREEMPTED = 'fold-preempted-by-the-turn';
 /** Abort reasons that say nothing about the writer. */
-const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT, FOLD_PREEMPTED]);
+const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
 
 /** Providers whose writer has not answered since it last failed or ran past a turn's patience. */
 /** Providers not answering: the moment (an ordinal) they failed, and the Settings writer then. */
@@ -65,7 +63,7 @@ function providerKey(modelId: string): string {
   }
 }
 
-/** Does this abort say anything about the writer? (No for Stop, the in-turn clock, a preemption.) */
+/** Does this abort say anything about the writer? (No for Stop or the turn's patience.) */
 export function abortBlamesWriter(signal?: AbortSignal): boolean {
   return !(signal?.aborted && NOT_THE_WRITERS_FAILURE.has(signal.reason));
 }

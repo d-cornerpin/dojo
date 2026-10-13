@@ -38,7 +38,7 @@ import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
-import { replacePlaceholdersInBackground, registerBackgroundCompaction, releaseBackgroundCompaction } from '../../../../memory/uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground } from '../../../../memory/uncondensed-placeholder.js';
 import { noteAPersonSpoke } from '../../../../memory/summary-writer-health.js';
 import { turnPatienceMs } from '../../../../memory/turn-patience.js';
 
@@ -232,8 +232,6 @@ function condenseLeavingInBackground(args: {
   const { agentId, writerModelId, dialedModelId, contextWindow, leaving } = args;
   if (backgroundDrains.has(agentId)) return false;
   backgroundDrains.add(agentId);
-  const condenseAbort = new AbortController();
-  registerBackgroundCompaction(agentId, condenseAbort);   // the turn's out-of-view fold may set it aside
   logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
     agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
     dialedModelId, contextWindow,
@@ -241,7 +239,6 @@ function condenseLeavingInBackground(args: {
   checkAndCompact(agentId, writerModelId, contextWindow, {
     leaving,
     dialedModelId,
-    abortSignal: condenseAbort.signal,
     inTheBackground: true,
   })
     .then((result) => {
@@ -255,7 +252,6 @@ function condenseLeavingInBackground(args: {
       }, agentId);
     })
     .finally(() => {
-      releaseBackgroundCompaction(agentId, condenseAbort);
       backgroundDrains.delete(agentId);
     });
   return true;

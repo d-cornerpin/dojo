@@ -39,7 +39,7 @@ import { createLogger } from '../logger.js';
 import { leavingViewPass } from './compaction.js';
 import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
 import { turnPatienceMs } from './turn-patience.js';
-import { owedThrough, preemptBackgroundCompaction, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
+import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
 
@@ -104,11 +104,11 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
 
 /**
  * Fold what is owed through `throughSeq` within the turn's patience, and cover the rest with
- * placeholders — UNDER the compaction lock when the turn gets it (round 4, re-review 3 F1). A routine
- * background compaction is set aside first. Round 6 (final review I2, R-V333-15): A TURN NEVER WAITS
- * ON ANOTHER COMPACTION'S LOCK. If anyone holds it — a manual or recovery compaction, or background
- * work that has not stepped out yet — the rows are labelled by placeholder notes now, beside the
- * lock, and the real fold happens after, in the background. That is safe because a real summary
+ * placeholders — UNDER the compaction lock when the turn gets it (round 4, re-review 3 F1). Round 6
+ * (final review I2, R-V333-15): A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK, and round 7 (I2'):
+ * it never cancels one either. If anyone holds it — a manual or recovery compaction, or a background
+ * fold or replacement still running — that job is left alone, the rows are labelled by placeholder
+ * notes now, beside the lock, and the real fold happens after (the running job's own summaries land). That is safe because a real summary
  * landing later takes its rows out of the note (`uncondensed-head.ts`).
  */
 async function foldOutOfView(agentId: string, contextWindow: number, throughSeq: number, budget: TurnBudget): Promise<void> {
@@ -116,7 +116,6 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
   let failedWriter: string | null = null;
   let noWriter = false;
   let covered = 0;
-  preemptBackgroundCompaction(agentId);
   try {
     const ran = await withLock(`compact:${agentId}`, async () => {
       while (!bound.signal.aborted) {

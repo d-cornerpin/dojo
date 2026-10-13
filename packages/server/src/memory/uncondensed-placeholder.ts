@@ -33,7 +33,7 @@ import { generateSummary } from './summarize.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
-import { abortBlamesWriter, eligibleSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
+import { abortBlamesWriter, eligibleSummaryWriters } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
 import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
@@ -146,22 +146,10 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   return replaced;
 }
 
-// ── Round 4 (re-review 3 F1): ROUTINE BACKGROUND COMPACTIONS ARE PREEMPTIBLE BY THE TURN ─────────
-// The gate's background pressure fold and this replacement register their abort here. When the turn's
-// own out-of-view fold needs the compaction lock, it sets them aside (reason `FOLD_PREEMPTED`, never a
-// writer failure) so it can write its summaries — or its placeholders — UNDER the lock in time.
-const backgroundCompactions = new Map<string, AbortController>();
-export function registerBackgroundCompaction(agentId: string, ctl: AbortController): void { backgroundCompactions.set(agentId, ctl); }
-export function releaseBackgroundCompaction(agentId: string, ctl: AbortController): void {
-  if (backgroundCompactions.get(agentId) === ctl) backgroundCompactions.delete(agentId);
-}
-export function preemptBackgroundCompaction(agentId: string): boolean {
-  const ctl = backgroundCompactions.get(agentId);
-  if (!ctl || ctl.signal.aborted) return false;
-  ctl.abort(FOLD_PREEMPTED);
-  logger.info('A routine background compaction was set aside for this turn\'s out-of-view fold', {}, agentId);
-  return true;
-}
+// STRIP (t140 round 7, re-review I2'): the registry of preemptible background compactions (round 4)
+// and `preemptBackgroundCompaction`. A turn never waits on another compaction's lock (round 6), so
+// setting a background job aside only threw its working summary away and labelled anyway. A running
+// background summary is left alone; its real summaries land and take their rows out of any note.
 
 /** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
  *  one-in-flight slot), only when a placeholder exists and some writer is answering. */
@@ -173,11 +161,10 @@ export function replacePlaceholdersInBackground(agentId: string): boolean {
     return false;   // a read that failed starts nothing; the gate never fails a turn over this
   }
   backgroundDrains.add(agentId);
-  const ctl = new AbortController();
-  registerBackgroundCompaction(agentId, ctl);
-  // Round 5: no clock of its own — a writer slower than the turn's patience finishes here.
-  replaceUncondensedPlaceholders(agentId, { abortSignal: ctl.signal })
+  // Round 5: no clock of its own — a writer slower than the turn's patience finishes here. Round 7:
+  // no turn sets it aside either (a turn that will not wait labels beside it instead).
+  replaceUncondensedPlaceholders(agentId)
     .catch((err) => logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId))
-    .finally(() => { releaseBackgroundCompaction(agentId, ctl); backgroundDrains.delete(agentId); });
+    .finally(() => { backgroundDrains.delete(agentId); });
   return true;
 }

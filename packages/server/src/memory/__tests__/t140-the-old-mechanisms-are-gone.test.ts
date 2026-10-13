@@ -272,3 +272,12 @@ describe('t140 census, round 7 — the change signals that re-arm a failed write
     expect(health, 'no global clear of the writers left').not.toMatch(/notAnsweringSince\.clear\(\);\s*logger/);
   });
 });
+
+describe('t140 census, round 7 — no turn cancels a background summary', () => {
+  it('the preemptible-compaction registry and its abort reason are gone from shipped code; the gate\'s background fold carries no abort', () => {
+    expect(filesWith(/\b(preemptBackgroundCompaction|registerBackgroundCompaction|releaseBackgroundCompaction|FOLD_PREEMPTED)\b/)).toEqual([]);
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
+    const launch = gate.slice(gate.indexOf('function condenseLeavingInBackground('));
+    expect(launch.slice(0, launch.indexOf('\n}\n'))).not.toMatch(/AbortController|abortSignal/);
+  });
+});

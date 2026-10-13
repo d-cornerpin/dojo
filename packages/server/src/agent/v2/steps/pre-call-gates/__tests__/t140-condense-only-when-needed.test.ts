@@ -399,18 +399,23 @@ describe('t140 round 3 — the gate replaces placeholder notes once a writer is 
   });
 });
 
-describe('t140 round 4 — the gate\'s background fold can be set aside by the turn\'s own fold', () => {
-  it('a routine fold the gate started is registered as preemptible, and setting it aside ends it promptly', async () => {
-    // The summariser hangs until its call is aborted — the slow background fold of re-review 3 F1.
-    generateSummarySpy.mockImplementation((args: { abortSignal?: AbortSignal }) => new Promise((resolve) => {
-      const done = () => resolve({ ok: false, reason: 'aborted' });
-      if (args.abortSignal?.aborted) done(); else args.abortSignal?.addEventListener('abort', done, { once: true });
-    }));
+describe('t140 round 4, re-aimed round 7 — the gate\'s background fold runs to its end; no turn cancels it', () => {
+  // Round 4 made this fold preemptible by the turn's own fold; round 7 (re-review I2') removed that:
+  // setting it aside threw a working summary away and the turn labelled anyway. The fold's calls carry
+  // no abort a turn could pull, and a slow writer's summary lands.
+  it('a routine fold the gate started is handed no turn-owned abort, and its slow writer\'s summary lands', async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    generateSummarySpy.mockImplementation(async (args: { abortSignal?: AbortSignal }) => {
+      seen.push(args.abortSignal);
+      await new Promise((r) => setTimeout(r, 50));
+      return { ok: true, content: 'The dock opens at nine; the crane is booked.' };
+    });
     seedBusyHistory(610);   // the ceiling cause: the gate starts a background fold
     await runPreCallGates(freshState(), makeCtx());
     expect(backgroundDrains.has(AGENT), 'precondition: a background fold is running').toBe(true);
-    const { preemptBackgroundCompaction } = await import('../../../../../memory/uncondensed-placeholder.js');
-    expect(preemptBackgroundCompaction(AGENT), 'the gate registered it as preemptible').toBe(true);
     await settle();
+    expect(seen.length, 'the fold dialled its writer').toBeGreaterThan(0);
+    expect(seen.every((sig) => sig === undefined), 'no abort a turn could pull').toBe(true);
+    expect(backgroundDrains.has(AGENT), 'it ran to its end').toBe(false);
   });
 });

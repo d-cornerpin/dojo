@@ -564,19 +564,17 @@ describe('t140 round 4 — R-V333-12: the fallback never widens who sees the con
   }, 5_000);
 });
 
-describe('t140 round 4 — F1: the turn sets a routine background fold aside to get the lock in time', () => {
-  // Round 6 (R-V333-15) re-aimed this clause: the turn sets the background fold aside but does not wait
-  // for it to step out; the rows are labelled now and get their real summaries after.
-  it('a slow background fold holding the lock is set aside and not waited for: the rows are labelled, the preempted writer is not blamed, and the real summaries come after', async () => {
+describe('t140 round 4 — F1: a slow background fold holding the lock does not hold the turn', () => {
+  // Round 6 (R-V333-15) re-aimed this clause: the turn does not wait for the fold to step out; the rows
+  // are labelled now. Round 7 (re-review I2'): nor does it set the fold aside — the fold's own real
+  // summaries land, and take their rows out of the notes.
+  it('a slow background fold holding the lock is left alone and not waited for: the rows are labelled now, and the fold\'s own summaries land', async () => {
     for (let t = 1; t <= 40; t++) appendTurn(false);
     appendTurn(true);
     const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
     writers.mode = { [OWN]: 'slow:1500', [CHEAP]: 'ok' };
-    const { registerBackgroundCompaction, releaseBackgroundCompaction } = await import('../uncondensed-placeholder.js');
-    const ctl = new AbortController();
-    registerBackgroundCompaction(AGENT, ctl);   // what the gate's pressure-fold launcher does
-    const background = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 }, abortSignal: ctl.signal })
-      .finally(() => releaseBackgroundCompaction(AGENT, ctl));
+    // What the gate's pressure-fold launcher does (round 7: with no abort a turn could pull).
+    const background = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 }, inTheBackground: true });
     await new Promise((r) => setTimeout(r, 20));
     // The background call is in flight on the slow writer; the door's own calls answer at once, so
     // the time below is the time to get the lock (round 5: the door no longer cuts a working writer).
@@ -584,10 +582,12 @@ describe('t140 round 4 — F1: the turn sets a routine background fold aside to 
     const started = Date.now();
     const ctx = await door();
     expect(Date.now() - started, 'the door did not wait out the background writer behind the lock').toBeLessThan(1_500);
-    await background;
-    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    // Judged as of the moment the turn's view was built (the fold's summary, landing later, re-points rows).
+    expect(lostRows(JSON.stringify(ctx.messages)), 'every row is in the turn\'s view, or labelled there').toEqual([]);
+    const result = await background;
     expect(coverCounts()).toEqual([]);
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a preempted call is not the writer\'s failure').toBe(OWN);
+    expect(result.leafCreated, 'the background fold was not cancelled: its summary landed').toBeTruthy();
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'the slow writer is not blamed').toBe(OWN);
     const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders(), 'the real summaries came after').toEqual([]);

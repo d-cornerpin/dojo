@@ -268,7 +268,7 @@ describe('t140 round 6 — a turn never waits on another compaction\'s lock', ()
 // summary was thrown away (after a paid partial call) and the turn got labels: the worst of both. A
 // turn that will not wait leaves the running job alone; its real summaries land.
 describe('t140 round 7 — a turn never cancels a background summary it is not going to wait for', () => {
-  it.fails('the reviewer\'s probe: a 20 s writer is replacing notes in the background when new rows leave the view — its summaries land, and the turn still goes on at once', async () => {
+  it('the reviewer\'s probe: a 20 s writer is replacing notes in the background when new rows leave the view — its summaries land, and the turn still goes on at once', async () => {
     seedACut();
     const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 20;
     expect(writeUncondensedPlaceholders(AGENT, through), 'precondition: notes to replace').toBeGreaterThan(0);
