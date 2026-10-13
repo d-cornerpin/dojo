@@ -7647,6 +7647,13 @@
       "to": 583,
       "by": "t139 round 3 — R-V333-8 + re-review minors",
       "why": "+5: R-V333-8 computes the recorded exit (`continuing`, the same queued-continuation fact the pause reads) once and passes it to settlement; the comment above the round-2 pause-side flag now says its settlement half was reverted. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts",
+      "from": 90,
+      "to": 108,
+      "by": "t139 round 4 — R-V333-11 (the park re-delivered a narration line as a visible bubble, #10)",
+      "why": "+18 (2 imports, 1 condition, 1 skip-and-log branch (4 lines), and 10 comment lines). The comment records the live evidence (t136 run bmv64ib0rkc #99007), the recorded exit fact the skip keys on (the C3 continuation stash, unless stop-fenced, the same fact finalize-record reads), and the requirement preserved: a turn that genuinely ENDS with only text that rode a tool call still delivers it (G-SUP-2). REFUSED: deleting the recovery outright, which would leave a genuinely ending turn's waiting person answered by silence. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7777,7 +7784,7 @@
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
-    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90,
+    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 108,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
