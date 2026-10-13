@@ -339,7 +339,7 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run();
   };
 
-  it.fails('a card raised for a notice about the blocked task records the tell, and the ladder does not raise it again', async () => {
+  it('a card raised for a notice about the blocked task records the tell, and the ladder does not raise it again', async () => {
     seedBlocked('t-card');
     noPhone();
     noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-card');
@@ -361,6 +361,19 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('A status line.', 'notice', { card: false, aboutWorkId: 't-nocard' });
     (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('It cleared.', 'notice', { clears: 'A status line.', aboutWorkId: 't-nocard' });
     expect(toldEvents('t-nocard')).toEqual([]);
+  });
+
+  it('the record refuses an owner_card tell on anything but a platform dashboard row', async () => {
+    seedBlocked('t-wrongcard');
+    const { withOutbound, recordAtDoor, currentOutboundDeliveryId } = await import('../../agent/v2/outbound.js');
+    const { recordPersonTold } = await import('../../work/validation-drive.js');
+    const viaCard = (agentId: string, channel: 'imessage' | 'dashboard', recipientId: string) => withOutbound(
+      { agentId, tool: 'owner-card', channel, recipientId },
+      () => { recordAtDoor({ outcome: 'delivered', channel, recipientId }); return recordPersonTold('t-wrongcard', { deliveryId: currentOutboundDeliveryId()!, via: 'owner_card' }); },
+    );
+    expect(viaCard('platform', 'imessage', OWNER_PHONE), 'a platform TEXT is an owner_notice, not a card').toMatchObject({ kind: 'refused', reason: 'wrong-door' });
+    expect(viaCard(PRIMARY, 'dashboard', 'owner'), 'an agent\'s dashboard reply is not the platform\'s card').toMatchObject({ kind: 'refused', reason: 'wrong-door' });
+    expect(viaCard('platform', 'dashboard', 'owner').kind, 'the platform\'s dashboard card is').toBe('applied');
   });
 
   it('the phone carried it: ONE record, the phone delivery — not a second one for the card', () => {

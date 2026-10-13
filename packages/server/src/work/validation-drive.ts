@@ -281,7 +281,9 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
 //   · `owner_notice` — the platform's owner-notice door (t138 / t143) sending about a named
 //     row: it passes the work id it was handed and the delivery its outbound scope wrote;
 //   · `send_tool`    — a send whose tool ARGUMENTS name the work, recorded at the dispatch
-//     door from the arguments, never from the text.
+//     door from the arguments, never from the text;
+//   · `owner_card`   — t146 round 2: with no phone carrying the notice, the owner card that
+//     door raised IS the owner told; the card is a platform dashboard delivery to the owner.
 // The record is SELF-VERIFYING rather than trusting: it refuses a delivery that does not
 // exist, did not succeed, or did not cross a door to a person (`a2a`, `none`, `engine-ack` —
 // the same three narrowings `deliveryForAgentSince` has always applied), and the readers
@@ -295,8 +297,8 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
 // block, reopened, and blocked again on a fresh obstacle is NOT told about the new block.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/** The two paths the ruling permits. Nothing else may write the record. */
-export type PersonToldVia = 'owner_notice' | 'send_tool';
+/** The paths the rulings permit. Nothing else may write the record. */
+export type PersonToldVia = 'owner_notice' | 'owner_card' | 'send_tool';
 
 export type PersonToldOutcome =
   | { kind: 'applied'; eventId: number }
@@ -384,10 +386,12 @@ export function recordPersonTold(
       };
     }
     const fromNoticeDoor = d.agent_id === NOTICE_DOOR_SENDER;
-    if ((evidence.via === 'owner_notice') !== fromNoticeDoor) {
+    // The notice door's two forms are the platform's; a card is a dashboard row, a text is not.
+    if ((evidence.via !== 'send_tool') !== fromNoticeDoor
+      || (evidence.via === 'owner_card') !== (d.channel === 'dashboard' && fromNoticeDoor)) {
       return {
         kind: 'refused', reason: 'wrong-door',
-        detail: `a ${evidence.via} tell must be ${fromNoticeDoor ? 'an agent' : 'the platform'}'s own delivery; this one was sent by ${d.agent_id}`,
+        detail: `a ${evidence.via} tell does not match this delivery (sent by ${d.agent_id} on ${d.channel})`,
       };
     }
     const w = db.prepare('SELECT requester, requester_id FROM work WHERE id = ?')

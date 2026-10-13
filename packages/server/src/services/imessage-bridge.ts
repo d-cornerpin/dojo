@@ -2055,6 +2055,14 @@ export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
 
+/** The door's told record (t146): from the delivery THIS scope wrote; a refusal is said, never thrown. */
+function toldAbout(workId: string, via: 'owner_notice' | 'owner_card'): void {
+  const deliveryId = currentOutboundDeliveryId();
+  if (!deliveryId) return;
+  const told = recordPersonTold(workId, { deliveryId, via });
+  if (told.kind === 'refused') logger.info('an owner notice about a task is not recorded as a tell', { workId, via, reason: told.reason });
+}
+
 /** A WARN `owner-notice` entry records why a text did not reach the phone (Vitals log view). */
 const ownerNoticeLog = createLogger('owner-notice');
 
@@ -2102,15 +2110,22 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
       () => {
         const ok = sendIMessage(recipient, fullMessage);
-        const deliveryId = currentOutboundDeliveryId();
-        if (ok && opts.aboutWorkId && deliveryId) {
-          const told = recordPersonTold(opts.aboutWorkId, { deliveryId, via: 'owner_notice' });
-          if (told.kind === 'refused') logger.info('an owner notice about a task is not recorded as a tell', { workId: opts.aboutWorkId, reason: told.reason });
-        }
+        if (ok && opts.aboutWorkId) toldAbout(opts.aboutWorkId, 'owner_notice');
         return ok;
       },
     );
     if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up', card });
+    // t146 round 2: with no phone carrying it, the CARD is the owner told (t138's cards). It goes
+    // on the ledger as a platform dashboard delivery to the owner, and the tell is recorded from
+    // that row. A status line or an all-clear raises no card, so it records nothing.
+    if (!sent && card === 'raised' && opts.aboutWorkId) {
+      const workId = opts.aboutWorkId;
+      withOutbound({ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' }, () => {
+        if (recordAtDoor({ outcome: 'delivered', channel: 'dashboard', recipientId: 'owner' }).kind === 'applied') {
+          toldAbout(workId, 'owner_card');
+        }
+      });
+    }
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

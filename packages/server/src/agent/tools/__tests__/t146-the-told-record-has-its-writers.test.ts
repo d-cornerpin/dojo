@@ -83,7 +83,13 @@ describe('§2 the told record is written by exactly the two doors, each in its o
     const door = fnBody('services/imessage-bridge.ts', 'sendAlert');
     expect(door).toMatch(/withOutbound\(\s*\{\s*agentId: PLATFORM_SENDER/);
     expect(door).not.toMatch(/withOutboundIfAbsent/);
-    expect(door).toMatch(/currentOutboundDeliveryId\(\)[\s\S]*recordPersonTold\(opts\.aboutWorkId, \{ deliveryId, via: 'owner_notice' \}\)/);
+    // The text's scope tells from its own row; with no phone, the card's own scope does (round 2).
+    expect(door).toMatch(/withOutbound\(\s*\{ agentId: PLATFORM_SENDER, tool: 'alert'[\s\S]*?toldAbout\(opts\.aboutWorkId, 'owner_notice'\)/);
+    expect(door).toMatch(/if \(!sent && card === 'raised' && opts\.aboutWorkId\)[\s\S]*?withOutbound\(\{ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' \}[\s\S]*?toldAbout\(workId, 'owner_card'\)/);
+    const helper = files.get('services/imessage-bridge.ts')!;
+    const h = helper.slice(helper.indexOf('function toldAbout('), helper.indexOf('\n}\n', helper.indexOf('function toldAbout(')));
+    expect(h).toMatch(/const deliveryId = currentOutboundDeliveryId\(\);[\s\S]*recordPersonTold\(workId, \{ deliveryId, via \}\)/);
+    expect(count('services/imessage-bridge.ts', /\btoldAbout\(/)).toBe(3);
   });
 
   it('the dispatch door writes it as send_tool, from the task_id ARGUMENT, inside withOutboundAsync', () => {
