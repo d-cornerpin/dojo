@@ -93,6 +93,8 @@ import { runPokeCheck, queueEffortReviewIfNeeded, runEffortReview } from '../pm-
 import { pendingCirclingVerdict } from '../effort-governor.js';
 import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
 import { configRouter } from '../../gateway/routes/config.js';
+import { trackerAddNotes } from '../tools.js';
+import { recordPoke } from '../../work/poke-ladder.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
@@ -402,5 +404,52 @@ describe('SPINNING: the PM tells the owner, in its own voice, what repeats — o
     expect(queueEffortReviewIfNeeded('task-circle')).toBe(true);
     await runEffortReview('task-circle');
     expect(reports()).toHaveLength(1);
+  });
+});
+
+const newestPokeRung = (taskId: string): number | null => {
+  const r = db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'poke' ORDER BY id DESC LIMIT 1").get(taskId) as { payload: string } | undefined;
+  return r ? (JSON.parse(r.payload) as { rung: number }).rung : null;
+};
+
+describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation against a working agent', () => {
+  it('a work_note after a check-in closes it: the ladder re-arms, and the next check-in is a first one again', async () => {
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+    claimedTask('task-q', 'the supplier list', t0 - 7 * MIN, 'c-1');
+    await runPokeCheck();
+    expect(newestPokeRung('task-q')).toBe(1); // the first check-in
+    vi.setSystemTime(t0 + MIN);
+    expect(trackerAddNotes('helper', { taskId: 'task-q', notes: 'Still working on it: halfway through the list.' })).toMatch(/^\[OK\]/);
+    vi.setSystemTime(t0 + 7 * MIN);
+    await runPokeCheck();
+    const closed = db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-q' AND kind = 'poke_remediation'").get() as { n: number };
+    expect(closed.n).toBe(1);
+    expect(newestPokeRung('task-q')).toBe(1); // a fresh first check-in, not a second rung
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('an agent moving inside its window is never escalated to the primary on a timer; one that is not, still is', async () => {
+    const t0 = Date.now();
+    claimedTask('task-e', 'the vendor audit', t0 - 40 * MIN, 'c-1');
+    recordPoke('task-e', 'pm', 1, 'nudge', 'helper');
+    recordPoke('task-e', 'pm', 2, 'urgent', 'helper');
+    modelCallFinished(t0 - MIN); // working, on something
+    await runPokeCheck();
+    expect(newestPokeRung('task-e')).toBe(2);
+    expect(a2a.filter((m) => m.payload?.startsWith('ESCALATION'))).toHaveLength(0);
+    // Control: the same task, the agent with no movement inside its window — the old rung still fires.
+    db().prepare("DELETE FROM cost_records WHERE agent_id = 'helper'").run();
+    modelCallFinished(t0 - 150 * MIN);
+    await runPokeCheck();
+    expect(newestPokeRung('task-e')).toBe(3);
+  });
+
+  it('a BROKEN-class agent (in error) holding work is not ALSO told SILENT: one notice per incident', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE agents SET status = 'error' WHERE id = 'helper'").run();
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(0);
   });
 });
