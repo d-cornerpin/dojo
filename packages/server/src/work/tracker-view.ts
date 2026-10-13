@@ -232,13 +232,29 @@ export function tsToMs(text: string | null | undefined): number | null {
 // answer, different store. The POLICY that changes what the facts MEAN — the two-key trigger
 // as migration `138`, the ladder rekey — is T8c's and is not here.
 
-/** The last time this row entered `state`, from its own event log. `transition()` writes one
- *  `transition` event per move with `to` in the payload, so this is a read of the record the
- *  spine already keeps rather than a second clock. */
-const lastEntryInto = (a: string, state: WorkState): string =>
-  `(SELECT MAX(e.created_at) FROM work_events e`
+/**
+ * WHERE this row last entered a state, as a position on its own event log: the
+ * `work_events.id` of the newest `transition` whose `to` is that state, or NULL when the log
+ * holds none (a row born in the state, or migrated without its history).
+ *
+ * ── t142: AN ID, NOT AN INSTANT ──
+ * ⟨TOMBSTONE⟩ This was `MAX(e.created_at)` and every caller compared it against another
+ * table's clock. A millisecond tie then read in the wrong direction (a verdict filed for the
+ * PREVIOUS episode counted for the new one), which `work/override-requests.ts` had already
+ * written down as the law this codebase keeps relearning: "Ordering is by `work_events.id`,
+ * never by `created_at` … a sequence exists here, so a clock is the wrong instrument."
+ * requirement preserved: "the newest entry into this state" is the same row it always was;
+ * only the unit it is returned in changed, and every caller compares in that unit.
+ *
+ * `stateSql` is a SQL expression, so a caller can ask about a literal state (`'blocked'`) or
+ * about the row's CURRENT state (`w.state`) — the latter is the ESCALATION EPISODE, see
+ * `work/validation-drive.ts:ownerEpisodeSettledExpr`. One definition serves both, so a verdict
+ * and a "the owner was told" record are scoped to the same boundary by construction.
+ */
+export const lastEntryEventIdExpr = (a: string, stateSql: string): string =>
+  `(SELECT MAX(e.id) FROM work_events e`
   + ` WHERE e.work_id = ${a}.id AND e.kind = 'transition'`
-  + `   AND json_extract(e.payload, '$.to') = '${state}')`;
+  + `   AND json_extract(e.payload, '$.to') = ${stateSql})`;
 
 /**
  * The system closers, mirrored from `store.ts:SYSTEM_CLOSERS` as SQL. Kept as a literal
@@ -280,7 +296,7 @@ const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
  * The blocked-work DISPOSAL door (`setTrackerStatus`) asks a question of the same rows and
  * needs the same freshness scoping, but NOT the same answer about machine writers, so it
  * passes this flag instead of re-typing the expression. The first cut of that gate DID re-type
- * it and dropped the `lastEntryInto` clause, which made one upheld block mark a row for life:
+ * it and dropped the last-entry clause, which made one upheld block mark a row for life:
  * blocked -> upheld -> resolved forward -> blocked again on a fresh obstacle read as "still
  * upheld" and refused the assignee's own ordinary close-out. Two copies of one predicate, one
  * of them repaired, is the drift this file's own comments keep closing — so the gate now calls
@@ -298,6 +314,24 @@ const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
  * owner permanently on the strength of a timeout. The exclusion list is the same
  * `SYSTEM_CLOSER_ROLES` the `done` arm uses, read from the same constant, so a machine writer
  * added to one list is excluded from both.
+ *
+ * ── t142: "AT OR AFTER" IS A SEQUENCE QUESTION, AND IT IS ASKED ON THE SEQUENCE ──
+ * ⟨TOMBSTONE⟩ The freshness clause read `adj.created_at >= <last entry's created_at>` — a
+ * clock in `adjudications` against a clock in `work_events`. Blocked -> upheld -> resolved
+ * forward -> blocked again inside one millisecond therefore read UPHELD, and every reader
+ * below inherited it: the owner was told "Your PM checked it" about a block nobody had
+ * checked, the disposal door above refused the assignee's own close-out as "ruled", and the
+ * board showed a stale blessing. The ties failed toward over-refusal, never toward
+ * destruction — still wrong, and wrong in front of the owner.
+ *
+ * Now each verdict carries its place on the event log (`adjudications.event_seq`, stamped by
+ * migration `189b`'s trigger with the id of the verdict's companion event — the `transition`
+ * that filed it, or its `claim_upheld`), and the clause is `event_seq >= <id of the last
+ * entry>`. An authoritative entry's own verdict IS that entry's companion, so it is current;
+ * an uphold filed after the entry is current; an uphold filed before a re-entry is not —
+ * whatever the clocks say. Driven both ways in `__tests__/t142-sequence-freshness.test.ts`.
+ * requirement preserved: the same three verdicts are current as before in every case where
+ * the clocks differed; only the tie is decided differently, and decided by the record.
  */
 export const validatedExpr = (
   a: string, state: WorkState, opts?: { excludeSystemClosers?: boolean },
@@ -306,7 +340,7 @@ export const validatedExpr = (
   + ` WHERE adj.work_id = ${a}.id AND adj.claim_state = '${state}' AND adj.verdict = 'upheld'`
   + (state === 'done' || opts?.excludeSystemClosers
       ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
-  + `   AND adj.created_at >= COALESCE(${lastEntryInto(a, state)}, 0)) THEN 1 ELSE 0 END)`;
+  + `   AND adj.event_seq >= COALESCE(${lastEntryEventIdExpr(a, `'${state}'`)}, 0)) THEN 1 ELSE 0 END)`;
 
 /**
  * KEY 1, AS A QUERY (PHASE-2 T8T).
@@ -445,10 +479,13 @@ export const validationThreadIdExpr = (a: string): string =>
   + ` ORDER BY e.created_at DESC, e.id DESC LIMIT 1)`;
 
 /** `awaiting_user_verdict` — set by a request, cleared by an apply/override/staleness sweep.
- *  Expressed as "the newest request is newer than the newest clear". */
+ *  Expressed as "the newest request is newer than the newest clear" — newer ON THE LOG
+ *  (t142): compared by `work_events.id`. It compared instants, so a request re-filed in the
+ *  same millisecond as the clear before it read as already answered and the row left the
+ *  hold it had just been put in. */
 export const awaitingUserVerdictExpr = (a: string): string =>
-  `(CASE WHEN COALESCE(${lastEvent(a, WORK_EVENT.userVerdictRequested)}, -1)`
-  + ` > COALESCE(${lastEvent(a, WORK_EVENT.userVerdictCleared)}, -1) THEN 1 ELSE 0 END)`;
+  `(CASE WHEN COALESCE(${lastEvent(a, WORK_EVENT.userVerdictRequested, 'id')}, -1)`
+  + ` > COALESCE(${lastEvent(a, WORK_EVENT.userVerdictCleared, 'id')}, -1) THEN 1 ELSE 0 END)`;
 
 /** `user_verdict_requested_at` — the request's own instant, and NULL once cleared, which is
  *  exactly what the column did. */
@@ -462,7 +499,12 @@ export const userVerdictRequestedAtExpr = (a: string): string =>
  *  reset (by override and by an applied user verdict). */
 export const revertCountExpr = (a: string): string =>
   `(SELECT count(*) FROM adjudications adj WHERE adj.work_id = ${a}.id AND adj.verdict = 'rejected'`
-  + `   AND adj.created_at >= COALESCE(${lastEvent(a, WORK_EVENT.revertReset)}, 0))`;
+  // t142: "since the last reset" is a position on the log. A rejection's `event_seq` is its
+  // own `claim_rejected` row (migration 189b), so it is AFTER the reset exactly when that row
+  // is — `>`, because the two can never be the same row. It compared instants with `>=`, so a
+  // rejection filed in the same millisecond BEFORE the reset survived it and kept counting
+  // toward the owner-verdict threshold.
+  + `   AND adj.event_seq > COALESCE(${lastEvent(a, WORK_EVENT.revertReset, 'id')}, 0))`;
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 5 — THE ROW SHAPES
