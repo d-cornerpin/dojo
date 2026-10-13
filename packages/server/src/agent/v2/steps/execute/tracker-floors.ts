@@ -20,23 +20,56 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { TRACKER_STEER_FLOORS, steerFiredAny } from '../../steer-queue.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
+import { getDb } from '../../../../db/connection.js';
+import { recordedInstant } from '../../../../memory/message-stamp.js';
 
 const logger = createLogger('v2-loop');
 import type { ExecuteContext } from './index.js';
 
 /**
- * t139 (#7 C1) — THE FLOOR'S TITLE IS A FIXED LABEL, NEVER THE TURN'S MESSAGE.
+ * t139 (#7 C1) — THE FLOOR'S TITLE COMES FROM ENGINE FACTS, NEVER THE TURN'S MESSAGE.
  *
  * The floor used to title (and describe) the row it opens from `state.lastUserMessageContent`
  * — whatever text the turn happened to be serving — and then hand that text to the PM to
  * "give it a proper name". On the owner's box a "You there?" turn that went on to make nine
  * untracked calls became a task titled "You there", which the PM was then asked to dress up as
  * a real piece of work. The floor cannot know what work was asked for; only the request can say.
- * So the row carries no words of its own: it is LINKED to the row the turn served
- * (`source_message_id`), and the task list shows that row's words, dated and labelled with its
- * conversation (`memory/work-board-lane.ts`). This is the floor's own pre-existing fallback name.
+ * So the row carries no words of the request: it is LINKED to the row the turn served
+ * (`source_message_id`), and the task list shows that row's words, dated and labelled.
+ *
+ * ROUND 2 (review I5): one fixed label made every engine-opened task identical on the owner's
+ * tracker. The title now states what the ENGINE observed — the untracked calls it counted, the
+ * tool it saw most this turn, and the turn's recorded start — e.g.
+ * "Multi-step task — 9 calls: image_create [Oct 7, 2026, 02:35 PM]". Nothing in it is read from
+ * the message, and the note invites the agent to rename it to what it is doing.
  */
 export const SCAFFOLD_TITLE = 'Multi-step task';
+
+/** The most-used tool this turn, from the turn's own persisted `tool_use` rows. */
+function mostUsedToolThisTurn(agentId: string, turnNumber: number): string | null {
+  try {
+    const rows = getDb().prepare(
+      `SELECT content FROM messages
+        WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'`,
+    ).all(agentId, turnNumber) as Array<{ content: string }>;
+    const tally = new Map<string, number>();
+    for (const r of rows) {
+      try {
+        for (const b of JSON.parse(r.content) as Array<{ type?: string; name?: string }>) {
+          if (b.type === 'tool_use' && b.name) tally.set(b.name, (tally.get(b.name) ?? 0) + 1);
+        }
+      } catch { /* not a block array */ }
+    }
+    let best: string | null = null;
+    for (const [name, n] of tally) if (best === null || n > (tally.get(best) ?? 0)) best = name;
+    return best;
+  } catch { return null; }
+}
+
+/** The floor's title, from engine facts only. */
+export function scaffoldTitle(calls: number, tool: string | null, turnStartMs: number): string {
+  return `${SCAFFOLD_TITLE} — ${calls} calls${tool ? `: ${tool}` : ''} ${recordedInstant(turnStartMs)}`;
+}
 
 export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContext): Promise<AgentTurnState> {
   const {
@@ -172,7 +205,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         // requirement preserved: no handed credential reaches the work spine from this floor —
         // now by construction, since nothing from the message is written here
         // (`the-scaffold-floor-never-persists-a-credential.test.ts`).
-        const scaffoldName = SCAFFOLD_TITLE;
+        const scaffoldName = scaffoldTitle(effectiveUntracked, mostUsedToolThisTurn(agentId, turnNumber), state.turnStartMs);
         // ── ONE TASK, NOT A PROJECT-AND-A-TASK (PHASE-2 T8c item 3, DECIDED D4) ──
         // The floor used to call `createProject`, which opened a project row, a first
         // task under it, and — because the project's description carried a prose
@@ -215,7 +248,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
           `(work calls with no tracker entry — this turn: ${state.nonTrackerToolCalls}; ` +
           `total untracked in this conversation: ${effectiveUntracked}; floor: ${TRACKER_AUTO_SCAFFOLD_AT}; ` +
           `untracked multi-step work drifts and the PM cannot monitor it). ` +
-          `Keep working; update it with work_note as you go and close it with work_update(action="status", complete) plus result/evidence when done.`
+          `Keep working; rename it with work_update(action="edit", title=…) to what you are doing, update it with work_note as you go, and close it with work_update(action="status", complete) plus result/evidence when done.`
         );
         state = persistEngineSteer(
           state,

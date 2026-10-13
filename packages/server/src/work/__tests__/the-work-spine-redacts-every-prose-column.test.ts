@@ -411,8 +411,8 @@ describe('§3 every production file that writes `work` with raw SQL has a verdic
     // there is nothing left to redact and the seam is closed by construction. Pinned as that:
     // the floor's code never reads the turn's message text. (Its behavioural half is still
     // `the-scaffold-floor-never-persists-a-credential`, which crosses the real >=6 floor.)
-    const floorSeam = engineFileContaining('const scaffoldName = SCAFFOLD_TITLE;');
-    expect(floorSeam, 'the tracker floor no longer writes its fixed title').not.toBeNull();
+    const floorSeam = engineFileContaining('rootKind: ENGINE_SCAFFOLD_ROOT_KIND');
+    expect(floorSeam, 'the tracker floor that opens the scaffold row').not.toBeNull();
     expect(
       codeOnly(floorSeam!.text),
       'the tracker auto-scaffold floor reads the raw user message again. That line IS t118: a '

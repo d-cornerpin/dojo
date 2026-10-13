@@ -334,7 +334,9 @@ describe('§2 a credential early in the message cannot reach the row TITLE', () 
     // The title used to be derived from the first line within ~50 chars, so with the value at
     // char 4 the placeholder is what landed there. t139: the title is the floor's fixed label
     // and the description is empty — nothing from the message is written to the row at all.
-    expect(row.title).toBe(SCAFFOLD_TITLE);
+    // t139 round 2 (I5): the title is built from engine facts (counted calls, the turn's start).
+    expect(row.title.startsWith(SCAFFOLD_TITLE)).toBe(true);
+    expect(row.title).not.toContain('webhook');
     expect(row.description).toBeNull();
 
     expect(steer).toContain('The engine opened tracker task');
@@ -374,8 +376,9 @@ describe('§3 the ordinary turn: the row is linked, never described from the mes
 
     const rows = scaffoldRows();
     expect(rows.length).toBe(1);
-    expect(rows[0].title).toBe(SCAFFOLD_TITLE);
-    expect(rows[0].title).toBe('Multi-step task');   // written out: a change has to be looked at
+    // t139 round 2 (I5): engine facts only — the counted calls and the turn's recorded start.
+    expect(rows[0].title).toMatch(/^Multi-step task — 6 calls/);   // written out: a change has to be looked at
+    expect(rows[0].title).not.toMatch(/inbox/i);
     expect(rows[0].description).toBeNull();
     expect(rows[0].source_message_id).toBe('msg-9006');
   });
@@ -386,7 +389,7 @@ describe('§3 the ordinary turn: the row is linked, never described from the mes
 
     const rows = scaffoldRows();
     expect(rows.length).toBe(1);
-    expect(rows[0].title).toBe(SCAFFOLD_TITLE);
+    expect(rows[0].title.startsWith(SCAFFOLD_TITLE)).toBe(true);
     expect(rows[0].description).toBeNull();
   });
 });

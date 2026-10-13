@@ -313,7 +313,7 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('t139 round 2 (I5) — the floor names its task from ENGINE FACTS, never the message', () => {
-  it.fails('the title states the calls the floor counted, the most-used tool and the turn\'s start, and the note invites a rename', async () => {
+  it('the title states the calls the floor counted, the most-used tool and the turn\'s start, and the note invites a rename', async () => {
     ownerSays('msg-ping-i5', 'You there?');
     script([{ toolCalls: imageCalls(9) }, { content: 'Yes, here.' }]);
     await runV2Turn(PRIMARY);
@@ -1102,7 +1102,9 @@ describe('t139 census — the floor\'s titling from the message is gone', () => 
     expect(code).not.toMatch(/lastUserMessageContent/);
     const call = writerCalls().find((c) => c.file === floor!.rel)!;
     expect(call.args).toMatch(/title:\s*scaffoldName/);
-    expect(code).toMatch(/const scaffoldName = SCAFFOLD_TITLE;/);
+    // Round 2 (I5): the title is built from ENGINE FACTS — the counted calls, the turn's most-used
+    // tool, the turn's start — and from nothing the message carries.
+    expect(code).toMatch(/const scaffoldName = scaffoldTitle\(effectiveUntracked, mostUsedToolThisTurn\(agentId, turnNumber\), state\.turnStartMs\);/);
     expect(call.args).not.toMatch(/description\s*:/);
     expect(call.args).toMatch(/sourceMessageId:\s*state\.lastUserMessageId/);
   });
