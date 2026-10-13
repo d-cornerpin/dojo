@@ -171,7 +171,7 @@ async function systemTokensFor(agentId: string, modelId: string, turnContext: Pr
 
 /** Whether a model of the agent's OWN can hold its system prompt and tools: its configured model, or,
  *  auto-routed, any model the router opens a tier on (`router/selector.ts`'s `routedFirstPicks`). */
-async function anOwnModelHolds(agentId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
+export async function anOwnModelHolds(agentId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
   const [{ getDb }, { routedFirstPicks }] = await Promise.all([
     import('../../../../db/connection.js'), import('../../../../router/selector.js'),
   ]);

@@ -136,10 +136,9 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   // ceiling matters. So: once the real model is known, ask `reassembleForFitIfNeeded`
   // (shared with `model-call.ts`'s fallback ladder — the SAME hole one layer deeper,
   // round 2) whether the array this turn already built still fits, and use its answer.
-  // t140 round 6 (H2, R-V333-15): a router pick that cannot hold this agent's instructions and tools
-  // is passed over like a fallback candidate (no card) and the router offers the next. When nothing it
-  // can reach right now holds the agent, the refusal stands by name — and the re-fit shows the "cannot
-  // hold a conversation" card only if that is true (no model of the agent's own holds it).
+  // t140 round 6 (H2): a router pick that cannot hold this agent's instructions and tools is passed over
+  // like a fallback (no card). Round 7 (H2'): when none the router can reach holds it, the owner is told
+  // why and the turn ends (`no-pick-holds.ts`; the "cannot hold a conversation" card only if true).
   let pick = selection.modelId;
   const passedOver: string[] = [];
   let reassembly: Awaited<ReturnType<typeof reassembleForFitIfNeeded>>;
@@ -155,16 +154,11 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
       const { selectModel: nextRoutedPick } = await import('../../../../router/selector.js');
       const next = nextRoutedPick(routerTier, agentId, [...excludedModels, ...passedOver], ['tools']);
       if (!next) {
-        // The card only if true (no own model holds the agent); then the true cause, to the owner.
-        await reassembleForFitIfNeeded({ agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext })
-          .catch((refusal: unknown) => { if (!(refusal instanceof SystemPromptTooLargeError)) throw refusal; });
         const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
-        const said = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext });
+        const said = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext, refusal: err });
         return requestExit(state, said) as CallLLMOutcome;
       }
-      logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', {
-        passedOver: pick, next: next.modelId, tier: routerTier,
-      }, agentId);
+      logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', { passedOver: pick, next: next.modelId, tier: routerTier }, agentId);
       pick = next.modelId;
     }
   }
