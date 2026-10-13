@@ -163,14 +163,14 @@ function seedRoutedBox(): void {
 }
 
 /** A long live conversation with no compaction ever: every row is in the live view. */
-function seedConversation(turns: number): void {
+function seedConversation(turns: number, replyRepeat = 1): void {
   for (let t = 1; t <= turns; t++) {
     db().prepare(
       `INSERT OR IGNORE INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered)
        VALUES (?, ?, 'user', datetime('now'), datetime('now'), 'answered', 1)`,
     ).run(AGENT, t);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] ${ASK}`, turnNumber: t });
-    insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${REPLY}`, turnNumber: t });
+    insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${REPLY.repeat(replyRepeat)}`, turnNumber: t });
   }
 }
 
@@ -361,7 +361,9 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
   });
 
   it('the fallback SELECTION checks each candidate against its own window, and skips one that cannot hold the turn at all', async () => {
-    seedConversation(250);
+    // Round 3: replies long enough that the heavy pick's array (~25K) is over BOTH light
+    // candidates' fill lines, so the fit-aware selection comes back empty and the RESCUE runs.
+    seedConversation(250, 4);
     // A 12K model ahead of the 16K one in the light tier: it cannot hold this agent's system
     // prompt and tools at all, so a selector that judged candidates by declared ceiling alone
     // would hand it the array, the re-fit would refuse it, and the turn would fail.
@@ -377,6 +379,9 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     expect(out.abandoned).toBeUndefined();
     if (out.abandoned) return;
     expect(out.modelId, 'the candidate whose window holds the turn').toBe(LIGHT);
+    // Round 3 (re-review 2 §3, mutant M5): every candidate failed the fit filter here, so this is
+    // the RESCUE path — the 12K one it tried first is passed over QUIETLY: no owner card.
+    expect(windowCards(), 'no "cannot hold a conversation" card on a turn that was answered').toBe(0);
   });
 
   it('a fallback the window check lets through but whose window cannot hold the system prompt and tools is excluded, and the next pick answers', async () => {
