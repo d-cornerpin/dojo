@@ -201,7 +201,10 @@ describe('§4 the wire — one precedence rule, one door, and an honest line', (
     // made `validateAtProviderBoundary` refuse the very assembly the dial had just widened the
     // window for — measured, as a red in `the-utility-dial-reaches-the-wire`. This clause is
     // the record of that boundary.
-    expect(modelSrc).toMatch(/contextWindow: row\.context_window \?\? 200000,/);
+    // t140: the stored value now passes through `declaredContextWindow` (a stored 0 reads as
+    // the documented default instead of a window of nothing). Still the ADVERTISED number —
+    // no num_ctx knob is applied here, which is the property this clause records.
+    expect(modelSrc).toMatch(/contextWindow: declaredContextWindow\(row\.context_window\),/);
     expect(modelSrc).toMatch(/contextWindow: modelInfo\.contextWindow,\n\s+maxOutputTokens: modelInfo\.maxOutputTokens,/);
   });
 

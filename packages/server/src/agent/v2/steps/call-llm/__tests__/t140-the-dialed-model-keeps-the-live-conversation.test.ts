@@ -91,7 +91,9 @@ const AGENT = 'agent-t140-routed';
 const HEAVY = 'm-routed-heavy';
 const LIGHT = 'm-routed-light';
 const HEAVY_WINDOW = 32_768;
-const LIGHT_WINDOW = 24_576;
+/** Small enough that an array sized for the heavy pick cannot reach it unchanged:
+ *  floor(0.96 × 16,384) − (2,000 tools + 4,096 output) leaves ~9.6K for a ~6K system prompt. */
+const LIGHT_WINDOW = 16_384;
 
 /** Fictional bodies (G1). Each row carries a marker so a request can be searched for it. */
 const ASK = 'Please keep counting the crates on the north dock and tell me the running total.';
@@ -170,7 +172,7 @@ afterEach(() => {
 });
 
 describe('t140 W1 — a routed pick below the 200K stand-in still receives the live conversation', () => {
-  it.fails('RED at 00a2b34d: the heavy pick is dialed WITHOUT the conversation (lane.fresh-tail dropped at the boundary)', async () => {
+  it('RED at 00a2b34d: the heavy pick is dialed WITHOUT the conversation (lane.fresh-tail dropped at the boundary)', async () => {
     seedConversation(250);
     const req = await dialAsRouted(HEAVY);
     const text = shown(req);
@@ -189,7 +191,7 @@ describe('t140 W1 — a routed pick below the 200K stand-in still receives the l
     expect(text.includes('[reply 249]'), 'the agent\'s own recent work must reach the dialed model').toBe(true);
   });
 
-  it.fails('the auto-routed window is a REAL routed window, never the 200K stand-in', () => {
+  it('the auto-routed window is a REAL routed window, never the 200K stand-in', () => {
     // The largest window any routed pick declares: every pick can be sized DOWN to its own
     // window before dial (reassemble-for-fit); none can be sized up.
     expect(getContextWindow('__auto__')).toBe(HEAVY_WINDOW);

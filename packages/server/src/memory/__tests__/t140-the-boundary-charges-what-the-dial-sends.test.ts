@@ -110,7 +110,7 @@ const CHUNK = '[USER] How many crates are on the north dock?\n\n---\n\n'
   + '[ASSISTANT] Forty-two, and three of them have damaged lids set aside for repair.';
 
 describe('t140 W3 — a toolless dial on a small window is not charged tools it never sends', () => {
-  it.fails('RED at 00a2b34d: the summariser on a 16K model computes a boundary budget of zero and writes nothing', async () => {
+  it('RED at 00a2b34d: the summariser on a 16K model computes a boundary budget of zero and writes nothing', async () => {
     const r = await generateSummary({ content: CHUNK, depth: 0, targetTokens: 500, agentId: AGENT, modelId: SMALL });
     expect(r.ok, `the summary must be written (got: ${r.ok ? 'ok' : r.reason})`).toBe(true);
     expect(provider.requests.length, 'the summariser must actually reach its provider').toBe(1);
@@ -118,11 +118,11 @@ describe('t140 W3 — a toolless dial on a small window is not charged tools it 
 });
 
 describe('t140 — a model row declaring context_window = 0 resolves to the documented default, never 0', () => {
-  it.fails('RED at 00a2b34d: the engine budgets against a window of 0', () => {
+  it('RED at 00a2b34d: the engine budgets against a window of 0', () => {
     expect(getContextWindow(ZERO)).toBe(200_000);
   });
 
-  it.fails('RED at 00a2b34d: a summariser dial on that row is refused at the boundary for a budget of zero', async () => {
+  it('RED at 00a2b34d: a summariser dial on that row is refused at the boundary for a budget of zero', async () => {
     const r = await generateSummary({ content: CHUNK, depth: 0, targetTokens: 500, agentId: AGENT, modelId: ZERO });
     expect(r.ok, `the summary must be written (got: ${r.ok ? 'ok' : r.reason})`).toBe(true);
     expect(provider.requests.length).toBe(1);

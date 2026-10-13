@@ -784,7 +784,9 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     // The model's ADVERTISED window, as stored. The RAM-aware cap the engine BUDGETS against is
     // applied at `getContextWindow`, deliberately not here — t103 C's own note says why, and the
     // utility dial's per-call widening is the reason.
-    contextWindow: row.context_window ?? 200000,
+    // t140: through `declaredContextWindow`, so a stored 0 (or any non-window) reads as the
+    // documented default instead of a window of nothing — `??` only ever replaced NULL.
+    contextWindow: declaredContextWindow(row.context_window),
     // Use the provider-reported value from DB, fall back to derived value for older records
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
     providerType: row.provider_type,
@@ -3279,6 +3281,10 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       systemPrompt,
       contextWindow: modelInfo.contextWindow,
       maxOutputTokens: modelInfo.maxOutputTokens,
+      // t140: the budget this dial is checked against is charged the tool payload only when
+      // this dial SENDS tools. A `tools: false` dial (the summariser, the classifiers) was
+      // charged the agent's whole tool surface, which on a small window is the entire budget.
+      toolsSent: tools !== false,
       laneIds: collectMessageLaneIds(messages),
     });
   } catch (err) {
@@ -3879,11 +3885,78 @@ export function clearClientCache(providerId?: string): void {
  *     per-call window protects the box" — names that mechanism; this keeps it.
  */
 export function getContextWindow(modelId: string): number {
+  if (isAutoRouteSentinel(modelId)) return routedContextWindow();
   try {
     const info = getModelInfo(modelId);
     return effectiveContextWindow(info.contextWindow, resolveNumCtx(info).effective);
   } catch {
-    return 200000; // Default fallback
+    return DEFAULT_CONTEXT_WINDOW;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t140 — NO 200K STAND-IN, AND NO WINDOW OF ZERO (tracker #13).
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// THE DEFAULT. One named number for "this model said nothing usable about its window", read by
+// the two places that answer that question: a model row whose `context_window` is NULL, ZERO,
+// negative or non-finite (`declaredContextWindow`), and an id with no row at all (the catch
+// above). Before this, `row.context_window ?? 200000` replaced only NULL, so a stored 0 flowed
+// on as a window of nothing: the assembler's budget clamped to zero, the provider boundary's
+// budget clamped to zero, and every dial on that row was refused for "N tokens against 0".
+//
+// THE AUTO-ROUTER'S WINDOW. An auto-routed turn is assembled before the router names its model
+// (the router reads the assembled array), against the `'__auto__'` sentinel — which has no
+// model row, so it fell into the catch above and was budgeted as a 200,000-token model whatever
+// the box actually routes to. On a box whose routed models are all smaller, every turn was
+// sized for a window no pick could hold, and the provider boundary then cut the difference out
+// of the array by dropping whole lanes — the live conversation last (#13's "45K family").
+//
+// The answer now is the LARGEST effective window among the models the router can actually
+// dial (the three routed tiers, enabled rows only). Largest, not smallest, and the direction is
+// the design: `agent/v2/steps/call-llm/reassemble-for-fit.ts` re-sizes the array DOWN to the
+// window of the model actually picked, before dial, for every routed and fallback pick — so the
+// first assembly may be as roomy as the roomiest pick and never has to guess which one is
+// coming. Sizing it to the smallest instead would hand a large pick a small model's view, and
+// would condense history on pressure against a model that was not being used.
+//
+// Both spellings of the sentinel resolve here: `'__auto__'` (the turn's context model) and
+// `'auto'` (the seeded row agents point at, which carries a placeholder 200000 of its own —
+// `turn-budget.ts` resolves `'__auto__'` back to it). No routed model at all answers the default.
+
+/** The window assumed for a model that declares no usable one. */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/** A stored `models.context_window`, made safe to budget against: positive and finite, or the default. */
+export function declaredContextWindow(stored: number | null | undefined): number {
+  return typeof stored === 'number' && Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_CONTEXT_WINDOW;
+}
+
+/** The router's pointer ids — never a callable model, never a window of their own. */
+export function isAutoRouteSentinel(modelId: string): boolean {
+  return modelId === '__auto__' || modelId === 'auto';
+}
+
+/** The tiers `router/selector.ts` walks for a routed pick (its `TIER_FALLBACK` union). */
+const ROUTED_TIERS = ['light', 'standard', 'heavy'] as const;
+
+/** The largest effective window any routed pick can dial; the default when nothing is routed. */
+function routedContextWindow(): number {
+  try {
+    const rows = getDb().prepare(`
+      SELECT DISTINCT tm.model_id AS id
+        FROM router_tier_models tm
+        JOIN models m ON m.id = tm.model_id
+       WHERE tm.tier_id IN (${ROUTED_TIERS.map(() => '?').join(', ')}) AND m.is_enabled = 1
+    `).all(...ROUTED_TIERS) as Array<{ id: string }>;
+    let largest = 0;
+    for (const { id } of rows) {
+      if (isAutoRouteSentinel(id)) continue;
+      largest = Math.max(largest, getContextWindow(id));
+    }
+    return largest > 0 ? largest : DEFAULT_CONTEXT_WINDOW;
+  } catch {
+    return DEFAULT_CONTEXT_WINDOW;
   }
 }
 
