@@ -129,14 +129,14 @@ describe('t140 round 6 — the CLI net sees through wrappers, and the network ne
   /** The fake first on PATH, the system directories after it (where `env` and `nohup` live). */
   const wrappedEnv = (): NodeJS.ProcessEnv => ({ ...process.env, PATH: `${scratch}:/usr/bin:/bin`, T140_MARKER: marker });
 
-  it.fails.each(['env claude --version', 'nohup claude --version', 'exec claude --version', '(claude --version)', 'env FOO=1 claude --version'])(
+  it.each(['env claude --version', 'nohup claude --version', 'exec claude --version', '(claude --version)', 'env FOO=1 claude --version'])(
     'a shell line that starts the CLI through a wrapper — %s — is refused, and nothing is launched', (line) => {
       fs.rmSync(marker, { force: true });
       expect(() => childProcess.execSync(line, { env: wrappedEnv(), stdio: 'ignore' })).toThrow(CLI_NET);
       expect(fs.existsSync(marker), 'the fake CLI ran').toBe(false);
     });
 
-  it.fails('spawn(env, [claude]) is refused, and nothing is launched', () => {
+  it('spawn(env, [claude]) is refused, and nothing is launched', () => {
     fs.rmSync(marker, { force: true });
     expect(() => childProcess.spawnSync('env', ['claude', '--version'], { env: wrappedEnv() })).toThrow(CLI_NET);
     expect(fs.existsSync(marker)).toBe(false);
@@ -146,7 +146,7 @@ describe('t140 round 6 — the CLI net sees through wrappers, and the network ne
     expect(String(childProcess.execSync('env echo claude', { env: wrappedEnv() })).trim()).toBe('claude');
   });
 
-  it.fails('the network net counts only literal loopback as this machine — not a hostname that starts with "127."', async () => {
+  it('the network net counts only literal loopback as this machine — not a hostname that starts with "127."', async () => {
     const { isThisMachine } = await import('../../vitest.test-nets.cjs') as unknown as { isThisMachine: (h: unknown) => boolean };
     for (const host of ['localhost', '127.0.0.1', '127.1.2.3', '::1', '[::1]', '::ffff:127.0.0.1', undefined]) {
       expect(isThisMachine(host), `${String(host)} is this machine`).toBe(true);

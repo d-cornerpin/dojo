@@ -29,6 +29,14 @@ const { syncBuiltinESMExports } = require('node:module');
 const AGENT_CLI_NET_MESSAGE = 'TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead.';
 const NETWORK_NET_MESSAGE = 'TEST NET: a test tried to reach the network';
 
+/**
+ * Is `host` this machine? Round 6 (final review M3): LITERAL loopback only — a 127.0.0.0/8 address,
+ * ::1 or localhost (no host at all means localhost) — so a hostname that merely starts with "127."
+ * is a name to resolve elsewhere, and is refused. Pure; exported so the rule itself can be pinned.
+ */
+const isThisMachine = (host) => host === undefined || host === null || host === '' || host === 'localhost'
+  || /^127(\.\d{1,3}){3}$/.test(host) || host === '::1' || host === '[::1]' || /^::ffff:127(\.\d{1,3}){3}$/i.test(host);
+
 if (!globalThis.__dojoTestNetsLoaded) {
   globalThis.__dojoTestNetsLoaded = true;
 
@@ -37,11 +45,23 @@ if (!globalThis.__dojoTestNetsLoaded) {
   const CLI_PACKAGE = /claude-agent-sdk|@anthropic-ai[\\/]claude-code/i;
   const SHELLS = /^(sh|bash|zsh|dash|ksh|cmd(\.exe)?|powershell(\.exe)?|pwsh)$/i;
 
-  /** The program each command on a shell line starts (env assignments and quotes skipped). */
-  const programsOn = (line) => String(line).split(/&&|\|\||[;|\n]/).map((segment) => {
-    const m = segment.trim().match(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:"([^"]*)"|'([^']*)'|(\S+))/);
-    return m ? (m[1] ?? m[2] ?? m[3]) : '';
-  }).filter(Boolean);
+  // Round 6 (final review M2): programs that only START another program. The net looks through
+  // them to the program they run, so `env claude`, `nohup claude` and `exec claude` are the CLI.
+  const WRAPPERS = /^(env|nohup|exec|command|builtin|time|nice|ionice|stdbuf|nocache|caffeinate|sudo|doas)$/;
+  const words = (text) => (String(text).match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^["']|["']$/g, ''));
+  /** The program a list of words starts: assignments, wrappers and their options skipped. */
+  const programOf = (ws) => {
+    let i = 0;
+    for (;;) {
+      while (i < ws.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[i]) || /^-/.test(ws[i]) || /^\d+$/.test(ws[i]))) i++;
+      if (i < ws.length && WRAPPERS.test(path.basename(ws[i]))) { i++; continue; }
+      return ws[i] ?? '';
+    }
+  };
+  /** The program each command on a shell line starts (subshell and group brackets stripped). */
+  const programsOn = (line) => String(line).split(/&&|\|\||[;|\n]/)
+    .map((segment) => programOf(words(segment.trim().replace(/^[({\s]+/, '').replace(/[)}\s]+$/, ''))))
+    .filter(Boolean);
   const isTheCli = (program) => typeof program === 'string' && CLI_PROGRAM.test(path.basename(program));
 
   /** Would this child_process call start the CLI? */
@@ -52,6 +72,7 @@ if (!globalThis.__dojoTestNetsLoaded) {
     const file = args[0];
     if (isTheCli(file)) return true;
     const argv = Array.isArray(args[1]) ? args[1] : [];
+    if (typeof file === 'string' && WRAPPERS.test(path.basename(file)) && isTheCli(programOf(argv.map(String)))) return true;
     const options = args.find((a) => a && typeof a === 'object' && !Array.isArray(a));
     if (typeof file === 'string' && SHELLS.test(path.basename(file))) {
       const i = argv.findIndex((a) => a === '-c' || a === '/c' || a === '-Command');
@@ -91,8 +112,6 @@ if (!globalThis.__dojoTestNetsLoaded) {
   process.env.NODE_OPTIONS = withTheNets(process.env.NODE_OPTIONS);
 
   // ── 2. THE NETWORK NET ──────────────────────────────────────────────────────────────────────
-  const isThisMachine = (host) => host === undefined || host === null || host === '' || host === 'localhost'
-    || /^127\./.test(host) || host === '::1' || host === '[::1]' || host === '0.0.0.0' || host === '::' || /^::ffff:127\./i.test(host);
   /** Where a `connect` call is going: `{ path }` for a local socket, else `{ host, port }`. */
   const destination = (args) => {
     const first = Array.isArray(args[0]) ? args[0][0] : args[0];
@@ -115,4 +134,4 @@ if (!globalThis.__dojoTestNetsLoaded) {
   };
 }
 
-module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE };
+module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE, isThisMachine };
