@@ -136,6 +136,36 @@ function skipTemplate(src: string, start: number): number {
   throw new Error('unterminated template');
 }
 
+/**
+ * Every mention of `sendAlert` that is NOT one of the three legitimate shapes — a call
+ * (`sendAlert(` or `x.sendAlert(`), an import binding (`import { sendAlert } from …`,
+ * `const { sendAlert } = await import(…)`), or the definition. What is left is a way to reach
+ * the door the call census cannot count: a local alias (`const door = sendAlert; door(…)`),
+ * a re-export (`export { sendAlert }`), a value handed to something else (`run(sendAlert)`),
+ * an `as` rename. Fix round 1, M2: the first cut caught only `as` and `:` renames.
+ */
+function bareReferences(code: string): string[] {
+  const out: string[] = [];
+  for (const m of code.matchAll(/\bsendAlert\b/g)) {
+    const i = m.index ?? 0;
+    const after = code.slice(i + m[0].length);
+    if (/^\s*\(/.test(after)) continue; // a call, or the definition
+    const open = code.lastIndexOf('{', i);
+    const close = code.indexOf('}', i);
+    if (open !== -1 && close !== -1 && !code.slice(open + 1, i).includes('}')) {
+      const inside = code.slice(open + 1, close);
+      const before = code.slice(Math.max(0, open - 12), open);
+      const tail = code.slice(close + 1, close + 40);
+      const plain = !/\bsendAlert\s+as\b/.test(inside) && !/\bsendAlert\s*:/.test(inside);
+      if (plain && /import\s*(?:type\s*)?$/.test(before) && /^\s*from\b/.test(tail)) continue;
+      if (plain && /(?:const|let|var)\s*$/.test(before) && /^\s*=\s*await\s+import\s*\(/.test(tail)) continue;
+    }
+    const line = code.slice(0, i).split('\n').length;
+    out.push(`line ${line}: ${code.slice(Math.max(0, i - 30), i + 30).replace(/\s+/g, ' ').trim()}`);
+  }
+  return out;
+}
+
 interface Found { rel: string; severity: string }
 
 /** Every `sendAlert(…)` CALL in the server's source (the definition excluded), with the
@@ -147,7 +177,7 @@ function findCalls(): { calls: Found[]; importers: string[]; aliased: string[] }
   for (const abs of sourceFiles()) {
     const rel = path.relative(SRC, abs).split(path.sep).join('/');
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
-    if (/\bsendAlert\b[^,}]*\bas\b/.test(code) || /\bsendAlert\s*:/.test(code)) aliased.push(rel);
+    for (const where of bareReferences(code)) aliased.push(`${rel}: ${where}`);
     if (/import\s*\{[^}]*\bsendAlert\b[^}]*\}\s*from/.test(code) || /\{\s*sendAlert\s*\}\s*=\s*await\s+import/.test(code)) {
       importers.push(rel);
     }
@@ -175,8 +205,8 @@ describe('the owner-notice census', () => {
     expect(actual, 'a new or changed sendAlert caller: classify it in CENSUS (budget | agent-trouble | platform-trouble)').toEqual(declared);
   });
 
-  it('every file that imports the door calls it, and every caller imports it (no alias, no back door)', () => {
-    expect(aliased).toEqual([]);
+  it('every file that imports the door calls it, and every caller imports it; no alias, re-export or hand-off of the door', () => {
+    expect(aliased, 'a reference to sendAlert that is not a call, an import or the definition').toEqual([]);
     const callerFiles = [...new Set(calls.map((c) => c.rel))].sort();
     expect(importers.sort()).toEqual(callerFiles);
   });
