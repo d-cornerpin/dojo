@@ -107,13 +107,13 @@ describe('t140 census — the continuity brief is gone', () => {
     expect(filesWith(/\.continuityBrief(At|ValidUntilTurn)?\s*=/)).toEqual([]);
   });
 
-  it('the only code still NAMING a brief key is the declared, handed-up remainder — counted both ways', () => {
-    // prompt/assembler.ts — `renderCompactionContinuity` reads `continuityBriefAt`; it can no
-    // longer render (nothing writes the key; migration 187 removes it), and deleting it needs
-    // `prompt/registry/entries.ts` + `types.ts`, handed up to land after the wave's merges. The five
+  it('no code NAMES a brief key any more — the handed-up remainder landed at the v3.3.3 merge', () => {
+    // prompt/assembler.ts's `renderCompactionContinuity` was the last reader of `continuityBriefAt`;
+    // it could no longer render (nothing writes the key; migration 187 removes it) and was deleted
+    // with its `prompt/registry/entries.ts` + `types.ts` entries at the merge. The five
     // session-reset doors that also `json_remove`d the key were fixed in fix round 1. A NEW reader
-    // or writer anywhere else reds this; so does the hand-up landing (then this list empties).
-    expect(filesWith('continuityBrief')).toEqual(['prompt/assembler.ts']);
+    // or writer anywhere reds this.
+    expect(filesWith('continuityBrief')).toEqual([]);
   });
 
   it('fix round 1: the always-0 briefTokens field is gone from every shipped shape', () => {

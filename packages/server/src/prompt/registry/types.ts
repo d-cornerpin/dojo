@@ -67,7 +67,7 @@ export enum SystemSlot {
   PmAwareness = 1000,
   TrainerAwareness = 1100,
   HealerAwareness = 1200,
-  CompactionContinuity = 1300,
+  // 1300 RETIRED (v3.3.3): sys.compaction-continuity, deleted with its only writer (t140, migration 187).
   MessageSources = 1400,
   GoogleAccess = 1500,
   MsAccess = 1600,
@@ -118,7 +118,7 @@ export enum MessageSlot {
   // byte-equivalence contract, so re-pointing 500 or 600 at a different section would
   // silently reorder a future array — the same disposition RelevantMemory=400,
   // TrackerNotif=1500 and ActiveDirective=900 got.
-  CompactionContinuity = 700, // A8 (post-compaction <24h)
+  // 700 RETIRED (v3.3.3): was CompactionContinuity (A8, post-compaction <24h); nothing used it.
   // W81: MessageSlot.Scratchpad (800) was STRIPPED with its lane — `scratchpad_set`,
   // `scratchpad_clear` and `reset_session` all rewrite it MID-CONVERSATION, and the block's
   // own header says the agent maintains it "as I make progress". It moved WHOLE to

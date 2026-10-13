@@ -161,8 +161,8 @@ describe('the declared precedence table', () => {
     // later, so the drain could never run again, and a driven turn across the budget
     // found its bytes in NO model request on any call (`integration.test.ts`, "DRIVEN:
     // the mid-turn recap reaches NO model request"). Its requirement is re-homed onto
-    // the person's own receipt row and onto `sys.compaction-continuity`, both asserted
-    // there. Priority 60 stays RETIRED and is never reused — see the tombstone in the
+    // the person's own receipt row (retired by t137) and `sys.compaction-continuity` (deleted
+    // in v3.3.3 with its writer; the task list carries it). Priority 60 stays RETIRED and is never reused — see the tombstone in the
     // table itself.
     expect(STEER_PRECEDENCE.length).toBe(29);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);

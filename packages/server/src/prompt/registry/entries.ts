@@ -24,7 +24,6 @@ import {
   renderPmAwareness,
   renderTrainerAwareness,
   renderHealerAwareness,
-  renderCompactionContinuity,
   renderGoogleAccess,
   renderMsAccess,
   renderIntegrationReconnect,
@@ -184,15 +183,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.HealerAwareness,
     reason: 'Primary only: names the Healer agent (auto-triages injured/stuck agents).',
     render: (ctx) => renderHealerAwareness(ctx.agentId),
-  },
-  {
-    id: 'sys.compaction-continuity',
-    target: 'system',
-    slot: SystemSlot.CompactionContinuity,
-    reason:
-      'Persistent post-compaction signal (within 24h): tells the agent older ' +
-      'history was summarized + the ordered recall sources if the live tail is unclear.',
-    render: (ctx) => renderCompactionContinuity(ctx.agentId),
   },
   {
     id: 'sys.google-access',

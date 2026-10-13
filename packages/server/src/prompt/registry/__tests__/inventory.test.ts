@@ -34,7 +34,6 @@ const EXPECTED_SYSTEM = [
   'sys.pm-awareness',
   'sys.trainer-awareness',
   'sys.healer-awareness',
-  'sys.compaction-continuity',
   'sys.message-sources',
   'sys.google-access',
   'sys.ms-access',

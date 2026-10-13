@@ -15,9 +15,9 @@
 //   1. the per-park "[System: This turn ran for N minutes. Pausing here … (k of cap)]" row and
 //      its chat broadcast. It was role='system', which the tail renderer never emits, so the
 //      MODEL never read it; the only reader was the owner, every fifteen minutes (tracker #10).
-//      requirement preserved: the model's half of "pick up where you left off" rides
-//      `sys.compaction-continuity` on the system prompt (unchanged); the operator's half is the
-//      log line below; the tracker's half is `noteEngineCheckpoint` (unchanged).
+//      requirement preserved: the model's half of "pick up where you left off" is the task list
+//      (t139) — v3.3.3 condenses only rows already leaving view (t140), so nothing it reads moves;
+//      the operator's half is the log line below; the tracker's half is `noteEngineCheckpoint`.
 //   2. the continuation cap (`MAX_TURN_AUTO_CONTINUATIONS`, later a per-provider budget whose
 //      column migration 186 drops), its "running for about N minutes … Pausing here" row
 //      and its PM hand-off. A long job now parks and continues for as long as it needs.
@@ -129,9 +129,9 @@ export async function runTurnTimeBudget(
       // WHERE THE REQUIREMENT LIVES NOW: the PERSON's half was the `[System: This turn
       // ran for N minutes …]` row — retired by t137 (OR-LONG-JOBS: a park is invisible
       // housekeeping, and that row never reached the model either); the
-      // MODEL's half is `sys.compaction-continuity` (`prompt/assembler.ts`), which
-      // rides the SYSTEM prompt for 24 h after any compaction and therefore reaches
-      // the continuation turn, the one thing this steer could never do; the OPERATOR's
+      // MODEL's half is the task list (t139), which reaches the continuation turn —
+      // the one thing this steer could never do — and v3.3.3 condenses only rows already
+      // leaving view (t140; the 24 h `sys.compaction-continuity` section went); the OPERATOR's
       // half is the log line below, whose number stays `toolResults` for T13 (CUT 3's
       // H1)'s measured reason — one writer, never reset mid-turn.
       //

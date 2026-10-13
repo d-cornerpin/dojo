@@ -1608,49 +1608,6 @@ export function renderHealerAwareness(agentId: string): string | null {
   return null;
 }
 
-/** The `compaction-continuity` slot: a persistent signal (any agent) that
- *  compaction fired within 24h + where to look if the live tail is unclear.
- *  Null outside that window. */
-export function renderCompactionContinuity(agentId: string): string | null {
-  try {
-    const db = getDb();
-    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    if (configRow?.config) {
-      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
-      const at = cfg.continuityBriefAt as string | undefined;
-      if (at) {
-        const atMs = new Date(at).getTime();
-        const ageMs = Date.now() - atMs;
-        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
-          // C28 P-4: absolute + coarse phrase, byte-stable for the whole 24h
-          // window it displays, instead of a per-minute "N minutes ago" that
-          // re-introduced exactly the per-minute cache break e7505db killed.
-          const atDate = new Date(atMs);
-          const y = atDate.getFullYear();
-          const m = String(atDate.getMonth() + 1).padStart(2, '0');
-          const d = String(atDate.getDate()).padStart(2, '0');
-          const hour = atDate.getHours();
-          const partOfDay = hour < 12 ? 'the morning' : hour < 18 ? 'the afternoon' : 'the evening';
-          const when = `on ${y}-${m}-${d} in ${partOfDay}`;
-          return `## Recent Memory Compaction
-
-Your conversation was compacted ${when}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
-
-**If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
-
-1. \`work_update(action="list")\`, your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
-2. \`scratchpad_set\` (called with no value, or read via the assistant message log), your own in-flight working notes.
-3. \`recall_recent_thread\`, pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
-4. \`vault_search\` / \`history_search\`: specific facts, decisions, or instructions you remember being said but can't find.
-
-The COMPRESSED HISTORY summaries above (if any) capture key facts but DROP procedural detail. If your task involves a specific workflow ("for each photo, ask the user for a caption, then add to album"), the summary may have collapsed that into "user and agent are building an album." Verify against the tracker before assuming.`;
-        }
-      }
-    }
-  } catch { /* config not readable, proceed without the signal */ }
-  return null;
-}
-
 /** The `google-access` slot: full/read Google Workspace access note, by the
  *  agent's resolved access level. Null when no Google access. */
 export function renderGoogleAccess(agentId: string): string | null {

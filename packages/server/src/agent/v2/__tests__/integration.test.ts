@@ -407,7 +407,6 @@ import { JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, compileSteerText, recordJoinDrive
 // HL4 step 2 (2d): the carrier the retired `compaction-recap` steer's model-facing
 // requirement re-homes onto. Imported (not mocked) so the re-home clause DRIVES the
 // real renderer against the real DB rather than reading its source.
-import { renderCompactionContinuity } from '../../../prompt/assembler.js';
 
 // ── Test helpers ──
 
@@ -3272,7 +3271,7 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
 // that pinned the recap's own wording are therefore GONE with their subject, and what
 // stands in their place are the driven measurement, the RED that keeps an undeliverable
 // entry from being filed again, and the two clauses pinning where the requirement went:
-// the person's own receipt row, and `sys.compaction-continuity` on the system prompt.
+// the person's own receipt row (retired, t137), and `sys.compaction-continuity` (deleted, v3.3.3).
 //
 // The three clauses that were never about the recap — the positive control, the parking
 // behaviour and the continuation cap — still guard this branch, the last one inverted by t137
@@ -3565,7 +3564,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     // "Pick up where you left off … do not start over" rode a role='system' row, which the tail
     // renderer never emits: the MODEL never read it, and the owner read it every fifteen
     // minutes (tracker #10). OR-LONG-JOBS makes the park invisible housekeeping. The model's
-    // half is unchanged (half 2, below); the operator's half is the log line. Both arms —
+    // half is the task list (half 2 went with its section in v3.3.3); the operator's half is the log line. Both arms —
     // rebuilt history or not — are driven here and both leave no row.
     checkAndCompactSpy.mockResolvedValueOnce({ leafCreated: 1, condensedCreated: 0, tokensReclaimed: 4000 });
     await runAcrossTheBudget();
@@ -3580,26 +3579,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     await runAcrossTheBudget();
     expect(sysOf()).toEqual([]);
     expect(pendingWakeups.has('primary')).toBe(true);
-  });
-
-  it('THE RE-HOME, half 2 — the MODEL still gets the post-compaction signal, on the carrier that reaches it', () => {
-    // The recap's model-facing requirement ("history was rebuilt under you; do not guess
-    // what you were mid-doing") is owned by `sys.compaction-continuity`
-    // (`prompt/assembler.ts`, `SystemSlot.CompactionContinuity`), which rides the SYSTEM
-    // PROMPT for 24 h after a compaction and therefore actually reaches the model — the
-    // one thing the retired steer could never do. DRIVEN against the real renderer and
-    // the real DB, not read off the source: the negative arm proves the signal is gated
-    // rather than unconditional, and the positive arm proves it renders.
-    expect(renderCompactionContinuity('primary')).toBeNull();
-
-    mockDb.current!
-      .prepare('UPDATE agents SET config = ? WHERE id = ?')
-      .run(JSON.stringify({ continuityBriefAt: new Date().toISOString() }), 'primary');
-
-    const signal = renderCompactionContinuity('primary');
-    expect(signal).toContain('## Recent Memory Compaction');
-    expect(signal).toContain('Older raw messages were summarized');
-    expect(signal).toContain("If you can't tell what you're mid-doing from the live tail");
   });
 });
 
