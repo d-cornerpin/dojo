@@ -8130,6 +8130,41 @@
       "to": 415,
       "by": "t144 per-conversation condensed notes",
       "why": "a LOWERED pin (-8): its private batchesOf and summaryInput are deleted for summary-subject.ts's per-conversation `subjectBatches` and summarize.ts's one `condensedSummaryInput`."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 1236,
+      "to": 1239,
+      "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
+      "why": "+3, all wiring: one import line and two lines at the top of onAgentInjured. A Tier D injury (out of credit, a key that stopped working, access denied, no network) reaches the owner AT ONCE, ONCE PER INCIDENT, through the owner-notice door; before it the platform's own recovery comment claimed an iMessage that was never sent, and the Healer texted only after three failed recoveries (witnessed RED at 4cb9ed61: a 402 and a 401 through the real recovery cascade, zero texts; the dev box's kit run logged five Tier D locks and no alert). The stuck-agent text gains one condition on its existing line (0 lines): it is not sent on top of a standing BROKEN notice, so the owner gets one text per incident. The words, the once-per-incident record and the card live in agent/agent-owner-cards.ts (not pinned), so this file pays only for the call. REFUSED: putting the text in agent/v2/recovery.ts (outside the lane's fence, and the Healer's injury door is where both the live path and the boot rehydrate arrive, so one call covers a restart too). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 1022,
+      "to": 1030,
+      "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
+      "why": "+8, the per-agent silent window's door (OR-LONG-JOBS: the owner confirmed the 2-hour window as a PER-AGENT setting so a known-slow agent can be given longer): one import, a 5-line validated arm in PUT /agents/:id (the shared SilentWindowMinutesSchema; a refusal is a 400 naming the default, and the field is written only when sent), one blank separator, and the one-line read in rowToAgentDetail so GET and the PUT reply carry it. REFUSED: a separate narrow route (the dashboard card already writes through this door, as the Memory card's toggle does; a second route for one column is the second-mechanism shape) and passing it through `config` JSON (the sweep reads a column, not a blob). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/config/schema.ts",
+      "from": 198,
+      "to": 201,
+      "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
+      "why": "+3: the per-agent silent window's one validator (whole minutes, at least 1, nullable for the 2-hour default, deliberately NO upper bound per the owner's 'no hard limits' ruling), a comment line saying exactly that, and a blank. The route imports it, so the bounds live in one place. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/AgentConfigPanel.tsx",
+      "from": 392,
+      "to": 394,
+      "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
+      "why": "+2: one import and one element — the 'Long jobs' card (components/QuietTimeCard.tsx, new, 64 lines) beside the Memory card in the agent's existing settings stack, the owner's door to the per-agent silent window. No new UX: the same tile, label, input and save-button primitives the Memory and Ollama cards use (owner ruling 2026-10-13, use what exists). From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 641,
+      "to": 643,
+      "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
+      "why": "+2: AgentDetail.silentWindowMinutes (number | null, one doc line) — the per-agent silent window the agents route returns and the Long jobs card edits. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8166,7 +8201,7 @@
     "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283,
-    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 392,
+    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 394,
     "packages/dashboard/src/pages/Agents.tsx": 683,
     "packages/dashboard/src/pages/Chat.tsx": 2109,
     "packages/dashboard/src/pages/Costs.tsx": 686,
@@ -8303,7 +8338,7 @@
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
     "packages/server/src/agent/web-tools.ts": 441,
-    "packages/server/src/config/schema.ts": 198,
+    "packages/server/src/config/schema.ts": 201,
     "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
     "packages/server/src/costs/tracker.ts": 612,
@@ -8312,7 +8347,7 @@
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 369,
-    "packages/server/src/gateway/routes/agents.ts": 1022,
+    "packages/server/src/gateway/routes/agents.ts": 1030,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
@@ -8333,7 +8368,7 @@
     "packages/server/src/healer/auto-fix.ts": 519,
     "packages/server/src/healer/diagnostic.ts": 1071,
     "packages/server/src/healer/healer-agent.ts": 1165,
-    "packages/server/src/healer/injury-recovery.ts": 1236,
+    "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2839,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
@@ -8446,7 +8481,7 @@
     "packages/shared/src/markers.ts": 358,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 641,
+    "packages/shared/src/types.ts": 643,
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
