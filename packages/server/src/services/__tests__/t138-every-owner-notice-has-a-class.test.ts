@@ -206,12 +206,12 @@ describe('the alert latches have ONE writer each', () => {
     .filter((f) => f.endsWith('.sql'))
     .filter((f) => token.test(fs.readFileSync(path.join(SRC, 'db', 'migrations', f), 'utf8').replace(/--[^\n]*/g, '')));
 
-  it.fails('the provider-balance latch lives only in the background check (the Ledger routes only read)', () => {
+  it('the provider-balance latch lives only in the background check (the Ledger routes only read)', () => {
     expect(writersOf(/threshold_alerted/)).toEqual(['costs/provider-balance-check.ts']);
     expect(migrationsTouching(/threshold_alerted/), 'the one upgrade clean-up').toEqual(['190_owner_notice_latches.sql']);
   });
 
-  it.fails('the budget latches live only in the budget module', () => {
+  it('the budget latches live only in the budget module', () => {
     expect(writersOf(/alert_(50|75|90)_sent/)).toEqual(['costs/budget.ts']);
     expect(migrationsTouching(/alert_(50|75|90)_sent/)).toEqual(['004_phase4.sql', '190_owner_notice_latches.sql']);
   });
