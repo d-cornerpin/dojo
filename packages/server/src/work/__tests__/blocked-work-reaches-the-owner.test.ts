@@ -66,7 +66,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { transition } from '../store.js';
 import { validatedExpr, taskScope } from '../tracker-view.js';
 import { upholdClaim } from '../tracker-store.js';
-import { deliveryAboutWorkSince, deliveryForAgentSince } from '../tracker-store.js';
+import { deliveryForAgentSince } from '../tracker-store.js';
 import {
   selectRowsForOwnerEscalation,
   setValidationDoorbellHandler,
@@ -306,49 +306,10 @@ describe('§2 an unrelated sentence does not count as telling the owner', () => 
     ).toBe('d-email');
   });
 
-  it('THE INVERSION: the work-scoped read does not', () => {
-    seedDelivery({ id: 'd-email', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-some-vendor-email' });
-
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT),
-      'talking about an email is not telling the owner about this row',
-    ).toBeNull();
-  });
-
-  it('THE POSITIVE CONTROL: a delivery rooted at THIS row\'s own ask does count', () => {
-    seedDelivery({ id: 'd-this', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-about-this-row' });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT)).toBe('d-this');
-  });
-
-  it('THE SECOND EDGE: a delivery rooted at a scheduled RUN of this row counts too', () => {
-    // An occurrence is a `work` row since migration 144 absorbed `task_runs`.
-    seedWork('run-7', {
-      kind: 'occurrence', parent_id: 't-sweep', root_kind: 'schedule', root_id: 't-sweep',
-      state: 'open', intent: 'occurrence', title: 'occurrence #7', sequence: 7,
-    });
-    seedDelivery({ id: 'd-run', agent: PRIMARY, rootKind: 'occurrence', rootId: 'run-7' });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT)).toBe('d-run');
-  });
-
-  it('the narrowings bite: a peer-lane send, an engine ack, and a pre-steer delivery are all refused', () => {
-    // Coordination traffic is not a person being told.
-    seedDelivery({ id: 'd-a2a', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-about-this-row', channel: 'a2a' });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT), 'a2a channel').toBeNull();
-
-    // "On it" is not the work arriving.
-    mockDb.current!.prepare('DELETE FROM deliveries').run();
-    seedDelivery({ id: 'd-ack', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-about-this-row', tool: 'engine-ack' });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT), 'engine-ack').toBeNull();
-
-    // A sentence from BEFORE the steer cannot be the answer to it.
-    mockDb.current!.prepare('DELETE FROM deliveries').run();
-    seedDelivery({ id: 'd-old', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-about-this-row', atMs: STEER_AT - 600_000 });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT), 'before the steer').toBeNull();
-
-    // A send that failed is not a send.
-    mockDb.current!.prepare('DELETE FROM deliveries').run();
-    seedDelivery({ id: 'd-fail', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-about-this-row', outcome: 'failed' });
-    expect(deliveryAboutWorkSince('t-sweep', STEER_AT), 'not delivered').toBeNull();
-  });
+  // t146: four clauses that tested only the turn-root read `deliveryAboutWorkSince` went with
+  // it (its last caller was deleted by t142). What they protected — chatter, an a2a send, an
+  // engine ack or an undelivered send never counts as the owner told — is now the told
+  // record's contract (`t142-a-person-was-told.test.ts` §5) and the driven clause below.
 
   it('DRIVEN: with only unrelated chatter on file, the ladder still ends at the owner', async () => {
     seedDelivery({ id: 'd-email', agent: PRIMARY, rootKind: 'ask', rootId: 'msg-some-vendor-email' });

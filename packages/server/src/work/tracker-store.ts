@@ -897,78 +897,16 @@ export function deliveryForTaskClose(workId: string): string | null {
   return deliveryForAgentSince(w.agent_id, w.opened_at, currentTurnNumber(w.agent_id) || null);
 }
 
-/**
- * ── t124 — "HAS ANYONE TOLD A PERSON ABOUT *THIS ROW*?" The verify step's actual question. ──
- *
- * ⚠ THE SWEEP USED TO ASK A DIFFERENT ONE, and the triage caught it only by driving the ladder.
- *
- * `scheduler/runner.ts`'s verify step read `deliveryForAgentSince(primaryId, firstSteerAt)` —
- * which is **agent-and-time scoped, with no work reference at all.** So the question it asked
- * was *"has the primary agent put ANYTHING in front of ANY person since the steer?"* Measured
- * (`overhaul-plans/pm-cluster-triage.md` §Q4b, live drive run 2): the sweep steered the primary
- * about a blocked task, the primary woke, talked about **an unrelated vendor email**, and the
- * sweep accepted that as proof it had escalated. It then burned `validation_escalated` — which
- * `work/tracker-view.ts` records as *"a permanent stamp … one shot per row, forever"* — and
- * closed the case. Its own audit line read *"the primary was steered and has since spoken; the
- * escalation is fired and closed"*. Any owner-facing sentence about anything permanently
- * retired a pending escalation, and the owner was never told.
- *
- * ── THE SCOPING, AND WHY IT IS THESE TWO EDGES AND NOT A THIRD ──
- * A delivery is ABOUT a work row when the LEDGER says so — the turn's own recorded root, a
- * column, never prose and never a title match. `TurnRoot.kind` (`agent/turn-context.ts`) is
- * exactly `'ask' | 'occurrence' | 'a2a' | 'engine'`, so there are precisely two edges that can
- * name a work row, and both are populated today:
- *
- *   · `root_kind='ask'` → the turn served the ask this row exists to satisfy. The join is
- *     `work.source_message_id` (T11's edge, the same one `validation-drive.ts`'s reality check
- *     already dereferences for the parent-ask receipt).
- *   · `root_kind='occurrence'` → the turn served a scheduled RUN of this row. The run id is an
- *     OCCURRENCE WORK ROW (`kind='occurrence'`, `parent_id` = the scheduled row), not a
- *     `task_runs` id: migration `144` absorbed that table into `work` and DROPPED it. Worth
- *     stating because the obvious spelling of this clause is a join to `task_runs`, and on a
- *     migrated body that throws `no such table` — which, inside this sweep's one outer
- *     try/catch, would abort the whole escalation pass and restore the exact silence this lane
- *     exists to remove. Caught by driving the arm rather than reading it.
- *
- * There is deliberately **no `root_kind='task'` clause**: no turn root of that kind exists in
- * the union, so the clause would be unsatisfiable — a gate that can only ever read false, which
- * is worse than no gate because it reads like one. `'a2a'` and `'engine'` roots are excluded for
- * the opposite reason: they are real, but neither is a person being told anything.
- *
- * ── AND THE CHANNEL HAS TO BE A DOOR TO A PERSON ──
- * `channel NOT IN ('a2a','none')` — the peer lane is coordination traffic (an assignee telling
- * the PM it is stuck is not the owner being told), and `'none'` is the channel for a send that
- * crossed no door at all. `outcome='delivered'` and `tool <> 'engine-ack'` are carried verbatim
- * from `deliveryForAgentSince` above, the second for the reason it is excluded everywhere: the
- * engine saying "on it" is not the work arriving.
- *
- * ── NOT SCOPED TO AN AGENT, ON PURPOSE ──
- * The old signature took the primary's id. This one does not, and the question is better for
- * it: the sweep wants to know whether the PERSON has been told about this row, not which agent
- * did the telling. A row the assignee itself surfaced to the owner is a row the owner knows
- * about, and re-escalating it would be the noise this ladder exists to avoid.
- *
- * Null when the ledger holds no such delivery — which is the TRUE answer, and the direction
- * that ends in the platform's own owner-visible surface rather than in silence.
- */
-export function deliveryAboutWorkSince(workId: string, sinceMs: number): string | null {
-  const r = getDb().prepare(
-    `SELECT d.id AS id FROM deliveries d, work w
-      WHERE w.id = @workId
-        AND d.outcome = 'delivered' AND d.tool <> 'engine-ack'
-        AND d.channel NOT IN ('a2a', 'none')
-        AND CAST(strftime('%s', d.created_at) AS INTEGER) * 1000 >= @since
-        AND (
-          (d.root_kind = 'ask' AND w.source_message_id IS NOT NULL
-             AND d.root_id = w.source_message_id)
-          OR (d.root_kind = 'occurrence'
-             AND d.root_id IN (SELECT occ.id FROM work occ
-                                WHERE occ.kind = 'occurrence' AND occ.parent_id = w.id))
-        )
-      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
-  ).get({ workId, since: sinceMs }) as { id: string } | undefined;
-  return r?.id ?? null;
-}
+// ⟨TOMBSTONE⟩ `deliveryAboutWorkSince` lived here (t124): "has a person been told about THIS
+// row since the first steer?", answered from the turn's recorded root (`ask` / `occurrence`).
+// t142 replaced its only caller — the escalation sweep's `spokeSince` branch — with the told
+// RECORD (`work/validation-drive.ts:recordPersonTold`, a `person_told` event keyed by the
+// delivery that told the person), and t146 deleted it once nothing called it. Its `occurrence`
+// edge was the over-credit t142 removed (any scheduled-run output retired an escalation).
+// requirement preserved: unrelated chatter never retires an escalation, and an a2a / engine-ack
+// / undelivered send never counts — asserted by the told record's own refusals in
+// `work/__tests__/t142-a-person-was-told.test.ts` §5 and the driven arm in
+// `work/__tests__/blocked-work-reaches-the-owner.test.ts` §2.
 
 // ⟨TOMBSTONE⟩ `claimOccurrence` lived here and was D21's timestamp CAS: one UPDATE keyed on
 // `next_run_at = ?`. It moved to `work/occurrences.ts` and CHANGED SHAPE in PHASE-2 T8c2

@@ -413,11 +413,8 @@ describe('§7 the turn-root verify step is gone, and nothing else reads the reco
     expect(filesMatching(/\bfirstEscalationSteerAt\b/)).toEqual([]);
   });
 
-  it('the turn-root read is called by nobody (its definition is handed up for deletion)', () => {
-    // `work/tracker-store.ts` is outside this lane's fence; the function's only caller was the
-    // branch deleted here. Defined once, called zero times — and pinned so, both directions.
-    expect(filesMatching(/\bdeliveryAboutWorkSince\s*\(/)).toEqual(['work/tracker-store.ts']);
-    expect((files.get('work/tracker-store.ts')!.match(/\bdeliveryAboutWorkSince\s*\(/g) ?? []).length).toBe(1);
+  it('the turn-root read is gone (t146 deleted it once nothing called it)', () => {
+    expect(filesMatching(/\bdeliveryAboutWorkSince\b/)).toEqual([]);
   });
 
   it('the record has ONE writer and the ladder\'s suppressor is its only reader', () => {
