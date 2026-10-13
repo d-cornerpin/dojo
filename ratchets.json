@@ -7983,6 +7983,48 @@
       "to": 1525,
       "by": "t140 round 5 — a background fold chooses its writer in the owner's order",
       "why": "1523 -> 1525 (+2: +1 code, +1 comment). CheckAndCompactOptions.inTheBackground and resolveSummaryWriterModel's background option: a background fold passes over only broken writers (nobody waits there, and trying the preferred writer is how its return is noticed), replacing the 5-minute writer bench."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/index.ts",
+      "from": 244,
+      "to": 274,
+      "by": "t140 round 6 — a router pick too small for the agent is passed over like a fallback (H2, R-V333-15)",
+      "why": "244 -> 274 (+30: +26 code, +4 comment). The call step re-fits the router's own pick as a candidate (no card), and on a refusal asks the same selector for the next pick with the refused ones excluded; when nothing reachable holds the agent, the refusal stands by name and the re-fit's card rule decides whether the card is true. The loop needs the step's own state (excludedModels, routerTier, the model advance), so it lives here; the fit decision itself stays in reassemble-for-fit.ts."
+    },
+    {
+      "path": "packages/server/src/providers/anthropic-sdk.ts",
+      "from": 587,
+      "to": 592,
+      "by": "t140 round 6 — the agent-sdk transport measures tokens (I3, R-V333-15)",
+      "why": "587 -> 592 (+5: +3 code, +2 comment). query() is asked for token events (includePartialMessages) so the patience bound measures 'no first token' and 'a gap' on tokens and a streaming answer is never cut; the finished message's text is taken only when no token arrived, so streamed text is not doubled."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 258,
+      "to": 262,
+      "by": "t140 round 6 — writer health's change signal and the forced pass's patience (I1, H3, R-V333-15)",
+      "why": "258 -> 262 (+4: +3 code, +1 comment). A person's new turn is the change that earns every not-answering writer another try (noteAPersonSpoke); both emergency arms pass the turn's patience to forcedCompactionOptions (the 3-minute clock and 10-chunk cap they relied on are deleted in compaction-brakes.ts)."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1525,
+      "to": 1519,
+      "by": "t140 round 6 — a LOWERED pin",
+      "why": "1525 -> 1519 (-6): the unread maxChunksPerRun option and its chunk slicing are deleted; the background writer rule (none answering: no dial) is one line."
+    },
+    {
+      "path": "packages/server/src/memory/compaction-brakes.ts",
+      "from": 306,
+      "to": 298,
+      "by": "t140 round 6 (H3) — a LOWERED pin",
+      "why": "306 -> 298 (-8): FORCED_MAX_CHUNKS_PER_RUN and FORCED_WALL_CLOCK_MS deleted; the forced pass takes the turn's patience from its caller."
+    },
+    {
+      "path": "packages/server/src/memory/condense-until-fits.ts",
+      "from": 428,
+      "to": 423,
+      "by": "t140 round 6 (H3) — a LOWERED pin",
+      "why": "428 -> 423 (-5): CONDENSE_MAX_CALLS_PER_RUN and the per-level call budget deleted; finiteness by CONDENSE_MAX_LEVELS, in-turn bound by the caller's abort."
     }
   ],
   "maxNewFileLines": 400,
@@ -8094,7 +8136,7 @@
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 214,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
-    "packages/server/src/agent/v2/steps/call-llm/index.ts": 244,
+    "packages/server/src/agent/v2/steps/call-llm/index.ts": 274,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 546,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
@@ -8136,7 +8178,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 258,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 262,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8192,9 +8234,9 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
-    "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1525,
-    "packages/server/src/memory/condense-until-fits.ts": 428,
+    "packages/server/src/memory/compaction-brakes.ts": 298,
+    "packages/server/src/memory/compaction.ts": 1519,
+    "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
@@ -8223,7 +8265,7 @@
     "packages/server/src/prompt/assembler.ts": 2000,
     "packages/server/src/prompt/registry/entries.ts": 638,
     "packages/server/src/prompt/registry/types.ts": 491,
-    "packages/server/src/providers/anthropic-sdk.ts": 587,
+    "packages/server/src/providers/anthropic-sdk.ts": 592,
     "packages/server/src/providers/billing-breaker.ts": 316,
     "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
