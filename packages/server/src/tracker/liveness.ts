@@ -3,38 +3,28 @@
 //
 // The owner, 2026-10-12: "if there is progress of any kind, maybe we just let them work … a true
 // connection issue or no movement (no tokens going in or out) for a couple hours, we notify the
-// user." This module is the ONE reader of what the Dojo can see an agent doing, and the PM's
-// sweep is its one caller for the owner notice.
+// user." The ONE reader of what the Dojo can see an agent doing; the PM sweep is its caller.
 //
-// ── WHAT COUNTS AS MOVEMENT, AND WHAT DOES NOT ──────────────────────────────────────────
-//   * tokens in or out — a model call's `cost_records` row (written when the call completes);
-//   * a request open on a live connection — the abort registry (`agent/shared-state.ts`): every
-//     model call registers for its whole life, and the transport's stream watchdog cuts a dead
-//     connection at the provider's own patience (declared, or sized by the measured prefill speed
-//     through the pre-dial doom gate). So while a request is open the clock does not run at all:
-//     the window is stretched for exactly as long as the request's own patience allows, which is
-//     how a slow-prefill local model is never called SILENT;
-//   * a tool started or finished — the agent's own `messages` rows (the assistant row carrying the
-//     tool_use blocks, the tool row carrying their results).
-// NOT movement: the 30-second status heartbeat (`runtime.ts` `startStatusHeartbeat` — a timer,
-// it bumps `agents.updated_at` whether or not anything moves); `audit_log` (only some tools write
-// it, and owner-side doors file rows ON the agent, e.g. a grants change); an inbound message (a
-// PM poke or an owner's words arriving is not the agent doing anything).
+// MOVEMENT: tokens in or out (a model call's `cost_records` row); a request open on a live
+// connection (the abort registry: every model call registers for its whole life, and the stream
+// watchdog cuts a dead connection at the provider's own patience — declared, or sized by the
+// measured prefill speed through the pre-dial doom gate — so the clock does not run while a request
+// is open, and a slow-prefill local model is never called SILENT); a tool started or finished (the
+// agent's own assistant / tool `messages` rows). NOT movement: the 30-second status heartbeat
+// (`runtime.ts` `startStatusHeartbeat`, a timer bumping `agents.updated_at` regardless);
+// `audit_log` (only some tools write it, and owner-side doors file rows ON the agent); inbound rows
+// (a PM poke or the owner's words arriving is not the agent doing anything).
 //
-// ── PER TASK (t137 review M3) ───────────────────────────────────────────────────────────
-// Every engine checkpoint touches EVERY claimed task's `updated_at` (`work/engine-checkpoint-
-// note.ts`), so with no total cap an abandoned second task looked fresh for the whole job and the
-// PM never re-drove it. A task's own movement is its own record: what its assignee wrote on it
-// (notes, steps, status — actor = the assignee), the engine's turn-finalize stamp for a turn tied
-// to it (`activity`), its transitions and claim. `updated_at` is still read — it is what every
-// tracker write touches — EXCEPT when the newest touch was the checkpoint's own.
+// PER TASK (t137 review M3): every engine checkpoint touches EVERY claimed task's `updated_at`
+// (`work/engine-checkpoint-note.ts`), so an abandoned second task looked fresh for a whole job and
+// the PM never re-drove it. A task's movement is its own record: what its assignee wrote on it
+// (actor = the assignee), the turn-finalize `activity` stamp, its transitions and claim;
+// `updated_at` counts EXCEPT when the newest touch was the checkpoint's own.
 //
-// ── THE OWNER NOTICE (SILENT) ───────────────────────────────────────────────────────────
-// One notice per incident, through the owner-notice door, recorded on `agents.silent_notice`
-// (migration 191). That record decides the text, the dashboard card and the clear: the card
-// leaves the moment the agent moves again. Not told: an agent the owner stopped, and an agent
-// whose status already says something louder (paused, error, rate-limited: those are BROKEN-class
-// and are told by their own doors). The window is the per-agent `agents.silent_window_minutes`,
+// SILENT: one notice per incident through the owner-notice door, recorded on `agents.silent_notice`
+// (migration 191), which decides the text, the card and the clear (the agent moving again). Not
+// told: an agent the owner stopped, or one whose status says something louder (paused, error,
+// rate-limited: BROKEN-class, told by their own doors). The window: `agents.silent_window_minutes`,
 // default 2 hours (owner-confirmed).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
