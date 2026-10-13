@@ -256,12 +256,17 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     //
     // ⚠ RE-DERIVED, LOWERED BY A DELETION (t137): 25 -> 24. The −1 is the continuation-cap
     // trip arm in `pre-call-gates/turn-budget.ts` (`'turn-continuation-cap'`), deleted with the
-    // total-time cap (OR-LONG-JOBS). Nothing was converted: `breaks.length` is UNCHANGED at 6, so
-    // the total moves 31 -> 30 by exactly the one way out of the loop that no longer exists.
-    expect(stepExitSites).toBe(24);
+    // total-time cap (OR-LONG-JOBS). Nothing was converted: `breaks.length` is UNCHANGED at 6.
+    // ⚠ RE-DERIVED AGAIN (t140 round 7, re-review H2'): +1. The call step's no-pick exit in
+    // `call-llm/index.ts`: no router pick can hold the agent, the owner has been told the true
+    // cause (`call-llm/no-pick-holds.ts`), and the turn ends here instead of being thrown into
+    // the injury cascade. The driver already honoured a `callLLM` exit with its one `break`;
+    // `breaks.length` is UNCHANGED at 6, so an exit was ADDED, not converted.
+    // MERGED (v3.3.3, t137 + t140): 25 − 1 + 1 = 25, total 31.
+    expect(stepExitSites).toBe(25);
     // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
     // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
-    expect(breaks.length + stepExitSites).toBe(30);
+    expect(breaks.length + stepExitSites).toBe(31);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {
