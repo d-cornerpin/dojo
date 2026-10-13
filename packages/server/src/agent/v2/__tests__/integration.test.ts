@@ -216,6 +216,8 @@ vi.mock('../../spawner.js', () => ({
 }));
 
 vi.mock('../../errors.js', () => ({
+  // t138 r6: recovery.ts words its own pause notice with the owner card's words.
+  pausedWords: (agentId: string) => `${agentId} has been paused after repeated errors. Open the Vitals page to investigate, or resume it from its detail page.`,
   // T81b: brought up to date with the real class's fields (`code`, `retryable`, `provider`,
   // `preDialRefusal`) — this mock previously only stored the raw `options` bag and never
   // assigned any of them to the instance, so `error.code`/`error.preDialRefusal` (which
