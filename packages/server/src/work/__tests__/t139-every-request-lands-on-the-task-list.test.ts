@@ -190,6 +190,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
+import { renderMessageTimeStamp } from '../../memory/message-stamp.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
@@ -728,6 +729,35 @@ describe('t139 — backwards lifecycle: the list follows the request, never a st
     expect(list).toContain(ask);
     expect(list).toContain("The task's own description (as last edited):\nOwner changed the job: four headshots, black and white.");
     expect(list).not.toContain('What are you working on right now?');
+  });
+
+  it('ask again DAYS later (backdated rows): the new task carries the new row and its own date, never the old job', async () => {
+    const ask = 'Make nine square headshots for the team page in the same soft studio style.';
+    ownerSays('msg-sept', ask);
+    script([{ toolCalls: [openTask('wo-sept', 'Headshots (September)', 'Headshots delivered')] }, { content: 'On it.' }]);
+    await runV2Turn(PRIMARY);
+    const oldId = taskIdTitled('Headshots (September)');
+    script([
+      { toolCalls: [call('wu-done', 'work_update', { action: 'status', task_id: oldId, status: 'cancelled', notes: 'Delivered by hand; closing.' })] },
+      { content: 'Closed.' },
+    ]);
+    ownerSays('msg-sept-close', 'Thanks, those are perfect.');
+    await runV2Turn(PRIMARY);
+    backdate(oldId, 'msg-sept', 21);
+    mockDb.current!.prepare("UPDATE messages SET created_at = created_at - ? WHERE id = 'msg-sept-close'").run(21 * 86_400_000);
+    const oldAt = (mockDb.current!.prepare("SELECT created_at FROM messages WHERE id = 'msg-sept'").get() as { created_at: number }).created_at;
+
+    ownerSays('msg-oct', ask);   // the same words, three weeks on
+    script([{ toolCalls: [openTask('wo-oct', 'Headshots (October)', 'Headshots delivered')] }, { content: 'On it again.' }]);
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks();
+    expect(rows.map((r) => r.source_message_id)).toEqual(['msg-oct']);
+    const newAt = (mockDb.current!.prepare("SELECT created_at FROM messages WHERE id = 'msg-oct'").get() as { created_at: number }).created_at;
+    const list = await taskList();
+    expect(list).toContain(renderMessageTimeStamp(newAt)!);
+    expect(list).not.toContain(renderMessageTimeStamp(oldAt)!);
+    expect(list.split(ask).length - 1).toBe(1);
   });
 
   it('the same ask repeated verbatim: each task names its own row and its own recorded instant', async () => {
