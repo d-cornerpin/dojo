@@ -364,6 +364,15 @@ const STEPS_BY_PATH: Declaration[] = [
       + '`engineText()` would be the wrong corpus AND useless here — concatenated engine text '
       + 'cannot be called, and what this file needs from `model-call.ts` is its BEHAVIOUR.',
   },
+  {
+    rel: 'packages/server/src/tracker/__tests__/t143-r2-freshness-is-named-not-inferred.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'It IMPORTS the close-out gate (`steps/preflight/closeout-gate.ts`) to DRIVE it, the way '
+      + 'the declaration above imports `model-call.ts`: there is no readFileSync, no corpus and no '
+      + 'clause over step-package text. Each clause asserts what the real gate armed '
+      + '(`danglingTaskIds`) after real parks. A cut that moved the gate would fail to RESOLVE the '
+      + 'import at compile time, which cannot be silent.',
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════════════════
