@@ -7801,6 +7801,13 @@
       "to": 1236,
       "by": "t138 round 3 (2026-10-13), ruling R-V333-13 + owner ruling 'no hard limits; the Dojo should be smart enough to know when enough is enough'",
       "why": "+3, and every one is a CALL, not a comment. The Healer-broken and Healer-missing texts fired on every injury (witnessed RED: 3 texts in 3 injuries each); they now text once per condition. The latch, its clearing rules and the owner-card reader were put in a NEW module (healer/owner-notices.ts, 99 lines) precisely so this pinned file pays only for its wiring: one import line, one call where an injury finds the Healer present (`ownerConditionsOnHealerSeen`, which ends 'missing' and, if healthy, 'broken'), and one call in onAgentRecovered (`ownerConditionsOnRecovery`, which ends 'stuck' and, for the Healer, 'broken'). The three message literals moved OUT to that module (their words are shared with the owner's dashboard card), which is why the three gated sendAlert sites themselves cost nothing. Each clearing call must sit at the moment the condition is observed to end, and those moments are in this file; moving them elsewhere would mean a second reader re-deriving 'the Healer recovered' from status prose, which is the drift this campaign keeps deleting. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/healer-agent.ts",
+      "from": 1163,
+      "to": 1165,
+      "by": "t138 round 4 (2026-10-13), orchestrator ruling 3: notice the clearing when it actually happens",
+      "why": "+2: one import and one call. The Healer's self-watchdog already looks at the Healer's own row every five minutes; the call hands that observation to healer/owner-notices.ts, which ends the owner's 'Healer is missing' card (and re-arms its text) when the row is present, and 'Healer is broken' when it is not in error, and broadcasts the card's removal. Before it, those conditions were seen to end only at the NEXT injury of some other agent, so a Healer restored on a quiet box left a stale card and a dead latch (witnessed RED). REFUSED: a new timer for the re-check (ruling 3: no new timer when an existing clock fits; this one is the Healer's own) and moving the observation into owner-notices.ts (it would need a second reader of the Healer's row on a second clock). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8003,7 +8010,7 @@
     "packages/server/src/healer/approval-routing.ts": 513,
     "packages/server/src/healer/auto-fix.ts": 519,
     "packages/server/src/healer/diagnostic.ts": 1071,
-    "packages/server/src/healer/healer-agent.ts": 1163,
+    "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1236,
     "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2856,
