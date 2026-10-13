@@ -113,10 +113,10 @@ export function recordError(agentId: string): boolean {
       const db = getDb();
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
       const name = agent?.name ?? agentId;
-      // v2.3.19 — a single agent paused is NOT a true blocker. The
-      // Healer's backoff handles it; the dashboard banner already
-      // surfaces it. Demoted to warning (dashboard only).
-      sendAlert(`${name} has been paused after repeated errors. Open the dashboard to investigate.`, 'warning');
+      // A paused agent is a BROKEN agent: one of the two things the owner ruled the platform
+      // may tell him directly (OR-V333-SET (3)). v2.3.19 had demoted this to 'warning', which
+      // the door drops before the phone. Once per trip: the window empties on the trip.
+      sendAlert(`${name} has been paused after repeated errors. Open the dashboard to investigate.`, 'notice');
     } catch (err) {
       logger.warn('Failed to send iMessage alert for error loop', { agentId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -148,7 +148,9 @@ export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'o
     const msg = errorType === 'rate_limit'
       ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
       : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
-    sendAlert(msg, 'warning');
+    // Agent trouble (OR-V333-SET (3)); reached only at strike 3 of the rate-limit retry, and
+    // throttled per agent above.
+    sendAlert(msg, 'notice');
   } catch (err) {
     logger.warn('Failed to send rate limit iMessage alert', { agentId, error: err instanceof Error ? err.message : String(err) });
   }

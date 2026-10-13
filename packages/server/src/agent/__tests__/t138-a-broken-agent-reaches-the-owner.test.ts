@@ -83,7 +83,7 @@ const ownerOutbounds = (): number => (db().prepare(
 const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 
 describe('BROKEN: an agent paused after repeated errors', () => {
-  it.fails('the trip that pauses the agent texts the owner once, naming the agent', () => {
+  it('the trip that pauses the agent texts the owner once, naming the agent', () => {
     let paused = false;
     for (let i = 0; i < 10 && !paused; i++) paused = recordError('ag');
     expect(paused).toBe(true);
@@ -95,7 +95,7 @@ describe('BROKEN: an agent paused after repeated errors', () => {
 });
 
 describe('BROKEN: the strike-3 rate-limit notice', () => {
-  it.fails('reaches the owner once; a repeat inside the cooldown does not', () => {
+  it('reaches the owner once; a repeat inside the cooldown does not', () => {
     notifyRateLimitHit('ag', 'rate_limit');
     notifyRateLimitHit('ag', 'rate_limit');
     expect(ownerOutbounds()).toBe(1);

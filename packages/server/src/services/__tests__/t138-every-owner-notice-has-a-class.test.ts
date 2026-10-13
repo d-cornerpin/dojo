@@ -167,7 +167,7 @@ function findCalls(): { calls: Found[]; importers: string[]; aliased: string[] }
 describe('the owner-notice census', () => {
   const { calls, importers, aliased } = findCalls();
 
-  it.fails('every caller is declared, in order, with its severity — and every declared caller exists', () => {
+  it('every caller is declared, in order, with its severity — and every declared caller exists', () => {
     const actual: Record<string, string[]> = {};
     for (const c of calls) (actual[c.rel] ??= []).push(c.severity);
     const declared: Record<string, string[]> = {};
