@@ -7962,6 +7962,13 @@
       "to": 635,
       "by": "t140 round 4 — fence extended to the manual summary routes",
       "why": "632 -> 635 (+3 code: one import, one refusal line in each of POST inject and PUT summary edit). A hand-written summary may not begin with the not-yet-condensed head, or the placeholder replacement would delete an injected memory as an empty note or overwrite an owner's edit; the reason text lives in memory/uncondensed-head.ts."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/memory.ts",
+      "from": 635,
+      "to": 632,
+      "by": "t140 round 4 — note identity made structural (a LOWERED pin)",
+      "why": "635 -> 632 (-3). The reserved-head refusal is removed: a not-yet-condensed note is known by summaries.kind, never by its text, so a user may write any text. Back to the pre-refusal size."
     }
   ],
   "maxNewFileLines": 400,
@@ -8148,7 +8155,7 @@
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
-    "packages/server/src/gateway/routes/memory.ts": 635,
+    "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
     "packages/server/src/gateway/routes/setup-deps.ts": 606,
     "packages/server/src/gateway/routes/tracker.ts": 985,
