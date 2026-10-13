@@ -136,3 +136,47 @@ describe('the owner the bridge texts is the owner the told record recognises', (
     expect(told?.kind).toBe('applied');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// The refusal gate's reminder lane reads the same owner: a reminder delivered to the owner —
+// by address in any spelling, or by his record's name — goes through; to anyone else it is
+// refused once. (No behavioural clause covered this gate's owner check before t146.)
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the reminder lane asks the same owner question', () => {
+  const reminderSend = async (recipient: string): Promise<string> => {
+    const { runRefusalGates } = await import('../../agent/v2/steps/execute/refusal-gates.js');
+    const state = {
+      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
+      structuringToolCalledThisTurn: false, steerQueue: [], heavyLoadsThisTurn: 0, lastContextRatio: 0,
+      loopCount: 0, closeOutGateSatisfied: true, danglingTaskIds: [], compileGateSatisfied: true, compileOwedAskIds: [],
+    };
+    const ctx = {
+      agentId: 'quillon', turnNumber: 1,
+      turnCtx: { servedWork: { taskKind: 'reminder' } },
+      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
+      reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '',
+    };
+    const out = runRefusalGates(
+      state as never, { id: 'c1', name: 'imessage_send', arguments: { recipient, message: 'water the seedlings' } } as never,
+      ctx as never, false,
+    );
+    return out.refusal?.content ?? '';
+  };
+
+  beforeEach(() => {
+    setConfig('imessage_approved_senders', JSON.stringify([
+      { address: FIRST, name: 'First' }, { address: SECOND, name: 'Keeper', is_primary: true },
+    ]));
+  });
+
+  it('to the owner, by address, by another spelling of it, or by his record name: not refused', async () => {
+    expect(await reminderSend(SECOND)).not.toMatch(/is not the owner/);
+    expect(await reminderSend('1 (555) 012-2')).not.toMatch(/is not the owner/);
+    expect(await reminderSend('Keeper')).not.toMatch(/is not the owner/);
+  });
+
+  it('to someone else: refused once', async () => {
+    expect(await reminderSend(FIRST)).toMatch(/is not the owner/);
+  });
+});
