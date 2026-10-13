@@ -14,7 +14,11 @@
 // The routine condense below it is fire-and-forget on purpose (v2.5.14): it used to be
 // awaited through a summarizer call whose only bound was an SDK default, so a hung summarizer
 // blocked the turn for up to ten minutes with no error and no log line. It runs in the
-// background under its own wall-clock abort, one in flight per agent.
+// background, one in flight per agent. Round 5 (owner ruling 2026-10-13, no hard limits): it has
+// no clock and no chunk cap of its own. A writer that is answering is never cut (a 60 s clock
+// refused a real summary on a user's box); one that is not is ended by its provider's own patience
+// in the transport, by the owner's Stop, or by the turn setting it aside; and it folds exactly
+// the rows leaving the view, however many that is.
 //
 // t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL, AND ONLY THAT ONE. A
 // fixed-model agent's, or an auto-routed tool loop's locked model, is known here. An auto-routed
@@ -61,14 +65,6 @@ export function routineCheckMeasuredAtGate(agentId: string, modelId: string): bo
   return routineMeasuredAtGate.get(agentId) === modelId;
 }
 
-/**
- * The routine condense's bounds: the most leaf chunks one background run may summarise and its
- * wall-clock abort. A ceiling fold is one step of rows (half the row ceiling), which is a
- * handful of 30K-token chunks at most; ten chunks and three minutes are the old catch-up
- * drain's own bounds, kept rather than re-derived.
- */
-const ROUTINE_CONDENSE_MAX_CHUNKS = 10;
-const ROUTINE_CONDENSE_WALL_CLOCK_MS = 180_000;
 
 /**
  * The context gates. Returns `proceed` when the assembled context still fits, and
@@ -188,7 +184,7 @@ export async function runContextGates(
   // "Full" is measured against the admission budget of the window this iteration will dial
   // (`liveViewIsFull`, off the same dry run as the gate above). The noop AND warn arms both
   // reach here: warn means the view is filling, and the rows leaving it are owed their fold.
-  // Still fire-and-forget (v2.5.14), still one in flight per agent, still under a wall clock.
+  // Still fire-and-forget (v2.5.14), still one in flight per agent.
   const measuredSystemTokens = Math.max(0, assemblerOverheadTokens - (assembledEstimate.reserveTokens ?? 0));
   if (assemblerOverheadTokens > 0) lastSystemPromptTokens.set(agentId, measuredSystemTokens);
   const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
@@ -236,10 +232,10 @@ export async function condenseForTheDialedModel(args: {
 
 /**
  * THE ROUTINE CONDENSE, fire-and-forget (v2.5.14): one in flight per agent (`backgroundDrains`),
- * under its own wall clock, folding exactly `leaving`. Measured for `dialedModelId`, WRITTEN by the
- * summary writer resolved from `writerModelId` (fix round 1, review I3). A PRESSURE fold, ahead of
- * need; rows an assembly already took out of view are folded by the engine's assembly door instead
- * (`out-of-view-fold.ts`, round 2; a re-fit for a smaller pick goes through it too). Returns whether one started.
+ * folding exactly `leaving` (header: no clock, no cap). Measured for `dialedModelId`, WRITTEN by the
+ * summary writer resolved from `writerModelId` in the background order (fix round 1, review I3;
+ * round 5). A PRESSURE fold, ahead of need; rows an assembly already took out of view are folded by
+ * the engine's assembly door instead (`out-of-view-fold.ts`). Returns whether one started.
  */
 function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView;
@@ -249,12 +245,6 @@ function condenseLeavingInBackground(args: {
   backgroundDrains.add(agentId);
   const condenseAbort = new AbortController();
   registerBackgroundCompaction(agentId, condenseAbort);   // the turn's out-of-view fold may set it aside
-  const condenseTimeout = setTimeout(() => {
-    logger.warn('v2: background condense wall-clock timeout, aborting', {
-      agentId, wallClockTimeoutMs: ROUTINE_CONDENSE_WALL_CLOCK_MS,
-    }, agentId);
-    condenseAbort.abort();
-  }, ROUTINE_CONDENSE_WALL_CLOCK_MS);
   logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
     agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
     dialedModelId, contextWindow,
@@ -262,8 +252,8 @@ function condenseLeavingInBackground(args: {
   checkAndCompact(agentId, writerModelId, contextWindow, {
     leaving,
     dialedModelId,
-    maxChunksPerRun: ROUTINE_CONDENSE_MAX_CHUNKS,
     abortSignal: condenseAbort.signal,
+    inTheBackground: true,
   })
     .then((result) => {
       logger.info('v2: background condense complete', {
@@ -276,7 +266,6 @@ function condenseLeavingInBackground(args: {
       }, agentId);
     })
     .finally(() => {
-      clearTimeout(condenseTimeout);
       releaseBackgroundCompaction(agentId, condenseAbort);
       backgroundDrains.delete(agentId);
     });

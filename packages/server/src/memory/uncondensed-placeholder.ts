@@ -33,16 +33,12 @@ import { generateSummary } from './summarize.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
-import { abortBlamesWriter, eligibleSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
+import { abortBlamesWriter, backgroundSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
 import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-uncondensed-placeholder');
-
-/** The background replacement's bounds: the routine condense's own (ten chunks, three minutes). */
-const REPLACE_MAX_PER_RUN = 10;
-const REPLACE_WALL_CLOCK_MS = 180_000;
 
 /** Unsummarised rows of this session at or below `throughSeq` (the fold's own reader). */
 export function owedThrough(agentId: string, throughSeq: number): Message[] {
@@ -91,22 +87,24 @@ function coveredElsewhere(messageId: string, placeholderId: string): boolean {
 }
 
 /**
- * Replace placeholders with real summaries of exactly their rows, oldest first, trying the next
- * eligible writer when one fails. Under the per-agent compaction lock (waiting for one running);
- * never consults the low-yield brake. When none remain, the compaction-failing incident is over.
- * Returns how many placeholders were replaced (or dropped because a real fold already covered them).
+ * Replace placeholders with real summaries of exactly their rows, oldest first, trying each writer in
+ * the owner's order once per note (`backgroundSummaryWriters`: only broken ones are passed over —
+ * nobody waits here). Round 5: no clock and no per-run cap; a writer is ended only by its own
+ * transport's patience, Stop, or the turn setting this aside. A pass stops at the first note no
+ * writer could replace, and the next gate tries again. Under the per-agent compaction lock (waiting
+ * for one running); never consults the low-yield brake. When none remain, the compaction-failing
+ * incident is over. Returns how many were replaced (or dropped because a real fold covered them).
  */
 export async function replaceUncondensedPlaceholders(
-  agentId: string, opts: { abortSignal?: AbortSignal; maxChunks?: number } = {},
+  agentId: string, opts: { abortSignal?: AbortSignal } = {},
 ): Promise<number> {
   return (await withLock(`compact:${agentId}`, () => replaceUnderLock(agentId, opts), { ifBusy: 'wait' })) ?? 0;
 }
 
-async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal; maxChunks?: number }): Promise<number> {
-  const ids = (getDb().prepare(
+async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal }): Promise<number> {
+  const ids = getDb().prepare(
     'SELECT id FROM summaries WHERE agent_id = ? AND kind = ? ORDER BY earliest_at ASC, id ASC',
-  ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>)
-    .slice(0, opts.maxChunks ?? Number.POSITIVE_INFINITY);
+  ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>;
   const preferred = configuredModel(agentId);
   let replaced = 0;
   let failedWriter: string | null = null;
@@ -124,9 +122,8 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     const content = buildLeafSummaryInput(source);
     let done = content.trim().length === 0;
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
-    for (let attempt = 0; attempt < 3 && !done && !opts.abortSignal?.aborted; attempt++) {
-      const writer = eligibleSummaryWriters(preferred)[0];
-      if (!writer) break;
+    for (const writer of backgroundSummaryWriters(preferred)) {
+      if (done || opts.abortSignal?.aborted) break;
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
       if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
       const text = annotateSummaryObligations(summary.text, agentId);
@@ -167,23 +164,20 @@ export function preemptBackgroundCompaction(agentId: string): boolean {
 }
 
 /** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
- *  one-in-flight slot), only when a placeholder exists and some writer is eligible. */
+ *  one-in-flight slot), only when a placeholder exists and some writer is not broken. */
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
     if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
-    if (eligibleSummaryWriters(configuredModel(agentId)).length === 0) return false;
+    if (backgroundSummaryWriters(configuredModel(agentId)).length === 0) return false;
   } catch {
     return false;   // a read that failed starts nothing; the gate never fails a turn over this
   }
   backgroundDrains.add(agentId);
   const ctl = new AbortController();
   registerBackgroundCompaction(agentId, ctl);
-  // The LONGER bound (re-review 3 F4): a writer too slow for the turn's own clock gets three minutes
-  // here, and only a timeout at THIS bound counts against it.
-  const timer = setTimeout(() => ctl.abort('placeholder replacement wall clock'), REPLACE_WALL_CLOCK_MS);
-  (timer as unknown as { unref?: () => void }).unref?.();
-  replaceUncondensedPlaceholders(agentId, { abortSignal: ctl.signal, maxChunks: REPLACE_MAX_PER_RUN })
+  // Round 5: no clock of its own — a writer slower than the turn's patience finishes here.
+  replaceUncondensedPlaceholders(agentId, { abortSignal: ctl.signal })
     .catch((err) => logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId))
-    .finally(() => { clearTimeout(timer); releaseBackgroundCompaction(agentId, ctl); backgroundDrains.delete(agentId); });
+    .finally(() => { releaseBackgroundCompaction(agentId, ctl); backgroundDrains.delete(agentId); });
   return true;
 }

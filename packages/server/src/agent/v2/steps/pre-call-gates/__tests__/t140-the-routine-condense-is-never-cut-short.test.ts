@@ -149,7 +149,7 @@ afterEach(() => {
 });
 
 describe('t140 round 5 — the routine background condense is never cut short by a clock of ours', () => {
-  it.fails('a writer that answers after 200 s — longer than the old three-minute clock — gets its summary written', async () => {
+  it('a writer that answers after 200 s — longer than the old three-minute clock — gets its summary written', async () => {
     seedAgent(200_000);
     seedRows(610, 'Quick one: is the dock open? Yes, the dock is open.');   // the ceiling cause
     summariser.slowMs = 200_000;
@@ -159,7 +159,7 @@ describe('t140 round 5 — the routine background condense is never cut short by
     expect(summaryCount(), 'the working writer finished; nothing refused its summary').toBeGreaterThan(0);
   });
 
-  it.fails('a leaving span of more than ten leaf chunks is folded in one background run — exactly as many as are leaving', async () => {
+  it('a leaving span of more than ten leaf chunks is folded in one background run — exactly as many as are leaving', async () => {
     seedAgent(1_000_000);
     // ~1,000 tokens a row, 610 rows: far from full on 1M, but at the row ceiling's lead —
     // 320 rows (~320K tokens, eleven 30K chunks) are leaving.
@@ -169,7 +169,7 @@ describe('t140 round 5 — the routine background condense is never cut short by
     expect(summariser.calls.length, 'every chunk of the leaving span, not ten').toBeGreaterThan(10);
   });
 
-  it.fails('the background tries the owner\'s preferred writer even after it failed once — nobody waits on it there, and its answer is how the engine learns it is back', async () => {
+  it('the background tries the owner\'s preferred writer even after it failed once — nobody waits on it there, and its answer is how the engine learns it is back', async () => {
     seedAgent(200_000);
     seedRows(610, 'Quick one: is the dock open? Yes, the dock is open.');
     noteSummaryWriterOutcome(MODEL, false);   // it failed a moment ago

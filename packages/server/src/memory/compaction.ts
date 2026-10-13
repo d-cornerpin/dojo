@@ -23,7 +23,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS } from './assembler.js';
-import { summaryWriterCandidates, eligibleSummaryWriters } from './summary-writer-health.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, backgroundSummaryWriters } from './summary-writer-health.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -526,13 +526,15 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
 // Shared by checkAndCompact and the nightly summary rebuild so both write
 // summaries with the same (cheap) model choice. Returns null when no
 // text-capable model exists at all.
-export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string): string | null {
-  // t140 round 3: the order above, with writers whose provider is broken or failed a summary in
-  // the last few minutes passed over (`summary-writer-health.ts`) — so an unreachable cheapest
-  // model is not picked again and again. When every writer is passed over, the first in order is
-  // still returned: the pressure path has its own brake, and "no writer" would be a false defect.
+export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string, opts?: { background?: boolean }): string | null {
+  // t140 round 3: the order above, with writers whose provider is broken or has not answered since
+  // it failed passed over (`summary-writer-health.ts`) — so an unreachable cheapest model is not
+  // picked again and again. Round 5: a BACKGROUND fold passes over only broken writers — nobody
+  // waits on it, and trying the preferred writer is how its return is noticed. When every writer
+  // is passed over, the first in order is still returned: the pressure path has its own brake, and
+  // "no writer" would be a false defect.
   const all = summaryWriterCandidates(preferredModelId);
-  const pick = eligibleSummaryWriters(preferredModelId)[0] ?? all[0] ?? null;
+  const pick = (opts?.background ? backgroundSummaryWriters : eligibleSummaryWriters)(preferredModelId)[0] ?? all[0] ?? null;
   if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
   return pick;
 }
@@ -568,6 +570,9 @@ export interface CheckAndCompactOptions {
    * cheapest text model, exactly as before t140.
    */
   dialedModelId?: string;
+  /** t140 round 5: a background fold — nobody waits on it, so its writer is chosen in the owner's
+   *  order with only broken writers passed over (`resolveSummaryWriterModel`). */
+  inTheBackground?: boolean;
 }
 
 export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number };
@@ -630,7 +635,7 @@ async function runCheckAndCompact(
 
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
-    const resolved = resolveSummaryWriterModel(agentId, modelId);
+    const resolved = resolveSummaryWriterModel(agentId, modelId, { background: options?.inTheBackground });
     if (!resolved) {
       // OR-COMPACT-1 part 3 (review I3): under pressure this is a repairable reason, not a shrug.
       // `force` IS the pressure signal — the gate only forces at ≥96% — so no reorder is needed.

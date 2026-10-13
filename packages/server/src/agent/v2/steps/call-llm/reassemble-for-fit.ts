@@ -153,7 +153,7 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
   // pick may take rows out of the view for THAT window — floor rows included — and they are folded
   // before this pick is dialed, through the same door as the turn's own assembly.
   const reassembled = await assembleWithNothingOutOfViewUnsummarised(agentId, policy.contextWindow,
-    () => assembleContext(agentId, modelId, assemblyTurnContext));
+    () => assembleContext(agentId, modelId, assemblyTurnContext), { dialedModelId: modelId });
   const tail = messages.slice(volatileFrom ?? messages.length);
   return {
     messages: [...reassembled.messages, ...tail],

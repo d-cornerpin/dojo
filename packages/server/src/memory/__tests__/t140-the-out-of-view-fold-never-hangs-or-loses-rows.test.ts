@@ -5,15 +5,18 @@
 // summarises the rows its assembly took out of the view before the turn is dialed. Round 2 made
 // that exact; this file is what happens when the model writing the summary does not answer:
 //
-//   · the door has its OWN bound (wall clock, chunk cap) and honours Stop — never a hung turn;
-//   · a writer that times out, answers empty, or answers 402 is passed over for the next
-//     eligible one, and is not picked again for a few minutes;
+//   · the door is bounded by the turn's patience (round 5: the dialed model's own declared
+//     first-chunk patience — no clock or chunk cap of the door's own) and honours Stop;
+//   · a writer that times out (its own transport's patience ran out), answers empty, or answers
+//     402 is passed over for the next eligible one, and no turn waits on it again until it has
+//     answered (the background keeps trying it);
 //   · if every writer fails, each out-of-view row is still REPRESENTED: a deterministic,
 //     labelled placeholder note (no model, no outside text verbatim) covers exactly those rows,
 //     and a real summary replaces it once a writer answers;
 //   · the owner gets ONE card per incident, not per turn, and the 15-minute brake never blocks
 //     this fold or the replacement;
-//   · a backlog is capped per turn — the rest is placeholders, replaced in the background.
+//   · round 5: a backlog is folded as far as the turn's patience goes — the rest is placeholders,
+//     replaced in the background.
 //
 // THE COUNTER is the reviewer's, tightened as asked: after the door, a row is LOST unless its own
 // marker is in the dialed view OR a summary covering it is itself in the dialed view.
@@ -50,6 +53,9 @@ const writers = vi.hoisted(() => ({
   written: 0,
   /** Hung calls, so a clause's teardown can end them the way the transport watchdog would. */
   hung: [] as Array<() => void>,
+  /** Round 5: a 'hang' writer is ended the way its transport ends it — after its own provider's
+   *  patience — not by any clock of the fold's. Short here so the clauses run quickly. */
+  transportMs: 300,
 }));
 vi.mock('../../agent/model.js', async () => {
   const { classifyProviderError } = await import('../../agent/provider-error.js');
@@ -59,7 +65,9 @@ vi.mock('../../agent/model.js', async () => {
       const mode = writers.mode[p.modelId] ?? 'ok';
       if (mode === 'hang') {
         return new Promise((_resolve, reject) => {
-          const fail = () => reject(new Error('The operation was aborted.'));
+          const fail = () => { clearTimeout(watchdog); reject(new Error('The operation was aborted.')); };
+          // The transport's watchdog: no data within the provider's patience ends the call.
+          const watchdog = setTimeout(() => reject(new Error('model first-chunk timeout: no data from provider for too long')), writers.transportMs);
           writers.hung.push(fail);
           if (p.abortSignal?.aborted) fail();
           p.abortSignal?.addEventListener('abort', fail, { once: true });
@@ -94,7 +102,7 @@ vi.mock('../../agent/model.js', async () => {
 
 import * as compaction from '../compaction.js';
 import * as door_ from '../out-of-view-fold.js';
-import { __resetSummaryWriterHealthForTests, WRITER_COOLDOWN_MS } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { __resetBrakesForTests, noteLowYield } from '../compaction-brakes.js';
@@ -110,9 +118,22 @@ const CHEAP = 'model-t140-cheap';
 const NEXT = 'model-t140-next';
 const db = (): Database.Database => mockDb.current!;
 
-/** Short bounds so a clause measures the bound, not the default (round 3 picks the real one). */
-const BOUNDS = { wallClockMs: 600, perWriterMs: 200 };
-const hooks = door_ as unknown as { __setOutOfViewFoldBoundsForTests?: (b: typeof BOUNDS | null) => void };
+/** Round 5: the door has no bounds of its own to shorten; a clause that needs the turn's patience to
+ *  run out drives it on a fake clock (`onTheClock`). */
+const realTurn = (): Promise<void> => new Promise((r) => setImmediate(r));
+async function onTheClock<T>(p: Promise<T>, maxMs = 900_000): Promise<T> {
+  let done = false;
+  let value: T | undefined;
+  let error: unknown;
+  p.then((v) => { done = true; value = v; }, (e) => { done = true; error = e; });
+  for (let t = 0; t < maxMs && !done; t += 1_000) {
+    for (let i = 0; i < 20; i++) await realTurn();
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
+  if (!done) throw new Error('never settled on the clock');
+  if (error) throw error;
+  return value as T;
+}
 
 const LARGE = 'Manifest line: crate, bay, weight, seal number, inspector initials, remarks. '.repeat(620);
 
@@ -184,7 +205,7 @@ beforeEach(() => {
   __resetBrakesForTests();
   __resetBreakersForTests();
   __resetSummaryWriterHealthForTests();
-  hooks.__setOutOfViewFoldBoundsForTests?.(BOUNDS);
+  writers.transportMs = 300;
   mockDb.current = new Database(':memory:');
   runMigrations();
   seed();
@@ -195,28 +216,28 @@ afterEach(async () => {
   for (const fail of writers.hung.splice(0)) fail();
   // Nothing may hold this agent's compaction lock into the next clause.
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 3_000))]);
-  hooks.__setOutOfViewFoldBoundsForTests?.(null);
   mockDb.current?.close();
   mockDb.current = null;
 });
 
-describe('t140 round 3 — a failing writer is passed over for the next one, within the door\'s own bound', () => {
+describe('t140 round 3 — a failing writer is passed over for the next one, within the turn\'s patience', () => {
   for (const mode of ['hang', 'empty', '402'] as Mode[]) {
-    it(`the agent's own writer ${mode === 'hang' ? 'times out' : mode === 'empty' ? 'answers empty' : 'answers 402'}: the next writer folds the rows, nothing is lost, the turn returns within the bound`, async () => {
+    it(`the agent's own writer ${mode === 'hang' ? 'times out' : mode === 'empty' ? 'answers empty' : 'answers 402'}: the next writer folds the rows, nothing is lost, the turn returns once the failed writer is over`, async () => {
       seedACut();
       writers.mode[OWN] = mode;
       const started = Date.now();
       const ctx = await door();
-      expect(Date.now() - started, 'the door returned within its own bound').toBeLessThan(BOUNDS.wallClockMs + 400);
+      expect(Date.now() - started, 'the door returned after one transport patience at most').toBeLessThan(writers.transportMs + 2_000);
       expect(lostRows(JSON.stringify(ctx.messages)), 'a row out of view with nothing representing it').toEqual([]);
       expect(writers.calls[0]).toBe(OWN);
       expect(writers.calls, 'the next eligible writer was tried').toContain(CHEAP);
       expect(placeholders(), 'a real summary, not a placeholder').toEqual([]);
       expect(failingCards()).toBe(0);
-      // …and a writer that FAILED is not picked first again while it cools down — but one the turn's
-      // own clock merely cut (round 4, re-review 3 F4) is not failing, and is not benched.
-      if (mode === 'hang') expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'cut by the in-turn clock is not a failure').toBe(OWN);
-      else expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'an unreachable writer is not picked again and again').not.toBe(OWN);
+      // …and a writer that FAILED (its own transport gave up, it answered empty, or 402) is not waited
+      // on by a turn again until it answers — round 5: no clock decides that — while the background,
+      // where nobody waits, keeps trying it in the owner's order.
+      expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again').not.toBe(OWN);
+      expect(compaction.resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background keeps trying it').toBe(OWN);
     }, 5_000);
   }
 });
@@ -228,7 +249,7 @@ describe('t140 round 3 — every writer down: the rows are still represented, an
     for (let extra = 0; extra < 3; extra++) {
       const started = Date.now();
       const ctx = await door();
-      expect(Date.now() - started).toBeLessThan(BOUNDS.wallClockMs + 400);
+      expect(Date.now() - started, 'two transport patiences at most (the two writers that hang)').toBeLessThan(2 * writers.transportMs + 2_000);
       expect(lostRows(JSON.stringify(ctx.messages)), `turn ${extra + 1}: a row out of view with nothing representing it`).toEqual([]);
       appendTurn(false);
     }
@@ -255,16 +276,13 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
     expect(placeholders().length).toBeGreaterThan(0);
     noteLowYield(AGENT);   // the brake a pressure pass would arm
     writers.mode = {};
-    // The writers come back, and the few minutes they are passed over for have gone by.
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(Date.now() + WRITER_COOLDOWN_MS + 1_000));
+    // The writers come back. Round 5: no waiting period — the background tries them at once.
     const ph = await import('../uncondensed-placeholder.js') as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
     expect(placeholders(), 'no placeholder left once a writer answers').toEqual([]);
     const ctx = await assembleContext(AGENT, OWN);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    vi.useRealTimers();
   }, 10_000);
 });
 
@@ -276,24 +294,23 @@ describe('t140 round 3 — Stop during the fold', () => {
     setTimeout(() => stop.abort(), 50);
     const started = Date.now();
     const ctx = await door(stop.signal);
-    expect(Date.now() - started, 'Stop ended the fold').toBeLessThan(BOUNDS.perWriterMs);
+    expect(Date.now() - started, 'Stop ended the fold before the writer\'s own transport would have').toBeLessThan(writers.transportMs);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(failingCards()).toBe(0);
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a stopped call is not a failed writer').toBe(OWN);
   }, 5_000);
 });
 
-describe('t140 round 3 — a backlog is capped per turn', () => {
-  it('300 unsummarised turns, then the window drops to 32K: at most two summariser calls inside the turn, nothing lost', async () => {
+describe('t140 round 3 (re-aimed round 5) — a backlog is folded as far as the turn\'s patience goes', () => {
+  it('300 unsummarised turns, then the window drops to 32K: with writers answering, every leaving chunk is summarised in the turn, nothing lost', async () => {
     writers.windowNow = 200_000;
     for (let t = 1; t <= 300; t++) appendTurn(false, 60);   // ~600 rows, many leaf chunks
     writers.windowNow = 32_000;
-    const started = Date.now();
     const ctx = await door();
-    expect(writers.calls.length, 'no 21 serial calls inside one owner turn').toBeLessThanOrEqual(2);
-    expect(Date.now() - started).toBeLessThan(BOUNDS.wallClockMs + 2_000);
+    expect(writers.calls.length, 'as much as is leaving — round 3 capped this at two').toBeGreaterThan(2);
+    expect(placeholders(), 'nothing left to a note while the writer answers').toEqual([]);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(failingCards(), 'a capped backlog is not a failure').toBe(0);
+    expect(failingCards()).toBe(0);
   }, 20_000);
 });
 
@@ -368,14 +385,17 @@ describe('t140 round 4 — F1: never two notes for one row', () => {
     appendTurn(true);
     const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
     expect(throughSeq).toBeGreaterThan(0);
-    // A fold of the same rows that holds the lock longer than the door's clock and grace, and that
-    // the door cannot set aside (not launched by the gate: a manual or recovery compaction's shape).
-    writers.mode = { [OWN]: 'slow:3000', [CHEAP]: 'slow:3000', [NEXT]: 'slow:3000' };
+    // A fold of the same rows that holds the lock longer than the turn's patience (round 5: the
+    // standing 90 s here), and that the door cannot set aside (not launched by the gate: a manual
+    // or recovery compaction's shape).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    writers.mode = { [OWN]: 'slow:120000', [CHEAP]: 'slow:120000', [NEXT]: 'slow:120000' };
     const pressure = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 } });
-    await new Promise((r) => setTimeout(r, 20));
-    const ctx = await door();
+    await realTurn();
+    const ctx = await onTheClock(door());
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    await pressure;
+    await onTheClock(pressure);
+    vi.useRealTimers();
     expect(coverCounts(), 'a row linked to two summaries').toEqual([]);
     writers.mode = {};
     const after = await door();   // the next turn's assembly, through the engine's door
@@ -398,7 +418,7 @@ describe('t140 round 4 — F2: placeholder rows reach the vault archive', () => 
 });
 
 describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed', () => {
-  it('R2 per-writer limit: a hung first writer leaves room for a fallback that needs 100 ms', async () => {
+  it('R2 (re-aimed round 5): a first writer its own transport gives up on leaves the turn to a fallback that needs 100 ms', async () => {
     writers.mode = { [OWN]: 'hang', [CHEAP]: 'slow:100' };
     seedACut();
     const ctx = await door();
@@ -440,17 +460,19 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
     expect(failingCards(), 'a Stop is not a failure, even after one').toBe(0);
   }, 5_000);
 
-  it('R8 lock-wait limit: a lock held far past the clock does not hold the door', async () => {
+  it('R8 (re-aimed round 5): a lock held past the turn\'s patience by a holder that will not yield does not hold the door', async () => {
     seedACut();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
     const started = Date.now();
-    const ctx = await door();
-    expect(Date.now() - started, 'the door returned within its own bound').toBeLessThan(BOUNDS.wallClockMs + 1_500);
+    const ctx = await onTheClock(door());
+    // The turn's patience: the agent's provider declares none, so the transport's standing 90 s.
+    expect(Date.now() - started, 'the door returned at the turn\'s patience, not when the holder let go').toBeLessThan(90_000 + 30_000);
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     release();
     await held;
-  }, 6_000);
+  }, 20_000);
 
   it('R9 a placeholder whose rows a real summary already covers is dropped, not re-summarised', async () => {
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
@@ -473,21 +495,23 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
   }, 6_000);
 });
 
-describe('t140 round 4 — F4: the in-turn limit is not a writer failure', () => {
-  it('a writer slower than the in-turn slice is not benched and raises no card; the background replacement uses it', async () => {
-    writers.mode = { [OWN]: 'slow:400', [CHEAP]: 'slow:400', [NEXT]: 'slow:400' };
+describe('t140 round 4 (re-aimed round 5) — F4: running past the turn\'s patience is not a writer failure', () => {
+  it('a writer slower than the turn\'s patience raises no card; the turn does not wait on it again; the background, with no clock, uses it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    writers.mode = { [OWN]: 'slow:120000', [CHEAP]: 'slow:120000', [NEXT]: 'slow:120000' };
     seedACut();
-    const ctx = await door();
+    const ctx = await onTheClock(door());
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(placeholders().length, 'nobody answered inside the slice').toBeGreaterThan(0);
+    expect(placeholders().length, 'nobody answered inside the turn\'s patience').toBeGreaterThan(0);
     expect(failingCards(), 'slow is not failing').toBe(0);
-    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a slow writer is not benched').toBe(OWN);
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
     const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     writers.calls = [];
-    await replaceUncondensedPlaceholders(AGENT);
+    await onTheClock(replaceUncondensedPlaceholders(AGENT));
     expect(placeholders()).toEqual([]);
-    expect(writers.calls[0], 'the background used the agent\'s own writer, with the longer bound').toBe(OWN);
-  }, 10_000);
+    expect(writers.calls[0], 'the background used the agent\'s own writer, and nothing cut it').toBe(OWN);
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'it answered: turns use it again').toBe(OWN);
+  }, 20_000);
 });
 
 describe('t140 round 4 — card noise: one card per incident', () => {
@@ -544,9 +568,12 @@ describe('t140 round 4 — F1: the turn sets a routine background fold aside to 
     const background = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 }, abortSignal: ctl.signal })
       .finally(() => releaseBackgroundCompaction(AGENT, ctl));
     await new Promise((r) => setTimeout(r, 20));
+    // The background call is in flight on the slow writer; the door's own calls answer at once, so
+    // the time below is the time to get the lock (round 5: the door no longer cuts a working writer).
+    writers.mode = {};
     const started = Date.now();
     const ctx = await door();
-    expect(Date.now() - started, 'the door did not sit out its clock behind the background fold').toBeLessThan(BOUNDS.wallClockMs);
+    expect(Date.now() - started, 'the door did not wait out the background writer behind the lock').toBeLessThan(1_500);
     await background;
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(placeholders(), 'the door got the lock in time and wrote real summaries').toEqual([]);

@@ -5,13 +5,16 @@
 // timed out; the next pick answered 402. Nothing remembered either, so every fold picked the same
 // unreachable writer again. Two facts now travel with each provider:
 //   · its BILLING BREAKER (`providers/billing-breaker.ts`) — open after permanent failures;
-//   · a short COOL-DOWN — any failed summary call (timeout, empty text, an error) on that provider
-//     in the last few minutes. A writer that answers clears it at once.
+//   · round 5: NOT ANSWERING SINCE — its last summary call failed (its transport's patience ran out,
+//     empty text, an error), or it did not answer within a turn's patience, and it has not answered
+//     since. No clock: the writer's own next answer clears it (owner ruling 2026-10-13, no hard
+//     limits — the five-minute bench this replaced kept a writer that was back unused).
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
-// no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
-// are that order with the broken and cooling ones removed. A call the OWNER stopped, cut by the
-// turn's own clock, or set aside for the turn's fold is not the writer's failure and is never
-// recorded against it; a timeout at the background replacement's longer bound is.
+// no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. INSIDE A TURN
+// (`eligibleSummaryWriters`) that order skips broken writers and those not answering since: the
+// owner's turn does not wait on them again. IN THE BACKGROUND (`backgroundSummaryWriters`) it
+// skips only broken ones: nobody waits there, and trying the preferred writer is how its return is
+// noticed. A call the OWNER stopped, or set aside for the turn's fold, is not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -20,21 +23,19 @@ import { writerBreaker } from './compaction-defect.js';
 
 const logger = createLogger('summary-writer-health');
 
-/** How long a provider whose summary call failed is passed over. Long enough that one turn's fold
- *  does not dial it again; short enough that a provider back from a bad minute is used again soon. */
-export const WRITER_COOLDOWN_MS = 5 * 60_000;
-
 /** The abort reason a fold gives a summary call when the owner pressed Stop. */
 export const FOLD_STOPPED_BY_OWNER = 'fold-stopped-by-owner';
-/** Round 4 (re-review 3 F4): the door's IN-TURN clock cut the call. A writer merely slower than
- *  that is not failing — the background replacement gives it the longer bound. */
+/** The turn's patience ran out while the call was still open (round 5: the dialed model's own
+ *  declared patience, see `out-of-view-fold.ts`). Not a failure — no card — but the turn will not
+ *  wait on that writer again until it answers (`noteDidNotAnswerInTurn`). */
 export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
 /** Round 4: a routine background fold was set aside so the turn's own fold could run. */
 export const FOLD_PREEMPTED = 'fold-preempted-by-the-turn';
 /** Abort reasons that say nothing about the writer. */
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT, FOLD_PREEMPTED]);
 
-const failedAt = new Map<string, number>();
+/** Providers whose writer has not answered since it last failed or ran past a turn's patience. */
+const notAnsweringSince = new Map<string, number>();
 
 function providerKey(modelId: string): string {
   try {
@@ -56,16 +57,23 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
   if (!ok && !abortBlamesWriter(abortSignal)) return;
   const key = providerKey(modelId);
   if (ok) {
-    failedAt.delete(key);
+    if (notAnsweringSince.delete(key)) logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key });
     return;
   }
-  failedAt.set(key, Date.now());
-  logger.warn('Summary writer failed; its provider is passed over for a few minutes', { modelId, providerKey: key, cooldownMs: WRITER_COOLDOWN_MS });
+  notAnsweringSince.set(key, Date.now());
+  logger.warn('Summary writer failed; turns pass it over until it answers again', { modelId, providerKey: key });
 }
 
-function coolingDown(modelId: string): boolean {
-  const at = failedAt.get(providerKey(modelId));
-  return at !== undefined && Date.now() - at < WRITER_COOLDOWN_MS;
+/** The turn's patience ran out on this writer's call: no failure, but no turn waits on it again
+ *  until it has answered (the background keeps trying it). */
+export function noteDidNotAnswerInTurn(modelId: string): void {
+  const key = providerKey(modelId);
+  if (!notAnsweringSince.has(key)) notAnsweringSince.set(key, Date.now());
+  logger.info('Summary writer did not answer within the turn\'s patience; turns pass it over until it answers', { modelId, providerKey: key });
+}
+
+function notAnswering(modelId: string): boolean {
+  return notAnsweringSince.has(providerKey(modelId));
 }
 
 /**
@@ -99,12 +107,17 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   return [...new Set(list)];
 }
 
-/** The candidates a summary may be written by NOW: no open breaker, not cooling down. */
+/** The writers a TURN may wait on: no open breaker, and answering. */
 export function eligibleSummaryWriters(preferredModelId?: string): string[] {
-  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !coolingDown(id));
+  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !notAnswering(id));
+}
+
+/** The writers the BACKGROUND tries, in the owner's order: every one without an open breaker. */
+export function backgroundSummaryWriters(preferredModelId?: string): string[] {
+  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id));
 }
 
 /** Test-only reset; the map is per-process. */
 export function __resetSummaryWriterHealthForTests(): void {
-  failedAt.clear();
+  notAnsweringSince.clear();
 }

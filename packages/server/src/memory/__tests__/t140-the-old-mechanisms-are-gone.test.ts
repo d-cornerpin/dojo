@@ -199,3 +199,26 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     expect(fit).toMatch(/agentId: input\.agentId, dialedModelId: input\.modelId, contextWindow: getContextWindow\(input\.modelId\),/);
   });
 });
+
+describe('t140 census, round 5 — no fixed number cuts a working writer or caps what is leaving', () => {
+  it.each([
+    'ROUTINE_CONDENSE_WALL_CLOCK_MS', 'ROUTINE_CONDENSE_MAX_CHUNKS',
+    'REPLACE_WALL_CLOCK_MS', 'REPLACE_MAX_PER_RUN',
+    'OUT_OF_VIEW_FOLD_WALL_CLOCK_MS', 'OUT_OF_VIEW_FOLD_PER_WRITER_MS', 'OUT_OF_VIEW_FOLD_MAX_CHUNKS', 'OUT_OF_VIEW_FOLD_WRITER_TRIES',
+    'LOCK_GRACE_MS', 'WRITER_COOLDOWN_MS', '__setOutOfViewFoldBoundsForTests',
+  ])('no shipped code says %s', (token) => {
+    expect(filesWith(token)).toEqual([]);
+  });
+
+  it('the turn\'s fold is bounded by the dialed model\'s own patience, and the background folds pass no cap and no clock', () => {
+    const door = FILES.find((f) => f.rel === 'memory/out-of-view-fold.ts')!.code;
+    expect(door).toMatch(/deadline: Date\.now\(\) \+ turnPatienceMs\(agentId, opts\.dialedModelId\)/);
+    expect(door).toMatch(/\{ cause: 'out-of-view', throughSeq, rowsLeaving: owed \}, \{ abortSignal: bound\.signal \}\);/);
+    expect(filesWith(/maxChunksPerRun:/)).toEqual(['memory/compaction-brakes.ts']);   // the forced pass's (t91; tabled, handed up)
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
+    expect(gate).not.toMatch(/setTimeout\(/);
+    const ph = FILES.find((f) => f.rel === 'memory/uncondensed-placeholder.ts')!.code;
+    expect(ph).not.toMatch(/setTimeout\(/);
+    expect(ph).toMatch(/for \(const writer of backgroundSummaryWriters\(preferred\)\) \{/);
+  });
+});

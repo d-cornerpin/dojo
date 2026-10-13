@@ -21,7 +21,7 @@
 // migrated DB; the model is scripted per writer, on a fake clock.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -101,8 +101,10 @@ const OWN = 'model-t140-own';
 const CHEAP = 'model-t140-cheap';
 const NEXT = 'model-t140-next';
 const FOURTH = 'model-t140-fourth';
-/** The patience the agent's own provider declares: how long the owner lets its model take to start answering. */
-const OWN_PATIENCE_MS = 60_000;
+/** The patience the agent's own provider declares: how long the owner lets its model take to start
+ *  answering (a slow local box declares minutes). Far above the fake clock's drift while the
+ *  assembly reads its templates from disk for real. */
+const OWN_PATIENCE_MS = 300_000;
 const db = (): Database.Database => mockDb.current!;
 
 const LARGE = 'Manifest line: crate, bay, weight, seal number, inspector initials, remarks. '.repeat(620);
@@ -137,13 +139,19 @@ function seed(): void {
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Reader', 'idle', ?, '{}')").run(AGENT, OWN);
 }
 
+/** Let real I/O (a module the path loads for the first time) finish before the fake clock moves. */
+const realTurn = (): Promise<void> => new Promise((r) => setImmediate(r));
+
 /** Drive a promise to completion on the fake clock, a second at a time. */
 async function onTheClock<T>(p: Promise<T>, maxMs = 900_000): Promise<T> {
   let done = false;
   let value: T | undefined;
   let error: unknown;
   p.then((v) => { done = true; value = v; }, (e) => { done = true; error = e; });
-  for (let t = 0; t < maxMs && !done; t += 1_000) await vi.advanceTimersByTimeAsync(1_000);
+  for (let t = 0; t < maxMs && !done; t += 1_000) {
+    for (let i = 0; i < 20; i++) await realTurn();
+    await vi.advanceTimersByTimeAsync(1_000);
+  }
   if (!done) throw new Error('never settled on the clock');
   if (error) throw error;
   return value as T;
@@ -171,6 +179,14 @@ const realSummaries = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind != 'uncondensed'").get(AGENT) as { n: number }).n;
 const failingCards = (): number => owner.cards.filter((c) => c.code === 'COMPACTION_FAILING').length;
 
+beforeAll(async () => {
+  // The fold path imports these lazily; load them before any clause starts a fake clock, so the
+  // clock does not run on while a module is read from disk.
+  await import('../../agent/model.js');
+  await import('../../tools/tool-docs.js');
+  await import('../../agent/provider-error.js');
+});
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   turnNo = 0;
@@ -195,7 +211,7 @@ afterEach(() => {
 });
 
 describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer that is answering', () => {
-  it.fails('every writer needs 20 s — longer than the old 15 s slice, well inside the agent\'s own declared patience: the summary is written in the turn, no placeholder', async () => {
+  it('every writer needs 20 s — longer than the old 15 s slice, well inside the agent\'s own declared patience: the summary is written in the turn, no placeholder', async () => {
     seedACut();
     writers.mode = { [OWN]: 'slow:20000', [CHEAP]: 'slow:20000', [NEXT]: 'slow:20000', [FOURTH]: 'slow:20000' };
     const ctx = await door();
@@ -206,7 +222,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(failingCards()).toBe(0);
   });
 
-  it.fails('a cut of many leaf chunks is folded in full inside the turn — as much as is leaving, not two chunks', async () => {
+  it('a cut of many leaf chunks is folded in full inside the turn — as much as is leaving, not two chunks', async () => {
     writers.windowNow = 200_000;
     for (let t = 1; t <= 300; t++) appendTurn(false, 60);   // ~600 rows, many leaf chunks
     writers.windowNow = 32_000;
@@ -216,7 +232,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(placeholders(), 'every leaving row has a real summary').toBe(0);
   });
 
-  it.fails('the first three writers answer badly (empty, 402, empty): the fourth eligible writer writes it inside the turn', async () => {
+  it('the first three writers answer badly (empty, 402, empty): the fourth eligible writer writes it inside the turn', async () => {
     seedACut();
     writers.mode = { [OWN]: 'empty', [CHEAP]: '402', [NEXT]: 'empty' };
     // No Settings writer and an own model: own, then (as before t140) the cheapest text models.
@@ -226,7 +242,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(placeholders(), 'the fourth writer answered; nothing was left to a note').toBe(0);
   });
 
-  it.fails('a writer that does not answer within the turn\'s patience is not waited on again in the next turn; the background keeps trying it, and its first answer brings it back', async () => {
+  it('a writer that does not answer within the turn\'s patience is not waited on again in the next turn; the background keeps trying it, and its first answer brings it back', async () => {
     writers.mode = { [OWN]: 'hang' };
     seedACut();
     await door();
@@ -252,7 +268,7 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
 });
 
 describe('t140 round 5 — the background replacement has no clock and no per-run cap', () => {
-  it.fails('a writer that needs 200 s — longer than the old three-minute clock — replaces its placeholder', async () => {
+  it('a writer that needs 200 s — longer than the old three-minute clock — replaces its placeholder', async () => {
     seedACut();
     const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 6;
     expect(writeUncondensedPlaceholders(AGENT, through), 'precondition: rows under placeholder notes').toBeGreaterThan(0);
@@ -262,7 +278,7 @@ describe('t140 round 5 — the background replacement has no clock and no per-ru
     expect(placeholders(), 'the working writer was not cut; its summary replaced the note').toBe(0);
   });
 
-  it.fails('more than ten placeholder notes are all replaced in one background run', async () => {
+  it('more than ten placeholder notes are all replaced in one background run', async () => {
     for (let t = 1; t <= 40; t++) appendTurn(false, 30);
     const seqs = (db().prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ seq: number }>).map((r) => r.seq);
     // One note per pair of rows: twelve notes.
@@ -275,7 +291,7 @@ describe('t140 round 5 — the background replacement has no clock and no per-ru
 });
 
 describe('t140 round 5 — a writer that failed is used again the moment it answers, not after a waiting period', () => {
-  it.fails('the owner\'s one Settings writer failed; it comes back a second later: the background replaces the notes at once', async () => {
+  it('the owner\'s one Settings writer failed; it comes back a second later: the background replaces the notes at once', async () => {
     // A Settings writer narrows the list to it and the agent's own provider (R-V333-12): here, one writer.
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
     writers.mode = { [OWN]: 'empty' };
