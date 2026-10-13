@@ -45,7 +45,7 @@ import { AUDIT_KIND } from './audit-trail.js';
 import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
-  unvalidatedCloseExpr, unvalidatedPauseExpr,
+  unvalidatedCloseExpr, unvalidatedPauseExpr, lastEntryEventIdExpr, WORK_EVENT,
 } from './tracker-view.js';
 
 const logger = createLogger('validation-drive');
@@ -266,6 +266,157 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
   `COALESCE(${DELIVERED_RECEIPT_EXPR(a)}, ${PARENT_ASK_RECEIPT_EXPR(a)})`;
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// 2b · A PERSON WAS TOLD ABOUT THIS WORK — THE RECORD (v3.3.3 t142, migration 189)
+//
+// ── WHAT WAS MISSING ──
+// The owner-escalation ladder's verify step asks one question — *has a person already been
+// told about THIS row?* — and until now the platform had nowhere to read an answer from.
+// `deliveries` carries `root_kind`/`root_id` and no work reference, so the ladder tried the
+// turn roots: the `ask` edge (structurally older than the steer, so always false for a plain
+// task) and the `occurrence` edge (true for ANY output of a scheduled run, including one that
+// said nothing about the block — the over-credit). The pm-cluster ruling refused the two
+// remaining shortcuts by name: TURN COINCIDENCE ("any delivery on the turn that happened to
+// serve the notice would credit the row") and CONTENT INSPECTION ("never"). The interim was
+// fail-safe: the owner told twice rather than never.
+//
+// ── THE RECORD ──
+// One `work_events` row of kind `person_told` on the work's own spine (OR-TRACKER-1: the
+// tracker is the record), keyed by the DELIVERY that told the person. It is written ONLY by a
+// caller that structurally holds the work id at the moment of the send — never inferred:
+//   · `owner_notice` — the platform's owner-notice door (t138 / t143) sending about a named
+//     row: it passes the work id it was handed and the delivery its outbound scope wrote;
+//   · `send_tool`    — a send whose tool ARGUMENTS name the work, recorded at the dispatch
+//     door from the arguments, never from the text.
+// The record is SELF-VERIFYING rather than trusting: it refuses a delivery that does not
+// exist, did not succeed, or did not cross a door to a person (`a2a`, `none`, `engine-ack` —
+// the same three narrowings `deliveryForAgentSince` has always applied), and the readers
+// below re-check `outcome = 'delivered'` at read time, because an outbound scope may
+// downgrade its row to `failed` after the first crossing (`agent/v2/outbound.ts:settle`).
+//
+// ── SCOPED TO THE EPISODE, EXACTLY LIKE A VERDICT ──
+// "Told" means told about the row's CURRENT state: the record counts only when it sits on the
+// log AFTER the row's last entry into the state it is in now — the same boundary
+// `validatedExpr` scopes a verdict to, built by the same `lastEntryEventIdExpr`. Told about a
+// block, reopened, and blocked again on a fresh obstacle is NOT told about the new block.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The two paths the ruling permits. Nothing else may write the record. */
+export type PersonToldVia = 'owner_notice' | 'send_tool';
+
+export type PersonToldOutcome =
+  | { kind: 'applied'; eventId: number }
+  | { kind: 'no_change'; reason: 'already-recorded'; eventId: number }
+  | {
+    kind: 'refused';
+    reason: 'no-such-work' | 'no-such-delivery' | 'not-delivered' | 'not-a-person' | 'write-failed';
+    detail: string;
+  };
+
+/** Channels a delivery can cross without reaching a person, and the one tool that is the
+ *  engine saying "on it" rather than the work arriving. Carried verbatim from
+ *  `work/tracker-store.ts:deliveryForAgentSince`'s narrowings. */
+const NOT_A_PERSON_CHANNELS: readonly string[] = ['a2a', 'none'];
+const NOT_A_PERSON_TOOL = 'engine-ack';
+
+/**
+ * Record that a person was told about `workId`, by the delivery `evidence.deliveryId`.
+ *
+ * THE CONTRACT, for every caller:
+ *   · call it AFTER the send, with the id of the `deliveries` row the send wrote (inside an
+ *     outbound scope that is `currentOutboundDeliveryId()`; outside one, the id `recordAtDoor`
+ *     returned);
+ *   · pass a work id you HOLD — handed to you as data, or named in the tool call's arguments.
+ *     Never one recovered from the turn, the conversation, or the text of the message;
+ *   · it never throws, and it never affects the send: a refusal or a write failure is
+ *     returned and logged, and the only consequence is the fail-safe one (the owner may be
+ *     told about the row again).
+ * Idempotent per (work, delivery). The actor on the event is the delivery's own sender
+ * (`deliveries.agent_id` — `PLATFORM_SENDER` for the notice door), read from the ledger
+ * rather than supplied, so the record cannot claim a different teller than the send.
+ */
+export function recordPersonTold(
+  workId: string,
+  evidence: { deliveryId: string; via: PersonToldVia },
+): PersonToldOutcome {
+  try {
+    const db = getDb();
+    if (!db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId)) {
+      return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
+    }
+    const d = db.prepare(
+      'SELECT agent_id, channel, tool, outcome FROM deliveries WHERE id = ?',
+    ).get(evidence.deliveryId) as
+      { agent_id: string; channel: string; tool: string; outcome: string } | undefined;
+    if (!d) {
+      return { kind: 'refused', reason: 'no-such-delivery', detail: `no delivery ${evidence.deliveryId}` };
+    }
+    if (d.outcome !== 'delivered') {
+      return { kind: 'refused', reason: 'not-delivered', detail: `delivery outcome is ${d.outcome}` };
+    }
+    if (NOT_A_PERSON_CHANNELS.includes(d.channel) || d.tool === NOT_A_PERSON_TOOL) {
+      return {
+        kind: 'refused', reason: 'not-a-person',
+        detail: `a ${d.channel} delivery by ${d.tool} does not reach a person`,
+      };
+    }
+    const prior = db.prepare(
+      `SELECT id FROM work_events WHERE work_id = ? AND kind = '${WORK_EVENT.personTold}'
+          AND json_extract(payload, '$.delivery_id') = ? LIMIT 1`,
+    ).get(workId, evidence.deliveryId) as { id: number } | undefined;
+    if (prior) return { kind: 'no_change', reason: 'already-recorded', eventId: prior.id };
+
+    const eventId = appendWorkEvent(workId, WORK_EVENT.personTold, d.agent_id, {
+      delivery_id: evidence.deliveryId, via: evidence.via, channel: d.channel,
+    });
+    // SAID OUT LOUD: from here the escalation ladder holds this row for the rest of its
+    // current episode, and the day that is wrong the log is where it becomes visible.
+    logger.info('a person was told about this work; its owner-escalation episode is settled', {
+      workId, deliveryId: evidence.deliveryId, via: evidence.via, channel: d.channel, eventId,
+    });
+    return { kind: 'applied', eventId };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn('could not record that a person was told (non-fatal; the owner may be told again)', {
+      workId, deliveryId: evidence.deliveryId, error: detail,
+    });
+    return { kind: 'refused', reason: 'write-failed', detail };
+  }
+}
+
+/** Where the row's CURRENT episode begins on its log: its last entry into the state it is in
+ *  now, or 0 for a row with no recorded entry (born in the state, or migrated). */
+const episodeStartExpr = (a: string): string =>
+  `COALESCE(${lastEntryEventIdExpr(a, `${a}.state`)}, 0)`;
+
+/** A person was told about this row during its current episode, by a send that still stands. */
+export const personToldThisEpisodeExpr = (a: string): string =>
+  `EXISTS (SELECT 1 FROM work_events te`
+  // The outcome filter rides the JOIN itself, so the statement that reads `deliveries` carries
+  // it (the owner-close receipt census in `agent/v2/__tests__/owner-close-receipt.test.ts`
+  // reads each `deliveries` statement for exactly this).
+  + ` JOIN deliveries td ON td.id = json_extract(te.payload, '$.delivery_id') AND td.outcome = 'delivered'`
+  + ` WHERE te.work_id = ${a}.id AND te.kind = '${WORK_EVENT.personTold}'`
+  + `   AND te.id > ${episodeStartExpr(a)})`;
+
+/**
+ * THE LADDER'S SUPPRESSOR: this row's current episode needs nothing more from the owner
+ * ladder — a person was told (above), or the ladder already ran to its end and stamped
+ * `validation_escalated` (the platform surface spoke, or the owner validated it himself).
+ *
+ * ⟨TOMBSTONE⟩ This was `NOT EXISTS (… kind = 'validation_escalated')` with no scope —
+ * *"a permanent stamp … one shot per row, forever"*. That bounded the loop, and it also meant
+ * a row told once, resolved, and blocked again on a NEW obstacle could never reach the owner
+ * again; driven RED in `__tests__/t142-a-person-was-told.test.ts` §3. The bound survives at
+ * the right size: one trip up the ladder per EPISODE (per entry into the state), not per row.
+ * requirement preserved: within an episode the stamp is still final — "a row already
+ * escalated is not escalated twice" (`blocked-work-reaches-the-owner.test.ts` §4) still holds.
+ */
+export const ownerEpisodeSettledExpr = (a: string): string =>
+  `(EXISTS (SELECT 1 FROM work_events se WHERE se.work_id = ${a}.id`
+  + `   AND se.kind = '${WORK_EVENT.validationEscalated}' AND se.id > ${episodeStartExpr(a)})`
+  + ` OR ${personToldThisEpisodeExpr(a)})`;
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // 3a · WHICH ROWS ARE THE OWNER'S PROBLEM — THE STATE ARMS, WITH ONE OWNER
 //
 // ⚠ THESE ARMS WERE WRITTEN TWICE. `selectRowsForOwnerEscalation` asks "who escalates" and
@@ -304,10 +455,10 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
  * LLM, not a mechanism.
  *
  * SO THE ARM IS NOW THE STATE ALONE, and the bound is the one the sweep always had: the
- * top-level `NOT EXISTS (… kind='validation_escalated')` clause, which `work/tracker-view.ts`
- * records as *"a permanent stamp … one shot per row, forever"*. A blocked row gets ONE trip
- * up the ladder — two steers at the primary, then the platform's own surface — whether or not
- * the PM blessed it. It cannot loop, and it can no longer be cancelled by the blessing.
+ * top-level suppressor, `ownerEpisodeSettledExpr` (t142 scoped it from "per row, forever" to
+ * "per episode"). A blocked row gets ONE trip up the ladder per block — two steers at the
+ * primary, then the platform's own surface — whether or not the PM blessed it. It cannot
+ * loop, and it can no longer be cancelled by the blessing.
  *
  * THE NEGATIVE CONTROL IS THE OTHER TWO ARMS: `close` and `pause` KEEP their validation
  * conjunct, because for those two an uphold IS the resolution (the work is done / the pause is
@@ -631,7 +782,7 @@ export function selectRowsForOwnerEscalation(
            (CASE WHEN ${ownerEscalationStateArmsExpr('w')} THEN 1 ELSE 0 END) AS by_state_arm
     FROM work w
     WHERE ${taskScope('w')}
-      AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
+      AND NOT ${ownerEpisodeSettledExpr('w')}
       AND ${awaitingUserVerdictExpr('w')} = 0
       AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
       AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
@@ -663,8 +814,8 @@ export interface SkippedAsDeliveredRow extends OwnerEscalationRow { deliveryId: 
  * Read only to say so out loud, exactly as `countRowsHeldBackFromOwner` below does for the
  * ordering law: a skip nobody can see is the same silent behaviour in the other direction, and
  * on the day this clause is wrong the log is where that becomes visible. Deliberately does NOT
- * write `validation_escalated` — that stamp is permanent (`work/tracker-view.ts:323-324`,
- * "one shot per row, forever"), and burning the row's one escalation on a pass that decided
+ * write `validation_escalated` — that stamp ends the row's escalation episode
+ * (`ownerEpisodeSettledExpr`), and burning the episode's one escalation on a pass that decided
  * NOT to escalate would be worse than the defect it fixes.
  */
 export function selectRowsSkippedAsDelivered(
@@ -686,7 +837,7 @@ export function selectRowsSkippedAsDelivered(
              ${alreadyDeliveredReceiptExpr('w')} AS deliveryId
       FROM work w
       WHERE ${taskScope('w')}
-        AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
+        AND NOT ${ownerEpisodeSettledExpr('w')}
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})
@@ -748,15 +899,19 @@ export function selectRowsSkippedAsDelivered(
  *  payload, the landing place migration 152's header names for exactly this. */
 export const ESCALATION_STEER_MARKER = 'validation_escalation_steer';
 
-/** How many REAL steers this row has spent — DISTINCT primary turns, never rows, so a 30-second
- *  sweep cadence cannot burn the bound between two of the agent's turns. */
+/** How many REAL steers this row has spent IN ITS CURRENT EPISODE — DISTINCT primary turns,
+ *  never rows, so a 30-second sweep cadence cannot burn the bound between two of the agent's
+ *  turns. t142: scoped to the episode with the same boundary as the suppressor
+ *  (`ownerEpisodeSettledExpr`), so a row blocked again on a new obstacle gets its two steers
+ *  again instead of arriving with the old episode's bound already spent. */
 export function escalationSteerCount(workId: string): number {
   try {
     return (getDb().prepare(
-      `SELECT COUNT(DISTINCT COALESCE(json_extract(payload, '$.turn_number'), -id)) AS n
-         FROM work_events
-        WHERE work_id = ? AND kind = '${AUDIT_KIND}'
-          AND json_extract(payload, '$.action_taken') = ?`,
+      `SELECT COUNT(DISTINCT COALESCE(json_extract(ev.payload, '$.turn_number'), -ev.id)) AS n
+         FROM work_events ev JOIN work w ON w.id = ev.work_id
+        WHERE ev.work_id = ? AND ev.kind = '${AUDIT_KIND}'
+          AND json_extract(ev.payload, '$.action_taken') = ?
+          AND ev.id > ${episodeStartExpr('w')}`,
     ).get(workId, ESCALATION_STEER_MARKER) as { n: number } | undefined)?.n ?? 0;
   } catch (err) {
     // A ladder that cannot read its own counter must not steer for ever. Reporting it spent
@@ -768,17 +923,12 @@ export function escalationSteerCount(workId: string): number {
   }
 }
 
-/** When the FIRST steer for this row went out, so the verify step has a boundary to read the
- *  delivery ledger against. Null when none has. */
-export function firstEscalationSteerAt(workId: string): number | null {
-  try {
-    return (getDb().prepare(
-      `SELECT MIN(created_at) AS at FROM work_events
-        WHERE work_id = ? AND kind = '${AUDIT_KIND}'
-          AND json_extract(payload, '$.action_taken') = ?`,
-    ).get(workId, ESCALATION_STEER_MARKER) as { at: number | null } | undefined)?.at ?? null;
-  } catch { return null; }
-}
+// ⟨TOMBSTONE⟩ `firstEscalationSteerAt` lived here: the clock boundary the verify step read the
+// delivery ledger against ("has anyone spoken about this row since the first steer?"). t142
+// deleted that verify step — the question is now answered by a RECORD
+// (`ownerEpisodeSettledExpr`, in SQL, before a row is ever steered), so nothing reads the
+// instant any more. requirement preserved: "the owner is not told about a row a person was
+// already told about" — now true for the paths that can know it, instead of for none.
 
 /** Record one steer's spend on the row's own durable history. */
 export function recordEscalationSteer(
@@ -855,11 +1005,16 @@ export function ownerEscalationAlertLine(p: {
   // honest-record standard this composer exists to enforce, applied to the one clause of it
   // that was still speaking beyond the evidence.
   //
-  // ⚠ IT IS NOT A FIX FOR THE BLIND SPOT, and must not be mistaken for one. The ruling
-  // ACCEPTS the missing record and defers the capability to a v3.3.3 lane (the fail-safe
-  // direction: the owner is told twice rather than never). When that lane gives the steer a
-  // real serve record, this clause can go back to stating the stronger fact — and it should,
-  // because "I have no record" is weaker than the owner deserves once a record exists.
+  // ── v3.3.3 t142: THE RECORD NOW EXISTS, AND THIS SENTENCE STAYS EXACTLY AS WEAK AS IT IS ──
+  // A person-told record (`recordPersonTold`, §2b) now settles the episode before a row is
+  // ever steered, so when this line is spoken the platform KNOWS that no path able to record
+  // a tell has done so this episode. That is still not "nobody brought it to you": an agent
+  // can tell the owner in an ordinary reply that names no work, and the ruling forbids
+  // inferring that from turn coincidence or from the words. So the stronger sentence would
+  // still be capable of being false, and the record does not license it. What the record
+  // DOES change is how often this line is spoken: never, now, for a row a recording path told.
+  // Asserted: `__tests__/blocked-work-reaches-the-owner.test.ts` §5 (the sentence) and
+  // `__tests__/t142-a-person-was-told.test.ts` §1 (the line is not spoken after a tell).
   const parts: string[] = [
     `"${title}" has been ${p.status} since ${p.since}, and I have no record of anyone bringing it to you.`,
   ];
@@ -929,7 +1084,7 @@ export function selectRowsHeldBackFromOwner(
     return (getDb().prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')}
-        AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
+        AND NOT ${ownerEpisodeSettledExpr('w')}
         AND ${awaitingUserVerdictExpr('w')} = 0
         AND COALESCE(w.agent_id, '') NOT IN (${placeholders})
         AND COALESCE(w.requester_id, '') NOT IN (${placeholders})

@@ -25,7 +25,7 @@ import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
-  deliveryForAgentSince, deliveryAboutWorkSince,
+  deliveryForAgentSince,
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
@@ -41,7 +41,7 @@ import { RUN_STATUS_UNDELIVERED } from '../work/run-deliver-drive.js';
 import {
   countRowsHeldBackFromOwner, selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered,
   ownerVerdictNudgeText, ownerEscalationAlertLine, failureArmStillWithinPatience,
-  escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
+  escalationSteerCount, recordEscalationSteer,
   recordAttemptsForRowsNoValidatorEverSaw, noteValidatorSilence,
 } from '../work/validation-drive.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from '../agent/v2/floor-ghost.js';
@@ -479,8 +479,8 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
     await noteValidatorSilence(stalled.length, getPrimaryAgentId());
     // UX-REPAIR round 2 T12 — THE REALITY CHECK, SAID OUT LOUD. A row held back because the
     // ledger says its work already reached the person is not a silent skip; and it deliberately
-    // does NOT burn `validation_escalated`, which is permanent (one shot per row, forever), so
-    // a row whose delivery is later undone can still be escalated.
+    // does NOT burn `validation_escalated`, which ends the row's escalation episode (t142: one
+    // shot per episode), so a row whose delivery is later undone can still be escalated.
     const skippedAsDelivered = selectRowsSkippedAsDelivered(staleBefore, serviceIds);
     if (skippedAsDelivered.length > 0) {
       logger.info('escalation_skipped_delivered: these rows are past the bound but the platform already delivered their work', {
@@ -521,96 +521,62 @@ export async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         ownerName: getOwnerName(), boundMin: VALIDATION_ESCALATION_MIN,
       });
 
-      // ── UX-REPAIR round 2 T12: VERIFY BEFORE RE-STEERING ──
-      // OR2's shape is detect → steer → VERIFY VIA DELIVERY RECORDS → bounded retry → the
-      // platform's own surface. The verify step: has a person been told about THIS ROW since
-      // the first steer went out? If so the nudge landed and the agent spoke, and the one-shot
-      // suppressor is written for that FIRED case exactly as it always was.
+      // ── v3.3.3 t142: THE VERIFY STEP IS A RECORD, READ BEFORE THE ROW IS EVER SELECTED ──
       //
-      // ⚠ t124 — THE SCOPE OF THAT QUESTION IS THE WHOLE FIX. This read was
-      // `deliveryForAgentSince(primaryId, firstSteerAt)`: agent-and-time scoped, no work
-      // reference. It asked "has the primary said anything to anyone?", so the triage's live
-      // drive watched an unrelated email bulletin retire a pending escalation and burn the
-      // row's one permanent `validation_escalated` stamp. `deliveryAboutWorkSince` asks the
-      // question the ladder means, scoped to the row by the ledger's own root columns; the
-      // argument for the two edges it accepts lives with the query in `work/tracker-store.ts`.
+      // ⟨TOMBSTONE⟩ This was `spokeSince = deliveryAboutWorkSince(t.id, firstSteerAt) !== null`
+      // — "has a person been told about THIS row since the first steer?", answered from turn
+      // roots. The review ruling of 2026-10-07 proved it FALSE BY CONSTRUCTION for a plain
+      // task (the steer rides `ENGINE_RIDER_INTENTS`, so no turn is rooted at it, and the
+      // `ask` edge predates the steer), and its one live edge — `occurrence` — OVER-CREDITED:
+      // any delivered output of a scheduled run retired the escalation, including output that
+      // said nothing about the block (driven RED in `work/__tests__/t142-a-person-was-told.test.ts`
+      // §2). The interim was the fail-safe "always tell".
       //
-      // ⚠⚠ REVIEW RULING 2026-10-07 — `spokeSince` IS FALSE BY CONSTRUCTION FOR A
-      //    NON-RECURRING ROW, WHICH IS THE CASE THIS LADDER MAINLY SERVES. MARKED, NOT
-      //    DELETED, AND THE DISTINCTION IS LOAD-BEARING.
-      //
-      // WHY IT CANNOT BE TRUE FOR A PLAIN TASK. The steer is delivered by `postAgentNotice`
-      // with `intent: 'validation_check'`, and that intent is on `ENGINE_RIDER_INTENTS`
-      // (`agent/v2/engine-riders.ts:88`) — a list whose whole purpose is *"engine rows that
-      // ride a turn and must never BE one"*. `getPendingEngineEvent` excludes it in SQL
-      // (`agent/v2/counterparty.ts:400`). So the notice never becomes the turn's root, and the
-      // turn the primary speaks on carries no root `deliveryAboutWorkSince` can match: its
-      // `ask` edge is `work.source_message_id`, reachable only from the turn that served the
-      // original ask, which by construction PREDATES `firstSteerAt` (the row must be ≥5
-      // minutes stale before the first steer). The platform therefore holds NO RECORD either
-      // way, which is why the owner line below now says exactly that and no more.
-      //
-      // WHY IT IS STILL NOT DEAD CODE, and why deleting it would be wrong: the `occurrence`
-      // edge is live. A SCHEDULED row's run is a turn rooted at its own occurrence, so a
-      // delivered output of that run does resolve here — driven green by
-      // `work/__tests__/blocked-work-reaches-the-owner.test.ts` §2 ("a delivery rooted at a
-      // scheduled RUN of this row counts too"). Deleting the branch would remove real
-      // behaviour for every recurring row and red that clause. So this is a NARROWED
-      // capability, not an absent one, and the marking says which half works.
-      //
-      // ACCEPTED AND DEFERRED TO v3.3.3, not left as a silent always-false branch. The ruling
-      // withdrew its own first prescription (a `root_kind='engine'` edge — refuted by the
-      // rider exclusion above, it could only ever read false) and refused the obvious
-      // alternative (matching deliveries on the notice's `served_by_turn`) because that
-      // re-admits defect (b) in a narrower form: an unrelated delivery made on the very turn
-      // that read this row's steer would retire the escalation. The v3.3.3 lane that gives the
-      // steer a REAL per-row serve record is where the capability gets rebuilt; until then the
-      // failure direction is deliberately fail-safe — the owner is told twice rather than
-      // never.
-      const firstSteerAt = firstEscalationSteerAt(t.id);
-      const spokeSince = firstSteerAt !== null
-        && deliveryAboutWorkSince(t.id, firstSteerAt) !== null;
+      // Both are gone. "A person was told about this row" is now a `person_told` record on the
+      // row's own spine, written only by a path that structurally holds the work id
+      // (`work/validation-drive.ts:recordPersonTold`), and `selectRowsForOwnerEscalation`
+      // excludes a row whose CURRENT episode is settled (`ownerEpisodeSettledExpr`) before it
+      // is ever steered — so a row reaching this loop is, by the record, one nobody has told.
+      // What remains is the ladder itself: steer the primary, bounded, then the platform's own
+      // surface. requirement preserved: the owner is not told twice about an episode a
+      // recording path already told him about, and is never told zero times about one it did
+      // not (the negative controls in that test file).
       const steersSpent = escalationSteerCount(t.id);
 
-      if (spokeSince || steersSpent >= MAX_FLOOR_STEER_ATTEMPTS) {
-        // Either the agent has spoken, or it has been asked twice on two separate turns and
-        // has not. The second case is a PLATFORM fault and the platform's own watchdog surface
-        // is what says so — never the engine wearing the agent's face (OR2's last clause).
-        if (!spokeSince) {
-          // ── t124 — THE OWNER IS TOLD WHAT IS BLOCKED, SINCE WHEN, AND WHAT WAS TRIED. ──
-          // The line was one fixed sentence that named no work, carried nothing actionable,
-          // and asserted "your PM cannot confirm it" unconditionally — which this lane's own
-          // blocked-arm fix turns into a LIE for the PM-upheld case it newly admits.
-          // `ownerEscalationAlertLine` composes it from the row's recorded facts and omits any
-          // clause whose fact is not on file; the argument lives with it in `validation-drive`.
-          recordFloorGhost({
-            agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
-            attempts: steersSpent,
-            ownerLine: ownerEscalationAlertLine({
-              title: t.title, status: t.status, since: t.updated, agentName,
-              steers: steersSpent, failures: t.failures,
-              blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
-            }),
-            detail: {
-              steers: steersSpent, task_title: t.title,
-              // The facts the sentence was built from, on the row's own durable history, so the
-              // alert can be audited against what the platform knew when it spoke.
-              failures: t.failures, blocked_validated: t.blocked_validated,
-              stated_obstacle: t.obstacle, since: t.updated,
-            },
-          }, { broadcast });
-        }
+      if (steersSpent >= MAX_FLOOR_STEER_ATTEMPTS) {
+        // It has been asked twice on two separate turns and has not raised it. That is a
+        // PLATFORM fault and the platform's own watchdog surface is what says so — never the
+        // engine wearing the agent's face (OR2's last clause).
+        // ── t124 — THE OWNER IS TOLD WHAT IS BLOCKED, SINCE WHEN, AND WHAT WAS TRIED. ──
+        // The line was one fixed sentence that named no work, carried nothing actionable,
+        // and asserted "your PM cannot confirm it" unconditionally — which this lane's own
+        // blocked-arm fix turns into a LIE for the PM-upheld case it newly admits.
+        // `ownerEscalationAlertLine` composes it from the row's recorded facts and omits any
+        // clause whose fact is not on file; the argument lives with it in `validation-drive`.
+        recordFloorGhost({
+          agentId: primaryId, turnNumber: null, floor: 'owner-verdict-unasked', workId: t.id,
+          attempts: steersSpent,
+          ownerLine: ownerEscalationAlertLine({
+            title: t.title, status: t.status, since: t.updated, agentName,
+            steers: steersSpent, failures: t.failures,
+            blockedValidated: t.blocked_validated === 1, obstacle: t.obstacle,
+          }),
+          detail: {
+            steers: steersSpent, task_title: t.title,
+            // The facts the sentence was built from, on the row's own durable history, so the
+            // alert can be audited against what the platform knew when it spoke.
+            failures: t.failures, blocked_validated: t.blocked_validated,
+            stated_obstacle: t.obstacle, since: t.updated,
+          },
+        }, { broadcast });
         stamp.run(threadId, t.id);
         writeTaskLog({
           taskId: t.id,
           fromEntity: 'engine',
           entryKind: 'directive',
           actionTaken: '5-min validation escalation: asked user',
-          reason: spokeSince
-            ? `the primary was steered and a person has since been told about THIS row; `
-              + `the escalation is fired and closed`
-            : `task has been ${t.status} with *_validated=0 since ${t.updated}; the primary was steered `
-              + `${steersSpent} time(s) and did not come back — handed to the platform surface`,
+          reason: `task has been ${t.status} with *_validated=0 since ${t.updated}; the primary was steered `
+            + `${steersSpent} time(s) and did not come back — handed to the platform surface`,
           note: askText,
         });
       } else {

@@ -26,6 +26,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -51,8 +54,9 @@ vi.mock('../../agent/runtime.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { transition } from '../store.js';
-import * as drive from '../validation-drive.js';
-import { selectRowsForOwnerEscalation, ESCALATION_STEER_MARKER } from '../validation-drive.js';
+import {
+  selectRowsForOwnerEscalation, ESCALATION_STEER_MARKER, recordPersonTold, escalationSteerCount,
+} from '../validation-drive.js';
 import { withOutbound, recordAtDoor, currentOutboundDeliveryId, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
 
 /** Fictional throughout (G1). */
@@ -66,14 +70,12 @@ const CUTOFF = NOW - 5 * 60_000;
 const SERVICE_IDS = ['dreamer', 'healer'];
 const OBSTACLE = 'the greenhouse controller rejects every firmware upload with a checksum error';
 
-type TellWriter = (workId: string, evidence: { deliveryId: string; via: string }) => unknown;
-
 /**
  * THE OWNER-NOTICE DOOR'S SHAPE. A platform outbound to the owner's phone, through the real
  * outbound scope (the door records the delivery), and then the told record keyed by the
- * delivery id that scope wrote — the exact call the t138/t143 door makes. The writer is
- * looked up rather than imported so this file runs at 00a2b34d, where it does not exist: the
- * RED there is the ladder's BEHAVIOUR, not a missing symbol.
+ * delivery id that scope wrote — the exact call the t138/t143 door makes. (At the RED commit
+ * the writer was looked up rather than imported, so the file ran at 00a2b34d and the RED was
+ * the ladder's BEHAVIOUR, not a missing symbol.)
  */
 function tellOwnerThroughTheNoticeDoor(workId: string): string {
   return withOutbound(
@@ -82,8 +84,8 @@ function tellOwnerThroughTheNoticeDoor(workId: string): string {
       recordAtDoor({ outcome: 'delivered', channel: 'imessage' });
       const deliveryId = currentOutboundDeliveryId();
       expect(deliveryId, 'the door wrote a delivery row').toBeTruthy();
-      const writer = (drive as unknown as Record<string, TellWriter | undefined>).recordPersonTold;
-      writer?.(workId, { deliveryId: deliveryId!, via: 'owner_notice' });
+      const told = recordPersonTold(workId, { deliveryId: deliveryId!, via: 'owner_notice' });
+      expect(told.kind, 'the record is written').toBe('applied');
       return deliveryId!;
     },
   );
@@ -173,7 +175,7 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 the owner already told about a blocked row is not told again', () => {
-  it.fails('RED at 00a2b34d: told through the notice door, then the ladder steers and alerts anyway', async () => {
+  it('was RED at 00a2b34d: told through the notice door, then the ladder steers and alerts anyway', async () => {
     seedBlocked('t-told');
     tellOwnerThroughTheNoticeDoor('t-told');
 
@@ -197,7 +199,7 @@ describe('§1 the owner already told about a blocked row is not told again', () 
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§2 a scheduled run reaching the owner does not retire the escalation', () => {
-  it.fails('RED at 00a2b34d: a run output after the first steer closed the case and the owner heard nothing', async () => {
+  it('was RED at 00a2b34d: a run output after the first steer closed the case and the owner heard nothing', async () => {
     seedBlocked('t-recurring');
     seedWork('run-3', {
       kind: 'occurrence', parent_id: 't-recurring', root_kind: 'schedule', root_id: 't-recurring',
@@ -228,7 +230,7 @@ describe('§2 a scheduled run reaching the owner does not retire the escalation'
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§3 told, reopened, blocked again — told again', () => {
-  it.fails('RED at 00a2b34d: the second block of the same row never reaches the owner', async () => {
+  it('was RED at 00a2b34d: the second block of the same row never reaches the owner', async () => {
     seedBlocked('t-twice');
     await driveLadderToTheEnd();
     const firstEpisode = ownerAlerts().length;
@@ -244,7 +246,7 @@ describe('§3 told, reopened, blocked again — told again', () => {
     ).toBeGreaterThan(firstEpisode);
   });
 
-  it.fails('RED at 00a2b34d: told through the door in episode 1 is not told in episode 2', async () => {
+  it('was RED at 00a2b34d: told through the door in episode 1 is not told in episode 2', async () => {
     seedBlocked('t-door-twice');
     tellOwnerThroughTheNoticeDoor('t-door-twice');
     await driveLadderToTheEnd();
@@ -273,5 +275,154 @@ describe('§4 cancelled after being told', () => {
     expect(ownerAlerts()).toHaveLength(0);
     expect(steersOn('t-cancelled')).toBe(0);
     expect(candidates()).not.toContain('t-cancelled');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §5 — THE RECORD'S CONTRACT. Self-verifying, idempotent, and it never claims a tell the
+// ledger does not hold.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+function seedDelivery(id: string, over: { channel?: string; tool?: string; outcome?: string } = {}): void {
+  mockDb.current!.prepare(
+    `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, created_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(id, PRIMARY, over.tool ?? 'imessage_send', over.channel ?? 'imessage', over.outcome ?? 'delivered');
+}
+
+describe('§5 the record refuses what is not a person being told', () => {
+  beforeEach(() => { seedBlocked('t-c'); });
+
+  it('an unknown work row, an unknown delivery', () => {
+    seedDelivery('d-ok');
+    expect(recordPersonTold('t-nope', { deliveryId: 'd-ok', via: 'send_tool' })).toMatchObject({ kind: 'refused', reason: 'no-such-work' });
+    expect(recordPersonTold('t-c', { deliveryId: 'd-nope', via: 'send_tool' })).toMatchObject({ kind: 'refused', reason: 'no-such-delivery' });
+  });
+
+  it('a send that failed, was held, or was suppressed is not a tell', () => {
+    for (const outcome of ['failed', 'held', 'suppressed']) {
+      seedDelivery(`d-${outcome}`, { outcome });
+      expect(recordPersonTold('t-c', { deliveryId: `d-${outcome}`, via: 'send_tool' }), outcome)
+        .toMatchObject({ kind: 'refused', reason: 'not-delivered' });
+    }
+  });
+
+  it('peer traffic, a crossing of no door, and the engine\'s "on it" do not reach a person', () => {
+    seedDelivery('d-a2a', { channel: 'a2a' });
+    seedDelivery('d-none', { channel: 'none' });
+    seedDelivery('d-ack', { tool: 'engine-ack' });
+    for (const d of ['d-a2a', 'd-none', 'd-ack']) {
+      expect(recordPersonTold('t-c', { deliveryId: d, via: 'send_tool' }), d)
+        .toMatchObject({ kind: 'refused', reason: 'not-a-person' });
+    }
+    expect(candidates(), 'none of them settled the episode').toContain('t-c');
+  });
+
+  it('idempotent per delivery, and the actor is the delivery\'s own sender', () => {
+    seedDelivery('d-once');
+    const first = recordPersonTold('t-c', { deliveryId: 'd-once', via: 'send_tool' });
+    expect(first.kind).toBe('applied');
+    expect(recordPersonTold('t-c', { deliveryId: 'd-once', via: 'send_tool' })).toMatchObject({ kind: 'no_change' });
+    const rows = mockDb.current!.prepare(
+      `SELECT actor, payload FROM work_events WHERE work_id = 't-c' AND kind = 'person_told'`,
+    ).all() as Array<{ actor: string; payload: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actor).toBe(PRIMARY);
+    expect(JSON.parse(rows[0].payload)).toMatchObject({ delivery_id: 'd-once', via: 'send_tool', channel: 'imessage' });
+  });
+
+  it('a send the outbound scope later DOWNGRADED to failed stops counting', async () => {
+    seedDelivery('d-later-failed');
+    expect(recordPersonTold('t-c', { deliveryId: 'd-later-failed', via: 'send_tool' }).kind).toBe('applied');
+    expect(candidates()).not.toContain('t-c');
+    mockDb.current!.prepare(`UPDATE deliveries SET outcome = 'failed' WHERE id = 'd-later-failed'`).run();
+    expect(candidates(), 'the record is only as good as the send it points at').toContain('t-c');
+    await driveLadderToTheEnd();
+    expect(ownerAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('it never throws into a send, even when the store cannot be written', () => {
+    seedDelivery('d-ro');
+    mockDb.current!.exec(`CREATE TRIGGER t142_block BEFORE INSERT ON work_events
+      WHEN NEW.kind = 'person_told' BEGIN SELECT RAISE(ABORT, 'disk full'); END;`);
+    const r = recordPersonTold('t-c', { deliveryId: 'd-ro', via: 'owner_notice' });
+    expect(r).toMatchObject({ kind: 'refused', reason: 'write-failed' });
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — A TELL FROM BEFORE THE EPISODE IS NOT A TELL ABOUT IT.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 the record is scoped to the episode, by the sequence', () => {
+  it('told while the work was in progress, then it blocked: the block still reaches the owner', async () => {
+    seedWork('t-before');
+    seedDelivery('d-progress');
+    recordPersonTold('t-before', { deliveryId: 'd-progress', via: 'send_tool' });
+    move('t-before', 'blocked');
+    age('t-before');
+    expect(candidates()).toContain('t-before');
+    await driveLadderToTheEnd();
+    expect(ownerAlerts().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a new episode gets its two steers back instead of arriving with the old bound spent', async () => {
+    seedBlocked('t-steers');
+    await driveLadderToTheEnd();
+    move('t-steers', 'claimed');
+    move('t-steers', 'blocked');
+    age('t-steers');
+    expect(escalationSteerCount('t-steers'), 'the new block has been steered zero times').toBe(0);
+    await sweep();
+    expect(escalationSteerCount('t-steers')).toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §7 — IS THE OLD MECHANISM GONE? A census, comments stripped first so a tombstone that
+// NAMES the old code is never mistaken for the code (G4).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§7 the turn-root verify step is gone, and nothing else reads the record but the ladder', () => {
+  const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const strip = (s: string): string => s
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+  const all = (): Map<string, string> => {
+    const out = new Map<string, string>();
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fp = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'migrations') walk(fp); }
+        else if (e.name.endsWith('.ts')) out.set(path.relative(SRC, fp).split(path.sep).join('/'), strip(fs.readFileSync(fp, 'utf8')));
+      }
+    };
+    walk(SRC);
+    return out;
+  };
+  const files = all();
+  const filesMatching = (re: RegExp): string[] => [...files].filter(([, s]) => re.test(s)).map(([f]) => f).sort();
+
+  it('no production code computes `spokeSince` or reads the first steer\'s instant', () => {
+    expect(filesMatching(/\bspokeSince\b/)).toEqual([]);
+    expect(filesMatching(/\bfirstEscalationSteerAt\b/)).toEqual([]);
+  });
+
+  it('the turn-root read is called by nobody (its definition is handed up for deletion)', () => {
+    // `work/tracker-store.ts` is outside this lane's fence; the function's only caller was the
+    // branch deleted here. Defined once, called zero times — and pinned so, both directions.
+    expect(filesMatching(/\bdeliveryAboutWorkSince\s*\(/)).toEqual(['work/tracker-store.ts']);
+    expect((files.get('work/tracker-store.ts')!.match(/\bdeliveryAboutWorkSince\s*\(/g) ?? []).length).toBe(1);
+  });
+
+  it('the record has ONE writer and the ladder\'s suppressor is its only reader', () => {
+    // The declared list, the constant, and the one module that writes and reads it.
+    expect(filesMatching(/WORK_EVENT\.personTold|'person_told'/))
+      .toEqual(['work/event-kinds.ts', 'work/tracker-view.ts', 'work/validation-drive.ts']);
+    const drive = files.get('work/validation-drive.ts')!;
+    expect((drive.match(/appendWorkEvent\(workId, WORK_EVENT\.personTold/g) ?? []).length).toBe(1);
+    // THE APPLICATION: the suppressor is what every owner-escalation lens filters on.
+    expect((drive.match(/AND NOT \$\{ownerEpisodeSettledExpr\('w'\)\}/g) ?? []).length).toBe(3);
+    expect(drive).not.toMatch(/NOT EXISTS \(SELECT 1 FROM work_events e WHERE e\.work_id = w\.id AND e\.kind = 'validation_escalated'\)/);
   });
 });

@@ -43,7 +43,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 import { runMigrations } from '../../db/migrations.js';
 import {
   selectRowsForOwnerEscalation, selectRowsSkippedAsDelivered, ownerVerdictNudgeText,
-  escalationSteerCount, firstEscalationSteerAt, recordEscalationSteer,
+  escalationSteerCount, recordEscalationSteer,
 } from '../validation-drive.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, OUT_OF_BAND_GHOST_SUBJECTS } from '../../agent/v2/floor-ghost.js';
 import { gatesForCall } from '../../agent/tools/gates.js';
@@ -211,12 +211,11 @@ describe('T12 (3b): a silent turn no longer ends the story — bounded re-steer,
     expect(MAX_FLOOR_STEER_ATTEMPTS).toBe(2);
   });
 
-  it('the first steer\'s instant is readable, so the verify step has a boundary', () => {
-    seedTask('bounded-2');
-    expect(firstEscalationSteerAt('bounded-2')).toBeNull();
-    recordEscalationSteer('bounded-2', { attempt: 1, bound: MAX_FLOOR_STEER_ATTEMPTS, turnNumber: 606 });
-    expect(firstEscalationSteerAt('bounded-2')).toBeGreaterThan(0);
-  });
+  // ⟨TOMBSTONE⟩ "the first steer's instant is readable, so the verify step has a boundary" lived
+  // here. v3.3.3 t142 deleted that verify step (and `firstEscalationSteerAt` with it): "a person
+  // was told about this row" is a RECORD now, read before a row is steered, so no instant is a
+  // boundary for anything. Its successor clauses, including the deletion census, are in
+  // `t142-a-person-was-told.test.ts`.
 
   it('the ghost subject is DECLARED, never a free string', () => {
     expect(OUT_OF_BAND_GHOST_SUBJECTS).toContain('owner-verdict-unasked');

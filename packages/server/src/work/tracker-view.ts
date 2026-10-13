@@ -462,6 +462,11 @@ export const WORK_EVENT = {
    *  turn-finalize, replacing SIX denormalized columns. Payload:
    *  `{ turn, outcome, answered, delivery_summary }`. */
   activity: 'activity',
+  /** v3.3.3 t142 (migration 189) — A PERSON WAS TOLD ABOUT THIS WORK. Written only by
+   *  `work/validation-drive.ts:recordPersonTold`, by a path that structurally holds the work
+   *  id. Payload: `{ delivery_id, via, channel }`; it counts only while that delivery is still
+   *  `delivered` (an outbound scope can downgrade its row to `failed` after the fact). */
+  personTold: 'person_told',
 } as const satisfies Record<string, WorkEventKind>;
 
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
