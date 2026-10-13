@@ -182,10 +182,8 @@ export async function runContextGates(
   const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
   const viewFull = liveViewIsFull(assembledEstimate, systemPromptTokens);
   const leaving = rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull });
-  // t140 round 3: placeholders (rows that left the view while no writer answered) are replaced
-  // first, in the background, whenever a writer is eligible; the pressure fold waits its turn.
-  replacePlaceholdersInBackground(agentId);
-  if (leaving) {
+  // t140 round 3: placeholders are replaced first, in the background, when a writer is eligible.
+  if (!replacePlaceholdersInBackground(agentId) && leaving) {
     condenseLeavingInBackground({ agentId, writerModelId: configuredModelId, dialedModelId: dialModelId, contextWindow, leaving });
   }
 
@@ -196,9 +194,8 @@ export async function runContextGates(
  * THE ROUTINE CONDENSE, fire-and-forget (v2.5.14): one in flight per agent (`backgroundDrains`),
  * under its own wall clock, folding exactly `leaving`. Measured for `dialedModelId`, WRITTEN by the
  * summary writer resolved from `writerModelId` (fix round 1, review I3). A PRESSURE fold, ahead of
- * need; rows an assembly has already taken out of view are folded, awaited, by the engine's
- * assembly door instead (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`, round 2 —
- * which is also what a re-fit for a smaller pick now goes through). Returns whether one started.
+ * need; rows an assembly already took out of view are folded by the engine's assembly door instead
+ * (`out-of-view-fold.ts`, round 2; a re-fit for a smaller pick goes through it too). Returns whether one started.
  */
 function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView;

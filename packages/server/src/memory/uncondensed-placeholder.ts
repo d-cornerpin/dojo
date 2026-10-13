@@ -9,7 +9,7 @@
 // from a fixed vocabulary of channel words, never by a sender's name or a message's words.
 //
 // A placeholder is a leaf summary row whose content starts with `UNCONDENSED_PLACEHOLDER_HEAD`
-// (`dag.ts`), one per leaf chunk. Condensation never merges one. When a writer answers again the
+// (`uncondensed-head.ts`), one per leaf chunk. Condensation never merges one. When a writer answers again the
 // placeholder's own row is REWRITTEN in place with a real summary of exactly its rows — the links
 // never move — in the background, and the 15-minute low-yield brake does not hold it back.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -18,10 +18,8 @@ import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { getMessagesOutsideFreshTail } from './store.js';
-import {
-  createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent,
-  UNCONDENSED_PLACEHOLDER_HEAD,
-} from './dag.js';
+import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
+import { UNCONDENSED_PLACEHOLDER_HEAD } from './uncondensed-head.js';
 import {
   buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, getLeafTargetTokens, rebuildContextItems,
   NO_CONVERSATION_PLACEHOLDER,
