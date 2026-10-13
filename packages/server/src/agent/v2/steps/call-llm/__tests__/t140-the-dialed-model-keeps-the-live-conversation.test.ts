@@ -65,10 +65,20 @@ vi.mock('../../../../../tools/tool-docs.js', async () => {
 /** THE SCRIPTED PROVIDER. Every request it receives is recorded verbatim. */
 const provider = vi.hoisted(() => ({
   requests: [] as Array<{ prompt: string; options: Record<string, unknown> }>,
+  /** Fix round 1: how many of the next requests fail on the wire (a transient error). */
+  failNext: 0,
 }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     provider.requests.push(args);
+    if (provider.failNext > 0) {
+      provider.failNext--;
+      return (async function* fail() {
+        throw new Error('socket hang up');
+        // eslint-disable-next-line no-unreachable
+        yield undefined as never;
+      })();
+    }
     return (async function* answer() {
       yield {
         type: 'assistant',
@@ -174,6 +184,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   provider.requests.length = 0;
+  provider.failNext = 0;
   __resetAssemblyValidationCounters();
   seedRoutedBox();
 });
@@ -259,5 +270,83 @@ describe('t140 — the provider boundary never ships an assembly without the liv
     // NO DEAD END (OR-COMPACT-1): the refusal starts condensing against the dialed window, so
     // the next assembly is smaller. Rows outside the 32K pick's live floor get a summary.
     expect(await summarisedRows(1)).toBeGreaterThan(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — I1: a FALLBACK pick, and the BUDGET redirect, are re-fitted to their own window
+// before the call (review I1). Door: `callWithRetryAndFallback`, the engine's dial step, with
+// the real router, the real re-fit, the real `callModel` and its boundary.
+// ════════════════════════════════════════════════════════════════════════════════════════
+import { callWithRetryAndFallback, type ModelCallInputs } from '../model-call.js';
+import { initState } from '../../../state.js';
+
+async function dialStep(firstPick: string): Promise<Awaited<ReturnType<typeof callWithRetryAndFallback>>> {
+  const assembled = await assembleContext(AGENT, '__auto__');
+  const state = initState({
+    agentId: AGENT, contextWindow: getContextWindow('__auto__'), isAutoRouted: true, configuredModelId: 'auto',
+    turnNumber: 251, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
+    lastUserMessageContent: 'keep counting', lastUserMessageId: null,
+    inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+  });
+  const input: ModelCallInputs = {
+    agentId: AGENT, turnCtx: {} as ModelCallInputs['turnCtx'], turnNumber: 251, messageId: 'msg-t140-fallback',
+    messages: assembled.messages as ModelCallInputs['messages'], systemPrompt: assembled.systemPrompt,
+    useTools: true, isAutoRouted: true, isA2ATurn: false, excludedModels: [],
+    revertTriggerStampOnAbort: () => undefined, assembled, routerTier: 'heavy',
+    counterparty: { kind: 'user' } as ModelCallInputs['counterparty'],
+    volatileFrom: assembled.messages.length,
+    assemblyTurnContext: undefined as unknown as PromptTurnContext,
+  };
+  return callWithRetryAndFallback(state, firstPick, input);
+}
+
+function summarisedRowCount(): number {
+  return (db().prepare(
+    'SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?',
+  ).get(AGENT) as { n: number }).n;
+}
+
+describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-fitted to their own window', () => {
+  it.fails('a smaller FALLBACK after the first pick fails on the wire succeeds, with the conversation, and forces no condense', async () => {
+    seedConversation(250);
+    provider.failNext = 1;   // the heavy (32K) pick dies on the wire; the router falls back to the 16K pick
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
+    expect(out.modelId).toBe(LIGHT);
+    expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(summarisedRowCount(), 'no forced condense: the array was re-fitted, not refused').toBe(0);
+  });
+
+  it.fails('the BUDGET redirect to a free model re-fits the array before it dials, and the turn succeeds', async () => {
+    seedConversation(250);
+    // The heavy pick is paid and the day's budget is spent, so `callModel` redirects to the only
+    // free model — the 16K pick — inside the same call.
+    db().prepare('UPDATE models SET input_cost_per_m = 3, output_cost_per_m = 15 WHERE id = ?').run(HEAVY);
+    db().prepare('UPDATE models SET input_cost_per_m = 0, output_cost_per_m = 0 WHERE id IN (?, ?, ?)').run(LIGHT, TINY, ROOMY);
+    db().prepare("UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)").run(TINY, ROOMY);
+    db().prepare("INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES ('global_daily', 'global', 0, 'daily')").run();
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(summarisedRowCount()).toBe(0);
+  });
+});
+
+describe('t140 fix round 1 — M1: a pick that cannot hold even the system prompt refuses as UNREPAIRABLE and starts no condense', () => {
+  it.fails('the refusal names the right defect, and no forced condense is fired for a window no condense can help', async () => {
+    seedConversation(40);
+    const assembled = await assembleContext(AGENT, '__auto__');
+    let thrown: unknown = null;
+    try {
+      await callModel({ agentId: AGENT, modelId: TINY, messages: assembled.messages as never, systemPrompt: assembled.systemPrompt, tools: true });
+    } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(AssemblyValidationError);
+    expect((thrown as AssemblyValidationError).code).toBe('UNREPAIRABLE');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(summarisedRowCount()).toBe(0);
   });
 });

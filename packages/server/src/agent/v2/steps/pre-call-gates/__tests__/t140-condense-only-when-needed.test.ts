@@ -315,3 +315,75 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     expect(summarisedSeqs(SMALL_AGENT)).toEqual(seqs.slice(0, 10));
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 — I2: the gate measures the window of the model the loop has LOCKED; I3: the
+// summary is still written by the owner's compaction model, else the cheapest text model —
+// never by the (possibly expensive) routed model that happens to be locked.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expensive model', () => {
+  const ROUTED_AGENT = 'agent-t140-routed-loop';
+  const LOCKED = 'm-t140-locked-32k';
+  const CHEAP = 'm-t140-cheap-writer';
+  const OWNER_PICK = 'm-t140-owner-compaction';
+
+  function seedRoutedLoop(): void {
+    const model = db().prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
+       VALUES (?, 'p-t140', ?, ?, '["text","tools"]', ?, 4096, 1, ?, ?)`,
+    );
+    model.run(LOCKED, 'Locked Heavy', 'locked', 32_000, 15, 75);
+    model.run(CHEAP, 'Cheap Writer', 'cheap', 32_000, 0.1, 0.4);
+    model.run(OWNER_PICK, 'Owner Compaction Pick', 'owner-pick', 32_000, 1, 2);
+    db().prepare('UPDATE models SET input_cost_per_m = 5 WHERE id = ?').run(MODEL);
+    db().prepare(
+      `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Routed Desk', 'auto', 'idle', '{}', datetime('now'))`,
+    ).run(ROUTED_AGENT);
+    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(12);
+    for (let i = 0; i < 100; i++) {
+      insertMessage({
+        agentId: ROUTED_AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner',
+        senderId: i % 2 === 0 ? 'owner' : null, content: `[row ${i}] ${body}`, turnNumber: 1 + Math.floor(i / 2),
+      });
+    }
+  }
+
+  async function gateLocked(): Promise<void> {
+    const s = advance(initState({
+      agentId: ROUTED_AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto',
+      turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
+      lastUserMessageContent: 'tally?', lastUserMessageId: null,
+      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    }), { phase: PRE_CALL_GATES_PHASE, loopCount: 3, lockedModelId: LOCKED, lockedTier: 'heavy' });
+    // The turn's own window is the roomy provisional one (200K); only the LOCK says 32K.
+    const ctx = Object.assign(makeCtx(), {
+      agentId: ROUTED_AGENT, contextWindow: 200_000, contextModelId: '__auto__', configuredModelId: 'auto', isAutoRouted: true,
+    });
+    await runPreCallGates(s, ctx);
+    for (let i = 0; i < 200 && backgroundDrains.has(ROUTED_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+  }
+
+  it('I2: the view is full for the LOCKED 32K model (not for the 200K provisional window), and the front half is folded', async () => {
+    seedRoutedLoop();
+    await gateLocked();
+    const seqs = allSeqs(ROUTED_AGENT);
+    expect(summarisedSeqs(ROUTED_AGENT)).toEqual(seqs.slice(0, 40));
+  });
+
+  it.fails('I3: with no compaction model set, the summary is written by the CHEAPEST text model, not the locked one', async () => {
+    seedRoutedLoop();
+    await gateLocked();
+    expect(generateSummarySpy).toHaveBeenCalled();
+    const writers = generateSummarySpy.mock.calls.map((c) => (c[0] as { modelId?: string }).modelId);
+    expect(new Set(writers)).toEqual(new Set([CHEAP]));
+  });
+
+  it('I3: with a compaction model set in Settings, that model writes the summary', async () => {
+    seedRoutedLoop();
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWNER_PICK);
+    await gateLocked();
+    const writers = generateSummarySpy.mock.calls.map((c) => (c[0] as { modelId?: string }).modelId);
+    expect(writers.length).toBeGreaterThan(0);
+    expect(new Set(writers)).toEqual(new Set([OWNER_PICK]));
+  });
+});
