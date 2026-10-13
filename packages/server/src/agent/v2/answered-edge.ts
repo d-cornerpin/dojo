@@ -686,6 +686,29 @@ export interface PauseResult { paused: number; ids: string[] }
  * "idle in_progress task gets driven, always" invariant survives untouched because the rows
  * it guards are exactly the rows this window excludes.
  */
+/** The request a continuation chain is serving. A continuation's turn record carries no root
+ *  (subject `conv` with the restored conversation key, or `continuation` when it has none), and
+ *  the turn before it is, by construction, the one that stashed it — `continuationContext` is
+ *  consumed by the very next preflight. So: walk back over rootless turns of the SAME
+ *  conversation to the turn that served a row, and return that row. Bounded; null when the chain
+ *  does not start on a served request. */
+function servedRequestOfContinuation(agentId: string, turnNumber: number | null | undefined): string | null {
+  if (turnNumber == null) return null;
+  const stmt = getDb().prepare(
+    'SELECT subject_kind, root_kind, source_message_id, conv_key FROM turns WHERE agent_id = ? AND turn_number = ?',
+  );
+  const first = stmt.get(agentId, turnNumber) as
+    { subject_kind: string | null; root_kind: string | null; source_message_id: string | null; conv_key: string | null } | undefined;
+  if (!first || first.root_kind !== null || !['conv', 'continuation'].includes(first.subject_kind ?? '')) return null;
+  for (let t = turnNumber - 1, hops = 0; t > 0 && hops < 50; t--, hops++) {
+    const r = stmt.get(agentId, t) as typeof first;
+    if (!r || r.conv_key !== first.conv_key) return null;
+    if (r.source_message_id) return r.source_message_id;
+    if (r.root_kind !== null) return null;
+  }
+  return null;
+}
+
 export function pauseDriveWorkWaitingOnOwner(
   agentId: string, turnNumber: number | null | undefined,
   opts?: {
@@ -773,7 +796,13 @@ export function pauseDriveWorkWaitingOnOwner(
   // was "everything this turn touched"; it is now the work whose `source_message_id` is the row
   // this turn served — the one request whose sender the reply could be waiting on. `undefined`
   // keeps the pre-link behaviour for the unit tests that call this directly.
-  const servedId = opts?.servedSourceMessageId;
+  // A CONTINUATION serves the request its chain started on: the turn record of a continuation
+  // carries no root, and the turn before it is, by construction, the one that stashed it
+  // (`continuationContext` is consumed by the very next preflight), so the walk is over recorded
+  // turns, never a guess.
+  const servedId = opts?.servedSourceMessageId === null
+    ? servedRequestOfContinuation(agentId, turnNumber)
+    : opts?.servedSourceMessageId;
   if (servedId === null) return none;
   const linkClause = servedId !== undefined ? 'AND w.source_message_id = ?' : '';
   const params: unknown[] = [agentId, turnNumber ?? -1];

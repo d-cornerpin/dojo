@@ -533,11 +533,14 @@ async function readOnlyTurnAcrossTheCheckpoint(
 /** The task the agent claimed for this job, in the drive state, touched just now. */
 function seedInFlightTask(id = 'w-long-job'): void {
   const now = Date.now();
+  // t139 round 2: the task is LINKED to the owner's ask that started it (`msg-user-1`), the shape
+  // every model- and floor-opened task has. The engine's waiting-on-owner pause now considers
+  // only work linked to the request the turn answered, so an unlinked fixture no longer reaches it.
   mockDb.current!.prepare(
     `INSERT INTO work (id, agent_id, kind, requester, root_kind, root_id, state, intent,
-                       wakes, closes_thread, title, opened_at, updated_at)
+                       wakes, closes_thread, title, opened_at, updated_at, source_message_id)
      VALUES (?, 'primary', 'task', 'owner', 'tracker', ?, 'claimed', 'action', 1, 0,
-             'summarise the research folder', ?, ?)`,
+             'summarise the research folder', ?, ?, 'msg-user-1')`,
   ).run(id, id, now, now);
 }
 
@@ -704,7 +707,7 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(workState('w-long-job')).toBe('paused');
   });
 
-  it('CONTROL: a turn that genuinely handed the ball back (answered, did nothing, no park) still pauses, and the owner\'s next word reopens it', async () => {
+  it('CONTROL: a turn that genuinely handed the ball back (answered, did nothing, no park) still pauses, and the owner\'s next word does NOT reopen it (R-V333-5)', async () => {
     // The PHASE-2 T1 adjudication #2 rule is NARROWED, not removed. Same task, same reply,
     // no checkpoint: the agent spoke and stopped, so the work waits on the owner.
     seedInFlightTask();
@@ -717,7 +720,9 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(turnRows()).toEqual([expect.objectContaining({ exit_reason: 'answered', answered: 1, effectful_calls: 0 })]);
     expect(workState('w-long-job')).toBe('paused');
 
-    // The owner answers mid-job: the reopen edge still fires.
+    // The owner answers mid-job. t139 round 2 (R-V333-5) DELETED the automatic reopen edge: the
+    // owner's message no longer flips the task back by itself — the agent resumes it with the
+    // tracker when the message is the answer. Was: `expect(reopened.n).toBe(1)`.
     insertMessage({
       id: 'msg-user-2', agentId: 'primary', role: 'user', content: 'Both halves, please.',
       turnNumber: 2, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-primary',
@@ -732,7 +737,8 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
          AND json_extract(payload, '$.from') = 'paused' AND json_extract(payload, '$.to') = 'claimed'
          AND json_extract(payload, '$.by') = 'owner'`,
     ).get() as { n: number };
-    expect(reopened.n).toBe(1);
+    expect(reopened.n).toBe(0);
+    expect(workState('w-long-job')).toBe('paused');
   });
 });
 
