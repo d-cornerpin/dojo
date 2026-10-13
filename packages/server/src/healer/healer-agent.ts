@@ -42,6 +42,7 @@ import {
   isSetupCompleted,
 } from '../config/platform.js';
 import { homeDir } from '../home.js';
+import { ownerConditionsOnHealerSeen } from './owner-notices.js';
 
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -333,6 +334,7 @@ function runHealerSelfWatchdog(): void {
     const row = db
       .prepare('SELECT id, name, status, updated_at FROM agents WHERE id = ?')
       .get(healerId) as { id: string; name: string; status: string; updated_at: string } | undefined;
+    ownerConditionsOnHealerSeen(row?.status ?? null); // t138 r4: back, or healthy, ends the owner's card
     if (!row) return; // Healer doesn't exist yet; ensureHealerAgentRunning will create it
 
     let shouldReset = false;

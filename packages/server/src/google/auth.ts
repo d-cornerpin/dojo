@@ -26,7 +26,7 @@ import {
   getPrimaryGoogleAccount,
   insertGoogleAccount,
   listGoogleAccounts,
-  updateGoogleAccount,
+  updateGoogleAccount, noteGoogleSignInExpired,
   MAX_ACCOUNTS_PER_KIND,
   type GoogleAccount,
 } from './accounts.js';
@@ -408,10 +408,10 @@ function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void 
   updateGoogleAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
   broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  try { sendAlert(expiredWords(acc), 'critical'); } catch { /* alert best effort */ }
+  try { sendAlert(noteGoogleSignInExpired(accountId, expiredWords(acc)), 'critical'); } catch { /* alert best effort */ }
 }
 
-const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings > Google.`; // the reconnect all-clear removes this card (t138 r3)
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Google Workspace ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings > Google.`; // the owner's card carries these words (t138 r3-4)
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getGoogleAccount(accountId);
@@ -507,7 +507,7 @@ export async function attemptGoogleReconnect(accountId: string): Promise<'reconn
   // Same loop-closing notice as the Microsoft twin: the bench told the owner to
   // re-authenticate, so the self-heal must cancel that instruction.
   try {
-    sendAlert(`Google account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice', { clears: expiredWords(acc) });
+    sendAlert(`Google account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice', { card: false }); // its card left when the sign-in was restored (t138 r4)
   } catch { /* alert best effort */ }
   return 'reconnected';
 }

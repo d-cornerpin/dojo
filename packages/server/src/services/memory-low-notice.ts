@@ -1,6 +1,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from './imessage-bridge.js';
+import { ownerCardEnded } from './owner-card-frames.js';
 
 const logger = createLogger('memory-low-notice');
 
@@ -38,6 +39,7 @@ export function noteCriticalMemory(freeMb: number): void {
       sendAlert(MEMORY_LOW_WORDS, 'critical');
     } else if (!low && told !== null) {
       writeMemoryLow(null);
+      ownerCardEnded(MEMORY_LOW_WORDS); // round 4: the card leaves open dashboards now
     }
   } catch (err) {
     logger.warn('Critical-memory notice check failed', { error: err instanceof Error ? err.message : String(err) });
@@ -49,4 +51,11 @@ export function memoryOwnerCards(): Array<{ words: string; severity: 'critical';
   const told = readMemoryLow();
   if (told === null || told.dismissedAt !== undefined) return [];
   return [{ words: MEMORY_LOW_WORDS, severity: 'critical', dismiss: () => writeMemoryLow({ ...told, dismissedAt: Date.now() }) }];
+}
+
+/** True while the owner has been told memory is low and it has not been seen recover: the
+ *  scheduler's existing tick then re-measures it (round 4), so recovery is noticed without
+ *  waiting for the next spawn attempt. */
+export function memoryLowStanding(): boolean {
+  try { return readMemoryLow() !== null; } catch { return false; }
 }

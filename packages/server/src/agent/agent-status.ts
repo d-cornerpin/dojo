@@ -57,6 +57,7 @@ import { turnContext } from './turn-context.js';
 // reads working and no run owns it'); the statement lives where the table's owner is.
 import { markTurnsTerminated } from './v2/turn-record.js';
 import type { AgentStatus } from '@dojo/shared';
+import { agentStatusMoved } from './agent-owner-cards.js';
 
 const logger = createLogger('agent-status');
 
@@ -84,17 +85,16 @@ export function writeAgentStatus(
     db.prepare(`
       UPDATE agents SET status = ?, last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
     `).run(status, opts.lastError, agentId);
-    return;
-  }
-  if (opts?.clearError) {
+  } else if (opts?.clearError) {
     db.prepare(`
       UPDATE agents SET status = ?, last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?
     `).run(status, agentId);
-    return;
+  } else {
+    db.prepare(`
+      UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(status, agentId);
   }
-  db.prepare(`
-    UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
-  `).run(status, agentId);
+  agentStatusMoved(agentId, status); // t138 r4: an owner card whose status this left is over
 }
 
 /**

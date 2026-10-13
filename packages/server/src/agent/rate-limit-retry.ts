@@ -21,6 +21,7 @@ import { isPrimaryAgent } from '../config/platform.js';
 import { notifyRateLimitHit } from './errors.js';
 import { providerClassOf } from './provider-error.js';
 import { setAgentStatus, writeAgentStatus } from './agent-status.js';
+import { noteRateLimitExhausted } from './agent-owner-cards.js';
 
 const logger = createLogger('rate-limit-retry');
 
@@ -159,10 +160,9 @@ function scheduleNextAttempt(
 
       if (decayIndex >= DECAY_SCHEDULE_SECONDS.length || elapsedHours >= 5) {
         // Exhausted the entire schedule
-        sendAlert(
-          `${agentName} has been rate-limited for ${formatDuration(Math.round(elapsedMs / 1000))}. The window should have reset by now. Check your API account.`,
-          'critical',
-        );
+        // t138 r4: the words wait on the owner's dashboard until he dismisses them or it gets through.
+        const words = `${agentName} has been rate-limited for ${formatDuration(Math.round(elapsedMs / 1000))}. The window should have reset by now. Check your API account.`;
+        sendAlert(noteRateLimitExhausted(agentId, words), 'critical');
         logger.error('Rate limit retry fully exhausted', { agentId, elapsedHours: elapsedHours.toFixed(1) });
         cleanupRetry(agentId);
         return;

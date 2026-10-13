@@ -22,6 +22,7 @@ import { patchAssignments } from '../db/patch.js';
 import { isSealedText, openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
+import { noteSignInExpired, signInRestored } from '../services/account-owner-cards.js';
 
 const logger = createLogger('google-accounts');
 
@@ -321,7 +322,12 @@ export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccoun
   values.push(id);
   getDb().prepare(`UPDATE google_accounts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
+  // t138 r4: a restored sign-in (probe or Settings) ends the owner's "connection expired" card.
+  if (patch.connected === true) signInRestored('google_accounts', id);
 }
+
+/** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
+export const noteGoogleSignInExpired = (id: string, words: string): string => noteSignInExpired('google_accounts', id, words);
 
 export function deleteGoogleAccount(id: string): void {
   getDb().prepare('DELETE FROM google_accounts WHERE id = ?').run(id);

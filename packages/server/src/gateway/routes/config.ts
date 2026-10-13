@@ -16,9 +16,11 @@ import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
 import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance, balanceOwnerCards } from '../../costs/provider-balance-check.js';
 import { budgetOwnerCards } from '../../costs/budget.js';
-import { pausedAgentOwnerCards } from '../../agent/paused-owner-card.js';
+import { agentOwnerCards } from '../../agent/agent-owner-cards.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
 import { memoryOwnerCards } from '../../services/memory-low-notice.js';
+import { accountOwnerCards } from '../../services/account-owner-cards.js';
+import { watcherOwnerCards } from '../../services/watcher-status.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
@@ -2735,11 +2737,13 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 // Every text the platform sends the owner also waits on his dashboard until he dismisses it.
 // The dashboard asks here on load and on every reconnect. There is no store of cards: each is
 // RE-DERIVED from the alert state its owner already keeps (budget and balance latches, the
-// error loop's paused row, the Healer's durable state, the memory latch), in the words the
+// error loop's paused row, the Healer's durable state, the memory, account, watcher and
+// rate-limit records), in the words the
 // text carried (as the door scrubs them). Dismissing stamps that incident's own row, so it stays
 // dismissed across reloads and restarts, and a NEW incident is a new card.
 const ownerCards = () => [
-  ...budgetOwnerCards(), ...balanceOwnerCards(), ...pausedAgentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
+  ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
+  ...accountOwnerCards(), ...watcherOwnerCards(),
 ].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words) }));
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)

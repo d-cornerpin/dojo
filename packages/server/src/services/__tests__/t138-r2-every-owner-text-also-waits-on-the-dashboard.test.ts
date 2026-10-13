@@ -198,7 +198,7 @@ const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !
 /** The owner's dashboard cards: notification frames spoken by the platform, not an agent. */
 const cards = (): Array<{ error: string; severity: unknown; retryable: unknown }> =>
   broadcasts
-    .filter((b) => b.type === 'chat:error' && b.agentId === 'platform')
+    .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity !== 'info') // round 4: info = a card leaving
     .map((b) => ({ error: String(b.error), severity: b.severity, retryable: b.retryable }));
 
 /** Each text has its card, in order, carrying the same words. */

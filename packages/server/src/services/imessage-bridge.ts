@@ -23,6 +23,7 @@ import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { ownerCardFrame, ownerCardEnded } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
@@ -2274,10 +2275,9 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     const fullMessage = urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed;
     logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
 
-    // The card (a platform `chat:error`) is born where the text is; an all-clear's `info` removes one.
-    const clears = opts.clears === undefined ? null : scrubTechnicalDetail(opts.clears);
-    const severity = clears !== null ? 'info' : urgency === 'critical' ? 'error' : 'warning';
-    if (opts.card !== false) broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: clears ?? scrubbed, severity, retryable: false });
+    // The card is born where the text is (services/owner-card-frames.ts); an all-clear ends one.
+    if (opts.clears !== undefined) ownerCardEnded(opts.clears);
+    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning');
 
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a

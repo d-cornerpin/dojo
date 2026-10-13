@@ -21,6 +21,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { ownerCardEnded } from '../services/owner-card-frames.js';
 
 const TOLD = 'owner_told';
 const DISMISSED = 'owner_dismissed';
@@ -57,11 +58,27 @@ function recordTold(key: string, family?: string): boolean {
   return true;
 }
 
-/** The condition cleared (its `key`, or every key under `family`): forget he was told and dismissed. */
+/** The words a condition's card carries, from its key. */
+function wordsOf(key: string): string {
+  const [kind, agentId = ''] = key.split(/:(.*)/s);
+  const nameOf = (id: string): string =>
+    (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
+  return kind === 'stuck' ? stuckWords(nameOf(agentId))
+    : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
+}
+
+/** The condition cleared (its `key`, or every key under `family`): forget he was told and
+ *  dismissed, and its card leaves every open dashboard now (round 4). */
 export function ownerConditionCleared(key: string, family = false): void {
   try {
-    getDb().prepare(`DELETE FROM healer_state WHERE scope IN (?, ?) AND (key = ? OR (? AND key LIKE ? || '%'))`)
+    const db = getDb();
+    const told = db.prepare(`SELECT key FROM healer_state WHERE scope = ? AND (key = ? OR (? AND key LIKE ? || '%'))`)
+      .all(TOLD, key, family ? 1 : 0, key) as Array<{ key: string }>;
+    if (told.length === 0) return;
+    const words = told.map((t) => wordsOf(t.key));
+    db.prepare(`DELETE FROM healer_state WHERE scope IN (?, ?) AND (key = ? OR (? AND key LIKE ? || '%'))`)
       .run(TOLD, DISMISSED, key, family ? 1 : 0, key);
+    for (const w of words) ownerCardEnded(w);
   } catch { /* best-effort, like the Healer's own damping: never block recovery */ }
 }
 
@@ -74,9 +91,11 @@ export function ownerConditionsOnRecovery(agentId: string): void {
   } catch { /* best-effort */ }
 }
 
-/** An injury found the Healer present: it is no longer missing, and if it is not itself in
- *  error it is no longer broken either. */
-export function ownerConditionsOnHealerSeen(healerStatus: string): void {
+/** The Healer was looked at — by an injury of another agent, or by its own self-watchdog every
+ *  five minutes (round 4): present means it is no longer missing, and not in error means it is no
+ *  longer broken. `null` = no Healer row at all, which ends neither. */
+export function ownerConditionsOnHealerSeen(healerStatus: string | null): void {
+  if (healerStatus === null || healerStatus === 'terminated') return;
   ownerConditionCleared('healer-missing:', true);
   if (healerStatus !== 'error') ownerConditionCleared('healer-broken');
 }
@@ -86,15 +105,10 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   const db = getDb();
   const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
     AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
-  const nameOf = (id: string): string =>
-    (db.prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return rows.map(({ key }) => {
-    const [kind, agentId = ''] = key.split(/:(.*)/s);
-    const words = kind === 'stuck' ? stuckWords(nameOf(agentId))
-      : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
     return {
-      words,
-      severity: kind === 'stuck' ? 'notice' as const : 'critical' as const,
+      words: wordsOf(key),
+      severity: key.startsWith('stuck:') ? 'notice' as const : 'critical' as const,
       dismiss: () => {
         db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
                     ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)

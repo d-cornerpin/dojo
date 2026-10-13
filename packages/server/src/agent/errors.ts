@@ -8,7 +8,7 @@ import { writeAgentStatus } from './agent-status.js';
 import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
 } from './error-loop-state.js';
-import { pausedWords, closePausedCards } from './paused-owner-card.js';
+import { pausedWords, closePausedCards } from './agent-owner-cards.js';
 
 const logger = createLogger('agent-errors');
 

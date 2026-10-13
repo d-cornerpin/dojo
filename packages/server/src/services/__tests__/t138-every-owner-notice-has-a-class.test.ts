@@ -64,11 +64,11 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'google/auth.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a Google account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own', card: 'clears' },
+    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own (its card ends where the sign-in is restored)', card: 'none' },
   ],
   'microsoft/auth.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a Microsoft account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own', card: 'clears' },
+    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own (its card ends where the sign-in is restored)', card: 'none' },
   ],
   'services/memory-low-notice.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory (once per low stretch, round 3)' },

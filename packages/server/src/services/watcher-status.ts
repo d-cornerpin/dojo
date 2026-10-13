@@ -10,6 +10,7 @@
 
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
+import { getDb } from '../db/connection.js';
 
 export interface RecentNotification {
   at: string;       // ISO timestamp
@@ -74,11 +75,44 @@ function watcherLabel(name: WatcherStatus['name']): string {
 // minFailureDurationMs AND has hit MIN_CONSECUTIVE_FAILURES_FOR_ALERT.
 // After that, silences itself until the watcher recovers (so a persistently
 // broken watcher doesn't spam).
-// The words of each watcher's failure text, so its recovery all-clear can name the dashboard
-// card it ends (t138 round 3: an all-clear removes the trouble card and raises none). It lives
-// as long as `alreadyAlerted` does — the watcher's own process memory — which is the only time a
-// recovery all-clear is sent.
-const failureWordsTold = new Map<WatcherStatus['name'], string>();
+// ── THE OWNER'S CARD FOR A FAILING WATCHER (t138 rounds 3-4) ──
+//
+// The failure text is told once per failure; its words wait on the owner's dashboard until he
+// dismisses them, and the recovery all-clear removes that card. The record is a config latch
+// per watcher (`{ at, words, dismissedAt? }`). The watcher's own "already alerted" flag lives in
+// its process (and one flag covers every account of that watcher), so a latch written before
+// this process started has no owner: the card is not shown from it, and a failure that is
+// still there re-alerts and writes a fresh one. A card never outlives a recovery it cannot see.
+const LATCH_KEY: Record<WatcherStatus['name'], string> = {
+  gmail: 'owner_notice_watcher_gmail', outlook: 'owner_notice_watcher_outlook', teams: 'owner_notice_watcher_teams',
+};
+type Told = { at: number; words: string; dismissedAt?: number };
+const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000;
+
+function readTold(name: WatcherStatus['name']): Told | null {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(LATCH_KEY[name]) as { value: string } | undefined;
+    return row ? JSON.parse(row.value) as Told : null;
+  } catch { return null; }
+}
+
+function writeTold(name: WatcherStatus['name'], told: Told | null): void {
+  try {
+    const db = getDb();
+    if (told === null) db.prepare('DELETE FROM config WHERE key = ?').run(LATCH_KEY[name]);
+    else db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(LATCH_KEY[name], JSON.stringify(told));
+  } catch { /* the text still goes; only the lasting card is lost */ }
+}
+
+/** The failing-watcher owner cards a dashboard shows on load. */
+export function watcherOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
+  return (Object.keys(LATCH_KEY) as Array<WatcherStatus['name']>).flatMap((name) => {
+    const told = readTold(name);
+    if (!told || told.dismissedAt !== undefined || told.at < PROCESS_STARTED_AT) return [];
+    return [{ words: told.words, severity: 'critical' as const, dismiss: () => writeTold(name, { ...told, dismissedAt: Date.now() }) }];
+  });
+}
 
 export function maybeAlertOnFailure(params: {
   name: WatcherStatus['name'];
@@ -114,7 +148,7 @@ export function maybeAlertOnFailure(params: {
   // when Gmail/Outlook/Teams stops polling, the user's email/chat input
   // stops reaching their agents. Real user-impact event, not just noise.
   try { sendAlert(message, 'critical'); } catch { /* best effort */ }
-  failureWordsTold.set(params.name, message);
+  writeTold(params.name, { at: Date.now(), words: message });
   return true;
 }
 
@@ -132,6 +166,7 @@ export function maybeAlertOnRecovery(params: {
   totalNotificationsSinceFailure: number;
 }): boolean {
   if (!params.alreadyAlerted) return false;
+  const told = readTold(params.name);
   const label = watcherLabel(params.name);
   const tail = params.totalNotificationsSinceFailure > 0
     ? ` ${params.totalNotificationsSinceFailure} new ${params.name === 'teams' ? 'message' : 'email'}${params.totalNotificationsSinceFailure === 1 ? '' : 's'} delivered since recovery.`
@@ -150,9 +185,8 @@ export function maybeAlertOnRecovery(params: {
   // confirmation reaches the same channel (the phone) that got the
   // failure alert. Without this the user is left wondering whether the
   // problem is still ongoing.
-  const failure = failureWordsTold.get(params.name);
-  failureWordsTold.delete(params.name);
-  try { sendAlert(message, 'critical', failure === undefined ? { card: false } : { clears: failure }); } catch { /* best effort */ }
+  writeTold(params.name, null);
+  try { sendAlert(message, 'critical', told === null ? { card: false } : { clears: told.words }); } catch { /* best effort */ }
   return false;
 }
 

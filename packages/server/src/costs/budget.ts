@@ -7,6 +7,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getDailySpend } from './tracker.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { ownerCardEnded } from '../services/owner-card-frames.js';
 
 const logger = createLogger('budget');
 
@@ -76,8 +77,8 @@ function ownerWords(b: BudgetScope, pctLabel: number, currentSpend: number, limi
 function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: number): void {
   const db = getDb();
   const row = db.prepare(`
-    SELECT alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?
-  `).get(b.budgetId) as { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null } | undefined;
+    SELECT alert_50_sent, alert_75_sent, alert_90_sent, alert_words FROM budgets WHERE id = ?
+  `).get(b.budgetId) as { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null; alert_words: string | null } | undefined;
 
   if (!row) return;
 
@@ -96,7 +97,13 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
     }
   }
 
-  if (highestCrossed === null) return;
+  if (highestCrossed === null) {
+    // Round 4: spend has dropped back under the line the owner's card names — that card's
+    // condition is over, so it leaves (no new text: a re-crossing inside the window stays told).
+    const cardLine = THRESHOLDS.find(({ field }) => (row[field] ?? 0) > 0)?.pct;
+    if (row.alert_words && cardLine !== undefined && ratio < cardLine) endBudgetCard(b.budgetId, row.alert_words);
+    return;
+  }
 
   // One crossing event per check: a single call that jumps from 40% to 95% is ONE thing that
   // happened, told once at the highest level it reached (every threshold it passed is latched).
@@ -113,6 +120,20 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const words = ownerWords(b, pctLabel, currentSpend, limitUsd);
   db.prepare('UPDATE budgets SET alert_words = ?, alert_dismissed_at = NULL WHERE id = ?').run(words, b.budgetId);
   sendAlert(words, 'notice');
+}
+
+/** The budget's card is over (spend dropped, or the owner changed the limit): it leaves every
+ *  open dashboard now (services/owner-card-frames.ts). */
+function endBudgetCard(budgetId: string, words: string): void {
+  getDb().prepare('UPDATE budgets SET alert_words = NULL WHERE id = ?').run(budgetId);
+  ownerCardEnded(words);
+}
+
+/** Before a limit or period is saved: if it CHANGES, the card for the old line is over. */
+function endBudgetCardOnChange(budgetId: string, limitUsd: number, period: string): void {
+  const row = getDb().prepare('SELECT limit_usd, period, alert_words FROM budgets WHERE id = ?').get(budgetId) as
+    { limit_usd: number; period: string; alert_words: string | null } | undefined;
+  if (row?.alert_words && (row.limit_usd !== limitUsd || row.period !== period)) endBudgetCard(budgetId, row.alert_words);
 }
 
 /**
@@ -326,6 +347,7 @@ const CLEAR_FLAGS_ON_CHANGE = ['alert_50_sent', 'alert_75_sent', 'alert_90_sent'
 
 export function setGlobalBudget(limitUsd: number): void {
   const db = getDb();
+  endBudgetCardOnChange('global_daily', limitUsd, 'daily');
   db.prepare(`
     INSERT INTO budgets (id, scope, limit_usd, period, created_at, updated_at)
     VALUES ('global_daily', 'global', ?, 'daily', datetime('now'), datetime('now'))
@@ -337,6 +359,7 @@ export function setGlobalBudget(limitUsd: number): void {
 export function setAgentBudget(agentId: string, limitUsd: number, period: string): void {
   const db = getDb();
   const id = `agent_${agentId}`;
+  endBudgetCardOnChange(id, limitUsd, period);
   db.prepare(`
     INSERT INTO budgets (id, scope, limit_usd, period, created_at, updated_at)
     VALUES (?, 'agent', ?, ?, datetime('now'), datetime('now'))

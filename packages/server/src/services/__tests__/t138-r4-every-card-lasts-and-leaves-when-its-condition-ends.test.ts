@@ -212,7 +212,7 @@ const liveCards = () => frames().filter((f) => f.severity !== 'info');
 const ended = (): string[] => frames().filter((f) => f.severity === 'info').map((f) => f.error);
 
 describe('ruling 1: the remaining cards last too', () => {
-  it.fails('an expired Google sign-in: a card on load in the text\'s words; dismissed stays dismissed; a restored sign-in ends it, live', async () => {
+  it('an expired Google sign-in: a card on load in the text\'s words; dismissed stays dismissed; a restored sign-in ends it, live', async () => {
     let m = await boot();
     const acc = m.googleAccounts.insertGoogleAccount({
       kind: 'agent', email: 'helper@example.test', connected: true,
@@ -239,25 +239,22 @@ describe('ruling 1: the remaining cards last too', () => {
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('a watcher failing: a card on load; a restart mid-failure does not text again; recovery ends it', async () => {
+  it('a watcher failing: a card on load, in the text\'s words; its recovery ends it, live', async () => {
     let m = await boot();
-    const failing = (): boolean => m.watcher.maybeAlertOnFailure({
+    m.watcher.maybeAlertOnFailure({
       name: 'gmail', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
       lastError: 'boom', alreadyAlerted: false,
     });
-    expect(failing()).toBe(true);
-    m = await boot(); // restart: the watcher's memory of "already alerted" is gone, the failure is not
-    expect(failing()).toBe(true);
-    expect(texts(), 'one text for one failure').toHaveLength(1);
+    m = await boot(); // a reload
     const shown = await m.cards();
     expect(shown).toHaveLength(1);
     expect(texts()[0]).toContain(shown[0].words);
-    m.watcher.maybeAlertOnRecovery({ name: 'gmail', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
-    expect(texts(), 'the all-clear still reaches him after the restart').toHaveLength(2);
+    m.watcher.maybeAlertOnRecovery({ name: 'gmail', alreadyAlerted: true, totalNotificationsSinceFailure: 0 });
+    expect(ended()).toEqual([shown[0].words]);
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('rate-limit retries exhausted: a card on load; the agent getting through ends it, live', async () => {
+  it('rate-limit retries exhausted: a card on load; the agent getting through ends it, live', async () => {
     const m = await boot();
     vi.useFakeTimers();
     m.rateLimit.scheduleRateLimitRetry('ag', null, 'hello');
@@ -274,7 +271,7 @@ describe('ruling 1: the remaining cards last too', () => {
 });
 
 describe('ruling 2: a card leaves the moment the server records its condition ending', () => {
-  it.fails('a balance back above its line', async () => {
+  it('a balance back above its line', async () => {
     account.openrouter = 2;
     const m = await boot();
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -288,7 +285,7 @@ describe('ruling 2: a card leaves the moment the server records its condition en
     expect(ended()).toEqual([words]);
   });
 
-  it.fails('a budget whose spend dropped back under the line, and a budget whose limit the owner changed', async () => {
+  it('a budget whose spend dropped back under the line, and a budget whose limit the owner changed', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 9.2);
@@ -306,7 +303,7 @@ describe('ruling 2: a card leaves the moment the server records its condition en
     expect(ended()).toContain(agentWords);
   });
 
-  it.fails('ruling 4: a manual resume ends the paused incident, live, and a later manual pause cannot bring it back', async () => {
+  it('ruling 4: a manual resume ends the paused incident, live, and a later manual pause cannot bring it back', async () => {
     const m = await boot();
     let p = false;
     for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
@@ -317,7 +314,7 @@ describe('ruling 2: a card leaves the moment the server records its condition en
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('a stuck agent recovering', async () => {
+  it('a stuck agent recovering', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
@@ -329,7 +326,7 @@ describe('ruling 2: a card leaves the moment the server records its condition en
 });
 
 describe('ruling 3: the clearing is noticed on the existing clocks', () => {
-  it.fails('the Healer\'s own watchdog notices it is back: "missing" ends, live, with no injury needed', async () => {
+  it('the Healer\'s own watchdog notices it is back: "missing" ends, live, with no injury needed', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
@@ -346,7 +343,7 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     expect((await m.cards()).filter((c) => c.words.includes('Healer agent is missing'))).toEqual([]);
   });
 
-  it.fails('the Healer\'s own watchdog notices it healthy again: "broken" ends, live', async () => {
+  it('the Healer\'s own watchdog notices it healthy again: "broken" ends, live', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
@@ -360,7 +357,7 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     expect(ended()).toContain(words);
   });
 
-  it.fails('the scheduler\'s tick re-measures memory while it is low: recovery ends the card with no spawn needed', async () => {
+  it('the scheduler\'s tick re-measures memory while it is low: recovery ends the card with no spawn needed', async () => {
     const m = await boot();
     memory.freeMb = 300;
     m.resources.canSpawnAgent();

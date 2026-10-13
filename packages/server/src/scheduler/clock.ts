@@ -79,9 +79,24 @@ function kickBalanceCheck(): void {
     });
 }
 
+// t138 r4: while the owner's low-memory card stands, this tick re-measures memory so its recovery
+// ends the card (and re-arms the text) without waiting for the next spawn attempt. Nothing is
+// measured while memory has not been reported low.
+let lastMemoryKick: Promise<void> = Promise.resolve();
+
+function kickMemoryRecheck(): void {
+  lastMemoryKick = import('../services/memory-low-notice.js').then(async (m) => {
+    if (!m.memoryLowStanding()) return;
+    const { getResourceInfo } = await import('../services/resource-monitor.js');
+    m.noteCriticalMemory(getResourceInfo().memory.free);
+  }).catch((err) => {
+    logger.warn('Memory re-check could not run', { error: err instanceof Error ? err.message : String(err) });
+  });
+}
+
 /** Resolves when the most recently kicked balance check has finished (or was not due). */
 export function balanceCheckSettled(): Promise<void> {
-  return lastBalanceKick;
+  return Promise.all([lastBalanceKick, lastMemoryKick]).then(() => undefined);
 }
 
 /** The default body: the balance check's kick, then the scheduler's own due scan. Injectable so
@@ -90,6 +105,7 @@ const defaultBody: TickBody = async () => {
   kickBalanceCheck();
   const { checkScheduledTasks } = await import('./runner.js');
   await checkScheduledTasks();
+  kickMemoryRecheck(); // after the due scan: never ahead of it, never awaited by it
 };
 
 /**

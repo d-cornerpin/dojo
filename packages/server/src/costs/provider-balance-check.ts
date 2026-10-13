@@ -27,6 +27,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential } from '../config/loader.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { ownerCardEnded } from '../services/owner-card-frames.js';
 
 const logger = createLogger('provider-balance');
 
@@ -151,8 +152,7 @@ function thresholdOf(raw: string | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** The latch row holds what the owner was told (`{ at, words }`), so his dashboard card outlives
- *  the page (t138 round 3); `dismissedAt` is added when he dismisses that card. */
+/** The latch holds what he was told (`{ at, words, dismissedAt? }`): his card (t138 rounds 3-4). */
 function setLatch(latchKey: string, told: { words: string } | null): void {
   const db = getDb();
   if (told) {
@@ -160,12 +160,13 @@ function setLatch(latchKey: string, told: { words: string } | null): void {
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(latchKey, value);
   } else {
+    const was = db.prepare('SELECT value FROM config WHERE key = ?').get(latchKey) as { value: string } | undefined;
     db.prepare('DELETE FROM config WHERE key = ?').run(latchKey);
+    try { const w = (JSON.parse(was?.value ?? '{}') as { words?: string }).words; if (w) ownerCardEnded(w); } catch { /* bare latch */ }
   }
 }
 
-/** The balance owner cards a dashboard shows on load: each latched, undismissed crossing. A
- *  top-up deletes the latch, which ends the card; falling again writes a fresh one. */
+/** The balance owner cards on load: each latched, undismissed crossing (a top-up ends it, live). */
 export function balanceOwnerCards(): Array<{ words: string; severity: 'notice'; dismiss: () => void }> {
   const keys = readKeys();
   return WATCHED.flatMap((w) => {
