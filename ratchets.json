@@ -7969,6 +7969,20 @@
       "to": 632,
       "by": "t140 round 4 — note identity made structural (a LOWERED pin)",
       "why": "635 -> 632 (-3). The reserved-head refusal is removed: a not-yet-condensed note is known by summaries.kind, never by its text, so a user may write any text. Back to the pre-refusal size."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 240,
+      "to": 258,
+      "by": "t140 round 5 — the routine condense is measured for the model the router dials, and has no clock or cap",
+      "why": "240 -> 258 (+18: +19 code, -1 comment; added 33 code/16 comment, removed 14 code/17 comment). The routine check becomes ONE exported function, condenseForTheDialedModel, called by the gate for a model it knows and by call-llm/reassemble-for-fit.ts once the router names an auto-routed pick (the gate cannot know it: the router decides the tier from the assembled array); routineCheckMeasuredAtGate records which model the gate measured so the check runs once per dialed model. Deleted in the same file: the routine condense's 3-minute wall clock and its 10-chunk cap (owner ruling 2026-10-13, no hard limits). Own prose condensed once before raising (20c4713b)."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1523,
+      "to": 1525,
+      "by": "t140 round 5 — a background fold chooses its writer in the owner's order",
+      "why": "1523 -> 1525 (+2: +1 code, +1 comment). CheckAndCompactOptions.inTheBackground and resolveSummaryWriterModel's background option: a background fold passes over only broken writers (nobody waits there, and trying the preferred writer is how its return is noticed), replacing the 5-minute writer bench."
     }
   ],
   "maxNewFileLines": 400,
@@ -8122,7 +8136,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 240,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 258,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8179,7 +8193,7 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1523,
+    "packages/server/src/memory/compaction.ts": 1525,
     "packages/server/src/memory/condense-until-fits.ts": 428,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
