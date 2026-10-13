@@ -85,7 +85,7 @@ describe('§2 the told record is written by exactly the two doors, each in its o
     expect(door).not.toMatch(/withOutboundIfAbsent/);
     // The text's scope tells from its own row; with no phone, the card's own scope does (round 2).
     expect(door).toMatch(/withOutbound\(\s*\{ agentId: PLATFORM_SENDER, tool: 'alert'[\s\S]*?toldAbout\(opts\.aboutWorkId, 'owner_notice'\)/);
-    expect(door).toMatch(/if \(!sent && card === 'raised' && opts\.aboutWorkId\)[\s\S]*?withOutbound\(\{ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' \}[\s\S]*?toldAbout\(workId, 'owner_card'\)/);
+    expect(door).toMatch(/if \(!sent && card === 'raised' && opts\.aboutWorkId && ownerCardStands\(scrubbed\)\)[\s\S]*?withOutbound\(\{ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' \}[\s\S]*?toldAbout\(workId, 'owner_card'\)/);
     const helper = files.get('services/imessage-bridge.ts')!;
     const h = helper.slice(helper.indexOf('function toldAbout('), helper.indexOf('\n}\n', helper.indexOf('function toldAbout(')));
     expect(h).toMatch(/const deliveryId = currentOutboundDeliveryId\(\);[\s\S]*recordPersonTold\(workId, \{ deliveryId, via \}\)/);
