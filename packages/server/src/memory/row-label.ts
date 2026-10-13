@@ -209,3 +209,25 @@ export function lastFinishedViewingTurnFirstSeq(agentId: string): number | null 
     return row?.seq ?? null;
   } catch { return null; }
 }
+
+/**
+ * Who an EVENTS item is addressed to, and from whom — read off its stored fields only. A notice
+ * about the owner's mail/channels is TO THE OWNER (the agent is not in that conversation); an
+ * engine-lane item is TO the agent itself, from another agent when the row names one (a PM
+ * review, say) or from the platform. So a notice for the owner is never read as one for the
+ * agent, or the reverse. Bounded: channel 24, sender 64, intent 32 chars.
+ */
+export function eventAddressee(m: Message): string {
+  const o = m.origin;
+  if (o?.kind === 'user') {
+    return `${(o.channel ?? 'channel').slice(0, 24)} notice TO THE OWNER, from ${(o.senderName ?? 'an unknown sender').slice(0, 64)}`;
+  }
+  let from = 'the platform';
+  if (m.sourceAgentId) {
+    try {
+      from = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(m.sourceAgentId) as { name: string } | undefined)?.name
+        ?? 'another agent';
+    } catch { from = 'another agent'; }
+  }
+  return `TO YOU, from ${from.slice(0, 64)}${o?.intent ? `: ${o.intent.slice(0, 32)}` : ''}`;
+}

@@ -78,6 +78,7 @@ function applySchema(db: Database.Database): void {
       model_id TEXT, cost REAL, latency_ms INTEGER, reasoning_content TEXT,
       inbound_meta TEXT, attachments TEXT, external_message_id TEXT, speaker TEXT,
       voice_session_id TEXT, task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
+      subject_kind TEXT,  -- t141 (migration 188): the single writer stamps it on every INSERT
       served_by_turn INTEGER, answer_message_id TEXT, swept_at TEXT,
       delivery_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, retired_at TEXT,
       origin_kind TEXT DEFAULT NULL, source TEXT DEFAULT NULL, conv_key TEXT DEFAULT NULL,

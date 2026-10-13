@@ -123,7 +123,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { startGmailWatcher, stopGmailWatcher } from '../../services/gmail-watcher.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { tagTurnOutputConversationId } from '../message-store.js';
+import { tagTurnOutputConversationId, insertEngineEvent } from '../message-store.js';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
@@ -416,5 +416,23 @@ describe('t141 backwards lifecycle — a notice handled, then a new one from the
     const lines = events.split('\n');
     expect(lines.find((l) => l.includes('"ZEBRA invoice"'))).toMatch(/^• HANDLED /);
     expect(lines.find((l) => l.includes('"ZEBRA invoice reminder"'))).toMatch(/^• NEW /);
+  });
+});
+
+describe('t141 — every EVENTS item says who it is addressed to, and from whom', () => {
+  it('the owner\'s mail notice reads TO THE OWNER; an agent\'s review notice reads TO YOU, from that agent', async () => {
+    await orchidThenZebraWake();
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification)
+                             VALUES ('pm-agent', 'Project Lead', 'm', 'idle', '{}', 'sensei')`).run();
+    insertEngineEvent({
+      agentId: AGENT, content: '[PM EFFORT REVIEW] many calls without advancing; please step back and re-plan.',
+      originIntent: 'agent_notice', sourceAgentId: 'pm-agent', work: null,
+    });
+    await submitUserMessage(AGENT, 'Anything new?');
+    const t = await turn({ content: 'Nothing for you.' });
+    const lines = (t[0].map(textOf).find((x) => x.includes('EVENTS & NOTICES')) ?? '').split('\n');
+    expect(lines.find((l) => l.includes('ZEBRA invoice'))).toMatch(/\[email notice TO THE OWNER, from billing@vendor\.example\]/);
+    expect(lines.find((l) => l.includes('PM EFFORT REVIEW') || l.includes('many calls without advancing')))
+      .toMatch(/\[TO YOU, from Project Lead: agent_notice\]/);
   });
 });

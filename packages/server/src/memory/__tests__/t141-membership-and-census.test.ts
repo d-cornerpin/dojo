@@ -17,6 +17,7 @@ import type { Message, MessageOrigin } from '@dojo/shared';
 import { scopeToHumanConversation, scopeToA2AThread } from '../assembler.js';
 import type { SubjectKind } from '../message-store.js';
 import type { TurnCounterparty } from '../../agent/v2/counterparty.js';
+import { engineSources } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -140,8 +141,10 @@ describe('§2 the deletions, counted', () => {
     // (a person's row no door resolved) and the superseded late stamp, kept only because its
     // three callers sit outside t141's fence (hand-up in the report). A third would red this.
     expect(store.match(/UPDATE messages SET conversation_id/g) ?? []).toHaveLength(2);
-    const callers = ['agent/v2/steps/finalize/route-reply.ts', 'agent/v2/steps/post-call-classify/no-reply.ts',
-      'agent/v2/steps/teardown/conversation-tagging.ts'];
-    for (const f of callers) expect(stripComments(read(f)), f).toMatch(/tagTurnOutputConversationId\(\{/);
+    // The engine corpus through the shared derivation (`engine-sources.ts`), never a path walk.
+    const callers = engineSources().filter((e) => /tagTurnOutputConversationId\(\{/.test(stripComments(e.text)))
+      .map((e) => e.rel).sort();
+    expect(callers).toEqual(['agent/v2/steps/finalize/route-reply.ts', 'agent/v2/steps/post-call-classify/no-reply.ts',
+      'agent/v2/steps/teardown/conversation-tagging.ts']);
   });
 });

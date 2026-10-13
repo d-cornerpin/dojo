@@ -628,7 +628,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.events',
     slot: MessageSlot.EventsTail,
-    reserveTokens: 1453,
+    reserveTokens: 1513,
     measured:
       'W81, DERIVED BY CALLING THE RENDERER: `eventsLaneWorstCaseTokens()` '
       + '(`memory/assembler.ts`) renders the real frame around 10 bullets (rows.events), each '

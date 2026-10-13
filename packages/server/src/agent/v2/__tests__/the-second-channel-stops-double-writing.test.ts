@@ -108,7 +108,8 @@ async function whatTheModelReceives(): Promise<string> {
 /** The EVENTS & NOTICES line for a given intent, or null when the lane does not carry it. */
 async function riderLine(intent: string): Promise<string | null> {
   const seen = await whatTheModelReceives();
-  const line = seen.split('\n').find((l) => l.includes(`[${intent}]`));
+  // t141: the bullet's label now says who it is addressed to: `[TO YOU, from the platform: <intent>]`.
+  const line = seen.split('\n').find((l) => l.includes(`: ${intent}]`));
   return line ?? null;
 }
 
@@ -218,7 +219,7 @@ describe('§0 the two channels, measured against the real assembler', () => {
     expect(line, 'the events lane must carry the row, or this measurement is vacuous').not.toBeNull();
 
     const cap = laneLimit('lane.events', 'chars', 'gist');
-    const gist = line!.slice(line!.indexOf('[thrash_gate] ') + '[thrash_gate] '.length);
+    const gist = line!.slice(line!.indexOf(': thrash_gate] ') + ': thrash_gate] '.length);
     const body = steer.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
 
     // It is the steer's own bytes, cut at the lane's declared cap: a strict prefix, so the
@@ -239,7 +240,7 @@ describe('§0 the two channels, measured against the real assembler', () => {
     expect(seen).toContain('EVENTS & NOTICES (things that happened');
     // t141: the head's "surface one to the owner" steer is deleted (OR-V333-SET 7); the frame
     // that makes it a NOTICE and not an order is the awareness clause, which stays.
-    expect(seen).toContain('that you are AWARE of but are NOT in conversation with');
+    expect(seen).toContain('you are AWARE of it but NOT in conversation');
   });
 });
 

@@ -13,7 +13,7 @@ import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js'
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import {
-  labelRows, lastFinishedViewingTurnFirstSeq, servedConversationId, subjectOf, withSubjectKinds,
+  eventAddressee, labelRows, lastFinishedViewingTurnFirstSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
@@ -2140,10 +2140,11 @@ export function scratchpadWorstCaseTokens(): number {
 // t141 — the "surface one to the owner" steer is gone (audit RC4); notices stay visible, each
 // marked NEW or HANDLED (OR-V333-SET (7); `row-label.ts lastFinishedViewingTurnFirstSeq`).
 const EVENTS_HEAD =
-  '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the '
-  + 'owner that you are AWARE of but are NOT in conversation with, NOT the person '
-  + 'you are replying to below; never reply to a notice\'s sender. NEW = arrived since '
-  + 'your last finished turn; HANDLED = already in front of you on a finished turn) ═══';
+  '═══ EVENTS & NOTICES (things that happened; each says who it is addressed to. A notice '
+  + 'TO THE OWNER is about his mail or channels: you are AWARE of it but NOT in conversation '
+  + 'with its sender, who is NOT the person you are replying to below; never reply to it. '
+  + 'An item TO YOU comes from the platform or another agent. NEW = arrived since your last '
+  + 'finished turn; HANDLED = already in front of you on a finished turn) ═══';
 
 /** The block, from bullets already built. Pure, for the same reason. */
 export function renderEventsBlock(lines: string[]): string | null {
@@ -2159,9 +2160,7 @@ function renderEventsLane(agentId: string, awarenessEvents: Message[]): string |
     const o = m.origin;
     const rawContent = typeof m.content === 'string' ? m.content : '';
     const body = rawContent.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
-    const label = o?.kind === 'user'
-      ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
-      : (o?.intent ?? 'event');
+    const label = eventAddressee(m);
     const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
     const gist = structured ?? body.slice(0, gistCap);
     const at = renderMessageTimeStamp(m.createdAt);
@@ -2178,7 +2177,8 @@ export function eventsLaneWorstCaseTokens(): number {
   const rows = laneLimit('lane.events', 'rows', 'events');
   const gistCap = laneLimit('lane.events', 'chars', 'gist');
   // The widest label the renderer can build, and the widest instant its stamp can print.
-  const label = `${'c'.repeat(24)} notice from ${'s'.repeat(64)}`;
+  const label = [`${'c'.repeat(24)} notice TO THE OWNER, from ${'s'.repeat(64)}`,
+    `TO YOU, from ${'s'.repeat(64)}: ${'i'.repeat(32)}`].sort((x, y) => y.length - x.length)[0];
   const at = renderMessageTimeStamp('2026-09-30T23:41:59.999Z') ?? '';
   const lines = Array.from({ length: rows }, () => `• HANDLED ${at}[${label}] ${'g'.repeat(gistCap)}`);
   eventsWorstCase = estimateTokens(renderEventsBlock(lines) ?? '');
