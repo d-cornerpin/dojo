@@ -132,12 +132,10 @@ export function ceilingSkipRows(rowsSinceBoundary: number, freshTailCount: numbe
 }
 
 /**
- * t140 — HOW FAR AHEAD OF THE CEILING THE CONDENSE TRIGGER FIRES: one token-trim block of
- * rows. The lead is the room a background condense has to finish before the cut would fire;
- * one block is the trim's own granularity (half a row cap — 20 rows on a 32K box, 40 on a 200K
- * one), which is several tool calls of growth, while a condense of one step is a handful of
- * summariser calls. Larger would fold rows the agent is reading sooner than the cut needs;
- * smaller would race the cut.
+ * t140 — the condense trigger fires one token-trim block of rows ahead of the ceiling: room for
+ * a background condense to finish before the cut (half a row cap — several tool calls of growth
+ * against a handful of summariser calls). Larger folds rows sooner than the cut needs them gone;
+ * smaller races the cut.
  */
 export function ceilingLeadRows(freshTailCount: number): number {
   return tailTrimBlockGroups(freshTailCount);
@@ -433,38 +431,19 @@ export function groupsToDropForBudget(
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t140 — WHICH ROWS ARE ABOUT TO LEAVE THE LIVE VIEW. THE CONDENSE TRIGGER'S ONE QUESTION.
-// (Tracker #13; decision #16 re-opened and reversed, OR-V333-SET (1).)
-//
-// THE RULING: condense only when the working view is getting full for the model actually used,
-// or messages are about to leave view — and then only the messages leaving view, never what the
-// agent is reading.
-//
-// WHAT STOOD BEFORE: a row-count drain. When more than 30 unsummarised rows sat outside the
-// newest row cap it summarised them, "regardless of token level". After t94 the live view is
-// every row since the boundary, so those rows were IN VIEW: the model was reading them word for
-// word while they were folded, the boundary moved, and the cache broke behind the summaries lane
-// — on a busy mailbox every few small asks. That drain is deleted. This answers the question it
-// should have been asking.
-//
-// TWO WAYS A ROW LEAVES THE VIEW, and this module owns the arithmetic of both:
-//   'ceiling' — the span since the boundary is within one trim block of the row ceiling. The
-//               rows that leave are the ones the ceiling's next cut would skip
-//               (`ceilingSkipRows`), and they are folded BEFORE the cut, so on a healthy box the
-//               cut never fires and no row ever leaves the view without a summary.
-//   'full'    — the caller has measured that the view is full for the dialed window (the
-//               token trim is setting rows aside). The rows that leave are the ones that trim
-//               takes off the front: half the span, in whole blocks (`maxTrimUnits`). Folding
-//               them moves the boundary to where the trim's front already is, so the live tail
-//               does not move at all — only the summaries lane above it changes.
-//
-// AND THE FLOOR NEITHER MAY CROSS: the newest `freshTailCount` rows never leave (the same floor
-// every compaction has always kept, and the one `freshTailHorizon`'s header relies on). A fold
-// that would reach into it is clamped short of it; one that cannot fold anything answers null.
-//
-// The answer is a SEQ, not a row list: compaction folds every not-yet-summarised row of this
-// session with `seq <= throughSeq`. That includes rows stranded before the boundary by an
-// earlier refused chunk — they left the view long ago and are owed a summary too.
+// t140 — WHICH ROWS ARE ABOUT TO LEAVE THE LIVE VIEW: the condense trigger's one question
+// (tracker #13; OR-V333-SET (1): condense only when the view is getting full for the model
+// actually used, or messages are about to leave view — and only those messages). It replaces a
+// row-count drain that folded rows the model was still reading. Two ways a row leaves, both
+// owned here:
+//   'ceiling' — within one trim block of the row ceiling: the rows its next cut would skip
+//               (`ceilingSkipRows`), folded BEFORE the cut, so on a healthy box the cut never fires.
+//   'full'    — the caller measured the view full for the dialed window: the rows the token trim
+//               takes off the front (`maxTrimUnits`). Folding them moves the boundary to where the
+//               trim's front is, so the live tail itself does not move.
+// The newest `freshTailCount` rows never leave (the floor every compaction keeps). The answer is
+// a SEQ: compaction folds every unsummarised row of the session with `seq <= throughSeq`, which
+// includes rows an earlier refused chunk stranded before the boundary.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 export type LeavingCause = 'ceiling' | 'full';
@@ -477,8 +456,7 @@ export interface LeavingView {
   rowsLeaving: number;
 }
 
-/** True when the row at `seq` is followed by its tool result, so a fold ending at `seq` would
- *  split a tool_use from its tool_result. */
+/** The seq of the tool result right after `seq`, if any — a fold ending at `seq` would split it. */
 function seqOfPairedToolResult(agentId: string, seq: number): number | null {
   const row = getDb().prepare(`
     SELECT m.seq AS seq, m.role AS role
@@ -491,14 +469,9 @@ function seqOfPairedToolResult(agentId: string, seq: number): number | null {
 }
 
 /**
- * The rows about to leave this agent's live view, or null when nothing is leaving.
- *
- * `viewFull` is the caller's measurement that the view no longer fits the dialed window
- * (`memory/compaction.ts`'s `liveViewIsFull`, off the same dry run the pre-call gate reads).
- * Without it only the ceiling can make rows leave.
- *
- * Never throws: a trigger is not the place to discover a broken read. Failure answers null —
- * condense nothing — which is the direction the ruling prefers over condensing on a guess.
+ * The rows about to leave this agent's live view, or null. `viewFull` is the caller's
+ * measurement (`compaction.ts`'s `liveViewIsFull`); without it only the ceiling makes rows leave.
+ * Never throws: a failed read answers null — condense nothing — the direction the ruling prefers.
  */
 export function rowsLeavingView(
   agentId: string,

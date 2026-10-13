@@ -123,14 +123,8 @@ export interface AssemblyValidation {
   overBy: number;
 }
 
-/**
- * WHY a repair refused, as a closed set a caller can branch on without reading prose.
- *   `UNREPAIRABLE`                 — the C11 refusals that stood before t140 (shape, no lane map,
- *                                    an undeclared lane, still over after every droppable lane).
- *   `LIVE_CONVERSATION_PROTECTED`  — t140: the array only fits if `lane.fresh-tail` goes. That is
- *                                    never a repair (see `LIVE_CONVERSATION_LANE`), so it is a
- *                                    repairable-defect report, and the boundary starts condensing.
- */
+/** Why a repair refused: the C11 refusals that stood before t140, or (t140) an array that fits
+ *  only without the live conversation — see `LIVE_CONVERSATION_LANE`. */
 export type AssemblyRefusalCode = 'UNREPAIRABLE' | 'LIVE_CONVERSATION_PROTECTED';
 
 export class AssemblyValidationError extends Error {
@@ -146,24 +140,15 @@ export class AssemblyValidationError extends Error {
 }
 
 /**
- * t140 — THE LIVE CONVERSATION IS NOT REPAIR MATERIAL (tracker #13, OR-COMPACT-1).
- *
- * `lane.fresh-tail` was the LAST rung of the droppable ladder. Dropping it removes the agent's
- * entire live conversation — the ask it is answering and its own earlier steps this turn — and
- * the call then goes out holding the system prompt and almost nothing else. The model, unable
- * to see what it just did, does it again: on the reporting box that is a run of calls whose
- * prompt sat flat at ~45K while their outputs never reached the next call.
- *
- * A "repair" that ships that array is warn-and-send wearing C10's name. The rung is removed: the
- * repair still drops every OTHER droppable lane in priority order, and when the array fits only
- * without the conversation it REFUSES with `LIVE_CONVERSATION_PROTECTED`. The boundary then
- * starts condensing against the dialed window (`validateAtProviderBoundary`), so the refusal is
- * a repairable defect with the repair already under way, never a dead end. The lane keeps its
- * priority for the ALLOCATOR (`fitLanes` still ranks it); only the repair may not take it.
- *
- * In normal running this never fires: every pick is re-sized for its own window before dial
- * (`agent/v2/steps/call-llm/reassemble-for-fit.ts`), and the assembler's own token trim keeps at
- * least half the live conversation and always its newest group.
+ * t140 (tracker #13, OR-COMPACT-1) — THE LIVE CONVERSATION IS NOT REPAIR MATERIAL. It was the
+ * last rung of the droppable ladder, and dropping it sent the model a call holding the system
+ * prompt and nothing it was working on, so it redid steps it could no longer see (the reporting
+ * box's run of calls flat at ~45K). Shipping that is warn-and-send wearing C10's name. The repair
+ * still drops every OTHER droppable lane in priority order; when the array fits only without the
+ * conversation it refuses with `LIVE_CONVERSATION_PROTECTED` and the boundary starts condensing
+ * against the dialed window — a repairable defect with the repair under way, never a dead end.
+ * `fitLanes` still ranks the lane; only the repair may not take it. In normal running this never
+ * fires: `reassemble-for-fit.ts` sizes every pick for its own window before dial.
  */
 export const LIVE_CONVERSATION_LANE = 'lane.fresh-tail';
 
@@ -685,16 +670,10 @@ export async function validateAtProviderBoundary(
 }
 
 /**
- * t140 — THE REFUSAL IS A REPAIRABLE-DEFECT REPORT, AND THE REPAIR STARTS HERE (OR-COMPACT-1).
- *
- * Three things, in this order, and then the caller re-throws so the dial never happens:
- *   1. the durable sink gets a record under its own code, so the event is countable on a box
- *      (`jq` the `live-conversation-protected` code) rather than living only in a rotated log;
- *   2. a named log line, `ASSEMBLY_VALIDATION_LIVE_CONVERSATION_PROTECTED`;
- *   3. a FORCED condense against the window of the model that was being dialed — the one
- *      whose budget this array did not fit. It is background on purpose: it calls a model, and
- *      the turn's error path must not wait on it. `checkAndCompact` is skip-if-busy per agent
- *      and bounded by the forced pass's own chunk and wall-clock limits.
+ * t140 — the refusal as a repairable-defect report, with the repair started: a durable sink
+ * record under its own code (countable on a box, not just a rotated log line), a named log line,
+ * and a FORCED condense against the dialed model's window, in the background because it dials a
+ * model (skip-if-busy per agent, bounded by the forced pass's own limits). The caller re-throws.
  */
 function refuseAndCondense(
   input: BoundaryCheckInput, err: AssemblyValidationError, result: AssemblyValidation,
