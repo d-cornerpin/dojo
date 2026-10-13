@@ -62,8 +62,32 @@ export function schedulerClockState(): {
   return { running: timer !== null, inFlight, overlapsSkipped, everyMs: SCHEDULER_INTERVAL_MS };
 }
 
-/** The default body: the scheduler's own due scan. Injectable so the guard can be driven. */
+/**
+ * The provider-balance check (t138, #8) rides this clock rather than owning a timer of its own:
+ * the platform already keeps one clock, and a balance that only got checked while the Ledger
+ * page was open is the defect it replaces. It is KICKED, not awaited — a slow provider API must
+ * never hold the due scan, or the re-entrancy guard, hostage — and it decides for itself whether
+ * it is due (`BALANCE_CHECK_EVERY_MS`). The last kick is kept so "has it settled" is answerable.
+ */
+let lastBalanceKick: Promise<void> = Promise.resolve();
+
+function kickBalanceCheck(): void {
+  lastBalanceKick = import('../costs/provider-balance-check.js')
+    .then(async (m) => { await m.maybeCheckProviderBalances(); })
+    .catch((err) => {
+      logger.error('Provider balance check could not start', { error: err instanceof Error ? err.message : String(err) });
+    });
+}
+
+/** Resolves when the most recently kicked balance check has finished (or was not due). */
+export function balanceCheckSettled(): Promise<void> {
+  return lastBalanceKick;
+}
+
+/** The default body: the balance check's kick, then the scheduler's own due scan. Injectable so
+ *  the guard can be driven. */
 const defaultBody: TickBody = async () => {
+  kickBalanceCheck();
   const { checkScheduledTasks } = await import('./runner.js');
   await checkScheduledTasks();
 };

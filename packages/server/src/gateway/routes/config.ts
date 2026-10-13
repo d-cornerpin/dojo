@@ -14,6 +14,7 @@ import type { Provider, Model } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
+import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance } from '../../costs/provider-balance-check.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
@@ -2725,14 +2726,12 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 });
 
 // GET /api/config/openrouter/credits — fetch OpenRouter account balance
+//
+// READ ONLY. The warning-threshold check that used to live here (and only ran while the Ledger
+// page was open) is the background check in `costs/provider-balance-check.ts`, on the
+// scheduler's clock; this route reads through the same reader and decides nothing.
 configRouter.get('/openrouter/credits', async (c) => {
-  const db = getDb();
-
-  // Find an openai-compatible provider with an OpenRouter base URL
-  const provider = db.prepare(
-    "SELECT id, base_url FROM providers WHERE type = 'openai-compatible' AND base_url LIKE '%openrouter%'"
-  ).get() as { id: string; base_url: string } | undefined;
-
+  const provider = findOpenRouterProvider();
   if (!provider) {
     return c.json({ ok: false, error: 'No OpenRouter provider configured' }, 404);
   }
@@ -2743,48 +2742,9 @@ configRouter.get('/openrouter/credits', async (c) => {
   }
 
   try {
-    const resp = await fetch('https://openrouter.ai/api/v1/credits', {
-      headers: { Authorization: `Bearer ${credential}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!resp.ok) {
-      return c.json({ ok: false, error: `OpenRouter returned ${resp.status}` }, 502);
-    }
-
-    const raw = await resp.json() as Record<string, unknown>;
-    logger.info('OpenRouter credits raw response', { raw: JSON.stringify(raw) });
-
-    // Normalize — response might be { data: { ... } } or flat
-    const src = (raw.data ?? raw) as Record<string, unknown>;
-
-    // OpenRouter may use different field names or nesting
-    const totalCredits = (src.total_credits ?? src.totalCredits ?? src.limit ?? 0) as number;
-    const totalUsage = (src.total_usage ?? src.totalUsage ?? src.usage ?? 0) as number;
-    const balance = (src.balance ?? src.remaining ?? (totalCredits - totalUsage)) as number;
-
-    // Check warning threshold and send iMessage alert if below
-    try {
-      const thresholdRow = (db.prepare("SELECT value FROM config WHERE key = 'openrouter_warning_threshold'").get() as { value: string } | undefined) ?? { value: '5' };
-      const alertedRow = db.prepare("SELECT value FROM config WHERE key = 'openrouter_threshold_alerted'").get() as { value: string } | undefined;
-      if (thresholdRow?.value) {
-        const thresholdVal = parseFloat(thresholdRow.value);
-        const alreadyAlerted = alertedRow?.value === 'true';
-        if (balance <= thresholdVal && !alreadyAlerted) {
-          // Send iMessage alert
-          const { sendAlert } = await import('../../services/imessage-bridge.js');
-          sendAlert(`OpenRouter balance is $${balance.toFixed(2)}, below your $${thresholdVal.toFixed(0)} warning threshold. Add credits at openrouter.ai`, 'warning');
-          // Mark as alerted so we don't spam
-          db.prepare("INSERT INTO config (key, value, updated_at) VALUES ('openrouter_threshold_alerted', 'true', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')").run();
-          logger.info('OpenRouter low balance alert sent', { balance, threshold: thresholdVal });
-        } else if (balance > thresholdVal && alreadyAlerted) {
-          // Reset alert flag when balance goes back above threshold
-          db.prepare("DELETE FROM config WHERE key = 'openrouter_threshold_alerted'").run();
-        }
-      }
-    } catch { /* alert is best-effort */ }
-
-    return c.json({ ok: true, data: { total_credits: totalCredits, total_usage: totalUsage, balance } });
+    const read = await readOpenRouterCredits(credential);
+    if (!read.ok) return c.json({ ok: false, error: read.error }, 502);
+    return c.json({ ok: true, data: read.data });
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }
@@ -2803,14 +2763,10 @@ configRouter.get('/openrouter/threshold', (c) => {
 // currency + total_balance + granted_balance + topped_up_balance.
 
 // GET /api/config/deepseek/balance — fetch DeepSeek account balance
+//
+// READ ONLY, like the OpenRouter route above: the threshold check is the background check.
 configRouter.get('/deepseek/balance', async (c) => {
-  const db = getDb();
-
-  // Find an openai-compatible provider with a DeepSeek base URL
-  const provider = db.prepare(
-    "SELECT id, base_url FROM providers WHERE type = 'openai-compatible' AND base_url LIKE '%deepseek.com%'"
-  ).get() as { id: string; base_url: string } | undefined;
-
+  const provider = findDeepSeekProvider();
   if (!provider) {
     return c.json({ ok: false, error: 'No DeepSeek provider configured' }, 404);
   }
@@ -2821,60 +2777,9 @@ configRouter.get('/deepseek/balance', async (c) => {
   }
 
   try {
-    const resp = await fetch('https://api.deepseek.com/user/balance', {
-      headers: { Authorization: `Bearer ${credential}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!resp.ok) {
-      return c.json({ ok: false, error: `DeepSeek returned ${resp.status}` }, 502);
-    }
-
-    const raw = await resp.json() as {
-      is_available?: boolean;
-      balance_infos?: Array<{ currency: string; total_balance: string; granted_balance?: string; topped_up_balance?: string }>;
-    };
-    logger.info('DeepSeek balance raw response', { raw: JSON.stringify(raw) });
-
-    // Find USD entry (DeepSeek can return per-currency rows; USD is the
-    // common case for accounts billed via Stripe).
-    const usd = raw.balance_infos?.find(b => b.currency === 'USD') ?? raw.balance_infos?.[0];
-    if (!usd) {
-      return c.json({ ok: false, error: 'DeepSeek returned no balance info' }, 502);
-    }
-
-    const balance = parseFloat(usd.total_balance);
-    const granted = usd.granted_balance ? parseFloat(usd.granted_balance) : 0;
-    const toppedUp = usd.topped_up_balance ? parseFloat(usd.topped_up_balance) : 0;
-
-    // Check warning threshold and send iMessage alert if below
-    try {
-      const thresholdRow = (db.prepare("SELECT value FROM config WHERE key = 'deepseek_warning_threshold'").get() as { value: string } | undefined) ?? { value: '5' };
-      const alertedRow = db.prepare("SELECT value FROM config WHERE key = 'deepseek_threshold_alerted'").get() as { value: string } | undefined;
-      if (thresholdRow?.value) {
-        const thresholdVal = parseFloat(thresholdRow.value);
-        const alreadyAlerted = alertedRow?.value === 'true';
-        if (balance <= thresholdVal && !alreadyAlerted) {
-          const { sendAlert } = await import('../../services/imessage-bridge.js');
-          sendAlert(`DeepSeek balance is $${balance.toFixed(2)}, below your $${thresholdVal.toFixed(0)} warning threshold. Add credits at platform.deepseek.com`, 'warning');
-          db.prepare("INSERT INTO config (key, value, updated_at) VALUES ('deepseek_threshold_alerted', 'true', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')").run();
-          logger.info('DeepSeek low balance alert sent', { balance, threshold: thresholdVal });
-        } else if (balance > thresholdVal && alreadyAlerted) {
-          db.prepare("DELETE FROM config WHERE key = 'deepseek_threshold_alerted'").run();
-        }
-      }
-    } catch { /* alert is best-effort */ }
-
-    return c.json({
-      ok: true,
-      data: {
-        currency: usd.currency,
-        balance,
-        granted_balance: granted,
-        topped_up_balance: toppedUp,
-        is_available: raw.is_available ?? true,
-      },
-    });
+    const read = await readDeepSeekBalance(credential);
+    if (!read.ok) return c.json({ ok: false, error: read.error }, 502);
+    return c.json({ ok: true, data: read.data });
   } catch (err) {
     return routeFailure(c, logger, err, { status: 500 });
   }
@@ -2898,8 +2803,9 @@ configRouter.post('/deepseek/threshold', async (c) => {
     INSERT INTO config (key, value, updated_at) VALUES ('deepseek_warning_threshold', ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
   `).run(String(body.threshold), String(body.threshold));
-  // Reset alert flag so the new threshold takes effect on the next check
-  db.prepare("DELETE FROM config WHERE key = 'deepseek_threshold_alerted'").run();
+  // The latch is NOT reset here (it used to be, for DeepSeek only): the background check
+  // re-arms on its own when the balance sits above the new line, and a balance still under it
+  // after a threshold edit is not a new crossing — the owner was already told.
   return c.json({ ok: true });
 });
 

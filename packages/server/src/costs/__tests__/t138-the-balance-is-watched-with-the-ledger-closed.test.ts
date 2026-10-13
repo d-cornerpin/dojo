@@ -126,9 +126,9 @@ async function boot(): Promise<{
   const { configRouter } = await import('../../gateway/routes/config.js');
   const tick = async (): Promise<'ran' | 'skipped'> => {
     const r = await clock.runSchedulerTick();
-    // The balance check rides the tick but must never hold the due scan hostage to a slow
-    // provider; let its own promise settle before the clause reads the result.
-    await new Promise((res) => setTimeout(res, 50));
+    // The balance check rides the tick but is kicked, not awaited (a slow provider must never
+    // hold the due scan); wait for the kick to settle before the clause reads the result.
+    await clock.balanceCheckSettled();
     return r;
   };
   const route = (method: string, p: string, body?: unknown): Promise<Response> => configRouter.request(p, {
@@ -159,7 +159,7 @@ function advance(ms: number): void {
 const HOUR = 60 * 60_000;
 
 describe('the RED witness (#8): the Ledger page is closed, the balance is below the line', () => {
-  it.fails('the scheduler tick checks the balance and tells the owner once', async () => {
+  it('the scheduler tick checks the balance and tells the owner once', async () => {
     const { tick } = await boot();
     await tick();
     expect(routerChecks(), 'a check happened with no page open').toBe(1);
@@ -170,7 +170,7 @@ describe('the RED witness (#8): the Ledger page is closed, the balance is below 
     expect(latch('openrouter')).not.toBeNull();
   });
 
-  it.fails('DeepSeek is watched the same way', async () => {
+  it('DeepSeek is watched the same way', async () => {
     account.openrouter = 50;
     account.deepseek = 1.5;
     const { tick } = await boot();
@@ -183,7 +183,7 @@ describe('the RED witness (#8): the Ledger page is closed, the balance is below 
 });
 
 describe('the Ledger page only READS now', () => {
-  it.fails('opening the page (the GET routes) returns the balance and decides nothing', async () => {
+  it('opening the page (the GET routes) returns the balance and decides nothing', async () => {
     const { route } = await boot();
     const r1 = await route('GET', '/openrouter/credits');
     expect(r1.status).toBe(200);
@@ -196,7 +196,7 @@ describe('the Ledger page only READS now', () => {
 });
 
 describe('once per real crossing', () => {
-  it.fails('runs on a cadence, not every 30 s tick; a later check while still low says nothing', async () => {
+  it('runs on a cadence, not every 30 s tick; a later check while still low says nothing', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     fakeNow = Date.now();
     vi.setSystemTime(fakeNow);
@@ -211,7 +211,7 @@ describe('once per real crossing', () => {
     expect(ownerTexts()).toHaveLength(1);
   });
 
-  it.fails('a restart does not re-alert', async () => {
+  it('a restart does not re-alert', async () => {
     let { tick } = await boot();
     await tick();
     expect(ownerTexts()).toHaveLength(1);
@@ -221,7 +221,7 @@ describe('once per real crossing', () => {
     expect(ownerTexts()).toHaveLength(1);
   });
 
-  it.fails('a top-up re-arms silently, and the next real drop is told again', async () => {
+  it('a top-up re-arms silently, and the next real drop is told again', async () => {
     let { tick } = await boot();
     await tick();
     account.openrouter = 40;
@@ -245,7 +245,7 @@ describe('once per real crossing', () => {
 });
 
 describe('backwards lifecycle', () => {
-  it.fails('threshold lowered below the balance after an alert: silent re-arm', async () => {
+  it('threshold lowered below the balance after an alert: silent re-arm', async () => {
     let { tick, route } = await boot();
     await tick();
     expect(ownerTexts()).toHaveLength(1);
@@ -256,7 +256,7 @@ describe('backwards lifecycle', () => {
     expect(ownerTexts()).toHaveLength(1);
   });
 
-  it.fails('threshold changed while still below it: not a new crossing, no second text (both providers alike)', async () => {
+  it('threshold changed while still below it: not a new crossing, no second text (both providers alike)', async () => {
     account.deepseek = 2;
     let { tick, route } = await boot();
     await tick();
@@ -268,7 +268,7 @@ describe('backwards lifecycle', () => {
     expect(ownerTexts()).toHaveLength(2);
   });
 
-  it.fails('threshold raised above a balance that was fine: the next check tells the owner once', async () => {
+  it('threshold raised above a balance that was fine: the next check tells the owner once', async () => {
     account.openrouter = 8;
     let { tick, route } = await boot();
     await tick();
@@ -281,7 +281,7 @@ describe('backwards lifecycle', () => {
     expect(sent[0]).toContain('$10');
   });
 
-  it.fails('provider key removed: no call, no text, latch cleared; key re-added on a low account: told once', async () => {
+  it('provider key removed: no call, no text, latch cleared; key re-added on a low account: told once', async () => {
     let { tick } = await boot();
     await tick();
     expect(ownerTexts()).toHaveLength(1);
