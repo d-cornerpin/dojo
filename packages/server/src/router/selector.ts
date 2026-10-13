@@ -163,6 +163,11 @@ function fitsProviderCeiling(
  * only these — one predicate, so the two can never disagree about which model a tier opens on.
  */
 function passesStandingFilters(model: TierModelRow, required: string[], agentId?: string): boolean {
+  return standingSkip(model, required, agentId) === null;
+}
+
+/** Why the standing filters turn a candidate away; `null` when they do not. */
+function standingSkip(model: TierModelRow, required: string[], agentId?: string): RoutedSkip | null {
   // ── v3.2.3 LAYER 3: DO NOT OFFER A PROVIDER THAT IS OUT OF MONEY ──
   // The incident's auto-router kept ranking the CHEAPEST model first, which was the
   // one answering 402 — so every turn paid a full round trip to a wall before falling
@@ -173,7 +178,7 @@ function passesStandingFilters(model: TierModelRow, required: string[], agentId?
     logger.debug('Model skipped: its provider is circuit-broken (permanent failure)', {
       modelId: model.model_id, providerId: model.provider_id,
     }, agentId);
-    return false;
+    return 'provider_down';
   }
 
   // Skip models lacking required capabilities (e.g., tools, vision)
@@ -186,16 +191,40 @@ function passesStandingFilters(model: TierModelRow, required: string[], agentId?
       logger.debug('Model lacks required capabilities, skipping', {
         modelId: model.model_id, required, caps,
       }, agentId);
-      return false;
+      return 'capability';
     }
   }
 
   // Skip rate-limited models
   if (isRateLimited(model.model_id)) {
     logger.debug('Model rate-limited, skipping', { modelId: model.model_id }, agentId);
-    return false;
+    return 'rate_limit';
   }
-  return true;
+  return null;
+}
+
+/** t140 round 7 (re-review H2'): why `selectModel` would not offer a model right now. */
+export type RoutedSkip = 'provider_down' | 'capability' | 'rate_limit' | 'budget' | 'excluded';
+
+/**
+ * t140 round 7 — WHEN NO PICK HOLDS THE AGENT, WHY. Every model `selectModel` could walk to from
+ * `tier`, with the filter that turns it away now (`null`: it would be offered). The same predicates
+ * in the same order as `selectModel`, so the owner is told the cause the router actually acted on.
+ */
+export function routedSkipReasons(
+  tier: string | null | undefined, agentId: string, exclude: string[], required: string[],
+): Array<{ modelId: string; skip: RoutedSkip | null }> {
+  const out: Array<{ modelId: string; skip: RoutedSkip | null }> = [];
+  for (const candidateTier of TIER_FALLBACK[tier && TIER_FALLBACK[tier] ? tier : 'standard']) {
+    for (const model of getTierModels(candidateTier)) {
+      if (out.some((o) => o.modelId === model.model_id)) continue;
+      const skip = exclude.includes(model.model_id) ? 'excluded'
+        : standingSkip(model, required, agentId)
+          ?? (checkBudget(agentId, estimateRequestCost(model)).allowed ? null : 'budget');
+      out.push({ modelId: model.model_id, skip });
+    }
+  }
+  return out;
 }
 
 /**

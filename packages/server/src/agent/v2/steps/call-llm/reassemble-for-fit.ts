@@ -172,17 +172,22 @@ async function systemTokensFor(agentId: string, modelId: string, turnContext: Pr
 /** Whether a model of the agent's OWN can hold its system prompt and tools: its configured model, or,
  *  auto-routed, any model the router opens a tier on (`router/selector.ts`'s `routedFirstPicks`). */
 async function anOwnModelHolds(agentId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
-  const [{ getDb }, { routedFirstPicks }, { contextWindowPolicy }, model] = await Promise.all([
+  const [{ getDb }, { routedFirstPicks }] = await Promise.all([
     import('../../../../db/connection.js'), import('../../../../router/selector.js'),
-    import('../../../../memory/budget.js'), import('../../../model.js'),
   ]);
   const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
   if (!configured) return false;
   for (const own of configured === 'auto' ? routedFirstPicks() : [configured]) {
-    const budget = contextWindowPolicy(model.getContextWindow(own), {
-      toolPayloadTokens, maxOutputTokens: model.getModelOutputCap(own), providerCeilingTokens: model.getProviderCeilingTokens(own),
-    }).assemblyBudgetTokens;
-    if (await systemTokensFor(agentId, own, turnContext) <= budget) return true;
+    if (await modelHoldsAgent(agentId, own, toolPayloadTokens, turnContext)) return true;
   }
   return false;
+}
+
+/** Whether `modelId` can hold this agent's system prompt and tools (round 7: also names a no-pick cause). */
+export async function modelHoldsAgent(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
+  const [{ contextWindowPolicy }, model] = await Promise.all([import('../../../../memory/budget.js'), import('../../../model.js')]);
+  const budget = contextWindowPolicy(model.getContextWindow(modelId), {
+    toolPayloadTokens, maxOutputTokens: model.getModelOutputCap(modelId), providerCeilingTokens: model.getProviderCeilingTokens(modelId),
+  }).assemblyBudgetTokens;
+  return await systemTokensFor(agentId, modelId, turnContext) <= budget;
 }

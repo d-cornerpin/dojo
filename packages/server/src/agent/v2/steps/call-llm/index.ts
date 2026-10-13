@@ -35,7 +35,7 @@ type ModelMessage = ModelCallParams['messages'][number];
 import type { callModel } from '../../../model.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { proceed, type StepOutcome } from '../step-outcome.js';
+import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { resolveToolAlias } from '../../../../tools/aliases.js';
 import { isBareNoReplySentinel } from '@dojo/shared';
 import { queueEmbedding } from '../../../../memory/embeddings.js';
@@ -155,8 +155,12 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
       const { selectModel: nextRoutedPick } = await import('../../../../router/selector.js');
       const next = nextRoutedPick(routerTier, agentId, [...excludedModels, ...passedOver], ['tools']);
       if (!next) {
-        await reassembleForFitIfNeeded({ agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext });
-        throw err;
+        // The card only if true (no own model holds the agent); then the true cause, to the owner.
+        await reassembleForFitIfNeeded({ agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext })
+          .catch((refusal: unknown) => { if (!(refusal instanceof SystemPromptTooLargeError)) throw refusal; });
+        const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
+        const said = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext });
+        return requestExit(state, said) as CallLLMOutcome;
       }
       logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', {
         passedOver: pick, next: next.modelId, tier: routerTier,

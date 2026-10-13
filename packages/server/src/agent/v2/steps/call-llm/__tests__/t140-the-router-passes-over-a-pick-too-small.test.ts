@@ -7,8 +7,8 @@
 // that pick over: the call step refused it by name and the turn failed — every ask routed to that
 // tier failed. A fallback candidate that is too small has been passed over since round 2; the
 // router's own pick now is too: the next model the router would offer is dialled, no card.
-// When nothing the router can reach right now holds the agent, the turn ends with the refusal by
-// name — and the card only if it is true (the agent's own models cannot hold it).
+// When nothing the router can reach right now holds the agent, the turn ends with the true cause told
+// to the owner (round 7) — and the card only if it is true (the agent's own models cannot hold it).
 //
 // THE DOOR: `runCallLLM`, the engine's call step, on a migrated DB with the real router selector,
 // the real assembler and re-fit; scripted: the tier decision and the provider call.
@@ -129,11 +129,14 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
     expect(starvedCards(), 'the agent can hold a conversation; no card').toBe(0);
   });
 
-  it('when nothing the router can reach right now holds the agent (the roomy model is over budget): one refusal by name, and no false card', async () => {
+  it('when nothing the router can reach right now holds the agent (the roomy model is over budget): the turn ends with one notice to the owner, and no false card', async () => {
     seed(true);
-    const err = await callStep().then(() => null, (e: unknown) => e as Error);
-    expect(err, 'the turn ends with a refusal').not.toBeNull();
-    expect(String(err?.message), 'what the owner is shown names the cause').toMatch(/system prompt does not fit its own budget/);
+    // Round 7 (re-review H2'): judged by what the OWNER is sent, not by a thrown error's text.
+    const out = await callStep();
+    expect(out.directive, 'the turn ends cleanly').toBe('exit');
+    const notices = owner.cards.filter((c) => c.type === 'chat:error');
+    expect(notices.length, 'one notice to the owner').toBe(1);
+    expect(notices[0].code).toBe('NO_MODEL');
     expect(dialed, 'nothing that cannot hold the agent was dialled').toEqual([]);
     expect(starvedCards(), 'the card would be false: the agent holds a conversation on its own roomy model once the budget allows').toBe(0);
   });
@@ -146,7 +149,7 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
 // a daily budget that was simply spent. The owner must see the true cause in plain words, and a
 // budget stop is not an injury.
 describe('t140 round 7 — when no router pick fits, what the owner sees is the true cause', () => {
-  it.fails('the roomy model is skipped for budget: the owner is told, in plain words, that today\'s spending limit is reached — and the agent is not errored or handed to the Healer', async () => {
+  it('the roomy model is skipped for budget: the owner is told, in plain words, that today\'s spending limit is reached — and the agent is not errored or handed to the Healer', async () => {
     seed(true);
     const { recoverFromError } = await import('../../../recovery.js');
     let outcome: unknown = null;

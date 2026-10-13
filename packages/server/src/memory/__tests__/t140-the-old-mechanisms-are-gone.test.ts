@@ -281,3 +281,14 @@ describe('t140 census, round 7 — no turn cancels a background summary', () => 
     expect(launch.slice(0, launch.indexOf('\n}\n'))).not.toMatch(/AbortController|abortSignal/);
   });
 });
+
+describe('t140 census, round 7 — when no router pick holds the agent, the owner is told why and the turn ends', () => {
+  it('the call step ends the turn with the owner notice, never a throw into the injury cascade', () => {
+    const step = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/index.ts`)!.code;
+    const branch = step.slice(step.indexOf('if (!next) {'));
+    const body = branch.slice(0, branch.indexOf('\n      }\n'));
+    expect(body).toMatch(/const said = await tellOwnerNoPickHolds\(\{[^}]*\}\);\s*return requestExit\(state, said\) as CallLLMOutcome;/);
+    expect(body, "the refusal is not rethrown (only an unrelated re-fit failure is)").not.toMatch(/\bthrow err\b/);
+    expect(filesWith(/\btellOwnerNoPickHolds\(/)).toEqual([`${ENGINE_STEPS_REL}/call-llm/index.ts`, `${ENGINE_STEPS_REL}/call-llm/no-pick-holds.ts`]);
+  });
+});
