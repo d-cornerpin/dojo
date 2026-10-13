@@ -2247,15 +2247,16 @@ export function getApprovedSenders(): string[] {
   return getSafeSenders().map(s => s.address);
 }
 
-/** The door's dashboard half: a WARN `owner-notice` entry (live log feed + Vitals log view). */
+/** A WARN `owner-notice` entry records why a text did not reach the phone (Vitals log view). */
 const ownerNoticeLog = createLogger('owner-notice');
 
 /**
  * THE OWNER-NOTICE DOOR — where the PLATFORM, not an agent, speaks to the owner. `critical`
- * (sent with a "[CRITICAL]" prefix) and `notice` (no prefix) go to the phone, or, with no phone
- * channel or a failed send, to the dashboard. `warning`/`info` never reach the phone (v2.3.19,
- * owner: "I only want true blockers or true issues the user needs to be aware of to go to
- * imessage"). Allowed callers are ruled (10(a) + OR-V333-SET (3)) and pinned by class in
+ * (sent with a "[CRITICAL]" prefix) and `notice` (no prefix) go to the phone AND, in the same
+ * words, to the dashboard's notification cards, pinned there until he dismisses them (t138
+ * round 2, owner: "use our existing alert/notification system"). `warning`/`info` reach neither
+ * (v2.3.19, owner: "I only want true blockers or true issues ... to go to imessage"). Allowed
+ * callers are ruled (10(a) + OR-V333-SET (3)) and pinned by class in
  * t138-every-owner-notice-has-a-class.test.ts; fix a wrong severity at the call site, never here.
  */
 export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice'): void {
@@ -2271,23 +2272,22 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     }
 
     const fullMessage = urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed;
-    logger.info(`Sending ${urgency} alert to iMessage`, {
-      message: scrubbed.slice(0, 200),
-    });
+    logger.info(`Sending ${urgency} alert to iMessage`, { message: scrubbed.slice(0, 200) });
+
+    // The dashboard's card: the existing `chat:error` notification, spoken by the platform. A
+    // card is born exactly where a text is, so one alert is one card, phone or no phone.
+    const severity = urgency === 'critical' ? 'error' : 'warning';
+    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubbed, severity, retryable: false });
 
     const recipient = getDefaultSender();
-    if (!recipient) {
-      ownerNoticeLog.warn(scrubbed, { urgency, phone: 'no phone channel set up' });
-      return;
-    }
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
     // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
     // trigger it would put watchdog-class traffic inside that agent's own ledger.
-    const sent = withOutboundIfAbsent(
+    const sent = recipient !== null && withOutboundIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
       () => sendIMessage(recipient, fullMessage),
     );
-    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: 'the phone send failed' });
+    if (!sent) ownerNoticeLog.warn(scrubbed, { urgency, phone: recipient ? 'the phone send failed' : 'no phone channel set up' });
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

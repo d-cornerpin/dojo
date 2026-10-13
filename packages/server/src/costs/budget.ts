@@ -5,7 +5,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { getDailySpend } from './tracker.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 
@@ -53,7 +52,7 @@ function agentPeriodSpend(agentId: string, period: string): number {
 }
 
 interface BudgetScope {
-  /** `global` or the agent id — the `scope` the dashboard's `cost:alert` event carries. */
+  /** `global` or the agent id. */
   scope: string;
   budgetId: string;
   period: string;
@@ -108,10 +107,8 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
     limitUsd,
     percentage: pctLabel,
   });
-  broadcast({
-    type: 'cost:alert',
-    data: { scope: b.scope, percentage: pctLabel, currentSpend, limitUsd },
-  });
+  // The text and its dashboard card are one thing (the door makes both); the old `cost:alert`
+  // toast was a second copy that faded at 50% and 75%, and is gone (t138 round 2).
   sendAlert(ownerWords(b, pctLabel, currentSpend, limitUsd), 'notice');
 }
 

@@ -214,7 +214,7 @@ function expectPaired(n: number): void {
 }
 
 describe('the RED witness: a text reaches the phone and nothing waits on the dashboard', () => {
-  it.fails('a budget crossing (50%, through the real cost door) texts AND leaves one card', async () => {
+  it('a budget crossing (50%, through the real cost door) texts AND leaves one card', async () => {
     const { recordCost, budget, PLATFORM_SENDER } = await boot();
     expect(PLATFORM_SENDER).toBe('platform');
     budget.setGlobalBudget(10);
@@ -224,7 +224,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     expect(cards()[0]).toMatchObject({ severity: 'warning', retryable: false });
   });
 
-  it.fails('an agent paused after repeated errors (the real error-loop door) texts AND leaves one card', async () => {
+  it('an agent paused after repeated errors (the real error-loop door) texts AND leaves one card', async () => {
     const { errors } = await boot();
     let paused = false;
     for (let i = 0; i < 10 && !paused; i++) paused = errors.recordError('ag');
@@ -234,7 +234,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     expect(cards()[0].error).toContain('paused');
   });
 
-  it.fails('auto-recovery giving up on a stuck agent (the real injury door) texts AND leaves one card', async () => {
+  it('auto-recovery giving up on a stuck agent (the real injury door) texts AND leaves one card', async () => {
     const { healer } = await boot();
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
@@ -244,7 +244,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     expect(cards()[0].error).toContain('Helper');
   });
 
-  it.fails('a provider balance at its warning line (the real scheduler tick) texts AND leaves one card', async () => {
+  it('a provider balance at its warning line (the real scheduler tick) texts AND leaves one card', async () => {
     account.openrouter = 2;
     const { tick } = await boot();
     await tick();
@@ -252,7 +252,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     expect(cards()[0].error).toContain('OpenRouter');
   });
 
-  it.fails('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
+  it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
     const { bridge } = await boot();
     bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
     expectPaired(1);
@@ -262,7 +262,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
 });
 
 describe('one alert = one card: every "tell him again?" rule decides the card too', () => {
-  it.fails('a budget climbing through 50, 75 and 90 is three cards; staying over, or a restart, is none', async () => {
+  it('a budget climbing through 50, 75 and 90 is three cards; staying over, or a restart, is none', async () => {
     let mods = await boot();
     mods.budget.setGlobalBudget(10);
     spend(mods.recordCost, 5.1);
@@ -279,7 +279,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     expectPaired(3);
   });
 
-  it.fails('a budget whose window has turned over and crosses again is a NEW card', async () => {
+  it('a budget whose window has turned over and crosses again is a NEW card', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
@@ -292,7 +292,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     expectPaired(2);
   });
 
-  it.fails('a balance still under its line is no second card; topped up and falling again is a new one', async () => {
+  it('a balance still under its line is no second card; topped up and falling again is a new one', async () => {
     account.openrouter = 2;
     const { tick } = await boot();
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -311,7 +311,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     expectPaired(2);
   });
 
-  it.fails('no phone set up: no text, and the card is still there', async () => {
+  it('no phone set up: no text, and the card is still there', async () => {
     setPhone(null);
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
@@ -321,7 +321,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     expect(cards()[0].error).toContain('90%');
   });
 
-  it.fails('the phone send failed: the card is still there', async () => {
+  it('the phone send failed: the card is still there', async () => {
     transportFails.on = true;
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
@@ -339,7 +339,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
 });
 
 describe('the old budget path is gone: the card is the ONLY budget notification', () => {
-  it.fails('a crossing emits no `cost:alert` frame (its toast consumer was the second, fading copy)', async () => {
+  it('a crossing emits no `cost:alert` frame (its toast consumer was the second, fading copy)', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.5);

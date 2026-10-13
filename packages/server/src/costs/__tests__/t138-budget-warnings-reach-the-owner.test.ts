@@ -161,8 +161,12 @@ function ownerTexts(): Array<{ recipient_id: string; outcome: string; channel: s
   ).all() as Array<{ recipient_id: string; outcome: string; channel: string }>;
 }
 const sentTexts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
-const costAlerts = (): Array<Record<string, unknown>> =>
-  broadcasts.filter((b) => b.type === 'cost:alert').map((b) => b.data ?? {});
+/** The budget's dashboard notification: the owner card the door makes beside each text (t138
+ *  round 2; before it, a `cost:alert` frame). Each entry is the percentage the card names. */
+const budgetCards = (): Array<{ percentage: number }> =>
+  (broadcasts as Array<Record<string, unknown>>)
+    .filter((b) => b.type === 'chat:error' && b.agentId === 'platform')
+    .map((b) => ({ percentage: Number(/(\d+)%/.exec(String(b.error))?.[1]) }));
 
 describe('the RED witness (#8): a daily-budget crossing reaches the owner', () => {
   it('a cost record pushing daily spend over 90% texts the owner exactly once, as the platform', async () => {
@@ -207,7 +211,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     // and all three are latched: nothing more for 50/75 on the next call
     spend(recordCost, 0.1);
     expect(ownerTexts()).toHaveLength(1);
-    expect(costAlerts().map((a) => a.percentage)).toEqual([90]);
+    expect(budgetCards().map((a) => a.percentage)).toEqual([90]);
   });
 
   it('an agent budget crossing names the agent and its period', async () => {
@@ -271,7 +275,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
       expect(budget.checkBudget('ag', 0.01).allowed).toBe(true);
       spend(recordCost, 1);
     }
-    expect(costAlerts(), 'no budget event at 30% of the week').toEqual([]);
+    expect(budgetCards(), 'no budget event at 30% of the week').toEqual([]);
     expect(ownerTexts()).toHaveLength(0);
   });
 
@@ -365,7 +369,7 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
 
     expect(sentTexts()).toHaveLength(0);
     expect(ownerTexts()).toHaveLength(0);
-    expect(costAlerts().map((a) => a.percentage)).toEqual([90]);
+    expect(budgetCards().map((a) => a.percentage)).toEqual([90]);
     const notice = logs.filter((l) => l.component === 'owner-notice');
     expect(notice, 'one dashboard-visible owner notice').toHaveLength(1);
     expect(notice[0].level).toBe('warn');
