@@ -50,8 +50,6 @@
 import { getDb } from '../db/connection.js';
 import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
-import fs from 'node:fs';
-import path from 'node:path';
 import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budget.js';
 import { laneLimit, truncateWrappedText, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
@@ -364,22 +362,24 @@ export const TECHNIQUE_FRAME_CHARS = 512;
 
 /**
  * The most a strong technique match can add after this assembly: the largest injection any
- * PUBLISHED technique this agent MAY use (the matcher's own candidate set) could produce, read
- * from the file sizes on disk (bytes, never fewer than characters). Zero when the agent has none
- * — the real signal on most boxes. The matcher runs only on a turn's first call; this does not
- * know which call it is, so it is counted on every call (an upper bound, stated).
+ * PUBLISHED technique this agent MAY use (the matcher's own candidate set) would produce, read
+ * through the same store door the injector reads (`getTechniqueDetail`): an empty file injects
+ * nothing, a file over the inline cap injects only its load-it notice, any other its whole text.
+ * Zero when the agent has none — the real signal on most boxes. The matcher runs only on a
+ * turn's first call; this does not know which call it is, so it is counted on every call (an
+ * upper bound, stated).
  */
 async function techniqueAllowanceTokens(agentId: string): Promise<number> {
   try {
-    const { listTechniques } = await import('../techniques/store.js');
+    const { listTechniques, getTechniqueDetail } = await import('../techniques/store.js');
     const { mayUseTechnique } = await import('../agent/access/read.js');
     let worst = 0;
     for (const t of listTechniques({ state: 'published' })) {
       if (!mayUseTechnique(agentId, t.id)) continue;
-      let bytes = 0;
-      try { bytes = fs.statSync(path.join(t.directoryPath, 'TECHNIQUE.md')).size; } catch { continue; }
-      worst = Math.max(worst,
-        TECHNIQUE_FRAME_CHARS + 2 * t.name.length + t.id.length + Math.min(bytes, TECHNIQUE_INLINE_CHARS));
+      const md = getTechniqueDetail(t.id)?.instructions ?? '';
+      if (md.length === 0) continue;
+      worst = Math.max(worst, TECHNIQUE_FRAME_CHARS + 2 * t.name.length + t.id.length
+        + (md.length > TECHNIQUE_INLINE_CHARS ? 0 : md.length));
     }
     return estimateTokensFromChars(worst);
   } catch {
