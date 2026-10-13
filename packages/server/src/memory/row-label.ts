@@ -109,12 +109,14 @@ export class LabelFacts {
     return label;
   }
 
-  /** When the request a delivered result answers was made (the request row's own instant). */
+  /** The request a delivered result answers, by instant + first words (two in a minute differ). */
   requestInstant(resultMessageId: string): string | null {
     try {
-      const r = getDb().prepare(`SELECT r.created_at FROM messages m JOIN messages r ON r.id = m.root_id
-                                   WHERE m.id = ?`).get(resultMessageId) as { created_at: number } | undefined;
-      return r ? renderInstant(r.created_at) : null;
+      const r = getDb().prepare(`SELECT r.created_at, r.content FROM messages m JOIN messages r ON r.id = m.root_id
+                                   WHERE m.id = ?`).get(resultMessageId) as { created_at: number; content: string } | undefined;
+      if (!r) return null;
+      const words = r.content.replace(/\s+/g, ' ').trim();
+      return `${renderInstant(r.created_at)}: "${words.length > 60 ? `${words.slice(0, 60)}…` : words}"`;
     } catch { return null; }
   }
 }

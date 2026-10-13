@@ -582,7 +582,7 @@ describe('fix round 1 — m-3: a thread\'s label is its stable identity', () => 
 });
 
 describe('round 2 — delegated work cancelled midway, then re-asked (plan backwards-lifecycle)', () => {
-  it.fails('the re-asked result reaches the owner once, labelled with the request it answers — never the cancelled one', async () => {
+  it('the re-asked result reaches the owner once, labelled with the request it answers — never the cancelled one', async () => {
     mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
     const T1 = '7e1f2a3b-0000-4000-8000-0000000c0de1';
     const T2 = '7e1f2a3b-0000-4000-8000-0000000c0de2';
