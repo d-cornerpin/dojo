@@ -39,7 +39,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // `vi.hoisted` because `vi.mock` is hoisted above the file's own consts, and the
 // spy has to exist before the factory runs.
 const { insertMessageIfAbsent } = vi.hoisted(() => ({ insertMessageIfAbsent: vi.fn() }));
-vi.mock('../../../memory/message-store.js', () => ({ insertMessageIfAbsent }));
+// t141: the media door labels its async results through the writer's `deliveredResult` — a pure
+// builder of insert fields, restated here in the writer's own shape (this file mocks the writer).
+vi.mock('../../../memory/message-store.js', () => ({
+  insertMessageIfAbsent,
+  deliveredResult: (conversationId: string | null | undefined, requestMessageId: string | null | undefined) => (
+    { conversationId: conversationId ?? null, subjectKind: 'delivered', rootKind: requestMessageId ? 'ask' : null, rootId: requestMessageId ?? null }),
+}));
 
 // ── Everything the four bodies touch on the way to their return ──
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
