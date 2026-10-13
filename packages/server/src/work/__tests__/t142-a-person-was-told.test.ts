@@ -167,6 +167,11 @@ beforeEach(() => {
   for (const [id, name] of [[PRIMARY, 'Primary'], [ASSIGNEE, 'Quillon']]) {
     mockDb.current.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')`).run(id, name);
   }
+  // The owner's starred iMessage address — the record that makes OWNER_PHONE the owner (fix
+  // round 1: the told record checks WHO was told).
+  mockDb.current.prepare(
+    `INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('imessage_approved_senders', ?, datetime('now'))`,
+  ).run(JSON.stringify([{ address: OWNER_PHONE, name: 'Owner', is_primary: true }]));
   vi.setSystemTime(new Date(NOW));
 });
 
@@ -285,9 +290,9 @@ describe('§4 cancelled after being told', () => {
 
 function seedDelivery(id: string, over: { channel?: string; tool?: string; outcome?: string } = {}): void {
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, tool, channel, outcome, created_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(id, PRIMARY, over.tool ?? 'imessage_send', over.channel ?? 'imessage', over.outcome ?? 'delivered');
+    `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, outcome, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(id, PRIMARY, over.tool ?? 'imessage_send', over.channel ?? 'imessage', OWNER_PHONE, over.outcome ?? 'delivered');
 }
 
 describe('§5 the record refuses what is not a person being told', () => {
@@ -345,7 +350,7 @@ describe('§5 the record refuses what is not a person being told', () => {
     seedDelivery('d-ro');
     mockDb.current!.exec(`CREATE TRIGGER t142_block BEFORE INSERT ON work_events
       WHEN NEW.kind = 'person_told' BEGIN SELECT RAISE(ABORT, 'disk full'); END;`);
-    const r = recordPersonTold('t-c', { deliveryId: 'd-ro', via: 'owner_notice' });
+    const r = recordPersonTold('t-c', { deliveryId: 'd-ro', via: 'send_tool' });
     expect(r).toMatchObject({ kind: 'refused', reason: 'write-failed' });
   });
 });
@@ -454,7 +459,7 @@ describe('§8 the episode suppressor and the sequence reads take their index', (
                   WHERE ${taskScope('w')} AND NOT ${ownerEpisodeSettledExpr('w')}`;
     const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
       .map((r) => r.detail);
-    const scans = plan.filter((d) => /^SCAN (e|te|se|td|adj|work_events|deliveries)\b/.test(d));
+    const scans = plan.filter((d) => /^SCAN (e|te|se|td|ne|fe|adj|work_events|deliveries)\b/.test(d));
     expect(scans, plan.join('\n')).toEqual([]);
     expect(plan.some((d) => /idx_work_events_work_id/.test(d)), plan.join('\n')).toBe(true);
   });

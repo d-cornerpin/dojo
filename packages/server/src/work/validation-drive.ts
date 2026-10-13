@@ -42,6 +42,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
+import { recipientIdsMatch } from '../agent/recipient-identity.js';
 import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
@@ -301,7 +302,9 @@ export type PersonToldOutcome =
   | { kind: 'no_change'; reason: 'already-recorded'; eventId: number }
   | {
     kind: 'refused';
-    reason: 'no-such-work' | 'no-such-delivery' | 'not-delivered' | 'not-a-person' | 'write-failed';
+    reason:
+      | 'no-such-work' | 'no-such-delivery' | 'not-delivered' | 'not-a-person'
+      | 'not-the-owner-or-requester' | 'wrong-door' | 'write-failed';
     detail: string;
   };
 
@@ -311,13 +314,49 @@ export type PersonToldOutcome =
 const NOT_A_PERSON_CHANNELS: readonly string[] = ['a2a', 'none'];
 const NOT_A_PERSON_TOOL = 'engine-ack';
 
+/** `agent/v2/outbound.ts:PLATFORM_SENDER`, as a literal: `work/store.ts` imports this module, and
+ *  `outbound.ts` reaches `work/store.ts` through `deliveries.ts`, so importing it here is a
+ *  cycle. Pinned equal by `__tests__/t142-fix1-recipient-and-arms.test.ts`. */
+export const NOTICE_DOOR_SENDER = 'platform';
+
+/**
+ * The owner's own addresses, read from the record that DEFINES him on each channel: the
+ * dashboard/voice counterparty sentinel `'owner'` (`agent/v2/deliveries.ts` resolves those
+ * channels to it), and the starred (`is_primary`) iMessage safe sender — the same record
+ * `services/imessage-bridge.ts:getDefaultSender` and the refusal gate's
+ * `recipientIsChannelOwner` read, plus the legacy key the bridge still honours. Unknown means
+ * NOT the owner: the cost is the owner possibly told again, never a tell invented.
+ */
+function ownerAddresses(): string[] {
+  const out = ['owner'];
+  try {
+    const db = getDb();
+    const raw = (db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'")
+      .get() as { value: string } | undefined)?.value;
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (Array.isArray(parsed)) {
+      for (const r of parsed) {
+        const rec = r as { address?: unknown; is_primary?: unknown };
+        if (rec && rec.is_primary === true && typeof rec.address === 'string') out.push(rec.address);
+      }
+    }
+    const legacy = (db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'")
+      .get() as { value: string } | undefined)?.value;
+    if (legacy) out.push(legacy);
+  } catch { /* unreadable config: only the dashboard sentinel is known */ }
+  return out;
+}
+
 /**
  * Record that a person was told about `workId`, by the delivery `evidence.deliveryId`.
  *
  * THE CONTRACT, for every caller:
- *   · call it AFTER the send, with the id of the `deliveries` row the send wrote (inside an
- *     outbound scope that is `currentOutboundDeliveryId()`; outside one, the id `recordAtDoor`
- *     returned);
+ *   · call it AFTER the send, with the id of the `deliveries` row YOUR OWN door wrote. The
+ *     owner-notice door opens its OWN scope for a work-carrying notice (`withOutbound`, never
+ *     `withOutboundIfAbsent`, which would fold the notice into an enclosing agent send) and
+ *     reads `currentOutboundDeliveryId()` inside that scope; the send-tool dispatch door reads
+ *     it inside the scope it opened for that one call. An ambient id from somebody else's
+ *     scope is refused structurally (below), not merely discouraged;
  *   · pass a work id you HOLD — handed to you as data, or named in the tool call's arguments.
  *     Never one recovered from the turn, the conversation, or the text of the message;
  *   · it never throws, and it never affects the send: a refusal or a write failure is
@@ -326,6 +365,14 @@ const NOT_A_PERSON_TOOL = 'engine-ack';
  * Idempotent per (work, delivery). The actor on the event is the delivery's own sender
  * (`deliveries.agent_id` — `PLATFORM_SENDER` for the notice door), read from the ledger
  * rather than supplied, so the record cannot claim a different teller than the send.
+ *
+ * ── t142 FIX ROUND 1 (review I2): WHO WAS TOLD, AND BY WHICH DOOR, ARE CHECKED TOO ──
+ *   · the recipient must be the OWNER (his dashboard sentinel or his starred address) or the
+ *     row's own REQUESTER when that is a person — an agent's email to a vendor "about" a
+ *     blocked task is not the owner being told, and recording it would silence him;
+ *   · `via` must match the sender on the ledger: an `owner_notice` is a PLATFORM delivery,
+ *     a `send_tool` tell is an agent's. A notice that borrowed an enclosing agent send's
+ *     delivery therefore cannot record, whatever that send was about.
  */
 export function recordPersonTold(
   workId: string,
@@ -337,9 +384,9 @@ export function recordPersonTold(
       return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
     }
     const d = db.prepare(
-      'SELECT agent_id, channel, tool, outcome FROM deliveries WHERE id = ?',
+      'SELECT agent_id, channel, tool, outcome, recipient_id FROM deliveries WHERE id = ?',
     ).get(evidence.deliveryId) as
-      { agent_id: string; channel: string; tool: string; outcome: string } | undefined;
+      { agent_id: string; channel: string; tool: string; outcome: string; recipient_id: string | null } | undefined;
     if (!d) {
       return { kind: 'refused', reason: 'no-such-delivery', detail: `no delivery ${evidence.deliveryId}` };
     }
@@ -350,6 +397,26 @@ export function recordPersonTold(
       return {
         kind: 'refused', reason: 'not-a-person',
         detail: `a ${d.channel} delivery by ${d.tool} does not reach a person`,
+      };
+    }
+    const fromNoticeDoor = d.agent_id === NOTICE_DOOR_SENDER;
+    if ((evidence.via === 'owner_notice') !== fromNoticeDoor) {
+      return {
+        kind: 'refused', reason: 'wrong-door',
+        detail: `a ${evidence.via} tell must be ${fromNoticeDoor ? 'an agent' : 'the platform'}'s own delivery; this one was sent by ${d.agent_id}`,
+      };
+    }
+    const w = db.prepare('SELECT requester, requester_id FROM work WHERE id = ?')
+      .get(workId) as { requester: string; requester_id: string | null };
+    const toOwner = d.recipient_id !== null
+      && ownerAddresses().some((o) => o === d.recipient_id || recipientIdsMatch(o, d.recipient_id));
+    const toRequester = d.recipient_id !== null && w.requester_id !== null
+      && !['agent', 'schedule'].includes(w.requester)
+      && recipientIdsMatch(w.requester_id, d.recipient_id);
+    if (!toOwner && !toRequester) {
+      return {
+        kind: 'refused', reason: 'not-the-owner-or-requester',
+        detail: `the delivery went to ${d.recipient_id ?? 'nobody recorded'}, who is neither the owner nor this row's requester`,
       };
     }
     const prior = db.prepare(
@@ -376,12 +443,42 @@ export function recordPersonTold(
   }
 }
 
-/** Where the row's CURRENT episode begins on its log: its last entry into the state it is in
- *  now, or 0 for a row with no recorded entry (born in the state, or migrated). */
+/**
+ * Where the ladder's CURRENT episode begins on the row's log.
+ *
+ * ── t142 FIX ROUND 1 (review I3): PER EPISODE FOR A BLOCK, PER ROW FOR EVERYTHING ELSE ──
+ * The ruled shape is exactly one: told about a block, reopened, blocked AGAIN on a new
+ * obstacle => told again. So a BLOCKED row's episode starts at its last entry into `blocked`.
+ * Every other arm keeps base behaviour — one trip up the ladder per row (episode start 0):
+ *   · pause:   a re-pause is the owner's own standby, not a new obstacle;
+ *   · close:   a re-filed close is a validation question the PM owns, not a blocker;
+ *   · failure: an old, already-escalated failure re-read after any later move is old news —
+ *     and a NEW obstacle on the row is a new `blocked` entry, which the blocked arm catches.
+ * The first cut scoped all four arms by "last entry into the current state", which re-climbed
+ * the ladder about an old block on every later claim/release (driven RED in
+ * `__tests__/t142-fix1-recipient-and-arms.test.ts`).
+ */
 const episodeStartExpr = (a: string): string =>
-  `COALESCE(${lastEntryEventIdExpr(a, `${a}.state`)}, 0)`;
+  `(CASE WHEN ${a}.state = 'blocked'`
+  + ` THEN COALESCE(${lastEntryEventIdExpr(a, `'blocked'`)}, 0) ELSE 0 END)`;
 
-/** A person was told about this row during its current episode, by a send that still stands. */
+/**
+ * The row's newest NEWS on the log: its last transition, its last filed close request, or the
+ * last failure of a piece it delegated. A tell counts only when it comes AFTER this — a person
+ * told about the row before its current obstacle, close request or failure was not told about
+ * THAT. This is what keeps the record from ever becoming a NEW silence on an arm that still
+ * runs once per row: base had no record at all, and the record suppresses only the news it
+ * postdates.
+ */
+const latestNewsEventIdExpr = (a: string): string =>
+  `MAX(`
+  + `COALESCE((SELECT MAX(ne.id) FROM work_events ne WHERE ne.work_id = ${a}.id`
+  + `   AND ne.kind IN ('transition', 'validation_requested')), 0), `
+  + `COALESCE((SELECT MAX(fe.id) FROM work_events fe WHERE fe.kind = 'transition'`
+  + `   AND json_extract(fe.payload, '$.to') IN (${FAILURE_STATE_LIST})`
+  + `   AND fe.work_id IN (${pieceIdsExpr(a)})), 0))`;
+
+/** A person was told about this row's latest news, by a send that still stands. */
 export const personToldThisEpisodeExpr = (a: string): string =>
   `EXISTS (SELECT 1 FROM work_events te`
   // The outcome filter rides the JOIN itself, so the statement that reads `deliveries` carries
@@ -389,7 +486,7 @@ export const personToldThisEpisodeExpr = (a: string): string =>
   // reads each `deliveries` statement for exactly this).
   + ` JOIN deliveries td ON td.id = json_extract(te.payload, '$.delivery_id') AND td.outcome = 'delivered'`
   + ` WHERE te.work_id = ${a}.id AND te.kind = '${WORK_EVENT.personTold}'`
-  + `   AND te.id > ${episodeStartExpr(a)})`;
+  + `   AND te.id > ${latestNewsEventIdExpr(a)})`;
 
 /**
  * THE LADDER'S SUPPRESSOR: this row's current episode needs nothing more from the owner

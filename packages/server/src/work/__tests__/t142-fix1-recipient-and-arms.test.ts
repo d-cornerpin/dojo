@@ -174,7 +174,7 @@ function seedOwnerAddress(): void {
 describe('I2 the record is about the right person and the right send', () => {
   beforeEach(seedOwnerAddress);
 
-  it.fails('RED at 3d68e92d: an agent\'s email to a VENDOR about the blocked task does not settle the owner\'s episode', async () => {
+  it('was RED at 3d68e92d: an agent\'s email to a VENDOR about the blocked task does not settle the owner\'s episode', async () => {
     seedBlocked('t-vendor');
     const deliveryId = withOutbound(
       { agentId: PRIMARY, tool: 'gmail_send', channel: 'email', recipientId: 'orders@supplier.example' },
@@ -186,7 +186,7 @@ describe('I2 the record is about the right person and the right send', () => {
     expect(ownerAlerts().length, 'the owner still hears about his blocked task').toBeGreaterThanOrEqual(1);
   });
 
-  it.fails('RED at 3d68e92d: a notice fired inside the agent\'s own send cannot borrow that send\'s delivery', () => {
+  it('was RED at 3d68e92d: a notice fired inside the agent\'s own send cannot borrow that send\'s delivery', () => {
     seedBlocked('t-borrow');
     // The agent is mid-send to the owner about something UNRELATED; the notice door is
     // reached inside that scope and reads the ambient delivery — the shape the review found.
@@ -225,7 +225,7 @@ describe('I2 the record is about the right person and the right send', () => {
 });
 
 describe('I3 once-per-episode is the BLOCKED arm only; every other arm keeps one trip per row', () => {
-  it.fails('RED at 3d68e92d: blocked, escalated, then back to claimed — the old block is not news again', async () => {
+  it('was RED at 3d68e92d: blocked, escalated, then back to claimed — the old block is not news again', async () => {
     seedBlocked('t-fail-arm');
     await driveLadderToTheEnd();
     const first = ownerAlerts().length;
@@ -238,7 +238,7 @@ describe('I3 once-per-episode is the BLOCKED arm only; every other arm keeps one
     expect(ownerAlerts().length).toBe(first);
   });
 
-  it.fails('RED at 3d68e92d: an unvalidated pause escalated once is not escalated again on a later pause', async () => {
+  it('was RED at 3d68e92d: an unvalidated pause escalated once is not escalated again on a later pause', async () => {
     seedWork('t-pause');
     move('t-pause', 'paused');
     age('t-pause');
@@ -261,5 +261,12 @@ describe('I3 once-per-episode is the BLOCKED arm only; every other arm keeps one
     age('t-ruled');
     await driveLadderToTheEnd();
     expect(ownerAlerts().length).toBeGreaterThan(first);
+  });
+});
+
+describe('the notice door\'s sender literal is the platform sender', () => {
+  it('NOTICE_DOOR_SENDER === PLATFORM_SENDER (kept as a literal only to avoid an import cycle)', async () => {
+    const { NOTICE_DOOR_SENDER } = await import('../validation-drive.js');
+    expect(NOTICE_DOOR_SENDER).toBe(PLATFORM_SENDER);
   });
 });
