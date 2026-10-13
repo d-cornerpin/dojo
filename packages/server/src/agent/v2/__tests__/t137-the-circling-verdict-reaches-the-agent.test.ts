@@ -144,11 +144,11 @@ describe('the 15-minute checkpoint hands the circling verdict to the AGENT', () 
     const seen = await whatTheModelReceives();
     // The events lane renders a gist (its leading `[SOURCE: …]` tag stripped), so the PM's
     // attribution the model reads is the verdict's own label, on the same line as the task and
-    // the reason — measured: `• [<time>][agent_notice] [PM EFFORT REVIEW — 150+ calls without
-    // advancing on "<title>" (<id>)] <reason>`.
+    // the reason — measured (t141's addressee label): `• NEW [<time> <zone>][TO YOU, from the
+    // platform: agent_notice] [PM EFFORT REVIEW — 150+ calls without advancing on "<title>" (<id>)] <reason>`.
     const line = seen.split('\n').find((l) => l.includes('[PM EFFORT REVIEW'));
     expect(line, 'the verdict must be in what the model receives').toBeTruthy();
-    expect(line).toContain('[agent_notice]');
+    expect(line).toMatch(/\[TO YOU, from [^\]]+: agent_notice\]/);
     expect(line).toContain(TITLE);
     expect(line).toContain(TASK);
     expect(line).toContain(REASON);
