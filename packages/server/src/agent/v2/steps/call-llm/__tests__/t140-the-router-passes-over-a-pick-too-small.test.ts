@@ -138,3 +138,30 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
     expect(starvedCards(), 'the card would be false: the agent holds a conversation on its own roomy model once the budget allows').toBe(0);
   });
 });
+
+// ── round 7 (round-6 re-review H2') ────────────────────────────────────────────────────────
+// Round 6 threw the by-name refusal when nothing reachable could hold the agent, and its witness read
+// the thrown error. What the OWNER saw, driven through the real turn-error path, was "Agent hit an
+// error and the Healer is looking into it", the agent marked errored and handed to the Healer — for
+// a daily budget that was simply spent. The owner must see the true cause in plain words, and a
+// budget stop is not an injury.
+describe('t140 round 7 — when no router pick fits, what the owner sees is the true cause', () => {
+  it.fails('the roomy model is skipped for budget: the owner is told, in plain words, that today\'s spending limit is reached — and the agent is not errored or handed to the Healer', async () => {
+    seed(true);
+    const { recoverFromError } = await import('../../../recovery.js');
+    let outcome: unknown = null;
+    try {
+      outcome = await callStep();
+    } catch (err) {
+      // The turn's teardown does exactly this with an error the call step throws.
+      await recoverFromError(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
+    }
+    const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
+    expect(said, `what the owner was shown:\n${said}`).toMatch(/spending limit/i);
+    expect(said, 'not the generic error that hands it to the Healer').not.toMatch(/Healer/);
+    const status = (db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status;
+    expect(status, 'a budget stop is not an injury').not.toBe('error');
+    expect(dialed, 'nothing that cannot hold the agent was dialled').toEqual([]);
+    expect((outcome as { directive?: string } | null)?.directive ?? 'threw').toBe('exit');
+  });
+});

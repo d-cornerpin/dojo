@@ -156,3 +156,24 @@ describe('t140 round 6 — the CLI net sees through wrappers, and the network ne
     }
   });
 });
+
+// ── round 7 (round-6 re-review minor net residue) ─────────────────────────────────────────────
+// Parsing a command string cannot see what a shell runs once it is running: `sh -c claude`, a
+// `$(…)`, an escaped name. The net now also puts a stand-in `claude` FIRST on every process's PATH
+// (`vitest.test-nets.cjs`), so whatever a shell resolves by name is the stand-in, which refuses.
+describe('t140 round 7 — whatever a shell resolves as "claude" is the net\'s stand-in', () => {
+  /** The net's stand-in first (when there is one), then the fake, then the system directories. */
+  const shellEnv = async (): Promise<NodeJS.ProcessEnv> => {
+    const { STAND_IN_DIR } = await import('../../vitest.test-nets.cjs') as unknown as { STAND_IN_DIR?: string };
+    return { ...process.env, PATH: `${STAND_IN_DIR ? `${STAND_IN_DIR}:` : ''}${scratch}:/usr/bin:/bin`, T140_MARKER: marker };
+  };
+
+  it.fails.each(['sh -c claude', 'bash -c "claude --version"', 'echo $(claude --version)', 'c\\laude --version'])(
+    'a shell that starts the CLI in a way no parser sees — %s — runs the stand-in, which refuses; nothing is launched', async (line) => {
+      fs.rmSync(marker, { force: true });
+      let said = '';
+      try { childProcess.execSync(line, { env: await shellEnv(), stdio: 'pipe' }); } catch (e) { said = String((e as { stderr?: Buffer }).stderr ?? (e as Error).message); }
+      expect(fs.existsSync(marker), 'the fake CLI ran').toBe(false);
+      expect(said).toMatch(CLI_NET);
+    });
+});

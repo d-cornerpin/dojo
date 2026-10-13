@@ -261,3 +261,26 @@ describe('t140 round 6 — a turn never waits on another compaction\'s lock', ()
     expect(placeholders(), 'the labelled rows got their real summaries after the turn').toBe(0);
   });
 });
+
+// ── round 7 (round-6 re-review I2') ────────────────────────────────────────────────────────
+// Round 6 still SET ASIDE a background compaction before trying the lock, and then — because the
+// aborted holder had not let go yet — always found the lock busy and labelled. The working background
+// summary was thrown away (after a paid partial call) and the turn got labels: the worst of both. A
+// turn that will not wait leaves the running job alone; its real summaries land.
+describe('t140 round 7 — a turn never cancels a background summary it is not going to wait for', () => {
+  it.fails('the reviewer\'s probe: a 20 s writer is replacing notes in the background when new rows leave the view — its summaries land, and the turn still goes on at once', async () => {
+    seedACut();
+    const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 20;
+    expect(writeUncondensedPlaceholders(AGENT, through), 'precondition: notes to replace').toBeGreaterThan(0);
+    writers.mode = { [OWN]: 'slow:20000' };
+    expect(replacePlaceholdersInBackground(AGENT), 'precondition: the background replacement is running').toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    appendTurn(true);                                   // a large reply: the turn's view drops rows
+    const started = Date.now();
+    const ctx = await door();
+    expect(Date.now() - started, 'the turn went on without waiting for the background job').toBeLessThan(15_000);
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    for (let t = 0; t < 120 && backgroundDrains.has(AGENT); t++) await vi.advanceTimersByTimeAsync(1_000);
+    expect(realSummaries(), 'the background job\'s real summaries landed — it was not cancelled').toBeGreaterThan(0);
+  });
+});
