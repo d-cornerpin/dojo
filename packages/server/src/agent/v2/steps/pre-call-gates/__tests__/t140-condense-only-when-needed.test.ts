@@ -290,9 +290,11 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     expect(folded.some((q) => q > seqs[39]), 'the newest 60 rows are the live view and stay raw').toBe(false);
   });
 
-  it('THE FLOOR: a full view with few rows folds only down to the newest row cap, never into it', async () => {
-    // 50 heavy rows: full, and the trim's own bound (one block, 20 rows) would reach into the
-    // newest 40 — the floor no compaction folds. The fold is clamped to the 10 rows above it.
+  it('THE FLOOR (fix round 1, I4): a full view with less than one trim block above the floor folds NOTHING', async () => {
+    // 50 heavy rows: full, but only 10 rows sit above the 40-row floor — the pressure is INSIDE
+    // the floor. Before fix round 1 the trigger folded those 10 (and then 1–5 rows every turn
+    // after, one summariser call and one prefix break each). Now it answers null and the token
+    // trim handles the floor's overflow, as it always has.
     seedSmallAgent(50);
     const state = advance(initState({
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
@@ -303,16 +305,11 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
     });
-    // The trigger's own answer names the clamped span. (The fold's selection excludes the
-    // floor a second time — `getMessagesOutsideFreshTail` — so the answer is what keeps the
-    // reported span and the tool-pair extension honest, and it is pinned here directly.)
-    const before = allSeqs(SMALL_AGENT);
-    expect(rowsLeavingView(SMALL_AGENT, { freshTailCount: 40 }, { viewFull: true }))
-      .toEqual({ cause: 'full', throughSeq: before[9], rowsLeaving: 10 });
+    expect(rowsLeavingView(SMALL_AGENT, { freshTailCount: 40 }, { viewFull: true })).toBeNull();
     await runPreCallGates(state, ctx);
     for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
-    const seqs = allSeqs(SMALL_AGENT);
-    expect(summarisedSeqs(SMALL_AGENT)).toEqual(seqs.slice(0, 10));
+    expect(summarisedSeqs(SMALL_AGENT)).toEqual([]);
+    expect(generateSummarySpy).not.toHaveBeenCalled();
   });
 });
 

@@ -55,7 +55,6 @@ export interface AssembledEstimate {
   total: number;
   summaryTokens: number;
   freshTailTokens: number;
-  briefTokens: number;
   freshTailCount: number;
   summaryCount: number;
   reserveTokens: number;

@@ -146,11 +146,11 @@ export async function estimateAssembledTokens(
   summaryTokens: number;
   freshTailTokens: number;
   /**
-   * t140: ALWAYS 0. The continuity brief this counted is deleted; the field stays only because
-   * `assembled-estimate-cache.ts` (outside t140's fence) declares it on the cached shape. Handed
-   * up for removal with that interface — nothing reads it to decide anything.
+   * t140 fix round 1 (C1): the live tail at the TOKEN TRIM's own per-row cost — `storedRowCost`,
+   * the function `budgetFreshTail` spends, uncapped. `freshTailTokens` above keeps the gate's
+   * 4K-per-row cap for the 96% emergency numerator, which is a different question.
    */
-  briefTokens: 0;
+  liveTailTokens: number;
   freshTailCount: number;
   summaryCount: number;
   /** What the assembler set aside for tool schemas + output on this agent, measured. */
@@ -226,6 +226,7 @@ export async function estimateAssembledTokens(
     (sum, m) => sum + Math.min(storedRowCost(m), policy.gateMessageCap),
     0,
   );
+  const liveTailTokens = freshTail.reduce((sum, m) => sum + storedRowCost(m), 0);
 
   // Cap summary tokens at the same budget the assembler applies (assembler.ts:
   // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
@@ -243,7 +244,7 @@ export async function estimateAssembledTokens(
     total: summaryTokens + freshTailTokens,
     summaryTokens,
     freshTailTokens,
-    briefTokens: 0,
+    liveTailTokens,
     freshTailCount: freshTail.length,
     summaryCount: summaries.length,
     reserveTokens: policy.toolAndOutputReserve,
@@ -264,11 +265,14 @@ export async function estimateAssembledTokens(
  * ladder it takes off the top (`lanes.ts`'s `reserveLadderFor`, the same function). Full means
  * the summaries plus the live tail no longer fit in that.
  *
- * The tail is the dry run's per-row-CAPPED figure, deliberately: one oversized tool result is
- * the token trim's to handle and is not, by itself, a reason to fold history (the cap's own
- * long-standing rule, `GATE_MESSAGE_CAP_TOKENS`). `systemPromptTokens` is the caller's
- * measurement of the system prompt last assembled for this agent; 0 makes the check more
- * lenient, never stricter.
+ * THE TAIL IS PRICED BY THE TRIM'S OWN FUNCTION (fix round 1, review C1): `liveTailTokens`, each
+ * row at `storedRowCost` — what `budgetFreshTail` spends before it takes rows off the front.
+ * The first cut used the gate's 4K-per-row cap here, on the theory that one large row is "the
+ * trim's to handle"; the trim handles it by setting the OLDEST rows aside unsummarised, so a
+ * file-reading agent on a 128K window lost rows for 131 turns with no fold (measured). Where the
+ * assembler pre-caps a tool result above 15K tokens this overstates, which folds earlier, never
+ * later. `systemPromptTokens` is the caller's measurement of the system prompt last assembled
+ * for this agent; 0 makes the check more lenient, never stricter.
  *
  * AND IT LEADS BY ONE TRIM BLOCK. The token trim moves the view's front in whole blocks
  * (`tail-horizon.ts`'s `tailTrimBlockGroups`), so "about to leave" is "one more block of growth
@@ -280,7 +284,7 @@ export async function estimateAssembledTokens(
  */
 export function liveViewIsFull(
   est: {
-    summaryTokens: number; freshTailTokens: number; freshTailCount?: number;
+    summaryTokens: number; freshTailTokens: number; liveTailTokens?: number; freshTailCount?: number;
     assemblyBudgetTokens?: number; policyFreshTailCount?: number;
   },
   systemPromptTokens: number,
@@ -289,8 +293,9 @@ export function liveViewIsFull(
   const available = Math.max(0, est.assemblyBudgetTokens - Math.max(0, systemPromptTokens));
   const content = Math.max(0, available - reserveLadderFor(available).offTheTop);
   const rows = Math.max(1, est.freshTailCount ?? 1);
-  const lead = tailTrimBlockGroups(est.policyFreshTailCount ?? 0) * (est.freshTailTokens / rows);
-  return est.summaryTokens + est.freshTailTokens + lead > content;
+  const tail = est.liveTailTokens ?? est.freshTailTokens;
+  const lead = tailTrimBlockGroups(est.policyFreshTailCount ?? 0) * (tail / rows);
+  return est.summaryTokens + tail + lead > content;
 }
 
 const logger = createLogger('memory-compaction');

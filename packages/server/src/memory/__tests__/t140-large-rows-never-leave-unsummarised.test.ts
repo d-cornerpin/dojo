@@ -125,7 +125,7 @@ afterEach(() => {
 });
 
 describe('t140 C1 — large rows never make the trim set unsummarised rows aside', () => {
-  it.fails('128K window, a ~12K row every 10 turns, 220 turns: ZERO trimmed turns, and the view is still folded', async () => {
+  it('128K window, a ~12K row every 10 turns, 220 turns: ZERO trimmed turns, and the view is still folded', async () => {
     seed(128_000);
     const log = await drive(220, 10);
     // eslint-disable-next-line no-console
@@ -136,7 +136,7 @@ describe('t140 C1 — large rows never make the trim set unsummarised rows aside
 });
 
 describe('t140 I4 — a full view whose pressure sits in the newest-row floor does not fold a few rows every turn', () => {
-  it.fails('32K window, a ~12K row every 15 turns, 220 turns: every fold is at least one trim block, never on consecutive turns', async () => {
+  it('32K window, a ~12K row every 15 turns, 220 turns: every fold is at least one trim block, never on consecutive turns', async () => {
     seed(32_000);
     const log = await drive(220, 15);
     const block = tailTrimBlockGroups(getFreshTailCount(32_000));

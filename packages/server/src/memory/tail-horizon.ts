@@ -497,13 +497,19 @@ export function rowsLeavingView(
     // the cut what it would take one row past the ceiling — or now, if it already has.
     cause = 'ceiling';
     leaving = ceilingSkipRows(Math.max(rowsSince, ceiling + 1), cap);
-  } else if (opts.viewFull) {
+  } else if (opts.viewFull && room >= tailTrimBlockGroups(cap)) {
+    // Fix round 1 (review I4): a full view with less than one trim block above the floor is a
+    // view whose pressure sits INSIDE the floor. Folding the 1–5 rows above it bought nothing
+    // and cost a summariser call and a prefix break on every turn; the trim handles it, as it
+    // always has, and the next block of growth makes a real fold possible.
     cause = 'full';
     leaving = Math.max(tailTrimBlockGroups(cap), maxTrimUnits(rowsSince, tailTrimBlockGroups(cap)));
   }
   if (cause === null) return null;
-  leaving = Math.min(leaving, room);
-  if (leaving <= 0) return null;
+  // No clamp is needed past this point, and it is argued rather than kept "to be safe": the
+  // ceiling's step (4 × cap) is below `room` whenever the lead fires (room ≥ 6.5 × cap), and a
+  // 'full' answer is half the span in whole blocks, below `room` whenever room ≥ one block (the
+  // guard above). The fold's own selection excludes the floor a second time regardless.
 
   let throughSeq = 0;
   try {
