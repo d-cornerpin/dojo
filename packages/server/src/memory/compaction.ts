@@ -12,7 +12,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 // t100: the fresh tail's front is the compaction boundary (t94). The gate READS that decision
 // so its dry run measures the span the assembler will actually admit — see the call below.
-import { freshTailHorizon, rowsLeavingView, tailTrimBlockGroups, type LeavingView } from './tail-horizon.js';
+import { freshTailHorizon, rowsLeavingView, rowsStrandedBelowBoundary, tailTrimBlockGroups, type LeavingView } from './tail-horizon.js';
 import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
 import { reserveLadderFor } from './lanes.js';
 // T82a: `agent/stream-patience.ts` is a LEAF (no imports of its own — see its header), so
@@ -40,6 +40,8 @@ import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterM
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
+import { groupBySubject, summaryConversationLabel, LabelFacts } from './summary-subject.js';
+import { renderInstant } from './message-stamp.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
@@ -1159,17 +1161,31 @@ export function stubOldToolResultsAtBoundary(agentId: string): number {
  */
 export function buildLeafSummaryInput(messages: Message[]): string {
   const answered = answeredAskTurns(messages);
-  return messages
+  // t144: the input says WHICH conversation (one, normally: chunks are built per conversation) and
+  // WHEN each message was written — the summariser's only source of dates. A mixed input (an older
+  // placeholder's rows) names each row's conversation in its own tag instead.
+  const agentId = messages[0]?.agentId;
+  const groups = agentId ? groupBySubject(agentId, messages) : [];
+  const facts = new LabelFacts(agentId ?? '');
+  const labelOf = new Map<string, string>();
+  for (const g of groups) {
+    const label = summaryConversationLabel({ subjectKey: g.key, earliestAt: g.rows[0].createdAt, latestAt: g.rows[g.rows.length - 1].createdAt }, facts);
+    for (const m of g.rows) labelOf.set(m.id, label);
+  }
+  const one = groups.length === 1;
+  const body = messages
     .filter(m => !isNonConversationForSummary(m.content))
     .map(m => {
-      const role = m.role.toUpperCase();
       const party = summaryPartyTag(m);
-      const base = party ? `${role} · ${party}` : role;
+      const at = renderInstant(m.createdAt);
+      const parts = [m.role.toUpperCase(), party, at, one ? null : `in ${labelOf.get(m.id) ?? 'conversation unknown'}`];
+      const base = parts.filter((p): p is string => !!p).join(' · ');
       const servedBy = answered.get(m.id);
       const tag = servedBy == null ? base : `${base} · ${ANSWERED_TAG} in turn ${servedBy}`;
       return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
     })
     .join('\n\n---\n\n');
+  return body && one ? `CONVERSATION: ${labelOf.get(messages[0].id)}\n\n${body}` : body;
 }
 
 /** The literal the input builder writes and the summariser's own instruction names. One
@@ -1408,7 +1424,19 @@ export async function runLeafCompaction(
     }
   }
 
+  // t144: the boundary stays true — rows a refused conversation's chunk left below a landed one are
+  // covered now (placeholder notes, replaced in the background), never left out of view unrepresented.
+  if (summariesCreated > 0) await coverRowsStrandedBelowBoundary(agentId, uncompacted[0].rowid ?? 0);
   return summariesCreated;
+}
+
+/** `tail-horizon.ts` names the rows; the placeholder writer covers them (caller holds the compaction lock). */
+async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number): Promise<void> {
+  const { anchor, stranded } = rowsStrandedBelowBoundary(agentId, fromSeq);
+  if (stranded === 0) return;
+  logger.warn('A conversation\'s rows were left below the summarised boundary; placeholder notes stand in for them', { stranded, anchor }, agentId);
+  const { writeUncondensedPlaceholders } = await import('./uncondensed-placeholder.js');
+  writeUncondensedPlaceholders(agentId, anchor);
 }
 
 // ── Rebuild Context Items ──
@@ -1493,7 +1521,14 @@ export function condenseToolJsonForSummary(content: string): string {
   }
 }
 
+/** t144: chunks NEVER cross conversations — the rows are grouped by conversation (`summary-subject.ts`),
+ *  then each group is cut at ~targetTokens, oldest first. Agent-wide mixed chunking is gone. */
 export function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
+  if (messages.length === 0) return [];
+  return groupBySubject(messages[0].agentId, messages).flatMap((g) => chunkByTokens(g.rows, targetTokens));
+}
+
+function chunkByTokens(messages: Message[], targetTokens: number): Message[][] {
   const chunks: Message[][] = [];
   let currentChunk: Message[] = [];
   let currentTokens = 0;

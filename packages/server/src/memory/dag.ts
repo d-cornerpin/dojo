@@ -3,7 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getMessagesByIds } from './store.js';
 import { queueEmbedding } from './embeddings.js';
-import { dominantMessageLineage } from './conversations.js';
+import { subjectKeyOfIds, lineageOf, SEVERAL_SUBJECTS } from './summary-subject.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-dag');
@@ -21,6 +21,8 @@ export interface Summary {
   latestAt: string;
   descendantCount: number;
   createdAt: string;
+  /** t144: its ONE conversation (`summary-subject.ts`); migration 192's state for an older mixed note. */
+  subjectKey?: string | null; rebuildState?: string | null;
 }
 
 interface SummaryRow {
@@ -34,6 +36,7 @@ interface SummaryRow {
   latest_at: string;
   descendant_count: number;
   created_at: string;
+  subject_key?: string | null; rebuild_state?: string | null;
 }
 
 function rowToSummary(row: SummaryRow): Summary {
@@ -48,6 +51,7 @@ function rowToSummary(row: SummaryRow): Summary {
     latestAt: row.latest_at,
     descendantCount: row.descendant_count,
     createdAt: row.created_at,
+    subjectKey: row.subject_key ?? null, rebuildState: row.rebuild_state ?? null,
   };
 }
 
@@ -64,13 +68,15 @@ export function createLeafSummary(
   const db = getDb();
   const id = `sum_${uuidv4()}`;
 
-  // P5c: the summary CARRIES the dominant lineage of its chunk (mig 115), so
-  // identity survives compression instead of dropping at the boundary.
-  const lineage = dominantMessageLineage(messageIds);
+  // t144: ONE conversation per leaf (chunks are built per conversation); the majority vote is gone.
+  // A writer that hands a mixed chunk anyway gets the truthful `several`, and the log says so.
+  const subjectKey = subjectKeyOfIds(messageIds);
+  if (subjectKey === SEVERAL_SUBJECTS) logger.error('DEFECT: a leaf summary was handed rows of more than one conversation', { messageCount: messageIds.length }, agentId);
+  const lineage = lineageOf(subjectKey);
 
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, created_at)
-    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, subject_key, created_at)
+    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   // PHASE-1 T7. `summary_messages.message_id` carries a real foreign key to `messages(id)`
@@ -99,7 +105,7 @@ export function createLeafSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length, lineage.conversationId, lineage.a2aThreadId);
+    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length, lineage.conversationId, lineage.a2aThreadId, subjectKey);
 
     for (const messageId of messageIds) {
       insertLink.run(id, messageId);
@@ -130,6 +136,7 @@ export function createLeafSummary(
     latestAt,
     descendantCount: messageIds.length,
     createdAt: new Date().toISOString(),
+    subjectKey, rebuildState: null,
   };
 }
 
@@ -151,28 +158,19 @@ export function createCondensedSummary(
     `SELECT COALESCE(SUM(descendant_count), 0) as total FROM summaries WHERE id IN (${parentPlaceholders})`,
   ).get(...parentIds) as { total: number };
 
-  // P5c: condensed summaries inherit the modal lineage of their parents, same
-  // deterministic tie-break as dominantMessageLineage.
-  const parentLineage = db.prepare(
-    `SELECT conversation_id, a2a_thread_id FROM summaries WHERE id IN (${parentPlaceholders})`,
-  ).all(...parentIds) as Array<{ conversation_id: string | null; a2a_thread_id: string | null }>;
-  const modal = (vals: Array<string | null>): string | null => {
-    const tally = new Map<string, number>();
-    for (const v of vals) if (v) tally.set(v, (tally.get(v) ?? 0) + 1);
-    let best: string | null = null; let bestCount = 0;
-    for (const [v, c] of [...tally.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      if (c > bestCount) { best = v; bestCount = c; }
-    }
-    return best;
-  };
-  const lineage = {
-    conversationId: modal(parentLineage.map(r => r.conversation_id)),
-    a2aThreadId: modal(parentLineage.map(r => r.a2a_thread_id)),
-  };
+  // t144: a parent is about the conversation its children share (no vote); older mixed notes stay
+  // that; `several` only at OR-COMPACT-1's last resort (`summary-subject.ts` subjectBatches).
+  const kids = db.prepare(`SELECT subject_key, rebuild_state FROM summaries WHERE id IN (${parentPlaceholders})`)
+    .all(...parentIds) as Array<{ subject_key: string | null; rebuild_state: string | null }>;
+  const keys = new Set(kids.map((k) => k.subject_key));
+  const rebuildState = kids.some((k) => k.rebuild_state)
+    ? (kids.every((k) => k.rebuild_state === 'legacy_mixed_rebuild') ? 'legacy_mixed_rebuild' : 'legacy_mixed') : null;
+  const subjectKey = rebuildState ? null : keys.size === 1 ? [...keys][0] : SEVERAL_SUBJECTS;
+  const lineage = lineageOf(subjectKey);
 
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, created_at)
-    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, subject_key, rebuild_state, created_at)
+    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   const insertLink = db.prepare(`
@@ -180,7 +178,7 @@ export function createCondensedSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total, lineage.conversationId, lineage.a2aThreadId);
+    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total, lineage.conversationId, lineage.a2aThreadId, subjectKey, rebuildState);
 
     for (const parentId of parentIds) {
       insertLink.run(id, parentId);
@@ -210,6 +208,7 @@ export function createCondensedSummary(
     latestAt,
     descendantCount: descendantRow.total,
     createdAt: new Date().toISOString(),
+    subjectKey, rebuildState,
   };
 }
 

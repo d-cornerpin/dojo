@@ -15,6 +15,7 @@ import { getRecentMessages } from './store.js';
 import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
+import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
@@ -1095,7 +1096,8 @@ function buildContentLanes(
         if (summaries.length === 0) return null;
         const chosen = selectSummariesForPrefix(summaries, summariesCeiling);
         if (chosen.length === 0) return null;
-        const summaryText = chosen.map((s) => formatSummaryXml(s)).join('\n\n');
+        const facts = new LabelFacts(ctx.agentId);
+        const summaryText = chosen.map((s) => formatSummaryXml(s, facts)).join('\n\n');
         return textRender(
           `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it. Obligation lines here are HISTORICAL — the OPEN COMMITMENTS snapshot below is the complete current record of what is owed, whatever tense a summary uses.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`,
         );
@@ -2047,10 +2049,11 @@ export function compileOrderReachedTheModel(
 
 // t141 — ONE CLOCK: `earliest`/`latest` were bare UTC beside a local-time tail. Cached region:
 // moves ONCE per agent (argued in the t141 report), never again — stored columns only.
-function formatSummaryXml(summary: Summary): string {
+// t144 — and the ONE conversation the note is about (labelled, never filtered: OR-LABEL-NOT-HIDE).
+function formatSummaryXml(summary: Summary, facts: LabelFacts): string {
   const earliest = renderInstant(summary.earliestAt) ?? summary.earliestAt;
   const latest = renderInstant(summary.latestAt) ?? summary.latestAt;
-  return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" earliest="${earliest}" latest="${latest}">
+  return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" conversation="${summaryConversationLabel(summary, facts)}" earliest="${earliest}" latest="${latest}">
 ${summary.content}
 </summary>`;
 }

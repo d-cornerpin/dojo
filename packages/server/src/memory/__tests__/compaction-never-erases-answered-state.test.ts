@@ -229,8 +229,10 @@ describe('the placeholder path is only taken over spans the ledger calls plumbin
 
     const created = await runLeafCompaction(AGENT, MODEL, SMALL_WINDOW);
 
-    expect(created).toBe(1);
-    expect(summaries()[0].content).toBe(NO_CONVERSATION_PLACEHOLDER);
+    // t144: the engine trigger and the agent thread are two conversations, so two notes — each the
+    // placeholder, each one conversation (chunks never cross conversations).
+    expect(created).toBe(2);
+    for (const s of summaries()) expect(s.content).toBe(NO_CONVERSATION_PLACEHOLDER);
     const compacted = getCompactedMessageIds(AGENT);
     expect(compacted.has(poke.id)).toBe(true);
     expect(compacted.has(a2a.id)).toBe(true);

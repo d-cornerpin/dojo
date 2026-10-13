@@ -5,27 +5,36 @@ import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { noteSummaryWriterOutcome } from './summary-writer-health.js';
+import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
+import { renderInstant } from './message-stamp.js';
+import type { Summary } from './dag.js';
 
 const logger = createLogger('memory-summarize');
 
 // ── Identity Resolution ──
 
+// t144: the `[USER] = the human operator` line is gone — an inbound row is from whoever its PARTY tag
+// names (a contact, an email sender, another agent), and calling every one of them the operator is how
+// a notice read as the owner's request. Only the agent's own name is given.
 function getIdentityContext(agentId: string): string {
-  const db = getDb();
-
-  // Get agent name
-  const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+  const agent = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
   const agentName = agent?.name ?? 'the assistant';
-
-  // Get user name from config
-  const userRow = db.prepare("SELECT value FROM config WHERE key = 'user_name'").get() as { value: string } | undefined;
-  const userName = userRow?.value || 'the user';
-
   return `IDENTITY CONTEXT:
-- Messages labeled [USER] are from ${userName}, the human operator
-- Messages labeled [ASSISTANT] are from ${agentName}, the AI agent
-- Messages labeled [TOOL] are tool execution results
-- Always attribute actions and statements to the correct person: "${userName} said/asked/wants..." or "${agentName} did/responded/suggested..."`;
+- Messages labeled [ASSISTANT] are from ${agentName}, the AI agent; [TOOL] are its tool results
+- Messages labeled [USER] are inbound, from the party their tag names — never assume who without the tag
+- Attribute every statement to the party its tag names: "<that party> asked…", "${agentName} did…"`;
+}
+
+/** t144 — THE ONE CONDENSED-INPUT BUILDER (the condenser and the nightly rebuild both read it). Each
+ *  note carries the conversation it is about and its recorded range, in the single clock. */
+export function condensedSummaryInput(batch: readonly Summary[]): string {
+  const labels = new LabelFacts(batch[0]?.agentId ?? '');
+  return batch.map((s) => {
+    const label = summaryConversationLabel(s, labels);
+    const earliest = renderInstant(s.earliestAt) ?? s.earliestAt;
+    const latest = renderInstant(s.latestAt) ?? s.latestAt;
+    return `<summary id="${s.id}" depth="${s.depth}" conversation="${label}" earliest="${earliest}" latest="${latest}">\n${s.content}\n</summary>`;
+  }).join('\n\n');
 }
 
 // ── Depth-Aware Prompts ──
@@ -42,18 +51,18 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 
 ${identity}
 
-INPUT FORMAT: The conversation below is formatted as [ROLE · PARTY] followed by the message content, separated by --- dividers.
-[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · the owner], [USER · <a contact> (imessage)], [USER · <an address> (email)], [USER · a PM agent (agent)])
-[ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result, tagged with the conversation it was part of
-The PARTY tag tells you which conversation each message belongs to. These are SEPARATE conversations with different people, not one stream.
+INPUT FORMAT: The input opens with a CONVERSATION line naming the ONE conversation every message below belongs to (a dashboard conversation, an email thread, an agent thread, engine events…). Each message is then [ROLE · PARTY · RECORDED TIME] followed by its content, separated by --- dividers.
+[USER · <name> · <time>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · <a contact> (imessage) · <time>], [USER · <an address> (email) · <time>], [USER · a PM agent (agent) · <time>])
+[ASSISTANT · <party> · <time>] / [TOOL · <party> · <time>] = the AI assistant's own reply / a tool result
+The RECORDED TIME is when that message was written: it is your only source of dates. If there is no CONVERSATION line, each tag names its own conversation ("in <conversation>"): keep those conversations apart, never merge them.
 [USER · <name> · ANSWERED in turn <N>] = the engine's own record that this ask WAS ALREADY ANSWERED, on turn N. Carry that state into the summary — write "asked X; answered on turn N" — and NEVER list such an ask as outstanding, pending, or awaiting a reply. An ask with no ANSWERED tag is simply an ask; say what was asked, not that it is still owed.
 
 CONVERSATION ATTRIBUTION — CRITICAL:
-- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "the owner asked to move their dentist to 3pm" and "<that contact> (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
-- Keep different parties' items separate. Do not merge a request from one person with an action for another. A later reader uses these labels to act on the RIGHT person's request on the right turn; an unlabeled fact causes it to act on the wrong conversation.
+- Every fact, request, reminder or decision MUST say who made it (its PARTY tag). Write "the owner asked to move their dentist to 3pm" — NEVER an unattributed "dentist moved to 3pm".
+- Do not merge a request from one person with an action for another.
 
 TEMPORAL ANCHORING — CRITICAL:
-- Begin the summary with the time period it covers: [YYYY-MM-DD HH:MM – HH:MM] or [YYYY-MM-DD] if timestamps are unclear.
+- Begin the summary with the time period it covers, from the first and last RECORDED TIME: [YYYY-MM-DD HH:MM – HH:MM]. Every message carries its time, so never write "date unknown".
 - Preserve ALL dates, times, and temporal references from the original messages.
 - When events happened at specific times, include those times in the summary.
 - This temporal context is essential — downstream systems use it to judge the age and relevance of information.
@@ -67,8 +76,8 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
-- Note any unresolved questions, pending tasks, or open decisions in the narrative, tagged with the party/conversation they belong to. An OBLIGATION — something still owed to someone — may only be written if the conversation gives you its work id, cited as written (e.g. "still owed: email <that contact> the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it. A summary is a record of what was SAID, never of what is currently owed; the OPEN WORK block in the live prompt is the current status, and an obligation line here is history whatever tense it is written in.
-- Attribute every fact to the correct person AND the correct conversation, using the [ROLE · PARTY] tags. Carry the party label into the summary text so whose-request-is-whose survives compression.
+- Record each request WITH ITS OUTCOME as these messages show it, dated: answered, done, declined, or "not answered by <last recorded time>". A summary is a record of what was SAID and DONE, never of what is CURRENT: never write "pending", "outstanding", "next steps" or "still owed" as present fact — the OPEN WORK block (the task list) in the live prompt is the only record of what is current. An obligation may be named only with the work id the conversation gives you, cited as written (e.g. "agreed to email <that contact> the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it.
+- Attribute every fact to the correct person, using the [ROLE · PARTY · TIME] tags, and carry the party label into the summary text.
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
   RESOLVED: [issue] — fixed [how/when]
   DECIDED: [what was decided and why]
@@ -92,7 +101,15 @@ ${contextBlock}`;
 
 ${identity}
 
-INPUT FORMAT: Each <summary> block below is a COMPRESSED version of earlier conversation — these are already summarized, not raw messages. They may overlap in time. Merge them, keeping ALL specific details from each.
+INPUT FORMAT: Each <summary> block below is a COMPRESSED version of earlier conversation — already summarized, not raw messages. Its conversation="…" attribute names the ONE conversation it records, and earliest/latest are its recorded range. Merge them, keeping ALL specific details from each.
+
+CONVERSATIONS — CRITICAL:
+- When every block names the same conversation, begin with "Conversation: <that name>".
+- When they name several (rare: memory had to shrink further), keep each conversation's facts under its own heading with its name and range. Never merge two conversations' facts.
+
+RESOLUTION STATE — CRITICAL:
+- Carry every RESOLVED / DECIDED / CLOSED / DEFERRED line forward, merged into one such section at the end, so settled issues are never re-raised.
+- Never state what is currently pending or owed: the OPEN WORK block (the task list) is the only record of what is current.
 
 TEMPORAL ANCHORING — CRITICAL:
 - Preserve the time period from each source summary. Each source summary should begin with a date/time range — carry these forward.
@@ -108,7 +125,7 @@ ABSOLUTE RULES:
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
 - Obligation lines (things owed to someone) carry a work id and, where the engine has resolved it, a bracketed state. Carry BOTH forward verbatim and never restate an obligation as currently owed: the OPEN WORK block is the current status, not these summaries. An obligation with no id does not survive condensation.
 - Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
-- Maintain correct attribution — never confuse who said or did what. The source summaries tag facts with the party/conversation they belong to (the owner, a named contact on a channel, another agent); CARRY THOSE LABELS FORWARD. Keep different parties' requests separate; never merge them into an unattributed statement.
+- Maintain correct attribution — never confuse who said or did what. CARRY the party and conversation labels forward; never merge different parties' requests into an unattributed statement.
 - Target approximately ${targetTokens} tokens — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
 ${contextBlock}`;
@@ -120,7 +137,7 @@ ${contextBlock}`;
 ${identity}
 
 TEMPORAL ANCHORING — CRITICAL:
-- Begin the document with the overall date range it covers: [YYYY-MM-DD to YYYY-MM-DD].
+- Begin the document with its conversation (from the conversation="…" attributes; one heading per conversation if they name several) and the overall date range it covers: [YYYY-MM-DD to YYYY-MM-DD].
 - Begin each topic section with the date range it covers (e.g., "## Projects [2026-03-15 to 2026-04-19]").
 - Within topics, organize chronologically so the reader can tell what happened when and what is most recent.
 - Mark decisions and events with their dates — "Decided on 2026-04-10 to use A2A protocol" not just "Decided to use A2A protocol".
@@ -129,7 +146,8 @@ TEMPORAL ANCHORING — CRITICAL:
 ABSOLUTE RULES:
 - This is a REFERENCE DOCUMENT, not a narrative — optimize for fact density
 - Preserve ALL proper nouns, specific names, numbers, and concrete details
-- Preserve ALL stated preferences, decisions, and instructions from the user
+- Preserve ALL stated preferences and decisions, and every instruction WITH its outcome as the sources record it (done, answered, declined, superseded) — an instruction is history, not a standing order
+- Carry every RESOLVED / DECIDED / CLOSED / DEFERRED line forward into one section at the end; never state what is currently pending or owed (the OPEN WORK block, the task list, is the only record of what is current)
 - Preserve ALL business/project details with their specific descriptions
 - Organize by topic (e.g., "User Profile", "Projects", "Preferences", "Technical Decisions") with date ranges
 - Drop only: routine tool calls, small talk, resolved errors with no lasting impact

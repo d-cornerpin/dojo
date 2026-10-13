@@ -167,7 +167,7 @@ afterEach(() => {
 });
 
 describe('t144 — a condensed note never crosses conversations', () => {
-  it.fails('W1: two interleaved conversations folded together give notes of ONE conversation each', async () => {
+  it('W1: two interleaved conversations folded together give notes of ONE conversation each', async () => {
     interleave(40);
     await foldThrough('[b60]');
     const written = leaves();
@@ -178,7 +178,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
     expect([...covered].sort()).toEqual([DASH, MAIL].sort());
   });
 
-  it.fails('W2: the summariser is given every message\'s recorded time (no "date unknown" from a lack of input)', async () => {
+  it('W2: the summariser is given every message\'s recorded time (no "date unknown" from a lack of input)', async () => {
     interleave(40);
     await foldThrough('[b60]');
     expect(model.calls.length).toBeGreaterThan(0);
@@ -192,7 +192,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
     }
   });
 
-  it.fails('W3: the summariser is not told every [USER] is the operator, and is not asked to carry pending tasks', async () => {
+  it('W3: the summariser is not told every [USER] is the operator, and is not asked to carry pending tasks', async () => {
     interleave(40);
     await foldThrough('[b60]');
     const prompts = model.calls.map((c) => c.systemPrompt).join('\n');
@@ -200,7 +200,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
     expect(prompts).not.toMatch(/pending task/i);
   });
 
-  it.fails('W4: every note in view carries the ONE conversation it belongs to', async () => {
+  it('W4: every note in view carries the ONE conversation it belongs to', async () => {
     interleave(40);
     await foldThrough('[b60]');
     const view = viewText(await assembleContext(AGENT, WRITER));
@@ -209,7 +209,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
     for (const t of tags) expect(t).toMatch(/conversation=\\?"(dashboard conversation with [^"\\]+|email thread with Depot Dispatch[^"\\]*)\\?"/);
   });
 
-  it.fails('W5: condensation merges a conversation\'s notes with its own, carrying the label into the writer\'s input', async () => {
+  it('W5: condensation merges a conversation\'s notes with its own, carrying the label into the writer\'s input', async () => {
     interleave(8);
     const rows = db().prepare('SELECT id, conversation_id AS c, created_at AS at FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string; c: string; at: number }>;
     // Four leaves, two per conversation, written as the post-fix fold writes them (one conversation each).
@@ -237,7 +237,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
 });
 
 describe('t144 — membership: a fold never leaves a row out of view that nothing stands for', () => {
-  it.fails('W6: one conversation\'s chunk refused while another\'s lands — every row is in view or covered in view', async () => {
+  it('W6: one conversation\'s chunk refused while another\'s lands — every row is in view or covered in view', async () => {
     // Long rows: the span is several chunks whatever the chunking, so a refusal can sit below a success.
     interleave(40, 'Crate manifest: bay, weight, seal number, inspector initials and remarks for the night shift. '.repeat(45));
     model.refuseWhen = '[b2]';   // the writer answers empty on the chunk holding the email thread's first notice

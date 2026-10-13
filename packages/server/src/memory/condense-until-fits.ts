@@ -81,7 +81,8 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
-import { generateSummary } from './summarize.js';
+import { generateSummary, condensedSummaryInput } from './summarize.js';
+import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
 const logger = createLogger('condense-until-fits');
@@ -228,17 +229,8 @@ export function shrinkTarget(currentTokens: number, ceilingTokens: number): numb
   return Math.max(CONDENSE_MIN_TARGET_TOKENS, Math.min(ceilingTokens, halved));
 }
 
-function batchesOf<T>(rows: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
-  return out;
-}
-
-function summaryInput(batch: readonly Summary[]): string {
-  return batch.map(s =>
-    `<summary id="${s.id}" depth="${s.depth}" earliest="${s.earliestAt}" latest="${s.latestAt}">\n${s.content}\n</summary>`,
-  ).join('\n\n');
-}
+// t144: batches are per conversation (`subjectBatches`), and the input is the one builder
+// (`condensedSummaryInput`), which names each note's conversation.
 
 /** Hand the event loop back. Each level does a synchronous all-summaries read; a deep
  *  condensation that never yields is the v3.2.3 freeze with a different cause. */
@@ -289,7 +281,7 @@ async function condenseLevel(
     }
     try {
       const summary = await generateSummary({
-        content: summaryInput([only]), depth: only.depth + 1, targetTokens: target, agentId, modelId, abortSignal,
+        content: condensedSummaryInput([only]), depth: only.depth + 1, targetTokens: target, agentId, modelId, abortSignal,
       });
       calls += 1;
       if (!summary.ok) return { created: 0, calls, stage: 'summariser_refused', detail: summary.reason };
@@ -303,7 +295,7 @@ async function condenseLevel(
     }
   }
 
-  for (const batch of batchesOf(rows, minFanout)) {
+  for (const batch of subjectBatches(rows, minFanout)) {
     if (abortSignal?.aborted) { stage ??= 'bounded_without_progress'; detail ??= 'aborted mid-level'; break; }
     // A trailing single waits for the next level, which reads the whole set again and so merges
     // it with the parents just written — one model call instead of two.
@@ -312,7 +304,7 @@ async function condenseLevel(
     const shape = parentShape(batch);
     try {
       const summary = await generateSummary({
-        content: summaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal,
+        content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal,
       });
       calls += 1;
       if (!summary.ok) {

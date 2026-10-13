@@ -526,3 +526,32 @@ export function rowsLeavingView(
   }
   return { cause, throughSeq, rowsLeaving: leaving };
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t144 — THE BOUNDARY STAYS TRUE WHEN NOTES ARE WRITTEN PER CONVERSATION. The live view starts after
+// the newest summarised row (`readBoundary`'s single MAX(seq) anchor), which is only right while every
+// session row at or below it is covered. A fold's chunks are now one conversation each, so one
+// conversation's chunk can be refused while another's, holding newer rows, lands — and the refused
+// rows would sit below the anchor, out of view, with nothing standing for them (this was already
+// possible with sequential chunks; per-conversation chunks make it common). Membership stays the one
+// anchor — the per-turn read is unchanged — and the fold re-establishes the invariant: this reader
+// names the rows left below it, and `compaction.ts` covers them with placeholder notes at once.
+// Bounded by the fold's own span (`fromSeq`), so it never scans the agent's history.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The anchor, and how many session rows in `[fromSeq, anchor]` no summary covers. Never throws. */
+export function rowsStrandedBelowBoundary(agentId: string, fromSeq: number): { anchor: number; stranded: number } {
+  try {
+    const anchor = readBoundary(agentId).anchor;
+    if (anchor <= 0 || anchor < fromSeq) return { anchor, stranded: 0 };
+    const row = getDb().prepare(`
+      SELECT COUNT(*) AS n FROM messages m LEFT JOIN agents a ON a.id = m.agent_id
+       WHERE m.agent_id = @agentId AND m.seq >= @fromSeq AND m.seq <= @anchor
+         AND (a.session_started_at IS NULL OR m.created_at >= unixepoch(a.session_started_at) * 1000)
+         AND NOT EXISTS (SELECT 1 FROM summary_messages sm WHERE sm.message_id = m.id)
+    `).get({ agentId, fromSeq, anchor }) as { n: number } | undefined;
+    return { anchor, stranded: row?.n ?? 0 };
+  } catch {
+    return { anchor: 0, stranded: 0 };
+  }
+}
