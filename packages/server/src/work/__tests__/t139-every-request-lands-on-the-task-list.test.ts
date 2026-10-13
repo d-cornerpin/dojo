@@ -60,7 +60,7 @@ vi.mock('../../agent/tools/index.js', async () => {
   return {
     ...actual,
     executeTool: async (agentId: string, tc: { id: string; name: string; arguments: Record<string, unknown> }) => {
-      if (tc.name.startsWith('work_')) return actual.executeTool(agentId, tc as never);
+      if (tc.name.startsWith('work_') || tc.name === 'send_to_agent') return actual.executeTool(agentId, tc as never);
       return classifyToolResult({ content: `ok: ${tc.name} accepted; it is rendering in the background`, isError: false });
     },
     getFilteredTools: () => [],
@@ -183,6 +183,8 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
+import { continuationContext } from '../../agent/turn-state.js';
+import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 
 const PRIMARY = 'primary';
 
@@ -214,16 +216,26 @@ function seedWorld(db: Database.Database): void {
     `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
      VALUES ('conv-dash', ?, 'dashboard', NULL, 'owner', datetime('now'))`,
   ).run(PRIMARY);
+  // A second agent: the delegate in the delegated shapes, the sender in the A2A-originated one.
+  db.prepare(
+    "INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('helper', 'Helper', 'test-model', 'idle', '{}', 'worker')",
+  ).run();
 }
 
-/** The owner says something on the dashboard, through the REAL writer (it opens the ask). */
-function ownerSays(id: string, content: string): void {
+/** The owner says something, through the REAL writer (it opens the ask). Dashboard by default. */
+function ownerSays(id: string, content: string, channel = 'dashboard', conversationId = 'conv-dash'): void {
   insertMessage({
     id, agentId: PRIMARY, role: 'user', content, turnNumber: 1,
-    channel: 'dashboard', senderId: 'owner', conversationId: 'conv-dash',
-    inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    channel, senderId: 'owner', conversationId,
+    inboundMeta: JSON.stringify({ channel, relation: 'owner' }),
   });
 }
+
+/** A turn's tool call, scripted. */
+const call = (id: string, name: string, args: Record<string, unknown>): NonNullable<Step['toolCalls']>[number] =>
+  ({ id, name, arguments: args });
+const openTask = (id: string, title: string, goal: string): NonNullable<Step['toolCalls']>[number] =>
+  call(id, 'work_open', { kind: 'task', title, description: `My plan: ${title}`, goal });
 
 type Step = { content?: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> };
 /** The scripted provider: answers each model call from the script, then ends the turn. */
@@ -272,6 +284,7 @@ beforeEach(() => {
   seedWorld(mockDb.current);
   callModelSpy.mockReset();
   handleMessageSpy.mockReset();
+  handleMessageSpy.mockImplementation(async () => undefined);
   stoppedAgents.clear();
   pendingWakeups.clear();
   turnContinuationCounts.clear();
@@ -327,6 +340,189 @@ describe('t139 — every multi-step request lands on the task list with its word
     const rows = openTasks();
     expect(rows.length).toBe(1);
     expect(rows[0].source_message_id).toBe('msg-long');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it('short multi-step (the engine floor opens the task): linked, and the words are on the list byte-for-byte', async () => {
+    const ask = 'Find three venues near the station, compare their day rates, and email me the cheapest.';
+    ownerSays('msg-short', ask);
+    script([
+      { toolCalls: Array.from({ length: 6 }, (_, k) => call(`ws-${k}`, 'web_search', { query: `venue ${k}` })) },
+      { content: 'I have three candidates and am comparing them now.' },
+    ]);
+
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].root_kind).toBe('engine_scaffold');
+    expect(rows[0].source_message_id).toBe('msg-short');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it('background-finishing (image jobs still rendering when the turn ends): the task stays open, linked, with the words', async () => {
+    const ask = 'Make nine square headshots for the team page, one per person, in the same soft studio style.';
+    ownerSays('msg-images', ask);
+    script([{ toolCalls: imageCalls(9) }, { content: 'All nine are rendering now; they will drop in as they finish.' }]);
+
+    await runV2Turn(PRIMARY);
+
+    // The turn is over and the renders are not: the request is unfinished, so its task is open.
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-images');
+    expect(rows[0].state).toBe('claimed');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it('email-originated (the owner asks on the email channel): linked, and labelled with the email conversation', async () => {
+    mockDb.current!.prepare(
+      `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+       VALUES ('conv-mail', ?, 'email', 'gmail', 'owner', datetime('now'))`,
+    ).run(PRIMARY);
+    const ask = 'When you get a minute: pull last month\'s receipts from the shared folder, total them by category, and reply with the table.';
+    ownerSays('msg-mail', ask, 'email', 'conv-mail');
+    script([
+      { toolCalls: [openTask('wo-mail', 'Receipts by category', 'A category total table sent to the owner')] },
+      { content: 'Will do — totalling them now.' },
+    ]);
+
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-mail');
+    const list = await taskList();
+    expect(list).toContain(ask);
+    expect(list).toMatch(/Original request \(from [^\n]*email/);
+  });
+
+  it('A2A-originated (another agent ASSIGNs the work): the auto-task is linked to the delivered row and shows it byte-for-byte', async () => {
+    const payload = 'Please reconcile the two supplier spreadsheets row by row and send me the mismatches as a list.';
+    const r = await deliverA2AMessage({
+      intent: 'ASSIGN', threadId: 'thread-t139-a2a', requiresResponse: true,
+      payload, toAgent: PRIMARY, fromAgent: 'helper',
+    });
+    expect(r.delivered).toBe(true);
+
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe(r.messageId);
+    const row = mockDb.current!.prepare('SELECT content FROM messages WHERE id = ?').get(r.messageId!) as { content: string };
+    expect(row.content).toContain(payload);
+    expect(await taskList()).toContain(row.content);
+  });
+
+  it('started on a continuation (the task is opened on the turn after a budget park): linked to the ask that started it', async () => {
+    // MEASURED, and stated so the clause says what it proves: at this base a budget park hands
+    // the owner's ask back, so the continuation turn RE-SERVES the same ask (its turn record
+    // names it) and the link comes from that served row. The clause holds the outcome the
+    // owner sees — the task opened after the park carries his words — whichever way it is served.
+    const ask = longAsk(1200, 'CONTINUED');
+    ownerSays('msg-cont', ask);
+    // Turn 1 works for longer than the turn budget, so the engine parks it and carries the
+    // owner's conversation into a continuation. The clock is moved INSIDE the model call — the
+    // same instant a real 16-minute call returns at.
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      let i = 0;
+      callModelSpy.mockImplementation(async () => {
+        i++;
+        if (i === 1) {
+          offset = 16 * 60_000;
+          // An EFFECTFUL call (a render started), so the ask stays claimed by this job and the
+          // next turn is a continuation of it rather than a fresh serve of the same message.
+          return { content: 'On it — starting on the venues now.', toolCalls: [call('ex-c', 'exec', { command: 'echo notes > /tmp/t139-notes.txt' })], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        }
+        return { content: 'unreachable', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+      });
+      await runV2Turn(PRIMARY);
+      offset = 0;                                             // the continuation starts a fresh turn clock
+      expect(openTasks().length).toBe(0);                     // nothing opened on turn 1
+      expect(continuationContext.has(PRIMARY)).toBe(true);    // the park carried the conversation
+
+      // Turn 2: the continuation. The model opens the task here.
+      script([
+        { toolCalls: [openTask('wo-cont', 'Continued job', 'The continued job, finished')] },
+        { content: 'Picking up where I left off.' },
+      ]);
+      await runV2Turn(PRIMARY);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const turn2 = mockDb.current!.prepare(
+      "SELECT source_message_id FROM turns WHERE agent_id = ? AND turn_number = 2",
+    ).get(PRIMARY) as { source_message_id: string | null };
+    expect(turn2.source_message_id).toBe('msg-cont');
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-cont');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it('delegated, then held while the delegated work runs: the task is linked, open, and shows the words throughout', async () => {
+    const ask = 'Get the helper to draft the venue shortlist, then you check it against my calendar and send me the final pick.';
+    ownerSays('msg-deleg', ask);
+    script([
+      { toolCalls: [openTask('wo-deleg', 'Venue pick', 'A final venue pick checked against the calendar')] },
+      { toolCalls: [call('sa-1', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Draft a venue shortlist of three options with day rates.' })] },
+      { content: 'I have asked Helper for a shortlist and will check it against your calendar when it lands.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    // HELD: the ask is owed behind the delegation; the task is open, linked, and on the list.
+    const askRow = mockDb.current!.prepare(
+      "SELECT state, remaining_children FROM work WHERE id = 'ask:msg-deleg'",
+    ).get() as { state: string; remaining_children: number | null };
+    expect(askRow.state).toBe('blocked');
+    expect(askRow.remaining_children).toBe(1);
+    const held = openTasks();
+    expect(held.length).toBe(1);
+    expect(held[0].source_message_id).toBe('msg-deleg');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it.fails('delegated to two helpers, with the task opened when the last result wakes the agent to compile: linked to the owner\'s ask', async () => {
+    const ask = 'Have the helper collect caterer quotes and venue quotes separately, then combine them and tell me the cheapest pairing.';
+    ownerSays('msg-deleg2', ask);
+    script([
+      { toolCalls: [
+        call('sa-2', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Collect three caterer quotes for forty people.' }),
+        call('sa-3', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Collect three venue quotes for forty people.' }),
+      ] },
+      { content: 'I have asked Helper for both sets of quotes.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    expect(openTasks().length).toBe(0);
+
+    // Both delegates answer on the threads the delegation opened; the join completes and the
+    // owner's ask becomes compile-pending — the wake turn's job is to combine them.
+    const threads = (mockDb.current!.prepare(
+      `SELECT a2a_thread_id AS t FROM messages WHERE source_agent_id = ? AND a2a_intent = 'ASSIGN' ORDER BY rowid`,
+    ).all(PRIMARY) as Array<{ t: string }>).map((r) => r.t);
+    expect(threads.length).toBe(2);
+    for (const [k, thread] of threads.entries()) {
+      const back = await deliverA2AMessage({
+        intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
+        payload: k === 0 ? 'Caterers: Alder 1,200; Birch 1,350; Cedar 990.' : 'Venues: Dock 700; Elm Hall 850; Ferry 640.',
+        toAgent: PRIMARY, fromAgent: 'helper',
+      });
+      expect(back.delivered).toBe(true);
+    }
+
+    // The wake turn: the results are in, and the agent opens the task to finish the job.
+    script([
+      { toolCalls: [openTask('wo-deleg2', 'Cheapest pairing', 'The cheapest caterer and venue pairing sent to the owner')] },
+      { content: 'Both sets are in; combining them now.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks();
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-deleg2');
     expect(await taskList()).toContain(ask);
   });
 });
