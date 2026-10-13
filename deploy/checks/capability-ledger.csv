@@ -489,7 +489,7 @@ route,PATCH /api/config/providers/:id,packages/server/src/gateway/routes/config.
 route,PATCH /api/config/providers/:id/host-ram,packages/server/src/gateway/routes/config.ts:1604,built,
 route,PATCH /api/config/providers/:id/prefill-throughput,packages/server/src/gateway/routes/config.ts:1748,built,
 route,PATCH /api/config/providers/:id/response-patience,packages/server/src/gateway/routes/config.ts:1656,built,
-route,PATCH /api/config/providers/:id/unattended-budget,packages/server/src/gateway/routes/config.ts:1707,built,
+route,PATCH /api/config/providers/:id/unattended-budget,(not found in the tree),dropped(OWNER-OK),"OWNER RULING OR-LONG-JOBS 2026-10-12 (design confirmed same day): agents work long jobs for as long as they need and there is NO total-time cap. This door set the per-provider cap (providers.max_unattended_minutes, migration 164); t137 deleted the cap, the door, the dashboard field and the column (migration 186). The money guardrail is the budget alerts (t138) and a stuck job is the liveness lane's (t143)."
 route,PATCH /api/contacts/:id,packages/server/src/gateway/routes/contacts.ts:101,built,
 route,PATCH /api/credentials/:id,packages/server/src/gateway/routes/credentials.ts:88,built,
 route,PATCH /api/reports/:id,packages/server/src/gateway/routes/reports.ts:129,built,
