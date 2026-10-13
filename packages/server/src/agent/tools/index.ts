@@ -201,7 +201,8 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
     // t146: a send whose ARGUMENTS name its task (`task_id`, ./told-about-task.ts) opens its OWN
     // scope, and the person is recorded as told about that task from the row THIS send wrote.
     // The record itself refuses anyone but the owner or the row's requester. No argument, no
-    // record: never inferred from the words or from what the turn was serving.
+    // record: never inferred from the words or from what the turn was serving. Whether the send
+    // reached the person is the ledger's answer (the record checks the delivery's outcome).
     const named = (resolved.args as Record<string, unknown>)[TOLD_ABOUT_TASK_ARG];
     if (typeof named !== 'string' || named.trim() === '') {
       return withOutboundAsyncIfAbsent(intent, () => dispatchResolved(agentId, toolCall, resolved));
@@ -210,7 +211,7 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
       const r = await dispatchResolved(agentId, toolCall, resolved);
       const deliveryId = currentOutboundDeliveryId();
       const task = resolveTaskId(named);
-      if (!r.isError && deliveryId && task.ok) recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
+      if (deliveryId && task.ok) recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
       return r;
     });
   }
