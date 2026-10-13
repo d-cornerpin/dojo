@@ -13,8 +13,12 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { broadcast } from '../gateway/ws.js';
-import { PLATFORM_SENDER } from '../agent/v2/outbound.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
+
+/** `PLATFORM_SENDER` (agent/v2/outbound.ts), spelled here so this module stays a leaf: the one
+ *  status writer imports it, and outbound's graph reaches the work spine. Pinned equal by the
+ *  t138 round-2 suite (`PLATFORM_SENDER` is 'platform') and read by the dashboard. */
+const PLATFORM_SENDER = 'platform';
 
 export function ownerCardFrame(words: string, severity: 'error' | 'warning' | 'info'): void {
   try {

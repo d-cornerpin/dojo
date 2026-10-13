@@ -15,6 +15,20 @@ import { ownerCardEnded } from './owner-card-frames.js';
 export type AccountTable = 'google_accounts' | 'microsoft_accounts';
 type Notice = { at: number; words: string; dismissedAt?: number };
 
+/** Each table's statements spelled out in full (no table name is ever interpolated into SQL). */
+const SQL: Record<AccountTable, { set: string; get: string; standing: string }> = {
+  google_accounts: {
+    set: 'UPDATE google_accounts SET owner_notice = ? WHERE id = ?',
+    get: 'SELECT owner_notice FROM google_accounts WHERE id = ?',
+    standing: 'SELECT id, owner_notice FROM google_accounts WHERE owner_notice IS NOT NULL AND connected = 0',
+  },
+  microsoft_accounts: {
+    set: 'UPDATE microsoft_accounts SET owner_notice = ? WHERE id = ?',
+    get: 'SELECT owner_notice FROM microsoft_accounts WHERE id = ?',
+    standing: 'SELECT id, owner_notice FROM microsoft_accounts WHERE owner_notice IS NOT NULL AND connected = 0',
+  },
+};
+
 function noticeOf(raw: string | null | undefined): Notice | null {
   try { return raw ? JSON.parse(raw) as Notice : null; } catch { return null; }
 }
@@ -22,7 +36,7 @@ function noticeOf(raw: string | null | undefined): Notice | null {
 /** The account was benched and the owner is being told: keep the words. Returns them. */
 export function noteSignInExpired(table: AccountTable, id: string, words: string): string {
   try {
-    getDb().prepare(`UPDATE ${table} SET owner_notice = ? WHERE id = ?`).run(JSON.stringify({ at: Date.now(), words }), id);
+    getDb().prepare(SQL[table].set).run(JSON.stringify({ at: Date.now(), words }), id);
   } catch { /* the text still goes; only the lasting card is lost */ }
   return words;
 }
@@ -31,10 +45,10 @@ export function noteSignInExpired(table: AccountTable, id: string, words: string
 export function signInRestored(table: AccountTable, id: string): void {
   try {
     const db = getDb();
-    const row = db.prepare(`SELECT owner_notice FROM ${table} WHERE id = ?`).get(id) as { owner_notice: string | null } | undefined;
+    const row = db.prepare(SQL[table].get).get(id) as { owner_notice: string | null } | undefined;
     const notice = noticeOf(row?.owner_notice);
     if (!row?.owner_notice) return;
-    db.prepare(`UPDATE ${table} SET owner_notice = NULL WHERE id = ?`).run(id);
+    db.prepare(SQL[table].set).run(null, id);
     if (notice) ownerCardEnded(notice.words);
   } catch { /* a card left standing is dismissable; a failed reconnect write is not this module's */ }
 }
@@ -43,13 +57,12 @@ export function signInRestored(table: AccountTable, id: string): void {
 export function accountOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
   const db = getDb();
   return (['google_accounts', 'microsoft_accounts'] as const).flatMap((table) => {
-    const rows = db.prepare(`SELECT id, owner_notice FROM ${table} WHERE owner_notice IS NOT NULL AND connected = 0`)
-      .all() as Array<{ id: string; owner_notice: string }>;
+    const rows = db.prepare(SQL[table].standing).all() as Array<{ id: string; owner_notice: string }>;
     return rows.flatMap((r) => {
       const notice = noticeOf(r.owner_notice);
       if (!notice || notice.dismissedAt !== undefined) return [];
       const dismiss = (): void => {
-        db.prepare(`UPDATE ${table} SET owner_notice = ? WHERE id = ?`).run(JSON.stringify({ ...notice, dismissedAt: Date.now() }), r.id);
+        db.prepare(SQL[table].set).run(JSON.stringify({ ...notice, dismissedAt: Date.now() }), r.id);
       };
       return [{ words: notice.words, severity: 'critical' as const, dismiss }];
     });
