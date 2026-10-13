@@ -580,3 +580,43 @@ describe('fix round 1 — m-3: a thread\'s label is its stable identity', () => 
     expect(new LabelFacts(AGENT, []).thread(T)).toBe('agent thread 7e1f2a3b with Peer');
   });
 });
+
+describe('round 2 — delegated work cancelled midway, then re-asked (plan backwards-lifecycle)', () => {
+  it.fails('the re-asked result reaches the owner once, labelled with the request it answers — never the cancelled one', async () => {
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
+    const T1 = '7e1f2a3b-0000-4000-8000-0000000c0de1';
+    const T2 = '7e1f2a3b-0000-4000-8000-0000000c0de2';
+    const delegate = async (text: string, thread: string): Promise<string> => {
+      await submitUserMessage(AGENT, text);
+      const ask = mockDb.current!.prepare(`SELECT id, conversation_id FROM messages WHERE role = 'user' ORDER BY seq DESC LIMIT 1`).get() as { id: string; conversation_id: string };
+      openDelegationJoin({ parentWorkId: askIdForMessage(ask.id), agentId: AGENT, replyConversationId: ask.conversation_id,
+        ttlAt: Date.now() + 3_600_000, threads: [{ threadId: thread, assigneeAgent: 'peer-agent', intent: 'ASSIGN' }] });
+      return ask.id;
+    };
+    const ask1 = await delegate('Ask the peer for the HERON report.', T1);
+    // Cancelled midway: the peer gives the piece up — the join fails closed and the owner is told.
+    await deliverA2AMessage({ intent: 'FAIL', threadId: T1, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'Cannot finish: the source went offline.' });
+    // Re-asked: a new request, a new thread, and this time the answer comes back.
+    const ask2 = await delegate('Please try the HERON report again.', T2);
+    await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: T2, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'HERON report: all clear at every site.' });
+    // ...and the first thread's answer straggles in after it was given up.
+    await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: T1, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'HERON report (late): partial data.' });
+
+    const relays = mockDb.current!.prepare(
+      `SELECT content, subject_kind, root_id FROM messages WHERE role = 'assistant' AND content LIKE '%HERON report%' ORDER BY seq`).all() as
+      Array<{ content: string; subject_kind: string; root_id: string | null }>;
+    const answered2 = relays.filter((r) => r.content.includes('all clear at every site'));
+    expect(answered2, 'the re-asked result reaches the owner exactly once').toHaveLength(1);
+    expect(answered2[0]).toMatchObject({ subject_kind: 'delivered', root_id: ask2 });
+    for (const r of relays.filter((x) => x.content.includes('partial data'))) {
+      expect(r.root_id, 'a straggler is never filed under the re-ask').toBe(ask1);
+    }
+
+    await submitUserMessage(AGENT, 'So, the HERON report?');
+    const t = await turn({ content: 'All clear.' });
+    const all = wireText(t[0]);
+    expect(all.split('all clear at every site').length - 1, 'shown once').toBe(1);
+    expect(headerBefore(all, 'all clear at every site'), 'labelled with THE REQUEST it answers')
+      .toMatch(/result delivered later, for the request of [^\]]*"Please try the HERON report again\."/);
+  });
+});
