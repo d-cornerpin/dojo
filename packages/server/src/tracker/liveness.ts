@@ -230,7 +230,8 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   // The quiet runs from the newest movement, or from when the agent was handed what it holds.
   const handed = Math.max(0, ...work.map((w) => w.opened), openTurnStartedAt(a.id));
   const since = Math.max(act.lastAt ?? 0, handed);
-  if (now - since <= silentWindowMs(a.id) || ownerStopped(a.id, since)) return;
+  // No movement ever, nothing handed, no open turn: there is no instant to measure quiet from.
+  if (since === 0 || now - since <= silentWindowMs(a.id) || ownerStopped(a.id, since)) return;
   const words = silentWords(a.id, a.name, now - since, work, act);
   if (noteNoticeOnce(a.id, 'silent_notice', words, since)) {
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
