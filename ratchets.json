@@ -7745,6 +7745,20 @@
       "to": 508,
       "by": "t141 fix round 1 — video results are labelled with the request they answer",
       "why": "t141 fix round 1 (review GO-WITH-FIXES, I-3 / OR-V333-SET 6): 507 -> 508 (+1): as generation-jobs.ts — the row's P6a lineage into the two result inserts. From 508 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2847,
+      "to": 2851,
+      "by": "t141 round 3 — renderEventsBullet for the kit; the EVENTS gist's outside text neutralised",
+      "why": "2847 -> 2851 (+4): `renderEventsBullet(m, status, gist)` exported as the ONE bullet formatter (the kit's t135 N4 hand-up — the kit renders EVENTS bullets with the platform's own bytes) and the lane calls it; the gist's sender and subject pass `labelText` (re-review N-1: outside text can never break a bullet's line). From 2851 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/row-label.ts",
+      "from": "(unlisted, crossed 240 of the 400-line new-file cap)",
+      "to": 252,
+      "by": "t141 round 3 — the one label neutraliser lives with the labels it guards",
+      "why": "New in t141 (the row label + its helpers moved OUT of memory/assembler.ts), 238 lines after round 1/2 compression; round 3 adds `labelText` (the ONE neutraliser for outside text inside a label, re-review N-1, 6 lines), the `THREAD_PEER_SQL` constant whose EXPLAIN is pinned (m-c, 4 lines), the N-2 HANDLED predicate (2 lines) and their reasons. Splitting the neutraliser away from the writers it guards would make the census that holds every label writer to it span two files. Pinned decrease-only from 252."
     }
   ],
   "maxNewFileLines": 400,
@@ -7950,7 +7964,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2847,
+    "packages/server/src/memory/assembler.ts": 2851,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7968,6 +7982,7 @@
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 1180,
+    "packages/server/src/memory/row-label.ts": 252,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
