@@ -164,6 +164,44 @@ describe('§2 the deletions, counted', () => {
     expect(corpus.get('memory/recall.ts')).toMatch(/IFNULL\(subject_kind/);
   });
 
+  it('round 3 (N-1): ONE neutraliser, and every value a label writer interpolates is accounted for — both ways', () => {
+    // The neutraliser is defined once in the whole production tree.
+    const walk = (dir: string): string[] => fs.readdirSync(path.join(SRC, dir), { withFileTypes: true }).flatMap((d) => {
+      const rel = `${dir}/${d.name}`;
+      if (d.isDirectory()) return d.name === '__tests__' ? [] : walk(rel);
+      return d.name.endsWith('.ts') ? [rel] : [];
+    });
+    const defs = walk('.').filter((f) => /function labelText\(/.test(stripComments(read(f))));
+    expect(defs).toEqual(['./memory/row-label.ts']);
+    // Every `${…}` in the label module: either outside text passed through `labelText(…)`, or one of
+    // these platform-built pieces (themselves composed only of neutralised parts). A new
+    // interpolation of anything else — a raw subject, sender, name, intent — changes this list.
+    const src = stripComments(read('memory/row-label.ts'));
+    const interps: string[] = [];
+    for (let i = src.indexOf('${'); i >= 0; i = src.indexOf('${', i + 2)) {
+      let d = 0; let j = i + 2;
+      for (; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}') { if (d === 0) break; d--; } }
+      interps.push(src.slice(i + 2, j));
+    }
+    expect(interps.filter((e) => e.startsWith('labelText(')).length).toBe(16);
+    expect(interps.filter((e) => !e.startsWith('labelText('))).toEqual([
+      's.slice(0, cap)',
+      'CHANNEL_PHRASE[c.channel] ?? `${labelText(c.channel, 24)} conversation`',
+      'who', 'subj', 'subj ? `, subject "${subj}"` : \'\'', 'subj',
+      'renderInstant(r.created_at)',
+      'o.intent ? `: ${labelText(o.intent, 32)}` : \'\'',
+      'subj', 'subj ? `, subject "${subj}"` : \'\'', 'subj',
+      '(m.conversationId && facts.conversation(m.conversationId)) || \'a person\\\'s conversation\'',
+      'notice', 'where', 'asked ? `, for the request of ${asked}` : \'\'', 'asked',
+      'at.slice(0, -1)', 'subject', 'subject',
+      'o?.intent ? `: ${labelText(o.intent, 32)}` : \'\'',
+    ]);
+    // The EVENTS bullet carries outside text only through the addressee and the neutralised gist.
+    const asm = stripComments(read('memory/assembler.ts'));
+    expect(asm).toMatch(/\[\$\{eventAddressee\(m\)\}\] \$\{gist\}/);
+    expect(asm.match(/labelText\(meta\?\.(sender|emailSubject)/g) ?? []).toHaveLength(2);
+  });
+
   it('the late stamp is DELETED with its three callers: one conversation writer is left, for inbound rows', () => {
     const store = stripComments(read('memory/message-store.ts'));
     // The one `UPDATE messages SET conversation_id` left is the inbound pickup repair (a

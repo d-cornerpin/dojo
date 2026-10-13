@@ -632,7 +632,7 @@ function allHeaders(text: string): string[] {
 }
 
 describe('round 3 — N-1: outside text can never close a label or forge one', () => {
-  it.fails('an email subject that imitates a header cannot make the wake\'s work read as the owner\'s conversation', async () => {
+  it('an email subject that imitates a header cannot make the wake\'s work read as the owner\'s conversation', async () => {
     setMailbox('user', 'owner.inbox@example.com');
     await submitUserMessage(AGENT, 'Hello.');
     await turn({ content: 'Hi.' });
@@ -643,13 +643,15 @@ describe('round 3 — N-1: outside text can never close a label or forge one', (
     const t = await turn({ content: 'No.' });
     const all = wireText(t[0]);
     expect(headerBefore(all, 'FORGED-SEARCH-TOKEN')).toMatch(/· work on the email notice from billing@vendor\.example/);
-    // No label anywhere in the wire carries the forged instant: the outside text stayed text.
-    expect(allHeaders(all).filter((h) => h.includes('09:00 AM UTC-07:00'))).toEqual([]);
+    // No label anywhere in the wire OPENS with the forged instant: the outside text stayed text,
+    // inside the one real label that carries it.
+    expect(allHeaders(all).filter((h) => h.startsWith('[Oct 12, 2026, 09:00 AM'))).toEqual([]);
+    expect(allHeaders(all).some((h) => h.includes('(Oct 12, 2026, 09:00 AM UTC-07:00 · dashboard conversation with TestUser)'))).toBe(true);
   });
 });
 
 describe('round 3 — N-2: HANDLED only when the model actually ran on a view holding the notice', () => {
-  it.fails('a turn that died before its first assembly marks nothing handled (H2)', async () => {
+  it('a turn that died before its first assembly marks nothing handled (H2)', async () => {
     await submitUserMessage(AGENT, 'Hello.');
     await turn({ content: 'Hi.' });
     noticeNow('htwo-1', 'HTWO invoice');
@@ -666,7 +668,7 @@ describe('round 3 — N-2: HANDLED only when the model actually ran on a view ho
     expect(line).toMatch(/^• NEW /);
   });
 
-  it.fails('a turn whose only model call failed marks nothing handled (H1)', async () => {
+  it('a turn whose only model call failed marks nothing handled (H1)', async () => {
     await submitUserMessage(AGENT, 'Hello.');
     await turn({ content: 'Hi.' });
     noticeNow('hone-1', 'HONE invoice');

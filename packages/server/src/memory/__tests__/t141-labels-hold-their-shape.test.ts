@@ -28,7 +28,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* not observed */ } 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { getRecentMessages } from '../store.js';
-import { LabelFacts, renderRowLabel, rowSubject, eventAddressee, withSubjectKinds } from '../row-label.js';
+import { LabelFacts, renderRowLabel, rowSubject, eventAddressee, withSubjectKinds, labelText, THREAD_PEER_SQL } from '../row-label.js';
 import { startTurn } from '../../agent/v2/turn-record.js';
 import { notifyAbandonedGenerationJobs } from '../../services/generation-jobs.js';
 import { enqueueVideoJob } from '../../services/video-job-poller.js';
@@ -56,7 +56,7 @@ function expectShape(label: string, what: string): void {
 }
 
 describe('round 3 — N-1: every label writer, hostile text in every field', () => {
-  it.fails('rows of every kind keep a one-bracket, one-line label', () => {
+  it('rows of every kind keep a one-bracket, one-line label', () => {
     const db = mockDb.current!;
     db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES ('peer', ?, 'idle', datetime('now'))`).run(H);
     db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id, counterparty_name, created_at) VALUES ('c-mail', ?, 'email', 'x@example.com', ?, datetime('now'))`).run(A, H);
@@ -121,5 +121,19 @@ describe('round 3 — m-a / m-b: the result and unknown wordings are pinned', ()
     }
     expect(m, 'the failure was told in the chat').toBeDefined();
     expect(rowSubject(m!, new LabelFacts(A))).toMatch(RESULT);
+  });
+});
+
+describe('round 3 — the neutraliser and the thread lookup', () => {
+  it('labelText leaves no bracket, quote, newline or control character, and caps', () => {
+    const out = labelText(H, 40);
+    expect(out).not.toMatch(/[[\]"\u0000-\u001f\u007f]/);
+    expect(out.length).toBeLessThanOrEqual(41);
+    expect(labelText('Plain subject', 120)).toBe('Plain subject');
+  });
+
+  it('m-c: the thread label is a key lookup on ix_msg_a2a_thread_seq (188), not an agent-wide scan', () => {
+    const plan = (mockDb.current!.prepare(`EXPLAIN QUERY PLAN ${THREAD_PEER_SQL}`).all('t', 'a') as Array<{ detail: string }>).map((r) => r.detail);
+    expect(plan.join(' | ')).toMatch(/SEARCH m USING INDEX ix_msg_a2a_thread_seq \(a2a_thread_id=\?\)/);
   });
 });

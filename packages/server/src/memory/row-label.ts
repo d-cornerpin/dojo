@@ -30,13 +30,27 @@ const CHANNEL_PHRASE: Record<string, string> = {
   email: 'email thread', teams: 'Teams chat', sms: 'SMS conversation', phone: 'phone call',
 };
 
+/** Outside text inside a label is INERT: whatever a subject, a name or a request says, it can never
+ *  end the label, open another, add a quote, or break the line (re-review N-1). The one neutraliser:
+ *  every value from a message, a remote party or a setting passes it before a label carries it. */
+export function labelText(raw: unknown, cap: number): string {
+  const s = String(raw ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/\[/g, '(').replace(/\]/g, ')').replace(/"/g, "'");
+  return s.length > cap ? `${s.slice(0, cap)}…` : s;
+}
+
 function emailSubjectOf(inboundMeta: string | null | undefined): string | null {
   if (!inboundMeta) return null;
   try {
     const s = (JSON.parse(inboundMeta) as { emailSubject?: unknown }).emailSubject;
-    return typeof s === 'string' && s.trim() ? s.trim().slice(0, 120) : null;
+    return typeof s === 'string' && s.trim() ? labelText(s, 120) : null;
   } catch { return null; }
 }
+
+/** A thread's FIRST other-agent sender. `+m.agent_id` keeps the planner on ix_msg_a2a_thread_seq (188)
+ *  — a key lookup — instead of an agent-wide scan (re-review m-c; EXPLAIN pinned in a test). */
+export const THREAD_PEER_SQL = `SELECT a.name FROM messages m JOIN agents a ON a.id = m.source_agent_id
+  WHERE m.a2a_thread_id = ? AND +m.agent_id = ? AND m.source_agent_id <> m.agent_id ORDER BY m.seq ASC LIMIT 1`;
 
 /** Per-assembly lookups, cached: one keyed read per conversation / thread / turn / request.
  *  Every one reads the STORE, never the tail in hand, so a label is a function of the row. */
@@ -55,8 +69,8 @@ export class LabelFacts {
       const c = db.prepare('SELECT channel, counterparty_id, counterparty_name FROM conversations WHERE id = ?')
         .get(conversationId) as { channel: string; counterparty_id: string | null; counterparty_name: string | null } | undefined;
       if (c) {
-        const who = c.counterparty_id === 'owner' ? getOwnerName() : (c.counterparty_name ?? c.counterparty_id ?? 'someone');
-        label = `${CHANNEL_PHRASE[c.channel] ?? `${c.channel} conversation`} with ${who}`;
+        const who = labelText(c.counterparty_id === 'owner' ? getOwnerName() : (c.counterparty_name ?? c.counterparty_id ?? 'someone'), 64);
+        label = `${CHANNEL_PHRASE[c.channel] ?? `${labelText(c.channel, 24)} conversation`} with ${who}`;
         if (c.channel === 'email') {
           // A mail thread is named by its subject — the one thing that tells two threads from
           // one sender apart. Read off the thread's FIRST inbound row, which never changes.
@@ -80,12 +94,9 @@ export class LabelFacts {
     if (hit) return hit;
     let peer: string | null = null;
     try {
-      peer = (getDb().prepare(`SELECT a.name FROM messages m JOIN agents a ON a.id = m.source_agent_id
-                                 WHERE m.a2a_thread_id = ? AND m.agent_id = ? AND m.source_agent_id <> m.agent_id
-                                 ORDER BY m.seq ASC LIMIT 1`)
-        .get(threadId, this.agentId) as { name: string } | undefined)?.name ?? null;
+      peer = (getDb().prepare(THREAD_PEER_SQL).get(threadId, this.agentId) as { name: string } | undefined)?.name ?? null;
     } catch { /* best-effort */ }
-    const label = `agent thread ${threadId.slice(0, 8)} with ${peer ?? 'another agent'}`;
+    const label = `agent thread ${labelText(threadId.slice(0, 8), 8)} with ${labelText(peer ?? 'another agent', 64)}`;
     this.threads.set(threadId, label);
     return label;
   }
@@ -102,7 +113,7 @@ export class LabelFacts {
         { channel: string | null; sender_id: string | null; inbound_meta: string | null } | undefined;
       if (n) {
         const subj = emailSubjectOf(n.inbound_meta);
-        label = `the ${n.channel ?? 'channel'} notice from ${(n.sender_id ?? 'an unknown sender').slice(0, 64)}${subj ? `, subject "${subj}"` : ''}`;
+        label = `the ${labelText(n.channel ?? 'channel', 24)} notice from ${labelText(n.sender_id ?? 'an unknown sender', 64)}${subj ? `, subject "${subj}"` : ''}`;
       }
     } catch { /* best-effort */ }
     this.wakes.set(turnNumber, label);
@@ -115,8 +126,7 @@ export class LabelFacts {
       const r = getDb().prepare(`SELECT r.created_at, r.content FROM messages m JOIN messages r ON r.id = m.root_id
                                    WHERE m.id = ?`).get(resultMessageId) as { created_at: number; content: string } | undefined;
       if (!r) return null;
-      const words = r.content.replace(/\s+/g, ' ').trim();
-      return `${renderInstant(r.created_at)}: "${words.length > 60 ? `${words.slice(0, 60)}…` : words}"`;
+      return `${renderInstant(r.created_at)}: "${labelText(r.content, 60)}"`;
     } catch { return null; }
   }
 }
@@ -126,17 +136,17 @@ export function rowSubject(m: LabelledMessage, facts: LabelFacts): string {
   const o = m.origin;
   if (m.role === 'user') {
     if (o?.kind === 'agent') return facts.thread(m.a2aThreadId ?? o.threadId);
-    if (o?.kind === 'engine') return `engine event${o.intent ? `: ${o.intent}` : ''}`;
+    if (o?.kind === 'engine') return `engine event${o.intent ? `: ${labelText(o.intent, 32)}` : ''}`;
     const subj = emailSubjectOf(m.inboundMeta);
     if (o?.kind === 'user' && o.authorized === false) {
       // A notice addressed to the owner's inbox: never a conversation the agent is in.
-      return `${o.channel ?? 'channel'} notice from ${o.senderName ?? 'an unknown sender'} (not addressed to you)`
+      return `${labelText(o.channel ?? 'channel', 24)} notice from ${labelText(o.senderName ?? 'an unknown sender', 64)} (not addressed to you)`
         + (subj ? `, subject "${subj}"` : '');
     }
     const conv = m.conversationId ? facts.conversation(m.conversationId) : null;
     if (conv) return conv;
-    if (o?.relation === 'owner') return `dashboard conversation with ${getOwnerName()}`;
-    return `${o?.channel ?? 'a'} conversation with ${o?.senderName ?? 'someone'}${subj ? `, subject "${subj}"` : ''}`;
+    if (o?.relation === 'owner') return `dashboard conversation with ${labelText(getOwnerName(), 64)}`;
+    return `${labelText(o?.channel ?? 'a', 24)} conversation with ${labelText(o?.senderName ?? 'someone', 64)}${subj ? `, subject "${subj}"` : ''}`;
   }
   switch (subjectOf(m)) {
     case 'conv': return (m.conversationId && facts.conversation(m.conversationId)) || 'a person\'s conversation (record missing)';
@@ -206,15 +216,17 @@ export function servedConversationId(agentId: string, turnContext: PromptTurnCon
   } catch { return null; }
 }
 
-/** EVENTS' HANDLED line: the trigger row (`seq`) of the last FINISHED turn that SHOWS EVENTS (a
- *  person's turn or a notice wake). A trigger is written before its turn assembles, so a notice
- *  at or before it was in view; one landing mid-turn stays NEW (review I-2). Sequence, never the
- *  clock; a turn with no recorded trigger marks nothing (the safe direction). */
+/** EVENTS' HANDLED line: the trigger (`seq`) of the last finished turn that SHOWS EVENTS and whose
+ *  model actually RAN on that view — it answered, declined, or wrote its own rows; a turn that died
+ *  before assembly or whose calls all failed saw nothing (re-review N-2). A notice at or before the
+ *  trigger was in that view; one landing mid-turn stays NEW. Sequence, never the clock. */
 export function lastViewedTriggerSeq(agentId: string): number | null {
   try {
     const row = getDb().prepare(
       `SELECT m.seq FROM turns t JOIN messages m ON m.id = t.source_message_id
         WHERE t.agent_id = ? AND t.ended_at IS NOT NULL AND (t.kind IS NULL OR t.kind = 'user')
+          AND (t.exit_reason IN ('answered', 'no_reply_intended') OR EXISTS (SELECT 1 FROM messages o
+                 WHERE o.agent_id = t.agent_id AND o.turn_number = t.turn_number AND o.role IN ('assistant', 'tool')))
         ORDER BY t.turn_number DESC LIMIT 1`,
     ).get(agentId) as { seq: number } | undefined;
     return row?.seq ?? null;
@@ -227,7 +239,7 @@ export function lastViewedTriggerSeq(agentId: string): number | null {
 export function eventAddressee(m: Message): string {
   const o = m.origin;
   if (o?.kind === 'user') {
-    return `${(o.channel ?? 'channel').slice(0, 24)} notice TO THE OWNER, from ${(o.senderName ?? 'an unknown sender').slice(0, 64)}`;
+    return `${labelText(o.channel ?? 'channel', 24)} notice TO THE OWNER, from ${labelText(o.senderName ?? 'an unknown sender', 64)}`;
   }
   let from = 'the platform';
   if (m.sourceAgentId) {
@@ -236,5 +248,5 @@ export function eventAddressee(m: Message): string {
         ?? 'another agent';
     } catch { from = 'another agent'; }
   }
-  return `TO YOU, from ${from.slice(0, 64)}${o?.intent ? `: ${o.intent.slice(0, 32)}` : ''}`;
+  return `TO YOU, from ${labelText(from, 64)}${o?.intent ? `: ${labelText(o.intent, 32)}` : ''}`;
 }

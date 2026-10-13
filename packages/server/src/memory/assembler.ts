@@ -13,7 +13,7 @@ import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js'
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import {
-  eventAddressee, labelRows, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
+  eventAddressee, labelRows, labelText, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
@@ -599,8 +599,9 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   } catch {
     return null;
   }
-  const sender = (meta?.sender ?? '').toString().trim();
-  const subject = (meta?.emailSubject ?? '').toString().trim();
+  // t141 round 3: outside text, rendered inert — a subject can never break the bullet's line.
+  const sender = labelText(meta?.sender ?? '', 254);
+  const subject = labelText(meta?.emailSubject ?? '', 140);
   // Nothing structured to lean on, let the caller use its raw-slice fallback.
   if (!sender && !subject) return null;
   // The mailbox watchers include a "Preview: <snippet>" line in the body; lift it as a
@@ -609,7 +610,7 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   const preview = previewMatch ? previewMatch[1].replace(/\s+/g, ' ').trim() : '';
   const parts: string[] = [];
   if (sender) parts.push(`from ${sender}`);
-  if (subject) parts.push(`subject: "${subject.slice(0, 140)}"`);
+  if (subject) parts.push(`subject: "${subject}"`);
   if (preview) parts.push(preview.slice(0, 160));
   return parts.join(' | ');
 }
@@ -2168,14 +2169,17 @@ function renderEventsLane(agentId: string, awarenessEvents: Message[]): string |
     const o = m.origin;
     const rawContent = typeof m.content === 'string' ? m.content : '';
     const body = rawContent.replace(/^\s*\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
-    const label = eventAddressee(m);
     const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
-    const gist = structured ?? body.slice(0, gistCap);
-    const at = renderMessageTimeStamp(m.createdAt);
     const status = seenThrough !== null && m.rowid != null && m.rowid <= seenThrough ? 'HANDLED' : 'NEW';
-    return `• ${status} ${at ?? ''}[${label}] ${gist}`;
+    return renderEventsBullet(m, status, structured ?? body.slice(0, gistCap));
   });
   return renderEventsBlock(lines);
+}
+
+/** One EVENTS bullet, from the real formatter: `• <status> [<instant>][<addressee>] <gist>`.
+ *  Exported so the kit renders bullets with the platform's own bytes (t135 N4 hand-up). */
+export function renderEventsBullet(m: Message, status: 'NEW' | 'HANDLED', gist: string): string {
+  return `• ${status} ${renderMessageTimeStamp(m.createdAt) ?? ''}[${eventAddressee(m)}] ${gist}`;
 }
 
 /** Derived by CALLING the renderer with every declared cap flooded at once. */
