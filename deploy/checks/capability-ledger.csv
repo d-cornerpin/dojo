@@ -362,6 +362,7 @@ route,GET /api/config/identity/:file,packages/server/src/gateway/routes/config.t
 route,GET /api/config/models,packages/server/src/gateway/routes/config.ts:1034,built,
 route,GET /api/config/openrouter/credits,packages/server/src/gateway/routes/config.ts:2765,built,
 route,GET /api/config/openrouter/threshold,packages/server/src/gateway/routes/config.ts:2831,built,
+route,GET /api/config/owner-notices,packages/server/src/gateway/routes/config.ts:2806,built,t138 rounds 3-6: the owner cards still standing re-derived from each condition's own record
 route,GET /api/config/pricing-sync/status,packages/server/src/gateway/routes/config.ts:1207,built,
 route,GET /api/config/providers,packages/server/src/gateway/routes/config.ts:458,built,
 route,GET /api/config/providers/:id,packages/server/src/gateway/routes/config.ts:467,built,
@@ -514,6 +515,7 @@ route,POST /api/config/models/check-usage,packages/server/src/gateway/routes/con
 route,POST /api/config/models/disable,packages/server/src/gateway/routes/config.ts:2246,built,
 route,POST /api/config/models/enable,packages/server/src/gateway/routes/config.ts:2200,built,
 route,POST /api/config/openrouter/threshold,packages/server/src/gateway/routes/config.ts:2944,built,
+route,POST /api/config/owner-notices/dismiss,packages/server/src/gateway/routes/config.ts:2812,built,t138 rounds 3-6: the card's X; stamps the incident's own record and ends the card in every tab
 route,POST /api/config/pricing-sync/run,packages/server/src/gateway/routes/config.ts:1215,built,
 route,POST /api/config/providers,packages/server/src/gateway/routes/config.ts:480,built,
 route,POST /api/config/providers/:id/add-model,packages/server/src/gateway/routes/config.ts:1330,built,
