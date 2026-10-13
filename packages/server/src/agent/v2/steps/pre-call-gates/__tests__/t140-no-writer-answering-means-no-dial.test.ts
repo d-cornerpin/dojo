@@ -58,7 +58,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
-import { __resetSummaryWriterHealthForTests } from '../../../../../memory/summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, noteSummaryWriterOutcome } from '../../../../../memory/summary-writer-health.js';
 import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/uncondensed-placeholder.js';
 import { advance, initState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
@@ -127,4 +127,16 @@ describe('t140 round 6 — no writer answering: the gate does not dial', () => {
     expect(summariser.calls.length, 'a person\'s new turn retried the writers').toBeGreaterThan(0);
     expect(hasUncondensedPlaceholders(AGENT), 'no note left once a writer answered').toBe(false);
   });
+
+  it('the routine background condense with rows leaving the view: no writer answering, nothing dialled — the rows stay in view until one answers', async () => {
+    db().prepare("DELETE FROM summary_messages").run();
+    db().prepare("DELETE FROM summaries").run();
+    for (let i = 0; i < 600; i++) {
+      insertMessage({ agentId: AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner', senderId: i % 2 === 0 ? 'owner' : null, content: `[more ${i}] Dock open? Yes.`, turnNumber: 30 + Math.floor(i / 2) });
+    }
+    for (const w of WRITERS) noteSummaryWriterOutcome(w, false);   // every writer failed a moment ago
+    await gate(600, 2);   // a tool-loop iteration: no person has spoken since
+    expect(summariser.calls, 'no writer is answering, so nothing is dialled').toEqual([]);
+  });
 });
+
