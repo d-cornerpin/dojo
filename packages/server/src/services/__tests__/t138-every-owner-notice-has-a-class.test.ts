@@ -257,7 +257,8 @@ describe('the alert latches have ONE writer each', () => {
   });
 
   it('the budget latches live only in the budget module', () => {
-    expect(writersOf(/alert_(50|75|90)_sent/)).toEqual(['costs/budget.ts']);
+    // r6: costs/budget-cards.ts (the window and the card) READS them; budget.ts is the one writer.
+    expect(writersOf(/alert_(50|75|90)_sent/)).toEqual(['costs/budget-cards.ts', 'costs/budget.ts']);
     expect(migrationsTouching(/alert_(50|75|90)_sent/)).toEqual(['004_phase4.sql', '190_owner_notice_latches.sql']);
   });
 });

@@ -221,7 +221,7 @@ const ageLatches = (seconds: number): void => {
 };
 
 describe('C1: a budget card is the CURRENT window\'s incident', () => {
-  it.fails('P1: a new 50% crossing after an earlier 90% day keeps its card through the next record', async () => {
+  it('P1: a new 50% crossing after an earlier 90% day keeps its card through the next record', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 9.2); // day 1: 90%
@@ -235,7 +235,7 @@ describe('C1: a budget card is the CURRENT window\'s incident', () => {
     expect((await m.cards()).map((c) => c.words)).toEqual([card]);
   });
 
-  it.fails('window turnover is the clear: the scheduler tick ends the card live; the next crossing is a new text and card', async () => {
+  it('window turnover is the clear: the scheduler tick ends the card live; the next crossing is a new text and card', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 5.1);
@@ -254,7 +254,7 @@ describe('C1: a budget card is the CURRENT window\'s incident', () => {
 });
 
 describe('I1: only the Healer working ends "Healer broken"', () => {
-  it.fails('P2: three failing watchdog cycles are ONE text; a clean Healer turn ends the card; breaking again texts again', async () => {
+  it('P2: three failing watchdog cycles are ONE text; a clean Healer turn ends the card; breaking again texts again', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
@@ -277,7 +277,7 @@ describe('I1: only the Healer working ends "Healer broken"', () => {
 });
 
 describe('I2: a clock is never evidence of recovery', () => {
-  it.fails('P3: the cooldown sweep leaves the stuck card standing; real recovery ends it', async () => {
+  it('P3: the cooldown sweep leaves the stuck card standing; real recovery ends it', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
@@ -292,7 +292,7 @@ describe('I2: a clock is never evidence of recovery', () => {
 });
 
 describe('I3: a card whose subject is gone leaves, live, and never shows a raw id', () => {
-  it.fails('P5: a stuck agent that is terminated, and one that is purged', async () => {
+  it('P5: a stuck agent that is terminated, and one that is purged', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
@@ -313,7 +313,7 @@ describe('I3: a card whose subject is gone leaves, live, and never shows a raw i
     expect(after.some((c) => c.words.startsWith('ag2 '))).toBe(false);
   });
 
-  it.fails('a paused agent that is purged: its card leaves live', async () => {
+  it('a paused agent that is purged: its card leaves live', async () => {
     const m = await boot();
     let p = false;
     for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
@@ -322,7 +322,7 @@ describe('I3: a card whose subject is gone leaves, live, and never shows a raw i
     expect(ended()).toContain(card);
   });
 
-  it.fails('P6: a failing Gmail account that is removed, and one whose watching is turned off', async () => {
+  it('P6: a failing Gmail account that is removed, and one whose watching is turned off', async () => {
     const m = await boot();
     const a = m.googleAccounts.insertGoogleAccount({ kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
     const b = m.googleAccounts.insertGoogleAccount({ kind: 'user', email: 'two@example.test', connected: true, watchEmail: true });
@@ -341,7 +341,7 @@ describe('I3: a card whose subject is gone leaves, live, and never shows a raw i
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('M3: an expired Google account that is deleted: its card leaves live', async () => {
+  it('M3: an expired Google account that is deleted: its card leaves live', async () => {
     const m = await boot();
     const acc = m.googleAccounts.insertGoogleAccount({
       kind: 'agent', email: 'helper@example.test', connected: true,
@@ -356,7 +356,7 @@ describe('I3: a card whose subject is gone leaves, live, and never shows a raw i
 });
 
 describe('M1: on the real engine pause path the owner card is the one card', () => {
-  it.fails('the engine\'s own pause notice carries the owner card\'s words (the dashboard folds them into one)', () => {
+  it('the engine\'s own pause notice carries the owner card\'s words (the dashboard folds them into one)', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../../agent/v2/recovery.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
     expect(src).not.toContain("'Agent paused after repeated errors.");

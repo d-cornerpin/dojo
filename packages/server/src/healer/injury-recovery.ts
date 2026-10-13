@@ -696,7 +696,7 @@ export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'eviden
   // gets full attention again (don't carry a "muted Healer" state across
   // a successful turn).
   healerSuppressedUntil.delete(agentId);
-  told.ownerConditionsOnRecovery(agentId);
+  if (basis === 'evidence') told.ownerConditionsOnRecovery(agentId); // a clock is not evidence (t114 U1)
 
   // T82c: a clean recovery ends the current doomed chain — the next injury (of any class)
   // starts the session-reset guard's count at zero again, same reset point

@@ -1,4 +1,5 @@
 import { getDb } from '../db/connection.js';
+import { ownerCardEnded } from './owner-card-frames.js';
 
 // ── THE OWNER'S CARD FOR A FAILING WATCHER, AND ITS RECORD (t138 rounds 3-5) ──
 //
@@ -10,6 +11,11 @@ import { getDb } from '../db/connection.js';
 // loses its card, and an account that recovered while the server was down clears it on its first
 // good poll (the watchers consult `watcherFailingOnRecord`). One account's success never clears
 // another's failure.
+//
+// Round 6 (review I3): the card's SUBJECT is the watched account. It stands only while that
+// account still exists and is still watched (Teams: the watching Microsoft account still enabled
+// with Teams on); when the subject goes, the entry is removed and its card ends, live — the
+// account tables' writers call `reconcileWatcherCards` after every change.
 
 type Name = 'gmail' | 'outlook' | 'teams';
 type Entry = { at: number; words: string; dismissedAt?: number };
@@ -54,10 +60,36 @@ export function clearFailure(name: Name, account: string): Entry | null {
   return told;
 }
 
+/** Is the watched subject still there and still watched? */
+function subjectStands(name: Name, account: string): boolean {
+  const db = getDb();
+  if (name === 'gmail') return !!db.prepare('SELECT 1 FROM google_accounts WHERE id = ? AND watch_email = 1').get(account);
+  if (name === 'outlook') return !!db.prepare('SELECT 1 FROM microsoft_accounts WHERE id = ? AND watch_email = 1').get(account);
+  const ms = db.prepare("SELECT enabled, enabled_services FROM microsoft_accounts WHERE kind = 'agent' ORDER BY position LIMIT 1")
+    .get() as { enabled: number; enabled_services: string | null } | undefined;
+  if (!ms || !ms.enabled) return false;
+  try { return (JSON.parse(ms.enabled_services ?? '{}') as { teams?: boolean }).teams !== false; } catch { return true; }
+}
+
+/** After any change to the watched accounts: an entry whose subject is gone is removed, and its
+ *  card leaves every open dashboard now. */
+export function reconcileWatcherCards(): void {
+  try {
+    for (const name of Object.keys(LATCH_KEY) as Name[]) {
+      const record = readRecord(name);
+      const gone = Object.entries(record).filter(([account]) => !subjectStands(name, account));
+      if (gone.length === 0) continue;
+      for (const [account] of gone) delete record[account];
+      writeRecord(name, record);
+      for (const [, told] of gone) if (told.dismissedAt === undefined) ownerCardEnded(told.words);
+    }
+  } catch { /* best-effort: the GET still filters by the subject */ }
+}
+
 /** The failing-watcher owner cards a dashboard shows on load (one per account still failing). */
 export function watcherOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
   return (Object.keys(LATCH_KEY) as Name[]).flatMap((name) => Object.entries(readRecord(name)).flatMap(([account, told]) => {
-    if (told.dismissedAt !== undefined) return [];
+    if (told.dismissedAt !== undefined || !subjectStands(name, account)) return [];
     const dismiss = (): void => writeRecord(name, { ...readRecord(name), [account]: { ...told, dismissedAt: Date.now() } });
     return [{ words: told.words, severity: 'critical' as const, dismiss }];
   }));

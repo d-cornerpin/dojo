@@ -9,6 +9,8 @@ import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
 } from './error-loop-state.js';
 import { pausedWords, closePausedCards } from './agent-owner-cards.js';
+import { ownerConditionsOnHealthyWork } from '../healer/owner-notices.js';
+export { pausedWords };
 
 const logger = createLogger('agent-errors');
 
@@ -113,6 +115,7 @@ export function recordError(agentId: string): boolean {
 export function clearErrors(agentId: string): void {
   clearErrorLoop(agentId);
   closePausedCards(agentId); // a clean turn: the agent works again, so the owner's card for the trip ends
+  ownerConditionsOnHealthyWork(agentId); // and if it is the Healer, "Healer broken" ends (t138 r6)
 }
 
 /**

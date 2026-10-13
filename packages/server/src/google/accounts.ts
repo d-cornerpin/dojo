@@ -22,7 +22,8 @@ import { patchAssignments } from '../db/patch.js';
 import { isSealedText, openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
-import { noteSignInExpired, signInRestored } from '../services/account-owner-cards.js';
+import { noteSignInExpired, signInRestored, accountRemoved } from '../services/account-owner-cards.js';
+import { reconcileWatcherCards } from '../services/watcher-owner-cards.js';
 
 const logger = createLogger('google-accounts');
 
@@ -324,13 +325,16 @@ export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccoun
   bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
   // t138 r4: a restored sign-in (probe or Settings) ends the owner's "connection expired" card.
   if (patch.connected === true) signInRestored('google_accounts', id);
+  reconcileWatcherCards(); // r6: an unwatched account's watcher card ends
 }
 
 /** t138 r4: the owner is told this account's sign-in expired; keep the words for his card. */
 export const noteGoogleSignInExpired = (id: string, words: string): string => noteSignInExpired('google_accounts', id, words);
 
 export function deleteGoogleAccount(id: string): void {
+  accountRemoved('google_accounts', id); // r6: the cards it is the subject of end, live
   getDb().prepare('DELETE FROM google_accounts WHERE id = ?').run(id);
+  reconcileWatcherCards();
   bumpToolConfigGeneration(); // FA-TS1: removing an account narrows the surface
 }
 

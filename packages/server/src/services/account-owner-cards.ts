@@ -53,6 +53,14 @@ export function signInRestored(table: AccountTable, id: string): void {
   } catch { /* a card left standing is dismissable; a failed reconnect write is not this module's */ }
 }
 
+/** The account is being deleted: its expired-sign-in card ends, live (t138 r6, review M3). */
+export function accountRemoved(table: AccountTable, id: string): void {
+  try {
+    const notice = noticeOf((getDb().prepare(SQL[table].get).get(id) as { owner_notice: string | null } | undefined)?.owner_notice);
+    if (notice && notice.dismissedAt === undefined) ownerCardEnded(notice.words);
+  } catch { /* best-effort */ }
+}
+
 /** The expired-sign-in owner cards a dashboard shows on load: benched, told, not dismissed. */
 export function accountOwnerCards(): Array<{ words: string; severity: 'critical'; dismiss: () => void }> {
   const db = getDb();

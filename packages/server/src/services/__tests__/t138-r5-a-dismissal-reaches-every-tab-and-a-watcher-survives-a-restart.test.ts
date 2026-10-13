@@ -180,10 +180,16 @@ const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
 const liveCards = () => frames().filter((f) => f.severity !== 'info');
 
 const ended = (): string[] => frames().filter((f) => f.severity === 'info').map((f) => f.error);
-const failing = (m: Awaited<ReturnType<typeof boot>>, accountId: string): boolean => m.watcher.maybeAlertOnFailure({
+/** A watched Gmail account (r6: a watcher card's subject must exist and be watched). */
+const watched = (m: Awaited<ReturnType<typeof boot>>, id: string): void => {
+  if (!m.googleAccounts.getGoogleAccount(id)) {
+    m.googleAccounts.insertGoogleAccount({ id, kind: id === 'acct-b' ? 'user' : 'agent', email: `${id}@example.test`, connected: true, watchEmail: true });
+  }
+};
+const failing = (m: Awaited<ReturnType<typeof boot>>, accountId: string): boolean => (watched(m, accountId), m.watcher.maybeAlertOnFailure({
   name: 'gmail', accountId, consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
   lastError: 'boom', alreadyAlerted: false,
-} as Parameters<typeof m.watcher.maybeAlertOnFailure>[0]);
+} as Parameters<typeof m.watcher.maybeAlertOnFailure>[0]));
 
 describe('ruling 1: a dismissal reaches every open tab', () => {
   it('the dismiss route sends the card\'s END on the owner-card frame path', async () => {

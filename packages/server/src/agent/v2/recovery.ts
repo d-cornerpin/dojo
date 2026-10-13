@@ -23,7 +23,7 @@ import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
-import { recordError, AgentError } from '../errors.js';
+import { recordError, AgentError, pausedWords } from '../errors.js';
 import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
@@ -872,7 +872,7 @@ async function recordInjury(
   const userMsg = isRateLimit
     ? 'Model is rate-limited. Retrying automatically — give it a moment.'
     : paused
-      ? 'Agent paused after repeated errors. Open the Vitals page to investigate, or resume from its detail page.'
+      ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one (t138 r6)
       : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
   broadcast({
     type: 'chat:error',

@@ -44,6 +44,7 @@ import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { deleteAllForAgent, deleteAgentBusRowsFor } from '../memory/message-store.js';
 import { deleteAllWorkForAgent } from '../work/purge-sweep.js';
+import { agentPurgedForOwner } from './agent-owner-cards.js';
 
 /** What the sweep removed, for the log line and the route's response. */
 export interface PurgeCounts {
@@ -73,6 +74,10 @@ export function purgeAgentRows(agentId: string): PurgeCounts {
   let counts: PurgeCounts = { messages: 0, workRows: 0, orphanedChildren: 0 };
 
   withUnit(() => {
+    // 0. Every owner card this agent is the subject of ends, live, while its rows and name can
+    //    still be read (t138 r6: a card whose subject is gone leaves; it never shows a raw id).
+    agentPurgedForOwner(agentId);
+
     // 1. CHILDREN SURVIVE, the link does not. Before the agent row goes, or the self-FK raises.
     const orphanedChildren = db.prepare(
       'UPDATE agents SET parent_agent = NULL WHERE parent_agent = ?',

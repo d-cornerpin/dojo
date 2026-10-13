@@ -15,8 +15,15 @@ const logger = createLogger('scheduler-background-checks');
  *  open is the defect it replaces. It decides for itself whether it is due (`BALANCE_CHECK_EVERY_MS`). */
 let lastBalanceKick: Promise<void> = Promise.resolve();
 
+/** Settles once the balance module has LOADED (not once its check is done): the other kicks
+ *  load their modules after it, never beside it — two concurrent first loads of one module
+ *  graph can stall each other. */
+let balanceModuleLoaded: Promise<void> = Promise.resolve();
+
 export function kickBalanceCheck(): void {
-  lastBalanceKick = import('../costs/provider-balance-check.js')
+  const loaded = import('../costs/provider-balance-check.js');
+  balanceModuleLoaded = loaded.then(() => undefined, () => undefined);
+  lastBalanceKick = loaded
     .then(async (m) => { await m.maybeCheckProviderBalances(); })
     .catch((err) => {
       logger.error('Provider balance check could not start', { error: err instanceof Error ? err.message : String(err) });
@@ -25,11 +32,14 @@ export function kickBalanceCheck(): void {
 
 // r4: while the owner's low-memory card stands, the tick re-measures memory so its recovery
 // ends the card (and re-arms the text) without waiting for the next spawn attempt. Nothing is
-// measured while memory has not been reported low.
+// measured while memory has not been reported low. r6: the same kick ends budget cards whose
+// window has turned over (the budget's incident is its window).
 let lastMemoryKick: Promise<void> = Promise.resolve();
 
 export function kickMemoryRecheck(): void {
-  lastMemoryKick = import('../services/memory-low-notice.js').then(async (m) => {
+  lastMemoryKick = balanceModuleLoaded.then(() => import('../services/memory-low-notice.js')).then(async (m) => {
+    // r6: a budget whose window turned over has no live incident; its card leaves now.
+    (await import('../costs/budget-cards.js')).endTurnedOverBudgetCards();
     if (!m.memoryLowStanding()) return;
     const { getResourceInfo } = await import('../services/resource-monitor.js');
     m.noteCriticalMemory(getResourceInfo().memory.free);

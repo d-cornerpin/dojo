@@ -99,7 +99,7 @@ beforeEach(() => {
 });
 
 describe('reconnect reconciles every owner card', () => {
-  it.fails('a live-arrived card whose END was missed leaves when the reconnect\'s GET no longer lists it', async () => {
+  it('a live-arrived card whose END was missed leaves when the reconnect\'s GET no longer lists it', async () => {
     const view = render(tree());
     await waitFor(() => expect(server.gets).toBe(1));
     emit('chat:error', { agentId: 'platform', error: BUDGET, severity: 'warning', retryable: false });

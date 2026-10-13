@@ -241,8 +241,9 @@ describe('ruling 1: the remaining cards last too', () => {
 
   it('a watcher failing: a card on load; a restart mid-failure does not text again; recovery ends it', async () => {
     let m = await boot();
+    m.googleAccounts.insertGoogleAccount({ id: 'acct-a', kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
     const failing = (): boolean => m.watcher.maybeAlertOnFailure({
-      name: 'gmail', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      name: 'gmail', accountId: 'acct-a', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
       lastError: 'boom', alreadyAlerted: false,
     });
     expect(failing()).toBe(true);
@@ -252,7 +253,7 @@ describe('ruling 1: the remaining cards last too', () => {
     const shown = await m.cards();
     expect(shown).toHaveLength(1);
     expect(texts()[0]).toContain(shown[0].words);
-    m.watcher.maybeAlertOnRecovery({ name: 'gmail', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
+    m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: false, totalNotificationsSinceFailure: 0 });
     expect(texts(), 'the all-clear still reaches him after the restart').toHaveLength(2);
     expect(await m.cards()).toEqual([]);
   });
@@ -288,13 +289,18 @@ describe('ruling 2: a card leaves the moment the server records its condition en
     expect(ended()).toEqual([words]);
   });
 
-  it('a budget whose spend dropped back under the line, and a budget whose limit the owner changed', async () => {
+  it('a budget whose window turned over (r6: spend moving inside the window ends nothing), and a budget whose limit the owner changed', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 9.2);
     const words = (await m.cards())[0].words;
     db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run(); // spend ages out
     (await import('../../costs/tracker.js')).invalidateDailySpendCache();
+    m.budget.checkBudget('ag', 0.01);
+    expect(ended(), 'inside the window the incident stands (review C1)').toEqual([]);
+    for (const f of ['alert_50_sent', 'alert_75_sent', 'alert_90_sent']) {
+      db().prepare(`UPDATE budgets SET ${f} = ${f} - 2 * 86400 WHERE ${f} > 0`).run();
+    }
     m.budget.checkBudget('ag', 0.01);
     expect(ended()).toEqual([words]);
     expect(await m.cards()).toEqual([]);
@@ -346,7 +352,7 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     expect((await m.cards()).filter((c) => c.words.includes('Healer agent is missing'))).toEqual([]);
   });
 
-  it('the Healer\'s own watchdog notices it healthy again: "broken" ends, live', async () => {
+  it('r6: the watchdog resetting the Healer is NOT recovery; its completing a healthy turn ends "broken", live', async () => {
     const m = await boot();
     vi.useFakeTimers();
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
@@ -354,9 +360,10 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     m.healer.onAgentInjured('hl', 'provider down');
     const words = (await m.cards()).find((c) => c.words.includes('Healer agent is broken'))?.words;
     expect(words).toBeDefined();
-    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'hl'").run(); // it came back by itself
     m.healerAgent.startHealerSelfWatchdog();
-    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    await vi.advanceTimersByTimeAsync(6 * 60_000); // reset to idle
+    expect(ended()).not.toContain(words);
+    m.errors.clearErrors('hl'); // a healthy Healer turn
     expect(ended()).toContain(words);
   });
 

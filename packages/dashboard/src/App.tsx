@@ -286,15 +286,19 @@ export const GlobalAlerts = () => {
     },
   }), [addActionToast]);
 
-  const fromServer = useRef<Set<string>>(new Set());
+  // Every owner card on screen — from an earlier load OR a live frame whose END this tab missed
+  // while away — is reconciled against what the server says still stands (t138 r6, review M2).
+  const onScreen = useRef(toast.toasts);
+  onScreen.current = toast.toasts;
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
     let current = true;
     void api.request<Array<{ words: string; severity: string }>>('/config/owner-notices').then((r) => {
       if (!current || !r.ok || !Array.isArray(r.data)) return;
-      const standing = new Set(r.data.map((c) => c.words));
-      for (const words of fromServer.current) if (!standing.has(words)) removeToastByKey(`owner-alert:${words}`);
-      fromServer.current = standing;
+      const standing = new Set(r.data.map((c) => `owner-alert:${c.words}`));
+      for (const t of onScreen.current) {
+        if (t.dedupeKey?.startsWith('owner-alert:') && !standing.has(t.dedupeKey)) removeToastByKey(t.dedupeKey);
+      }
       for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical');
     });
     return () => { current = false; };

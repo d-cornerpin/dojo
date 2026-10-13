@@ -7,7 +7,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getDailySpend } from './tracker.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { ownerCardEnded } from '../services/owner-card-frames.js';
+import { windowOf, latestToldAt, endBudgetCard, endBudgetCardOnChange } from './budget-cards.js';
+export { budgetOwnerCards, endTurnedOverBudgetCards } from './budget-cards.js';
 
 const logger = createLogger('budget');
 
@@ -35,15 +36,7 @@ const logger = createLogger('budget');
 // post-cost check saw a crossing and latched, the next pre-call check saw the week and re-armed
 // it, and every turn alerted again — nine dashboard alerts in three turns at 30% of the week
 // (t138 witness). One reader now, one window per period.
-type BudgetWindow = { sqlite: string; words: string; seconds: number };
-const DAY_S = 86_400;
-const PERIOD_WINDOW: Record<string, BudgetWindow> = {
-  daily: { sqlite: '-1 day', words: 'the last 24 hours', seconds: DAY_S },
-  weekly: { sqlite: '-7 days', words: 'the last 7 days', seconds: 7 * DAY_S },
-  monthly: { sqlite: '-30 days', words: 'the last 30 days', seconds: 30 * DAY_S },
-};
-/** The Ledger route accepts only the three periods above; anything else reads as daily. */
-const windowOf = (period: string): BudgetWindow => PERIOD_WINDOW[period] ?? PERIOD_WINDOW.daily;
+// The windows, and the budget's owner card, live in ./budget-cards.ts (light: the scheduler tick loads it).
 
 function agentPeriodSpend(agentId: string, period: string): number {
   return (getDb().prepare(`
@@ -87,6 +80,12 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const windowS = windowOf(b.period).seconds;
   let highestCrossed: number | null = null;
 
+  // THE INCIDENT IS THE LATEST CROSSING, LIVE FOR ITS WINDOW (t138 round 6, review C1). The same
+  // latches decide the text (no second text inside the window) and so the card: it stands while
+  // the latest told-at is inside the window, and the window turning over is the clear. Spend
+  // moving inside the window ends nothing; a stale higher latch from an earlier window is not it.
+  if (row.alert_words && nowS - latestToldAt(row) >= windowS) endBudgetCard(b.budgetId, row.alert_words);
+
   for (const { pct, field } of THRESHOLDS) {
     // At or over the line, and not told within this window -> record when, then tell. Recorded
     // BEFORE the owner is told, so a crash between the two can never tell him twice.
@@ -97,13 +96,7 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
     }
   }
 
-  if (highestCrossed === null) {
-    // Round 4: spend has dropped back under the line the owner's card names — that card's
-    // condition is over, so it leaves (no new text: a re-crossing inside the window stays told).
-    const cardLine = THRESHOLDS.find(({ field }) => (row[field] ?? 0) > 0)?.pct;
-    if (row.alert_words && cardLine !== undefined && ratio < cardLine) endBudgetCard(b.budgetId, row.alert_words);
-    return;
-  }
+  if (highestCrossed === null) return;
 
   // One crossing event per check: a single call that jumps from 40% to 95% is ONE thing that
   // happened, told once at the highest level it reached (every threshold it passed is latched).
@@ -120,39 +113,6 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const words = ownerWords(b, pctLabel, currentSpend, limitUsd);
   db.prepare('UPDATE budgets SET alert_words = ?, alert_dismissed_at = NULL WHERE id = ?').run(words, b.budgetId);
   sendAlert(words, 'notice');
-}
-
-/** The budget's card is over (spend dropped, or the owner changed the limit): it leaves every
- *  open dashboard now (services/owner-card-frames.ts). */
-function endBudgetCard(budgetId: string, words: string): void {
-  getDb().prepare('UPDATE budgets SET alert_words = NULL WHERE id = ?').run(budgetId);
-  ownerCardEnded(words);
-}
-
-/** Before a limit or period is saved: if it CHANGES, the card for the old line is over. */
-function endBudgetCardOnChange(budgetId: string, limitUsd: number, period: string): void {
-  const row = getDb().prepare('SELECT limit_usd, period, alert_words FROM budgets WHERE id = ?').get(budgetId) as
-    { limit_usd: number; period: string; alert_words: string | null } | undefined;
-  if (row?.alert_words && (row.limit_usd !== limitUsd || row.period !== period)) endBudgetCard(budgetId, row.alert_words);
-}
-
-/**
- * The budget owner cards a dashboard shows on load (t138 round 3, ruling R-V333-13), re-derived
- * from the latches: a budget whose latest crossing is still inside its window, not dismissed.
- * Once the window turns over the incident is over and so is the card.
- */
-export function budgetOwnerCards(): Array<{ words: string; severity: 'notice'; dismiss: () => void }> {
-  const db = getDb();
-  const rows = db.prepare(`SELECT id, period, alert_words AS words,
-      MAX(COALESCE(alert_50_sent, 0), COALESCE(alert_75_sent, 0), COALESCE(alert_90_sent, 0)) AS toldAt
-    FROM budgets WHERE alert_words IS NOT NULL AND alert_dismissed_at IS NULL`).all() as
-    Array<{ id: string; period: string; words: string; toldAt: number }>;
-  const nowS = Math.floor(Date.now() / 1000);
-  return rows.filter((r) => r.toldAt > 0 && nowS - r.toldAt < windowOf(r.period).seconds).map((r) => ({
-    words: r.words,
-    severity: 'notice' as const,
-    dismiss: () => { db.prepare('UPDATE budgets SET alert_dismissed_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), r.id); },
-  }));
 }
 
 // ── Post-Cost Alert Check ──

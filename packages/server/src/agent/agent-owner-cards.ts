@@ -20,6 +20,7 @@
 
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
+import { ownerConditionsOnAgentGone } from '../healer/owner-notices.js';
 
 type Notice = { at: number; words: string; dismissedAt?: number };
 type Card = { words: string; severity: 'critical' | 'notice'; dismiss: () => void };
@@ -69,10 +70,18 @@ function endRateLimitCard(agentId: string): void {
   } catch { /* best-effort, as above */ }
 }
 
-/** The one status writer moved this agent: an incident whose status it left is over. */
+/** The one status writer moved this agent: an incident whose status it left is over, and a
+ *  terminated agent is the subject of nothing any more (t138 r6, review I3). */
 export function agentStatusMoved(agentId: string, status: string): void {
   if (status !== 'paused') closePausedCards(agentId);
   if (status !== 'rate_limited') endRateLimitCard(agentId);
+  if (status === 'terminated') ownerConditionsOnAgentGone(agentId);
+}
+
+/** The purge door is about to delete this agent: every card it is the subject of ends, live,
+ *  while its name can still be read (never a raw id on a card). */
+export function agentPurgedForOwner(agentId: string): void {
+  agentStatusMoved(agentId, 'terminated');
 }
 
 /** The agent owner cards a dashboard shows on load. */

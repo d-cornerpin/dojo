@@ -82,22 +82,34 @@ export function ownerConditionCleared(key: string, family = false): void {
   } catch { /* best-effort, like the Healer's own damping: never block recovery */ }
 }
 
-/** An agent recovered: its "stuck" condition is over, and if it is the Healer, so is "broken". */
+/** An agent recovered ON EVIDENCE (the caller passes only `basis === 'evidence'`; a clock is
+ *  never evidence, t114 U1 / review I2): its "stuck" condition is over. "Healer broken" is not
+ *  ended here: a watchdog reset calls recovery too, and a reset is not the Healer working (I1). */
 export function ownerConditionsOnRecovery(agentId: string): void {
   ownerConditionCleared(`stuck:${agentId}`);
+}
+
+/** The agent completed a healthy model turn (`clearErrors`, the clean-turn signal): if it is
+ *  the Healer, it works again, and that alone ends "Healer broken" (review I1). */
+export function ownerConditionsOnHealthyWork(agentId: string): void {
   try {
     const healer = getDb().prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healer?.value === agentId) ownerConditionCleared('healer-broken');
   } catch { /* best-effort */ }
 }
 
-/** The Healer was looked at — by an injury of another agent, or by its own self-watchdog every
- *  five minutes (round 4): present means it is no longer missing, and not in error means it is no
- *  longer broken. `null` = no Healer row at all, which ends neither. */
+/** The Healer's row was looked at — by an injury of another agent, or by its own five-minute
+ *  self-watchdog: present (and not terminated) is the very record of "missing" ending. Its
+ *  status says nothing about "broken" (a reset sets it idle). `null` = no row at all. */
 export function ownerConditionsOnHealerSeen(healerStatus: string | null): void {
   if (healerStatus === null || healerStatus === 'terminated') return;
   ownerConditionCleared('healer-missing:', true);
-  if (healerStatus !== 'error') ownerConditionCleared('healer-broken');
+}
+
+/** The agent is gone (terminated or purged): the conditions it is the subject of end (I3). */
+export function ownerConditionsOnAgentGone(agentId: string): void {
+  ownerConditionCleared(`stuck:${agentId}`);
+  ownerConditionCleared(`healer-missing:${agentId}`);
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed. */
@@ -105,7 +117,9 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   const db = getDb();
   const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
     AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
-  return rows.map(({ key }) => {
+  const live = (id: string): boolean =>
+    !!db.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(id);
+  return rows.filter(({ key }) => !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '')).map(({ key }) => {
     return {
       words: wordsOf(key),
       severity: key.startsWith('stuck:') ? 'notice' as const : 'critical' as const,
