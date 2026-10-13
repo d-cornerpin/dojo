@@ -3,7 +3,7 @@
 //
 // The owner, 2026-10-12: "if there is progress of any kind, maybe we just let them work … a true
 // connection issue or no movement (no tokens going in or out) for a couple hours, we notify the
-// user." The ONE reader of what the Dojo can see an agent doing; the PM sweep is its caller.
+// user." The ONE reader of what the Dojo can see an agent doing; the scheduler's own clock sweeps it.
 //
 // MOVEMENT: tokens in or out (a model call's `cost_records` row); a request open on a live
 // connection (the abort registry: every model call registers for its whole life, and the stream
@@ -15,11 +15,9 @@
 // `audit_log` (only some tools write it, and owner-side doors file rows ON the agent); inbound rows
 // (a PM poke or the owner's words arriving is not the agent doing anything).
 //
-// PER TASK (t137 review M3): every engine checkpoint touches EVERY claimed task's `updated_at`
-// (`work/engine-checkpoint-note.ts`), so an abandoned second task looked fresh for a whole job and
-// the PM never re-drove it. A task's movement is its own record: what its assignee wrote on it
-// (actor = the assignee), the turn-finalize `activity` stamp, its transitions and claim;
-// `updated_at` counts EXCEPT when the newest touch was the checkpoint's own.
+// PER TASK (t137 review M3, round 2): a task's movement is its own record (`work/task-freshness.ts`):
+// its row's clock, what its assignee wrote on it, its transitions and claim, the finalize stamp of
+// a turn whose trigger names it. The engine checkpoint now touches only the job's own work.
 //
 // SILENT: one notice per incident through the owner-notice door, recorded on `agents.silent_notice`
 // (migration 191), which decides the text, the card and the clear (the agent moving again). Not
@@ -34,6 +32,7 @@ import { isPrimaryAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../con
 import { sendAlert } from '../services/imessage-bridge.js';
 import { noteNoticeOnce, endNotice, readNotice } from '../agent/agent-owner-cards.js';
 import { taskScope } from '../work/tracker-view.js';
+import { taskMovedAtSql } from '../work/task-freshness.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('liveness');
@@ -111,31 +110,14 @@ export function agentIsMoving(agentId: string, now = Date.now()): boolean {
   } catch { return false; /* unreadable: no claim of movement, so the ladder behaves as before */ }
 }
 
-/** The engine checkpoint's own touch, as `work/engine-checkpoint-note.ts` records it (actor
- *  `engine`, an `observation` whose reason names the checkpoint). A census clause pins the writer. */
-const CHECKPOINT_TOUCH = `e.kind = 'audit' AND e.actor = 'engine'
-  AND json_extract(e.payload, '$.entry_kind') = 'observation'
-  AND json_extract(e.payload, '$.reason') LIKE 'engine checkpoint:%'`;
-
-/**
- * The task's own last movement, epoch ms — the PM ladder's idle clock (t137 review M3).
- * `updated_at` counts unless the engine checkpoint's touch was the newest write to it.
- */
-export function taskLastMovedAt(taskId: string, assigneeId: string | null, updatedAtMs: number): number {
-  try { return lastMovedAt(taskId, assigneeId, updatedAtMs); } catch { return updatedAtMs; /* the row's own clock, as before */ }
-}
-
-function lastMovedAt(taskId: string, assigneeId: string | null, updatedAtMs: number): number {
-  const r = getDb().prepare(`SELECT
-      (SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND ${CHECKPOINT_TOUCH}) AS touch,
-      (SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND NOT (${CHECKPOINT_TOUCH})
-         AND (e.kind IN ('transition', 'activity', 'opened', 'claim_turn') OR e.actor IN (?, 'agent:' || ?))) AS own,
-      w.opened_at AS opened
-    FROM work w WHERE w.id = ?`).get(assigneeId ?? '', assigneeId ?? '', taskId) as
-    { touch: number | null; own: number | null; opened: number } | undefined;
-  if (!r) return updatedAtMs;
-  const ownAt = Math.max(r.own ?? 0, r.opened ?? 0);
-  return r.touch !== null && r.touch >= updatedAtMs ? ownAt : Math.max(updatedAtMs, ownAt);
+/** The task's own last movement, epoch ms — the PM ladder's idle clock (t137 review M3). Since
+ *  round 2 the checkpoint touches only the job's own work, so the row's clock is honest; the one
+ *  expression is shared with the close-out gate (`work/task-freshness.ts`). */
+export function taskLastMovedAt(taskId: string, updatedAtMs: number): number {
+  try {
+    const r = getDb().prepare(`SELECT ${taskMovedAtSql('w')} AS at FROM work w WHERE w.id = ?`).get(taskId) as { at: number } | undefined;
+    return r?.at ?? updatedAtMs;
+  } catch { return updatedAtMs; /* the row's own clock, as before */ }
 }
 
 function roleOf(agentId: string): string {
@@ -169,7 +151,7 @@ function ownerStopped(agentId: string, sinceMs: number): boolean {
 
 /** The words of a SILENT notice: agent and role, task, last movement, what it was doing. */
 function silentWords(agentId: string, name: string, quietMs: number, work: OpenWork[], act: Activity): string {
-  const newest = [...work].sort((a, b) => taskLastMovedAt(b.id, agentId, b.updated) - taskLastMovedAt(a.id, agentId, a.updated))[0];
+  const newest = [...work].sort((a, b) => taskLastMovedAt(b.id, b.updated) - taskLastMovedAt(a.id, a.updated))[0];
   const others = work.length - 1;
   const task = newest ? ` on "${newest.title}"${others > 0 ? ` (and ${others} other open task${others > 1 ? 's' : ''})` : ''}` : '';
   const doing = act.waitingOn ? ` It was waiting on ${act.waitingOn}, which has not come back.` : '';

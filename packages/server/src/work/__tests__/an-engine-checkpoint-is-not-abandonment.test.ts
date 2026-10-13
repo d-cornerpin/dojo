@@ -33,6 +33,16 @@ import { listTaskLog, writeTaskLog } from '../../tracker/task-log.js';
 import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../engine-checkpoint-note.js';
 import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+
+/** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
+ *  Here the trigger is the owner's ask `msg-job`, which opened the job's task (or project). */
+function park(reason: 'turn-budget' | 'tool-loop', turnNumber = 5, ask: string | null = 'msg-job'): number {
+  const tc = openTurnContext(AGENT);
+  tc.turnNumber = turnNumber;
+  tc.root = ask ? { kind: 'ask', id: ask, sourceMessageId: ask } : null;
+  try { return noteEngineCheckpoint(AGENT, reason); } finally { endTurnContext(AGENT); }
+}
 
 const AGENT = 'zargo';
 const OTHER_AGENT = 'dreamer';
@@ -104,12 +114,12 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
   it('RED->GREEN: a claimed task past the gate\'s staleness window is disarmed by the checkpoint note', () => {
     const now = Date.now();
     const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
-    seedWork('w-inflight', { updated_at: stale });
+    seedWork('w-inflight', { updated_at: stale, source_message_id: 'msg-job' });
 
     // Before the checkpoint: the gate's own query already calls this a dangler.
     expect(gateInProgressDanglers(AGENT, now).map((r) => r.id)).toEqual(['w-inflight']);
 
-    const touched = noteEngineCheckpoint(AGENT, 'turn-budget');
+    const touched = park('turn-budget');
 
     expect(touched).toBe(1);
     // After the checkpoint: the SAME gate query, unmodified, finds nothing.
@@ -124,11 +134,11 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
   it('touches a task that has NOT yet gone stale — the checkpoint is not a staleness check', () => {
     const now = Date.now();
     const fresh = now - 30_000; // 30 seconds ago, nowhere near the 10-minute window
-    seedWork('w-fresh', { updated_at: fresh });
+    seedWork('w-fresh', { updated_at: fresh, source_message_id: 'msg-job' });
 
     expect(gateInProgressDanglers(AGENT, now)).toEqual([]); // not a dangler yet
 
-    const touched = noteEngineCheckpoint(AGENT, 'tool-loop');
+    const touched = park('tool-loop');
 
     expect(touched).toBe(1);
     const row = mockDb.current!.prepare('SELECT updated_at FROM work WHERE id = ?')
@@ -143,23 +153,45 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
   it('leaves another agent\'s claimed task untouched', () => {
     const now = Date.now();
     const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
-    seedWork('w-other-agent', { agent_id: OTHER_AGENT, updated_at: stale });
+    seedWork('w-other-agent', { agent_id: OTHER_AGENT, updated_at: stale, source_message_id: 'msg-job' });
 
-    const touched = noteEngineCheckpoint(AGENT, 'turn-budget');
+    const touched = park('turn-budget');
 
     expect(touched).toBe(0);
     expect(gateInProgressDanglers(OTHER_AGENT, now).map((r) => r.id)).toEqual(['w-other-agent']);
     expect(listTaskLog('w-other-agent', { kinds: ['observation'] })).toEqual([]);
   });
 
+  it('t143 r2: a claimed task the turn does NOT name is left alone — another conversation or the same one', () => {
+    const now = Date.now();
+    const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
+    seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job', origin_conv_key: 'c-job' });
+    seedWork('w-abandoned-same-conv', { updated_at: stale, origin_conv_key: 'c-job' });
+    seedWork('w-abandoned-other-conv', { updated_at: stale, origin_conv_key: 'c-old' });
+    expect(park('turn-budget')).toBe(1);
+    expect(gateInProgressDanglers(AGENT, now).map((r) => r.id).sort()).toEqual(['w-abandoned-other-conv', 'w-abandoned-same-conv']);
+  });
+
+  it('t143 r2: the continuation the park queues inherits the job; a later turn with its own trigger does not', () => {
+    const now = Date.now();
+    const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
+    seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
+    expect(park('turn-budget', 7)).toBe(1);
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
+    expect(park('turn-budget', 8, null)).toBe(1); // the continuation (empty trigger) carries the job
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
+    expect(park('turn-budget', 9, 'msg-other')).toBe(0); // an unrelated ask's turn names other work
+    expect(park('turn-budget', 11, null)).toBe(0); // not the next turn: no inheritance
+  });
+
   it('returns 0 and writes nothing when the agent has no in-flight work', () => {
-    expect(noteEngineCheckpoint(AGENT, 'turn-budget')).toBe(0);
+    expect(park('turn-budget')).toBe(0);
   });
 
   it('also disarms a stranded on_deck task the gate would flag in the second family', () => {
     const now = Date.now();
     const stale = now - (STRANDED_IDLE_MINUTES + 5) * 60_000;
-    seedProject('proj-1');
+    seedProject('proj-1', { source_message_id: 'msg-job' });
     // `schedule_status: 'unscheduled'` — the legacy default for a plain (non-recurring)
     // on_deck task (`009_phase6.sql`'s `DEFAULT 'unscheduled'`, backfilled into `work` by
     // `137_work_attributes.sql`). NULL would also satisfy the gate's own `!= 'waiting'` NO —
@@ -172,7 +204,7 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
 
     expect(gateStrandedDanglers(AGENT, now).map((r) => r.id)).toEqual(['w-stranded']);
 
-    const touched = noteEngineCheckpoint(AGENT, 'tool-loop');
+    const touched = park('tool-loop');
 
     expect(touched).toBe(1);
     expect(gateStrandedDanglers(AGENT, now)).toEqual([]);
@@ -184,14 +216,14 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
     // it is actively worked, so the checkpoint correctly leaves the on_deck step alone.
     const now = Date.now();
     const stale = now - (STRANDED_IDLE_MINUTES + 5) * 60_000;
-    seedProject('proj-2');
+    seedProject('proj-2', { source_message_id: 'msg-job' });
     seedWork('w-active-sibling', { kind: 'task', parent_id: 'proj-2', state: 'claimed', updated_at: now });
     seedWork('w-on-deck-sibling', {
       kind: 'task', parent_id: 'proj-2', state: 'on_deck', updated_at: stale,
       schedule_status: 'unscheduled',
     });
 
-    const touched = noteEngineCheckpoint(AGENT, 'turn-budget');
+    const touched = park('turn-budget');
 
     // The claimed sibling IS touched (it's the in-flight family); the on_deck one is not.
     expect(touched).toBe(1);

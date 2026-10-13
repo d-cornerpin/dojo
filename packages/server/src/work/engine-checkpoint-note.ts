@@ -12,8 +12,8 @@
 // and a slow model re-pays a whole inference round for work it never stopped doing.
 //
 // THE FIX is one call at each checkpoint site, made just before it schedules its own
-// self-continuation: for every task the gate would count as THIS agent's dangler on the very
-// next turn, record that the checkpoint fired and touch `updated_at`.
+// self-continuation: for the task(s) the parked job is serving, record that the checkpoint fired
+// and touch `updated_at`. (Until t143 round 2 this was EVERY dangler of the agent — see below.)
 //
 // THE TWO QUERIES BELOW ARE THE GATE'S OWN TWO DANGLER PREDICATES
 // (`closeout-gate.ts` ~63-103), copied in SHAPE — table, join, state, `is_paused`, schedule
@@ -56,6 +56,7 @@ import { pendingCirclingVerdict, EFFORT_REVIEW_DELTA_CALLS } from '../tracker/ef
 import { recordPoke } from './poke-ladder.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
+import { turnContext } from '../agent/turn-context.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
  *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
@@ -66,34 +67,65 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
   'tool-loop': 'the 75-tool-call loop cap parked this turn for a fresh continuation',
 };
 
+// t143 ROUND 2 (orchestrator ruling) — A PARK TOUCHES ONLY THE JOB'S OWN WORK.
+// This used to touch EVERY claimed task of the agent (and every stranded step of its projects)
+// at every park. With no total cap that kept a genuinely abandoned second task fresh for a whole
+// long job, so neither the close-out gate nor the PM ever saw it (t137 review M3). A task's
+// freshness may only be refreshed by activity that structurally NAMES it: here, the work the
+// parked turn's trigger names — the owner's ask that opened it (`source_message_id`), the A2A
+// thread that assigned it, the engine event that served it, a task born in this turn, and steps
+// of a project so named. A continuation fires with an empty trigger, so the checkpoint CARRIES
+// that set to the one continuation it queues (the next turn of this agent, and only if that turn
+// has no trigger of its own). The T79a guarantee — the job's own task is never read as abandoned
+// across a park — is kept, now for exactly that task.
+
+/** The job's work, handed from a park to the continuation it queues. In memory on purpose: a
+ *  restart ends the job's turn, and nothing should inherit it after that. */
+const jobWork = new Map<string, { forTurn: number; ids: string[] }>();
+
+/** The tasks the CURRENT turn of this agent structurally serves (see the header above). */
+export function turnWorkIds(agentId: string): string[] {
+  const ctx = turnContext(agentId);
+  if (!ctx || ctx.turnNumber === undefined) return [];
+  const carried = jobWork.get(agentId);
+  const inherited = !ctx.root && !ctx.servedWork && carried?.forTurn === ctx.turnNumber ? carried.ids : [];
+  const named = [...inherited, ...(ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [])];
+  const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
+  const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
+  const list = named.length > 0 ? named.map(() => '?').join(', ') : 'NULL';
+  const rows = getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND (
+      w.id IN (${list}) OR w.source_message_id = ? OR w.a2a_thread_id = ? OR w.origin_turn = ?
+      OR w.parent_id IN (SELECT p.id FROM work p WHERE p.id IN (${list}) OR p.source_message_id = ?))`)
+    .all(agentId, ...named, ask, thread, ctx.turnNumber, ...named, ask) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
 /**
  * Call immediately before an engine-forced checkpoint schedules its self-continuation.
  *
- * Touches every task the close-out gate would otherwise count as this agent's dangler on the
- * very next turn — an in_progress (claimed) task this agent holds, and a stranded on_deck
- * task in a project this agent created that the gate would also flag (see the header above
- * for why both families are in scope: the gate counts both as danglers, so a checkpoint that
- * squared only one would still get refused on the other).
- *
- * Returns the number of tasks touched. 0 is the common case — most checkpoints fire with
- * nothing claimed.
+ * Touches the job's own in-flight work — an in_progress (claimed) task this turn serves, and a
+ * stranded on_deck step of a project it serves (the close-out gate's two dangler families) — and
+ * carries the job's work to the continuation. Returns the number of tasks touched.
  */
 export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason): number {
   const db = getDb();
   const now = Date.now();
+  const tied = turnWorkIds(agentId);
+  const turn = turnContext(agentId)?.turnNumber;
+  if (turn !== undefined) jobWork.set(agentId, { forTurn: turn + 1, ids: tied });
+  if (tied.length === 0) return 0;
+  const ids = tied.map(() => '?').join(', ');
 
-  // Mirrors closeout-gate.ts's inProgressDanglers query, minus `AND w.updated_at < ?` and the
-  // `ORDER BY … LIMIT 10` (that limit exists to bound a rendered message; this touches ALL of
-  // them).
+  // The gate's in_progress dangler family, limited to the job's own tasks.
   const inProgress = db.prepare(`
     SELECT w.id AS id FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ?
       AND w.state = 'claimed'
       AND w.is_paused = 0
-  `).all(agentId) as Array<{ id: string }>;
+      AND w.id IN (${ids})
+  `).all(agentId, ...tied) as Array<{ id: string }>;
 
-  // Mirrors closeout-gate.ts's strandedRows query, minus `AND t.updated_at < ?` and the same
-  // rendering-only LIMIT.
+  // The gate's stranded on_deck family, limited to the job's own steps.
   const stranded = db.prepare(`
     SELECT t.id AS id FROM work t
     INNER JOIN work p ON p.id = t.parent_id
@@ -104,11 +136,12 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
       AND t.schedule_status != 'waiting'
       AND p.requester_id = ?
       AND p.state = 'open'
+      AND t.id IN (${ids})
       AND NOT EXISTS (
         SELECT 1 FROM work sib
         WHERE sib.parent_id = p.id AND sib.kind = 'task' AND sib.state = 'claimed'
       )
-  `).all(agentId, now, agentId) as Array<{ id: string }>;
+  `).all(agentId, now, agentId, ...tied) as Array<{ id: string }>;
 
   // Disjoint by construction (`state = 'claimed'` vs `state = 'on_deck'`), so no id can be
   // double-counted or double-touched.

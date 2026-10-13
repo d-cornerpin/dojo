@@ -20,6 +20,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
+import { turnWorkIds } from '../work/engine-checkpoint-note.js';
 // T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
 // never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
@@ -173,6 +174,11 @@ export function stampTasksAtTurnFinalize(input: {
 }): void {
   try {
     const db = getDb();
+    // t143 round 2: only work THIS turn's trigger names — never a conversation's other tasks
+    // (`input.convKey` is no longer a tie: an abandoned task born in the same conversation as a
+    // long job was stamped fresh at every park). A continuation inherits its job's work from the
+    // checkpoint that queued it.
+    const carried = turnWorkIds(input.agentId);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
@@ -180,17 +186,17 @@ export function stampTasksAtTurnFinalize(input: {
           AND w.state IN ('claimed', 'on_deck', 'blocked')
           AND (
             (w.source_message_id IS NOT NULL AND w.source_message_id = ?)
-            OR (w.origin_conv_key IS NOT NULL AND w.origin_conv_key = ?)
             OR w.origin_turn = ?
             OR w.id = ?
+            OR w.id IN (${carried.map(() => '?').join(', ') || 'NULL'})
           )
         LIMIT 20`,
     ).all(
       input.agentId,
       input.rootSourceMessageId ?? '',
-      input.convKey ?? '',
       input.turnNumber,
       input.servedTaskId ?? '',
+      ...carried,
     ) as Array<{ id: string }>;
     if (tied.length === 0) return;
 

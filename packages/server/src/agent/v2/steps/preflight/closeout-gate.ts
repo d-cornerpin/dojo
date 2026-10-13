@@ -24,6 +24,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, stampColumns } from '../../../../work/tracker-view.js';
+import { taskMovedAtSql } from '../../../../work/task-freshness.js';
 import { advance } from '../../state.js';
 import type { WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -57,17 +58,17 @@ export async function runCloseoutGate(
   // just with a sane idle window before it kicks in.
   try {
     // (1) Tasks the agent is in_progress on but hasn't touched in the
-    // last CLOSE_OUT_IDLE_MINUTES. Any tracker tool call (status update,
-    // notes add/edit, complete_step) bumps updated_at, so an actively-
-    // worked task naturally stays inside the window.
+    // last CLOSE_OUT_IDLE_MINUTES. "Touched" is the task's own movement
+    // (`work/task-freshness.ts`): a status, step or edit, a note naming it,
+    // a turn whose trigger names it. Never another task's park (t143 r2).
     const CLOSE_OUT_IDLE_MINUTES = 10;
     const inProgressDanglers = db.prepare(`
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
         AND w.is_paused = 0
-        AND w.updated_at < ?
-      ORDER BY w.updated_at ASC
+        AND ${taskMovedAtSql('w')} < ?
+      ORDER BY ${taskMovedAtSql('w')} ASC
       LIMIT 10
     `).all(agentId, Date.now() - CLOSE_OUT_IDLE_MINUTES * 60_000) as Array<{ id: string; title: string; kind: string }>;
 
@@ -93,12 +94,12 @@ export async function runCloseoutGate(
         AND t.schedule_status != 'waiting'
         AND p.requester_id = ?
         AND p.state = 'open'
-        AND t.updated_at < ?
+        AND ${taskMovedAtSql('t')} < ?
         AND NOT EXISTS (
           SELECT 1 FROM work sib
           WHERE sib.parent_id = p.id AND sib.kind = 'task' AND sib.state = 'claimed'
         )
-      ORDER BY t.updated_at ASC
+      ORDER BY ${taskMovedAtSql('t')} ASC
       LIMIT 10
     `).all(agentId, Date.now(), agentId, Date.now() - 30 * 60_000) as Array<{ id: string; title: string; kind: string }>;
 
