@@ -7570,6 +7570,69 @@
       "to": 1329,
       "by": "t139 — the active-tasks lane re-declares its reserve and caps",
       "why": "+28 (+34/-6; added 20 comment, 14 code — the 14 are the `measured` derivation string each POST_BUDGET_LANES entry is REQUIRED to carry, the cap literal, and the reserve). `chars.description` (300) is deleted; `chars.originalWords` (8,000 = the pin's DIRECTIVE_MAX_CHARS) and `chars.originLabel` (120 = chars.title's own number) are declared with their derivation; the reserve 1,239 -> 3,444 is re-derived by calling the renderer, net +124 once t145 frees the pin's 2,081. No smaller version is true: a cap without its derivation is the rumour `PostBudgetLane.measured` forbids. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 422,
+      "to": 533,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+111 (+190/-79; added 48 comment, 5 blank, 137 code). Review C1/I1/M2/M3 and item 6's fallback, all in the lane's own render: a waiting task renders a status (since when, on whom, 'not current') and a POINTER instead of its words and spends nothing from the pool; the pool is spent in PASSES (every current request newest-first, then edited descriptions), which needed the read-then-render split (`TaskView`, `renderTaskLines`); the edited fact and the newer-messages count are two point/range reads; the worst-case generator renders every split of the rows between the two line shapes (M2). 79 lines left with the round-1 single-pass renderer. REFUSED: putting the newer-messages count or the edited fact in `tracker/delivery-evidence.ts` (outside the fence, and an excerpt reader by design). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1324,
+      "to": 1403,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+79 (+81/-2; added 22 comment, 4 blank, 55 code). I4: `startLineOnly` on the settlement context (finalize only); the turn's own model bubbles stop counting as evidence on such a turn (`receiptIsThisTurnsModelBubble`, `nonBubbleDelivery`), and `holdStartLineOnly` moves the ask to `blocked` (owed, visible, not re-served — a re-serve would put a clarifying question in front of the person twice). Keyed on the engine's classification, never the prose; driven both start-ack timer branches with controls. REFUSED: handing back `open` through CT0 (the repeat), and stamping the bubble in persist-assistant (t141's file). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 825,
+      "to": 865,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+40 (+86/-46; added 50 comment, 1 blank, 35 code). R-V333-5 DELETED `resumeWorkOnOwnerAsk` (-46). The pause it paired with is narrowed to recorded facts, because a misfire now strands work: refused on a served-nothing turn, a tracker-writing turn, a start-line-only turn, for a task opened this turn, and it considers only work linked to the request the turn answered (continuations resolve that request by walking back over their own rootless turns). Each refusal has a unit clause and a mutant. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/tracker-floors.ts",
+      "from": 316,
+      "to": 349,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+33 (+39/-6; added 11 comment, 2 blank, 26 code). I5: the engine-opened task is titled from engine facts — `scaffoldTitle` and `mostUsedToolThisTurn` (the turn's own persisted tool_use rows) — and the note invites a rename. Nothing is read from the message (the census still counts zero). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/task-stamps.ts",
+      "from": 296,
+      "to": 317,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+21 (+23/-2; added 7 comment, 16 code). I3: an a2a delivery counts as a handover only when a guarded second read proves it went back to the agent who asked on that thread; a failed read is 'no proof', never a handover (the hand-rolled fixtures several tracker tests use lack the columns). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/delegation-exit.ts",
+      "from": 165,
+      "to": 176,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+11 (+17/-6; added 8 comment, 9 code). Hand-up 4: this turn's sends are read off this turn's own send_to_agent delivery records (turn number + message id) instead of a whole-second clock bound that swept the previous turn's sends into a new join. The comment records why a millisecond bound cannot work (the rows are whole-second). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 567,
+      "to": 578,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+11 (+12/-1; added 7 comment, 5 code). I4's one judgement (`startLineOnly`) and the four facts the narrowed pause reads, passed to the two consumers; placed after the turn record so the pinned exit-reason/finalizeTurn adjacency holds. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1127,
+      "to": 1130,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+3 (+4/-1; 2 comment, 2 code). The tracker's sort ranked TEXT priority alphabetically (normal, low, high); now high, normal, low. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1329,
+      "to": 1331,
+      "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
+      "why": "+2 (+13/-11; 8 comment, 5 code). The active-tasks reserve re-derived 3,444 -> 3,584 with its `measured` text (C1's waiting line, the newer-messages count, the two-shape generator). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7664,7 +7727,7 @@
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
-    "packages/server/src/agent/v2/answered-edge.ts": 825,
+    "packages/server/src/agent/v2/answered-edge.ts": 865,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
     "packages/server/src/agent/v2/counterparty.ts": 997,
     "packages/server/src/agent/v2/loop.ts": 705,
@@ -7685,7 +7748,7 @@
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 477,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
-    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 165,
+    "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 266,
     "packages/server/src/agent/v2/steps/execute/index.ts": 309,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
@@ -7694,7 +7757,7 @@
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 97,
     "packages/server/src/agent/v2/steps/execute/tracker-counting.ts": 203,
-    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 316,
+    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 349,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
@@ -7736,11 +7799,11 @@
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
     "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 480,
-    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 312,
+    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 303,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 53,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 567,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 578,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
     "packages/server/src/agent/web-tools.ts": 441,
@@ -7787,7 +7850,7 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1329,
+    "packages/server/src/memory/lanes.ts": 1331,
     "packages/server/src/memory/message-store.ts": 1206,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -7799,7 +7862,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/memory/tail-horizon.ts": 391,
-    "packages/server/src/memory/work-board-lane.ts": 422,
+    "packages/server/src/memory/work-board-lane.ts": 533,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
@@ -7850,8 +7913,8 @@
     "packages/server/src/tracker/delivery-evidence.ts": 320,
     "packages/server/src/tracker/pm-agent.ts": 3090,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
-    "packages/server/src/tracker/schema.ts": 1127,
-    "packages/server/src/tracker/task-stamps.ts": 296,
+    "packages/server/src/tracker/schema.ts": 1130,
+    "packages/server/src/tracker/task-stamps.ts": 317,
     "packages/server/src/tracker/tools.ts": 5199,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
@@ -7869,7 +7932,7 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1324,
+    "packages/server/src/work/ask-settlement.ts": 1403,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
