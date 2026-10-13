@@ -7646,7 +7646,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 825,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
     "packages/server/src/agent/v2/counterparty.ts": 997,
-    "packages/server/src/agent/v2/loop.ts": 723,
+    "packages/server/src/agent/v2/loop.ts": 705,
     "packages/server/src/agent/v2/outbound-ledger.ts": 462,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
