@@ -7668,6 +7668,20 @@
       "to": 1350,
       "by": "t139 round 5 — owner ruling 2026-10-13, no fixed pool",
       "why": "+19 (+30/-11; 18 comment, 12 code). `lane.active-tasks` limits renamed to what they now are (`rows.tasksFloor`, `chars.originalWordsFloor`: the guarantee the reserve is derived at, not a ceiling), the reserve re-derived 3,584 -> 3,618 (the counted 'N more not shown' line) with its `measured` text. Active-tasks region only. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 695,
+      "to": 779,
+      "by": "t139 round 6 — ruling R-V333-14 (review I1 + M1)",
+      "why": "+84 (+137/-53; 62 comment, 5 blank, 70 code). I1: a request whose message is among the live rows the assembly kept AND whose words are on the emitted array is pointed to, not re-printed (the 'in view' check, the pointer line, the generator's third line shape). M1: the room is read against the WHOLE array (everything already on it, measured; the loop's later appends at their declared bounds, including the largest strong-technique injection this agent could receive, read through the technique store's own door and pinned to the injector's source), replacing round 5's share-plus-slack; a room below one bare row gets a compact count line instead of a truncation. The comment states the claim precisely and its one exception. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2811,
+      "to": 2816,
+      "by": "t139 round 6 — ruling R-V333-14 (assembler hand-off ruled in)",
+      "why": "+5 (+19/-14; 2 comment, 16 code). The work-board read moves below the integration-status block (so the list is laid out after every other assembler block) and hands over the array, the kept live rows and the other blocks instead of the allocation and ladder. Board block only; for merge with t141. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7874,7 +7888,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2811,
+    "packages/server/src/memory/assembler.ts": 2816,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7897,7 +7911,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/memory/tail-horizon.ts": 391,
-    "packages/server/src/memory/work-board-lane.ts": 695,
+    "packages/server/src/memory/work-board-lane.ts": 779,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
