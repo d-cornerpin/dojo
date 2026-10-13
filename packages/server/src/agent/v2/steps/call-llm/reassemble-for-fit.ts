@@ -65,12 +65,20 @@ export interface ReassembleForFitResult {
 }
 
 /**
- * `null` when nothing needs to change — either `modelId` declared no provider ceiling
- * (every fast/cloud pick, and the whole world before T82a) or the array already assembled
- * fits its provider-aware budget. This is the cheap short-circuit both call sites rely on:
- * the common path costs one indexed read (`getProviderCeilingTokens`) and nothing else —
- * `contextWindowPolicy`, `measureAgentToolPayloadTokens` and `assembleContext` are all
- * deferred behind that one check.
+ * `null` when nothing needs to change — the array already assembled fits the budget of the
+ * model about to be dialed: ITS window, ITS output cap, and its provider ceiling when it
+ * declares one. The common path costs one policy derivation (the tool payload measurement is
+ * memoised) and nothing else; `assembleContext` runs only when the array does not fit.
+ *
+ * ── t140: EVERY PICK, NOT ONLY A DECLARED-CEILING ONE (tracker #13) ──────────────────────
+ * This used to return `null` for any model that declared no provider ceiling, so for every
+ * ordinary routed or fallback pick the array went to the provider boundary exactly as it was
+ * assembled — for the `'__auto__'` stand-in window, not for the model being dialed. When the
+ * pick's own window was smaller, the boundary's lane repair cut the difference out of the array
+ * a whole lane at a time, ending with `lane.fresh-tail`: the call went out without the agent's
+ * live conversation. The window is a fact of EVERY model, so the check is now made for every
+ * model, and the ceiling is applied on top of it only where one is declared — the T82a case is
+ * a special case of this one, not a separate door.
  *
  * When it DOES re-assemble: the current iteration's own loop-appended tail (technique
  * hints, the multistep scaffold, the delegation hint, the drained steer — everything the
@@ -82,9 +90,6 @@ export interface ReassembleForFitResult {
 export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
   const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext } = input;
   const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
-  const providerCeiling = getProviderCeilingTokens(modelId);
-  if (providerCeiling === null) return null;
-
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
     import('../../../../memory/budget.js'),
     import('../../../../tools/tool-docs.js'),
@@ -93,12 +98,12 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   const policy = contextWindowPolicy(getContextWindow(modelId), {
     toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: getModelOutputCap(modelId),
-    providerCeilingTokens: providerCeiling,
+    providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
   if (assembledEstimate <= policy.assemblyBudgetTokens) return null;
 
-  logger.warn('v2: picked model was not the one this assembly was sized for; re-assembling against its provider-aware budget', {
-    agentId, modelId, assembledEstimate, budget: policy.assemblyBudgetTokens,
+  logger.warn('v2: picked model was not the one this assembly was sized for; re-assembling against its own window', {
+    agentId, modelId, assembledEstimate, budget: policy.assemblyBudgetTokens, contextWindow: policy.contextWindow,
   }, agentId);
   const { assembleContext } = await import('../../../../memory/assembler.js');
   const reassembled = await assembleContext(agentId, modelId, assemblyTurnContext);

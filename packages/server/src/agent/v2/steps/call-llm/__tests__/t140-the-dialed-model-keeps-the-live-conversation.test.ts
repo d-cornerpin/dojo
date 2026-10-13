@@ -85,6 +85,7 @@ import { reassembleForFitIfNeeded } from '../reassemble-for-fit.js';
 import { callModel, getContextWindow } from '../../../../model.js';
 import { __resetAssemblyValidationCounters } from '../../../../../memory/assembly-validation.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
+import { SystemPromptTooLargeError } from '../../../../../memory/budget.js';
 
 const AGENT = 'agent-t140-routed';
 /** Two routed models, both far below the 200K stand-in — the reporting box's shape. */
@@ -101,6 +102,11 @@ const REPLY = 'Counted another stack on the north dock; the running total is wri
   + 'beside the ramp, and the damaged lids are set aside for the repair bench this afternoon. '
   + 'Nothing else has moved since the last count, and the pallets by the door are still sealed.';
 
+/** A model that cannot hold this agent's system prompt and tools at all (not in a tier: a
+ *  fallback pick or a mis-set override can still name it). */
+const TINY = 'm-too-small';
+const TINY_WINDOW = 8_192;
+
 const db = (): Database.Database => mockDb.current!;
 
 function seedRoutedBox(): void {
@@ -114,6 +120,7 @@ function seedRoutedBox(): void {
   );
   model.run(HEAVY, 'Routed Heavy', HEAVY_WINDOW);
   model.run(LIGHT, 'Routed Light', LIGHT_WINDOW);
+  model.run(TINY, 'Too Small', TINY_WINDOW);
   const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
   tier.run('heavy', HEAVY);
   tier.run('standard', HEAVY);
@@ -183,7 +190,7 @@ describe('t140 W1 — a routed pick below the 200K stand-in still receives the l
     expect(text.includes('[reply 249]'), 'the agent\'s own recent work must reach the dialed model').toBe(true);
   });
 
-  it.fails('the light pick, smaller still, keeps the newest exchange too', async () => {
+  it('the light pick, smaller still, keeps the newest exchange too', async () => {
     seedConversation(250);
     const req = await dialAsRouted(LIGHT);
     const text = shown(req);
@@ -195,5 +202,20 @@ describe('t140 W1 — a routed pick below the 200K stand-in still receives the l
     // The largest window any routed pick declares: every pick can be sized DOWN to its own
     // window before dial (reassemble-for-fit); none can be sized up.
     expect(getContextWindow('__auto__')).toBe(HEAVY_WINDOW);
+  });
+
+  it('a pick whose window cannot hold the system prompt and tools FAILS LOUD with a named defect, and nothing is dialed', async () => {
+    // floor(0.96 × 8,192) − (2,000 tools + 4,096 output) = 1,768 tokens for a ~6K system
+    // prompt. No array can be right for this model, so the honest answer is the named refusal
+    // the assembler already owns (`SystemPromptTooLargeError`, which also cards the person),
+    // never a dial with the conversation cut out of it.
+    seedConversation(40);
+    const assembled = await assembleContext(AGENT, '__auto__');
+    await expect(reassembleForFitIfNeeded({
+      agentId: AGENT, modelId: TINY, messages: assembled.messages as never,
+      systemPrompt: assembled.systemPrompt, volatileFrom: assembled.messages.length,
+      assemblyTurnContext: undefined as unknown as PromptTurnContext,
+    })).rejects.toBeInstanceOf(SystemPromptTooLargeError);
+    expect(provider.requests.length).toBe(0);
   });
 });
