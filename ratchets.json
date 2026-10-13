@@ -7654,6 +7654,20 @@
       "to": 108,
       "by": "t139 round 4 — R-V333-11 (the park re-delivered a narration line as a visible bubble, #10)",
       "why": "+18 (2 imports, 1 condition, 1 skip-and-log branch (4 lines), and 10 comment lines). The comment records the live evidence (t136 run bmv64ib0rkc #99007), the recorded exit fact the skip keys on (the C3 continuation stash, unless stop-fenced, the same fact finalize-record reads), and the requirement preserved: a turn that genuinely ENDS with only text that rode a tool call still delivers it (G-SUP-2). REFUSED: deleting the recovery outright, which would leave a genuinely ending turn's waiting person answered by silence. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 540,
+      "to": 695,
+      "by": "t139 round 5 — owner ruling 2026-10-13, no fixed pool (the task list's words get the room the view has)",
+      "why": "+155 (+219/-64; 85 comment, 13 blank, 121 code). The fixed 8,000-char words pool and the fixed 5-row cut are replaced by the room the assembly actually left the list: `activeTasksRoomTokens` (the lane's ladder share plus the content fit's unspent budget) and `fitTaskList` (everything whole when it fits; otherwise the floor rows at declared widths, more rows only while every request stays whole, fewer only when framing cannot fit, every row left off COUNTED; the words take the largest pool the room holds). The waiting-line text moved from read time to render time so its width can follow the room. The comments record the ruling, why the conversation cannot be starved (the fit runs first) and the G2 argument. WHY NOT SPLIT: the reserve is derived by calling the same renderer that lays the block out. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1331,
+      "to": 1350,
+      "by": "t139 round 5 — owner ruling 2026-10-13, no fixed pool",
+      "why": "+19 (+30/-11; 18 comment, 12 code). `lane.active-tasks` limits renamed to what they now are (`rows.tasksFloor`, `chars.originalWordsFloor`: the guarantee the reserve is derived at, not a ceiling), the reserve re-derived 3,584 -> 3,618 (the counted 'N more not shown' line) with its `measured` text. Active-tasks region only. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7871,7 +7885,7 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1331,
+    "packages/server/src/memory/lanes.ts": 1350,
     "packages/server/src/memory/message-store.ts": 1206,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -7883,7 +7897,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/memory/tail-horizon.ts": 391,
-    "packages/server/src/memory/work-board-lane.ts": 540,
+    "packages/server/src/memory/work-board-lane.ts": 695,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
