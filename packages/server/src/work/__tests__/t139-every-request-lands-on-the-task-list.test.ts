@@ -485,7 +485,7 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(await taskList()).toContain(ask);
   });
 
-  it.fails('delegated to two helpers, with the task opened when the last result wakes the agent to compile: linked to the owner\'s ask', async () => {
+  it('delegated to two helpers, with the task opened when the last result wakes the agent to compile: linked to the owner\'s ask', async () => {
     const ask = 'Have the helper collect caterer quotes and venue quotes separately, then combine them and tell me the cheapest pairing.';
     ownerSays('msg-deleg2', ask);
     script([
@@ -524,6 +524,98 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(rows.length).toBe(1);
     expect(rows[0].source_message_id).toBe('msg-deleg2');
     expect(await taskList()).toContain(ask);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE COMPILE LINK'S CONTROLS — it never guesses, and it never re-points a served turn
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** One owner ask fanned out to two helpers, both pieces delivered: the ask is left
+ *  compile-pending, exactly as the engine leaves it. Returns nothing; reads the spine after. */
+async function fanOutAndLand(msgId: string, ask: string, tag: string): Promise<void> {
+  ownerSays(msgId, ask);
+  script([
+    { toolCalls: [
+      call(`${tag}-a`, 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: `${tag}: collect part one.` }),
+      call(`${tag}-b`, 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: `${tag}: collect part two.` }),
+    ] },
+    { content: `Asked Helper for both parts of ${tag}.` },
+  ]);
+  await runV2Turn(PRIMARY);
+  const threads = (mockDb.current!.prepare(
+    `SELECT a2a_thread_id AS t FROM messages WHERE source_agent_id = ? AND a2a_intent = 'ASSIGN' AND content LIKE ? ORDER BY rowid`,
+  ).all(PRIMARY, `%${tag}:%`) as Array<{ t: string }>).map((r) => r.t);
+  expect(threads.length).toBe(2);
+  for (const thread of threads) {
+    const back = await deliverA2AMessage({
+      intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
+      payload: `${tag} part result.`, toAgent: PRIMARY, fromAgent: 'helper',
+    });
+    expect(back.delivered).toBe(true);
+  }
+}
+
+describe('t139 — the compile link has two recorded facts behind it, or it is not made', () => {
+  it('two owed compiles at once: a task opened on the wake turn is NOT linked (ambiguous is not guessed)', async () => {
+    await fanOutAndLand('msg-two-a', 'Compare the two caterer quote sets and pick one.', 'JOBA');
+    // The delegation exit finds its own sends by `created_at >= unixepoch(turn start)`, a
+    // whole-second comparison; two scripted turns inside one second would share their sends.
+    // Real turns are seconds apart, so the fixture is too.
+    await new Promise((r) => setTimeout(r, 1100));
+    await fanOutAndLand('msg-two-b', 'Compare the two venue quote sets and pick one.', 'JOBB');
+    const owed = mockDb.current!.prepare(
+      "SELECT COUNT(*) AS n FROM work WHERE agent_id = ? AND kind = 'ask' AND compile_pending = 1",
+    ).get(PRIMARY) as { n: number };
+    expect(owed.n).toBe(2);
+
+    script([
+      { toolCalls: [openTask('wo-amb', 'Combine results', 'Combined results sent to the owner')] },
+      { content: 'Combining.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks().filter((r) => r.title === 'Combine results');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBeNull();
+    expect(await taskList()).toContain('(original request not linked)');
+  });
+
+  it('a PEER\'s ASSIGN while a compile is owed: a task opened on that A2A turn is never re-pointed at the owner\'s ask', async () => {
+    await fanOutAndLand('msg-owed-peer', 'Compare the two quote sets and pick one.', 'JOBD');
+    const r = await deliverA2AMessage({
+      intent: 'ASSIGN', threadId: 'thread-t139-peer', requiresResponse: true,
+      payload: 'Unrelated: please tidy the shared drive folder names.', toAgent: PRIMARY, fromAgent: 'helper',
+    });
+    expect(r.delivered).toBe(true);
+    script([
+      { toolCalls: [openTask('wo-peer', 'Drive tidy sub-step', 'Folder names tidied')] },
+      { content: 'Tidying.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    const turn = mockDb.current!.prepare(
+      'SELECT kind, subject_kind FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 1',
+    ).get(PRIMARY) as { kind: string | null; subject_kind: string };
+    expect(turn.kind).toBe('a2a');                    // the turn really served the peer
+    const rows = openTasks().filter((t) => t.title === 'Drive tidy sub-step');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).not.toBe('msg-owed-peer');
+  });
+
+  it('a NEW owner ask while a compile is owed: the task opened on that ask\'s turn is linked to the new ask', async () => {
+    await fanOutAndLand('msg-owed', 'Compare the two quote sets and pick one.', 'JOBC');
+    const fresh = 'Separately: book a meeting room for Thursday afternoon and send me the confirmation.';
+    ownerSays('msg-fresh', fresh);
+    script([
+      { toolCalls: [openTask('wo-fresh', 'Book the room', 'A Thursday room booking confirmed to the owner')] },
+      { content: 'Booking it now.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks().filter((r) => r.title === 'Book the room');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-fresh');
   });
 });
 

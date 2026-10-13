@@ -246,7 +246,7 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
  *
  * Only fills a GAP: a caller that states an origin keeps it byte-identically.
  */
-function askSourceMessageForCreatingTurn(agentId: string): string | null {
+function askSourceMessageForCreatingTurn(agentId: string, creator: string, originTurn: number | null): string | null {
   try {
     const turn = currentTurnNumber(agentId);
     if (!turn) return null;
@@ -255,7 +255,8 @@ function askSourceMessageForCreatingTurn(agentId: string): string | null {
         WHERE kind = 'ask' AND agent_id = ? AND state = 'claimed' AND claimed_by_turn = ?
         ORDER BY opened_at DESC LIMIT 1`,
     ).get(agentId, turn) as { root_id: string } | undefined;
-    return r?.root_id ?? null;
+    if (r?.root_id) return r.root_id;
+    return originTurn !== null ? owedCompileOfUnrootedTurn(creator, originTurn) : null;
   } catch (err) {
     // A missing edge is the status quo, never a failed task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
@@ -265,12 +266,49 @@ function askSourceMessageForCreatingTurn(agentId: string): string | null {
   }
 }
 
+/**
+ * t139 — THE DELEGATED ASK A WAKE TURN IS COMPILING (the gap `work/join-drive.ts` names).
+ *
+ * The owner asks; the agent fans the job out to helpers; the ask is HELD `blocked` behind the
+ * join. When the last piece lands the join completes, the ask becomes `compile_pending`, and the
+ * agent is woken to combine the pieces — on a turn that serves no ask at all (its turn record
+ * carries no root: nothing waiting, no engine event, no A2A thread it was asked on). A task the
+ * agent opens there to finish the job was born with no link, so the task list could show only
+ * the agent's own restatement and never the owner's words (driven in
+ * `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
+ *
+ * The tie is two RECORDED facts, never a guess by time or by text:
+ *   * the creating turn's own record says it serves NOTHING (`turns.subject_kind = 'none'`,
+ *     no root) — an ask turn is linked by its root above, and an engine, occurrence, A2A or
+ *     continuation turn has a subject of its own (a peer's ASSIGN turn records its thread even
+ *     where it records no root), so none of them is ever re-pointed here;
+ *   * the spine says this agent owes exactly ONE compiled answer right now (`kind='ask'`, still
+ *     owed, `compile_pending = 1`) — the job the engine's compile drive is steering it to finish.
+ * Two owed compiles at once is ambiguous, and an ambiguous link is an invented one: the task is
+ * then opened unlinked, which the task list labels as such.
+ *
+ * Read on `ix_work_queue (agent_id, state, kind)` and the `turns` primary key; it runs only when a
+ * task is opened with no stated origin, never on an assembly.
+ */
+function owedCompileOfUnrootedTurn(agentId: string, turn: number): string | null {
+  const db = getDb();
+  const t = db.prepare('SELECT subject_kind, root_kind FROM turns WHERE agent_id = ? AND turn_number = ?')
+    .get(agentId, turn) as { subject_kind: string | null; root_kind: string | null } | undefined;
+  if (!t || t.subject_kind !== 'none' || t.root_kind !== null) return null;
+  const owed = db.prepare(
+    `SELECT root_id FROM work
+      WHERE agent_id = ? AND kind = 'ask' AND state IN ('claimed','blocked') AND compile_pending = 1
+      LIMIT 2`,
+  ).all(agentId) as Array<{ root_id: string }>;
+  return owed.length === 1 ? owed[0].root_id : null;
+}
+
 export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
   const at = now();
   const sourceMessageId = p.origin.sourceMessageId
-    ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy);
+    ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy, p.createdBy, p.origin.turn);
   // `agent_id` is NOT NULL on the spine and the legacy column was nullable, so an unassigned
   // task belongs to its creator until someone claims it — the same COALESCE migration `135`
   // used (`COALESCE(t.assigned_to, t.created_by)`), not a new rule.
