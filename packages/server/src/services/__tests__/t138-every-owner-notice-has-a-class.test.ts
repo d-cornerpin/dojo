@@ -53,10 +53,7 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'healer/injury-recovery.ts': [
     { cls: 'agent-trouble', severity: 'critical', what: 'the Healer itself is broken' },
-    {
-      cls: 'agent-trouble', severity: 'warning', what: 'auto-recovery gave up on a stuck agent',
-      muted: 'BROKEN door owned by t143 (plan: healer/injury-recovery.ts routed through the t138 door with once-per-incident dedupe)',
-    },
+    { cls: 'agent-trouble', severity: 'notice', what: 'auto-recovery gave up on a stuck agent (first entry into backoff)' },
     { cls: 'agent-trouble', severity: 'critical', what: 'an agent is stuck and the Healer is missing' },
   ],
   'google/auth.ts': [
@@ -187,11 +184,11 @@ describe('the owner-notice census', () => {
     }
   });
 
-  it('the two classes the owner asked to hear about (budget, agent trouble) reach the phone — except one handed-up site', () => {
+  it('the two classes the owner asked to hear about (budget, agent trouble) reach the phone — none is muted', () => {
     const muted = Object.entries(CENSUS).flatMap(([rel, sites]) =>
       sites.filter((s) => s.severity === 'warning' || s.severity === 'info').map((s) => ({ rel, ...s })));
     for (const m of muted) expect(m.muted, `${m.rel}: a muted notice must name who turns it on`).toBeTruthy();
-    expect(muted.map((m) => m.rel)).toEqual(['healer/injury-recovery.ts']);
+    expect(muted.map((m) => m.rel)).toEqual([]);
     const budget = Object.values(CENSUS).flat().filter((s) => s.cls === 'budget');
     expect(budget.length).toBeGreaterThan(0);
     expect(budget.every((s) => s.severity === 'notice')).toBe(true);

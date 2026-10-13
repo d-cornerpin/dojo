@@ -95,7 +95,7 @@ const ownerOutbounds = (): number => (db().prepare(
 const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 
 describe('BROKEN: auto-recovery gave up on a stuck agent', () => {
-  it.fails('the first entry into Healer backoff texts the owner once, naming the agent', () => {
+  it('the first entry into Healer backoff texts the owner once, naming the agent', () => {
     // Recovery attempts already at the maximum (3), as the durable counter would read after
     // three failed recoveries.
     db().prepare("UPDATE agents SET recovery_attempts = 3 WHERE id = 'ag'").run();

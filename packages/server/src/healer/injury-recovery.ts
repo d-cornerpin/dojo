@@ -476,7 +476,7 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
         const db = getDb();
         const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         const userMsg = `${agent?.name ?? agentId} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
-        sendAlert(userMsg, 'warning');
+        sendAlert(userMsg, 'notice'); // a broken agent: OR-V333-SET (3), once per backoff entry
         broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
       } catch { /* best effort */ }
     } else {
