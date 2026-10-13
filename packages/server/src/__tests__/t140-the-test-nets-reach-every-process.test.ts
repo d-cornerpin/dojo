@@ -39,14 +39,26 @@ beforeAll(() => {
 });
 afterAll(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
 
-/** Run `code` in a fresh Node process the way a test would start one, with the fake CLI alone on PATH. */
-function grandchild(code: string): string {
-  const out = childProcess.spawnSync(process.execPath, ['-e', code], {
-    env: { ...process.env, PATH: scratch, T140_MARKER: marker },
-    encoding: 'utf8',
-    timeout: 20_000,
-  });
-  return `${out.stdout ?? ''}${out.stderr ?? ''}`;
+/**
+ * Run `code` in a fresh Node process the way a test would start one, with the fake CLI alone on PATH.
+ * `env`: 'copied' — the test's environment, copied and amended; 'fresh' — an environment built from
+ * nothing (no NODE_OPTIONS of its own); 'inherited' — no env option at all, the process's own.
+ */
+function grandchild(code: string, env: 'copied' | 'fresh' | 'inherited' = 'copied'): string {
+  const saved = { PATH: process.env.PATH, T140_MARKER: process.env.T140_MARKER };
+  if (env === 'inherited') { process.env.PATH = scratch; process.env.T140_MARKER = marker; }
+  try {
+    const out = childProcess.spawnSync(process.execPath, ['-e', code], {
+      ...(env === 'copied' ? { env: { ...process.env, PATH: scratch, T140_MARKER: marker } } : {}),
+      ...(env === 'fresh' ? { env: { PATH: scratch, T140_MARKER: marker } } : {}),
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    return `${out.stdout ?? ''}${out.stderr ?? ''}`;
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.T140_MARKER === undefined) delete process.env.T140_MARKER; else process.env.T140_MARKER = saved.T140_MARKER;
+  }
 }
 
 describe('t140 round 5 — the CLI net asks what program is started, not what words are on the line', () => {
@@ -62,12 +74,12 @@ describe('t140 round 5 — the CLI net asks what program is started, not what wo
 });
 
 describe('t140 round 5 — the nets reach every Node process the suite starts', () => {
-  it('a process a test starts cannot start the CLI either', () => {
+  it.each(['copied', 'fresh', 'inherited'] as const)('a process a test starts (its environment %s) cannot start the CLI either', (env) => {
     fs.rmSync(marker, { force: true });
     const said = grandchild(`
       try { require('child_process').spawnSync('claude', ['--version'], { env: process.env }); process.stdout.write('NOT-STOPPED'); }
       catch (e) { process.stdout.write(String(e && e.message)); }
-    `);
+    `, env);
     expect(said).toMatch(CLI_NET);
     expect(fs.existsSync(marker), 'the fake CLI ran from the grandchild').toBe(false);
   });
