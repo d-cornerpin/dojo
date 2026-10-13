@@ -73,10 +73,12 @@ function appendTurn(large: boolean): void {
     `INSERT OR IGNORE INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered)
      VALUES (?, ?, 'user', datetime('now'), NULL, NULL, 0)`,
   ).run(AGENT, turnNo);
-  insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[t${turnNo}] Which bay is the next crate for?`, turnNumber: turnNo });
+  // Each row carries its OWN marker ([u7] / [a7]), so round 2's direct count can tell which
+  // rows the assembled view holds without asking the assembler.
+  insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[t${turnNo}] [u${turnNo}] Which bay is the next crate for?`, turnNumber: turnNo });
   insertMessage({
     agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: turnNo,
-    content: `[t${turnNo}] ${large ? LARGE : 'Bay four, beside the ramp; the seal is intact and the weight is on the sheet.'}`,
+    content: `[t${turnNo}] [a${turnNo}] ${large ? LARGE : 'Bay four, beside the ramp; the seal is intact and the weight is on the sheet.'}`,
   });
 }
 
@@ -148,4 +150,73 @@ describe('t140 I4 — a full view whose pressure sits in the newest-row floor do
     // Bounded: a 32K view with 12K rows in it may fold, but never on more than one turn in ten.
     expect(log.folds.length).toBeLessThanOrEqual(22);
   }, 600_000);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2 (re-review 1 §1) — THE DIRECT COUNT. After every assembly, a row is LOST when it is
+// (a) not in the assembled view and (b) not covered by any summary. The invariant is absolute:
+// zero lost rows, on every turn, at 32K and at 128K, whether the routine fold is awaited before
+// the assembly or lands after it (production's fire-and-forget). The newest-row floor limits
+// what a PRESSURE fold may take; it does not decide what the token trim takes, and every row
+// the trim takes is owed its summary before it leaves.
+// ════════════════════════════════════════════════════════════════════════════════════════
+type FoldTiming = 'awaited' | 'after-assembly';
+interface CountLog { lostRowTurns: number; turnsWithLoss: number; worstTurn: { turn: number; lost: string[] } | null; folds: number }
+
+/** The assembly the turn actually dials. Round 2's fix changes which door the engine uses. */
+const turnAssembly = async () => assembleContext(AGENT, MODEL);
+
+function lostRows(view: string): string[] {
+  const rows = db().prepare(
+    `SELECT m.content AS content FROM messages m
+      WHERE m.agent_id = ? AND NOT EXISTS (SELECT 1 FROM summary_messages sm WHERE sm.message_id = m.id)`,
+  ).all(AGENT) as Array<{ content: string }>;
+  const lost: string[] = [];
+  for (const r of rows) {
+    const marker = /\[(u|a)\d+\]/.exec(r.content)?.[0];
+    if (marker && !view.includes(marker)) lost.push(marker);
+  }
+  return lost;
+}
+
+async function driveCounting(turns: number, largeEvery: number, timing: FoldTiming): Promise<CountLog> {
+  const log: CountLog = { lostRowTurns: 0, turnsWithLoss: 0, worstTurn: null, folds: 0 };
+  let lastSystemTokens = 0;
+  for (let t = 1; t <= turns; t++) {
+    appendTurn(t % largeEvery === 0);
+    const before = summariser.calls;
+    const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
+    const leaving = rowsLeavingView(AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
+      { viewFull: liveViewIsFull(est, lastSystemTokens) });
+    const fold = leaving ? checkAndCompact(AGENT, MODEL, windowNow.value, { leaving, maxChunksPerRun: 10 }) : null;
+    if (fold && timing === 'awaited') await fold;
+    const ctx = await turnAssembly();
+    const lost = lostRows(JSON.stringify(ctx.messages));
+    if (fold && timing === 'after-assembly') await fold;
+    if (summariser.calls > before) log.folds++;
+    lastSystemTokens = estimateTokens(ctx.systemPrompt);
+    if (lost.length > 0) {
+      log.turnsWithLoss++;
+      log.lostRowTurns += lost.length;
+      if (!log.worstTurn || lost.length > log.worstTurn.lost.length) log.worstTurn = { turn: t, lost };
+    }
+  }
+  return log;
+}
+
+describe('t140 round 2 — C1 direct count: no row is ever out of view without a summary', () => {
+  for (const [window, every] of [[128_000, 10], [32_000, 15]] as const) {
+    for (const timing of ['awaited', 'after-assembly'] as const) {
+      const clause = `${window / 1000}K window, a ~12K row every ${every} turns, 220 turns, fold ${timing}: ZERO lost rows on every turn`;
+      const body = async () => {
+        seed(window);
+        const log = await driveCounting(220, every, timing);
+        // eslint-disable-next-line no-console
+        console.log(`t140 C1-direct ${window / 1000}K/${every} ${timing}: ${log.turnsWithLoss} turns with loss, ${log.lostRowTurns} lost row-turns, worst ${JSON.stringify(log.worstTurn && { turn: log.worstTurn.turn, n: log.worstTurn.lost.length })} · ${log.folds} fold turns`);
+        expect(log.worstTurn, 'a row was out of view with no summary covering it').toBeNull();
+      };
+      if (window === 32_000) it.fails(clause, body, 600_000);
+      else it(clause, body, 600_000);
+    }
+  }
 });
