@@ -65,7 +65,10 @@ vi.mock('../../agent/tools/index.js', async () => {
     ...actual,
     executeTool: async (agentId: string, tc: { id: string; name: string; arguments: Record<string, unknown> }) => {
       if (tc.name.startsWith('work_') || tc.name === 'send_to_agent') return actual.executeTool(agentId, tc as never);
-      return classifyToolResult({ content: `ok: ${tc.name} accepted; it is rendering in the background`, isError: false });
+      return classifyToolResult({
+        toolCallId: tc.id, name: tc.name,
+        content: `ok: ${tc.name} accepted; it is rendering in the background`, isError: false,
+      } as never);
     },
     getFilteredTools: () => [],
   };
@@ -470,25 +473,68 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(await taskList()).toContain(ask);
   });
 
-  // ⚠ RED, HANDED UP (outside t139's fence; lead from t137's harness, re-derived here). A long
-  // multi-step request answered with an acknowledgement alone ("On it — I will work through the
-  // venues and report back.") closes the owner's ask as DONE on the dashboard delivery
-  // ("delivered via dashboard", `work/ask-settlement.ts` close arm, reached from
-  // `agent/v2/answered-edge.ts`), and nothing else records the request: no task (the floor
-  // needs >= 6 untracked calls), no continuation, no wake. The work it promised has no live
-  // record anywhere — the #7 class, from the other side: not a stale request kept alive, but a
-  // live one dropped. Flip to `it` when an acknowledgement stops settling an unfinished request
-  // (the ask stays owed) or the request lands as an open task.
-  it.fails('a multi-step request ACKNOWLEDGED without work still has a live record while unfinished', async () => {
+  // ROUND 2, I4 (fence widened to ask settlement this round). A long multi-step request answered
+  // with an acknowledgement alone closed the owner's ask DONE on the dashboard delivery, and
+  // nothing else recorded the request. The fix keys on the ENGINE'S OWN JUDGEMENT, recorded at
+  // loop 1 (`assemble/multistep-detection.ts` arms the start-ack steer and sets
+  // `inboundClassifiedAsWork` — the "[Engine hint: … being worked as a tracked job" row is its
+  // durable trace), never on the reply's text: on such a turn with ZERO effectful calls, the
+  // reply is the start line, not the answer, so the ask goes back OWED (CT0's hand-back,
+  // bounded by the re-serve ladder) and work it touched is not parked as "waiting on the owner".
+  const askStateOf = (msgId: string): string =>
+    (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${msgId}`) as { state: string }).state;
+  const engineJudgedWork = (turn: number): boolean => !!mockDb.current!.prepare(
+    "SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'system' AND content LIKE '[Engine hint: the user has not heard anything%'",
+  ).get(PRIMARY, turn);
+
+  it.fails('a multi-step request ACKNOWLEDGED without work stays OWED (timer branch: chat-shaped, no tools)', async () => {
     const ask = longAsk(900, 'ACKED');
     ownerSays('msg-acked', ask);
     script([{ content: 'On it — I will work through the venues and report back.' }]);
     await runV2Turn(PRIMARY);
 
-    const askState = (mockDb.current!.prepare("SELECT state FROM work WHERE id = 'ask:msg-acked'").get() as { state: string }).state;
-    const linked = openTasks().filter((t) => t.source_message_id === 'msg-acked');
-    // A live record: the ask is still owed, or an open task carries the request.
-    expect(askState !== 'done' || linked.length > 0).toBe(true);
+    expect(engineJudgedWork(1)).toBe(true);           // the engine's own record, not the prose
+    expect(askStateOf('msg-acked')).not.toBe('done');
+  });
+
+  it.fails('acknowledged with only a READ (timer branch: tools started past the threshold) stays OWED', async () => {
+    const ask = longAsk(900, 'ACKREAD');
+    ownerSays('msg-ackread', ask);
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      let i = 0;
+      callModelSpy.mockImplementation(async () => {
+        i++;
+        if (i === 1) {
+          offset = 31_000;                              // past the 30 s start-ack threshold
+          return { content: 'On it.', toolCalls: [call('ws-r', 'web_search', { query: 'venues' })], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        }
+        return { content: 'I have a first look; will report back with the comparison.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+      });
+      await runV2Turn(PRIMARY);
+    } finally { nowSpy.mockRestore(); }
+    expect(askStateOf('msg-ackread')).not.toBe('done');
+  });
+
+  it('CONTROL: a quick question the engine did NOT judge as work closes on its answer, as always', async () => {
+    ownerSays('msg-quick', 'What is 15% of 240?');
+    script([{ content: '36.' }]);
+    await runV2Turn(PRIMARY);
+    expect(engineJudgedWork(1)).toBe(false);
+    expect(askStateOf('msg-quick')).toBe('done');
+  });
+
+  it('CONTROL: a multi-step request whose turn DID the work (an effectful call) closes as before', async () => {
+    const ask = longAsk(900, 'DIDWORK');
+    ownerSays('msg-didwork', ask);
+    script([
+      { content: 'On it.', toolCalls: [call('ce-dw', 'calendar_create_event', { title: 'Venue visit', start: '2026-10-20T10:00:00Z' })] },
+      { content: 'Done — the venue list is written up.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-didwork')).toBe('done');
   });
 
   // ⚠ RED, HANDED UP (outside t139's fence). The task the agent opened for the owner's request
