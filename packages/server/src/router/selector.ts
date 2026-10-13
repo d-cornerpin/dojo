@@ -235,18 +235,27 @@ export function routedSkipReasons(
  * auto-routed turn is assembled the engine knows these candidates and not yet which of them it
  * dials. The per-call filters are left out on purpose: the budget check carries its own alerting
  * side effects and is the call's to make, and the fit check needs an assembled array.
+ * Round 7 (re-review H2'): so are the filters that PASS — a rate limit, a provider's open breaker.
+ * A tier opens on its model when that clears; building the turn only for a stand-in left a model
+ * big enough for the agent out of the build, failed the assembly, and showed the owner a false
+ * "cannot hold a conversation" card. The call step re-fits to the pick it gets, and when no pick
+ * can hold the agent it tells the owner why (`call-llm/no-pick-holds.ts`).
  */
 export function routedFirstPicks(): string[] {
   const picks = new Set<string>();
   for (const chain of Object.values(TIER_FALLBACK)) {
     walk: for (const candidateTier of chain) {
       for (const model of getTierModels(candidateTier)) {
-        if (passesStandingFilters(model, ['tools'])) { picks.add(model.model_id); break walk; }
+        const skip = standingSkip(model, ['tools']);
+        if (skip === null || PASSING.has(skip)) { picks.add(model.model_id); break walk; }
       }
     }
   }
   return [...picks];
 }
+
+/** The skips that clear without the owner changing the agent: a rate limit, a provider's breaker. */
+const PASSING = new Set<RoutedSkip>(['rate_limit', 'provider_down']);
 
 export function selectModel(
   tier: string | null | undefined,

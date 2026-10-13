@@ -182,8 +182,11 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     expect(model).toMatch(/if \(isAutoRouteSentinel\(modelId\)\) return routedOpeningWindow\(\);/);
     expect(model).toMatch(/for \(const id of routedFirstPicks\(\)\) \{/);
     // The opening picks are the selector's own: ONE standing-filter predicate, read by both.
+    // Round 7: the opening picks read its reason, and count the skips that pass (rate limit, breaker).
     const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
-    expect(selector.match(/passesStandingFilters\(/g)?.length, 'declaration + selectModel + routedFirstPicks').toBe(3);
+    expect(selector.match(/passesStandingFilters\(/g)?.length, 'declaration + selectModel').toBe(2);
+    expect(selector).toMatch(/const skip = standingSkip\(model, \['tools'\]\);\s*if \(skip === null \|\| PASSING\.has\(skip\)\) \{ picks\.add\(model\.model_id\); break walk; \}/);
+    expect(selector).toMatch(/const PASSING = new Set<RoutedSkip>\(\['rate_limit', 'provider_down'\]\);/);
     // Its readers: the turn's building window, and the card's "can a model of its own hold it" (round 5 b).
     expect(filesWith(/\broutedFirstPicks\(/)).toEqual(['agent/model.ts', REFIT_REL, 'router/selector.ts']);
   });

@@ -172,7 +172,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   // The roomy model is turned away for a reason that passes (a rate limit): the turn must still be
   // BUILT for it, so the call step can say so. Building for the small pick alone failed the assembly
   // with the "cannot hold a conversation" card — false — and the generic Healer error.
-  it.fails('the roomy model is rate-limited right now: the owner is told so in plain words — no false card, no Healer, not errored', async () => {
+  it('the roomy model is rate-limited right now: the owner is told so in plain words — no false card, no Healer, not errored', async () => {
     seed(false);
     const { updateRateLimits } = await import('../../../../../router/rate-limits.js');
     updateRateLimits(ROOMY, { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
