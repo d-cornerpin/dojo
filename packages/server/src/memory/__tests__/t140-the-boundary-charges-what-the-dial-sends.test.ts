@@ -22,7 +22,7 @@
 // "the dial happened" off the scripted provider.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -54,19 +54,26 @@ vi.mock('../../tools/tool-docs.js', async () => {
 const provider = vi.hoisted(() => ({
   requests: [] as Array<{ prompt: string; options: Record<string, unknown> }>,
 }));
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (args: { prompt: string; options: Record<string, unknown> }) => {
-    provider.requests.push(args);
-    return (async function* answer() {
-      yield {
-        type: 'assistant',
-        message: {
-          content: [{ type: 'text', text: 'The crew counted the north dock and logged the damaged lids.' }],
-          usage: { input_tokens: 40, output_tokens: 12 },
-        },
-      };
-    })();
+// THE SCRIPTED PROVIDER, one level above the external SDK package: `callAnthropicViaSdk` (the
+// in-tree transport `callModel` dials for an agent-sdk provider) records what it was handed and
+// answers. Fix round 1: scripting the external package itself was measured to leak — under
+// concurrent dynamic imports, one importer received the REAL Agent SDK, which launched the real
+// CLI ("Not logged in"; nothing was sent). An in-tree module mock does not have that path.
+vi.mock('../../providers/anthropic-sdk.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  callAnthropicViaSdk: async (params: { systemPrompt: string; messages: unknown[] }) => {
+    const req = { prompt: '', options: { systemPrompt: `${params.systemPrompt}\n${JSON.stringify(params.messages)}` } as Record<string, unknown> };
+    provider.requests.push(req);
+    if ((provider as { failNext?: number }).failNext) {
+      (provider as { failNext: number }).failNext--;
+      throw new Error('socket hang up');
+    }
+    return { content: 'The crew counted the north dock and logged the damaged lids.', toolCalls: [], inputTokens: 40, outputTokens: 12, stopReason: 'end_turn' };
   },
+}));
+// A second net, never expected to be reached: the external package stays mocked too.
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: () => { throw new Error('t140 test: the real Agent SDK must never be reached'); },
 }));
 
 import { runMigrations } from '../../db/migrations.js';
@@ -79,12 +86,6 @@ const SMALL = 'm-small-16k';
 const ZERO = 'm-window-zero';
 
 const db = (): Database.Database => mockDb.current!;
-
-// Resolve the mocked transport once up front (see the same note in the W1 file).
-beforeAll(async () => {
-  await import('@anthropic-ai/claude-agent-sdk');
-  await import('../../providers/anthropic-sdk.js');
-});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');

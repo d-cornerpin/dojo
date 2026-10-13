@@ -16,14 +16,14 @@
 // The three calls the engine's `callLLM` step makes, in its order, against REAL migrations, a
 // REAL assembler, the REAL window resolver, the REAL re-assemble helper and the REAL
 // `callModel` with its provider-boundary validator. Only the transport at the very bottom is
-// scripted (the Agent SDK's `query()`), so what this file reads is the exact request a provider
+// scripted (`callAnthropicViaSdk`, the in-tree agent-sdk transport), so what this file reads is the exact request a provider
 // would have received.
 //   1. `assembleContext(agentId, '__auto__')`   — what `assemble` runs for an auto-routed turn
 //   2. `reassembleForFitIfNeeded({ modelId })`  — what `callLLM` runs once the router has picked
 //   3. `callModel({ modelId, messages })`        — the dial, through the boundary validator
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -68,24 +68,26 @@ const provider = vi.hoisted(() => ({
   /** Fix round 1: how many of the next requests fail on the wire (a transient error). */
   failNext: 0,
 }));
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (args: { prompt: string; options: Record<string, unknown> }) => {
-    provider.requests.push(args);
-    if (provider.failNext > 0) {
-      provider.failNext--;
-      return (async function* fail() {
-        throw new Error('socket hang up');
-        // eslint-disable-next-line no-unreachable
-        yield undefined as never;
-      })();
+// THE SCRIPTED PROVIDER, one level above the external SDK package: `callAnthropicViaSdk` (the
+// in-tree transport `callModel` dials for an agent-sdk provider) records what it was handed and
+// answers. Fix round 1: scripting the external package itself was measured to leak — under
+// concurrent dynamic imports, one importer received the REAL Agent SDK, which launched the real
+// CLI ("Not logged in"; nothing was sent). An in-tree module mock does not have that path.
+vi.mock('../../../../../providers/anthropic-sdk.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  callAnthropicViaSdk: async (params: { systemPrompt: string; messages: unknown[] }) => {
+    const req = { prompt: '', options: { systemPrompt: `${params.systemPrompt}\n${JSON.stringify(params.messages)}` } as Record<string, unknown> };
+    provider.requests.push(req);
+    if ((provider as { failNext?: number }).failNext) {
+      (provider as { failNext: number }).failNext--;
+      throw new Error('socket hang up');
     }
-    return (async function* answer() {
-      yield {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'Noted.' }], usage: { input_tokens: 3, output_tokens: 2 } },
-      };
-    })();
+    return { content: 'Noted.', toolCalls: [], inputTokens: 40, outputTokens: 12, stopReason: 'end_turn' };
   },
+}));
+// A second net, never expected to be reached: the external package stays mocked too.
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: () => { throw new Error('t140 test: the real Agent SDK must never be reached'); },
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
@@ -183,15 +185,6 @@ async function dialAsRouted(pick: string): Promise<{ prompt: string; options: Re
   expect(turnRequests.length, 'the turn must have been dialed exactly once').toBe(1);
   return turnRequests[0];
 }
-
-// Resolve the MOCKED transport once, before any clause can race two first-time dynamic imports
-// of it (a background fold's summariser and the turn's own dial): measured once under that race,
-// one importer received the REAL Agent SDK, which spawned the real CLI ("Not logged in"). With
-// the module already resolved, every later `await import(...)` gets the same mocked instance.
-beforeAll(async () => {
-  await import('@anthropic-ai/claude-agent-sdk');
-  await import('../../../../../providers/anthropic-sdk.js');
-});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -369,6 +362,26 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     expect(out.abandoned).toBeUndefined();
     if (out.abandoned) return;
     expect(out.modelId, 'the candidate whose window holds the turn').toBe(LIGHT);
+  });
+
+  it('a fallback the window check lets through but whose window cannot hold the system prompt and tools is excluded, and the next pick answers', async () => {
+    // A SHORT conversation: the array (~6.5K) is under the 12K model's fill line, so the window
+    // check admits it — but 0.96 × 12,288 − (2,000 tools + 4,096 output) is below the ~6K system
+    // prompt, so its re-fit refuses by name. The pick is excluded and the 16K one answers.
+    seedConversation(5);
+    const SMALLER = 'm-routed-smaller';
+    db().prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 12288, 4096, 1, datetime('now'), datetime('now'))`,
+    ).run(SMALLER);
+    db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
+    db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
+    provider.failNext = 1;
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
+    expect(out.modelId).toBe(LIGHT);
+    expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 5]')).toBe(true);
   });
 
   it('the BUDGET redirect to a free model re-fits the array before it dials, and the turn succeeds', async () => {
