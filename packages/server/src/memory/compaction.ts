@@ -527,12 +527,10 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
 // summaries with the same (cheap) model choice. Returns null when no
 // text-capable model exists at all.
 export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string, opts?: { background?: boolean }): string | null {
-  // t140 round 3: the order above, with writers whose provider is broken or has not answered since
-  // it failed passed over (`summary-writer-health.ts`) — so an unreachable cheapest model is not
-  // picked again and again. Round 5: a BACKGROUND fold passes over only broken writers — nobody
-  // waits on it, and trying the preferred writer is how its return is noticed. When every writer
-  // is passed over, the first in order is still returned: the pressure path has its own brake, and
-  // "no writer" would be a false defect.
+  // t140 round 3: the order above, passing over writers broken or not answering since they failed
+  // (`summary-writer-health.ts`); round 5: a BACKGROUND fold passes over only broken ones (nobody
+  // waits there). With every writer passed over, the first in order is still returned: the pressure
+  // path has its own brake, and "no writer" would be a false defect.
   const all = summaryWriterCandidates(preferredModelId);
   const pick = (opts?.background ? backgroundSummaryWriters : eligibleSummaryWriters)(preferredModelId)[0] ?? all[0] ?? null;
   if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
@@ -570,8 +568,7 @@ export interface CheckAndCompactOptions {
    * cheapest text model, exactly as before t140.
    */
   dialedModelId?: string;
-  /** t140 round 5: a background fold — nobody waits on it, so its writer is chosen in the owner's
-   *  order with only broken writers passed over (`resolveSummaryWriterModel`). */
+  /** t140 round 5: a background fold; its writer is the owner's order minus broken ones. */
   inTheBackground?: boolean;
 }
 

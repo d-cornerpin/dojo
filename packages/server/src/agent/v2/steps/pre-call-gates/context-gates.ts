@@ -14,18 +14,14 @@
 // The routine condense below it is fire-and-forget on purpose (v2.5.14): it used to be
 // awaited through a summarizer call whose only bound was an SDK default, so a hung summarizer
 // blocked the turn for up to ten minutes with no error and no log line. It runs in the
-// background, one in flight per agent. Round 5 (owner ruling 2026-10-13, no hard limits): it has
-// no clock and no chunk cap of its own. A writer that is answering is never cut (a 60 s clock
-// refused a real summary on a user's box); one that is not is ended by its provider's own patience
-// in the transport, by the owner's Stop, or by the turn setting it aside; and it folds exactly
-// the rows leaving the view, however many that is.
+// background, one in flight per agent, with no clock or chunk cap of its own (round 5, owner ruling
+// 2026-10-13): it folds exactly the rows leaving, and ends only on Stop, the turn setting it aside,
+// or the writer's own transport patience — a 60 s clock refused a real summary on a user's box.
 //
-// t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL, AND ONLY THAT ONE. A
-// fixed-model agent's, or an auto-routed tool loop's locked model, is known here. An auto-routed
-// iteration with nothing locked is not: the router decides the tier from the assembled array, which
-// does not exist yet. That iteration's routine check therefore runs once the router has named its
-// pick (`condenseForTheDialedModel`, called by `call-llm/reassemble-for-fit.ts`), never here against
-// the turn's building window (`agent/model.ts`'s `routedOpeningWindow`, round 5).
+// t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL — a fixed model, or an
+// auto-routed loop's locked one. With nothing locked the router has not decided (it reads the
+// assembled array), so the check runs once it names its pick (`condenseForTheDialedModel`, from
+// `call-llm/reassemble-for-fit.ts`), never against the building window (round 5).
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -54,17 +50,11 @@ const logger = createLogger('v2-loop');
  */
 const lastSystemPromptTokens = new Map<string, number>();
 
-/**
- * Round 5: the model each agent's routine check last measured at the gate (absent: the gate left it
- * to the call step). The call step reads it so the check runs exactly once per dialed model.
- */
+/** Round 5: the model each agent's gate last measured the routine check for (absent: left to the call step). */
 const routineMeasuredAtGate = new Map<string, string>();
-
-/** Whether this iteration's gate already measured the routine check for `modelId`. */
 export function routineCheckMeasuredAtGate(agentId: string, modelId: string): boolean {
   return routineMeasuredAtGate.get(agentId) === modelId;
 }
-
 
 /**
  * The context gates. Returns `proceed` when the assembled context still fits, and
@@ -205,13 +195,8 @@ export async function runContextGates(
   return proceed(state);
 }
 
-/**
- * THE ROUTINE CHECK, for the model a call will actually dial: is the view full for ITS window, or
- * are rows about to leave it? If so, fold exactly those rows in the background
- * (`condenseLeavingInBackground`). The gate runs it for a model it knows; the call step runs it
- * once the router has named an auto-routed pick (round 5). `estimate` is the gate's own dry run
- * when it already has one for this window and model. Never throws; returns whether a fold started.
- */
+/** THE ROUTINE CHECK for the model a call will dial: full for ITS window, or rows about to leave it? Then
+ *  fold exactly those, in the background. `estimate`: the gate's own dry run. Never throws. */
 export async function condenseForTheDialedModel(args: {
   agentId: string; dialedModelId: string; contextWindow: number; writerModelId: string; systemPromptTokens: number;
   estimate?: Awaited<ReturnType<typeof estimateAssembledTokens>>;
