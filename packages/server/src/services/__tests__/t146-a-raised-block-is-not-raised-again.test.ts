@@ -238,6 +238,19 @@ describe('§2 an agent text that names its task records that the owner was told'
     expect(toldEvents('t-raised'), 'because the dispatch door wrote the told record').toEqual([{ actor: PRIMARY, via: 'send_tool' }]);
   });
 
+  it('inside an engine lane\'s own scope (an auto-route reply), the named send still records from ITS OWN delivery', async () => {
+    seedBlocked('t-in-lane');
+    await withOutboundAsync(
+      { agentId: PRIMARY, tool: 'auto-route', channel: 'imessage', recipientId: OWNER_PHONE },
+      async () => { await agentTexts(OWNER_PHONE, 'The greenhouse firmware task is stuck.', { task_id: 't-in-lane' }); },
+    );
+    const told = db().prepare(
+      `SELECT d.tool AS tool FROM work_events e JOIN deliveries d ON d.id = json_extract(e.payload, '$.delivery_id')
+        WHERE e.work_id = 't-in-lane' AND e.kind = 'person_told'`,
+    ).all() as Array<{ tool: string }>;
+    expect(told.map((r) => r.tool), 'the record names the send tool\'s own row, never the lane around it').toEqual(['imessage_send']);
+  });
+
   it('a task id given as an 8+ character prefix resolves to the row, as the work tools resolve it', async () => {
     const id = '9f3c2a71-5d1e-4b8a-a0c4-2e6f1b7d9c03';
     seedBlocked(id);
