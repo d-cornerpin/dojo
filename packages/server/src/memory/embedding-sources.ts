@@ -73,6 +73,16 @@ export const EMBEDDING_SOURCE_TABLES: Record<EmbeddingSourceType, string> = {
   technique: 'techniques',
 };
 
+/** t140: a source row that exists but is NOT knowledge. A not-yet-condensed note
+ *  (`summaries.kind = 'uncondensed'`, `memory/uncondensed-head.ts`) only says that rows exist and
+ *  are kept; it is never embedded, and an embedding one carries is never served. Its replacement
+ *  re-embeds the real summary text. */
+const NOT_EMBEDDABLE: Partial<Record<EmbeddingSourceType, string>> = { summary: "src.kind = 'uncondensed'" };
+const embeddable = (kind: string): string => {
+  const excluded = Object.hasOwn(NOT_EMBEDDABLE, kind) ? NOT_EMBEDDABLE[kind as EmbeddingSourceType] : undefined;
+  return excluded ? ` AND NOT (${excluded})` : '';
+};
+
 /**
  * A SQL predicate over an aliased `embeddings` row, true only while the row's source still exists.
  *
@@ -89,7 +99,7 @@ export const EMBEDDING_SOURCE_TABLES: Record<EmbeddingSourceType, string> = {
 export function embeddingSourceAliveSql(alias = 'e'): string {
   const arms = Object.entries(EMBEDDING_SOURCE_TABLES).map(
     ([kind, table]) =>
-      `(${alias}.source_type = '${kind}' AND EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ${alias}.source_id))`,
+      `(${alias}.source_type = '${kind}' AND EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ${alias}.source_id${embeddable(kind)}))`,
   );
   return `(${arms.join(' OR ')})`;
 }
@@ -170,7 +180,7 @@ export function insertEmbeddingIfSourceAlive(
   const result = db.prepare(`
     INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, datetime('now')
-     WHERE EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ?)
+     WHERE EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ?${embeddable(row.sourceType)})
   `).run(
     row.id, row.sourceType, row.sourceId, row.agentId, row.preview,
     row.vector, row.dimensions, row.sourceId,

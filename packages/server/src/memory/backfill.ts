@@ -57,7 +57,7 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
       SELECT s.id, s.agent_id, s.content
       FROM summaries s
       LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
-      WHERE e.id IS NULL
+      WHERE e.id IS NULL AND s.kind != 'uncondensed'   -- t140: a not-yet-condensed note is not knowledge
       ORDER BY s.created_at ASC
       LIMIT ?
     `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
@@ -92,7 +92,7 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
         const c = (q: string): number => (db.prepare(q).get() as { c: number }).c;
         const total =
           c(`SELECT COUNT(*) AS c FROM messages m LEFT JOIN embeddings e ON e.source_type='message' AND e.source_id=m.id WHERE e.id IS NULL AND length(m.content) >= 20`) +
-          c(`SELECT COUNT(*) AS c FROM summaries s LEFT JOIN embeddings e ON e.source_type='summary' AND e.source_id=s.id WHERE e.id IS NULL`) +
+          c(`SELECT COUNT(*) AS c FROM summaries s LEFT JOIN embeddings e ON e.source_type='summary' AND e.source_id=s.id WHERE e.id IS NULL AND s.kind != 'uncondensed'`) +
           c(`SELECT COUNT(*) AS c FROM techniques t LEFT JOIN embeddings e ON e.source_type='technique' AND e.source_id=t.id WHERE e.id IS NULL`);
         return Math.max(0, total - items.length);
       } catch { return null; }

@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe('t140 — a not-yet-condensed note is never taken for knowledge', () => {
-  it.fails('EMBEDDING WRITE: a note is not an embeddable source — the guarded insert writes nothing for it', () => {
+  it('EMBEDDING WRITE: a note is not an embeddable source — the guarded insert writes nothing for it', () => {
     const id = aNote();
     const wrote = insertEmbeddingIfSourceAlive(db(), {
       id: 'emb-note', sourceType: 'summary', sourceId: id, agentId: AGENT, preview: 'x', vector: vector(), dimensions: 4,
@@ -79,7 +79,7 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
     expect(wrote, 'a note was embedded as if it were a summary of what was said').toBe(false);
   });
 
-  it.fails('VECTOR READ: an embedding a note somehow carries (a legacy row) is never served', () => {
+  it('VECTOR READ: an embedding a note somehow carries (a legacy row) is never served', () => {
     const id = aNote();
     db().prepare(`INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
                   VALUES ('emb-legacy', 'summary', ?, ?, 'x', ?, 4, datetime('now'))`).run(id, AGENT, vector());
@@ -87,14 +87,14 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
     expect(served.n).toBe(0);
   });
 
-  it.fails('BACKFILL: the embedding backfill never picks a note up', async () => {
+  it('BACKFILL: the embedding backfill never picks a note up', async () => {
     const id = aNote();
     const { runBackfill } = await import('../backfill.js');
     await runBackfill();
     expect(embed.stored, 'the backfill sent a note to be embedded').not.toContain(id);
   });
 
-  it.fails('REPLACED IN PLACE: when a writer answers, the same row becomes a real summary and THAT text is embedded', async () => {
+  it('REPLACED IN PLACE: when a writer answers, the same row becomes a real summary and THAT text is embedded', async () => {
     const id = aNote();
     await replaceUncondensedPlaceholders(AGENT);
     const row = db().prepare('SELECT kind, content FROM summaries WHERE id = ?').get(id) as { kind: string; content: string };
@@ -121,5 +121,42 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
     const { getDescendantMessages } = await import('../dag.js');
     const linked = (db().prepare('SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id = ?').get(id) as { n: number }).n;
     expect(getDescendantMessages(id).length).toBe(linked);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE CENSUS — every reader of `summaries.kind`, and what it does with 'uncondensed' (reviewed):
+//   assembler.ts            renders `kind="uncondensed"` on the note's tag: an honest label in view.
+//   backfill.ts             selects and counts un-embedded summaries EXCLUDING notes.
+//   condense-until-fits.ts  counts and merges top-level summaries EXCLUDING notes (never folded).
+//   dag.ts                  maps the column; a note expands to its own rows (kind !== 'condensed');
+//                           any text write through `updateSummaryContent` makes a note a leaf.
+//   embedding-sources.ts    a note is not embeddable, and a note's embedding is never served
+//                           (vector search and the recall lane read through this predicate).
+//   retrieval.ts            grep/describe PRINT the kind: a note is shown as `uncondensed`.
+//   summary-rebuild.ts      leaf-only filler check (a note is skipped); non-leaf → condensed path,
+//                           where a note has no children and is SKIPPED, never written — and a
+//                           note's fixed text is never flagged in the first place (witnessed above).
+//   uncondensed-head.ts / uncondensed-placeholder.ts   the identity itself.
+// A NEW reader of the kind anywhere in memory/ (or the memory routes) fails this until it is reviewed
+// for the third value and added here.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('t140 — census: every reader of summaries.kind has been reviewed for the third value', () => {
+  it('the readers are exactly the reviewed set', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const SRC = path.resolve(__dirname, '../..');
+    const RE = /\b(?:summary|flag|src|row|s|r)\.kind\b|\bkind\s*(?:===|!==|=|!=|<>)\s*'(?:leaf|condensed|uncondensed)'|CASE kind|UNCONDENSED_KIND|\bs\.kind\s*(?:=|!=)\s*[?@]/;
+    const files = [
+      ...fs.readdirSync(path.join(SRC, 'memory')).filter((f) => f.endsWith('.ts')).map((f) => `memory/${f}`),
+      'gateway/routes/memory.ts',
+    ];
+    const readers = files.filter((rel) => fs.readFileSync(path.join(SRC, rel), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1').split('\n').some((l) => RE.test(l)));
+    expect(readers.sort()).toEqual([
+      'memory/assembler.ts', 'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
+      'memory/embedding-sources.ts', 'memory/retrieval.ts', 'memory/summary-rebuild.ts',
+      'memory/uncondensed-head.ts', 'memory/uncondensed-placeholder.ts',
+    ]);
   });
 });

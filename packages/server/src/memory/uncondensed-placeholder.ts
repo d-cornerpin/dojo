@@ -30,6 +30,7 @@ import {
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { generateSummary } from './summarize.js';
+import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { abortBlamesWriter, eligibleSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
@@ -129,7 +130,8 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
       if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
       const text = annotateSummaryObligations(summary.text, agentId);
-      updateSummaryContent(id, text, text === summary.text ? summary.tokenCount : estimateTokens(text));
+      updateSummaryContent(id, text, text === summary.text ? summary.tokenCount : estimateTokens(text));   // now a leaf
+      refreshEmbedding('summary', id, agentId, text);   // the real text is knowledge; the note never was
       done = true;
     }
     if (!done) break;
