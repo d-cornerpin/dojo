@@ -8060,6 +8060,20 @@
       "to": 256,
       "by": "t146 (2026-10-13) — the safe-sender records move out of the iMessage bridge with the one owner rule",
       "why": "New file at 256, pinned decrease-only (growth detector: crossed 60% of the new-file cap). 196 of its lines are the safe-sender section moved BYTE-FOR-BYTE out of services/imessage-bridge.ts (proved by a containment check against 4cb9ed61's bytes; the bridge's pin drops 2322 -> 2142 in the same series), plus a 16-line header and the owner rule (ownerIMessageRecord, isOwnerIMessageRecipient, the stored-records read). It exists because the told record (work/validation-drive.ts) could not import the bridge without a cycle and so kept its own owner parse, which disagreed with the bridge. REFUSED: leaving the parse in the bridge with a second minimal copy beside the rule (two parsers of one record is the defect being removed). From 256 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2145,
+      "to": 2160,
+      "by": "t146 round 2 (2026-10-13) — rulings 1 and 4",
+      "why": "+15 (2145 -> 2160), still -162 below base's 2322 (this lane's own earlier lowering is what made it a raise). Round 2 ruling 4: with no phone, the owner card about a work row is the tell — the card goes on the ledger as a platform dashboard delivery to the owner in its own scope (8 lines, 3 of them the comment stating the ruling), and the two told-record calls share one 7-line helper (`toldAbout`: read THIS scope's delivery, record, log a refusal) instead of two inline copies. REFUSED: a deliveries row for every card (the ledger would change for every notice; only a card that is evidence of a tell about a row is recorded). From 2160 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 1306,
+      "to": 1313,
+      "by": "t146 round 2 (2026-10-13) — rulings 1 and 4",
+      "why": "+7 (1306 -> 1313), still -10 below base's 1323. Round 2: the `owner_card` evidence form (+3 doc lines, the union member), the door check for it (+2: owner_card only from a platform dashboard row), and a 3-line note at the steer composer that its last sentence names the send tools' task_id. From 1313 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8318,7 +8332,7 @@
     "packages/server/src/services/generation-jobs.ts": 461,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
-    "packages/server/src/services/imessage-bridge.ts": 2145,
+    "packages/server/src/services/imessage-bridge.ts": 2160,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
@@ -8370,7 +8384,7 @@
     "packages/server/src/work/store.ts": 2258,
     "packages/server/src/work/tracker-store.ts": 1007,
     "packages/server/src/work/tracker-view.ts": 700,
-    "packages/server/src/work/validation-drive.ts": 1306,
+    "packages/server/src/work/validation-drive.ts": 1313,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
