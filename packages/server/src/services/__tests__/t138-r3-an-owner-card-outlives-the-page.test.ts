@@ -282,6 +282,16 @@ describe('an agent-trouble card outlives the page', () => {
     expect(shown[0].words).toContain('Helper');
   });
 
+  it('a clean turn ends the trip\'s card: a later manual pause shows no stale "paused after errors" card', async () => {
+    const m = await boot();
+    let p = false;
+    for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
+    expect(await m.cards()).toHaveLength(1);
+    m.errors.clearErrors('ag'); // the agent worked again
+    db().prepare("UPDATE agents SET status = 'paused' WHERE id = 'ag'").run(); // the owner pauses it by hand
+    expect(await m.cards()).toEqual([]);
+  });
+
   it('the paused agent\'s own chat card carries the owner card\'s words, after it (one card on screen)', async () => {
     const m = await boot();
     let p = false;
