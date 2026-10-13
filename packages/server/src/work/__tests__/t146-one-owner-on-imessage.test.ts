@@ -88,7 +88,7 @@ beforeEach(() => {
 });
 
 describe('the owner the bridge texts is the owner the told record recognises', () => {
-  it.fails('RED at 4cb9ed61: a list with nobody starred — the bridge texts the first record, the record refuses it', () => {
+  it('RED at 4cb9ed61: a list with nobody starred — the bridge texts the first record, the record refuses it', () => {
     setConfig('imessage_approved_senders', JSON.stringify([
       { address: FIRST, name: 'First' }, { address: SECOND, name: 'Second' },
     ]));
@@ -107,7 +107,7 @@ describe('the owner the bridge texts is the owner the told record recognises', (
     expect(told?.kind, JSON.stringify(told)).toBe('applied');
   });
 
-  it.fails('RED at 4cb9ed61: a legacy bare-string list — its first entry is the owner', () => {
+  it('RED at 4cb9ed61: a legacy bare-string list — its first entry is the owner', () => {
     setConfig('imessage_approved_senders', JSON.stringify([FIRST, SECOND]));
     const { sentTo, told } = noticeToTheBridgesOwner('t-1');
     expect(sentTo).toBe(FIRST);

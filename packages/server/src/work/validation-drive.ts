@@ -43,6 +43,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { AUDIT_KIND } from './audit-trail.js';
 import { recipientIdsMatch } from '../agent/recipient-identity.js';
+import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
 import { appendWorkEvent, TERMINAL_STATES } from './store.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, awaitingUserVerdictExpr,
@@ -320,31 +321,14 @@ const NOT_A_PERSON_TOOL = 'engine-ack';
 export const NOTICE_DOOR_SENDER = 'platform';
 
 /**
- * The owner's own addresses, read from the record that DEFINES him on each channel: the
- * dashboard/voice counterparty sentinel `'owner'` (`agent/v2/deliveries.ts` resolves those
- * channels to it), and the starred (`is_primary`) iMessage safe sender — the same record
- * `services/imessage-bridge.ts:getDefaultSender` and the refusal gate's `recipientIsChannelOwner`
- * read (the legacy key ONLY when none is starred, the bridge's own order). Unknown means NOT the
- * owner: the cost is the owner possibly told again, never a tell invented.
+ * Is this delivery's recipient the owner? The dashboard/voice counterparty sentinel `'owner'`
+ * (`agent/v2/deliveries.ts` resolves those channels to it), or the owner on iMessage by the ONE
+ * rule every reader shares (`services/safe-senders.ts:isOwnerIMessageRecipient`, t146 — the
+ * address the bridge sends his notices to). Unknown means NOT the owner: the cost is the owner
+ * possibly told again, never a tell invented.
  */
-function ownerAddresses(): string[] {
-  const out = ['owner'];
-  try {
-    const db = getDb();
-    const raw = (db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'")
-      .get() as { value: string } | undefined)?.value;
-    const parsed = raw ? JSON.parse(raw) as unknown : null;
-    if (Array.isArray(parsed)) {
-      for (const r of parsed) {
-        const rec = r as { address?: unknown; is_primary?: unknown };
-        if (rec && rec.is_primary === true && typeof rec.address === 'string') out.push(rec.address);
-      }
-    }
-    const legacy = out.length > 1 ? undefined : (db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'")
-      .get() as { value: string } | undefined)?.value;
-    if (legacy) out.push(legacy);
-  } catch { /* unreadable config: only the dashboard sentinel is known */ }
-  return out;
+function isOwnerRecipient(recipientId: string): boolean {
+  return recipientId === 'owner' || isOwnerIMessageRecipient(recipientId);
 }
 
 /**
@@ -408,8 +392,7 @@ export function recordPersonTold(
     }
     const w = db.prepare('SELECT requester, requester_id FROM work WHERE id = ?')
       .get(workId) as { requester: string; requester_id: string | null };
-    const toOwner = d.recipient_id !== null
-      && ownerAddresses().some((o) => o === d.recipient_id || recipientIdsMatch(o, d.recipient_id));
+    const toOwner = d.recipient_id !== null && isOwnerRecipient(d.recipient_id);
     const toRequester = d.recipient_id !== null && w.requester_id !== null
       && !['agent', 'schedule'].includes(w.requester)
       && recipientIdsMatch(w.requester_id, d.recipient_id);

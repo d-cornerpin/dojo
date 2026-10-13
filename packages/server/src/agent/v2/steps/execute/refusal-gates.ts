@@ -11,15 +11,13 @@
 // one. The refusal VALUES are the same bytes, including every threshold and every
 // word of every refusal text.
 //
-// `recipientIsChannelOwner` came WITH them: its only use was inside this span.
+// The owner check they use is the shared one (`services/safe-senders.ts`, t146).
 // ════════════════════════════════════════
 
-import { getDb } from '../../../../db/connection.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { getPresence } from '../../../../services/presence.js';
-import { parseSafeSenders } from '../../../../services/imessage-bridge.js';
+import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
-import { recipientIdsMatch } from '../../../recipient-identity.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { persistEngineSteer } from '../../engine-steer.js';
@@ -44,23 +42,10 @@ const logger = createLogger('v2-loop');
 // engine turn serving a reminder, the floor model resolved "deliver this to
 // the user" to the most RECENT human it had chatted with (a third-party
 // iMessage contact) and texted owner-bound content there, recipient chosen
-// explicitly by the model, so no recency-map fix could catch it. This helper
-// answers "is this recipient the owner?" from the channel's own approved
-// sender records (is_primary), phone-tolerant via recipientIdsMatch.
-function recipientIsChannelOwner(toolName: string, recipient: string): boolean {
-  try {
-    const db = getDb();
-    const raw = (db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined)?.value ?? null;
-    // Lazy import avoided: parseSafeSenders is a pure parser; require the
-    // bridge module statically below via the existing import surface.
-    const senders = parseSafeSenders(raw);
-    const owners = senders.filter((x) => x.is_primary);
-    for (const o of owners) {
-      if (recipientIdsMatch(recipient, o.address) || recipientIdsMatch(recipient, o.name)) return true;
-    }
-  } catch { /* conservative: unknown = not owner */ }
-  return false;
-}
+// explicitly by the model, so no recency-map fix could catch it. "Is this
+// recipient the owner?" is answered by the ONE owner rule
+// (`services/safe-senders.ts:isOwnerIMessageRecipient`, t146), address or
+// record name, phone-tolerant via recipientIdsMatch.
 
 /** `refusal` non-null means the call does NOT run and this is its result. */
 export function runRefusalGates(
@@ -93,7 +78,7 @@ export function runRefusalGates(
     const served = turnCtx.servedWork;
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
     const recip = String(a.recipient ?? a.to ?? '').trim();
-    const recipIsOwner = recip ? recipientIsChannelOwner(tc.name, recip) : false;
+    const recipIsOwner = recip ? isOwnerIMessageRecipient(recip) : false;
     if (served?.taskKind === 'reminder' && recip && !recipIsOwner) {
       const laneSig = `${tc.name}|${recip}`;
       if (!reminderLaneRefusedSigs.has(laneSig)) {

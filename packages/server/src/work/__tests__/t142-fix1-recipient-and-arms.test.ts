@@ -328,10 +328,23 @@ describe('round 2 N2: the legacy owner key counts only when no primary is starre
       'the starred address still is').toBe('applied');
   });
 
-  it('CONTROL: no primary starred, the legacy key IS the owner (an install that never re-saved Settings)', () => {
+  // t146 (one owner rule): this clause read "no primary starred → the legacy key IS the owner".
+  // But a non-empty list always HAS an owner — `parseSafeSenders` stars the record matching the
+  // legacy key, else the first — and that is the address the bridge texts his notices to. The
+  // legacy key alone is the owner only when there are no records (t146-one-owner-on-imessage).
+  it('CONTROL (t146): no primary starred — the record the bridge promotes is the owner, a legacy key outside the list is not', () => {
     setConfig('imessage_approved_senders', JSON.stringify([{ address: '+15550199', name: 'Garden supplier', is_primary: false }]));
     setConfig('imessage_default_sender', OLD_ADDRESS);
     seedBlocked('t-legacy-only');
-    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }).kind).toBe('applied');
+    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }))
+      .toMatchObject({ kind: 'refused', reason: 'not-the-owner-or-requester' });
+    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo('+15550199'), via: 'send_tool' }).kind).toBe('applied');
+  });
+
+  it('CONTROL: no records at all — the legacy key IS the owner (an install that never re-saved Settings)', () => {
+    setConfig('imessage_approved_senders', JSON.stringify([]));
+    setConfig('imessage_default_sender', OLD_ADDRESS);
+    seedBlocked('t-legacy-alone');
+    expect(recordPersonTold('t-legacy-alone', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }).kind).toBe('applied');
   });
 });
