@@ -2103,7 +2103,10 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
       () => {
         const ok = sendIMessage(recipient, fullMessage);
         const deliveryId = currentOutboundDeliveryId();
-        if (ok && opts.aboutWorkId && deliveryId) recordPersonTold(opts.aboutWorkId, { deliveryId, via: 'owner_notice' });
+        if (ok && opts.aboutWorkId && deliveryId) {
+          const told = recordPersonTold(opts.aboutWorkId, { deliveryId, via: 'owner_notice' });
+          if (told.kind === 'refused') logger.info('an owner notice about a task is not recorded as a tell', { workId: opts.aboutWorkId, reason: told.reason });
+        }
         return ok;
       },
     );

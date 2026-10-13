@@ -211,7 +211,10 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
       const r = await dispatchResolved(agentId, toolCall, resolved);
       const deliveryId = currentOutboundDeliveryId();
       const task = resolveTaskId(named);
-      if (deliveryId && task.ok) recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
+      if (deliveryId && task.ok) {
+        const told = recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
+        if (told.kind === 'refused') logger.info('a send named its task but is not recorded as a tell', { taskId: task.id, reason: told.reason }, agentId);
+      }
       return r;
     });
   }
