@@ -114,7 +114,7 @@ afterEach(() => {
 });
 
 describe('t140 round 6 — the agent-sdk transport is bounded by its provider\'s own patience', () => {
-  it.fails('a provider that declares no patience: a call that never answers ends at the standing first-token patience, by name', async () => {
+  it('a provider that declares no patience: a call that never answers ends at the standing first-token patience, by name', async () => {
     seed(null);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const run = await onTheClock(summaryCall(), 30 * 60_000);
@@ -123,7 +123,7 @@ describe('t140 round 6 — the agent-sdk transport is bounded by its provider\'s
     expect(run.atMs, 'about the standing 90 s first-token patience, not the 300 s transport floor').toBeLessThan(200_000);
   });
 
-  it.fails('the transport asks for token-level events, so "no first token" and "a gap" are real signals', async () => {
+  it('the transport asks for token-level events, so "no first token" and "a gap" are real signals', async () => {
     seed(null);
     sdk.script = 'streams-slowly';
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -131,7 +131,7 @@ describe('t140 round 6 — the agent-sdk transport is bounded by its provider\'s
     expect(sdk.calls[0]?.options.includePartialMessages).toBe(true);
   });
 
-  it.fails('a long answer that keeps streaming (a token every 50 s for five minutes) is never cut, and its text arrives once', async () => {
+  it('a long answer that keeps streaming (a token every 50 s for five minutes) is never cut, and its text arrives once', async () => {
     seed(null);
     sdk.script = 'streams-slowly';
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });

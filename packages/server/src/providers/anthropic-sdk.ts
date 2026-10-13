@@ -419,8 +419,8 @@ export async function callAnthropicViaSdk(params: {
   // `agent/model.ts` without a cycle, since `model.ts` is what dynamically imports this file.
   // Absence of progress stays a MEASURED fact: silence longer than the declared gap still trips,
   // and it trips with the bound that actually expired, so the honest exit reason names the right
-  // number. The arming CONDITION is deliberately unchanged — a NULL row still gets no timer at
-  // all — so this is a fix to the clock's shape and not a new bound for undeclared providers.
+  // number. t140 round 6: a NULL row is bounded by the standing patience too (`agent/model.ts`), and
+  // `query()` is asked for token events, so "no first token" and "a gap" are measured on tokens.
   let timedOutByPatience = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abortController: AbortController | undefined;
@@ -468,6 +468,7 @@ export async function callAnthropicViaSdk(params: {
    * depends on whether generated content has started, exactly as the shared watchdog decides it
    * (`bump: () => arm(contentSeen ? idleMs : firstChunkMs)`).
    */
+  let sawTokenEvents = false;
   const bumpGap = (): void => {
     if (!armGap) return;
     const ms = sawAnyContent ? idleBoundMs : firstChunkBoundMs;
@@ -488,6 +489,7 @@ export async function callAnthropicViaSdk(params: {
         maxTurns: 1,
         allowedTools: [],
         permissionMode: 'bypassPermissions' as any,
+        includePartialMessages: true,
         ...(abortController ? { abortController } : {}),
       },
     })) {
@@ -498,7 +500,9 @@ export async function callAnthropicViaSdk(params: {
         const betaMsg = (message as any).message;
         if (betaMsg?.content) {
           for (const block of betaMsg.content) {
-            if (block.type === 'text' && block.text) {
+            // With token events on, the finished message repeats what was streamed: take its text
+            // only when no token arrived (a provider or SDK that does not stream).
+            if (block.type === 'text' && block.text && !sawTokenEvents) {
               fullResponse += block.text;
               noteContent();
               onChunk?.(block.text);
@@ -517,6 +521,7 @@ export async function callAnthropicViaSdk(params: {
         // Streaming chunks
         const event = (message as any).event;
         if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
+          sawTokenEvents = true;
           const text = event.delta.text ?? '';
           fullResponse += text;
           noteContent();

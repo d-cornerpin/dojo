@@ -2945,19 +2945,21 @@ async function callAnthropicSdkModel(
   // `AgentSdkPatienceExceededError` branch below — except that it now reports the bound that
   // actually expired, which only became a distinction worth drawing once the two bounds differ.
   //
-  // NULL row — nothing declared, or a declaration the standing transport default already
-  // covers — makes `resolveTransportTimeouts` return `null`, both bounds stay `null`, and
-  // `callAnthropicViaSdk` never builds an `AbortController` at all: `query()` runs with EXACTLY
-  // the arguments it always has. That is R6 (byte-preservation) for a transport that had no
-  // clock to preserve until today — "today's behavior" for the NULL row IS "no bound at all".
+  // t140 round 6 (final review I3, R-V333-15): A NULL ROW IS BOUNDED TOO. It used to keep "no bound
+  // at all", so a wedged call held whatever waited on it (a summary writer: the background slot and
+  // the agent's compaction lock) until a restart. A hung call is a safety case: when nothing is
+  // declared, or the declaration needs no lift above the standing transport default, the bounds are
+  // the provider's resolved patience itself — first token, then a gap — exactly as the other three
+  // transports arm `makeStreamWatchdog`. The transport now sees tokens, so a call that is streaming
+  // is never cut (`providers/anthropic-sdk.ts`).
   const patience = resolveStreamPatience(modelInfo);
   const transportTimeouts = resolveTransportTimeouts(patience);
   // t114 (census row 35): WAS a single `sdkTimeoutMs = bodyTimeoutMs`, armed once at dial as a
   // TOTAL duration that no chunk ever bumped — row 7's exact defect on a different transport,
   // and it only armed for rows that had DECLARED patience, so it punished the owner who tried
   // to configure the problem away. The two bounds are now kept apart and applied as gaps.
-  const sdkFirstChunkTimeoutMs = transportTimeouts?.headersTimeoutMs ?? null;
-  const sdkIdleTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? null;
+  const sdkFirstChunkTimeoutMs = transportTimeouts?.headersTimeoutMs ?? patience.firstChunkMs;
+  const sdkIdleTimeoutMs = transportTimeouts?.bodyTimeoutMs ?? patience.idleMs;
 
   // T81d, closing the T81b review-round's parked minor finding: the pre-dial doomed-request
   // gate (`refuseIfDoomed`) covered the OpenAI-compat and direct-Anthropic transports and left

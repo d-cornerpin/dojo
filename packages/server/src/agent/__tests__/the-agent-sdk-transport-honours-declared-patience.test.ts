@@ -435,7 +435,11 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
       'a row that declared nothing must never be cut by this transport').toBe(false);
   });
 
-  it('CONTROL (byte-preservation): a NULL row arms NO PATIENCE CLOCK — a stall is never cut', async () => {
+  // t140 round 6 (final review I3, ruling R-V333-15) RE-AIMED THIS CLAUSE: a NULL row used to keep
+  // "no bound at all", and a wedged summary writer then held the agent's compaction lock until a
+  // restart. A NULL row is now bounded by the STANDING patience, as every other transport is, so
+  // the same stall is cut. The discrimination below is unchanged; only the expected answer flips.
+  it('a NULL row is bounded by the STANDING patience — a stall IS cut (was: never cut)', async () => {
     // THE DISCRIMINATION, restored (fix round 2, review NEW-1). The sibling clause above reads
     // facts off a call that ANSWERED, and an answered call clears its timer in the transport's
     // own `finally` — so no assertion on it can tell "no timer was armed" from "a 630s timer was
@@ -463,11 +467,7 @@ describe('T81d §B — the real dispatch attaches the derived bound, or nothing 
     expect(agentSdk.queryCalls, 'the transport never dialled — the clause would prove nothing').toHaveLength(1);
     const controller = agentSdk.queryCalls.at(-1)!.options.abortController as AbortController | undefined;
     expect(controller, 'T83 keeps the stop lever reachable even with no patience declared').toBeInstanceOf(AbortController);
-    expect(settled, 'a row that declared nothing armed a clock and ended its own call on it').toBe(false);
-
-    // Release the stalled generator through the OTHER aborter — which also shows the lever is
-    // live, not merely present, on a row that declared no patience.
-    controller!.abort();
+    expect(settled, 'a row that declared nothing must still end a call that never answers').toBe(true);
     await promise.catch(() => {});
   });
 
