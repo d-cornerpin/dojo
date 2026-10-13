@@ -1878,7 +1878,7 @@ async function assembleMessageContext(
   let attemptLedgerLane: string | null = null;
   let activeTasksLane: string | null = null;
   try {
-    const board = await buildWorkBoardLane(agentId);
+    const board = await buildWorkBoardLane(agentId, { allocation: report, ladder });
     attemptLedgerLane = board.attemptLedger;
     activeTasksLane = board.activeTasks;
   } catch (err) {

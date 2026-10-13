@@ -385,7 +385,7 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // 300-char stub of the agent's own restatement while the "still in force" pin carried the
   // owner's words in full; the task list is the one record of what is current now, so it
   // carries the requester's ORIGINAL words, read through `work.source_message_id`.
-  //   `chars.originalWords` = 8,000 is the pin's own cap (`DIRECTIVE_MAX_CHARS`,
+  //   `chars.originalWordsFloor` = 8,000 is the pin's own cap (`DIRECTIVE_MAX_CHARS`,
   //     `memory/directive.ts`), NOT a new opinion: the pin promised one request's words up to
   //     8,000 chars, and the task list keeps that promise as ONE POOL shared across its open
   //     tasks in block order. A single request up to 8,000 chars is always shown whole; a cut
@@ -393,9 +393,19 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   //     been five times the pin's reserve, taken off every assembly on every window.
   //   `chars.originLabel` = 120 bounds the one term the block does not author — the party
   //     name read off the conversation row — with the same 120 as `chars.title`.
+  // t139 ROUND 5 (owner, 2026-10-13: "no hard limits … smart enough to know when enough is
+  // enough"): NONE OF THESE IS A CEILING ANY MORE. The list is laid out in the room this
+  // assembly actually left it (`activeTasksRoomTokens`, `memory/work-board-lane.ts`): its own
+  // reserve plus whatever the content fit did not spend. When every unfinished task fits whole,
+  // every request, title, label and note is whole and every task is listed. These numbers are
+  // the GUARANTEE the reserve is derived at — what the list keeps when the conversation fills
+  // the view — and are named for it: `rows.tasksFloor` rows are always listed (a row beyond them
+  // is listed while every listed request still fits whole, and a row left off is COUNTED);
+  // `chars.originalWordsFloor` characters of words always fit beside them; title, label and
+  // note take the widths below only when the view cannot hold them whole.
   'lane.active-tasks': {
-    rows: { tasks: 5 },
-    chars: { title: 120, originalWords: 8000, originLabel: 120, lastNote: 200 },
+    rows: { tasksFloor: 5 },
+    chars: { title: 120, originalWordsFloor: 8000, originLabel: 120, lastNote: 200 },
   },
 
   // §T0-B C `:1185`(−10), D `:1205`(0,400) — the awareness lane's row cap and gist slice.
@@ -550,8 +560,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.active-tasks',
     slot: MessageSlot.ActiveTasksTail,
-    // t139: 1,239 -> 3,584 (+2,345). The 300-char description term (5 x 300 = 1,500 chars)
-    // left with the cut; the one 8,000-char pool of original words (chars.originalWords) plus
+    // t139: 1,239 -> 3,584 (+2,345), then 3,618 at round 5. The 300-char description term (5 x 300 = 1,500 chars)
+    // left with the cut; the one 8,000-char pool of original words (chars.originalWordsFloor) plus
     // each current line's labelled head and end/continues line arrived. Round 2: the pool is
     // spent in passes (every current request first, newest task first, then descriptions the
     // task's record says were EDITED); a current line also counts NEWER messages in its
@@ -559,15 +569,21 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // "not current" and a POINTER instead of words. The generator renders every split of the
     // five rows between the two line shapes and keeps the largest. The words pool itself is the
     // pin's 8,000 characters, so once t145 deletes the pin (-2,081) the net is +264 tokens.
-    reserveTokens: 3584,
+    // Round 5: 3,584 -> 3,618 (+34), the closing "N more unfinished tasks not shown" line at a
+    // 10-digit count — a row the room cannot hold is now COUNTED, never dropped silently. And the
+    // reserve is now the list's GUARANTEE, not its ceiling: at run time it is laid out in this
+    // reserve PLUS the content fit's unspent budget (`activeTasksRoomTokens`), so on a roomy view
+    // every request is whole. Net once the pin goes: +298.
+    reserveTokens: 3618,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
       + '`taskLine` + `renderActiveTasksBlock`, every cap flooded at once — a 120-char title '
       + '(chars.title, NEW at W81 and the one term this move added, because an unbounded '
-      + 'title is why this lane could never declare a worst case), the ORIGINAL WORDS POOL '
-      + '(chars.originalWords = 8,000, t139: the pin\'s own DIRECTIVE_MAX_CHARS, shared across '
-      + 'the open tasks in block order) spent in full by an over-cap first request, every line '
+      + 'title is why this lane could never declare a worst case), the GUARANTEED WORDS FLOOR '
+      + '(chars.originalWordsFloor = 8,000, t139: the pin\'s own DIRECTIVE_MAX_CHARS, shared across '
+      + 'the open tasks in block order) spent in full by an over-cap first request, the closing '
+      + '"N more unfinished tasks not shown" line at a 10-digit count (round 5), every line '
       + 'linked and over the cap so each carries the longer "continues … history_get(id=…)" '
       + 'line with a 36-char message id and a 10-digit count, a 120-char conversation label '
       + '(chars.originLabel) and the widest recorded-instant stamp, a 200-char last note '
@@ -584,8 +600,11 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'six PURE READS: that is why `plaud_*` and `outlook_*` appear in the owner\'s list of '
       + 'six occurrences alongside the two `work_update`s. '
       + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not. '
-      + 't139 adds 2,345 tokens off the top of every assembly for the requester\'s words; the '
-      + 'pin\'s own 2,081 for the same 8,000 characters is freed by t145, a net +264.',
+      + 't139 adds 2,379 tokens off the top of every assembly for the requester\'s words; the '
+      + 'pin\'s own 2,081 for the same 8,000 characters is freed by t145, a net +298. '
+      + 'ROUND 5: this reserve is the list\'s GUARANTEE, not its ceiling — the block is laid out '
+      + 'in this reserve plus whatever the content fit left unspent (`activeTasksRoomTokens`), so '
+      + 'a roomy view carries every request whole and a full one still carries this much.',
   },
   {
     id: 'lane.scratchpad',

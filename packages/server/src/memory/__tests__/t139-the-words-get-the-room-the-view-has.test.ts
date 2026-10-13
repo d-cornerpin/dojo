@@ -79,10 +79,10 @@ function longAsk(len: number, tag: string): string {
   return s.slice(0, len - tail.length) + tail;
 }
 
-/** Three live tasks, each linked (through the tracker's own door) to a 4,000-char owner ask. */
-function threeLiveTasks(): string[] {
+/** Live tasks, each linked (through the tracker's own door) to a 4,000-char owner ask. */
+function liveTasks(tags: string[]): string[] {
   const asks: string[] = [];
-  for (const tag of ['ALPHA', 'BRAVO', 'CHARLIE']) {
+  for (const tag of tags) {
     const ask = longAsk(4000, tag);
     const id = `msg-${tag.toLowerCase()}`;
     insertMessage({
@@ -98,6 +98,7 @@ function threeLiveTasks(): string[] {
   }
   return asks;
 }
+const threeLiveTasks = () => liveTasks(['ALPHA', 'BRAVO', 'CHARLIE']);
 
 let turnNo = 1;
 /** One owner/agent exchange, long enough that a handful of them fill a small window. */
@@ -145,7 +146,7 @@ afterEach(() => {
 });
 
 describe('§1 a 200K window has room for every live request, whole', () => {
-  it.fails('RED at f58214e5: three 4,000-character requests all appear whole on a 200K window', async () => {
+  it('(RED at f58214e5) three 4,000-character requests all appear whole on a 200K window', async () => {
     seed(200_000);
     const asks = threeLiveTasks();
     exchange();
@@ -157,6 +158,21 @@ describe('§1 a 200K window has room for every live request, whole', () => {
     // The view genuinely had the room: the content fit left far more than the words need.
     const slack = ctx.allocation!.budgetTokens - ctx.allocation!.spentTokens;
     expect(slack).toBeGreaterThan(estimateTokens(asks.join('')));
+  });
+
+  it('more words than the list\'s own reserve holds (six 4,000-character requests) are all whole when the view has the room', async () => {
+    seed(200_000);
+    const asks = liveTasks(['ALPHA', 'BRAVO', 'CHARLIE', 'DELTA', 'ECHO', 'FOXTROT']);
+    exchange();
+    const reserve = POST_BUDGET_LANES.find((l) => l.id === 'lane.active-tasks')!.reserveTokens;
+    expect(estimateTokens(asks.join('')), 'the premise: the words alone exceed the reserve').toBeGreaterThan(reserve);
+
+    const ctx = await assembleContext(AGENT, MODEL);
+    const block = ctx.activeTasksLane ?? '';
+    for (const ask of asks) expect(block).toContain(ask);
+    expect(block).not.toContain('original request continues');
+    expect(block, 'every task listed, the sixth included').not.toContain('not shown here');
+    expect(estimateTokens(block)).toBeLessThanOrEqual(roomFromReceipt(ctx.allocation!));
   });
 
   it('the block still stays inside the room the assembly left it', async () => {
@@ -190,7 +206,7 @@ describe('§2 a 16K window: cut only because the view cannot hold them, and the 
     expect(ctx.allocation!.admittedIds).toContain('lane.fresh-tail');
   });
 
-  it.fails('RED at f58214e5: the task list spends no more than the room the 16K assembly left it', async () => {
+  it('(RED at f58214e5) the task list spends no more than the room the 16K assembly left it', async () => {
     const { ctx, block } = await smallBox();
     expect(estimateTokens(block)).toBeLessThanOrEqual(roomFromReceipt(ctx.allocation!));
   });

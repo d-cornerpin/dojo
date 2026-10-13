@@ -50,8 +50,10 @@
 import { getDb } from '../db/connection.js';
 import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
-import { estimateTokens } from './budget.js';
-import { laneLimit, truncateWrappedText } from './lanes.js';
+import { estimateTokens, CHARS_PER_TOKEN } from './budget.js';
+import {
+  laneLimit, truncateWrappedText, POST_BUDGET_LANES, type AllocationReport, type ReserveLadder,
+} from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { conversationLabel } from './party-label.js';
 
@@ -122,17 +124,34 @@ interface TaskView {
   stamp: string | null;
   steps: string | null;
   origin: TaskOrigin;
-  /** Set for a paused/blocked task: when it entered that state and on whom it waits. */
-  waiting: { since: number | string | null; on: string } | null;
+  /** Set for a paused/blocked task: when it entered that state, and who put it there (the
+   *  transition's own `by`; `blocked` for a blocked task). The words are chosen at render. */
+  waiting: { since: number | string | null; by: WaitingBy } | null;
   /** The task's record holds a `description_edited` entry (review M3: a fact, not a byte test). */
   edited: boolean;
   /** Newer messages in the request's conversation (item 6's factual line). */
   newer: { count: number; newestAt: number | string | null };
 }
 
-/** The one pool of original words the block may spend, shared across its tasks in block order
- *  (see `LANE_LIMITS['lane.active-tasks'].chars.originalWords`). Mutable: each line spends it. */
+type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other';
+
+/** The characters of original words this rendering may spend, shared across its tasks in pass
+ *  order. Round 5: no longer a fixed number — `fitTaskList` sets it from the room the assembly
+ *  left the list. Mutable: each line spends it. */
 interface WordsPool { remaining: number }
+
+/** The widths of the three short terms the block does not author. `WHOLE` when the view holds
+ *  everything; the declared `LANE_LIMITS` widths (what the reserve was derived at) when it
+ *  cannot. */
+interface TermCaps { title: number; label: number; note: number }
+const WHOLE: TermCaps = { title: Infinity, label: Infinity, note: Infinity };
+function declaredCaps(): TermCaps {
+  return {
+    title: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title'),
+    label: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel'),
+    note: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote'),
+  };
+}
 
 export interface WorkBoardBlocks {
   attemptLedger: string | null;
@@ -151,13 +170,13 @@ const ATTEMPT_LEDGER_HEAD =
 const ATTEMPT_LEDGER_TAIL = '═══ END ATTEMPT LEDGER ═══';
 
 /**
- * The task lines, in block order, from views already read.
+ * The task lines, in block order, from views already read, spending `poolChars` characters of
+ * words and printing the three short terms at `caps`.
  *
- * W81 capped the TITLE (120 chars), because an unbounded term is what stops a post-budget lane
- * having a derivable worst case.
- *
- * t139 replaced the 300-char `Instructions:` cut with the REQUESTER'S ORIGINAL WORDS, printed
- * verbatim and contiguous between a labelled head (who, when) and an end marker. ROUND 2:
+ * W81 capped the TITLE, because an unbounded term is what stops a post-budget lane having a
+ * derivable worst case. t139 replaced the 300-char `Instructions:` cut with the REQUESTER'S
+ * ORIGINAL WORDS, printed verbatim and contiguous between a labelled head (who, when) and an end
+ * marker. ROUND 2:
  *   * a WAITING task (paused/blocked) prints no words: a status line saying since when and on
  *     whom it waits, that it is NOT current and must not be resumed unless asked, and a POINTER
  *     to its request — and it spends nothing from the pool (review C1: a weeks-old paused job
@@ -167,14 +186,16 @@ const ATTEMPT_LEDGER_TAIL = '═══ END ATTEMPT LEDGER ═══';
  *     can never starve the newest request (review I1, M3);
  *   * newer messages in the request's conversation are COUNTED under it (item 6, a fact from the
  *     rows that claims no relation to the task).
+ * ROUND 5: how much the pool holds is decided by `fitTaskList` from the room this assembly left
+ * the list — never a fixed number.
  * A task with no link shows its stored description under "(original request not linked)"; a cut
  * says how much is missing and names the message `history_get` returns it from.
  */
-function renderTaskLines(views: TaskView[]): string[] {
-  const pool: WordsPool = { remaining: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords') };
+function renderTaskLines(views: TaskView[], poolChars: number, caps: TermCaps): string[] {
+  const pool: WordsPool = { remaining: poolChars };
   const requestOf = new Map<number, string>();
   const editedOf = new Map<number, string>();
-  views.forEach((v, i) => { if (!v.waiting) requestOf.set(i, requestSection(v, pool)); });
+  views.forEach((v, i) => { if (!v.waiting) requestOf.set(i, requestSection(v, pool, caps)); });
   views.forEach((v, i) => {
     if (!v.waiting && v.edited && v.t.description && v.origin.messageId && v.origin.words !== null) {
       editedOf.set(i, '\n  The task\'s own description (as last edited):\n' + spend(v.t.description, pool,
@@ -182,39 +203,48 @@ function renderTaskLines(views: TaskView[]): string[] {
         (more) => `  [description continues: ${more} more characters, not shown]`));
     }
   });
-  return views.map((v, i) => taskLine(v, requestOf.get(i) ?? '', editedOf.get(i) ?? ''));
+  return views.map((v, i) => taskLine(v, requestOf.get(i) ?? '', editedOf.get(i) ?? '', caps));
 }
 
-function taskLine(v: TaskView, request: string, edited: string): string {
+function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): string {
   const { t } = v;
-  const titleCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title');
-  const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
-  const title = t.title.length > titleCap ? `${t.title.slice(0, titleCap)}...` : t.title;
+  const title = t.title.length > caps.title ? `${t.title.slice(0, caps.title)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
   if (v.waiting) {
-    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — ${v.waiting.on}. `
+    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — ${waitingOn(v, caps)}. `
       + 'Not current work: do not resume it unless asked.';
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
-  line += v.waiting ? pointerLine(v.origin) : request + newerLine(v) + edited;
+  line += v.waiting ? pointerLine(v.origin, caps) : req + newerLine(v) + edited;
   if (t.notes) {
     const lastNote = t.notes.split('\n').filter(Boolean).pop();
-    if (lastNote) line += `\n  Last note: ${lastNote.slice(0, noteCap)}`;
+    if (lastNote) line += `\n  Last note: ${lastNote.slice(0, caps.note)}`;
   }
   return line;
 }
 
-function capLabel(raw: string | null | undefined, fallback: string): string {
-  const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
+/** WHO paused it is the transition's own `by` (round 3): `status_before_pause` is written for
+ *  every pause, so it cannot tell the engine's "waiting on the person" from an owner pausing the
+ *  job himself — which is not a question waiting on his answer. */
+function waitingOn(v: TaskView, caps: TermCaps): string {
+  switch (v.waiting?.by) {
+    case 'blocked': return 'waiting on what blocked it (its last note says what)';
+    case 'engine': return `waiting on ${capLabel(v.origin.party, 'the person who asked', caps)} to answer`;
+    case 'owner': return 'paused by the owner';
+    default: return 'paused by whoever paused it';
+  }
+}
+
+function capLabel(raw: string | null | undefined, fallback: string, caps: TermCaps): string {
   const label = raw ?? fallback;
-  return label.length > labelCap ? `${label.slice(0, labelCap)}...` : label;
+  return label.length > caps.label ? `${label.slice(0, caps.label)}...` : label;
 }
 
 /** A current task's request: the linked words, or the labelled description when unlinked. */
-function requestSection(v: TaskView, pool: WordsPool): string {
+function requestSection(v: TaskView, pool: WordsPool, caps: TermCaps): string {
   const { t, origin } = v;
   if (origin.messageId && origin.words !== null) {
-    const head = `\n  Original request (from ${capLabel(origin.label, 'a conversation with no recorded label')}, `
+    const head = `\n  Original request (from ${capLabel(origin.label, 'a conversation with no recorded label', caps)}, `
       + `${recordedInstant(origin.createdAt)}), word for word:\n`;
     return head + spend(origin.words, pool,
       '  [end of original request]',
@@ -230,11 +260,11 @@ function requestSection(v: TaskView, pool: WordsPool): string {
 }
 
 /** A waiting task's request, as a pointer only — the words are one `history_get` away. */
-function pointerLine(origin: TaskOrigin): string {
+function pointerLine(origin: TaskOrigin, caps: TermCaps): string {
   if (!origin.messageId) return '\n  [original request not linked]';
   if (origin.words === null) return `\n  [original request: message ${origin.messageId}, no longer stored]`;
   return `\n  [original request: message ${origin.messageId}, ${recordedInstant(origin.createdAt)}, `
-    + `from ${capLabel(origin.label, 'a conversation with no recorded label')}; `
+    + `from ${capLabel(origin.label, 'a conversation with no recorded label', caps)}; `
     + `history_get(id="${origin.messageId}") returns it]`;
 }
 
@@ -253,11 +283,129 @@ function spend(text: string, pool: WordsPool, endMarker: string, cutLine: (more:
     : `${shown}${shown.length > 0 ? '\n' : ''}${cutLine(text.length - shown.length)}`;
 }
 
-/** The block, from lines already built. Pure — the worst-case generator calls this one. */
-export function renderActiveTasksBlock(lines: string[]): string | null {
-  if (lines.length === 0) return null;
-  return `${ACTIVE_TASKS_HEAD}\n${lines.join('\n\n')}\n\n${ACTIVE_TASKS_TAIL}`;
+/** The line that says tasks were left off the list, and where they are. Never silent. */
+function hiddenLine(hidden: number): string {
+  return `…and ${hidden} more unfinished task${hidden === 1 ? '' : 's'} not shown here: this view has `
+    + 'no room left for them. work_update(action="list") lists every task.';
 }
+
+/** The block, from lines already built. Pure — the worst-case generator calls this one. */
+export function renderActiveTasksBlock(lines: string[], hidden = 0): string | null {
+  if (lines.length === 0) return null;
+  const more = hidden > 0 ? `\n\n${hiddenLine(hidden)}` : '';
+  return `${ACTIVE_TASKS_HEAD}\n${lines.join('\n\n')}${more}\n\n${ACTIVE_TASKS_TAIL}`;
+}
+
+// ── ROUND 5: THE ROOM THE VIEW ACTUALLY HAS ─────────────────────────────────────────────
+//
+// Owner ruling, 2026-10-13: "I don't want to put hard limits on the dojo. The dojo should be
+// smart enough to know when enough is enough." Rounds 1-4 spent ONE fixed 8,000-character pool
+// across every task, so three 4,000-character requests lost the third to a pointer on a 200K
+// window with tens of thousands of tokens unused.
+//
+// THE SIGNAL. The list is a post-budget lane: the assembler took its declared reserve off the
+// top BEFORE the content fit (`reserveLadderFor`), then ran the fit (`fitLanes`). So the room
+// the list really has on this assembly is two numbers the assembler already holds:
+//   * its OWN SHARE of the ladder — the declared reserve, scaled by the same factor as the whole
+//     ladder when the window could not hold all of it (`ladder.offTheTop / ladder.declared`), so
+//     on a small window the list never spends the share the other appends were promised; and
+//   * the content fit's UNSPENT budget (`allocation.budgetTokens - allocation.spentTokens`):
+//     room the conversation, summaries and recall were offered and did not need.
+// Nothing new is reserved and the content budget does not move, so the cached region's bytes
+// are exactly what they were (G2): what changes is only how much of THIS block, which sits
+// below the conversation and is uncached by construction, the view can carry.
+//
+// WHY THE CONVERSATION CANNOT BE STARVED. The fit has already run when this is read; the list
+// is offered only what the fit left. A full conversation leaves no slack and the list falls
+// back to its own reserve, which is the guarantee the reserve was derived for (below).
+
+/** The fit's two outputs this lane reads; the assembler passes them through unchanged. */
+export interface TaskListRoom {
+  allocation: Pick<AllocationReport, 'budgetTokens' | 'spentTokens'>;
+  ladder: Pick<ReserveLadder, 'offTheTop' | 'declared' | 'scaled'>;
+}
+
+/** The lane's declared reserve: what the budget took off the top for it. */
+function declaredReserveTokens(): number {
+  const lane = POST_BUDGET_LANES.find((l) => l.id === ACTIVE_TASKS_LANE_ID);
+  return lane ? lane.reserveTokens : activeTasksWorstCaseTokens();
+}
+
+/** Tokens this assembly can give the task list. With no room passed (a caller outside the
+ *  assembler), the declared reserve — the guarantee and nothing more. */
+export function activeTasksRoomTokens(room?: TaskListRoom): number {
+  const reserve = declaredReserveTokens();
+  if (!room) return reserve;
+  const { allocation, ladder } = room;
+  const share = ladder.scaled && ladder.declared > 0
+    ? Math.floor((reserve * Math.max(0, ladder.offTheTop)) / ladder.declared)
+    : reserve;
+  return share + Math.max(0, allocation.budgetTokens - allocation.spentTokens);
+}
+
+/**
+ * Lay the list out in `roomTokens`. The order of what gives way is the order of value:
+ *   1. if every unfinished task fits WHOLE — every request, every title, label and note — the
+ *      block is exactly that, with nothing cut;
+ *   2. otherwise the three short terms take their declared widths and the declared floor of rows
+ *      is listed; a further row is listed only while every listed request still fits whole
+ *      (words before rows); under the floor, a row is dropped only when even its framing cannot
+ *      fit; every row left off is COUNTED in a closing line, never silently dropped;
+ *   3. the words get every character left — the largest pool the room holds, found by stepping
+ *      down from the room by exactly the overshoot (one character of pool moves the block by at
+ *      most one character, so a step can never skip a pool that fits).
+ * `enforce` stays behind it as the backstop for a room smaller than the block's bare framing.
+ */
+function fitTaskList(count: number, viewAt: (i: number) => TaskView, roomTokens: number): string | null {
+  if (count === 0) return null;
+  const roomChars = roomTokens * CHARS_PER_TOKEN;
+  const views = (n: number) => Array.from({ length: n }, (_, i) => viewAt(i));
+  const blockChars = (lineChars: number[], hidden: number) =>
+    (renderActiveTasksBlock(['x'], hidden) ?? '').length - 1
+    + lineChars.reduce((a, b) => a + b, 0) + 2 * (lineChars.length - 1);
+  // A line rendered with an unlimited or an empty pool does not depend on its neighbours, so a
+  // row count can be grown one line at a time.
+  const lineChars = (i: number, pool: number, caps: TermCaps) =>
+    renderTaskLines([viewAt(i)], pool, caps)[0].length;
+
+  // 1. Everything whole.
+  const whole: number[] = [];
+  for (let i = 0; i < count; i++) {
+    whole.push(lineChars(i, Infinity, WHOLE));
+    if (blockChars(whole, 0) > roomChars) break;
+  }
+  if (whole.length === count && blockChars(whole, 0) <= roomChars) {
+    return renderActiveTasksBlock(renderTaskLines(views(count), Infinity, WHOLE));
+  }
+
+  // 2. Rows: the declared floor, more while the words stay whole, fewer only when framing cannot fit.
+  const caps = declaredCaps();
+  let n = Math.min(count, laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasksFloor'));
+  const capped = Array.from({ length: n }, (_, i) => lineChars(i, Infinity, caps));
+  while (n < count) {
+    const next = [...capped, lineChars(n, Infinity, caps)];
+    if (blockChars(next, count - next.length) > roomChars) break;
+    capped.push(next[next.length - 1]);
+    n++;
+  }
+  const bare = Array.from({ length: n }, (_, i) => lineChars(i, 0, caps));
+  while (n > 1 && blockChars(bare.slice(0, n), count - n) > roomChars) n--;
+
+  // 3. Words: the largest pool the room holds.
+  const shown = views(n);
+  let pool = roomChars;
+  let block = renderActiveTasksBlock(renderTaskLines(shown, pool, caps), count - n) ?? '';
+  for (let step = 0; block.length > roomChars && pool > 0 && step < FIT_STEP_BACKSTOP; step++) {
+    pool = Math.max(0, pool - (block.length - roomChars));
+    block = renderActiveTasksBlock(renderTaskLines(shown, pool, caps), count - n) ?? '';
+  }
+  return block;
+}
+
+/** A pure safety backstop on the step-down above, never what decides the words: each step lands
+ *  on the largest pool that could fit and only a new cut line or one more digit in a count can
+ *  push it over again, so a real list settles in a handful of steps. */
+const FIT_STEP_BACKSTOP = 64;
 
 /** The ledger block, from sections already built. Pure, for the same reason. */
 export function renderAttemptLedgerBlock(sections: string[]): string | null {
@@ -268,13 +416,11 @@ export function renderAttemptLedgerBlock(sections: string[]): string | null {
 /**
  * Both blocks, from ONE tracker read.
  *
- * Every SQL statement, cap and string below is the one the two lanes used at slot 500/600 —
- * this is a position change, and a diff that also changed what the model reads would make
- * the before/after measurement meaningless. The two exceptions are declared and are both
- * bounding, never content: the title cap in `taskLine`, and the ceiling enforcement at the
- * end (a post-budget lane must fit its own declared reserve, `lanes.ts`'s truncate contract).
+ * `room` is the assembler's own fit result (round 5): the task list is laid out in the room it
+ * leaves (`activeTasksRoomTokens`). Absent, the list gets its declared reserve and no more.
+ * The attempt ledger is unchanged: its own declared ceiling, enforced at the render.
  */
-export async function buildWorkBoardLane(agentId: string): Promise<WorkBoardBlocks> {
+export async function buildWorkBoardLane(agentId: string, room?: TaskListRoom): Promise<WorkBoardBlocks> {
   let tasks: BoardTask[] = [];
   try {
     const { listTasks } = await import('../tracker/schema.js');
@@ -293,18 +439,20 @@ export async function buildWorkBoardLane(agentId: string): Promise<WorkBoardBloc
   const inProgress = tasks.filter((t) => t.status === undefined || t.status === 'in_progress');
   return {
     attemptLedger: enforce(await attemptLedgerFrom(inProgress), attemptLedgerWorstCaseTokens()),
-    activeTasks: enforce(activeTasksFrom(tasks), activeTasksWorstCaseTokens()),
+    activeTasks: enforce(activeTasksFrom(tasks, activeTasksRoomTokens(room)), activeTasksRoomTokens(room)),
   };
 }
 
-/** A post-budget lane may not exceed the reserve it declared. `lanes.ts`'s truncate contract
- *  applied at the render, because there is no allocator downstream of a post-budget lane. */
+/** A post-budget lane may not exceed the room it was given (the ledger: its declared reserve;
+ *  the task list: `activeTasksRoomTokens`). `lanes.ts`'s truncate contract applied at the
+ *  render, because there is no allocator downstream of a post-budget lane. For the task list it
+ *  is a backstop only: `fitTaskList` already lays the block out inside the room. */
 function enforce(block: string | null, maxTokens: number): string | null {
   if (!block) return null;
   return estimateTokens(block) > maxTokens ? truncateWrappedText(block, maxTokens) : block;
 }
 
-function activeTasksFrom(tasks: BoardTask[]): string | null {
+function activeTasksFrom(tasks: BoardTask[], roomTokens: number): string | null {
   try {
     const db = getDb();
     const stampStmt = db.prepare(
@@ -341,7 +489,9 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
       `SELECT COUNT(*) AS n, MAX(created_at) AS newest FROM messages
         WHERE conversation_id = ? AND seq > ? AND role = 'user' AND lane <> 'events'`,
     );
-    const views: TaskView[] = tasks.slice(0, laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks')).map((t) => {
+    // Round 5: every unfinished task is a candidate (how many are listed is decided by the room,
+    // `fitTaskList`); each view is read only when the layout first asks for it.
+    const read = (t: BoardTask): TaskView => {
       let stamp: string | null = null;
       let steps: string | null = null;
       try {
@@ -361,17 +511,9 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
         const state = t.status === 'paused' ? 'paused' : 'blocked';
         const into = sinceStmt.get(t.id, state) as { created_at: number | string; by: string | null } | undefined;
         const since = into?.created_at ?? null;
-        // WHO paused it is the transition's own `by` (round 3): `status_before_pause` is written
-        // for every pause, so it cannot tell the engine's "waiting on the person" from an owner
-        // pausing the job himself — which is not a question waiting on his answer.
-        const on = t.status === 'blocked'
-          ? 'waiting on what blocked it (its last note says what)'
-          : into?.by === 'engine'
-            ? `waiting on ${capLabel(origin.party, 'the person who asked')} to answer`
-            : into?.by === 'owner'
-              ? 'paused by the owner'
-              : 'paused by whoever paused it';
-        waiting = { since, on };
+        const by: WaitingBy = t.status === 'blocked' ? 'blocked'
+          : into?.by === 'engine' ? 'engine' : into?.by === 'owner' ? 'owner' : 'other';
+        waiting = { since, by };
       }
       const edited = !isWaiting && !!editedStmt.get(t.id);
       let newer: TaskView['newer'] = { count: 0, newestAt: null };
@@ -380,8 +522,10 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
         if (r) newer = { count: r.n, newestAt: r.newest };
       }
       return { t, stamp, steps, origin, waiting, edited, newer };
-    });
-    return renderActiveTasksBlock(renderTaskLines(views));
+    };
+    const seen: TaskView[] = [];
+    const viewAt = (i: number): TaskView => (seen[i] ??= read(tasks[i]));
+    return fitTaskList(tasks.length, viewAt, roomTokens);
   } catch { return null; }
 }
 
@@ -458,6 +602,13 @@ let attemptLedgerWorstCase: number | null = null;
  * Every cap of `lane.active-tasks` flooded at once, through the REAL `renderTaskLines` +
  * `renderActiveTasksBlock`.
  *
+ * ROUND 5 — WHAT THIS NUMBER NOW MEANS. It is the list's GUARANTEE, not its ceiling: the room it
+ * is promised however full the conversation is. At run time the list is laid out in
+ * `activeTasksRoomTokens` — this reserve (scaled with the ladder on a small window) PLUS what the
+ * content fit left unspent — so on a roomy view every request is whole whatever this says. The
+ * guarantee is: the declared floor of rows (`rows.tasksFloor`), the three short terms at their
+ * declared widths, the closing "N more not shown" line, and `chars.originalWordsFloor` of words.
+ *
  * The words term is ONE POOL, so the worst case is the pool spent in full plus the most framing
  * the five lines can carry around it. Round 2 has two line shapes — a current line (request,
  * newer-messages count, edited description) and a waiting line (status, pointer) — so the
@@ -471,9 +622,9 @@ let attemptLedgerWorstCase: number | null = null;
  */
 export function activeTasksWorstCaseTokens(): number {
   if (activeTasksWorstCase !== null) return activeTasksWorstCase;
-  const rows = laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks');
+  const rows = laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasksFloor');
   const titleCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title');
-  const wordsCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords');
+  const wordsCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWordsFloor');
   const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
   const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
   // The widest stamp/steps terms the two tracker renderers can produce, measured by CALLING
@@ -492,9 +643,11 @@ export function activeTasksWorstCaseTokens(): number {
   // A count no real row reaches (10 digits), substituted into every "continues"/"Newer" line.
   const longest = 9_999_999_999;
   const party = 'l'.repeat(labelCap + 10);
-  const widestWaitingOn = [`waiting on ${capLabel(party, '')} to answer`, 'waiting on what blocked it (its last note says what)',
-    'paused by the owner', 'paused by whoever paused it']
-    .sort((a, b) => b.length - a.length)[0];
+  const caps = declaredCaps();
+  // The widest of the four "waiting on" texts, by rendering each through the real `waitingOn`.
+  const widestWaitingBy = (['blocked', 'engine', 'owner', 'other'] as const)
+    .map((by) => ({ by, len: waitingOn({ origin: { party }, waiting: { since: null, by } } as TaskView, caps).length }))
+    .sort((a, b) => b.len - a.len)[0].by;
   const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
   const view = (waiting: boolean): TaskView => ({
     t: {
@@ -510,15 +663,17 @@ export function activeTasksWorstCaseTokens(): number {
       messageId: 'm'.repeat(36), words: 'w'.repeat(wordsCap + 1),
       createdAt: widestInstant, label: party, party,
     },
-    waiting: waiting ? { since: widestInstant, on: widestWaitingOn } : null,
+    waiting: waiting ? { since: widestInstant, by: widestWaitingBy } : null,
     edited: true,
     newer: { count: longest, newestAt: widestInstant },
   });
   let worst = 0;
   for (let waitingRows = 0; waitingRows <= rows; waitingRows++) {
     const views = Array.from({ length: rows }, (_, i) => view(i >= rows - waitingRows));
-    const lines = renderTaskLines(views).map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`));
-    worst = Math.max(worst, estimateTokens(renderActiveTasksBlock(lines) ?? ''));
+    const lines = renderTaskLines(views, wordsCap, caps)
+      .map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`));
+    // The closing "N more not shown" line at a count no real board reaches.
+    worst = Math.max(worst, estimateTokens(renderActiveTasksBlock(lines, longest) ?? ''));
   }
   activeTasksWorstCase = worst;
   return activeTasksWorstCase;

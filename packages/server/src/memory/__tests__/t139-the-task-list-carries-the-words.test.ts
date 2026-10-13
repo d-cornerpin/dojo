@@ -59,7 +59,9 @@ import { setTrackerStatus } from '../../work/tracker-store.js';
 import { updateTask, listTasks } from '../../tracker/schema.js';
 import { writeTaskLog } from '../../tracker/task-log.js';
 import { assembleContext } from '../assembler.js';
-import { buildWorkBoardLane, activeTasksWorstCaseTokens } from '../work-board-lane.js';
+import {
+  buildWorkBoardLane, activeTasksWorstCaseTokens, activeTasksRoomTokens, type TaskListRoom,
+} from '../work-board-lane.js';
 import { POST_BUDGET_LANES } from '../lanes.js';
 import { renderMessageTimeStamp } from '../message-stamp.js';
 import { estimateTokens } from '../budget.js';
@@ -97,6 +99,13 @@ function seed(): void {
     `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name, created_at)
      VALUES ('conv-mail', ?, 'email', 'gmail', 'pat@example.test', 'Pat Example', datetime('now'))`,
   ).run(AGENT);
+}
+
+/** A room of exactly `tokens` for the list, in the shape the assembler passes: the ladder scaled
+ *  so the lane's share is `tokens`, and a content fit with nothing left over. */
+function roomOf(tokens: number): TaskListRoom {
+  const reserve = activeTasksRoomTokens();
+  return { allocation: { budgetTokens: 0, spentTokens: 0 }, ladder: { scaled: true, offTheTop: tokens, declared: reserve } };
 }
 
 /** The owner's message, through the REAL writer (it opens the ask the message belongs to). */
@@ -299,20 +308,28 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
   });
 });
 
-describe('t139 §3 — the words are bounded by a declared cap, and a cut is never silent', () => {
-  it('an over-cap request keeps its first 8,000 characters byte-for-byte and names the full message', async () => {
-    const ask = longAsk(8500, 'OVERCAP');
+describe('t139 §3 — the words get the room the view has (round 5), and a cut is never silent', () => {
+  // ROUND 5: these two clauses asserted the fixed 8,000-char pool (round 1). The pool is now the
+  // room the assembly left the list; the clauses keep their subject — byte-for-byte prefix, a
+  // named pointer, newest first — at an explicit room.
+  it('an over-room request keeps the most the room holds byte-for-byte — at least the guaranteed floor — and names the full message', async () => {
+    const ask = longAsk(20000, 'OVERCAP');
     ownerSays('msg-overcap', ask, DAY_ONE - 60_000);
     task('Over cap', undefined, 'msg-overcap');
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
-    expect(block).toContain(ask.slice(0, 8000));
-    expect(block).not.toContain(ask.slice(0, 8001));
+    const shown = /word for word:\n([^]*?)\n  \[original request continues: (\d+) more characters/.exec(block)!;
+    expect(shown, 'cut, with the count of what is missing').not.toBeNull();
+    expect(ask.startsWith(shown[1]), 'byte-for-byte prefix').toBe(true);
+    expect(shown[1].length, 'at least the guaranteed floor').toBeGreaterThanOrEqual(8000);
+    expect(Number(shown[2])).toBe(ask.length - shown[1].length);
     expect(block).toContain('history_get(id="msg-overcap")');
-    expect(block).toContain('500 more characters');
+    // The LARGEST pool the room holds, not merely one that fits: one more character of words
+    // moves the block by at most one character, so a cut block fills the room exactly.
+    expect(block.length, 'fills the room to the character').toBe(activeTasksRoomTokens() * 4);
   });
 
-  it('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
+  it('the room is shared across open tasks, newest first: words appear in full until the room is spent', async () => {
     const a = longAsk(5000, 'FIRST');
     const b = longAsk(5000, 'SECOND');
     ownerSays('msg-first', a, DAY_ONE - 120_000);
@@ -323,13 +340,17 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
     task('Second', undefined, 'msg-second');
     vi.setSystemTime(DAY_ONE);
 
-    // ROUND 2 (review I1): NEWEST request first — the active ask is never starved by an older one.
-    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    const block = (await buildWorkBoardLane(AGENT, roomOf(2600))).activeTasks!;
     expect(block).toContain(b);
-    expect(block).toContain(a.slice(0, 3000));
-    expect(block).not.toContain(a.slice(0, 3001));
+    expect(block).toContain(a.slice(0, 2000));
+    expect(block).not.toContain(a);
     expect(block).toContain('history_get(id="msg-first")');
     expect(block.indexOf('• Second')).toBeLessThan(block.indexOf('• First'));
+    expect(estimateTokens(block)).toBeLessThanOrEqual(2600);
+    // And with the room a roomy view has, both are whole.
+    const roomy = (await buildWorkBoardLane(AGENT, roomOf(20_000))).activeTasks!;
+    expect(roomy).toContain(a);
+    expect(roomy).toContain(b);
   });
 });
 
@@ -347,11 +368,15 @@ describe('t139 §3b — round 2 order: the newest request is intact; every reque
     writeTaskLog({ taskId: nid, fromEntity: AGENT, entryKind: 'observation', actionTaken: 'description_edited', note: 'edited' });
     vi.setSystemTime(DAY_ONE);
 
-    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    // A room 100 tokens short of everything whole: the cut must land on the description.
+    const whole = (await buildWorkBoardLane(AGENT, roomOf(20_000))).activeTasks!;
+    const room = estimateTokens(whole) - 100;
+    const block = (await buildWorkBoardLane(AGENT, roomOf(room))).activeTasks!;
     expect(block.indexOf('• Change of plan')).toBeLessThan(block.indexOf('• Monday brief'));   // newest first
     expect(block).toContain(newer);
     expect(block).toContain(older);                      // 600 + 7,000 fit; the description pays
-    expect(block).toContain('[description continues: 600 more characters, not shown]');
+    expect(block).toMatch(/\[description continues: \d+ more characters, not shown\]/);
+    expect(estimateTokens(block)).toBeLessThanOrEqual(room);
   });
 
   it('the newest request is intact while an older long one is listed', async () => {
@@ -365,7 +390,7 @@ describe('t139 §3b — round 2 order: the newest request is intact; every reque
     task('New short', undefined, 'msg-newshort');
     vi.setSystemTime(DAY_ONE);
 
-    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    const block = (await buildWorkBoardLane(AGENT, roomOf(2000))).activeTasks!;
     expect(block).toContain(newer);
     expect(block).toContain('history_get(id="msg-oldlong")');
   });
@@ -399,5 +424,76 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
     // next one is reduced to its pointer rather than dropped without a word.
     expect(block).toContain('history_get(id="msg-flood-5")');
     expect(block).toContain('history_get(id="msg-flood-4")');
+    // Round 5: the guarantee holds on the fullest board — the newest request keeps at least the
+    // floor — and the sixth task is COUNTED, not dropped without a word.
+    const first = /word for word:\n([^]*?)\n  \[original request continues/.exec(block)!;
+    expect(first[1].length).toBeGreaterThanOrEqual(8000);
+    expect(block).toContain('…and 1 more unfinished task not shown here');
+  });
+});
+
+describe('t139 §5 — round 5: rows, titles and notes follow the room too', () => {
+  it('with room, every unfinished task is listed whole — more than the five the reserve guarantees', async () => {
+    for (let i = 0; i < 8; i++) {
+      ownerSays(`msg-row-${i}`, `Short job number ${i}.`, DAY_ONE - (20 - i) * 60_000);
+      vi.setSystemTime(DAY_ONE - (20 - i) * 60_000 + 1000);
+      task(`Row ${i}`, undefined, `msg-row-${i}`);
+    }
+    vi.setSystemTime(DAY_ONE);
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    for (let i = 0; i < 8; i++) expect(block).toContain(`• Row ${i} `);
+    expect(block).not.toContain('not shown here');
+  });
+
+  it('without room, the guaranteed rows are listed and every other row is COUNTED, with where to find it', async () => {
+    for (let i = 0; i < 7; i++) {
+      ownerSays(`msg-big-${i}`, longAsk(4000, `BIG${i}`), DAY_ONE - (20 - i) * 60_000);
+      vi.setSystemTime(DAY_ONE - (20 - i) * 60_000 + 1000);
+      task(`Big ${i}`, undefined, `msg-big-${i}`);
+    }
+    vi.setSystemTime(DAY_ONE);
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block.match(/^• Big /gm)?.length).toBe(5);
+    expect(block).toContain('…and 2 more unfinished tasks not shown here: this view has no room left for them. '
+      + 'work_update(action="list") lists every task.');
+    expect(estimateTokens(block)).toBeLessThanOrEqual(activeTasksRoomTokens());
+    // With the room, all seven are listed and whole.
+    const roomy = (await buildWorkBoardLane(AGENT, roomOf(20_000))).activeTasks!;
+    expect(roomy.match(/^• Big /gm)?.length).toBe(7);
+    expect(roomy).not.toContain('original request continues');
+  });
+
+  it('a room too small for even the guaranteed rows\' framing lists fewer rows, counts the rest, and is never chopped mid-line', async () => {
+    for (let i = 0; i < 5; i++) {
+      ownerSays(`msg-tiny-${i}`, longAsk(1500, `TINY${i}`), DAY_ONE - (20 - i) * 60_000);
+      vi.setSystemTime(DAY_ONE - (20 - i) * 60_000 + 1000);
+      task(`Tiny ${i}`, undefined, `msg-tiny-${i}`);
+    }
+    vi.setSystemTime(DAY_ONE);
+    const block = (await buildWorkBoardLane(AGENT, roomOf(300))).activeTasks!;
+    expect(estimateTokens(block)).toBeLessThanOrEqual(300);
+    expect(block, 'laid out, not truncated by the backstop').not.toContain('shortened to fit');
+    expect(block).toMatch(/…and [1-4] more unfinished tasks? not shown here/);
+    expect(block).toContain('═══ END ACTIVE TASKS ═══');
+    expect(block).toContain('• Tiny 4 ');   // the newest is the one that stays
+  });
+
+  it('a long title and a long last note are whole when the view holds them, and cut only when it cannot', async () => {
+    const title = 'Quarterly depot audit: ' + 'reconcile every bay against the manifest, '.repeat(6);
+    const note = 'Bay 7 still open: ' + 'the scanner keeps losing the pallet labels, '.repeat(8);
+    ownerSays('msg-title', 'Run the audit.', DAY_ONE - 60_000);
+    const id = task(title, undefined, 'msg-title');
+    updateTask(id, { notes: note });
+    expect(title.length).toBeGreaterThan(120);
+    expect(note.length).toBeGreaterThan(200);
+
+    const roomy = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(roomy).toContain(`• ${title} (ID:`);
+    expect(roomy).toContain(`Last note: ${note.trimEnd()}`);
+
+    // A room one token short of the whole block: the declared widths apply.
+    const tight = (await buildWorkBoardLane(AGENT, roomOf(estimateTokens(roomy) - 1))).activeTasks!;
+    expect(tight).toContain(`• ${title.slice(0, 120)}... (ID:`);
+    expect(tight).toContain(`Last note: ${note.slice(0, 200)}\n`);
   });
 });
