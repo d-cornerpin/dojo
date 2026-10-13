@@ -368,16 +368,18 @@ describe('t140 round 4 — F1: never two notes for one row', () => {
     appendTurn(true);
     const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
     expect(throughSeq).toBeGreaterThan(0);
-    writers.mode = { [OWN]: 'slow:1500', [CHEAP]: 'slow:1500', [NEXT]: 'slow:1500' };
-    // A routine fold of the same rows, already running and holding the lock (not launched by the gate).
+    // A fold of the same rows that holds the lock longer than the door's clock and grace, and that
+    // the door cannot set aside (not launched by the gate: a manual or recovery compaction's shape).
+    writers.mode = { [OWN]: 'slow:3000', [CHEAP]: 'slow:3000', [NEXT]: 'slow:3000' };
     const pressure = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 } });
     await new Promise((r) => setTimeout(r, 20));
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     await pressure;
     expect(coverCounts(), 'a row linked to two summaries').toEqual([]);
-    const after = await assembleContext(AGENT, OWN);
-    expect(lostRows(JSON.stringify(after.messages))).toEqual([]);
+    writers.mode = {};
+    const after = await door();   // the next turn's assembly, through the engine's door
+    expect(lostRows(JSON.stringify(after.messages)), 'after the race').toEqual([]);
   }, 10_000);
 });
 
@@ -413,6 +415,8 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(writers.calls, 'the broken provider was dialed').not.toContain(OWN);
     expect(placeholders(), 'the next writer folded the rows').toEqual([]);
+    // And every other path that asks for a writer (the pressure fold, the replacement) skips it too.
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a writer whose provider breaker is open is picked').not.toBe(OWN);
   }, 5_000);
 
   it('R6 no writer left: placeholders, and the owner is told', async () => {

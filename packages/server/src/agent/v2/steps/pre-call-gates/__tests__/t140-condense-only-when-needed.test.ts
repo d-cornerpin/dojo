@@ -398,3 +398,19 @@ describe('t140 round 3 — the gate replaces placeholder notes once a writer is 
     expect(hasUncondensedPlaceholders(AGENT), 'no placeholder note left').toBe(false);
   });
 });
+
+describe('t140 round 4 — the gate\'s background fold can be set aside by the turn\'s own fold', () => {
+  it('a routine fold the gate started is registered as preemptible, and setting it aside ends it promptly', async () => {
+    // The summariser hangs until its call is aborted — the slow background fold of re-review 3 F1.
+    generateSummarySpy.mockImplementation((args: { abortSignal?: AbortSignal }) => new Promise((resolve) => {
+      const done = () => resolve({ ok: false, reason: 'aborted' });
+      if (args.abortSignal?.aborted) done(); else args.abortSignal?.addEventListener('abort', done, { once: true });
+    }));
+    seedBusyHistory(610);   // the ceiling cause: the gate starts a background fold
+    await runPreCallGates(freshState(), makeCtx());
+    expect(backgroundDrains.has(AGENT), 'precondition: a background fold is running').toBe(true);
+    const { preemptBackgroundCompaction } = await import('../../../../../memory/uncondensed-placeholder.js');
+    expect(preemptBackgroundCompaction(AGENT), 'the gate registered it as preemptible').toBe(true);
+    await settle();
+  });
+});
