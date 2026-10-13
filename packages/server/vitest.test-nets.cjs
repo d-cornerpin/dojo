@@ -14,6 +14,11 @@
 //      insensitive disk runs `Claude` as `claude`), and what a shell line starts (the program of
 //      each command on it). It does not match words: `echo claude` is an ordinary command, and a
 //      checkout under a folder like "…/Claude Code Projects/…" is not the CLI.
+//      Round 7 (re-review net residue): what a SHELL runs once it is running — `sh -c claude`, a
+//      `$(…)`, an escaped name — no parser of the line can see. So the net also resolves the name
+//      the way the shell will: a stand-in `claude` that refuses is put FIRST on every process's
+//      PATH (and on the PATH of any environment a child is handed), so whatever a shell resolves
+//      as `claude` is the stand-in (`test-net-stand-in/claude`, checked in: it exits 97, loudly).
 //   2. THE NETWORK NET — no process may open a connection to anything but this machine. Every
 //      TCP/TLS connection goes through `net.Socket.prototype.connect` (fetch/undici, http, https,
 //      tls), so that one door is netted: a loopback host or a local socket path passes; anything
@@ -36,6 +41,14 @@ const NETWORK_NET_MESSAGE = 'TEST NET: a test tried to reach the network';
  */
 const isThisMachine = (host) => host === undefined || host === null || host === '' || host === 'localhost'
   || /^127(\.\d{1,3}){3}$/.test(host) || host === '::1' || host === '[::1]' || /^::ffff:127(\.\d{1,3}){3}$/i.test(host);
+
+/** Round 7: where the stand-in `claude` lives. */
+const STAND_IN_DIR = path.join(__dirname, 'test-net-stand-in');
+/** PATH with the stand-in first (once). */
+const withTheStandIn = (current) => {
+  const parts = String(current ?? '').split(path.delimiter).filter((p) => p && p !== STAND_IN_DIR);
+  return [STAND_IN_DIR, ...parts].join(path.delimiter);
+};
 
 if (!globalThis.__dojoTestNetsLoaded) {
   globalThis.__dojoTestNetsLoaded = true;
@@ -92,10 +105,13 @@ if (!globalThis.__dojoTestNetsLoaded) {
   const carryTheNets = (args) => {
     for (const a of args) {
       if (a && typeof a === 'object' && !Array.isArray(a) && a.env && typeof a.env === 'object') {
-        a.env = { ...a.env, NODE_OPTIONS: withTheNets(a.env.NODE_OPTIONS) };
+        a.env = { ...a.env, NODE_OPTIONS: withTheNets(a.env.NODE_OPTIONS), PATH: withTheStandIn(a.env.PATH) };
       }
     }
   };
+
+  // Round 7: the stand-in `claude` (checked in, nothing made or removed at run time), first on PATH.
+  process.env.PATH = withTheStandIn(process.env.PATH);
 
   for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
     const real = childProcess[name];
@@ -134,4 +150,4 @@ if (!globalThis.__dojoTestNetsLoaded) {
   };
 }
 
-module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE, isThisMachine };
+module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE, isThisMachine, STAND_IN_DIR };

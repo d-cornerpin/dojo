@@ -1,0 +1,6 @@
+#!/bin/sh
+# THE TEST NET STAND-IN (t140 round 7). The test nets (vitest.test-nets.cjs) put this directory
+# FIRST on the PATH of every process the suite starts, so a shell that resolves "claude" by name
+# runs this, never the real CLI. It refuses, loudly, by name.
+echo "TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead. (a shell resolved \"claude\")" >&2
+exit 97

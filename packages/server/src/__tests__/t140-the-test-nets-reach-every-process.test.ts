@@ -164,15 +164,17 @@ describe('t140 round 6 — the CLI net sees through wrappers, and the network ne
 describe('t140 round 7 — whatever a shell resolves as "claude" is the net\'s stand-in', () => {
   /** The net's stand-in first (when there is one), then the fake, then the system directories. */
   const shellEnv = async (): Promise<NodeJS.ProcessEnv> => {
-    const { STAND_IN_DIR } = await import('../../vitest.test-nets.cjs') as unknown as { STAND_IN_DIR?: string };
-    return { ...process.env, PATH: `${STAND_IN_DIR ? `${STAND_IN_DIR}:` : ''}${scratch}:/usr/bin:/bin`, T140_MARKER: marker };
+    // The net's stand-in when the net is in (the fake follows it), so a RED run starts only the fake.
+    const standIn = path.resolve(__dirname, '../../test-net-stand-in');
+    const netIn = (process.env.PATH ?? '').split(':')[0] === standIn;
+    return { ...process.env, PATH: `${netIn ? `${standIn}:` : ''}${scratch}:/usr/bin:/bin`, T140_MARKER: marker };
   };
 
-  it.fails.each(['sh -c claude', 'bash -c "claude --version"', 'echo $(claude --version)', 'c\\laude --version'])(
+  it.each(['sh -c claude', 'bash -c "claude --version"', 'echo $(claude --version)', 'c\\laude --version'])(
     'a shell that starts the CLI in a way no parser sees — %s — runs the stand-in, which refuses; nothing is launched', async (line) => {
       fs.rmSync(marker, { force: true });
-      let said = '';
-      try { childProcess.execSync(line, { env: await shellEnv(), stdio: 'pipe' }); } catch (e) { said = String((e as { stderr?: Buffer }).stderr ?? (e as Error).message); }
+      const ran = childProcess.spawnSync('/bin/sh', ['-c', line], { env: await shellEnv(), encoding: 'utf8' });
+      const said = `${ran.stderr ?? ''}${ran.error?.message ?? ''}`;
       expect(fs.existsSync(marker), 'the fake CLI ran').toBe(false);
       expect(said).toMatch(CLI_NET);
     });
