@@ -334,14 +334,14 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
 
   it('condensation has no per-run call cap: a level that needs fifteen calls makes fifteen', async () => {
     seedSummaries(60, 0, 2_000);
+    const callsAtEachMeasure: number[] = [];   // `measure` runs once before the climb and once after each level
     await condenseUntilFits({
       agentId: AGENT, modelId: MODEL_64K, minFanout: 4, targetTokens: 2_000,
-      measure: () => cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, () => estimateAssembledTokens(AGENT, 65_536, MODEL_64K)),
+      measure: () => { callsAtEachMeasure.push(calls.length); return cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, () => estimateAssembledTokens(AGENT, 65_536, MODEL_64K)); },
       rebuild: () => rebuildContextItems(AGENT),
     });
-    // Sixty leaves at a fanout of four: the FIRST level is fifteen batches, each writing a depth-1
-    // parent — and they come first. (A cap that stopped the level at twelve would let the next level
-    // begin with depth-2 merges of those parents, and only then batch the leftover leaves.)
-    expect(calls.slice(0, 15).map((c) => c.depth), 'the first level makes all fifteen of its calls, in one go').toEqual(Array(15).fill(1));
+    // Sixty leaves at a fanout of four: the FIRST level is fifteen batches. A cap stopping it at twelve
+    // would leave three batches for the next level, so the count when the first level ends tells.
+    expect(callsAtEachMeasure[1], 'the first level made all fifteen of its calls').toBe(15);
   });
 });
