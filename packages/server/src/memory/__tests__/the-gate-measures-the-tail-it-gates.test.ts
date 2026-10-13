@@ -225,7 +225,7 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
     seedHeavyRunPastTheCap(cap);
 
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, {
-      maxChunksPerRun: 1, skipContinuityBrief: true,
+      maxChunksPerRun: 1,
     });
     expect(result.leafCreated).toBeGreaterThan(0);
   }, 120_000);
@@ -257,7 +257,7 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
     expect(rowsLeavingView(AGENT, { freshTailCount: cap }, { viewFull: false })).toBeNull();
 
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, {
-      maxChunksPerRun: 1, skipContinuityBrief: true,
+      maxChunksPerRun: 1,
     });
     expect(result.leafCreated).toBe(0);
   }, 120_000);

@@ -505,13 +505,16 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
     expect(call, 'and the compactable-row count the branch was chosen on').toContain('guardUncompactedCount');
     const guard = code.match(/^\s*if \(guardUncompactedCount < MIN_COMPACTABLE_ROWS\) \{$/m);
     expect(guard, 'the branch must be chosen by the row floor, not by force').toBeTruthy();
-    // IN THE SAME SLOT: ahead of the continuity brief, the chunk loop and every provider dial.
+    // IN THE SAME SLOT: ahead of the archive, the chunk loop and every provider dial.
+    // (t140: this anchored on `generateContinuityBrief(agentId`, the first piece of work on the
+    // pressure path; the brief is deleted, so the anchor is now the next piece of work, the
+    // pre-compaction archive — the pressure path's only call of it.)
     const routeAt = code.indexOf('return condenseOnlyPass(agentId');
-    const briefAt = code.indexOf('generateContinuityBrief(agentId');
+    const workAt = code.indexOf('archiveMessagesBeforeCompaction(agentId, uncompactedForArchive)');
     expect(routeAt).toBeGreaterThan(0);
-    expect(briefAt).toBeGreaterThan(0);
+    expect(workAt).toBeGreaterThan(0);
     expect(routeAt, 'a pre-work route that runs after the work is not a pre-work route')
-      .toBeLessThan(briefAt);
+      .toBeLessThan(workAt);
   });
 
   it('⚠ AND THE WORD IS GONE FROM EVERY SHIPPED SOURCE LINE — the census', () => {

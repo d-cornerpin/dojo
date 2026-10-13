@@ -107,9 +107,11 @@ describe('the lane table declares priority as data, independent of position', ()
     // of the whole conversation, which is the owner's DS4 FINDING 2. They are post-budget tail
     // lanes at 1830 / 1820 with reserves off the top. The ladder the ack prints is unchanged
     // for every rung that remains, in the same relative order.
+    // t140: `'lane.continuity'` LEFT this list with the lane and the continuity brief it
+    // rendered (writer deleted, keys removed by migration 187). Every rung that remains keeps
+    // its relative order.
     const prose = [
       'lane.fresh-tail',
-      'lane.continuity',
       'lane.vault',
       'lane.briefing',
     ];
@@ -126,7 +128,9 @@ describe('the lane table declares priority as data, independent of position', ()
     // W81: `lane.scratchpad` left the fit too, so the low-priority end of the pair is
     // `lane.continuity` now — the highest-priority scaffolding lane the fit still ranks. The
     // property is the separation, not the pair of nouns that demonstrate it.
-    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.continuity']);
+    // t140: `lane.continuity` left the fit with the continuity brief, so the low-priority end
+    // of the pair is `lane.summaries` (80) — the highest-priority scaffolding lane left.
+    expect(LANE_PRIORITY['lane.briefing']).toBeGreaterThan(LANE_PRIORITY['lane.summaries']);
 
   });
 });
@@ -168,19 +172,20 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
     // that the directive is a reserved tail lane. W81: the scratchpad left the fit in turn
     // (three tools rewrite it mid-conversation), so the stand-in is `lane.continuity` (70),
     // the highest-priority lane the fit still ranks. The mechanic being pinned is unchanged:
-    // a lane RENDERED SECOND still gets its floor reserved FIRST.
-    const directive = textLane('lane.continuity', LANE_PRIORITY['lane.continuity'], 700, { minTokens: 64 });
+    // a lane RENDERED SECOND still gets its floor reserved FIRST. t140: the continuity lane
+    // left the fit with its brief, so the stand-in is `lane.summaries` (80).
+    const directive = textLane('lane.summaries', LANE_PRIORITY['lane.summaries'], 300, { minTokens: 64 });
     // Deliberately in BUILD order (briefing first) — the order the old arithmetic consumed.
     const { report } = fitLanes([candidate(briefing, 900), candidate(directive, 200)], 1000);
     expect(report.reservedTokens).toBe(64);
-    const d = report.grants.find((g) => g.id === 'lane.continuity')!;
+    const d = report.grants.find((g) => g.id === 'lane.summaries')!;
     expect(d.status).toBe('admitted');
     expect(d.granted).toBe(200);
   });
 
   it('pass 2 never spends a reservation still owed to a lane below it', () => {
     const tail = textLane('lane.fresh-tail', LANE_PRIORITY['lane.fresh-tail'], 1100, { minTokens: 64 });
-    const directive = textLane('lane.continuity', LANE_PRIORITY['lane.continuity'], 700, { minTokens: 64 });
+    const directive = textLane('lane.summaries', LANE_PRIORITY['lane.summaries'], 300, { minTokens: 64 });   // t140
     // The higher-priority lane is greedy (cost 5,000) but must leave the tail its 64-token floor.
     const { report } = fitLanes([candidate(directive, 5000), candidate(tail, 5000)], 1000);
     const t = report.grants.find((g) => g.id === 'lane.fresh-tail')!;
@@ -292,8 +297,12 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
   const SIZES: Array<[string, number, number, number]> = [
     // id, slot, cost, minTokens
     ['lane.briefing', 100, 4000, 0],
-    ['lane.vault', 200, 3000, 0],
-    ['lane.summaries', 300, 6000, 0],
+    // t140: the continuity lane left the fit (its row is gone below), so `lane.summaries` (80)
+    // is the smallest-and-highest-priority cached lane and carries the 64-token floor, and the
+    // vault takes the big middle slot the summaries held. The inversion pinned is unchanged:
+    // the briefing — admitted FIRST by the old build-order arithmetic — is the one rejected.
+    ['lane.vault', 200, 6000, 0],
+    ['lane.summaries', 300, 1500, 64],
     // SWEEP CORE-2 item 4: `['lane.relevant-memory', 400, 1200, 0]` LEFT this fixture with the
     // lane. It is not a `fitLanes` candidate any more — it is post-budget at slot 1870
     // (`memory/recall-lane.ts`), reserved off the top and never ranked — so keeping a row for
@@ -306,7 +315,6 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     // both are post-budget now (1810 / 1820, `memory/work-board-lane.ts`), never ranked, so a
     // row here would test a rung that does not exist AND would read `LANE_PRIORITY[id]` as
     // `undefined` — where every `undefined >= n` is silently false.
-    ['lane.continuity', 700, 1500, 64],
     // T67b §7: `['lane.directive', 900, 200, 64]` LEFT this fixture with the lane, for the
     // same reason the recall lane's row left it above — it is post-budget at slot 1890 now,
     // reserved off the top and never ranked, so a row here would test a rung that does not
@@ -315,8 +323,8 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     // carries the floor this fixture uses to pin the inversion.
     // W81: `['lane.scratchpad', 800, 400, 64]` LEFT it in turn — three tools rewrite the pad
     // mid-conversation and it held the HIGHEST content priority in the assembly while doing
-    // it, so it is post-budget at 1830 now. `lane.continuity` (priority 70) is the
-    // smallest-and-highest-priority lane the fit still ranks, so it carries the floor.
+    // it, so it is post-budget at 1830 now. `lane.continuity` (priority 70) carried the floor
+    // next — and t140 deleted it with the continuity brief; see the summaries row above.
     ['lane.fresh-tail', 1100, 5000, 64],
   ];
   const FORCED_BUDGET = 8000;
@@ -327,15 +335,15 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     );
   }
 
-  it('the SMALLEST, HIGHEST-PRIORITY lane survives (directive -> scratchpad -> continuity)', () => {
-    // The noun has moved twice and the property has not: T67b swapped `lane.directive` for
-    // `lane.scratchpad` when the pin became a reserved tail lane, and W81 swapped it again
-    // when the pad did. `lane.continuity` (70) is the smallest-and-highest-priority lane the
-    // fit still ranks.
+  it('the SMALLEST, HIGHEST-PRIORITY lane survives (directive -> scratchpad -> continuity -> summaries)', () => {
+    // The noun has moved three times and the property has not: T67b swapped `lane.directive`
+    // for `lane.scratchpad` when the pin became a reserved tail lane, W81 swapped it again when
+    // the pad did, and t140 deleted `lane.continuity` with the continuity brief.
+    // `lane.summaries` (80) is the smallest-and-highest-priority lane the fit still ranks.
     const { report } = fitLanes(build(), FORCED_BUDGET);
-    const d = report.grants.find((g) => g.id === 'lane.continuity')!;
+    const d = report.grants.find((g) => g.id === 'lane.summaries')!;
     expect(d.status).toBe('admitted');
-    expect(report.admittedIds).toContain('lane.continuity');
+    expect(report.admittedIds).toContain('lane.summaries');
   });
 
   it('the BRIEFING drops first', () => {
@@ -387,13 +395,14 @@ describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
   });
 
   it('cannot claim a section the budget dropped', () => {
-    // W81: the probe lane is `lane.continuity` — the scratchpad no longer HAS a section, so
+    // W81: the probe lane was `lane.continuity` — the scratchpad no longer HAS a section, so
     // an ack asked for it renders null, which would make this clause vacuous rather than red.
-    const ack = renderScaffoldingAck(['lane.continuity'])!;
-    expect(ack).toContain('continuity brief');
+    // t140: the continuity lane is gone too, so the probe is `lane.summaries`.
+    const ack = renderScaffoldingAck(['lane.summaries'])!;
+    expect(ack).toContain('summaries');
     expect(ack).not.toContain('briefing');
     expect(ack).not.toContain('vault');
-    expect(ack).not.toContain('summaries');
+    expect(ack).not.toContain('continuity');
   });
 
   it('T67b: the ack no longer names the ACTIVE USER DIRECTIVE at all', () => {

@@ -1033,7 +1033,7 @@ describe('t109 §11 — the deep-compaction floor re-anchors instead of trimming
     // drain), so the deep compaction is the PRESSURE path's, forced as the emergency arm forces
     // it: everything outside the row floor is folded and `rows_since` lands at the cap.
     await driveRun({ turns: 40, compaction: false });
-    const forced = await checkAndCompact(AGENT, MODEL, windowNow.value, { force: true, maxChunksPerRun: 10, skipContinuityBrief: true });
+    const forced = await checkAndCompact(AGENT, MODEL, windowNow.value, { force: true, maxChunksPerRun: 10 });
     passLog.push({ turn: 40, leafCreated: forced.leafCreated, tokensReclaimed: forced.tokensReclaimed });
     expect(passLog[0].leafCreated, 'precondition: a compaction ran, so a boundary exists')
       .toBeGreaterThan(0);

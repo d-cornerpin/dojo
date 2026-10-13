@@ -205,10 +205,12 @@ export interface Lane<C = unknown, P = unknown> {
 // fit no longer ranks has nothing to say there. Each carries a DECLARED RESERVE in
 // `POST_BUDGET_LANES` instead, which is stronger: a reserve cannot be outbid where a
 // priority can (T67b §5's argument for `lane.directive`, unchanged).
+// t140: `lane.continuity` (70) LEFT this table with the continuity brief it rendered — the
+// writer is deleted and migration 187 removes the stored keys. Its two label entries below
+// went with it, so the ack can never name a section that no longer exists.
 export const LANE_PRIORITY: Record<string, number> = {
   'lane.fresh-tail': 30,
   'lane.scaffolding-ack': 35,
-  'lane.continuity': 70,
   'lane.summaries': 80,
   'lane.vault': 100,
   'lane.briefing': 110,
@@ -221,7 +223,6 @@ export const LANE_PRIORITY: Record<string, number> = {
  */
 export const LANE_LADDER_LABEL: Record<string, string> = {
   'lane.fresh-tail': 'live conversation below',
-  'lane.continuity': 'continuity brief',
   'lane.summaries': 'compressed history',
   'lane.vault': 'vault entries',
   'lane.briefing': 'briefing',
@@ -232,7 +233,6 @@ export const LANE_SECTION_LABEL: Record<string, string> = {
   'lane.briefing': 'briefing',
   'lane.vault': 'vault',
   'lane.summaries': 'summaries',
-  'lane.continuity': 'continuity brief',
 };
 
 // ── The declared numbers ────────────────────────────────────────────────────────────────

@@ -57,7 +57,7 @@ import { turnBoundary } from '../agent/turn-state.js';
 // ALIASED: `turnContext` already means `PromptTurnContext` (an assembly's per-turn
 // INPUTS) throughout this file. This one is the turn's own ambient facts (PHASE-6 T1).
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
-import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
+import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
@@ -1113,55 +1113,15 @@ function buildContentLanes(
     // appended by the loop past `volatileFrom`, each with a DECLARED RESERVE derived by
     // calling its own renderer. Same move as `lane.directive`'s at T67b §7, two nouns over.
 
-    {
-      id: 'lane.continuity',
-      slot: MessageSlot.CompactionContinuity,
-      priority: LANE_PRIORITY['lane.continuity'],
-      minTokens: 0,
-      maxTokens: Infinity,
-      truncate: truncateTextLane,
-      // ── T67b CENSUS — THE ONE BOUNDED FLAP THIS TASK KEPT, AND WHY ────────────────────
-      //
-      // Classified honestly: this lane APPEARS at a compaction (which writes the brief and
-      // the threshold) and VANISHES `CONTINUITY_BRIEF_HORIZON_TURNS` turns later, which is a
-      // prefix shape change that is NOT at a compaction boundary — the same class §2 deleted
-      // from briefing / vault / active-tasks.
-      //
-      // IT IS KEPT, and the argument is that removing the gate would resurrect the incident
-      // the gate exists for. `lane.continuity` is the LAST reader of T6's whole mechanism
-      // (`readStoredTurnThreshold` + `CONTINUITY_BRIEF_HORIZON_TURNS` +
-      // `continuityBriefValidUntilTurn`), and T6's finding was a threshold from an older
-      // numbering era sitting PERMANENTLY IN THE FUTURE — a brief written at turn 264 with
-      // `validUntil` 1598. An ungated brief is that state by construction, not by accident.
-      //
-      // WHAT MAKES IT TOLERABLE, stated in the terms the invariance gate uses: the flap is
-      // BOUNDED, ONE-WAY and AT MOST ONCE PER BRIEF. It costs one prefix rebuild per
-      // compaction cycle — a cycle that already rebuilds the prefix at its start, three turns
-      // earlier — where the lanes §2 fixed cost one per conversation and one per session.
-      // `check-prefix-holds-still.mjs` REFUSES a pair that contains this transition (reading
-      // the lane's own grant, the way it reads `lane.new-session`'s) rather than judging it,
-      // because a declared bounded event is not the unlawful rewrite that gate is for.
-      render: (ctx) => {
-        try {
-          const db = getDb();
-          const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(ctx.agentId) as { config: string } | undefined;
-          if (!configRow?.config) return null;
-          const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
-          const continuityBrief = agentConfig.continuityBrief as string | undefined;
-          const currentTurn = currentTurnNumber(ctx.agentId);   // G24: the turns record, not a MAX over messages
-          // T6: bounded ABOVE by the writer's own horizon — a threshold from an older
-          // numbering era is permanently in the future and never expires on its own.
-          const validUntil = readStoredTurnThreshold(
-            agentConfig.continuityBriefValidUntilTurn, currentTurn, CONTINUITY_BRIEF_HORIZON_TURNS,
-          );
-          if (validUntil === null || !(currentTurn < validUntil)) return null;
-          if (!continuityBrief || continuityBrief.length <= 50) return null;
-          return textRender(
-            `═══ CONTINUITY BRIEF (snapshot from before the last compaction, the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`,
-          );
-        } catch { return null; /* best effort */ }
-      },
-    },
+    // ── STRIP (t140): `lane.continuity` (slot 700) IS GONE, with the brief it rendered ──────
+    // It injected the pre-compaction continuity brief for three turns after a compaction —
+    // ahead of the conversation, inside the cached region, appearing and vanishing outside any
+    // compaction boundary (the one bounded flap T67b kept). Its writer is deleted
+    // (`memory/compaction.ts`, STRIP note at the pressure path) and migration 187 removes the
+    // stored keys, so the lane could only ever render nothing. requirement preserved: "after a
+    // compaction the agent knows what it was working on" — the task list, and the live
+    // conversation a fold no longer reaches into (t140).
+
     // ── W81: `lane.scratchpad` (800) LEFT THIS LIST ──────────────────────────────────────
     //
     // Three tools rewrite `agents.config.scratchpad` mid-conversation — `scratchpad_set`,

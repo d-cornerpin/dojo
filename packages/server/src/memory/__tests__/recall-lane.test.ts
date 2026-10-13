@@ -190,12 +190,15 @@ describe('§1 the recall lane rides the tail', () => {
     // no longer in the scaffolding the ack closes. That sentence's job is done by the
     // scratchpad block's own header ("update with scratchpad_set"), beside the thing it
     // describes instead of thousands of tokens above it.
-    const ack = renderScaffoldingAck(['lane.continuity', 'lane.fresh-tail']);
+    // t140 moves it a FOURTH time: `lane.continuity` is deleted with the continuity brief, so
+    // the probe section is the summaries — the ack can no longer name a brief at all.
+    const ack = renderScaffoldingAck(['lane.summaries', 'lane.fresh-tail']);
     expect(ack).toBe(
-      'Understood, I have reviewed my background context (continuity brief). Source ' +
-      'priority for this turn: live conversation below > continuity brief. When sources ' +
+      'Understood, I have reviewed my background context (summaries). Source ' +
+      'priority for this turn: live conversation below > compressed history. When sources ' +
       'disagree, trust the most recent and most specific.',
     );
+    expect(ack).not.toContain('continuity brief');
     expect(ack).not.toContain('relevant memory');
     expect(ack).not.toContain('active user directive');
     // W81's four, each asserted absent by NAME rather than by the set they left.

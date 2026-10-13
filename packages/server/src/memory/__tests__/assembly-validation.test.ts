@@ -179,18 +179,21 @@ describe('repairAssembly — C10, priority order and not one message older', () 
   // inversion clause below asserts that monotonicity instead of demonstrating a violation it
   // can no longer construct from real ids. That is a strictly stronger statement about the
   // table, and it is stated rather than quietly dropped.
+  // ── t140: THE `lane.continuity` ROW LEFT THIS FIXTURE with the lane and the continuity
+  // brief it rendered (writer deleted, keys removed by migration 187). An undeclared id now
+  // makes the repair refuse by name (C10.5), so a row for it would test a refusal, not a
+  // ranking. The four lanes that remain keep their order.
   const laneArray = (): { messages: ValidatedMessage[]; laneIds: (string | null)[] } => ({
     messages: [
       user('BRIEFING '.repeat(100)),   // 0  slot 100   priority 110  (lowest)
       user('VAULT '.repeat(100)),      // 1  slot 200   priority 100
       user('SUMMARIES '.repeat(100)),  // 2  slot 300   priority 80
-      user('CONTINUITY '.repeat(100)), // 3  slot 700   priority 70
-      user('FRESHTAIL '.repeat(100)),  // 4  slot 1100  priority 30   (highest)
-      user('the live question'),       // 5  newest, no lane: the loop's tail-append
+      user('FRESHTAIL '.repeat(100)),  // 3  slot 1100  priority 30   (highest)
+      user('the live question'),       // 4  newest, no lane: the loop's tail-append
     ],
     laneIds: [
       'lane.briefing', 'lane.vault', 'lane.summaries',
-      'lane.continuity', 'lane.fresh-tail', null,
+      'lane.fresh-tail', null,
     ],
   });
 
@@ -207,8 +210,8 @@ describe('repairAssembly — C10, priority order and not one message older', () 
 
   it('drops in DESCENDING priority order when one lane is not enough', () => {
     const { messages, laneIds } = laneArray();
-    // Room for the two highest-priority lanes plus the tail-append, and no more.
-    const budget = cost([messages[3], messages[4], messages[5]]) + 5;
+    // Room for the highest-priority lane plus the tail-append, and no more.
+    const budget = cost([messages[3], messages[4]]) + 5;
     const r = repairAssembly(messages, { budgetTokens: budget, laneIds });
     expect(r.droppedLaneIds).toEqual(['lane.briefing', 'lane.vault', 'lane.summaries']);
     // …which is exactly descending priority.
@@ -219,12 +222,11 @@ describe('repairAssembly — C10, priority order and not one message older', () 
 
   it('W81: the repair still ranks, and the REAL table is now monotone', () => {
     const { messages, laneIds } = laneArray();
-    const budget = cost([messages[3], messages[4], messages[5]]) + 5;
+    const budget = cost([messages[3], messages[4]]) + 5;
 
-    // Priority order. The continuity brief, the fresh tail and the live question survive.
+    // Priority order. The fresh tail and the live question survive.
     const repaired = repairAssembly(messages, { budgetTokens: budget, laneIds });
     const kept = repaired.messages.map((m) => String(m.content).split(' ')[0]);
-    expect(kept).toContain('CONTINUITY');
     expect(kept).toContain('FRESHTAIL');
     expect(kept).toContain('the');
 
@@ -254,7 +256,6 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       'lane.briefing': MessageSlot.MorningBriefing,
       'lane.vault': MessageSlot.VaultPull,
       'lane.summaries': MessageSlot.Summaries,
-      'lane.continuity': MessageSlot.CompactionContinuity,
       'lane.fresh-tail': MessageSlot.FreshTail,
     };
     expect(new Set(ranked)).toEqual(new Set(Object.keys(slots)));
@@ -278,7 +279,7 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       // ALLOWED to drop — it refuses by name instead (`LIVE_CONVERSATION_PROTECTED`), and the
       // boundary starts condensing. Before t140 this list ended with 'lane.fresh-tail'.
       expect(err.droppedLaneIds).toEqual([
-        'lane.briefing', 'lane.vault', 'lane.summaries', 'lane.continuity',
+        'lane.briefing', 'lane.vault', 'lane.summaries',
       ]);
       expect(err.code).toBe('LIVE_CONVERSATION_PROTECTED');
     }

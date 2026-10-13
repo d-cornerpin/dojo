@@ -251,7 +251,7 @@ describe('T56 leg (b) — reasoning ages out at compaction boundaries, and only 
     const { old, active } = seedHistoryAcrossTurns();
 
     const result = await checkAndCompact(AGENT, MODEL, CONTEXT_WINDOW, {
-      force: true, skipContinuityBrief: true,
+      force: true,
     });
     expect(result.leafCreated).toBeGreaterThan(0);
 
@@ -293,7 +293,7 @@ describe('T56 leg (b) — reasoning ages out at compaction boundaries, and only 
     // Nothing outside the fresh tail: `runLeafCompaction` has no span, so no prefix region is
     // rewritten and no byte may move.
     const result = await checkAndCompact(AGENT, MODEL, CONTEXT_WINDOW, {
-      force: true, skipContinuityBrief: true,
+      force: true,
     });
     expect(result.leafCreated).toBe(0);
     expect(stampOf(call)).toBe(0);
@@ -304,7 +304,7 @@ describe('T56 leg (b) — reasoning ages out at compaction boundaries, and only 
   // every turn, and this is what refuses that shape.
   it('CONTROL: the retirement is DURABLE — assemblies after the boundary do not re-decide it', async () => {
     seedHistoryAcrossTurns();
-    await checkAndCompact(AGENT, MODEL, CONTEXT_WINDOW, { force: true, skipContinuityBrief: true });
+    await checkAndCompact(AGENT, MODEL, CONTEXT_WINDOW, { force: true });
 
     const first = await assembleContext(AGENT, MODEL);
     const second = await assembleContext(AGENT, MODEL);

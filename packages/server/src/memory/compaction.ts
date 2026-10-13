@@ -38,7 +38,7 @@ import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterM
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
-import { currentTurnNumber, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
+import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Both of the latter two were re-declared below.
@@ -81,11 +81,11 @@ export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no use
 //
 // The assembler loads:
 //   - summaries pinned to context_items (top-level DAG nodes)
-//   - the fresh tail (last N raw messages, sized by contextWindow)
-//   - the continuity brief (a short snapshot stored in agent config)
+//   - the fresh tail (every row since the compaction boundary — `tail-horizon.ts`)
 //   - vault snippets and tracker tasks (variable, bounded by their own logic)
 //
-// We approximate the compressible portion: summaries + fresh tail + brief.
+// We approximate the compressible portion: summaries + fresh tail. (t140: the continuity brief
+// that used to be the third term is deleted — see the STRIP note where its writer stood.)
 // Vault and active tasks aren't compressible by this engine, so leaving
 // them out of the gating metric is correct.
 // Per-message cap for the compaction gate. A single oversized message
@@ -145,7 +145,12 @@ export async function estimateAssembledTokens(
   total: number;
   summaryTokens: number;
   freshTailTokens: number;
-  briefTokens: number;
+  /**
+   * t140: ALWAYS 0. The continuity brief this counted is deleted; the field stays only because
+   * `assembled-estimate-cache.ts` (outside t140's fence) declares it on the cached shape. Handed
+   * up for removal with that interface — nothing reads it to decide anything.
+   */
+  briefTokens: 0;
   freshTailCount: number;
   summaryCount: number;
   /** What the assembler set aside for tool schemas + output on this agent, measured. */
@@ -222,17 +227,6 @@ export async function estimateAssembledTokens(
     0,
   );
 
-  let briefTokens = 0;
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    if (row?.config) {
-      const cfg = JSON.parse(row.config) as Record<string, unknown>;
-      const brief = cfg.continuityBrief as string | undefined;
-      if (brief) briefTokens = estimateTokens(brief);
-    }
-  } catch { /* best effort */ }
-
   // Cap summary tokens at the same budget the assembler applies (assembler.ts:
   // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
   // dropping oldest first to fit). Without this cap, a long-lived agent, or
@@ -242,14 +236,14 @@ export async function estimateAssembledTokens(
   // "memory is too full" message forever. The assembler will trim summaries
   // to fit; the gate must reflect that, not the unbounded raw total.
   const maxAssemblerTokens = policy.assemblyBudgetTokens;
-  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - briefTokens - freshTailTokens) * policy.summaryShare));
+  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - freshTailTokens) * policy.summaryShare));
   const summaryTokens = Math.min(rawSummaryTokens, summaryBudget);
 
   return {
-    total: summaryTokens + freshTailTokens + briefTokens,
+    total: summaryTokens + freshTailTokens,
     summaryTokens,
     freshTailTokens,
-    briefTokens,
+    briefTokens: 0,
     freshTailCount: freshTail.length,
     summaryCount: summaries.length,
     reserveTokens: policy.toolAndOutputReserve,
@@ -557,11 +551,6 @@ export interface CheckAndCompactOptions {
   // messages) drains across many turns instead of blocking a single turn
   // for minutes while it does dozens of LLM calls back-to-back.
   maxChunksPerRun?: number;
-  // v2.5.12, Skip the expensive continuity-brief LLM call AND the
-  // user-facing divider/nudge insert. Used by routine drain so we don't
-  // pay the brief cost on every chunk and don't spam the chat with
-  // "Memory Compacted" notifications while we drain a backlog.
-  skipContinuityBrief?: boolean;
   // v2.5.14, Optional abort signal for cancellation. Used by the
   // background condense in the v2 pre-call gate so a hung summarizer LLM call
   // can actually be cancelled instead of running until the SDK's
@@ -691,11 +680,10 @@ async function runCheckAndCompact(
       ? options.leaving
       : rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull: false });
 
-  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow})${leaving ? `, leaving=${leaving.rowsLeaving} rows (${leaving.cause}) through seq ${leaving.throughSeq}` : ''}${force ? ' [FORCED]' : ''}`, {
+  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow})${leaving ? `, leaving=${leaving.rowsLeaving} rows (${leaving.cause}) through seq ${leaving.throughSeq}` : ''}${force ? ' [FORCED]' : ''}`, {
     assembledTokens: totalTokens,
     summaryTokens: assembled.summaryTokens,
     freshTailTokens: assembled.freshTailTokens,
-    briefTokens: assembled.briefTokens,
     freshTailCount: assembled.freshTailCount,
     summaryCount: assembled.summaryCount,
     threshold: Math.round(threshold),
@@ -774,25 +762,20 @@ async function runCheckAndCompact(
       uncompactedOutsideTail: guardUncompactedCount,
     }, agentId);
 
-    // ── Pre-compaction continuity brief ──
-    // BEFORE compaction destroys raw messages, generate a concise summary
-    // of the FULL current context so the agent knows what it was working
-    // on. The brief is the difference between "post-compaction the agent
-    // is reoriented" and "post-compaction the agent is dazed."
-    //
-    // Pre-2026-05-06 this only ran on emergency compactions. The reasoning
-    // was that proactive compaction shouldn't happen in v2, so generating
-    // a brief was treated as a self-inflicted wound. In practice: when
-    // compaction DOES run for any reason (force, threshold, recovery
-    // cascade), the agent loses raw thread tail. The brief is cheap (one
-    // summarizer call) and the failure mode without it ("forgot what we
-    // were doing") is severe. Always run it, UNLESS this is a routine
-    // gap drain (skipContinuityBrief), in which case the agent is not
-    // losing context this turn (fresh tail unchanged) and the brief is
-    // pure overhead.
-    if (!options?.skipContinuityBrief) {
-      await generateContinuityBrief(agentId, modelId, contextWindow);
-    }
+    // ── STRIP (t140): THE PRE-COMPACTION CONTINUITY BRIEF IS GONE ──────────────────────────
+    // A model call here wrote a 1,500–3,000-word "continuity brief" into `agents.config` before
+    // every non-routine compaction, injected for three turns ahead of the conversation
+    // (`lane.continuity`, slot 700, inside the cached region) and announced for 24 hours in the
+    // system prompt. It asked for the user's last instructions VERBATIM and "what the agent was
+    // about to do next … continue exactly from here", built from undated rows with no record of
+    // what was already answered — a second "what's current" beside the task list, which the
+    // owner ruled is the only one (OR-TRACKER-1), and a carrier of finished work back into a live
+    // turn (tracker #7). It existed to bridge compaction cutting what the agent was reading;
+    // t140 removes that cause (only rows LEAVING the view are folded), so it is deleted, not
+    // repaired (build plan §1 choice 6). requirement preserved: "after a compaction the agent
+    // knows what it was working on" — owned by the task list (the tracker survives compaction
+    // unchanged) and by the live conversation itself, which a fold no longer reaches into.
+    // Migration 187 removes the stored keys.
 
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction, better to have a bloated context than lost data.
@@ -831,13 +814,9 @@ async function runCheckAndCompact(
       maxChunks: options?.maxChunksPerRun,
       abortSignal: options?.abortSignal,
     }));
-    // v2.5.12, Skip condensation on routine drain too. Condensation walks
-    // the depth tree and can do multiple LLM calls; backlog drains will
-    // accumulate enough leaf summaries that condensation runs naturally on
-    // the next forced/emergency compaction.
-    const condensation = options?.skipContinuityBrief
-      ? null
-      : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
+    // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
+    // rows leaving the view never reaches here (`leavingViewPass`), so nothing needs skipping.
+    const condensation = await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
     const condensedCreated = condensation?.condensedCreated ?? 0;
     rebuildContextItems(agentId);
     // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
@@ -946,8 +925,7 @@ function passFacts(
  * THE LEAF-LESS PASS — over budget with nothing raw left to fold, which is the incident's
  * own state and used to be the dead end.
  *
- * It runs condensation and nothing else: no continuity brief (the agent is losing no raw
- * tail, so the brief is pure overhead — the routine drain's own argument), no archive (there
+ * It runs condensation and nothing else: no archive (there
  * is nothing to archive), no leaf chunking (the handful of rows outside the tail is below the
  * floor that makes folding them worth a model call). An assembly that is in fact within this
  * module's own threshold returns before spending anything at all.
@@ -1102,7 +1080,7 @@ export function ageOutReplayedReasoning(agentId: string): number {
 //
 // WHERE IT LIVES: `agents.config.toolResultsStubbedBeforeTurn`, an integer. No migration:
 // this is a per-agent scalar of exactly the kind that column already holds
-// (`continuityBriefValidUntilTurn` is its neighbour and its precedent), and the assembler
+// (the deleted continuity brief's turn horizon was its precedent), and the assembler
 // reads it on a path that already reads this config. The read stays PURE (PHASE-3 S3) —
 // assembly never writes it.
 //
@@ -1457,187 +1435,6 @@ export function rebuildContextItems(agentId: string): void {
     summaryCount: topLevel.length,
     freshTailCount: freshTail.length,
   }, agentId);
-}
-
-// ── Pre-Compaction Continuity Brief ──
-// Generates a concise summary of the agent's full current context BEFORE
-// compaction destroys the raw messages. This summary is stored as a
-// special "continuity" summary and injected first in context assembly,
-// so the agent always knows what it was doing after compaction.
-
-const CONTINUITY_BRIEF_PROMPT = `You are generating a CONTINUITY BRIEF for an AI agent whose conversation history is about to be compressed. After compaction the agent will only see this brief + compressed summaries, not the raw messages. If you are vague, the agent loses its mind on the next turn. Specificity is everything.
-
-Length: aim for 1500–3000 words. This is the single most important context the agent will see; do NOT under-write it.
-
-Required sections (use these headings literally, in this order):
-
-## What the user has told the agent
-Quote the user's last 3–5 direct instructions or messages **verbatim** if they are short, or paraphrase tightly with quotes around the load-bearing phrases. The user's exact words matter more than your interpretation. Include any "remember to…", "always…", "never…", "from now on…" instructions verbatim.
-
-## Current project / task
-What is the agent actually working on right now? Be concrete: specific project name, what stage, what they're trying to achieve. Reject "working on a project", that's useless. "Fixing the drop-shadow rendering on Layout 7 of the Verve Health deck so it matches Figma reference (file: /Users/.../decks/verve.pptx, slide ID: g3a8f2)" is useful.
-
-## What was happening RIGHT BEFORE compaction
-Last 1–3 turns: what tool calls just ran, what they returned, what the agent was about to do next. The agent has to continue exactly from here.
-
-## Specific details to preserve
-File paths, URLs, task IDs, agent IDs, deck IDs, technique names, drive file IDs, model names, error messages, decision rationale, anything an agent picking this up tomorrow couldn't rederive in five seconds. Bullet list of facts. Be exhaustive.
-
-## Active threads / tasks
-Tracker tasks the agent is owning, A2A threads the agent is in the middle of (with thread IDs), files the agent has been editing, tools the agent has loaded.
-
-## Known constraints
-Standing rules from this conversation (don't push without approval, the user is testing X, don't touch Y, etc.). Anything the agent would otherwise blunder into.
-
-Anti-patterns to avoid:
-- "The agent has been working on various tasks." Useless.
-- "The user wants the project to succeed." Useless.
-- "Several decisions were made." Useless, list them.
-- Filler transitions ("As mentioned above", "In summary", "Looking forward").
-
-Write the brief directly, no preamble, no meta-commentary about being a continuity brief. The first character should start the "## What the user has told the agent" heading.`;
-
-// Don't regenerate the brief if a fresh one already exists. Compaction can
-// fire several times in a row when assembled context hovers around the
-// threshold; without this guard the brief is overwritten before the agent
-// has a chance to read it. 5 minutes is generous enough that the agent has
-// ALMOST CERTAINLY had a turn or two with the existing brief in context.
-const BRIEF_OVERWRITE_GUARD_MS = 5 * 60 * 1000;
-
-// Brief target size. Pre-2026-04-30 this was 800 tokens; v1.15.92 raised
-// to 2500. The structured prompt rewrite (verbatim user quotes + required
-// sections) needs more room to fully capture state, so 4000 tokens, a
-// chunky but bounded brief that can hold weeks of project context across
-// compactions. Still well under typical context windows.
-const BRIEF_TARGET_TOKENS = 4000;
-
-async function generateContinuityBrief(agentId: string, modelId: string, contextWindow: number): Promise<void> {
-  try {
-    const db = getDb();
-
-    // Skip if a fresh brief already exists. Stored via continuityBriefAt
-    // (ISO timestamp); legacy briefs without a timestamp are treated as
-    // stale so they get replaced once.
-    try {
-      const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-      if (cfgRow?.config) {
-        const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
-        const existingBrief = cfg.continuityBrief as string | undefined;
-        const existingAt = cfg.continuityBriefAt as string | undefined;
-        if (existingBrief && existingAt) {
-          const ageMs = Date.now() - new Date(existingAt).getTime();
-          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < BRIEF_OVERWRITE_GUARD_MS) {
-            logger.info('Skipping continuity brief regen, existing brief is fresh', {
-              ageSeconds: Math.round(ageMs / 1000),
-              guardSeconds: Math.round(BRIEF_OVERWRITE_GUARD_MS / 1000),
-            }, agentId);
-            return;
-          }
-        }
-      }
-    } catch { /* best effort */ }
-
-    // Gather ALL current messages (the full context window the agent has right now)
-    const allMessages = getRecentMessages(agentId, getFreshTailCount(contextWindow) * 2);
-    if (allMessages.length < 5) return; // Not enough context to summarize
-
-    // Format messages for the summarizer. Scrub technique tool-result
-    // bodies first so they don't leak into the continuity brief. Also drop
-    // inter-agent/lifecycle plumbing (same reason as the leaf summary above): a
-    // sub-agent completion dump or PM poke must not become part of the brief the
-    // primary reads after compaction, or it narrates another agent's work to the user.
-    const formatted = allMessages
-      .filter(m => !isNonConversationForSummary(m.content))
-      .map(m => {
-        const role = m.role === 'assistant' ? '[ASSISTANT]' : m.role === 'user' ? '[USER]' : `[${m.role.toUpperCase()}]`;
-        const scrubbed = scrubTechniqueContentForSummary(m.content);
-        // Truncate very long messages (tool results) to keep the input manageable
-        const content = scrubbed.length > 2000 ? scrubbed.slice(0, 2000) + '...[truncated]' : scrubbed;
-        return `${role}\n${content}`;
-      }).join('\n---\n');
-
-    // Cap the input to avoid sending too much to the summarizer
-    const maxInput = Math.min(formatted.length, 50000);
-    const input = formatted.slice(-maxInput); // Take the most recent portion
-
-    logger.info('Generating pre-compaction continuity brief', {
-      messageCount: allMessages.length,
-      inputChars: input.length,
-      targetTokens: BRIEF_TARGET_TOKENS,
-    }, agentId);
-
-    const result = await generateSummary({
-      content: input,
-      depth: 0,
-      targetTokens: BRIEF_TARGET_TOKENS,
-      agentId,
-      modelId,
-      previousContext: CONTINUITY_BRIEF_PROMPT,
-    });
-
-    // PHASE-3 T5 Step 2: a refused brief is simply not written. The brief is advisory —
-    // the assembler injects it when present — so its absence costs a turn of continuity,
-    // while a truncated raw dump in its place would be read by the model as fact.
-    if (!result.ok) {
-      logger.warn('SUMMARY_REFUSED continuity brief not written', { reason: result.reason }, agentId);
-      return;
-    }
-
-    // PHASE-2 T7: nothing to strip. The depth-0 contract no longer emits a fenced
-    // OPEN-LOOPS section, so the brief is the model's text as written.
-    const briefText = result.text;
-
-    if (!briefText || briefText.length < 50) {
-      logger.warn('Continuity brief generation produced empty/short result, skipping', { agentId });
-      return;
-    }
-
-    // Store the brief in the agent's config JSON. The context assembler reads
-    // it and injects it at assembly time, no messages, no wasted turns, no
-    // chat feed clutter. continuityBriefAt is the source of truth for the
-    // overwrite guard above.
-    const nowIso = new Date().toISOString();
-    const briefTimestamp = new Date().toLocaleString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true,
-      timeZoneName: 'short',
-    });
-    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${briefText}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or history_search to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
-
-    // Phase 4 §C (2026-05-04), set continuityBriefValidUntilTurn so the
-    // assembler stops injecting the brief after 3 turns post-emergency
-    // (Part XVIII §C: "the fresh tail is authoritative once the agent has
-    // had a few turns to re-orient").
-    //
-    // G24: the WRITER of the window the two assembler readers compare against, now on the
-    // same clock they are. Before this, writer and readers each ran their own MAX over
-    // `messages` at different moments, so a row landing in between shifted the window by one
-    // (research 06 §7).
-    const currentTurn = currentTurnNumber(agentId);
-    const validUntilTurn = currentTurn + CONTINUITY_BRIEF_HORIZON_TURNS;
-
-    db.prepare(`
-      UPDATE agents SET config = json_set(
-        json_set(
-          json_set(COALESCE(config, '{}'), '$.continuityBrief', ?),
-          '$.continuityBriefAt', ?
-        ),
-        '$.continuityBriefValidUntilTurn', ?
-      )
-      WHERE id = ?
-    `).run(briefContent, nowIso, validUntilTurn, agentId);
-
-    logger.info('Continuity brief stored in agent config', {
-      briefTokens: result.tokenCount,
-      briefChars: result.text.length,
-    }, agentId);
-  } catch (err) {
-    // Continuity brief is best-effort, don't block compaction if it fails
-    logger.warn('Continuity brief generation failed, compaction will proceed without it', {
-      agentId,
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
 }
 
 // ── Helpers ──

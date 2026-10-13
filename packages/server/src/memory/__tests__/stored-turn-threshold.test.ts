@@ -63,11 +63,6 @@ function seed(validUntilTurn: number | null, turns: number): void {
   ).run(AGENT, turns);
 }
 
-async function continuityAdmitted(): Promise<boolean> {
-  const ctx = await assembleContext(AGENT, MODEL);
-  return (ctx.allocation?.admittedIds ?? []).includes('lane.continuity');
-}
-
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
@@ -98,20 +93,22 @@ describe('readStoredTurnThreshold — the bound is the writer\'s own horizon', (
 });
 
 describe('the assembly, end to end', () => {
-  it('RED AT BASE: a fossil threshold admits the continuity lane on every turn', async () => {
-    seed(1598, 5);
-    // With the bound in place this is FALSE. Without it, 5 < 1598 and the lane is admitted
-    // on this turn and on every turn thereafter, indefinitely.
-    expect(await continuityAdmitted()).toBe(false);
-  });
-
-  it('a threshold inside the horizon still admits the lane — the bound did not break the feature', async () => {
-    seed(5 + H, 5);
-    expect(await continuityAdmitted()).toBe(true);
-  });
-
-  it('an honestly expired threshold still closes the lane', async () => {
-    seed(3, 9);
-    expect(await continuityAdmitted()).toBe(false);
+  // t140: the continuity lane these clauses gated is DELETED with the continuity brief (its
+  // writer in `memory/compaction.ts`, the lane in `memory/assembler.ts`, the stored keys by
+  // migration 187). The three clauses that stood here — a fossil threshold must not admit the
+  // lane, an in-horizon one must, an expired one must not — asked a question the assembly can
+  // no longer be asked. What replaces them is the stronger statement: a brief left in a config
+  // (an upgraded box between boot and migration, or an imported body) is never rendered, at ANY
+  // threshold, so the bound above is no longer what stands between a stale brief and the model.
+  it.each([
+    ['a fossil threshold', 1598, 5],
+    ['a threshold inside the horizon', 5 + H, 5],
+    ['an honestly expired threshold', 3, 9],
+  ])('t140: %s renders no continuity brief at all', async (_label, validUntil, turns) => {
+    seed(validUntil, turns);
+    const ctx = await assembleContext(AGENT, MODEL);
+    expect(ctx.allocation?.admittedIds ?? []).not.toContain('lane.continuity');
+    expect(JSON.stringify(ctx.messages)).not.toContain('CONTINUITY BRIEF');
+    expect(JSON.stringify(ctx.messages)).not.toContain('north gym locker');
   });
 });
