@@ -36,7 +36,7 @@ export async function runNoReply(
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
   const {
-    agentId, chosenConvKey, counterparty, latestUserSource,
+    agentId, counterparty, latestUserSource,
     messageId, noteTerminalAnswer, persistAndBroadcastSystemRow, result, triggerRow,
     turnCtx, turnNumber,
   } = ctx;

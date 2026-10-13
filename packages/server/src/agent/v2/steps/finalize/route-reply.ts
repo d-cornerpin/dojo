@@ -39,13 +39,6 @@ export async function routeTerminalReply(
   engineCompletionAckThisTurn: boolean,
 ): Promise<AgentTurnState> {
   const { agentId, turnNumber, turnCtx, counterparty, chosenConvKey, settledContextWakeTurn, isEngineTurn } = ctx;
-  // PHASE-6 T9 (CUT 4): the conversation this turn serves is read from the TURN'S BAG,
-  // which is where the driver publishes it (`loop.ts`'s one writer, whose own comment
-  // says "MOVED, not doubled — a second `.set()` is two owners of one fact"). The
-  // driver local it used to read is the same value by construction — one write, before
-  // the loop, and the publication is the statement after it — so this is the crossing
-  // dissolving into a field that already exists rather than a second copy of the fact.
-  const chosenConversationId = turnCtx.conversationId ?? null;
 
   // ── Reply-destination resolver (v2.7.23, OpenClaw-inspired) ──
   // The model just writes text; the engine decides which channel to
