@@ -65,6 +65,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
+import { rowsLeavingView } from '../../../../../memory/tail-horizon.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
@@ -302,6 +303,12 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
     });
+    // The trigger's own answer names the clamped span. (The fold's selection excludes the
+    // floor a second time — `getMessagesOutsideFreshTail` — so the answer is what keeps the
+    // reported span and the tool-pair extension honest, and it is pinned here directly.)
+    const before = allSeqs(SMALL_AGENT);
+    expect(rowsLeavingView(SMALL_AGENT, { freshTailCount: 40 }, { viewFull: true }))
+      .toEqual({ cause: 'full', throughSeq: before[9], rowsLeaving: 10 });
     await runPreCallGates(state, ctx);
     for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
     const seqs = allSeqs(SMALL_AGENT);
