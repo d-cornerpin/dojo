@@ -551,6 +551,43 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(askStateOf('msg-parked')).toBe('done');        // the continuation's delivery closes it
   });
 
+  // ROUND 4, R-V333-11 (live evidence, t136 run bmv64ib0rkc #99007): at the 15-minute park the
+  // engine re-delivered an EARLIER narration line ("Page 3 found one wrong line. Onward") as a new
+  // user-visible bubble — the owner's "filler line every 15 minutes" (#10). On a turn the engine
+  // is CONTINUING, the finalize recovery must not turn the held-back line into an answer bubble;
+  // the line stays the working-note it already is, and the continuation's answer arrives once.
+  it.fails('a parked job never re-delivers its held-back narration as a visible bubble; the real answer arrives once', async () => {
+    const line = 'Page 3 found one wrong line. Onward';
+    ownerSays('msg-pages', 'Proofread the five report pages for wrong lines.');
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      let i = 0;
+      callModelSpy.mockImplementation(async () => {
+        i++;
+        if (i <= 2) {
+          if (i === 2) offset = 16 * 60_000;            // the second call returns past the budget
+          return { content: line, toolCalls: [call(`fr-${i}`, 'file_read', { path: `/report/page-${i + 2}.txt` })], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        }
+        return { content: 'unreachable', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+      });
+      await runV2Turn(PRIMARY);
+    } finally { nowSpy.mockRestore(); }
+    expect((mockDb.current!.prepare('SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1').get(PRIMARY) as { exit_reason: string }).exit_reason).toBe('budget');
+    const visible = (text: string): number => (mockDb.current!.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND role = 'assistant' AND display_kind = 'agent-text' AND content = ?",
+    ).get(PRIMARY, text) as { n: number }).n;
+    expect(visible(line)).toBe(0);                       // no bubble made of the narration at the park
+
+    const answer = 'All five pages checked: two wrong lines, on pages 3 and 5.';
+    script([{ content: answer }]);
+    await runV2Turn(PRIMARY);
+    expect(visible(answer)).toBe(1);                     // the continuation's answer, once
+    expect(visible(line)).toBe(0);
+    expect(askStateOf('msg-pages')).toBe('done');
+  });
+
   // CONTROLS — re-review B1's four cases: genuinely answered requests settle as they always did.
   it('CONTROL (B1): a lookup answered in text after one read closes on its answer', async () => {
     ownerSays('msg-b1a', 'Look up the population of France and compare it to Germany.');
