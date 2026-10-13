@@ -339,7 +339,9 @@ describe('t140 round 6 — the forced pass is bounded by the turn\'s patience', 
       measure: () => cachedAssembledEstimate(AGENT, 65_536, MODEL_64K, () => estimateAssembledTokens(AGENT, 65_536, MODEL_64K)),
       rebuild: () => rebuildContextItems(AGENT),
     });
-    // Sixty leaves at a fanout of four: the FIRST level is fifteen batches, each writing a depth-1 parent.
-    expect(calls.filter((c) => c.depth === 1).length, 'the first level makes all fifteen of its calls').toBe(15);
+    // Sixty leaves at a fanout of four: the FIRST level is fifteen batches, each writing a depth-1
+    // parent — and they come first. (A cap that stopped the level at twelve would let the next level
+    // begin with depth-2 merges of those parents, and only then batch the leftover leaves.)
+    expect(calls.slice(0, 15).map((c) => c.depth), 'the first level makes all fifteen of its calls, in one go').toEqual(Array(15).fill(1));
   });
 });
