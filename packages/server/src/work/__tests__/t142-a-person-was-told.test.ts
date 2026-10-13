@@ -426,3 +426,36 @@ describe('§7 the turn-root verify step is gone, and nothing else reads the reco
     expect(drive).not.toMatch(/NOT EXISTS \(SELECT 1 FROM work_events e WHERE e\.work_id = w\.id AND e\.kind = 'validation_escalated'\)/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §8 — THE NEW READS TAKE THEIR INDEX ON A GROWN BODY. The suppressor runs for every
+// candidate row on every sweep, so each of its work_events / deliveries reads must be an
+// index or rowid lookup, never a scan. Read off EXPLAIN QUERY PLAN, not timed (a timing clause
+// reds on a loaded box).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§8 the episode suppressor and the sequence reads take their index', () => {
+  it('on 300 rows x 30 events, no work_events or deliveries access is a scan', async () => {
+    const { ownerEpisodeSettledExpr } = await import('../validation-drive.js');
+    const { validatedExpr, taskScope } = await import('../tracker-view.js');
+    const db = mockDb.current!;
+    const ins = db.prepare('INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)');
+    db.transaction(() => {
+      for (let i = 0; i < 300; i++) {
+        seedWork(`g-${i}`, { state: i % 2 ? 'blocked' : 'claimed' });
+        for (let e = 0; e < 30; e++) {
+          ins.run(`g-${i}`, e % 3 ? 'activity' : 'transition',
+            JSON.stringify({ to: e % 2 ? 'blocked' : 'claimed' }), 'agent', T + e);
+        }
+      }
+    })();
+    db.exec('ANALYZE');
+    const sql = `SELECT w.id, ${validatedExpr('w', 'blocked')} AS v FROM work w
+                  WHERE ${taskScope('w')} AND NOT ${ownerEpisodeSettledExpr('w')}`;
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+      .map((r) => r.detail);
+    const scans = plan.filter((d) => /^SCAN (e|te|se|td|adj|work_events|deliveries)\b/.test(d));
+    expect(scans, plan.join('\n')).toEqual([]);
+    expect(plan.some((d) => /idx_work_events_work_id/.test(d)), plan.join('\n')).toBe(true);
+  });
+});
