@@ -224,9 +224,9 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
       db.prepare(
-        // Clear the stale continuity brief AND the session-scoped scratchpad
+        // Clear the session-scoped scratchpad (t140: the continuity brief it also cleared is gone)
         // (matches agents.ts / reset_session so all reset paths behave alike).
-        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
+        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?",
       ).run(boundary, boundary, agent.id);
 
       // Carry a fired-but-undelivered reminder/scheduler event across the reset

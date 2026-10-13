@@ -656,13 +656,13 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       pendingWakeups.delete(id);
     } catch { /* best-effort */ }
 
-    // 2. Set session boundary + clear continuity brief + clear scratchpad.
+    // 2. Set session boundary + clear scratchpad. (t140: the continuity brief is gone; migration 187 removed its keys.)
     //    (Scratchpad is session-scoped: the outline an agent built for the
     //    prior task isn't relevant once the session resets.)
     const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     db.prepare(
       "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
-      "config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
+      "config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?",
     ).run(boundary, boundary, id);
     // Carry a fired-but-undelivered reminder/scheduler event across the reset
     // boundary so it survives (engine-event queries gate created_at >=

@@ -431,9 +431,9 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     //    Use SQLite datetime format (not ISO) to match the messages table format
     const now = new Date();
     const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    // Clear both session-scoped config keys: the stale continuity brief and the
-    // scratchpad (session-scoped per its tool docs). Matches agents.ts reset.
-    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
+    // Clear the session-scoped scratchpad (session-scoped per its tool docs). Matches agents.ts
+    // reset. (t140: the continuity brief this also cleared is gone; migration 187 removed its keys.)
+    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
 
     // Carry a fired-but-undelivered reminder/scheduler event across the reset
     // boundary so it survives (engine-event queries gate created_at >=

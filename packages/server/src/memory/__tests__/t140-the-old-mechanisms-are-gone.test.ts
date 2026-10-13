@@ -67,6 +67,7 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
 
   it('the replacement is called from exactly the two doors that decide to condense, and nowhere else', () => {
     expect(filesWith(/\browsLeavingView\(/)).toEqual([
+      REFIT_REL,                  // fix round 1 (M3): what a re-fit set aside, for that pick's window
       GATE_REL,
       'memory/compaction.ts',
       'memory/tail-horizon.ts',   // its own declaration
@@ -74,7 +75,8 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
     // And the gate APPLIES it: the routine condense is handed the leaving span, not a count.
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     expect(gate).toMatch(/const leaving = rowsLeavingView\(agentId, \{ freshTailCount: getFreshTailCount\(contextWindow\) \}, \{ viewFull \}\);/);
-    expect(gate).toMatch(/checkAndCompact\(agentId, dialModelId, contextWindow, \{\s*leaving,/);
+    expect(gate).toMatch(/condenseLeavingInBackground\(\{ agentId, writerModelId: configuredModelId, dialedModelId: dialModelId, contextWindow, leaving \}\);/);
+    expect(gate).toMatch(/checkAndCompact\(agentId, writerModelId, contextWindow, \{\s*leaving,/);
   });
 
   it('the ceiling and the trim bound each have ONE owner, read by the cut AND by the trigger', () => {
@@ -105,22 +107,16 @@ describe('t140 census — the continuity brief is gone', () => {
   });
 
   it('the only code still NAMING a brief key is the declared, handed-up remainder — counted both ways', () => {
-    // Every file below is OUTSIDE t140's fence and named in the report's hand-up:
-    //   * prompt/assembler.ts — `renderCompactionContinuity` reads `continuityBriefAt`; it can no
-    //     longer render (nothing writes the key; migration 187 removes it), and deleting it needs
-    //     `prompt/registry/entries.ts` + `types.ts`.
-    //   * the five session-reset doors `json_remove` the key along with `scratchpad` — a no-op on
-    //     a key nothing writes; removing the argument is a one-word edit in each, handed up.
-    // A NEW reader or writer anywhere else reds this; so does the hand-up landing (good — then
-    // this list shrinks with it).
-    expect(filesWith('continuityBrief')).toEqual([
-      'agent/tools/cat/session.ts',
-      'gateway/routes/agents.ts',
-      'gateway/routes/chat.ts',
-      'gateway/routes/system.ts',
-      'prompt/assembler.ts',
-      'vault/maintenance.ts',
-    ]);
+    // prompt/assembler.ts — `renderCompactionContinuity` reads `continuityBriefAt`; it can no
+    // longer render (nothing writes the key; migration 187 removes it), and deleting it needs
+    // `prompt/registry/entries.ts` + `types.ts`, handed up to land after the wave's merges. The five
+    // session-reset doors that also `json_remove`d the key were fixed in fix round 1. A NEW reader
+    // or writer anywhere else reds this; so does the hand-up landing (then this list empties).
+    expect(filesWith('continuityBrief')).toEqual(['prompt/assembler.ts']);
+  });
+
+  it('fix round 1: the always-0 briefTokens field is gone from every shipped shape', () => {
+    expect(filesWith(/\bbriefTokens\b/)).toEqual([]);
   });
 });
 
@@ -136,5 +132,38 @@ describe('t140 census — the 200K stand-in and the ceiling-only re-size are gon
     expect(model).not.toMatch(/context_window \?\? 200000/);
     expect(model).not.toMatch(/return 200000;/);
     expect(model.match(/DEFAULT_CONTEXT_WINDOW = 200_000/g)?.length, 'one named default').toBe(1);
+  });
+});
+
+describe('t140 census, fix round 1 — one cost function, one launcher, every fallback re-fitted', () => {
+  it('C1: "view full" prices the live tail with the token trim\'s own function, uncapped', () => {
+    const compaction = FILES.find((f) => f.rel === 'memory/compaction.ts')!.code;
+    const assembler = FILES.find((f) => f.rel === 'memory/assembler.ts')!.code;
+    // The trim (budgetFreshTail) costs each row with storedRowCost …
+    expect(assembler).toMatch(/const tokens = storedRowCost\(msg\);/);
+    // … and so does the view-full measure, with no per-row cap.
+    expect(compaction).toMatch(/const liveTailTokens = freshTail\.reduce\(\(sum, m\) => sum \+ storedRowCost\(m\), 0\);/);
+    const fn = compaction.slice(compaction.indexOf('export function liveViewIsFull('));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toMatch(/est\.liveTailTokens/);
+    expect(body).not.toMatch(/gateMessageCap|GATE_MESSAGE_CAP_TOKENS/);
+    // Exactly the files that own a tail cost call it: the owner, the trim, the dry run.
+    expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts', 'memory/compaction.ts']);
+  });
+
+  it('M3/I3: ONE background-condense launcher, used by the gate and the re-fit and nowhere else', () => {
+    expect(filesWith(/\bcondenseLeavingInBackground\(/)).toEqual([REFIT_REL, GATE_REL]);
+  });
+
+  it('I1: every fallback pick is re-fitted, the fit filter judges windows, and the budget redirect re-fits', () => {
+    const call = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/model-call.ts`)!.code;
+    expect(call).toMatch(/reassembleForFitIfNeeded\(\{\s*agentId, modelId: fallback\.modelId,/);
+    expect(call.match(/estimateAssembledArrayTokens\(systemPrompt, messages\), getContextWindow,/g)?.length,
+      'both fit-aware selections pass the window resolver').toBe(2);
+    expect(call).toMatch(/refitFor: async \(pick\) =>/);
+    const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
+    expect(selector).toMatch(/if \(windowOf && inputEstimate > Math\.floor\(CONTEXT_THRESHOLD \* windowOf\(modelId\)\)\) return false;/);
+    const model = FILES.find((f) => f.rel === 'agent/model.ts')!.code;
+    expect(model).toMatch(/const refit = params\.refitFor \? await params\.refitFor\(fb\.modelId\) : null;/);
   });
 });

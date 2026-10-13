@@ -222,13 +222,13 @@ export const sessionHandlers: ToolHandlerMap = {
       // single owner, `agent/session-forget.ts`, whose header carries the measurement.
       await (await import('../../session-forget.js')).forgetSessionScratch(resolvedId);
 
-      // Set session boundary and clear stale continuity brief + session
+      // Set session boundary and clear the session
       // scratchpad. Scratchpad is session-scoped (its own tool docs promise
       // it "auto-clears on session reset"); leaving it behind bleeds the
       // prior task's outline into the fresh session via the assembler.
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-      db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
+      db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
 
       // Carry a fired-but-undelivered reminder/scheduler event across the
       // reset boundary so it is not silently lost (all engine-event queries
