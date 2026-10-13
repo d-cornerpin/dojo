@@ -124,7 +124,7 @@ describe('§2 the deletions, counted', () => {
     expect(stripComments(read('services/gmail-watcher.ts'))).not.toMatch(/surface it/i);
   });
 
-  it.fails('round 2: no notice body anywhere tells the agent to "surface it" — Gmail, Outlook and SMS alike', () => {
+  it('round 2: no notice body anywhere tells the agent to "surface it" — Gmail, Outlook and SMS alike', () => {
     for (const f of ['services/gmail-watcher.ts', 'services/outlook-watcher.ts', 'twilio/sms-inbound.ts']) {
       expect(stripComments(read(f)), f).not.toMatch(/surface it|looks important/i);
     }
