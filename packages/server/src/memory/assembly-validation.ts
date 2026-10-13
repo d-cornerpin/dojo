@@ -478,7 +478,11 @@ export function repairAssembly(
   }
 
   const after = validateAssembly(kept, { ...opts, laneIds: keptLanes });
-  if (keptLanes.includes(LIVE_CONVERSATION_LANE)) {
+  // Fix round 1 (review M1): only an array that WOULD fit without the conversation is refused as
+  // LIVE_CONVERSATION_PROTECTED (and condensed). One that would not fit even then — the system
+  // prompt and tools alone overflow the window — is UNREPAIRABLE: no condense can help it.
+  const tailTokens = kept.reduce((t, m, i) => t + (keptLanes[i] === LIVE_CONVERSATION_LANE ? messageTokens(m) : 0), 0);
+  if (keptLanes.includes(LIVE_CONVERSATION_LANE) && after.tokenTotal - tailTokens <= after.budgetTokens) {
     throw new AssemblyValidationError(
       `assembly is over budget${who} and would fit only by dropping the live conversation ` +
         `(${LIVE_CONVERSATION_LANE}) after every other droppable lane ` +

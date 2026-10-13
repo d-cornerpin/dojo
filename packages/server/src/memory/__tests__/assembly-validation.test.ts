@@ -281,7 +281,9 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       expect(err.droppedLaneIds).toEqual([
         'lane.briefing', 'lane.vault', 'lane.summaries',
       ]);
-      expect(err.code).toBe('LIVE_CONVERSATION_PROTECTED');
+      // Fix round 1 (M1): the tail-append alone overflows this budget, so dropping the
+      // conversation would not fit either — that is UNREPAIRABLE, not a protected refusal.
+      expect(err.code).toBe('UNREPAIRABLE');
     }
   });
 

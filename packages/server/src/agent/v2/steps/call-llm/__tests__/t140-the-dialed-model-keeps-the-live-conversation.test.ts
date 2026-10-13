@@ -356,7 +356,7 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
 });
 
 describe('t140 fix round 1 — M1: a pick that cannot hold even the system prompt refuses as UNREPAIRABLE and starts no condense', () => {
-  it.fails('the refusal names the right defect, and no forced condense is fired for a window no condense can help', async () => {
+  it('the refusal names the right defect, and no forced condense is fired for a window no condense can help', async () => {
     seedConversation(40);
     const assembled = await assembleContext(AGENT, '__auto__');
     let thrown: unknown = null;
