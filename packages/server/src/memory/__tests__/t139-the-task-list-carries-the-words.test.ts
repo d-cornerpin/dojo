@@ -236,7 +236,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
   // ROUND 3 (re-review minor): `status_before_pause` is written for EVERY pause, so a task the
   // OWNER paused himself read "waiting on <owner> to answer". Who paused it is the transition's
   // own `by`, and an owner's pause is not a question waiting on his answer.
-  it.fails('a task the OWNER paused is labelled as paused by the owner, never "waiting on <owner> to answer"', async () => {
+  it('a task the OWNER paused is labelled as paused by the owner, never "waiting on <owner> to answer"', async () => {
     ownerSays('msg-ownerpause', 'Book the photographer for the launch.', DAY_ONE - 60_000);
     const id = task('Photographer', undefined, 'msg-ownerpause');
     expect(setTrackerStatus(id, 'paused', { by: 'owner', actorId: 'owner', reason: 'owner paused it' }).kind).toBe('applied');

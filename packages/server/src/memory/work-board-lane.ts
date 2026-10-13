@@ -192,7 +192,7 @@ function taskLine(v: TaskView, request: string, edited: string): string {
   const title = t.title.length > titleCap ? `${t.title.slice(0, titleCap)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
   if (v.waiting) {
-    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — waiting on ${v.waiting.on}. `
+    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — ${v.waiting.on}. `
       + 'Not current work: do not resume it unless asked.';
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
@@ -328,7 +328,7 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
     // description was EDITED (its own audit record), and how many newer messages its request's
     // conversation holds (`ix_msg_conv_seq`). All per task, all point/range reads on indexes.
     const sinceStmt = db.prepare(
-      `SELECT created_at FROM work_events
+      `SELECT created_at, json_extract(payload, '$.by') AS by FROM work_events
         WHERE work_id = ? AND kind = 'transition' AND json_extract(payload, '$.to') = ?
         ORDER BY id DESC LIMIT 1`,
     );
@@ -359,12 +359,18 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
       let waiting: TaskView['waiting'] = null;
       if (isWaiting) {
         const state = t.status === 'paused' ? 'paused' : 'blocked';
-        const since = (sinceStmt.get(t.id, state) as { created_at: number | string } | undefined)?.created_at ?? null;
+        const into = sinceStmt.get(t.id, state) as { created_at: number | string; by: string | null } | undefined;
+        const since = into?.created_at ?? null;
+        // WHO paused it is the transition's own `by` (round 3): `status_before_pause` is written
+        // for every pause, so it cannot tell the engine's "waiting on the person" from an owner
+        // pausing the job himself — which is not a question waiting on his answer.
         const on = t.status === 'blocked'
-          ? 'what blocked it (its last note says what)'
-          : t.statusBeforePause
-            ? `${capLabel(origin.party, 'the person who asked')} to answer`
-            : 'whoever paused it';
+          ? 'waiting on what blocked it (its last note says what)'
+          : into?.by === 'engine'
+            ? `waiting on ${capLabel(origin.party, 'the person who asked')} to answer`
+            : into?.by === 'owner'
+              ? 'paused by the owner'
+              : 'paused by whoever paused it';
         waiting = { since, on };
       }
       const edited = !isWaiting && !!editedStmt.get(t.id);
@@ -486,7 +492,8 @@ export function activeTasksWorstCaseTokens(): number {
   // A count no real row reaches (10 digits), substituted into every "continues"/"Newer" line.
   const longest = 9_999_999_999;
   const party = 'l'.repeat(labelCap + 10);
-  const widestWaitingOn = [`${capLabel(party, '')} to answer`, 'what blocked it (its last note says what)', 'whoever paused it']
+  const widestWaitingOn = [`waiting on ${capLabel(party, '')} to answer`, 'waiting on what blocked it (its last note says what)',
+    'paused by the owner', 'paused by whoever paused it']
     .sort((a, b) => b.length - a.length)[0];
   const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
   const view = (waiting: boolean): TaskView => ({
