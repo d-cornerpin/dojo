@@ -57,7 +57,6 @@ import { turnBoundary } from '../agent/turn-state.js';
 // ALIASED: `turnContext` already means `PromptTurnContext` (an assembly's per-turn
 // INPUTS) throughout this file. This one is the turn's own ambient facts (PHASE-6 T1).
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
