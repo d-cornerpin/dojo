@@ -405,16 +405,20 @@ describe('§3 every production file that writes `work` with raw SQL has a verdic
     // Driven behaviourally next door, in `the-scaffold-floor-never-persists-a-credential`,
     // which crosses the real >=6 floor; this is the source half, so a removal is caught even
     // if someone deletes that file.
-    const floorSeam = engineFileContaining(
-      'redactHandedCredentials(agentId, state.lastUserMessageContent)',
-    );
+    // SEAM ONE CHANGED SHAPE AT t139, deliberately. The floor redacted the raw message before
+    // deriving the row's title and description from it; t139 removed the message from the
+    // floor altogether (it writes a fixed title, no description, and LINKS the served row), so
+    // there is nothing left to redact and the seam is closed by construction. Pinned as that:
+    // the floor's code never reads the turn's message text. (Its behavioural half is still
+    // `the-scaffold-floor-never-persists-a-credential`, which crosses the real >=6 floor.)
+    const floorSeam = engineFileContaining('const scaffoldName = SCAFFOLD_TITLE;');
+    expect(floorSeam, 'the tracker floor no longer writes its fixed title').not.toBeNull();
     expect(
-      floorSeam,
-      'the tracker auto-scaffold floor no longer redacts the raw user message before it '
-      + 'derives the row title and description. That line IS t118: a handed credential in a '
-      + 'message that crosses the >=6 untracked-call floor lands in `work.description` in '
-      + 'plaintext, and in the title the dashboard broadcasts and the PM is handed.',
-    ).not.toBeNull();
+      codeOnly(floorSeam!.text),
+      'the tracker auto-scaffold floor reads the raw user message again. That line IS t118: a '
+      + 'handed credential in a message that crosses the >=6 untracked-call floor lands in '
+      + '`work.description` in plaintext, and in the title the dashboard broadcasts.',
+    ).not.toMatch(/lastUserMessageContent/);
 
     const tools = codeOnly(readRel('tracker/tools.ts'));
     expect(tools).toContain('redactHandedCredentials(agentId, result)');

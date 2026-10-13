@@ -256,7 +256,7 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
         ORDER BY opened_at DESC LIMIT 1`,
     ).get(agentId, turn) as { root_id: string } | undefined;
     if (r?.root_id) return r.root_id;
-    return originTurn !== null ? owedCompileOfUnrootedTurn(creator, originTurn) : null;
+    return originTurn !== null ? askOfDelegateReplyWake(creator, originTurn) : null;
   } catch (err) {
     // A missing edge is the status quo, never a failed task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
@@ -267,40 +267,51 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
 }
 
 /**
- * t139 — THE DELEGATED ASK A WAKE TURN IS COMPILING (the gap `work/join-drive.ts` names).
+ * t139 — THE DELEGATED ASK A WAKE TURN IS FINISHING (the gap `work/join-drive.ts` names).
  *
- * The owner asks; the agent fans the job out to helpers; the ask is HELD `blocked` behind the
- * join. When the last piece lands the join completes, the ask becomes `compile_pending`, and the
- * agent is woken to combine the pieces — on a turn that serves no ask at all (its turn record
- * carries no root: nothing waiting, no engine event, no A2A thread it was asked on). A task the
- * agent opens there to finish the job was born with no link, so the task list could show only
- * the agent's own restatement and never the owner's words (driven in
- * `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
+ * The owner asks; the agent hands the job (or parts of it) to helpers; the ask is HELD behind
+ * the join. When a helper's reply lands, the agent is woken to finish the job — on a turn that
+ * serves no ask at all (its turn record carries no subject and no root). A task the agent opens
+ * there was born with no link, so the task list could show only the agent's own restatement and
+ * never the owner's words (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
  *
- * The tie is two RECORDED facts, never a guess by time or by text:
- *   * the creating turn's own record says it serves NOTHING (`turns.subject_kind = 'none'`,
- *     no root) — an ask turn is linked by its root above, and an engine, occurrence, A2A or
- *     continuation turn has a subject of its own (a peer's ASSIGN turn records its thread even
- *     where it records no root), so none of them is ever re-pointed here;
- *   * the spine says this agent owes exactly ONE compiled answer right now (`kind='ask'`, still
- *     owed, `compile_pending = 1`) — the job the engine's compile drive is steering it to finish.
- * Two owed compiles at once is ambiguous, and an ambiguous link is an invented one: the task is
- * then opened unlinked, which the task list labels as such.
+ * The tie is RECORDED facts, never a guess by text:
+ *   * the creating turn's own record says it serves NOTHING (`turns.subject_kind = 'none'`, no
+ *     root) — an ask turn is linked by its root above, and an engine, occurrence, A2A or
+ *     continuation turn has a subject of its own, so none of them is ever re-pointed here;
+ *   * the newest inbound row the agent had when that turn started is a delegate's reply on a
+ *     PIECE of one of its asks (`work.root_kind = 'a2a_thread'`, `root_id` = the reply's thread,
+ *     `parent_id` = the ask) — so a turn woken by anything else (a mailbox notice, a contact) is
+ *     never tied to the owner's ask, which would present someone else's message as the owner's
+ *     request (#12).
+ * The ask's own state is deliberately NOT a condition: whether the engine already relayed a
+ * single piece (the ask is done) or is waiting for the agent to combine several (blocked,
+ * compile pending), a task opened on the turn that reply woke continues THAT request.
  *
- * Read on `ix_work_queue (agent_id, state, kind)` and the `turns` primary key; it runs only when a
- * task is opened with no stated origin, never on an assembly.
+ * Point reads: the `turns` primary key, `idx_messages_agent_created`, `ix_work_root`, the `work`
+ * primary key. It runs only when a task is opened with no stated origin, never on an assembly.
  */
-function owedCompileOfUnrootedTurn(agentId: string, turn: number): string | null {
+function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   const db = getDb();
-  const t = db.prepare('SELECT subject_kind, root_kind FROM turns WHERE agent_id = ? AND turn_number = ?')
-    .get(agentId, turn) as { subject_kind: string | null; root_kind: string | null } | undefined;
-  if (!t || t.subject_kind !== 'none' || t.root_kind !== null) return null;
-  const owed = db.prepare(
-    `SELECT root_id FROM work
-      WHERE agent_id = ? AND kind = 'ask' AND state IN ('claimed','blocked') AND compile_pending = 1
-      LIMIT 2`,
-  ).all(agentId) as Array<{ root_id: string }>;
-  return owed.length === 1 ? owed[0].root_id : null;
+  const t = db.prepare(
+    `SELECT subject_kind, root_kind, (unixepoch(started_at) * 1000 + 999) AS started_ms
+       FROM turns WHERE agent_id = ? AND turn_number = ?`,
+  ).get(agentId, turn) as { subject_kind: string | null; root_kind: string | null; started_ms: number | null } | undefined;
+  if (!t || t.subject_kind !== 'none' || t.root_kind !== null || t.started_ms === null) return null;
+  // The row the turn woke on: the newest inbound row (not an engine events-lane row) at its start.
+  const woke = db.prepare(
+    `SELECT a2a_thread_id FROM messages
+      WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND created_at <= ?
+      ORDER BY created_at DESC, seq DESC LIMIT 1`,
+  ).get(agentId, t.started_ms) as { a2a_thread_id: string | null } | undefined;
+  if (!woke?.a2a_thread_id) return null;
+  const ask = db.prepare(
+    `SELECT a.root_id AS root_id FROM work p JOIN work a ON a.id = p.parent_id
+      WHERE p.kind = 'task' AND p.root_kind = 'a2a_thread' AND p.root_id = ?
+        AND a.kind = 'ask' AND a.agent_id = ?
+      ORDER BY p.opened_at DESC LIMIT 1`,
+  ).get(woke.a2a_thread_id, agentId) as { root_id: string } | undefined;
+  return ask?.root_id ?? null;
 }
 
 export function openTrackerTask(p: OpenTrackerTaskInput): string {

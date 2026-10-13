@@ -184,11 +184,14 @@ vi.mock('../../logger.js', () => ({
 
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
-import { insertMessage } from '../../memory/message-store.js';
+import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { stoppedAgents, pendingWakeups, turnContinuationCounts } from '../../agent/shared-state.js';
 import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
+// The engine's step packages are found through the ONE shared derivation, never by a path
+// literal (the guard-corpus census rule).
+import { engineFileContaining, engineSources } from '../../agent/v2/__tests__/engine-sources.js';
 
 const PRIMARY = 'primary';
 
@@ -467,6 +470,27 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(await taskList()).toContain(ask);
   });
 
+  // ⚠ RED, HANDED UP (outside t139's fence; lead from t137's harness, re-derived here). A long
+  // multi-step request answered with an acknowledgement alone ("On it — I will work through the
+  // venues and report back.") closes the owner's ask as DONE on the dashboard delivery
+  // ("delivered via dashboard", `work/ask-settlement.ts` close arm, reached from
+  // `agent/v2/answered-edge.ts`), and nothing else records the request: no task (the floor
+  // needs >= 6 untracked calls), no continuation, no wake. The work it promised has no live
+  // record anywhere — the #7 class, from the other side: not a stale request kept alive, but a
+  // live one dropped. Flip to `it` when an acknowledgement stops settling an unfinished request
+  // (the ask stays owed) or the request lands as an open task.
+  it.fails('a multi-step request ACKNOWLEDGED without work still has a live record while unfinished', async () => {
+    const ask = longAsk(900, 'ACKED');
+    ownerSays('msg-acked', ask);
+    script([{ content: 'On it — I will work through the venues and report back.' }]);
+    await runV2Turn(PRIMARY);
+
+    const askState = (mockDb.current!.prepare("SELECT state FROM work WHERE id = 'ask:msg-acked'").get() as { state: string }).state;
+    const linked = openTasks().filter((t) => t.source_message_id === 'msg-acked');
+    // A live record: the ask is still owed, or an open task carries the request.
+    expect(askState !== 'done' || linked.length > 0).toBe(true);
+  });
+
   // ⚠ RED, HANDED UP (outside t139's fence). The task the agent opened for the owner's request
   // is CLOSED at the end of the delegating turn by the engine's strike-0 "delivery-receipt
   // close (same-turn boundary)" (`agent/v2/steps/teardown/finalize-record.ts`), because the
@@ -494,6 +518,34 @@ describe('t139 — every multi-step request lands on the task list with its word
     const held = openTasks();
     expect(held.length).toBe(1);
     expect(held[0].source_message_id).toBe('msg-deleg');
+    expect(await taskList()).toContain(ask);
+  });
+
+  it('delegated to one helper, whose reply the engine relays, with the task opened on the turn that reply woke: linked to the owner\'s ask', async () => {
+    const ask = 'Have the helper collect three caterer quotes, then compare them and tell me which one to book.';
+    ownerSays('msg-deleg1', ask);
+    script([
+      { toolCalls: [call('sa-1b', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Collect three caterer quotes for forty people.' })] },
+      { content: 'I have asked Helper for the quotes.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const thread = (mockDb.current!.prepare(
+      `SELECT a2a_thread_id AS t FROM messages WHERE source_agent_id = ? AND a2a_intent = 'ASSIGN' ORDER BY rowid DESC LIMIT 1`,
+    ).get(PRIMARY) as { t: string }).t;
+    const back = await deliverA2AMessage({
+      intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
+      payload: 'Quotes: Alder 1,200; Birch 1,350; Cedar 990 (all for forty people).', toAgent: PRIMARY, fromAgent: 'helper',
+    });
+    expect(back.delivered).toBe(true);
+    script([
+      { toolCalls: [openTask('wo-deleg1', 'Caterer recommendation', 'A caterer recommendation sent to the owner')] },
+      { content: 'The quotes are in; comparing them now.' },
+    ]);
+    await runV2Turn(PRIMARY);
+
+    const rows = openTasks().filter((r) => r.title === 'Caterer recommendation');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-deleg1');
     expect(await taskList()).toContain(ask);
   });
 
@@ -656,8 +708,8 @@ async function fanOutAndLand(msgId: string, ask: string, tag: string): Promise<v
   }
 }
 
-describe('t139 — the compile link has two recorded facts behind it, or it is not made', () => {
-  it('two owed compiles at once: a task opened on the wake turn is NOT linked (ambiguous is not guessed)', async () => {
+describe('t139 — the delegate-reply link has recorded facts behind it, or it is not made', () => {
+  it('two owed compiles at once: the wake turn is tied to the ask whose piece reply woke it, never the other', async () => {
     await fanOutAndLand('msg-two-a', 'Compare the two caterer quote sets and pick one.', 'JOBA');
     // The delegation exit finds its own sends by `created_at >= unixepoch(turn start)`, a
     // whole-second comparison; two scripted turns inside one second would share their sends.
@@ -675,10 +727,11 @@ describe('t139 — the compile link has two recorded facts behind it, or it is n
     ]);
     await runV2Turn(PRIMARY);
 
+    // The newest reply the agent woke on is JOBB's second piece: the task belongs to JOBB's ask.
     const rows = openTasks().filter((r) => r.title === 'Combine results');
     expect(rows.length).toBe(1);
-    expect(rows[0].source_message_id).toBeNull();
-    expect(await taskList()).toContain('(original request not linked)');
+    expect(rows[0].source_message_id).toBe('msg-two-b');
+    expect(await taskList()).toContain('Compare the two venue quote sets and pick one.');
   });
 
   it('a PEER\'s ASSIGN while a compile is owed: a task opened on that A2A turn is never re-pointed at the owner\'s ask', async () => {
@@ -701,6 +754,61 @@ describe('t139 — the compile link has two recorded facts behind it, or it is n
     const rows = openTasks().filter((t) => t.title === 'Drive tidy sub-step');
     expect(rows.length).toBe(1);
     expect(rows[0].source_message_id).not.toBe('msg-owed-peer');
+  });
+
+  it('a MAILBOX NOTICE wakes the agent while a compile is owed: a task opened on that turn is never re-pointed at the owner\'s ask', async () => {
+    await fanOutAndLand('msg-owed-mail', 'Compare the two quote sets and pick one.', 'JOBE');
+    // The notice lands AFTER the pieces, so it is the newest thing the agent wakes on, while
+    // the compile is still owed (asserted, or this control proves nothing).
+    await new Promise((r) => setTimeout(r, 1100));
+    mockDb.current!.prepare(
+      `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name, created_at)
+       VALUES ('conv-notice', ?, 'email', 'gmail', 'news@example.test', 'A Newsletter', datetime('now'))`,
+    ).run(PRIMARY);
+    insertMessage({
+      id: 'msg-notice', agentId: PRIMARY, role: 'user',
+      content: 'New email from A Newsletter: "Spring sale — 20% off all stationery."', turnNumber: 1,
+      channel: 'email', senderId: 'news@example.test', conversationId: 'conv-notice',
+      inboundMeta: JSON.stringify({ channel: 'email', relation: 'unknown' }), authorized: false,
+    });
+    const pending = mockDb.current!.prepare(
+      "SELECT compile_pending FROM work WHERE id = 'ask:msg-owed-mail'",
+    ).get() as { compile_pending: number };
+    expect(pending.compile_pending).toBe(1);
+    script([
+      { toolCalls: [openTask('wo-notice', 'Stationery sale follow-up', 'Sale details noted')] },
+      { content: '[no-reply]' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const turn = mockDb.current!.prepare(
+      'SELECT subject_kind, root_kind FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 1',
+    ).get(PRIMARY) as { subject_kind: string; root_kind: string | null };
+    expect(turn).toEqual({ subject_kind: 'none', root_kind: null });   // the shape the tie reads
+
+    const rows = openTasks().filter((t) => t.title === 'Stationery sale follow-up');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).not.toBe('msg-owed-mail');
+  });
+
+  it('a SCHEDULED EVENT drives a turn while a compile is owed: a task opened on that engine turn is never re-pointed', async () => {
+    await fanOutAndLand('msg-owed-evt', 'Compare the two quote sets and pick one.', 'JOBF');
+    insertEngineEvent({
+      id: 'evt-t139', agentId: PRIMARY, content: '[SOURCE: SCHEDULER] Reminder: water the office plants.',
+      originIntent: 'scheduler', turnNumber: null, work: null,
+    });
+    script([
+      { toolCalls: [openTask('wo-evt', 'Plant watering', 'Plants watered')] },
+      { content: 'Watering reminder handled.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const turn = mockDb.current!.prepare(
+      'SELECT subject_kind FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 1',
+    ).get(PRIMARY) as { subject_kind: string };
+    expect(turn.subject_kind).toBe('engine_event');   // the turn really served the event
+
+    const rows = openTasks().filter((t) => t.title === 'Plant watering');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).not.toBe('msg-owed-evt');
   });
 
   it('a NEW owner ask while a compile is owed: the task opened on that ask\'s turn is linked to the new ask', async () => {
@@ -785,8 +893,9 @@ describe('t139 census — the floor\'s titling from the message is gone', () => 
     // changes this table, so it is looked at instead of passing a clause it never met.
     const byFile: Record<string, number> = {};
     for (const c of calls) byFile[c.file] = (byFile[c.file] ?? 0) + 1;
+    const floorRel = engineFileContaining('rootKind: ENGINE_SCAFFOLD_ROOT_KIND')!.rel;
     expect(byFile).toEqual({
-      'agent/v2/steps/execute/tracker-floors.ts': 1,
+      [floorRel]: 1,
       'gateway/routes/tracker.ts': 3,
       'tracker/schema.ts': 4,
       'tracker/tools.ts': 4,
@@ -794,9 +903,11 @@ describe('t139 census — the floor\'s titling from the message is gone', () => 
   });
 
   it('the floor writes a fixed title and no description, and links the served row', () => {
-    const code = stripComments(fs.readFileSync(path.join(SRC, 'agent/v2/steps/execute/tracker-floors.ts'), 'utf8'));
+    const floor = engineFileContaining('rootKind: ENGINE_SCAFFOLD_ROOT_KIND');
+    expect(floor, 'the engine floor that opens the scaffold row').not.toBeNull();
+    const code = stripComments(floor!.text);
     expect(code).not.toMatch(/lastUserMessageContent/);
-    const call = writerCalls().find((c) => c.file === 'agent/v2/steps/execute/tracker-floors.ts')!;
+    const call = writerCalls().find((c) => c.file === floor!.rel)!;
     expect(call.args).toMatch(/title:\s*scaffoldName/);
     expect(code).toMatch(/const scaffoldName = SCAFFOLD_TITLE;/);
     expect(call.args).not.toMatch(/description\s*:/);
@@ -804,7 +915,7 @@ describe('t139 census — the floor\'s titling from the message is gone', () => 
   });
 
   it('the PM rename handoff and the message-derived title are deleted, not orphaned', () => {
-    expect(fs.existsSync(path.join(SRC, 'agent/v2/steps/execute/scaffold-title.ts'))).toBe(false);
+    expect(engineSources().map((e) => e.rel).filter((r) => r.endsWith('/scaffold-title.ts'))).toEqual([]);
     for (const f of productFiles(SRC)) {
       const code = stripComments(fs.readFileSync(f, 'utf8'));
       expect(code, path.relative(SRC, f)).not.toMatch(/deriveScaffoldTitle|dispatchPMRenameHandoff/);
