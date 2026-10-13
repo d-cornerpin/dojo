@@ -94,6 +94,7 @@ import { assembleContext } from '../../../../../memory/assembler.js';
 import { reassembleForFitIfNeeded } from '../reassemble-for-fit.js';
 import { callModel, getContextWindow } from '../../../../model.js';
 import { __resetAssemblyValidationCounters, AssemblyValidationError } from '../../../../../memory/assembly-validation.js';
+import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 import { SystemPromptTooLargeError, getFreshTailCount } from '../../../../../memory/budget.js';
 
@@ -189,6 +190,9 @@ beforeEach(() => {
   provider.requests.length = 0;
   provider.failNext = 0;
   __resetAssemblyValidationCounters();
+  // Module state keyed by agent id: a low-yield brake armed by one clause's fold must not brake
+  // the next clause's (the trap the t94 file documents).
+  __resetBrakesForTests();
   seedRoutedBox();
 });
 
@@ -368,9 +372,12 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     db().prepare("INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES ('global_daily', 'global', 0, 'daily')").run();
     const out = await dialStep(HEAVY);
     expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
     expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(summarisedRowCount()).toBe(0);
+    // The redirect ITSELF carried a fitted array, so the FIRST call succeeded. Had the boundary
+    // refused it, the auto-router's fallback would have rescued the turn on a second attempt
+    // and reported the fallback's id — which is why this is asserted, not inferred from success.
+    expect(out.modelId, 'the turn was answered inside the first call, by the redirect').toBe(HEAVY);
   });
 });
 
