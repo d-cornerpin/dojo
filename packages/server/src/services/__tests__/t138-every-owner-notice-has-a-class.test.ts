@@ -46,7 +46,10 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'agent/errors.ts': [
     { cls: 'agent-trouble', severity: 'notice', what: 'an agent was paused after repeated errors' },
-    { cls: 'agent-trouble', severity: 'notice', what: 'an agent is being rate-limited (strike 3)' },
+    {
+      cls: 'agent-trouble', severity: 'warning', what: 'an agent is being rate-limited (strike 3); it will retry by itself',
+      muted: 'ruling R-V333-4 (orchestrator, following the owner\'s "true blockers only"): not a blocker, so dashboard only — rate-limit-retry.ts shows the agent as rate-limited; "retries exhausted" stays on the phone at critical',
+    },
   ],
   'agent/rate-limit-retry.ts': [
     { cls: 'agent-trouble', severity: 'critical', what: 'rate-limit retries exhausted' },
@@ -184,11 +187,11 @@ describe('the owner-notice census', () => {
     }
   });
 
-  it('the two classes the owner asked to hear about (budget, agent trouble) reach the phone — none is muted', () => {
+  it('the two classes the owner asked to hear about reach the phone — except the one ruled not a blocker', () => {
     const muted = Object.entries(CENSUS).flatMap(([rel, sites]) =>
       sites.filter((s) => s.severity === 'warning' || s.severity === 'info').map((s) => ({ rel, ...s })));
     for (const m of muted) expect(m.muted, `${m.rel}: a muted notice must name who turns it on`).toBeTruthy();
-    expect(muted.map((m) => m.rel)).toEqual([]);
+    expect(muted.map((m) => `${m.rel}: ${m.what}`)).toEqual(['agent/errors.ts: an agent is being rate-limited (strike 3); it will retry by itself']);
     const budget = Object.values(CENSUS).flat().filter((s) => s.cls === 'budget');
     expect(budget.length).toBeGreaterThan(0);
     expect(budget.every((s) => s.severity === 'notice')).toBe(true);

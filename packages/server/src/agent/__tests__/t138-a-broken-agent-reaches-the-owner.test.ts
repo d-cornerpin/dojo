@@ -104,7 +104,7 @@ describe('NOT A BLOCKER: the strike-3 rate-limit notice (fix round 1, ruling R-V
   // owner's v2.3.19 request: true blockers only). The dashboard already shows the agent as
   // rate-limited (rate-limit-retry.ts writes the status and broadcasts it); "retries exhausted"
   // stays on the phone at `critical`.
-  it.fails('never reaches the phone', () => {
+  it('never reaches the phone', () => {
     notifyRateLimitHit('ag', 'rate_limit');
     expect(ownerOutbounds()).toBe(0);
     expect(sent()).toHaveLength(0);
