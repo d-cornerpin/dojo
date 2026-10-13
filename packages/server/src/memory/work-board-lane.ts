@@ -73,6 +73,10 @@ export interface BoardTask {
   /** t139: the tracker status. The block carries every UNFINISHED task, not only in-progress
    *  ones, so a line that is waiting says so (`BOARD_STATUSES`). */
   status?: string;
+  /** The engine's own record that IT paused the row (waiting on the person who asked). */
+  statusBeforePause?: string | null;
+  /** When the task was opened — round 2 lists the NEWEST request first. */
+  createdAt?: string;
 }
 
 /**
@@ -104,6 +108,26 @@ export interface TaskOrigin {
   createdAt: number | string | null;
   /** The conversation the row belongs to, as `conversationLabel` names it, plus its channel. */
   label: string | null;
+  /** Just the party (`conversationLabel`), for "waiting on <party>". */
+  party?: string | null;
+}
+
+/**
+ * ROUND 2 — everything one task line renders from, read before any words are spent, because the
+ * pool is spent in PASSES (every current request first, then edited descriptions) while the lines
+ * are printed in block order.
+ */
+interface TaskView {
+  t: BoardTask;
+  stamp: string | null;
+  steps: string | null;
+  origin: TaskOrigin;
+  /** Set for a paused/blocked task: when it entered that state and on whom it waits. */
+  waiting: { since: number | string | null; on: string } | null;
+  /** The task's record holds a `description_edited` entry (review M3: a fact, not a byte test). */
+  edited: boolean;
+  /** Newer messages in the request's conversation (item 6's factual line). */
+  newer: { count: number; newestAt: number | string | null };
 }
 
 /** The one pool of original words the block may spend, shared across its tasks in block order
@@ -117,8 +141,9 @@ export interface WorkBoardBlocks {
 
 const ACTIVE_TASKS_HEAD =
   '═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══\n'
-  + 'These are the unfinished tasks assigned to you, each with the request that started it. '
-  + 'The in_progress ones are what you should be working on; a task marked paused or blocked is waiting:\n';
+  + 'These are the unfinished tasks assigned to you, newest first. The in_progress ones are what you '
+  + 'should be working on, each with the request that started it; a paused or blocked one is NOT '
+  + 'current and says what it is waiting on:\n';
 const ACTIVE_TASKS_TAIL = '═══ END ACTIVE TASKS ═══';
 const ATTEMPT_LEDGER_HEAD =
   '═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts '
@@ -126,31 +151,52 @@ const ATTEMPT_LEDGER_HEAD =
 const ATTEMPT_LEDGER_TAIL = '═══ END ATTEMPT LEDGER ═══';
 
 /**
- * One task's line.
+ * The task lines, in block order, from views already read.
  *
- * W81 capped the TITLE (120 chars, one cap with one justification — `lane.relevant-memory`'s
- * `snapshotTitle`), because an unbounded term is what stops a post-budget lane having a
- * derivable worst case.
+ * W81 capped the TITLE (120 chars), because an unbounded term is what stops a post-budget lane
+ * having a derivable worst case.
  *
- * t139 (#7, OR-TRACKER-1) replaced the `Instructions: <description, 300 chars>` line with the
- * REQUESTER'S ORIGINAL WORDS. The 300-char cut is gone; the words are printed verbatim and
- * contiguous between a labelled head and an end marker, so the list can be asserted
- * byte-for-byte against the row that carried the request. The head says WHEN (the row's
- * recorded instant, never a relative time — T67b §3) and WHERE (its conversation). A task with
- * no link shows its stored description under "(original request not linked)": the gap is
- * labelled, never filled with an invented request. A cut — only when the shared pool is spent —
+ * t139 replaced the 300-char `Instructions:` cut with the REQUESTER'S ORIGINAL WORDS, printed
+ * verbatim and contiguous between a labelled head (who, when) and an end marker. ROUND 2:
+ *   * a WAITING task (paused/blocked) prints no words: a status line saying since when and on
+ *     whom it waits, that it is NOT current and must not be resumed unless asked, and a POINTER
+ *     to its request — and it spends nothing from the pool (review C1: a weeks-old paused job
+ *     with its full words rode every turn, the #7 shape);
+ *   * the pool is spent in PASSES — every current request first, newest task first, then any
+ *     description the task's record says was EDITED — so an older brief or an agent's own words
+ *     can never starve the newest request (review I1, M3);
+ *   * newer messages in the request's conversation are COUNTED under it (item 6, a fact from the
+ *     rows that claims no relation to the task).
+ * A task with no link shows its stored description under "(original request not linked)"; a cut
  * says how much is missing and names the message `history_get` returns it from.
  */
-function taskLine(
-  t: BoardTask, stamp: string | null, steps: string | null, origin: TaskOrigin, pool: WordsPool,
-): string {
+function renderTaskLines(views: TaskView[]): string[] {
+  const pool: WordsPool = { remaining: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords') };
+  const requestOf = new Map<number, string>();
+  const editedOf = new Map<number, string>();
+  views.forEach((v, i) => { if (!v.waiting) requestOf.set(i, requestSection(v, pool)); });
+  views.forEach((v, i) => {
+    if (!v.waiting && v.edited && v.t.description && v.origin.messageId && v.origin.words !== null) {
+      editedOf.set(i, '\n  The task\'s own description (as last edited):\n' + spend(v.t.description, pool,
+        '  [end of description]',
+        (more) => `  [description continues: ${more} more characters, not shown]`));
+    }
+  });
+  return views.map((v, i) => taskLine(v, requestOf.get(i) ?? '', editedOf.get(i) ?? ''));
+}
+
+function taskLine(v: TaskView, request: string, edited: string): string {
+  const { t } = v;
   const titleCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title');
   const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
   const title = t.title.length > titleCap ? `${t.title.slice(0, titleCap)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
-  if (t.status && t.status !== 'in_progress') line += `\n  Status: ${t.status}, waiting`;
-  if (stamp) line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
-  line += originSection(t, origin, pool);
+  if (v.waiting) {
+    line += `\n  Status: ${t.status} since ${recordedInstant(v.waiting.since)} — waiting on ${v.waiting.on}. `
+      + 'Not current work: do not resume it unless asked.';
+  }
+  if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
+  line += v.waiting ? pointerLine(v.origin) : request + newerLine(v) + edited;
   if (t.notes) {
     const lastNote = t.notes.split('\n').filter(Boolean).pop();
     if (lastNote) line += `\n  Last note: ${lastNote.slice(0, noteCap)}`;
@@ -158,27 +204,21 @@ function taskLine(
   return line;
 }
 
-/** The origin part of a task line: the original words when linked, the labelled description
- *  when not. Spends the shared pool.
- *
- *  A linked task's OWN description is shown after the words when it says something the words do
- *  not — it is where an agent records a change the person made later ("only four, in black and
- *  white"), and hiding it would hide the current state of the job. A description that merely
- *  repeats the words (models routinely copy the ask into it) is not printed twice. */
-function originSection(t: BoardTask, origin: TaskOrigin, pool: WordsPool): string {
+function capLabel(raw: string | null | undefined, fallback: string): string {
+  const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
+  const label = raw ?? fallback;
+  return label.length > labelCap ? `${label.slice(0, labelCap)}...` : label;
+}
+
+/** A current task's request: the linked words, or the labelled description when unlinked. */
+function requestSection(v: TaskView, pool: WordsPool): string {
+  const { t, origin } = v;
   if (origin.messageId && origin.words !== null) {
-    const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
-    const rawLabel = origin.label ?? 'a conversation with no recorded label';
-    const label = rawLabel.length > labelCap ? `${rawLabel.slice(0, labelCap)}...` : rawLabel;
-    const head = `\n  Original request (from ${label}, ${recordedInstant(origin.createdAt)}), word for word:\n`;
-    const words = head + spend(origin.words, pool,
+    const head = `\n  Original request (from ${capLabel(origin.label, 'a conversation with no recorded label')}, `
+      + `${recordedInstant(origin.createdAt)}), word for word:\n`;
+    return head + spend(origin.words, pool,
       '  [end of original request]',
       (more) => `  [original request continues: ${more} more characters; history_get(id="${origin.messageId}") returns it in full]`);
-    const desc = t.description?.trim();
-    if (!desc || desc === origin.words.trim()) return words;
-    return words + '\n  The task\'s own description (as last edited):\n' + spend(t.description!, pool,
-      '  [end of description]',
-      (more) => `  [description continues: ${more} more characters, not shown]`);
   }
   const why = origin.messageId
     ? `(original request no longer stored: message ${origin.messageId})`
@@ -187,6 +227,21 @@ function originSection(t: BoardTask, origin: TaskOrigin, pool: WordsPool): strin
   return `\n  Description ${why}:\n` + spend(t.description, pool,
     '  [end of description]',
     (more) => `  [description continues: ${more} more characters, not shown]`);
+}
+
+/** A waiting task's request, as a pointer only — the words are one `history_get` away. */
+function pointerLine(origin: TaskOrigin): string {
+  if (!origin.messageId) return '\n  [original request not linked]';
+  if (origin.words === null) return `\n  [original request: message ${origin.messageId}, no longer stored]`;
+  return `\n  [original request: message ${origin.messageId}, ${recordedInstant(origin.createdAt)}, `
+    + `from ${capLabel(origin.label, 'a conversation with no recorded label')}; `
+    + `history_get(id="${origin.messageId}") returns it]`;
+}
+
+function newerLine(v: TaskView): string {
+  if (v.newer.count <= 0) return '';
+  return `\n  Newer messages in this conversation since this request: ${v.newer.count}, `
+    + `the newest ${recordedInstant(v.newer.newestAt)}; history_get shows them.`;
 }
 
 /** Print `text` verbatim up to what the pool has left, then the end marker or the cut line. */
@@ -223,9 +278,12 @@ export async function buildWorkBoardLane(agentId: string): Promise<WorkBoardBloc
   let tasks: BoardTask[] = [];
   try {
     const { listTasks } = await import('../tracker/schema.js');
-    // In-progress first, then the waiting ones — each status in the tracker's own order.
+    // In-progress first, then the waiting ones; inside each status the NEWEST task first
+    // (round 2, review I1: the active request is never behind an older one).
+    const newestFirst = (a: BoardTask, b: BoardTask): number =>
+      (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
     tasks = BOARD_STATUSES.flatMap((status) =>
-      listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]);
+      (listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]).sort(newestFirst));
   } catch {
     return { attemptLedger: null, activeTasks: null };   // tracker may not be available
   }
@@ -259,15 +317,31 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
     // (<= rows.tasks of them), joined to the row that carried it.
     const originStmt = db.prepare(
       `SELECT w.source_message_id AS message_id, m.id AS found_id, m.content AS content,
-              m.created_at AS created_at, m.conversation_id AS conversation_id,
+              m.created_at AS created_at, m.conversation_id AS conversation_id, m.seq AS seq,
               COALESCE(c.channel, m.channel) AS channel
          FROM work w
          LEFT JOIN messages m ON m.id = w.source_message_id
          LEFT JOIN conversations c ON c.id = m.conversation_id
         WHERE w.id = ?`,
     );
-    const pool: WordsPool = { remaining: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords') };
-    const lines = tasks.slice(0, laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks')).map((t) => {
+    // Round 2: when a waiting task entered its state (its own transition record), whether its
+    // description was EDITED (its own audit record), and how many newer messages its request's
+    // conversation holds (`ix_msg_conv_seq`). All per task, all point/range reads on indexes.
+    const sinceStmt = db.prepare(
+      `SELECT created_at FROM work_events
+        WHERE work_id = ? AND kind = 'transition' AND json_extract(payload, '$.to') = ?
+        ORDER BY id DESC LIMIT 1`,
+    );
+    const editedStmt = db.prepare(
+      `SELECT 1 AS hit FROM work_events
+        WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.action_taken') LIKE 'description_edited%'
+        LIMIT 1`,
+    );
+    const newerStmt = db.prepare(
+      `SELECT COUNT(*) AS n, MAX(created_at) AS newest FROM messages
+        WHERE conversation_id = ? AND seq > ? AND role = 'user' AND lane <> 'events'`,
+    );
+    const views: TaskView[] = tasks.slice(0, laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks')).map((t) => {
       let stamp: string | null = null;
       let steps: string | null = null;
       try {
@@ -280,28 +354,54 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
           steps = renderStepFacts(st);
         }
       } catch { /* stamps are best-effort */ }
-      return taskLine(t, stamp, steps, readOrigin(originStmt, t.id), pool);
+      const { origin, conversationId, seq } = readOrigin(originStmt, t.id);
+      const isWaiting = t.status === 'paused' || t.status === 'blocked';
+      let waiting: TaskView['waiting'] = null;
+      if (isWaiting) {
+        const state = t.status === 'paused' ? 'paused' : 'blocked';
+        const since = (sinceStmt.get(t.id, state) as { created_at: number | string } | undefined)?.created_at ?? null;
+        const on = t.status === 'blocked'
+          ? 'what blocked it (its last note says what)'
+          : t.statusBeforePause
+            ? `${capLabel(origin.party, 'the person who asked')} to answer`
+            : 'whoever paused it';
+        waiting = { since, on };
+      }
+      const edited = !isWaiting && !!editedStmt.get(t.id);
+      let newer: TaskView['newer'] = { count: 0, newestAt: null };
+      if (!isWaiting && conversationId && seq !== null) {
+        const r = newerStmt.get(conversationId, seq) as { n: number; newest: number | null } | undefined;
+        if (r) newer = { count: r.n, newestAt: r.newest };
+      }
+      return { t, stamp, steps, origin, waiting, edited, newer };
     });
-    return renderActiveTasksBlock(lines);
+    return renderActiveTasksBlock(renderTaskLines(views));
   } catch { return null; }
 }
 
 /** The task's origin row, labelled. A failed read is "not linked" only when there is no link;
  *  a link whose row cannot be read reports the link, so the gap is never misnamed. */
-function readOrigin(stmt: { get: (id: string) => unknown }, taskId: string): TaskOrigin {
+function readOrigin(
+  stmt: { get: (id: string) => unknown }, taskId: string,
+): { origin: TaskOrigin; conversationId: string | null; seq: number | null } {
+  const none = { messageId: null, words: null, createdAt: null, label: null };
   try {
     const r = stmt.get(taskId) as {
       message_id: string | null; found_id: string | null; content: string | null;
-      created_at: number | string | null; conversation_id: string | null; channel: string | null;
+      created_at: number | string | null; conversation_id: string | null; seq: number | null; channel: string | null;
     } | undefined;
-    if (!r?.message_id) return { messageId: null, words: null, createdAt: null, label: null };
-    if (!r.found_id) return { messageId: r.message_id, words: null, createdAt: null, label: null };
+    if (!r?.message_id) return { origin: none, conversationId: null, seq: null };
+    if (!r.found_id) return { origin: { ...none, messageId: r.message_id }, conversationId: null, seq: null };
+    const party = conversationLabel(r.conversation_id);
     return {
-      messageId: r.message_id, words: r.content ?? '', createdAt: r.created_at,
-      label: originLabel(conversationLabel(r.conversation_id), r.channel),
+      origin: {
+        messageId: r.message_id, words: r.content ?? '', createdAt: r.created_at,
+        label: originLabel(party, r.channel), party,
+      },
+      conversationId: r.conversation_id, seq: r.seq,
     };
   } catch {
-    return { messageId: null, words: null, createdAt: null, label: null };
+    return { origin: none, conversationId: null, seq: null };
   }
 }
 
@@ -349,13 +449,19 @@ let activeTasksWorstCase: number | null = null;
 let attemptLedgerWorstCase: number | null = null;
 
 /**
- * Every cap of `lane.active-tasks` flooded at once, through `renderActiveTasksBlock`.
+ * Every cap of `lane.active-tasks` flooded at once, through the REAL `renderTaskLines` +
+ * `renderActiveTasksBlock`.
  *
- * t139: the words term is ONE POOL, so its worst case is the pool spent in full plus the most
- * framing five lines can carry around it: every task is linked, every request is over the cap
- * (so each line carries the longer "continues" line, not the end marker — the first spends the
- * whole pool, the rest are pointer-only), every label is at its cap, and the message ids and
- * the "more characters" counts are at their widest.
+ * The words term is ONE POOL, so the worst case is the pool spent in full plus the most framing
+ * the five lines can carry around it. Round 2 has two line shapes — a current line (request,
+ * newer-messages count, edited description) and a waiting line (status, pointer) — so the
+ * generator renders EVERY split of the five rows between them and keeps the largest (review M2:
+ * a single assumed shape is not a derivation). Within a shape every term is at its widest: the
+ * first request is over the cap and spends the whole pool (`shown` + its newline + the cut line),
+ * every later request and every edited description is pointer-only, the labels are at their cap,
+ * the message ids are 36 chars and the counts are 10 digits. The waiting line takes the wider of
+ * the two "waiting on" texts AND the wider status word together — a combination no single row
+ * has, so the number is a sound upper bound rather than an exact one, and says so.
  */
 export function activeTasksWorstCaseTokens(): number {
   if (activeTasksWorstCase !== null) return activeTasksWorstCase;
@@ -374,35 +480,40 @@ export function activeTasksWorstCaseTokens(): number {
   const widestSteps = renderStepFacts({
     step_number: 99, total_steps: 99, project_id: 'p'.repeat(36),
   } as unknown as TaskStampFields) ?? '';
-  // A request longer than any message the lane could be asked to cut, so the "continues" count
-  // is as wide as it can get on a real row (10 digits — a message would have to be over 10 GB).
+  // Mid-month at mid-day, so every box timezone renders a two-digit day and a two-digit hour —
+  // the widest `[Sep 15, 2026, 12:41 PM]` shape, with no timezone able to move it.
+  const widestInstant = Date.parse('2026-09-15T12:41:00Z');
+  // A count no real row reaches (10 digits), substituted into every "continues"/"Newer" line.
   const longest = 9_999_999_999;
-  const pool: WordsPool = { remaining: wordsCap };
-  const lines: string[] = [];
-  for (let i = 0; i < rows; i++) {
-    lines.push(taskLine({
+  const party = 'l'.repeat(labelCap + 10);
+  const widestWaitingOn = [`${capLabel(party, '')} to answer`, 'what blocked it (its last note says what)', 'whoever paused it']
+    .sort((a, b) => b.length - a.length)[0];
+  const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
+  const view = (waiting: boolean): TaskView => ({
+    t: {
       id: 'w'.repeat(36),
       title: 't'.repeat(titleCap + 10),        // over the cap, so the `...` suffix is counted
       priority: 'critical',
-      // The widest status line a task can carry (`Status: <status>, waiting` — in-progress
-      // lines carry none, so the widest WAITING status is the term).
-      status: BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0],
-      // A description that differs from the words, so every line also carries the description
-      // head and its (pointer-only, once the pool is spent) cut line.
+      status: waiting ? widestWaitingStatus : 'in_progress',
       description: 'd'.repeat(wordsCap + 1),
       notes: 'n'.repeat(noteCap + 10),
-    }, widestStamp, widestSteps, {
-      messageId: 'm'.repeat(36),
-      // Only the pool's worth is ever printed, so the string need only be that long plus one;
-      // the "continues" count is computed from its length, which is substituted below.
-      words: 'w'.repeat(wordsCap + 1),
-      // Mid-month at mid-day, so every box timezone renders a two-digit day and a two-digit
-      // hour — the widest `[Sep 15, 2026, 12:41 PM]` shape, with no timezone able to move it.
-      createdAt: Date.parse('2026-09-15T12:41:00Z'),
-      label: 'l'.repeat(labelCap + 10),
-    }, pool).replace(/continues: \d+ more/g, `continues: ${longest} more`));
+    },
+    stamp: widestStamp, steps: widestSteps,
+    origin: {
+      messageId: 'm'.repeat(36), words: 'w'.repeat(wordsCap + 1),
+      createdAt: widestInstant, label: party, party,
+    },
+    waiting: waiting ? { since: widestInstant, on: widestWaitingOn } : null,
+    edited: true,
+    newer: { count: longest, newestAt: widestInstant },
+  });
+  let worst = 0;
+  for (let waitingRows = 0; waitingRows <= rows; waitingRows++) {
+    const views = Array.from({ length: rows }, (_, i) => view(i >= rows - waitingRows));
+    const lines = renderTaskLines(views).map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`));
+    worst = Math.max(worst, estimateTokens(renderActiveTasksBlock(lines) ?? ''));
   }
-  activeTasksWorstCase = estimateTokens(renderActiveTasksBlock(lines) ?? '');
+  activeTasksWorstCase = worst;
   return activeTasksWorstCase;
 }
 

@@ -204,7 +204,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
   // words under "Status: paused, waiting", so a weeks-old paused job read like live work on
   // every turn — the #7 shape. It now carries a pointer to its request, says whom it waits on and
   // since when, says plainly it is not current, and takes nothing from the words pool.
-  it.fails('a month-old paused task: visible, labelled not current, a POINTER instead of the words, nothing from the pool', async () => {
+  it('a month-old paused task: visible, labelled not current, a POINTER instead of the words, nothing from the pool', async () => {
     const old = 'Price three flights to the conference and hold the cheapest until I confirm.';
     ownerSays('msg-paused', old, DAY_ONE - 31 * 86_400_000);
     vi.setSystemTime(DAY_ONE - 30 * 86_400_000);
@@ -243,7 +243,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
 
   // ROUND 2 (review M3): a description is printed only when the task's record says it was
   // EDITED after creation — a recorded fact, not a byte comparison a paraphrase always fails.
-  it.fails('a description EDITED after creation is shown after the words; an unedited one is not printed', async () => {
+  it('a description EDITED after creation is shown after the words; an unedited one is not printed', async () => {
     const ask = 'Make nine square headshots for the team page.';
     ownerSays('msg-desc', ask, DAY_ONE - 60_000);
     const id = task('Headshots', 'Nine headshots, soft studio light (my restatement).', 'msg-desc');
@@ -260,7 +260,7 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
 
   // ROUND 2 (item 6, the factual fallback): newer messages in the request's conversation are
   // COUNTED under the request — a fact from the rows, claiming no relation to the task.
-  it.fails('newer owner messages in the same conversation are counted under the request, with the newest instant', async () => {
+  it('newer owner messages in the same conversation are counted under the request, with the newest instant', async () => {
     ownerSays('msg-orig', 'Make nine square headshots for the team page.', DAY_ONE - 600_000);
     task('Headshots', undefined, 'msg-orig');
     ownerSays('msg-later-1', 'Actually make it four.', DAY_ONE - 300_000);
@@ -285,7 +285,7 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
     expect(block).toContain('500 more characters');
   });
 
-  it.fails('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
+  it('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
     const a = longAsk(5000, 'FIRST');
     const b = longAsk(5000, 'SECOND');
     ownerSays('msg-first', a, DAY_ONE - 120_000);
@@ -307,27 +307,43 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
 });
 
 describe('t139 §3b — round 2 order: the newest request is intact; every request before any description', () => {
-  it.fails('an older 7,000-char task with an edited 1,000-char description never starves a newer 600-char ask', async () => {
+  it('every request is spent before any description: a newer task\'s edited description never starves an older request', async () => {
     const older = longAsk(7000, 'MONDAY');
     ownerSays('msg-monday', older, DAY_ONE - 3 * 86_400_000);
     vi.setSystemTime(DAY_ONE - 3 * 86_400_000 + 1000);
-    const oid = task('Monday brief', undefined, 'msg-monday');
-    updateTask(oid, { description: 'x'.repeat(1000) });
-    writeTaskLog({ taskId: oid, fromEntity: AGENT, entryKind: 'observation', actionTaken: 'description_edited', note: 'edited' });
+    task('Monday brief', undefined, 'msg-monday');
     const newer = longAsk(600, 'TODAY');
     ownerSays('msg-today', newer, DAY_ONE - 60_000);
     vi.setSystemTime(DAY_ONE - 30_000);
-    task('Change of plan', undefined, 'msg-today');
+    const nid = task('Change of plan', undefined, 'msg-today');
+    updateTask(nid, { description: 'x'.repeat(1000) });
+    writeTaskLog({ taskId: nid, fromEntity: AGENT, entryKind: 'observation', actionTaken: 'description_edited', note: 'edited' });
+    vi.setSystemTime(DAY_ONE);
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block.indexOf('• Change of plan')).toBeLessThan(block.indexOf('• Monday brief'));   // newest first
+    expect(block).toContain(newer);
+    expect(block).toContain(older);                      // 600 + 7,000 fit; the description pays
+    expect(block).toContain('[description continues: 600 more characters, not shown]');
+  });
+
+  it('the newest request is intact while an older long one is listed', async () => {
+    const older = longAsk(7900, 'OLDLONG');
+    ownerSays('msg-oldlong', older, DAY_ONE - 3 * 86_400_000);
+    vi.setSystemTime(DAY_ONE - 3 * 86_400_000 + 1000);
+    task('Old long', undefined, 'msg-oldlong');
+    const newer = longAsk(600, 'NEWSHORT');
+    ownerSays('msg-newshort', newer, DAY_ONE - 60_000);
+    vi.setSystemTime(DAY_ONE - 30_000);
+    task('New short', undefined, 'msg-newshort');
     vi.setSystemTime(DAY_ONE);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toContain(newer);
-    expect(block).toContain(older);              // 600 + 7,000 fit; the description is spent LAST
-    expect(block).toContain('[description continues:');
-    expect(block.indexOf('• Change of plan')).toBeLessThan(block.indexOf('• Monday brief'));
+    expect(block).toContain('history_get(id="msg-oldlong")');
   });
 
-  it.fails('the tracker lists high before normal before low (priority is TEXT; it sorted alphabetically)', () => {
+  it('the tracker lists high before normal before low (priority is TEXT; it sorted alphabetically)', () => {
     for (const [title, priority] of [['Low one', 'low'], ['High one', 'high'], ['Normal one', 'normal']] as const) {
       createTask({ title, assignedTo: AGENT, createdBy: AGENT, priority,
         origin: { kind: 'model', sourceMessageId: null, turn: 1, convKey: null } });
@@ -342,7 +358,7 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
     expect(declared.reserveTokens).toBe(activeTasksWorstCaseTokens());
   });
 
-  it.fails('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
+  it('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
     for (let i = 0; i < 6; i++) {
       const id = `msg-flood-${i}`;
       ownerSays(id, longAsk(12000, `FLOOD${i}`), DAY_ONE - (10 - i) * 60_000);

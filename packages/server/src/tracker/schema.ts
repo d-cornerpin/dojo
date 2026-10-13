@@ -938,7 +938,10 @@ export function listTasks(filter?: {
   }
 
   const sql = `${TASK_COLS} WHERE ${conditions.join(' AND ')}`
-    + ' ORDER BY work.priority DESC, work.step_number ASC, work.opened_at ASC';
+    // t139 round 2: `priority` is TEXT ('high'|'normal'|'low'), so `priority DESC` sorted it
+    // ALPHABETICALLY — normal, low, high — and listed high-priority work LAST. Ranked explicitly.
+    + " ORDER BY CASE work.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,"
+    + ' work.step_number ASC, work.opened_at ASC';
 
   const rows = db.prepare(sql).all(...params) as TaskRow[];
   return rows.map(mapTaskRow);
