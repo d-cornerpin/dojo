@@ -77,7 +77,9 @@ import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import { recoverFromError } from '../v2/recovery.js';
 import { initState } from '../v2/state.js';
-import { AgentError } from '../errors.js';
+import { AgentError, clearErrors } from '../errors.js';
+import { onAgentInjured } from '../../healer/injury-recovery.js';
+import { configRouter } from '../../gateway/routes/config.js';
 import { classifyProviderErrorText } from '../provider-error.js';
 
 const OWNER = 'owner@example.test';
@@ -150,5 +152,56 @@ describe('BROKEN: a provider refuses the agent in a way only the owner can fix',
       .toMatch(/^\[auth_invalid\]/);
     expect(ownerTexts()).toBe(1);
     expect(sent()[0]).toContain('Helper');
+  });
+});
+
+const ends = (): string[] => broadcasts
+  .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity === 'info')
+  .map((b) => String(b.error));
+const cardsOnLoad = async (): Promise<string[]> =>
+  ((await (await configRouter.request('/owner-notices')).json()) as { data: Array<{ words: string }> }).data.map((c) => c.words);
+const OUT_OF_CREDIT = 'API error 402: {"error":{"message":"Insufficient Balance"}}';
+
+describe('BROKEN: once per incident, and the incident ends on healthy work', () => {
+  it('the agent re-woken and refused again (the t136 shape: five Tier D locks) is still ONE text; the Healer\'s "stuck" text does not stack on it', async () => {
+    for (let i = 1; i <= 5; i++) await failedCall(OUT_OF_CREDIT, i);
+    expect(ownerTexts()).toBe(1);
+    // Recovery attempts at their maximum: the Healer's own "stuck" text would fire here.
+    db().prepare("UPDATE agents SET recovery_attempts = 3 WHERE id = 'helper'").run();
+    onAgentInjured('helper', '[quota_exhausted] Cloud Provider has hit its quota for the day.');
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('a restart replays the injury from the row (rehydrate) and does not text again; the card is there on load', async () => {
+    await failedCall(OUT_OF_CREDIT);
+    const words = JSON.parse((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string }).n).words as string;
+    const lastError = (db().prepare("SELECT last_error FROM agents WHERE id = 'helper'").get() as { last_error: string }).last_error;
+    onAgentInjured('helper', lastError); // what `rehydrateInjuredAgents` does on boot
+    expect(ownerTexts()).toBe(1);
+    expect(await cardsOnLoad()).toContain(words);
+  });
+
+  it('dismissed, it stays dismissed for this incident; the next healthy turn ends it; a NEW incident is told again', async () => {
+    await failedCall(OUT_OF_CREDIT);
+    const words = JSON.parse((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string }).n).words as string;
+    const res = await configRouter.request('/owner-notices/dismiss', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ words }),
+    });
+    expect(((await res.json()) as { data: { dismissed: number } }).data.dismissed).toBe(1);
+    expect(await cardsOnLoad()).not.toContain(words);
+    await failedCall(OUT_OF_CREDIT, 2);
+    expect(ownerTexts()).toBe(1);
+    // The owner tops up; the agent's next turn works (the clean-turn signal).
+    clearErrors('helper');
+    expect(ends()).toContain(words);
+    expect((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n).toBeNull();
+    // Out of credit again, later: a new incident.
+    await failedCall(OUT_OF_CREDIT, 3);
+    expect(ownerTexts()).toBe(2);
+  });
+
+  it('an ordinary, unclassified failure is NOT broken: no text (the Healer owns it, as before)', async () => {
+    await failedCall('fetch failed: ECONNRESET');
+    expect(ownerTexts()).toBe(0);
   });
 });

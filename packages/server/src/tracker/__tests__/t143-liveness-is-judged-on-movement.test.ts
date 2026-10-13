@@ -73,6 +73,11 @@ vi.mock('../../agent/a2a-transport.js', () => ({
   }),
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
+const { verdict } = vi.hoisted(() => ({ verdict: { reply: '' } }));
+vi.mock('../../agent/model.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent/model.js')>()),
+  callModel: vi.fn(async () => ({ content: verdict.reply })),
+}));
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>();
   const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
@@ -84,7 +89,10 @@ import { runMigrations } from '../../db/migrations.js';
 // Each clause boots the real module graph and runs the full migration chain; an import cost, not
 // a timing assertion. Nothing here measures time.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { runPokeCheck } from '../pm-agent.js';
+import { runPokeCheck, queueEffortReviewIfNeeded, runEffortReview } from '../pm-agent.js';
+import { pendingCirclingVerdict } from '../effort-governor.js';
+import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
+import { configRouter } from '../../gateway/routes/config.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
@@ -217,5 +225,182 @@ describe('M3 (t137 review): a task is judged on its OWN activity, not on the eng
     expect(pokes('task-live')).toBe(0);
     // The agent is moving (its last park was a minute ago): the owner hears nothing.
     expect(ownerTexts()).toBe(0);
+  });
+});
+
+const setWindow = async (minutes: number | null): Promise<void> => {
+  const res = await agentsRouter.request('/helper', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ silentWindowMinutes: minutes }),
+  });
+  expect(res.status).toBe(200);
+};
+const silentNotice = (): string | null =>
+  (db().prepare("SELECT silent_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n;
+const ownerCardWords = async (): Promise<string[]> => {
+  const res = await configRouter.request('/owner-notices');
+  return ((await res.json()) as { data: Array<{ words: string }> }).data.map((c) => c.words);
+};
+const ends = (): string[] => broadcasts
+  .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity === 'info').map((b) => String(b.error));
+
+describe('GREEN: exactly once, and never for a working agent', () => {
+  it('the 30-second status heartbeat is not movement: a wedged agent whose row the heartbeat keeps fresh is still told', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = 'helper'").run();
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('the notice is a lasting owner card in the same words, until the agent moves again (then it leaves every dashboard)', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+    const words = JSON.parse(silentNotice()!).words as string;
+    expect(await ownerCardWords()).toContain(words);
+    // The tool comes back: real movement.
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES ('tool-back', 'helper', 'tool', '[]', 7, ?)`).run(Date.now());
+    await runPokeCheck();
+    expect(silentNotice()).toBeNull();
+    expect(ends()).toContain(words);
+    expect(await ownerCardWords()).not.toContain(words);
+    expect(ownerTexts()).toBe(1);
+  });
+
+  it('a slow-prefill request open on a live connection, past the bare window, yields ZERO notices', async () => {
+    await setWindow(10);
+    // A slow local box: the provider's measured prefill speed is 20 tokens/s, so a 30,000-token
+    // prompt takes 25 minutes before its first token. The request opened 25 minutes ago.
+    db().prepare('UPDATE providers SET measured_prefill_tokens_per_sec = 20 WHERE id = ?').run('prov-a');
+    claimedTask('task-slow', 'the long local summary', Date.now() - 40 * MIN, 'c-1');
+    turnOpen(3, Date.now() - 26 * MIN);
+    modelCallFinished(Date.now() - 25 * MIN);
+    db().prepare("UPDATE agents SET status = 'working' WHERE id = 'helper'").run();
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);
+    try {
+      await runPokeCheck();
+      expect(ownerTexts()).toBe(0);
+    } finally {
+      releaseAbortable('helper', open);
+    }
+    // Its first token arrives and the call completes: still nothing to tell.
+    modelCallFinished(Date.now());
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('a working long job (a park every 15 minutes for 3 hours) yields ZERO notices and ZERO check-ins on the task it is working', async () => {
+    const start = Date.now() - 180 * MIN;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    claimedTask('task-live', 'the long research job', start, 'c-job');
+    for (let t = start + 15 * MIN, i = 0; t <= start + 180 * MIN; t += 15 * MIN, i++) {
+      vi.setSystemTime(t);
+      modelCallFinished(t);
+      noteEngineCheckpoint('helper', 'turn-budget');
+      stampTasksAtTurnFinalize({
+        agentId: 'helper', turnNumber: 20 + i, outcome: 'budget', answerMessageId: null,
+        rootSourceMessageId: null, convKey: 'c-job', servedTaskId: null,
+      });
+      await runPokeCheck();
+    }
+    expect(ownerTexts()).toBe(0);
+    expect(pokes('task-live')).toBe(0);
+  });
+});
+
+describe('BROKEN ends on healthy work the sweep can see', () => {
+  it('a BROKEN incident ends (its card leaves) once the agent completes a model call again', async () => {
+    const { noteNoticeOnce } = await import('../../agent/agent-owner-cards.js');
+    expect(noteNoticeOnce('helper', 'broken_notice', 'Helper has stopped: the key stopped working.')).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+    modelCallFinished(Date.now() + 1000);
+    await runPokeCheck();
+    expect((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n).toBeNull();
+    expect(ends()).toContain('Helper has stopped: the key stopped working.');
+  });
+});
+
+describe('BACKWARDS LIFECYCLE', () => {
+  it('the window changed mid-job: raised before the quiet reaches it, nothing; lowered past it, one notice; raised again, no second', async () => {
+    wedgedToolCall(30 * MIN);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(0); // inside the 2-hour default
+    await setWindow(20);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+    await setWindow(600);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+    await setWindow(null); // back to the default through the same door
+    expect((db().prepare("SELECT silent_window_minutes AS m FROM agents WHERE id = 'helper'").get() as { m: number | null }).m).toBeNull();
+  });
+
+  it('the setting door refuses what it cannot honour, and changes nothing', async () => {
+    for (const bad of [0, -5, 2.5, '60']) {
+      const res = await agentsRouter.request('/helper', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ silentWindowMinutes: bad }),
+      });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    expect((db().prepare("SELECT silent_window_minutes AS m FROM agents WHERE id = 'helper'").get() as { m: number | null }).m).toBeNull();
+  });
+
+  it('an agent the owner stopped while silent is not reported (his Stop is the answer)', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    // The owner pressed Stop a minute ago: the turn ended on it, the agent is idle, the task still claimed.
+    db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")
+      .run(sqlTime(Date.now() - MIN));
+    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'helper'").run();
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('an agent that recovers after the notice is not told about twice for the same incident', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+    modelCallFinished(Date.now());
+    await runPokeCheck();
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+    expect(silentNotice()).toBeNull();
+  });
+
+  it('the project manager agent offline (in error, no model to run): the platform notice still fires from the sweep', async () => {
+    db().prepare("UPDATE agents SET status = 'error', model_id = NULL WHERE id = 'pm'").run();
+    wedgedToolCall(3 * 60 * MIN);
+    await runPokeCheck();
+    expect(ownerTexts()).toBe(1);
+  });
+});
+
+describe('SPINNING: the PM tells the owner, in its own voice, what repeats — once — and keeps re-driving', () => {
+  it('a circling verdict yields ONE PM report naming the repeated step; a second verdict in the same episode yields none', async () => {
+    claimedTask('task-circle', 'the inbox sweep', Date.now() - 60 * MIN, 'c-1');
+    db().prepare("UPDATE work SET effort_calls = 200, effort_reviewed_calls = 0 WHERE id = 'task-circle'").run();
+    for (let i = 0; i < 6; i++) toolStarted(Date.now() - (30 - i) * MIN, 'gmail_search', 4);
+    toolStarted(Date.now() - 20 * MIN, 'file_read', 4);
+    verdict.reply = JSON.stringify({ advancing: false, reason: 'It runs the same inbox search again and again and nothing new lands.', task_id: 'task-circle' });
+    expect(queueEffortReviewIfNeeded('task-circle')).toBe(true);
+    await runEffortReview('task-circle');
+    const reports = (): Array<{ content: string }> => db().prepare(
+      "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'assistant'",
+    ).all() as Array<{ content: string }>;
+    expect(reports()).toHaveLength(1);
+    expect(reports()[0].content).toContain('Helper');
+    expect(reports()[0].content).toContain('the inbox sweep');
+    expect(reports()[0].content).toContain('gmail_search');
+    expect(reports()[0].content).toContain('nothing new lands');
+    // The PM keeps re-driving: the verdict is still pending delivery to the agent.
+    expect(pendingCirclingVerdict('task-circle')).not.toBeNull();
+    // SPINNING is the PM's voice, never a platform text.
+    expect(ownerTexts()).toBe(0);
+
+    // Another 150 calls, still no advance: the same episode — nothing new to tell.
+    db().prepare("UPDATE work SET effort_calls = 400 WHERE id = 'task-circle'").run();
+    expect(queueEffortReviewIfNeeded('task-circle')).toBe(true);
+    await runEffortReview('task-circle');
+    expect(reports()).toHaveLength(1);
   });
 });
