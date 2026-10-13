@@ -8165,6 +8165,20 @@
       "to": 643,
       "by": "t143 (2026-10-13), OR-LONG-JOBS + OR-V333-SET (3): a broken or silent agent is told to the owner once; the per-agent silent window",
       "why": "+2: AgentDetail.silentWindowMinutes (number | null, one doc line) — the per-agent silent window the agents route returns and the Long jobs card edits. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/task-stamps.ts",
+      "from": 317,
+      "to": 321,
+      "by": "t143 round 2 (2026-10-13), orchestrator ruling 2+3: a task is fresh only by activity that names it",
+      "why": "+4: one import (turnWorkIds from work/engine-checkpoint-note.ts), a 2-line comment, and the carried-ids binding; the SQL tie list is line-neutral (the origin_conv_key clause is DELETED and the job's carried ids take its line). The conversation tie stamped every ticket born in the same conversation as fresh at every park, which hid an abandoned task from the PM and the close-out gate (witnessed RED). REFUSED: computing the tie inside finalize-record.ts (outside the fence, and the checkpoint already owns the job's identity across a continuation). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts",
+      "from": 238,
+      "to": 239,
+      "by": "t143 round 2 (2026-10-13), orchestrator ruling 2+3: a task is fresh only by activity that names it",
+      "why": "+1: one import of the shared freshness expression (work/task-freshness.ts). The gate's two dangler families now read the task's own movement (its row's clock or its own events, a work_note included) instead of the bare updated_at the engine checkpoint used to refresh for every claim; the swaps themselves are line-neutral. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8322,7 +8336,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
-    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 238,
+    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 239,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 298,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
@@ -8444,11 +8458,11 @@
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 3090,
+    "packages/server/src/tracker/pm-agent.ts": 2995,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
-    "packages/server/src/tracker/task-stamps.ts": 317,
-    "packages/server/src/tracker/tools.ts": 5199,
+    "packages/server/src/tracker/task-stamps.ts": 321,
+    "packages/server/src/tracker/tools.ts": 5195,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
