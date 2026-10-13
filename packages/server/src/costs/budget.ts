@@ -11,24 +11,20 @@ import { sendAlert } from '../services/imessage-bridge.js';
 
 const logger = createLogger('budget');
 
-// ── Alert tracking (edge-triggered with hysteresis, restart-safe) ──
+// ── Alert tracking: at most ONE text per threshold per budget window, restart-safe ──
 //
-// FA-PC3: alerts used to reset on every UTC calendar-day boundary via a
-// resetAlertsIfNewDay() call plus an in-memory lastAlertResetDate. But daily
-// spend is a ROLLING 24h sum (getDailySpend / created_at >= now-1day), not a
-// calendar-day sum, so at midnight the flags reset while rolling spend was
-// still high and the alert immediately re-fired, and on restart the in-memory
-// date reinitialized and re-alerted. Both are gone. A threshold's sent-flag is
-// now cleared ONLY when rolling spend falls back below that threshold by more
-// than a hysteresis margin, and the flags live in the budgets row (persisted),
-// so a restart never re-alerts. Result: exactly one alert per genuine crossing,
-// and a real re-crossing after spend genuinely dropped re-alerts.
+// FA-PC3: alerts used to reset on every UTC calendar-day boundary via an in-memory date, so
+// at midnight (and on every restart) a still-high rolling spend re-alerted. That fix cleared a
+// threshold's flag when rolling spend fell 2 points below it — a band sized for a dashboard
+// toast. Once budget alerts reached the owner's phone (t138, #8) it was too narrow: a day spent
+// in calls of >=2% of the limit, hovering at a line, re-crossed on every record that aged out
+// of the rolling window — nine texts in nine turns (t138 review I1; witnessed RED).
 //
-// Hysteresis margin: 2% of the limit. The 90% flag re-arms only once rolling
-// spend drops below 88% of the cap (75% below 73%, 50% below 48%). This keeps a
-// record aging out of the 24h window from flapping a flag that is hovering at
-// exactly the threshold, without hiding a genuine sustained drop-and-recross.
-const ALERT_HYSTERESIS = 0.02;
+// So each `alert_NN_sent` column holds 0 (not told in this window) or the unix second the owner
+// was told. A threshold texts again only when its WINDOW has turned over since then (24 h,
+// 7 d, 30 d — the same window the spend is summed over), or when the owner CHANGES the limit
+// or period (the setters below clear the flags). Small rolling drops never re-arm. The flags
+// live in the budgets row, so a restart never re-alerts.
 
 // ── One window per budget period ──
 //
@@ -39,13 +35,15 @@ const ALERT_HYSTERESIS = 0.02;
 // post-cost check saw a crossing and latched, the next pre-call check saw the week and re-armed
 // it, and every turn alerted again — nine dashboard alerts in three turns at 30% of the week
 // (t138 witness). One reader now, one window per period.
-const PERIOD_WINDOW: Record<string, { sqlite: string; words: string }> = {
-  daily: { sqlite: '-1 day', words: 'the last 24 hours' },
-  weekly: { sqlite: '-7 days', words: 'the last 7 days' },
-  monthly: { sqlite: '-30 days', words: 'the last 30 days' },
+type BudgetWindow = { sqlite: string; words: string; seconds: number };
+const DAY_S = 86_400;
+const PERIOD_WINDOW: Record<string, BudgetWindow> = {
+  daily: { sqlite: '-1 day', words: 'the last 24 hours', seconds: DAY_S },
+  weekly: { sqlite: '-7 days', words: 'the last 7 days', seconds: 7 * DAY_S },
+  monthly: { sqlite: '-30 days', words: 'the last 30 days', seconds: 30 * DAY_S },
 };
 /** The Ledger route accepts only the three periods above; anything else reads as daily. */
-const windowOf = (period: string): { sqlite: string; words: string } => PERIOD_WINDOW[period] ?? PERIOD_WINDOW.daily;
+const windowOf = (period: string): BudgetWindow => PERIOD_WINDOW[period] ?? PERIOD_WINDOW.daily;
 
 function agentPeriodSpend(agentId: string, period: string): number {
   return (getDb().prepare(`
@@ -80,29 +78,22 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   const db = getDb();
   const row = db.prepare(`
     SELECT alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?
-  `).get(b.budgetId) as { alert_50_sent: number; alert_75_sent: number; alert_90_sent: number } | undefined;
+  `).get(b.budgetId) as { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null } | undefined;
 
   if (!row) return;
 
   const ratio = limitUsd > 0 ? currentSpend / limitUsd : 0;
+  const nowS = Math.floor(Date.now() / 1000);
+  const windowS = windowOf(b.period).seconds;
   let highestCrossed: number | null = null;
 
   for (const { pct, field } of THRESHOLDS) {
-    // Rising edge: crossed the threshold and not yet alerted -> latch. Latched BEFORE the owner
-    // is told, so a crash between the two can never tell him twice.
-    if (ratio >= pct && row[field] === 0) {
-      db.prepare(`UPDATE budgets SET ${field} = 1, updated_at = datetime('now') WHERE id = ?`).run(b.budgetId);
+    // At or over the line, and not told within this window -> record when, then tell. Recorded
+    // BEFORE the owner is told, so a crash between the two can never tell him twice.
+    const toldAt = row[field] ?? 0;
+    if (ratio >= pct && (toldAt === 0 || nowS - toldAt >= windowS)) {
+      db.prepare(`UPDATE budgets SET ${field} = ?, updated_at = datetime('now') WHERE id = ?`).run(nowS, b.budgetId);
       highestCrossed = Math.max(highestCrossed ?? 0, pct);
-    // Falling edge: rolling spend dropped genuinely below the threshold (by the
-    // hysteresis margin) -> re-arm so a real re-crossing alerts again.
-    } else if (ratio < pct - ALERT_HYSTERESIS && row[field] === 1) {
-      db.prepare(`UPDATE budgets SET ${field} = 0, updated_at = datetime('now') WHERE id = ?`).run(b.budgetId);
-      logger.info(`Budget alert re-armed: ${b.scope} fell below ${Math.round(pct * 100)}%`, {
-        scope: b.scope,
-        currentSpend: currentSpend.toFixed(4),
-        limitUsd,
-        percentage: Math.round(pct * 100),
-      });
     }
   }
 
@@ -307,13 +298,20 @@ export function getBudgets(): { global: Budget | null; agents: AgentBudget[] } {
   return { global: globalBudget, agents };
 }
 
+/** The owner CHANGED the limit or the period: every threshold is re-armed (a new line, told
+ *  afresh). Saving the same values again changes nothing. SQLite evaluates every right-hand
+ *  side against the OLD row, so the comparison sees the values being replaced. */
+const CLEAR_FLAGS_ON_CHANGE = ['alert_50_sent', 'alert_75_sent', 'alert_90_sent']
+  .map((f) => `${f} = CASE WHEN budgets.limit_usd = excluded.limit_usd AND budgets.period = excluded.period THEN budgets.${f} ELSE 0 END`)
+  .join(', ');
+
 export function setGlobalBudget(limitUsd: number): void {
   const db = getDb();
   db.prepare(`
     INSERT INTO budgets (id, scope, limit_usd, period, created_at, updated_at)
     VALUES ('global_daily', 'global', ?, 'daily', datetime('now'), datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET limit_usd = ?, updated_at = datetime('now')
-  `).run(limitUsd, limitUsd);
+    ON CONFLICT(id) DO UPDATE SET ${CLEAR_FLAGS_ON_CHANGE}, limit_usd = excluded.limit_usd, updated_at = datetime('now')
+  `).run(limitUsd);
   logger.info('Global daily budget set', { limitUsd });
 }
 
@@ -323,7 +321,8 @@ export function setAgentBudget(agentId: string, limitUsd: number, period: string
   db.prepare(`
     INSERT INTO budgets (id, scope, limit_usd, period, created_at, updated_at)
     VALUES (?, 'agent', ?, ?, datetime('now'), datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET limit_usd = ?, period = ?, updated_at = datetime('now')
-  `).run(id, limitUsd, period, limitUsd, period);
+    ON CONFLICT(id) DO UPDATE SET ${CLEAR_FLAGS_ON_CHANGE},
+      limit_usd = excluded.limit_usd, period = excluded.period, updated_at = datetime('now')
+  `).run(id, limitUsd, period);
   logger.info('Agent budget set', { agentId, limitUsd, period });
 }

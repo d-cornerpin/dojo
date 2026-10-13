@@ -235,16 +235,25 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     expect(ownerTexts()).toHaveLength(1);
   });
 
-  it('a genuine drop (spend ages out of the rolling day) re-arms, and the re-crossing texts again', async () => {
+  it('a full drop INSIDE the window does not re-arm; once the window has turned over, a new crossing texts again', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
     expect(ownerTexts()).toHaveLength(1);
 
+    // All of today's spend leaves the rolling day, and spend climbs back over the line — but
+    // the owner was told about this line less than a day ago (fix round 1, I1).
     db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run();
-    spend(recordCost, 0.1); // the check after this call sees ~1%: re-arms 50/75/90
+    spend(recordCost, 0.1);
+    spend(recordCost, 9.0);
     expect(ownerTexts()).toHaveLength(1);
-    spend(recordCost, 9.0); // a real re-crossing
+
+    // A day later (the told-at stamps age with everything else), the next crossing is new.
+    db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run();
+    db().prepare(`UPDATE budgets SET alert_50_sent = alert_50_sent - 2 * 86400 WHERE alert_50_sent > 0`).run();
+    db().prepare(`UPDATE budgets SET alert_75_sent = alert_75_sent - 2 * 86400 WHERE alert_75_sent > 0`).run();
+    db().prepare(`UPDATE budgets SET alert_90_sent = alert_90_sent - 2 * 86400 WHERE alert_90_sent > 0`).run();
+    spend(recordCost, 9.1);
     expect(ownerTexts()).toHaveLength(2);
     expect(sentTexts()[1]).toContain('90%');
   });
@@ -283,7 +292,7 @@ describe('fix round 1 (I1): at most ONE text per threshold per budget window', (
   // ageing out of the rolling day drops spend $0.25 (2.5 points) and the next call brings it
   // back. With a 2-point re-arm band that is a fresh text every turn; the owner asked for
   // true blockers only.
-  it.fails('steady spend near the line: one text, however many times it dips and returns', async () => {
+  it('steady spend near the line: one text, however many times it dips and returns', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     const seedRow = db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens,
