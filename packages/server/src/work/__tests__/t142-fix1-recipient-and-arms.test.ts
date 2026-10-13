@@ -270,3 +270,31 @@ describe('the notice door\'s sender literal is the platform sender', () => {
     expect(NOTICE_DOOR_SENDER).toBe(PLATFORM_SENDER);
   });
 });
+
+describe('the told record silences only the news it postdates', () => {
+  beforeEach(seedOwnerAddress);
+
+  it('told while the work was running, then it PAUSED unvalidated: the pause still reaches the owner', async () => {
+    seedWork('t-news');
+    const deliveryId = withOutbound(
+      { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: OWNER_PHONE_PRIMARY },
+      () => { recordAtDoor({ outcome: 'delivered', channel: 'imessage' }); return currentOutboundDeliveryId()!; },
+    );
+    expect(recordPersonTold('t-news', { deliveryId, via: 'owner_notice' }).kind).toBe('applied');
+    move('t-news', 'paused');
+    age('t-news');
+    expect(candidates(), 'the pause is news the tell did not carry').toContain('t-news');
+  });
+
+  it('CONTROL: told AFTER the pause, the pause is settled', () => {
+    seedWork('t-news2');
+    move('t-news2', 'paused');
+    age('t-news2');
+    const deliveryId = withOutbound(
+      { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: OWNER_PHONE_PRIMARY },
+      () => { recordAtDoor({ outcome: 'delivered', channel: 'imessage' }); return currentOutboundDeliveryId()!; },
+    );
+    expect(recordPersonTold('t-news2', { deliveryId, via: 'owner_notice' }).kind).toBe('applied');
+    expect(candidates()).not.toContain('t-news2');
+  });
+});

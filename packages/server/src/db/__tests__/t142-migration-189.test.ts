@@ -24,6 +24,8 @@ const MIGRATIONS_DIR = path.join(HERE, '..', 'migrations');
 const FILES = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
 const M189 = '189_work_told_event.sql';
 const M189C = '189c_verdict_event_sequence.sql';
+const M189D = '189d_escalation_carry.sql';
+const M189E = '189e_verdict_sequence_conservative.sql';
 /** Every lane-t142 migration, whatever letters exist: 189, 189c and the fix round's files. */
 const SUBJECTS = FILES.filter((f) => f.startsWith('189'));
 const isSubject = (f: string): boolean => SUBJECTS.includes(f);
@@ -195,6 +197,24 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
     expect(seqOf(db, 'w-none', 'claimed'), 'no companion: the end of the history it was filed into').toBe(ids.maxIdBefore);
   });
 
+  it('fix round 1: 189d carries nothing on a body with no stamps, and 189e re-positions conservatively', () => {
+    const before = (db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get() as { n: number }).n;
+    applyFile(db, M189D);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get() as { n: number }).n,
+      'no stamp on this body, nothing to carry').toBe(before);
+    applyFile(db, M189E);
+    // Real companions keep the position 189c gave them (transition at the instant; the
+    // verdict's own claim_* row) ...
+    expect(seqOf(db, 'w-auth', 'blocked')).toBe(ids.authEntry);
+    expect(seqOf(db, 'w-uphold', 'blocked')).toBe(ids.upholdCompanion);
+    expect(seqOf(db, 'w-reject', 'blocked', 'rejected')).toBe(ids.rejectCompanion);
+    expect(seqOf(db, 'w-tie', 'blocked'), 'the tie still lands before the re-entry').toBe(ids.tieEntry);
+    expect(seqOf(db, 'w-corrupt', 'blocked')).toBe(ids.corruptCompanion);
+    // ... and a verdict with NO companion leaves the GLOBAL max for its own work's clock floor.
+    expect(seqOf(db, 'w-none', 'claimed'), 'no events on its work at all: floor 0').toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL').get() as { n: number }).n).toBe(0);
+  });
+
   it('THE POINT: the tie row now reads unvalidated by the sequence, and the auth row validated', async () => {
     const { validatedExpr } = await import('../../work/tracker-view.js');
     const v = (id: string) => (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`).get(id) as { v: number }).v;
@@ -327,6 +347,18 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
   ev.run('d-orphan', 'transition', tr('claimed'), 'agent', T0 + 250);
   ev.run('d-orphan', 'transition', tr('blocked'), 'agent', T0 + 300);
 
+  // M1, second shape: an orphan UPHELD verdict whose first same-state claim_* row after it is a
+  // REJECTION filed after a later re-entry. Parking the verdict there would validate that entry.
+  work.run('d-orphan-rej', 'd-orphan-rej', 'blocked', T0, T0);
+  ev.run('d-orphan-rej', 'transition', tr('blocked'), 'agent', T0 + 350);
+  built.prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at)
+                 VALUES ('d-orphan-rej', 'blocked', 'upheld', 'pm-fixture', 'fixture', ?)`).run(T0 + 400);
+  ev.run('d-orphan-rej', 'transition', tr('claimed'), 'agent', T0 + 420);
+  ev.run('d-orphan-rej', 'transition', tr('blocked'), 'agent', T0 + 450);
+  built.prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at)
+                 VALUES ('d-orphan-rej', 'blocked', 'rejected', 'pm-fixture', 'fixture', ?)`).run(T0 + 500);
+  ev.run('d-orphan-rej', 'claim_rejected', JSON.stringify({ claim_state: 'blocked' }), 'pm-fixture', T0 + 500);
+
   const db = copyOf(built);
   for (const f of SUBJECTS) applyFile(db, f);
 
@@ -336,7 +368,7 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
       .get(id) as { s: number }).s;
   };
 
-  it.fails('THE MEASURE: rows the old suppressor silenced and the new one would not — zero after upgrade', async () => {
+  it('THE MEASURE: rows the old suppressor silenced and the new one would not — zero after upgrade', async () => {
     const { ownerEpisodeSettledExpr } = await import('../../work/validation-drive.js');
     const newlyEligible = (db.prepare(
       `SELECT COUNT(*) AS n FROM work w
@@ -346,14 +378,14 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
     expect(newlyEligible).toBe(0);
   });
 
-  it.fails('the already-escalated, re-blocked row is carried as settled; the controls are untouched', async () => {
+  it('the already-escalated, re-blocked row is carried as settled; the controls are untouched', async () => {
     expect(await settled('d-reblocked'), 'carried').toBe(1);
     expect(await settled('d-current'), 'already settled').toBe(1);
     expect(await settled('d-never'), 'never escalated: eligible exactly as at base').toBe(0);
     expect(await settled('d-claimed'), 'not blocked: base behaviour').toBe(1);
   });
 
-  it.fails('the carry is exactly ONE row, invisible on the dashboard (the original instant and thread)', () => {
+  it('the carry is exactly ONE row, invisible on the dashboard (the original instant and thread)', () => {
     const carried = db.prepare(
       `SELECT work_id, actor, created_at, payload FROM work_events
         WHERE kind = 'validation_escalated' AND json_extract(payload, '$.carried') = 1`,
@@ -363,9 +395,15 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
     expect(JSON.parse(carried[0].payload)).toMatchObject({ thread_id: 'conv-owner', carried_from: origStamp });
   });
 
-  it.fails('M1: a companion-less verdict filed before a later re-entry reads UNVALIDATED, as base read it', async () => {
+  it('M1: a companion-less verdict filed before a later re-entry reads UNVALIDATED, as base read it', async () => {
     const { validatedExpr } = await import('../../work/tracker-view.js');
     const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan'`).get() as { v: number }).v;
     expect(v).toBe(0);
+  });
+
+  it('M1: an orphan upheld verdict is not parked on a later REJECTION\'s row', async () => {
+    const { validatedExpr } = await import('../../work/tracker-view.js');
+    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan-rej'`).get() as { v: number }).v;
+    expect(v, 'the re-entry at +450 was never upheld').toBe(0);
   });
 });

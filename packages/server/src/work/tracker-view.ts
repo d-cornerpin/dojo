@@ -472,8 +472,12 @@ export const WORK_EVENT = {
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
   `(SELECT MAX(e.${col}) FROM work_events e WHERE e.work_id = ${a}.id AND e.kind = '${kind}')`;
 
-/** `validation_escalated_at` — a permanent stamp in the legacy schema (nothing cleared it;
- *  the scheduler's own predicate is `validation_escalated_at IS NULL`), so no scoping. */
+/** `validation_escalated_at` — the newest stamp's instant, for DISPLAY (the dashboard's "user
+ *  has been asked" label). It is deliberately unscoped, and since t142 that is a known gap: the
+ *  escalation sweep reads stamps PER EPISODE for a blocked row (`validation-drive.ts:
+ *  ownerEpisodeSettledExpr`), so after a re-block this label still shows the previous episode's
+ *  ask until the ladder runs again. Migration 189d's carried stamps copy the original instant,
+ *  so the upgrade itself moves no label. */
 export const validationEscalatedAtExpr = (a: string): string =>
   msToText(lastEvent(a, WORK_EVENT.validationEscalated));
 
