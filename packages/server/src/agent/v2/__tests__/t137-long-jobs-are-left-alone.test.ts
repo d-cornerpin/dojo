@@ -675,6 +675,35 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     expect(workState('w-long-job')).toBe('claimed');
   });
 
+  // ROUND 3 (review I1): the refusal reads "this turn queued its own continuation" off the C3
+  // stash, which is only TRUE because the next preflight consumes the stash on read
+  // (`turn-trigger.ts`'s `continuationContext.delete`). This is the shape that delete protects: a
+  // job parks, then a later turn genuinely asks the owner something and stops. If the stash were
+  // left behind, the old park would still read as "continuing" and the task would never pause —
+  // the PM would keep pushing an agent that is waiting on the owner (the inverse of OR-PM-1).
+  it('CONTROL AFTER A PARK: a later turn that genuinely asks the owner and stops still pauses the task', async () => {
+    seedInFlightTask();
+    await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Starting on the research folder now.' });
+    expect(workState('w-long-job')).toBe('claimed');
+    expect(continuationContext.has('primary')).toBe(true);   // the park stashed its continuation
+    pendingWakeups.clear();
+
+    // The continuation: it reads nothing more, asks the owner a real question, touches the task
+    // (fixture: the task's clock moved inside this turn), and stops. No park this time.
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now() + 60 * 60_000, 'w-long-job');
+    callModelSpy.mockResolvedValue({
+      content: 'I have read everything I can reach. Should I include the archived folder too, or stop here?',
+      toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+    await runV2Turn('primary');
+
+    const second = turnRows()[1];
+    expect(second).toEqual(expect.objectContaining({ turn_number: 2, answered: 1, effectful_calls: 0 }));
+    expect(second.exit_reason).not.toBe('budget');
+    expect(continuationContext.has('primary'), 'the continuation consumed the stash and queued none').toBe(false);
+    expect(workState('w-long-job')).toBe('paused');
+  });
+
   it('CONTROL: a turn that genuinely handed the ball back (answered, did nothing, no park) still pauses, and the owner\'s next word reopens it', async () => {
     // The PHASE-2 T1 adjudication #2 rule is NARROWED, not removed. Same task, same reply,
     // no checkpoint: the agent spoke and stopped, so the work waits on the owner.
