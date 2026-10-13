@@ -56,6 +56,8 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createTask } from '../../tracker/schema.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
+import { updateTask, listTasks } from '../../tracker/schema.js';
+import { writeTaskLog } from '../../tracker/task-log.js';
 import { assembleContext } from '../assembler.js';
 import { buildWorkBoardLane, activeTasksWorstCaseTokens } from '../work-board-lane.js';
 import { POST_BUDGET_LANES } from '../lanes.js';
@@ -198,16 +200,37 @@ describe('t139 §2 — a task with no linked origin never gets an invented reque
 });
 
 describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; nothing is hidden', () => {
-  it('a paused task stays on the list with its words, labelled as waiting', async () => {
-    const ask = 'Price three flights to the conference and hold the cheapest until I confirm.';
-    ownerSays('msg-paused', ask, DAY_ONE - 60_000);
+  // ROUND 2 (review C1): a waiting task is VISIBLE but NOT CURRENT. Round 1 printed its full
+  // words under "Status: paused, waiting", so a weeks-old paused job read like live work on
+  // every turn — the #7 shape. It now carries a pointer to its request, says whom it waits on and
+  // since when, says plainly it is not current, and takes nothing from the words pool.
+  it.fails('a month-old paused task: visible, labelled not current, a POINTER instead of the words, nothing from the pool', async () => {
+    const old = 'Price three flights to the conference and hold the cheapest until I confirm.';
+    ownerSays('msg-paused', old, DAY_ONE - 31 * 86_400_000);
+    vi.setSystemTime(DAY_ONE - 30 * 86_400_000);
     const id = task('Conference flights', undefined, 'msg-paused');
     const r = setTrackerStatus(id, 'paused', { by: 'agent', actorId: AGENT, reason: 'waiting on the person' });
     expect(r.kind).toBe('applied');
+    const pausedAt = (mockDb.current!.prepare(
+      "SELECT created_at FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1",
+    ).get(id) as { created_at: number }).created_at;
+    // A live 8,000-char request beside it gets the WHOLE pool.
+    const live = longAsk(8000, 'LIVE');
+    ownerSays('msg-live', live, DAY_ONE - 60_000);
+    vi.setSystemTime(DAY_ONE - 30_000);
+    task('Live job', undefined, 'msg-live');
+    vi.setSystemTime(DAY_ONE);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
-    expect(block).toContain(ask);
-    expect(block).toContain('Status: paused, waiting');
+    expect(block).toContain('Conference flights');
+    expect(block).not.toContain(old);
+    expect(block).toContain(`Status: paused since ${renderMessageTimeStamp(pausedAt)}`);
+    expect(block).toMatch(/Not current work: do not resume it unless asked\./);
+    expect(block).toContain('[original request: message msg-paused, ');
+    expect(block).toContain('history_get(id="msg-paused")');
+    expect(block).toContain(live);
+    // The live request is listed before the waiting one.
+    expect(block.indexOf('Live job')).toBeLessThan(block.indexOf('Conference flights'));
   });
 
   it('a task scheduled for later (on_deck) is not current work and is not listed', async () => {
@@ -218,17 +241,34 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     expect((await buildWorkBoardLane(AGENT)).activeTasks).toBeNull();
   });
 
-  it('a description that records a later change is shown after the words; one that repeats them is not printed twice', async () => {
+  // ROUND 2 (review M3): a description is printed only when the task's record says it was
+  // EDITED after creation — a recorded fact, not a byte comparison a paraphrase always fails.
+  it.fails('a description EDITED after creation is shown after the words; an unedited one is not printed', async () => {
     const ask = 'Make nine square headshots for the team page.';
     ownerSays('msg-desc', ask, DAY_ONE - 60_000);
-    task('Headshots', 'Owner changed it: four, black and white.', 'msg-desc');
-    ownerSays('msg-same', 'Book the Thursday room.', DAY_ONE - 30_000);
-    task('Room', 'Book the Thursday room.', 'msg-same');
-
-    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    const id = task('Headshots', 'Nine headshots, soft studio light (my restatement).', 'msg-desc');
+    let block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toContain(ask);
+    expect(block).not.toContain('my restatement');
+
+    updateTask(id, { description: 'Owner changed it: four, black and white.' });
+    writeTaskLog({ taskId: id, fromEntity: AGENT, entryKind: 'observation', actionTaken: 'description_edited',
+      note: 'BEFORE: Nine headshots -- AFTER: four, black and white' });
+    block = (await buildWorkBoardLane(AGENT)).activeTasks!;
     expect(block).toContain("The task's own description (as last edited):\nOwner changed it: four, black and white.");
-    expect(block.split('Book the Thursday room.').length - 1).toBe(1);
+  });
+
+  // ROUND 2 (item 6, the factual fallback): newer messages in the request's conversation are
+  // COUNTED under the request — a fact from the rows, claiming no relation to the task.
+  it.fails('newer owner messages in the same conversation are counted under the request, with the newest instant', async () => {
+    ownerSays('msg-orig', 'Make nine square headshots for the team page.', DAY_ONE - 600_000);
+    task('Headshots', undefined, 'msg-orig');
+    ownerSays('msg-later-1', 'Actually make it four.', DAY_ONE - 300_000);
+    ownerSays('msg-later-2', 'And black and white, please.', DAY_ONE - 120_000);
+    vi.setSystemTime(DAY_ONE);
+    const newest = (mockDb.current!.prepare("SELECT created_at FROM messages WHERE id = 'msg-later-2'").get() as { created_at: number }).created_at;
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toContain(`Newer messages in this conversation since this request: 2, the newest ${renderMessageTimeStamp(newest)}`);
   });
 });
 
@@ -245,7 +285,7 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
     expect(block).toContain('500 more characters');
   });
 
-  it('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
+  it.fails('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
     const a = longAsk(5000, 'FIRST');
     const b = longAsk(5000, 'SECOND');
     ownerSays('msg-first', a, DAY_ONE - 120_000);
@@ -256,11 +296,43 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
     task('Second', undefined, 'msg-second');
     vi.setSystemTime(DAY_ONE);
 
+    // ROUND 2 (review I1): NEWEST request first — the active ask is never starved by an older one.
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
-    expect(block).toContain(a);
-    expect(block).toContain(b.slice(0, 3000));
-    expect(block).not.toContain(b.slice(0, 3001));
-    expect(block).toContain('history_get(id="msg-second")');
+    expect(block).toContain(b);
+    expect(block).toContain(a.slice(0, 3000));
+    expect(block).not.toContain(a.slice(0, 3001));
+    expect(block).toContain('history_get(id="msg-first")');
+    expect(block.indexOf('• Second')).toBeLessThan(block.indexOf('• First'));
+  });
+});
+
+describe('t139 §3b — round 2 order: the newest request is intact; every request before any description', () => {
+  it.fails('an older 7,000-char task with an edited 1,000-char description never starves a newer 600-char ask', async () => {
+    const older = longAsk(7000, 'MONDAY');
+    ownerSays('msg-monday', older, DAY_ONE - 3 * 86_400_000);
+    vi.setSystemTime(DAY_ONE - 3 * 86_400_000 + 1000);
+    const oid = task('Monday brief', undefined, 'msg-monday');
+    updateTask(oid, { description: 'x'.repeat(1000) });
+    writeTaskLog({ taskId: oid, fromEntity: AGENT, entryKind: 'observation', actionTaken: 'description_edited', note: 'edited' });
+    const newer = longAsk(600, 'TODAY');
+    ownerSays('msg-today', newer, DAY_ONE - 60_000);
+    vi.setSystemTime(DAY_ONE - 30_000);
+    task('Change of plan', undefined, 'msg-today');
+    vi.setSystemTime(DAY_ONE);
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toContain(newer);
+    expect(block).toContain(older);              // 600 + 7,000 fit; the description is spent LAST
+    expect(block).toContain('[description continues:');
+    expect(block.indexOf('• Change of plan')).toBeLessThan(block.indexOf('• Monday brief'));
+  });
+
+  it.fails('the tracker lists high before normal before low (priority is TEXT; it sorted alphabetically)', () => {
+    for (const [title, priority] of [['Low one', 'low'], ['High one', 'high'], ['Normal one', 'normal']] as const) {
+      createTask({ title, assignedTo: AGENT, createdBy: AGENT, priority,
+        origin: { kind: 'model', sourceMessageId: null, turn: 1, convKey: null } });
+    }
+    expect(listTasks({ assignedTo: AGENT }).map((t) => t.title)).toEqual(['High one', 'Normal one', 'Low one']);
   });
 });
 
@@ -270,7 +342,7 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
     expect(declared.reserveTokens).toBe(activeTasksWorstCaseTokens());
   });
 
-  it('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
+  it.fails('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
     for (let i = 0; i < 6; i++) {
       const id = `msg-flood-${i}`;
       ownerSays(id, longAsk(12000, `FLOOD${i}`), DAY_ONE - (10 - i) * 60_000);
@@ -282,7 +354,7 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
     expect(estimateTokens(block)).toBeLessThanOrEqual(activeTasksWorstCaseTokens());
     // And the cap really bit: the pool was spent on the first request in block order, and the
     // next one is reduced to its pointer rather than dropped without a word.
-    expect(block).toContain('history_get(id="msg-flood-0")');
-    expect(block).toContain('history_get(id="msg-flood-1")');
+    expect(block).toContain('history_get(id="msg-flood-5")');
+    expect(block).toContain('history_get(id="msg-flood-4")');
   });
 });
