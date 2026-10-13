@@ -77,7 +77,6 @@ import { classifyThrownCut, latchEngineCut } from '../../engine-exit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
-import { tagTurnOutputs } from './conversation-tagging.js';
 import { finalizeTurnRecord } from './finalize-record.js';
 import { reclassifyTurnDrafts } from './draft-reclassify.js';
 import { flushStrandedAttachments } from './attachment-flush.js';
@@ -292,7 +291,7 @@ export async function runTurnTeardown(
 
   settleStatus(ctx);
 
-  tagTurnOutputs(ctx);
+  // t141: the C15 late re-tag is DELETED — every own row carries its subject from its INSERT.
   await finalizeTurnRecord(state, ctx);
   // SWEEP CORE-2 item 7 — DRAFTS ARE NOT ANSWERS. It runs HERE and the ORDER is the whole
   // mechanism, not a preference: `finalizeTurnRecord` is what stamps `turns.answer_message_id`,

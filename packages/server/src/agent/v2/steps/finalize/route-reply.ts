@@ -18,7 +18,6 @@
 
 import { createLogger } from '../../../../logger.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
-import { tagTurnOutputConversationId } from '../../../../memory/message-store.js';
 import { recordAffinityPromotion, affinityPromotionRefusedNoBasis } from '../../owner-affinity.js';
 import { outboundRoot } from '../../outbound-root.js';
 import { steerFired } from '../../steer-queue.js';
@@ -77,12 +76,8 @@ export async function routeTerminalReply(
       // that ends WITHOUT reaching here (interrupted by a gate/limit mid-task)
       // tags nothing, so the conversation stays waiting and resumes under the
       // SAME counterparty, routing correctly.
-      // Tag this turn's OWN messages with the conversation they belong to, so a
-      // later turn for a different counterparty never sees this turn's reply or
-      // work in its live tail (content bleed across conversations).
-      if (chosenConvKey) {
-        try { if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId }); } catch { /* best effort */ }
-      }
+      // t141: this turn's own rows were labelled with their conversation AT INSERT
+      // (`memory/message-store.ts ownRowSubject`); the late re-tag that stood here is deleted.
 
       const { resolveReplyDestination } = await import('../../reply-destination.js');
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');

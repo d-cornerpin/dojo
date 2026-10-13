@@ -65,16 +65,16 @@ function statements(): string[] {
 let seq = 0;
 function row(db: Database.Database, p: {
   id: string; role: string; lane?: string; turn?: number | null; conv?: string | null; thread?: string | null;
-  servedBy?: number | null; channel?: string | null; sourceAgent?: string | null; content?: string;
+  servedBy?: number | null; channel?: string | null; sourceAgent?: string | null; content?: string; meta?: string | null;
 }): void {
   seq += 1;
   db.prepare(`INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier, turn_number,
                 conversation_id, a2a_thread_id, served_by_turn, channel, source_agent_id, provenance, authorized,
-                token_count, created_at, sent_at)
-              VALUES (?, ?, ?, ?, ?, 'agent-text', 'agent-only', ?, ?, ?, ?, ?, ?, 'live', 1, 5, ?, ?)`)
+                token_count, created_at, sent_at, inbound_meta)
+              VALUES (?, ?, ?, ?, ?, 'agent-text', 'agent-only', ?, ?, ?, ?, ?, ?, 'live', 1, 5, ?, ?, ?)`)
     .run(p.id, A, p.role, p.lane ?? 'owner', p.content ?? `[{"type":"tool_use","id":"${p.id}","name":"x","input":{}}]`,
       p.turn ?? null, p.conv ?? null, p.thread ?? null, p.servedBy ?? null, p.channel ?? null, p.sourceAgent ?? null,
-      1_790_000_000_000 + seq * 1000, 1_790_000_000_000 + seq * 1000);
+      1_790_000_000_000 + seq * 1000, 1_790_000_000_000 + seq * 1000, p.meta ?? null);
 }
 function turn(db: Database.Database, n: number, kind: string, subjectId: string | null, source: string | null): void {
   db.prepare(`INSERT INTO turns (agent_id, turn_number, kind, subject_kind, subject_id, source_message_id, started_at, ended_at, exit_reason, answered)
@@ -91,7 +91,8 @@ function seedAdversarialBody(db: Database.Database): void {
   row(db, { id: 'in-owner', role: 'user', conv: OWNER_CONV, channel: 'dashboard', content: 'owner ask', servedBy: 1 });
   // A CONTACT's ask whose turn the late stamp missed: its reconstructed row belongs to ANOTHER
   // conversation, and must stay in the owner's view anyway (it was NULL, so it was kept).
-  row(db, { id: 'in-owner-2', role: 'user', conv: OTHER_CONV, channel: 'imessage', content: 'contact ask', servedBy: 2 });
+  row(db, { id: 'in-owner-2', role: 'user', conv: OTHER_CONV, channel: 'imessage', content: 'contact ask', servedBy: 2,
+    meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true, relation: 'known_contact' }) });
   row(db, { id: 'in-peer', role: 'user', lane: 'a2a', thread: 'thread-served-0001', sourceAgent: A, content: 'peer asks', servedBy: 5 });
   row(db, { id: 'in-mail', role: 'user', conv: MAIL_CONV, channel: 'email', content: 'a notice' });
   row(db, { id: 'sys-1', role: 'system', content: '[System: a note]', turn: 1 });

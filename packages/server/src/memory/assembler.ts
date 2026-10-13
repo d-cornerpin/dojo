@@ -13,7 +13,7 @@ import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js'
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import {
-  eventAddressee, labelRows, lastFinishedViewingTurnFirstSeq, servedConversationId, subjectOf, withSubjectKinds,
+  eventAddressee, labelRows, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
@@ -843,6 +843,13 @@ export function scopeToHumanConversation(
   const a2aStripped = stripA2AFromTail(tail);
   if (!cp) return a2aStripped;
   const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
+  // t141 fix round 1 (ruling R-V333-6, option a): this counterparty's OTHER conversations whose
+  // questions are in view here (one sender, two mail threads). Their answers stay beside them,
+  // labelled with their own thread, so a question already answered never looks unanswered.
+  const shownHere = new Set(a2aStripped.filter((m) => m.origin?.kind === 'user' && m.origin.authorized
+    && m.conversationId && m.conversationId !== cpConversationId
+    && conversationKey(m.origin.channel, m.origin.senderId, m.origin.senderName, m.origin.threadId) === cpKey)
+    .map((m) => m.conversationId as string));
   return a2aStripped.filter((m) => {
     const o = m.origin;
     if (o?.kind === 'user') {
@@ -874,7 +881,8 @@ export function scopeToHumanConversation(
     // person's reply in ANOTHER conversation (the re-answer-ghost guard). The rest stay, labelled.
     return isInFlight(m, inFlightTurn)
       || m.conversationId === cpConversationId
-      || subjectOf(m) !== 'conv';
+      || subjectOf(m) !== 'conv'
+      || shownHere.has(m.conversationId ?? '');
   });
 }
 
@@ -2138,7 +2146,7 @@ export function scratchpadWorstCaseTokens(): number {
 }
 
 // t141 — the "surface one to the owner" steer is gone (audit RC4); notices stay visible, each
-// marked NEW or HANDLED (OR-V333-SET (7); `row-label.ts lastFinishedViewingTurnFirstSeq`).
+// marked NEW or HANDLED (OR-V333-SET (7); `row-label.ts lastViewedTriggerSeq`).
 const EVENTS_HEAD =
   '═══ EVENTS & NOTICES (things that happened; each says who it is addressed to. A notice '
   + 'TO THE OWNER is about his mail or channels: you are AWARE of it but NOT in conversation '
@@ -2155,7 +2163,7 @@ export function renderEventsBlock(lines: string[]): string | null {
 function renderEventsLane(agentId: string, awarenessEvents: Message[]): string | null {
   if (awarenessEvents.length === 0) return null;
   const gistCap = laneLimit('lane.events', 'chars', 'gist');
-  const seenBefore = lastFinishedViewingTurnFirstSeq(agentId);
+  const seenThrough = lastViewedTriggerSeq(agentId);
   const lines = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events')).map((m) => {
     const o = m.origin;
     const rawContent = typeof m.content === 'string' ? m.content : '';
@@ -2164,7 +2172,7 @@ function renderEventsLane(agentId: string, awarenessEvents: Message[]): string |
     const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
     const gist = structured ?? body.slice(0, gistCap);
     const at = renderMessageTimeStamp(m.createdAt);
-    const status = seenBefore !== null && m.rowid != null && m.rowid < seenBefore ? 'HANDLED' : 'NEW';
+    const status = seenThrough !== null && m.rowid != null && m.rowid <= seenThrough ? 'HANDLED' : 'NEW';
     return `• ${status} ${at ?? ''}[${label}] ${gist}`;
   });
   return renderEventsBlock(lines);

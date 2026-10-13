@@ -26,7 +26,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
@@ -61,6 +61,7 @@ interface VideoJobRow {
   status: string;
   started_at: string;
   attempt_count: number;
+  conversation_id?: string | null; source_message_id?: string | null;  // P6a lineage (mig 116)
 }
 
 const inFlight = new Set<string>();
@@ -163,7 +164,7 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
   insertMessageIfAbsent({
     id: msgId, agentId: row.agent_id, role: 'assistant', content: caption,
     attachments: JSON.stringify([attachment]),
-  });
+    ...deliveredResult(row.conversation_id, row.source_message_id) });  // t141: labelled with its request
   broadcast({
     type: 'chat:message', agentId: row.agent_id,
     message: {
@@ -181,7 +182,7 @@ function deliverError(row: VideoJobRow, error: string): void {
   const content =
     `I wasn't able to finish that video:\n\n> ${error}\n\n` +
     `You could try a shorter clip or a simpler description.`;
-  insertMessageIfAbsent({ id: msgId, agentId: row.agent_id, role: 'assistant', content });
+  insertMessageIfAbsent({ id: msgId, agentId: row.agent_id, role: 'assistant', content, ...deliveredResult(row.conversation_id, row.source_message_id) });
   broadcast({
     type: 'chat:message', agentId: row.agent_id,
     message: {

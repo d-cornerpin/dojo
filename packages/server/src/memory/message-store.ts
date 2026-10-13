@@ -101,8 +101,10 @@ export interface NewMessage {
 
 /** t141 — what an OWN row belongs to (migration 188's CHECK is the authority). `conv` is the only
  *  kind a scoper excludes from ANOTHER conversation; the rest stay in view, labelled
- *  (OR-LABEL-NOT-HIDE). `legacy` is written only by 188, for rows the late stamp missed. */
-export type SubjectKind = 'conv' | 'a2a_thread' | 'engine_event' | 'background' | 'legacy' | 'unknown';
+ *  (OR-LABEL-NOT-HIDE). `legacy` is written only by 188, for rows the late stamp missed;
+ *  `delivered` is a result that reaches a conversation AFTER the turn that asked (a relayed
+ *  delegated answer, an async media result) — `root_id` names the request it answers. */
+export type SubjectKind = 'conv' | 'a2a_thread' | 'engine_event' | 'background' | 'legacy' | 'delivered' | 'unknown';
 
 export interface Persisted {
   seq: number;
@@ -269,6 +271,13 @@ function ownRowSubject(m: NewMessage, lane: Lane): OwnSubject {
     case 'none': return { subjectKind: 'background', ...given };
     default: return { subjectKind: 'unknown', ...given };
   }
+}
+
+/** t141 — the identity of a result that reaches a conversation AFTER the turn that asked (a
+ *  relayed delegated answer, an async media result): his conversation and the request it answers. */
+export function deliveredResult(conversationId: string | null | undefined, requestMessageId: string | null | undefined):
+  Pick<NewMessage, 'conversationId' | 'subjectKind' | 'rootKind' | 'rootId'> {
+  return { conversationId: conversationId ?? null, subjectKind: 'delivered', rootKind: requestMessageId ? 'ask' : null, rootId: requestMessageId ?? null };
 }
 
 /** t141 — the labels, read beside rows the caller already holds (`memory/store.ts`'s tail
@@ -735,32 +744,12 @@ export function stampConversationIdByRowid(
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.conversationId }).changes;
 }
 
-/** SUPERSEDED BY THE AT-INSERT LABEL (t141) — kept only until its three callers can go.
- *
- *  This was the LATE stamp: at turn end it wrote the served conversation onto the turn's own
- *  rows, and it was late on purpose, because all three assembler scopers read NULL as "this
- *  turn's own work, keep it". t141 deleted that reading (in-flight is now the explicit fact
- *  `turn_number = the live turn`) and labels every own row in its INSERT (`ownRowSubject`
- *  above) from the SAME bag this read. So on every row written from t141 on, its
- *  `conversation_id IS NULL` predicate matches nothing: a person's turn wrote the id at insert,
- *  and a turn with no resolved conversation never reaches this call. Proven, not argued:
- *  `memory/__tests__/t141-labelled-at-birth.test.ts` drives a full person turn and asserts this
- *  UPDATE changes ZERO rows afterwards.
- *
- *  ITS DELETION IS HANDED UP, not done: the three callers (`finalize/route-reply.ts`,
- *  `post-call-classify/no-reply.ts`, `teardown/conversation-tagging.ts`) sit outside t141's
- *  fence. The exact patch is in `overhaul-plans/t141-report.md`. */
-export function tagTurnOutputConversationId(
-  p: { agentId: string; turnNumber: number; conversationId: string; lane?: Lane },
-): number {
-  const db = getDb();
-  const laneClause = `AND lane = @lane`;
-  return db.prepare(
-    `UPDATE messages SET conversation_id = @conversationId
-       WHERE agent_id = @agentId AND turn_number = @turnNumber
-         AND role IN ('assistant','tool') AND conversation_id IS NULL ${laneClause}`,
-  ).run({ agentId: p.agentId, turnNumber: p.turnNumber, conversationId: p.conversationId, lane: p.lane ?? 'owner' }).changes;
-}
+// t141: `tagTurnOutputConversationId` — the LATE conversation stamp, written at turn end and only
+// for a person's turn — is DELETED with its three callers. Every own row is labelled in its
+// INSERT (`ownRowSubject` above), so the stamp had nothing left to do; and in the one shape it
+// still wrote (an engine-event turn restoring a continuation) it put a conversation on a row
+// whose label says otherwise. requirement preserved: one conversation's work never reads as
+// another's — the label is the row's from birth, on every exit path, aborted turns included.
 
 /** Record the TURN that served a row.
  *

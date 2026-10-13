@@ -131,7 +131,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { startGmailWatcher, stopGmailWatcher } from '../../services/gmail-watcher.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { tagTurnOutputConversationId, insertEngineEvent } from '../message-store.js';
+import { insertEngineEvent } from '../message-store.js';
 import { insertInboundMessageIfAbsent, } from '../../work/ask-title.js';
 import { recordInboundMeta } from '../../agent/v2/inbound-channel.js';
 import { askIdForMessage, openDelegationJoin } from '../../work/store.js';
@@ -206,6 +206,15 @@ function labelBefore(text: string, needle: string): string {
   if (at < 0) return '';
   const stamps = [...text.slice(0, at).matchAll(/\[[A-Z][a-z]{2} \d{1,2}, \d{4}, [^\]]*?UTC[+-]\d{2}:\d{2}[^\]]*\]/g)];
   return stamps.length ? stamps[stamps.length - 1][0] : '';
+}
+
+/** The nearest block HEADER (`[<instant> · <subject>]`) before `needle` — the subject the row
+ *  carrying `needle` sits under (a continuing row carries only its instant). */
+function headerBefore(text: string, needle: string): string {
+  const at = text.indexOf(needle);
+  if (at < 0) return '';
+  const heads = [...text.slice(0, at).matchAll(/\[[A-Z][a-z]{2} \d{1,2}, \d{4}, [^\]]*?UTC[+-]\d{2}:\d{2} · [^\]]*\]/g)];
+  return heads.length ? heads[heads.length - 1][0] : '';
 }
 
 async function turn(...steps: typeof script): Promise<Wire[][]> {
@@ -310,7 +319,7 @@ describe('t141 witnesses — the email wake and the owner conversation', () => {
     // ...and now it says what it was: the agent's own work on a wake that served no person. The
     // label is a block header — the platform's stamp nearest before the call names its subject.
     const all = wireText(wire);
-    expect(labelBefore(all, 'ZEBRA invoice 4471')).toMatch(/background wake/i);
+    expect(labelBefore(all, 'ZEBRA invoice 4471')).toMatch(/not part of any conversation/i);
     // Controls: the owner's conversation is headed as HIS, before the email work and again after.
     expect(labelBefore(all, 'Draft a 3-section note about ORCHID')).toMatch(/dashboard conversation with TestUser/);
     expect(labelBefore(all, 'What have you finished for me today?')).toMatch(/dashboard conversation with TestUser/);
@@ -365,7 +374,7 @@ describe('t141 witness — two email threads from one sender', () => {
 // ── GREEN: the lane's own guarantees, through the same doors ─────────────────────────────
 
 describe('t141 — every own row is labelled AT BIRTH, never late', () => {
-  it('a person turn\'s tool call carries its conversation while the tool is still running; the late stamp then has nothing left to do', async () => {
+  it('a person turn\'s tool call carries its conversation while the tool is still running (there is no late stamp)', async () => {
     await submitUserMessage(AGENT, 'Look up ORCHID for me.');
     const seenMidTurn: Array<{ conversation_id: string | null; subject_kind: string | null }> = [];
     executeToolSpy.mockImplementationOnce(async (...a: unknown[]) => {
@@ -379,8 +388,6 @@ describe('t141 — every own row is labelled AT BIRTH, never late', () => {
     await turn({ tool: { name: 'web_search', arguments: { query: 'ORCHID' } } }, { content: 'Found it.' });
     const conv = (mockDb.current!.prepare(`SELECT id FROM conversations WHERE channel = 'dashboard'`).get() as { id: string }).id;
     expect(seenMidTurn).toEqual([{ conversation_id: conv, subject_kind: 'conv' }]);
-    expect(tagTurnOutputConversationId({ agentId: AGENT, turnNumber: 1, conversationId: conv }),
-      'the late stamp finds no unlabelled row of a person\'s turn').toBe(0);
     const unlabelled = mockDb.current!.prepare(
       `SELECT count(*) AS n FROM messages WHERE role IN ('assistant','tool') AND subject_kind IS NULL`).get() as { n: number };
     expect(unlabelled.n).toBe(0);
@@ -472,7 +479,7 @@ function noticeNow(id: string, subject: string): void {
 }
 
 describe('fix round 1 — I-1 (ruling R-V333-6, option a): a thread answered elsewhere is not shown as unanswered', () => {
-  it.fails('on thread B\'s turn, the answer already given on thread A sits next to A\'s question, labelled with thread A', async () => {
+  it('on thread B\'s turn, the answer already given on thread A sits next to A\'s question, labelled with thread A', async () => {
     setMailbox('agent', 'agent.box@example.com');
     mockDb.current!.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('gmail_approved_senders_agent', ?, datetime('now'))`)
       .run(JSON.stringify([{ address: 'colleague@example.com', name: 'A Colleague' }]));
@@ -483,12 +490,12 @@ describe('fix round 1 — I-1 (ruling R-V333-6, option a): a thread answered els
     const all = wireText(t2[0]);
     expect(all, 'thread A\'s question is in B\'s view').toContain('Can you check the ALPHA budget?');
     expect(all, 'and so is the answer it already got — never an unanswered-looking question').toContain('ALPHA budget is approved by finance, 12k.');
-    expect(labelBefore(all, 'ALPHA budget is approved by finance')).toMatch(/subject "ALPHA budget"/);
+    expect(headerBefore(all, 'ALPHA budget is approved by finance')).toMatch(/subject "ALPHA budget"/);
   });
 });
 
 describe('fix round 1 — I-2: HANDLED only for a notice a finished turn actually had in view', () => {
-  it.fails('a notice that lands DURING a turn\'s model call is NEW on the next turn (probe D)', async () => {
+  it('a notice that lands DURING a turn\'s model call is NEW on the next turn (probe D)', async () => {
     await submitUserMessage(AGENT, 'Quick question: what is two plus two?');
     duringNextCall = () => noticeNow('yak-1', 'YAK invoice');
     const t1 = await turn({ content: 'Four.' });
@@ -518,7 +525,7 @@ describe('fix round 1 — I-2: HANDLED only for a notice a finished turn actuall
 });
 
 describe('fix round 1 — I-4: the email wake\'s own work is labelled with ITS email', () => {
-  it.fails('the wake\'s search reads as work on the ZEBRA notice from its sender, not an anonymous background wake', async () => {
+  it('the wake\'s search reads as work on the ZEBRA notice from its sender, not an anonymous background wake', async () => {
     await orchidThenZebraWake();
     await submitUserMessage(AGENT, 'What have you finished for me today?');
     const t3 = await turn({ content: 'The ORCHID note.' });
@@ -528,7 +535,7 @@ describe('fix round 1 — I-4: the email wake\'s own work is labelled with ITS e
 });
 
 describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appears in his conversation, labelled as such', () => {
-  it.fails('a delegated result relayed back reads as a result for his request, never "subject not recorded"', async () => {
+  it('a delegated result relayed back reads as a result for his request, never "subject not recorded"', async () => {
     mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
     await submitUserMessage(AGENT, 'Ask the peer for the PELICAN status.');
     const ask = mockDb.current!.prepare(`SELECT id, conversation_id FROM messages WHERE role = 'user' ORDER BY seq DESC LIMIT 1`).get() as { id: string; conversation_id: string };
@@ -545,7 +552,7 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
     expect(label).not.toMatch(/subject not recorded/);
   });
 
-  it.fails('an image the owner asked for that FAILED later reads as a result for his request', async () => {
+  it('an image the owner asked for that FAILED later reads as a result for his request', async () => {
     await submitUserMessage(AGENT, 'Make me an image of a heron at dawn.');
     executeToolSpy.mockImplementationOnce(async (...a: unknown[]) => {
       const tc = a.find((x) => x && typeof x === 'object' && 'id' in (x as object)) as { id: string; name: string; arguments: Record<string, unknown> };
@@ -565,7 +572,7 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
 });
 
 describe('fix round 1 — m-3: a thread\'s label is its stable identity', () => {
-  it.fails('the peer named is the thread\'s FIRST sender, read from the store, whatever the tail holds', async () => {
+  it('the peer named is the thread\'s FIRST sender, read from the store, whatever the tail holds', async () => {
     mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei'), ('late-agent', 'Latecomer', 'm', 'idle', '{}', 'sensei')`).run();
     const T = '7e1f2a3b-0000-4000-8000-0000000000aa';
     await deliverA2AMessage({ intent: 'FYI', threadId: T, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'first' });

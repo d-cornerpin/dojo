@@ -20,7 +20,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { NO_REPLY_CLOSED_MARKER, NO_REPLY_TAIL_RE, isBareNoReplySentinel } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
-import { insertMessageIfAbsent, readPersistedRow, tagTurnOutputConversationId } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, readPersistedRow } from '../../../../memory/message-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { recordedAnswerInConversation } from '../../answered-edge.js';
@@ -391,13 +391,8 @@ export async function runNoReply(
           }, agentId);
         }
       }
-      // Turn continuity: declining ([no-reply]) IS addressing the counterparty.
-      // Tag this turn's own messages with the conversation, that conv_key is
-      // the durable "served" signal (the conversation won't be re-picked) AND
-      // the content-isolation tag (its work won't bleed into another turn).
-      if (chosenConvKey) {
-        try { if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId }); } catch { /* best effort */ }
-      }
+      // t141: declining ([no-reply]) IS addressing the counterparty; this turn's own rows already
+      // carry the conversation from their INSERT, so the late re-tag that stood here is deleted.
       logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
         agentId, loopCount: state.loopCount,
       }, agentId);

@@ -22,7 +22,7 @@ import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_AL
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
+import { deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 // SWEEP CORE-2 item 5: STATIC, because the relay's scope check runs on the synchronous
@@ -1606,7 +1606,8 @@ async function deliverJoinResultToOwnerInner(
     // assistant bubble. A relay of a peer's own answer stays an assistant row, because that is
     // what it is — the agent's delegated work coming back to the person who asked.
     const role = platformVoice ? 'system' as const : 'assistant' as const;
-    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role, content: deliveryBody });
+    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role, content: deliveryBody,  // t141: labelled
+      ...(platformVoice ? {} : deliveredResult(join.replyConversationId, join.rootId)) });  // as his request's result
     broadcast({
       type: 'chat:message', agentId: join.agentId,
       message: { id: messageId, agentId: join.agentId, role, content: deliveryBody, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },

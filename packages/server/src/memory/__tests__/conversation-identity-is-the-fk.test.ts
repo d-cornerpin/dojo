@@ -144,13 +144,14 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
   // by `checks/check-reanswer-ghost.mjs`, wired into the kit roster and the dojo REQUIRED
   // list in this same task and green there.
 
-  it('the turn\'s own output is tagged with the conversation, at turn END (not at insert)', () => {
+  // t141: this clause asserted the LATE stamp (turn END, not insert). That mechanism is deleted:
+  // the turn's own output is labelled with its conversation AT INSERT (`ownRowSubject`), and the
+  // scopers no longer read NULL as "this turn's" — `t141-membership-and-census.test.ts` pins it.
+  it('the turn\'s own output is labelled with the conversation AT INSERT, on the FK, never late', () => {
     const s = stripComments(src('packages/server/src/memory/message-store.ts'));
     expect(s).not.toMatch(/conv_key/);
-    expect(s).toMatch(/tagTurnOutputConversationId/);
-    // The "do not re-tag" guard is the whole reason the tag is late: an already-tagged row
-    // belongs to an earlier turn. Preserved as the same NULL test on the new column.
-    expect(s).toMatch(/conversation_id IS NULL/);
+    expect(s).not.toMatch(/tagTurnOutputConversationId/);
+    expect(s).toMatch(/function ownRowSubject/);
   });
 
   it('the recently-answered block and the F9 sibling batch-claim scope on conversation_id', () => {

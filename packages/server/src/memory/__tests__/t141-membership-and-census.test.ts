@@ -135,16 +135,14 @@ describe('§2 the deletions, counted', () => {
     }
   });
 
-  it('the late stamp is SUPERSEDED, and its remaining writers are exactly the handed-up three', () => {
+  it('the late stamp is DELETED with its three callers: one conversation writer is left, for inbound rows', () => {
     const store = stripComments(read('memory/message-store.ts'));
-    // Two `UPDATE messages SET conversation_id` writers remain: the inbound pickup repair
-    // (a person's row no door resolved) and the superseded late stamp, kept only because its
-    // three callers sit outside t141's fence (hand-up in the report). A third would red this.
-    expect(store.match(/UPDATE messages SET conversation_id/g) ?? []).toHaveLength(2);
+    // The one `UPDATE messages SET conversation_id` left is the inbound pickup repair (a
+    // person's row no door resolved). A late stamp of the agent's own rows would be a second.
+    expect(store.match(/UPDATE messages SET conversation_id/g) ?? []).toHaveLength(1);
+    expect(store).not.toMatch(/function tagTurnOutputConversationId/);
     // The engine corpus through the shared derivation (`engine-sources.ts`), never a path walk.
-    const callers = engineSources().filter((e) => /tagTurnOutputConversationId\(\{/.test(stripComments(e.text)))
-      .map((e) => e.rel).sort();
-    expect(callers).toEqual(['agent/v2/steps/finalize/route-reply.ts', 'agent/v2/steps/post-call-classify/no-reply.ts',
-      'agent/v2/steps/teardown/conversation-tagging.ts']);
+    const callers = engineSources().filter((e) => /tagTurnOutputConversationId|tagTurnOutputs\(/.test(stripComments(e.text)));
+    expect(callers.map((e) => e.rel)).toEqual([]);
   });
 });

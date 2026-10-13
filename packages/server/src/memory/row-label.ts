@@ -1,41 +1,26 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE ROW LABEL (t141) — every row the model reads says WHEN, and WHICH conversation it is.
+// The owner, tracker #12: "The agent just needs to be aware of what conversations are what and
+// not confuse them." (OR-LABEL-NOT-HIDE) — a LABEL on each row, never a narrower view.
 //
-// The owner, on tracker #12: "Why can't it just recognize that the email is from a different
-// conversation and not get it conflated with other conversations?" / "The agent just needs to
-// be aware of what conversations are what and not confuse them." (OR-LABEL-NOT-HIDE.) So the
-// fix is a LABEL on each row, never a narrower view: the stamp the fresh tail already prefixed
-// (`[Jul 16, 2026, 11:41 AM]`) grows the row's subject — `[<instant> · <subject>]`.
-//
-// ── CACHE LAW (OR7 / G2): THE LABEL IS A PURE FUNCTION OF THE ROW ──
-// It is derived from stored columns only — the row's own `conversation_id`, `a2a_thread_id`,
-// `subject_kind` (written ONCE, at insert), `inbound_meta`, and the `conversations` row it
-// points at — never from which turn is rendering it and never from the clock. The same row
-// therefore renders the same bytes on every turn of every kind: an email wake and the owner's
-// next turn share their prefix instead of each re-billing it. Nothing here is relative
-// ("2 minutes ago" would move every turn), and nothing depends on the turn's subject.
-//
-// ── WHAT IS LABELLED ──
-// Text rows (user and assistant) and the agent's tool CALLS. A tool RESULT is not: it is bound
-// to its call by id and sits immediately after it, and putting text into a `tool_result`
-// message is the shape some providers reject. The call carries the label for the pair.
+// CACHE LAW (OR7 / G2): a pure function of STORED columns — the row's own conversation, thread,
+// insert-time `subject_kind`, `inbound_meta`, root, turn record — never of the turn rendering it
+// or the clock, so an email wake and the owner's next turn render shared rows identically.
+// Labelled: text rows and tool CALLS; a tool RESULT is bound to its call by id and stays bare.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
-import { renderMessageTimeStamp } from './message-stamp.js';
+import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
 
 /** A tail row as the assembler holds it once its label column has been read beside it. */
 export type LabelledMessage = Message & { subjectKind?: SubjectKind | null };
 
-/**
- * What an OWN row belongs to. A row read without its label column (a hand-built fixture, a
- * writer that bypassed `message-store.ts`) is judged by its stamp — exactly the old reading of
- * a stamped row — so no shape of input changes which rows a scoper keeps.
- */
+/** What an OWN row belongs to; a row read without its label (a fixture, a bypassing writer) is
+ *  judged by its stamp — the old reading — so no input shape changes which rows a scoper keeps. */
 export function subjectOf(m: LabelledMessage): SubjectKind | null {
   return m.subjectKind ?? (m.conversationId ? 'conv' : null);
 }
@@ -53,11 +38,13 @@ function emailSubjectOf(inboundMeta: string | null | undefined): string | null {
   } catch { return null; }
 }
 
-/** Per-assembly lookups, cached: one PK read per conversation and per thread, not per row. */
+/** Per-assembly lookups, cached: one keyed read per conversation / thread / turn / request.
+ *  Every one reads the STORE, never the tail in hand, so a label is a function of the row. */
 export class LabelFacts {
   private readonly convs = new Map<string, string | null>();
   private readonly threads = new Map<string, string>();
-  constructor(private readonly agentId: string, private readonly rows: Message[]) {}
+  private readonly wakes = new Map<number, string | null>();
+  constructor(private readonly agentId: string) {}
 
   /** "dashboard conversation with <owner>", "email thread with x@y, subject "…"" — or null. */
   conversation(conversationId: string): string | null {
@@ -85,22 +72,50 @@ export class LabelFacts {
     return label;
   }
 
-  /** "agent thread 1a2b3c4d with <peer>". The peer is read off the thread's inbound row. */
+  /** "agent thread 1a2b3c4d with <peer>". The peer is the thread's FIRST other-agent sender —
+   *  its stable identity: a later poster never renames the rows before it (review m-3). */
   thread(threadId: string | null | undefined): string {
     if (!threadId) return 'agent-to-agent work (thread not recorded)';
     const hit = this.threads.get(threadId);
     if (hit) return hit;
-    let peer = this.rows.find((r) => r.a2aThreadId === threadId && r.origin?.kind === 'agent')?.origin?.senderName ?? null;
-    if (!peer) {
-      try {
-        peer = (getDb().prepare(`SELECT a.name FROM messages m JOIN agents a ON a.id = m.source_agent_id
-                                   WHERE m.agent_id = ? AND m.a2a_thread_id = ? ORDER BY m.seq DESC LIMIT 1`)
-          .get(this.agentId, threadId) as { name: string } | undefined)?.name ?? null;
-      } catch { /* best-effort */ }
-    }
+    let peer: string | null = null;
+    try {
+      peer = (getDb().prepare(`SELECT a.name FROM messages m JOIN agents a ON a.id = m.source_agent_id
+                                 WHERE m.a2a_thread_id = ? AND m.agent_id = ? AND m.source_agent_id <> m.agent_id
+                                 ORDER BY m.seq ASC LIMIT 1`)
+        .get(threadId, this.agentId) as { name: string } | undefined)?.name ?? null;
+    } catch { /* best-effort */ }
     const label = `agent thread ${threadId.slice(0, 8)} with ${peer ?? 'another agent'}`;
     this.threads.set(threadId, label);
     return label;
+  }
+
+  /** The notice a wake turn was woken by (its turn record's trigger, written at turn start), as
+   *  "the email notice from x, subject "…"" — or null when the turn recorded none. */
+  wakeNotice(turnNumber: number | null | undefined): string | null {
+    if (turnNumber == null) return null;
+    if (this.wakes.has(turnNumber)) return this.wakes.get(turnNumber) ?? null;
+    let label: string | null = null;
+    try {
+      const n = getDb().prepare(`SELECT n.channel, n.sender_id, n.inbound_meta FROM turns t JOIN messages n ON n.id = t.source_message_id
+                                   WHERE t.agent_id = ? AND t.turn_number = ?`).get(this.agentId, turnNumber) as
+        { channel: string | null; sender_id: string | null; inbound_meta: string | null } | undefined;
+      if (n) {
+        const subj = emailSubjectOf(n.inbound_meta);
+        label = `the ${n.channel ?? 'channel'} notice from ${(n.sender_id ?? 'an unknown sender').slice(0, 64)}${subj ? `, subject "${subj}"` : ''}`;
+      }
+    } catch { /* best-effort */ }
+    this.wakes.set(turnNumber, label);
+    return label;
+  }
+
+  /** When the request a delivered result answers was made (the request row's own instant). */
+  requestInstant(resultMessageId: string): string | null {
+    try {
+      const r = getDb().prepare(`SELECT r.created_at FROM messages m JOIN messages r ON r.id = m.root_id
+                                   WHERE m.id = ?`).get(resultMessageId) as { created_at: number } | undefined;
+      return r ? renderInstant(r.created_at) : null;
+    } catch { return null; }
   }
 }
 
@@ -126,8 +141,16 @@ export function rowSubject(m: LabelledMessage, facts: LabelFacts): string {
     case 'legacy': return `${(m.conversationId && facts.conversation(m.conversationId)) || 'a person\'s conversation'} (earlier work, labelled after the fact)`;
     case 'a2a_thread': return facts.thread(m.a2aThreadId);
     case 'engine_event': return 'engine event (a scheduled task, reminder or system notice)';
-    case 'background': return 'background wake — not part of any conversation';
-    default: return 'earlier work, subject not recorded';
+    case 'background': {
+      const notice = facts.wakeNotice(m.turnNumber);
+      return notice ? `work on ${notice} — not part of any conversation` : 'background wake — not part of any conversation';
+    }
+    case 'delivered': {
+      const where = (m.conversationId && facts.conversation(m.conversationId)) || 'no conversation recorded';
+      const asked = facts.requestInstant(m.id);
+      return `${where} — result delivered later${asked ? `, for the request of ${asked}` : ''}`;
+    }
+    default: return 'subject not recorded';
   }
 }
 
@@ -144,17 +167,13 @@ export function withSubjectKinds(agentId: string, rows: Message[]): LabelledMess
   return rows.map((m) => (m.rowid != null && kinds.has(m.rowid) ? { ...m, subjectKind: kinds.get(m.rowid) ?? null } : m));
 }
 
-/**
- * Every renderable row's label, in render order — ONE HEADER PER CONVERSATION BLOCK. The first
- * row of a run with one subject carries `[<instant> · <subject>]`; the rows after it carry the
- * instant alone (the stamp they always had), so a subject change is read wherever one happens
- * and paid for once per block. A tool CALL carries a header only when it opens a block; a tool
- * RESULT never does. Append-only: a row's label reads only rows BEFORE it.
- */
+/** Labels in render order — ONE HEADER PER CONVERSATION BLOCK: a block's first row carries
+ *  `[<instant> · <subject>]`, the rest `[<instant>]`; a tool CALL only when it opens a block.
+ *  Append-only: a row's label reads only rows BEFORE it. */
 export function labelRows(agentId: string, rows: Message[]): Map<string, string> {
   const labelled: LabelledMessage[] = rows.some((m) => (m as LabelledMessage).subjectKind === undefined)
     ? withSubjectKinds(agentId, rows) : rows;
-  const facts = new LabelFacts(agentId, labelled);
+  const facts = new LabelFacts(agentId);
   const out = new Map<string, string>();
   let current: string | null = null;
   for (const m of labelled) {
@@ -172,12 +191,9 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
   return out;
 }
 
-/**
- * The conversation a turn's tail is scoped to: the one a person's turn serves. An EMAIL WAKE
- * serves none and used to hand `null` to the scoper, which kept the owner's asks and dropped
- * every answer already given him (the identity audit's RC2). Its counterparty IS the owner on
- * the dashboard, so its view is that conversation WHOLE, asks and answers, each row labelled.
- */
+/** The conversation a turn's tail is scoped to. An EMAIL WAKE serves none and used to hand `null`,
+ *  keeping the owner's asks and dropping his answers (audit RC2); its counterparty IS the owner on
+ *  the dashboard, so it sees that conversation WHOLE, each row labelled. */
 export function servedConversationId(agentId: string, turnContext: PromptTurnContext | undefined): string | null {
   const live = liveTurnContext(agentId)?.conversationId ?? null;
   if (live || !turnContext?.isNotificationTurn) return live;
@@ -188,35 +204,24 @@ export function servedConversationId(agentId: string, turnContext: PromptTurnCon
   } catch { return null; }
 }
 
-/**
- * EVENTS' HANDLED status: the first row the agent's last FINISHED notice-viewing turn (a
- * person's or a background wake; engine/agent-thread turns never show EVENTS) wrote. A notice
- * before it was in that turn's view, so it has been dealt with. Ordered on the INSERTION
- * SEQUENCE, never the clock — a notice and the wake it causes share a second. A turn that wrote
- * nothing cannot be placed and leaves its notices NEW (the safe direction). No new column.
- */
-export function lastFinishedViewingTurnFirstSeq(agentId: string): number | null {
+/** EVENTS' HANDLED line: the trigger row (`seq`) of the last FINISHED turn that SHOWS EVENTS (a
+ *  person's turn or a notice wake). A trigger is written before its turn assembles, so a notice
+ *  at or before it was in view; one landing mid-turn stays NEW (review I-2). Sequence, never the
+ *  clock; a turn with no recorded trigger marks nothing (the safe direction). */
+export function lastViewedTriggerSeq(agentId: string): number | null {
   try {
     const row = getDb().prepare(
-      `SELECT MIN(m.seq) AS seq FROM messages m
-        WHERE m.agent_id = @a AND m.role IN ('assistant','tool') AND m.turn_number = (
-          SELECT t.turn_number FROM turns t
-           WHERE t.agent_id = @a AND t.ended_at IS NOT NULL AND (t.kind IS NULL OR t.kind = 'user')
-             AND EXISTS (SELECT 1 FROM messages x WHERE x.agent_id = @a AND x.turn_number = t.turn_number
-                           AND x.role IN ('assistant','tool'))
-           ORDER BY t.turn_number DESC LIMIT 1)`,
-    ).get({ a: agentId }) as { seq: number | null } | undefined;
+      `SELECT m.seq FROM turns t JOIN messages m ON m.id = t.source_message_id
+        WHERE t.agent_id = ? AND t.ended_at IS NOT NULL AND (t.kind IS NULL OR t.kind = 'user')
+        ORDER BY t.turn_number DESC LIMIT 1`,
+    ).get(agentId) as { seq: number } | undefined;
     return row?.seq ?? null;
   } catch { return null; }
 }
 
-/**
- * Who an EVENTS item is addressed to, and from whom — read off its stored fields only. A notice
- * about the owner's mail/channels is TO THE OWNER (the agent is not in that conversation); an
- * engine-lane item is TO the agent itself, from another agent when the row names one (a PM
- * review, say) or from the platform. So a notice for the owner is never read as one for the
- * agent, or the reverse. Bounded: channel 24, sender 64, intent 32 chars.
- */
+/** Who an EVENTS item is addressed to and from whom, off stored fields: a mail/channel notice is
+ *  TO THE OWNER; an engine-lane item is TO the agent, from the agent the row names (a PM review)
+ *  or the platform. Bounded: channel 24, sender 64, intent 32 chars. */
 export function eventAddressee(m: Message): string {
   const o = m.origin;
   if (o?.kind === 'user') {

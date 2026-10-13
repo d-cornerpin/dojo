@@ -76,7 +76,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
-import { insertMessageIfAbsent } from '../../../memory/message-store.js';
+import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
@@ -100,6 +100,7 @@ import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../
 import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
+import { turnContext } from '../../turn-context.js';
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -188,6 +189,8 @@ const handlers = {
     // concurrency). This const is closed over by the IIFE and unaffected by the turn end.
     const requesterIMessage = getTurnScopedImRecipient(agentId);
     const triggeredByIMessage = requesterIMessage !== null;
+    const live = turnContext(agentId);  // t141: captured at CALL time — the result is labelled with the request
+    const resultSubject = deliveredResult(live?.conversationId, live?.root?.kind === 'ask' ? live.root.id : null);
 
     auditLog(agentId, 'image_create', null, 'success',
       `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
@@ -273,7 +276,7 @@ const handlers = {
             `I wasn't able to generate that image:\n\n` +
             `> ${result.error}\n\n` +
             `You could try simplifying the description or trying again in a moment.`;
-          insertMessageIfAbsent({ id: errMsgId, agentId, role: 'assistant', content: errContent });
+          insertMessageIfAbsent({ id: errMsgId, agentId, role: 'assistant', content: errContent, ...resultSubject });
           broadcast({
             type: 'chat:message', agentId,
             message: {
@@ -391,7 +394,7 @@ const handlers = {
           const attachmentsJson = JSON.stringify([attachment]);
           insertMessageIfAbsent({
             id: deliveryMsgId, agentId, role: 'assistant', content: caption,
-            attachments: attachmentsJson,
+            attachments: attachmentsJson, ...resultSubject,
           });
           broadcast({
             type: 'chat:message', agentId,

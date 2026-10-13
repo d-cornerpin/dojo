@@ -243,7 +243,7 @@ export async function runPreflight(
     lastUserMessageId, triggerRow, triggerWorkId, chosenConvKey, inboundChannel,
     inboundContext, latestUserSource, triggeredByIMessage, isA2ATurn, isEngineTurn,
     terminalWakeA2A, terminalWakeDrivesTurn, pendingEngineEvent, a2aReplyContext,
-    contextWindow, isAutoRouted, configuredModelId,
+    contextWindow, isAutoRouted, configuredModelId, notificationTriggerRowid: isNotificationTurn ? (mostRecentInbound?.rowid ?? null) : null,
   });
 
   const {

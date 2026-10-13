@@ -24,6 +24,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
+import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
 import { stampClaimingTurn } from '../../../../work/store.js';
 import { turnBoundary } from '../../../turn-state.js';
@@ -63,6 +64,7 @@ export interface CounterpartyAndRecordInputs {
   readonly contextWindow: number;
   readonly isAutoRouted: boolean;
   readonly configuredModelId: string;
+  readonly notificationTriggerRowid: number | null;  // t141: a notice wake's own reason (by seq)
 }
 
 /** What this section hands the sections after it. The STATE is not among them: it
@@ -190,7 +192,10 @@ export async function runCounterpartyAndRecord(
       // P8: typed spoken-stream lane on the record.
       lane: latestUserSource === 'voice' ? 'voice' : inboundChannel === 'phone' ? 'phone' : null,
       rootKind: root?.kind ?? null, rootId: root?.id ?? null,
-      sourceMessageId: root?.sourceMessageId ?? null, convKey: chosenConvKey,
+      // t141: a notice wake records ITS notice, so its work is labelled with that email.
+      sourceMessageId: root?.sourceMessageId ?? (input.notificationTriggerRowid == null ? null : ((getDb().prepare(
+        'SELECT id FROM messages WHERE seq = ?').get(input.notificationTriggerRowid) as { id: string } | undefined)?.id ?? null)),
+      convKey: chosenConvKey,
     });
   })();
   // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
