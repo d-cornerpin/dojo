@@ -123,16 +123,49 @@ export interface AssemblyValidation {
   overBy: number;
 }
 
+/**
+ * WHY a repair refused, as a closed set a caller can branch on without reading prose.
+ *   `UNREPAIRABLE`                 — the C11 refusals that stood before t140 (shape, no lane map,
+ *                                    an undeclared lane, still over after every droppable lane).
+ *   `LIVE_CONVERSATION_PROTECTED`  — t140: the array only fits if `lane.fresh-tail` goes. That is
+ *                                    never a repair (see `LIVE_CONVERSATION_LANE`), so it is a
+ *                                    repairable-defect report, and the boundary starts condensing.
+ */
+export type AssemblyRefusalCode = 'UNREPAIRABLE' | 'LIVE_CONVERSATION_PROTECTED';
+
 export class AssemblyValidationError extends Error {
   constructor(
     message: string,
     readonly violations: AssemblyViolation[],
     readonly droppedLaneIds: string[],
+    readonly code: AssemblyRefusalCode = 'UNREPAIRABLE',
   ) {
     super(message);
     this.name = 'AssemblyValidationError';
   }
 }
+
+/**
+ * t140 — THE LIVE CONVERSATION IS NOT REPAIR MATERIAL (tracker #13, OR-COMPACT-1).
+ *
+ * `lane.fresh-tail` was the LAST rung of the droppable ladder. Dropping it removes the agent's
+ * entire live conversation — the ask it is answering and its own earlier steps this turn — and
+ * the call then goes out holding the system prompt and almost nothing else. The model, unable
+ * to see what it just did, does it again: on the reporting box that is a run of calls whose
+ * prompt sat flat at ~45K while their outputs never reached the next call.
+ *
+ * A "repair" that ships that array is warn-and-send wearing C10's name. The rung is removed: the
+ * repair still drops every OTHER droppable lane in priority order, and when the array fits only
+ * without the conversation it REFUSES with `LIVE_CONVERSATION_PROTECTED`. The boundary then
+ * starts condensing against the dialed window (`validateAtProviderBoundary`), so the refusal is
+ * a repairable defect with the repair already under way, never a dead end. The lane keeps its
+ * priority for the ALLOCATOR (`fitLanes` still ranks it); only the repair may not take it.
+ *
+ * In normal running this never fires: every pick is re-sized for its own window before dial
+ * (`agent/v2/steps/call-llm/reassemble-for-fit.ts`), and the assembler's own token trim keeps at
+ * least half the live conversation and always its newest group.
+ */
+export const LIVE_CONVERSATION_LANE = 'lane.fresh-tail';
 
 export interface RepairResult {
   messages: ValidatedMessage[];
@@ -429,7 +462,7 @@ export function repairAssembly(
   // here, which is the same treatment an untagged message has always had — `null` never
   // entered this set either, and the untagged message this header describes IS the tail.
   const droppable = [...new Set(laneIds.filter((id): id is string => id !== null))]
-    .filter((id) => LANE_PRIORITY[id] !== undefined)
+    .filter((id) => LANE_PRIORITY[id] !== undefined && id !== LIVE_CONVERSATION_LANE)
     .sort((a, b) => LANE_PRIORITY[b] - LANE_PRIORITY[a] || a.localeCompare(b));
 
   let kept: ValidatedMessage[] = [...messages];
@@ -460,6 +493,19 @@ export function repairAssembly(
   }
 
   const after = validateAssembly(kept, { ...opts, laneIds: keptLanes });
+  if (keptLanes.includes(LIVE_CONVERSATION_LANE)) {
+    throw new AssemblyValidationError(
+      `assembly is over budget${who} and would fit only by dropping the live conversation ` +
+        `(${LIVE_CONVERSATION_LANE}) after every other droppable lane ` +
+        `(${droppedLaneIds.join(', ') || 'none'}) was already gone: ${after.tokenTotal} tokens ` +
+        `against ${after.budgetTokens}. Refusing rather than sending the model a call without ` +
+        `its conversation. Repairable: condense this agent's history against the dialed ` +
+        `window, or size the array for the model being dialed before it reaches the boundary.`,
+      after.violations,
+      droppedLaneIds,
+      'LIVE_CONVERSATION_PROTECTED',
+    );
+  }
   throw new AssemblyValidationError(
     `assembly is STILL over budget${who} after dropping every droppable lane ` +
       `(${droppedLaneIds.join(', ') || 'none'}): ${after.tokenTotal} tokens against ` +
@@ -617,7 +663,15 @@ export async function validateAtProviderBoundary(
   // Repair mode: fix the array the transports are about to read, or throw (C11). The throw
   // must reach the caller — a boundary that swallows its own loud failure is warn-and-send
   // with extra steps.
-  const repaired = repairAssembly(input.messages, opts);
+  let repaired: RepairResult;
+  try {
+    repaired = repairAssembly(input.messages, opts);
+  } catch (err) {
+    if (err instanceof AssemblyValidationError && err.code === 'LIVE_CONVERSATION_PROTECTED') {
+      refuseAndCondense(input, err, result);
+    }
+    throw err;
+  }
   input.messages.splice(0, input.messages.length, ...repaired.messages);
   logger.warn(
     `ASSEMBLY_VALIDATION_REPAIRED mode=${ASSEMBLY_VALIDATION_MODE} ` +
@@ -628,4 +682,43 @@ export async function validateAtProviderBoundary(
     input.agentId,
   );
   return repaired.after;
+}
+
+/**
+ * t140 — THE REFUSAL IS A REPAIRABLE-DEFECT REPORT, AND THE REPAIR STARTS HERE (OR-COMPACT-1).
+ *
+ * Three things, in this order, and then the caller re-throws so the dial never happens:
+ *   1. the durable sink gets a record under its own code, so the event is countable on a box
+ *      (`jq` the `live-conversation-protected` code) rather than living only in a rotated log;
+ *   2. a named log line, `ASSEMBLY_VALIDATION_LIVE_CONVERSATION_PROTECTED`;
+ *   3. a FORCED condense against the window of the model that was being dialed — the one
+ *      whose budget this array did not fit. It is background on purpose: it calls a model, and
+ *      the turn's error path must not wait on it. `checkAndCompact` is skip-if-busy per agent
+ *      and bounded by the forced pass's own chunk and wall-clock limits.
+ */
+function refuseAndCondense(
+  input: BoundaryCheckInput, err: AssemblyValidationError, result: AssemblyValidation,
+): void {
+  appendDivergenceRecord({
+    at: new Date().toISOString(), pid: process.pid, mode: ASSEMBLY_VALIDATION_MODE,
+    agentId: input.agentId, modelId: input.modelId, codes: ['live-conversation-protected'],
+    violations: [err.message], tokenTotal: result.tokenTotal, budgetTokens: result.budgetTokens,
+    overBy: result.overBy, messageCount: input.messages.length,
+    checked: checkedCalls, diverged: divergentCalls,
+  });
+  logger.error(
+    `ASSEMBLY_VALIDATION_LIVE_CONVERSATION_PROTECTED tokens=${result.tokenTotal} ` +
+    `budget=${result.budgetTokens} dropped=${err.droppedLaneIds.join('|') || 'none'}`,
+    { agentId: input.agentId, modelId: input.modelId, contextWindow: input.contextWindow },
+    input.agentId,
+  );
+  void import('./compaction.js')
+    .then(({ checkAndCompact, forcedCompactionOptions }) =>
+      checkAndCompact(input.agentId, input.modelId, input.contextWindow, forcedCompactionOptions()))
+    .catch((condenseErr: unknown) => {
+      logger.warn('the condense started by a live-conversation refusal failed', {
+        agentId: input.agentId,
+        error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr),
+      }, input.agentId);
+    });
 }

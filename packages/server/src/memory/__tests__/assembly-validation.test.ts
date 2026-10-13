@@ -274,10 +274,13 @@ describe('repairAssembly — C10, priority order and not one message older', () 
       const err = e as AssemblyValidationError;
       // It dropped everything it was allowed to drop, in priority order, and then FAILED,
       // rather than reaching for the newest message.
+      // t140: the live conversation (`lane.fresh-tail`) is no longer something the repair is
+      // ALLOWED to drop — it refuses by name instead (`LIVE_CONVERSATION_PROTECTED`), and the
+      // boundary starts condensing. Before t140 this list ended with 'lane.fresh-tail'.
       expect(err.droppedLaneIds).toEqual([
         'lane.briefing', 'lane.vault', 'lane.summaries', 'lane.continuity',
-        'lane.fresh-tail',
       ]);
+      expect(err.code).toBe('LIVE_CONVERSATION_PROTECTED');
     }
   });
 

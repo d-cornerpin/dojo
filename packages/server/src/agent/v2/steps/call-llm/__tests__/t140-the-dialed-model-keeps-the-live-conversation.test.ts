@@ -239,7 +239,7 @@ describe('t140 — the provider boundary never ships an assembly without the liv
     return 0;
   }
 
-  it.fails('RED at 00a2b34d: an array too big for the dialed window is lane-repaired down to no conversation and SENT', async () => {
+  it('RED at 00a2b34d: an array too big for the dialed window is lane-repaired down to no conversation and SENT', async () => {
     seedConversation(250);
     // Assembled for a 200K model, dialed on the 32K heavy pick with no re-assembly in between:
     // the boundary is the only thing left between this array and the provider.
