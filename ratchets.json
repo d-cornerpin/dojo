@@ -7780,6 +7780,20 @@
       "to": 696,
       "by": "t142 — <state>_validated and its two siblings compare by the work_events sequence, not the clock",
       "why": "649 -> 696 (+47 net: +59/-12; added 8 code, 51 comment; removed 7 code, 5 comment). WHAT THE CODE IS: `lastEntryEventIdExpr` (the last entry into a state as a work_events ID instead of an instant — the old `lastEntryInto` re-expressed, exported because the escalation episode must use the SAME boundary as a verdict), `validatedExpr`'s freshness clause comparing `adj.event_seq` to that id instead of two clocks, `revertCountExpr` and `awaitingUserVerdictExpr` moved from instants to ids (the census found both reading the same log by clock), and the `personTold` member of WORK_EVENT. Net code +1. WHY THE COMMENT WEIGHT: this is a file of predicates other modules interpolate blind; every `<state>_validated` reader in the product (19 call sites, censused both ways in `work/__tests__/t142-sequence-freshness.test.ts`) inherits this clause, so the argument travels with it: the tie it fixes (blocked -> upheld -> resolved -> re-blocked inside one millisecond read as upheld — on the board, in the owner's escalation sentence, at the disposal door), the codebase's own written law it now obeys (`work/override-requests.ts`), and why an authoritative entry's own verdict stays current (it IS that entry's companion). REFUSED: leaving `revertCountExpr`/`awaitingUserVerdictExpr` on the clock because they are not `<state>_validated` readers — same file, same law, same defect class, found by this lane's own census, and the owner's v3.3 ruling is that bugs found on the way are fixed. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/validation-drive.ts",
+      "from": 1226,
+      "to": 1323,
+      "by": "t142 fix round 1 — the told record checks who and which door; once-per-episode is the blocked arm only",
+      "why": "1226 -> 1323 (+97 net: +108/-11; added 56 code, 49 comment, 3 blank; removed 5 code, 6 comment). t142 FIX ROUND 1, the review's I2 and I3. WHAT THE CODE IS: recordPersonTold now checks WHO was told and BY WHICH DOOR — `ownerAddresses()` (the owner's dashboard sentinel plus his starred iMessage address, the record the bridge and the refusal gate already read), the requester check through `recipient-identity.recipientIdsMatch`, the via-vs-sender check, and two refusal reasons; `episodeStartExpr` narrowed to the BLOCKED arm (the one ruled shape — told, reopened, blocked again => told again; every other arm back to one trip per row); `latestNewsEventIdExpr` so a tell only silences news it postdates (last transition, filed close request, a delegated piece's failure) and can never become a new silence on an arm that runs once per row; the `NOTICE_DOOR_SENDER` literal. WHY HERE: same fence and same readers as the first raise; `ownerAddresses` could not import the bridge's `getDefaultSender` (`work/store.ts` imports this module, the bridge reaches `work/` — a cycle), and a shared owner-identity reader is handed up rather than created outside the fence. WHY THE COMMENT WEIGHT: the per-arm justification of I3 is what stops the next reader re-widening it, and the contract now names the exact ambient-scope trap the review found (an owner notice folded into an enclosing agent send). REFUSED: dropping the per-arm lines to the CASE expression. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 696,
+      "to": 700,
+      "by": "t142 fix round 1 — the escalation-stamp label's docstring tells the truth",
+      "why": "696 -> 700 (+4: 0 code, 6 comment added, 2 removed). t142 fix round 1, review M2: `validationEscalatedAtExpr`'s docstring said 'a permanent stamp … so no scoping', which t142 made false for a blocked row. It now says what the expression is (unscoped DISPLAY for the dashboard label), names the known gap after a re-block, and records that migration 189d's carried stamps copy the original instant so the upgrade moves no label. Comment only. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8088,8 +8102,8 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
     "packages/server/src/work/tracker-store.ts": 1069,
-    "packages/server/src/work/tracker-view.ts": 696,
-    "packages/server/src/work/validation-drive.ts": 1226,
+    "packages/server/src/work/tracker-view.ts": 700,
+    "packages/server/src/work/validation-drive.ts": 1323,
     "packages/server/src/work/work-reaper.ts": 694,
     "packages/shared/src/access.ts": 338,
     "packages/shared/src/markers.ts": 358,
