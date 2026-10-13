@@ -173,7 +173,10 @@ describe('no a2a caller throws its delivery away', () => {
   // finding the tree (a moved directory, a renamed transport, a broken stripper).
   it('and the walk still finds the callers it is measuring', () => {
     const { sites, files } = census();
-    expect(sites).toBeGreaterThanOrEqual(8);
+    // t137: 8 -> 7. The unattended-budget trip hand-off (`escalateUnattendedBudgetTripToPM` in
+    // tracker/pm-agent.ts) was a caller and is DELETED with the total-time cap (OR-LONG-JOBS);
+    // the census itself still finds 0 findings over the 7 that remain.
+    expect(sites).toBeGreaterThanOrEqual(7);
     expect(files).toContain(TRANSPORT);
     expect(files).toContain(DOOR);
   });

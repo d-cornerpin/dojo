@@ -18,8 +18,8 @@
 //      requirement preserved: the model's half of "pick up where you left off" rides
 //      `sys.compaction-continuity` on the system prompt (unchanged); the operator's half is the
 //      log line below; the tracker's half is `noteEngineCheckpoint` (unchanged).
-//   2. the continuation cap (`MAX_TURN_AUTO_CONTINUATIONS`, later the per-provider
-//      `max_unattended_minutes` budget), its "running for about N minutes … Pausing here" row
+//   2. the continuation cap (`MAX_TURN_AUTO_CONTINUATIONS`, later a per-provider budget whose
+//      column migration 186 drops), its "running for about N minutes … Pausing here" row
 //      and its PM hand-off. A long job now parks and continues for as long as it needs.
 //      requirement preserved: the money guardrail is the budget alerts (t138); a genuinely stuck
 //      job is the liveness lane's (t143: BROKEN / SILENT / SPINNING) and the thrash gate's.
