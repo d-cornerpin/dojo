@@ -111,7 +111,8 @@ async function callStep(): Promise<Awaited<ReturnType<typeof runCallLLM>>> {
   return runCallLLM(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), ctx);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  (await import('../../../../../router/rate-limits.js')).clearRateLimits();
   mockDb.current = new Database(':memory:');
   runMigrations();
   dialed.length = 0;
@@ -166,5 +167,26 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     expect(status, 'a budget stop is not an injury').not.toBe('error');
     expect(dialed, 'nothing that cannot hold the agent was dialled').toEqual([]);
     expect((outcome as { directive?: string } | null)?.directive ?? 'threw').toBe('exit');
+  });
+
+  // The roomy model is turned away for a reason that passes (a rate limit): the turn must still be
+  // BUILT for it, so the call step can say so. Building for the small pick alone failed the assembly
+  // with the "cannot hold a conversation" card — false — and the generic Healer error.
+  it.fails('the roomy model is rate-limited right now: the owner is told so in plain words — no false card, no Healer, not errored', async () => {
+    seed(false);
+    const { updateRateLimits } = await import('../../../../../router/rate-limits.js');
+    updateRateLimits(ROOMY, { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
+    const { recoverFromError } = await import('../../../recovery.js');
+    try {
+      await callStep();
+    } catch (err) {
+      await recoverFromError(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
+    }
+    const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
+    expect(said, `what the owner was shown:\n${said}`).toMatch(/rate-limited/);
+    expect(said).not.toMatch(/Healer/);
+    expect(starvedCards(), 'the agent can hold a conversation once the limit lifts').toBe(0);
+    expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('error');
+    expect(dialed).toEqual([]);
   });
 });
