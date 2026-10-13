@@ -66,9 +66,12 @@ export async function runContextGates(
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
   const {
-    agentId, turnNumber, contextWindow: turnWindow, contextModelId, isAutoRouted,
+    agentId, turnNumber, contextWindow: turnWindow, contextModelId, configuredModelId, isAutoRouted,
     assemblerOverheadTokens, broadcast, stashContinuationIfHuman,
   } = ctx;
+  // Fix round 1 (review I3): every condense below is MEASURED for the dialed model but WRITTEN
+  // by the summary writer resolved from the CONFIGURED model — `'auto'` resolves to the owner's
+  // compaction model, else the cheapest text model — never by a locked, possibly expensive pick.
   // The model this iteration will dial, and its window (see the header).
   const lockedModelId = isAutoRouted ? state.lockedModelId : null;
   const dialModelId = lockedModelId ?? contextModelId;
@@ -115,7 +118,7 @@ export async function runContextGates(
       agentId, ratio: gateResult.ratio,
     }, agentId);
     try {
-      await checkAndCompact(agentId, dialModelId, contextWindow, forcedCompactionOptions());
+      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(), dialedModelId: dialModelId });
     } catch (compErr) {
       logger.warn('v2: emergency compaction failed', {
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
@@ -147,7 +150,7 @@ export async function runContextGates(
     });
     // Force compaction then wakeup so we recover next turn
     try {
-      await checkAndCompact(agentId, dialModelId, contextWindow, forcedCompactionOptions());
+      await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(), dialedModelId: dialModelId });
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
     queueSelfWake(agentId, 'context-gate-rebuild');
@@ -191,8 +194,9 @@ export async function runContextGates(
       agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
       dialModelId, contextWindow,
     }, agentId);
-    checkAndCompact(agentId, dialModelId, contextWindow, {
+    checkAndCompact(agentId, configuredModelId, contextWindow, {
       leaving,
+      dialedModelId: dialModelId,
       maxChunksPerRun: ROUTINE_CONDENSE_MAX_CHUNKS,
       abortSignal: condenseAbort.signal,
     })

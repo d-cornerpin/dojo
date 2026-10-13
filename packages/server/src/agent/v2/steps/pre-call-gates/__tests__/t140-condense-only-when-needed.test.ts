@@ -367,7 +367,7 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
     expect(summarisedSeqs(ROUTED_AGENT)).toEqual(seqs.slice(0, 40));
   });
 
-  it.fails('I3: with no compaction model set, the summary is written by the CHEAPEST text model, not the locked one', async () => {
+  it('I3: with no compaction model set, the summary is written by the CHEAPEST text model, not the locked one', async () => {
     seedRoutedLoop();
     await gateLocked();
     expect(generateSummarySpy).toHaveBeenCalled();

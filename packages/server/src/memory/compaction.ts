@@ -567,6 +567,15 @@ export interface CheckAndCompactOptions {
    * `rowsLeavingView` itself, ceiling cause only (it has no view-full measurement of its own).
    */
   leaving?: LeavingView | null;
+  /**
+   * t140 fix round 1 (review I3): the model this call's pressure was measured for — the box
+   * actually serving the turn, whose declared ceiling the trigger keys on. Absent, it is
+   * `modelId`. It is kept APART from `modelId` because `modelId` is the summary WRITER's
+   * preference (`resolveSummaryWriterModel`): an auto-routed loop locked to an expensive routed
+   * model must still have its summaries written by the owner's compaction model, else the
+   * cheapest text model, exactly as before t140.
+   */
+  dialedModelId?: string;
 }
 
 export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number };
@@ -625,7 +634,7 @@ async function runCheckAndCompact(
   // summary-writer resolution below can reassign `modelId` to a different (often cheaper,
   // often different-provider) model. The compaction trigger cares about the box that produced
   // the pressure, not the box that will write the summary describing it.
-  const turnModelId = modelId;
+  const turnModelId = options?.dialedModelId ?? modelId;
 
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
