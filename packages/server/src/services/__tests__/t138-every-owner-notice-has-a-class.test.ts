@@ -62,6 +62,7 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'healer/injury-recovery.ts': [
     { cls: 'agent-trouble', severity: 'critical', what: 'the Healer itself is broken' },
+    { cls: 'agent-trouble', severity: 'notice', what: 't143 BROKEN: a provider refused the agent in a way only the owner can fix (once per incident)' },
     { cls: 'agent-trouble', severity: 'notice', what: 'auto-recovery gave up on a stuck agent (first entry into backoff)' },
     { cls: 'agent-trouble', severity: 'critical', what: 'an agent is stuck and the Healer is missing' },
   ],
@@ -72,6 +73,9 @@ const CENSUS: Record<string, Site[]> = {
   'microsoft/auth.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a Microsoft account connection expired' },
     { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own (its card ends where the sign-in is restored)', card: 'none' },
+  ],
+  'tracker/liveness.ts': [
+    { cls: 'agent-trouble', severity: 'notice', what: 't143 SILENT: no movement at all past the agent\'s silent window (once per incident)' },
   ],
   'services/memory-low-notice.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory (once per low stretch, round 3)' },

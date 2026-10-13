@@ -111,7 +111,8 @@ afterEach(() => {
 const ownerTexts = (): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
 ).get(OWNER) as { n: number }).n;
-const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
+/** The phone sends (the bridge's own `--help` probe and path lookups are not sends). */
+const sent = (): string[] => transport.filter((t) => t.includes('"send"'));
 const cards = (): string[] => broadcasts
   .filter((b) => b.type === 'chat:error' && b.agentId === 'platform' && b.severity !== 'info')
   .map((b) => String(b.error));
@@ -132,7 +133,7 @@ async function failedCall(providerWords: string, turnNumber = 1): Promise<void> 
 }
 
 describe('BROKEN: a provider refuses the agent in a way only the owner can fix', () => {
-  it.fails('out of credit (402): the owner gets ONE text and ONE card, naming the agent', async () => {
+  it('out of credit (402): the owner gets ONE text and ONE card, naming the agent', async () => {
     await failedCall('API error 402: {"error":{"message":"Insufficient Balance"}}');
     // Precondition: this IS the platform's Tier D lock, not some other path.
     expect((db().prepare("SELECT status, last_error FROM agents WHERE id = 'helper'").get() as { status: string; last_error: string }).last_error)
@@ -143,7 +144,7 @@ describe('BROKEN: a provider refuses the agent in a way only the owner can fix',
     expect(cards()).toHaveLength(1);
   });
 
-  it.fails('a key that stopped working (401): the owner gets ONE text naming the agent', async () => {
+  it('a key that stopped working (401): the owner gets ONE text naming the agent', async () => {
     await failedCall('API error 401: {"error":{"message":"invalid x-api-key"}}');
     expect((db().prepare("SELECT last_error FROM agents WHERE id = 'helper'").get() as { last_error: string }).last_error)
       .toMatch(/^\[auth_invalid\]/);

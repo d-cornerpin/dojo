@@ -196,3 +196,6 @@ export const SendMessageSchema = z.object({
 export const EnableModelsSchema = z.object({
   modelIds: z.array(z.string()).min(1),
 });
+
+// ── Per-agent silent window (t143, OR-LONG-JOBS): whole minutes, 1 or more; null = the default (2 h). No upper bound: a known-slow agent may be given as long as its owner wants.
+export const SilentWindowMinutesSchema = z.number().int('a whole number of minutes').min(1, 'at least 1 minute').nullable();

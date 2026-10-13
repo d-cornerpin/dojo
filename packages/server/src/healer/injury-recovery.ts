@@ -25,6 +25,7 @@ import { clearAgentLastError } from '../agent/agent-status.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import * as told from './owner-notices.js'; // t138 r3: once per condition, and the owner's cards
+import { brokenWords, noteNoticeOnce, readNotice } from '../agent/agent-owner-cards.js'; // t143: BROKEN
 
 const logger = createLogger('injury-recovery');
 
@@ -434,6 +435,8 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
       return;
     }
   } catch { /* config not available */ }
+  const broken = brokenWords(agentId, errorMessage); // t143: only the owner can fix it — told at once, once per incident
+  if (broken && noteNoticeOnce(agentId, 'broken_notice', broken)) sendAlert(broken, 'notice');
 
   // v2.3.19 (error-handling-spec Phase 3), per-agent Healer backoff.
   //
@@ -477,7 +480,7 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
         const db = getDb();
         const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         const userMsg = told.stuckWords(agent?.name ?? agentId);
-        if (told.tellOwnerOnce(`stuck:${agentId}`)) sendAlert(userMsg, 'notice'); // a broken agent: OR-V333-SET (3), once per backoff entry
+        if (!readNotice(agentId, 'broken_notice') && told.tellOwnerOnce(`stuck:${agentId}`)) sendAlert(userMsg, 'notice'); // once per incident (t143: not on top of BROKEN)
         broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
       } catch { /* best effort */ }
     } else {

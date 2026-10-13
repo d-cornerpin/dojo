@@ -224,6 +224,8 @@ export interface AgentDetail extends Agent {
   /** When true, the agent's conversations are skipped by the vault archive layer entirely (Dreamer
    * never sees them). Toggleable on the agent detail page; falls through from the group's flag. */
   dreamerIgnore?: boolean;
+  /** t143: minutes of no movement at all before the owner is told this agent went silent; null = 2 h. */
+  silentWindowMinutes?: number | null;
   /** A-5b: calls a stop would cut NOW, live off the abort registry. `background` outlives its
    *  turn, so an `idle` row can be stoppable; absent = no claim, not zero. See `stop-affordance.ts`. */
   inFlight?: { turn: number; background: number };

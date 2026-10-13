@@ -46,6 +46,7 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
+import { sweepSilentAgents, taskLastMovedAt, agentIsMoving } from './liveness.js';
 
 const logger = createLogger('pm-agent');
 
@@ -2492,6 +2493,9 @@ export async function runPokeCheck(): Promise<void> {
     });
   }
 
+  // t143: liveness — an agent silent past its window is told to the owner ONCE (tracker/liveness.ts).
+  sweepSilentAgents();
+
   // ── Engine-level quick checks (still needed for immediate alerts) ──
   const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
 
@@ -2581,7 +2585,9 @@ export async function runPokeCheck(): Promise<void> {
     // it existed for (agent busy elsewhere, task stalled) is already covered
     // by task staleness alone. "Is the agent active on THIS task" is the task
     // row's clock, not the agent's chatter.
-    const idleSeconds = Math.max(0, Math.floor((now - taskUpdated) / 1000));
+    // t143 (M3): the task's OWN movement, never the engine checkpoint's touch of every claim.
+    const movedAt = taskLastMovedAt(task.id, task.assignedTo, taskUpdated);
+    const idleSeconds = Math.max(0, Math.floor((now - movedAt) / 1000));
 
     // SLOW-INFERENCE T79d: queue an effort review REGARDLESS of the `assigneeStatus ===
     // 'working'` guard three lines down. That guard exists to protect POKES — a live turn is
@@ -2607,6 +2613,9 @@ export async function runPokeCheck(): Promise<void> {
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
     // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
+    // t143: any answer on the task since the last check-in (a "still working" work_note) closes it.
+    const answered = lastPokeOf(task.id);
+    if (answered && movedAt > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
     const lastPoke = lastPokeOf(task.id);
     const lastPokeNumber = currentRung(task.id);
 
@@ -2627,7 +2636,8 @@ export async function runPokeCheck(): Promise<void> {
     if (idleSeconds >= thresholds.autoReset && (lastPokeNumber < 4 || redriveDueAgain)) {
       pokeType = 'redrive';
       pokeNumber = 4;
-    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
+    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3 && !agentIsMoving(task.assignedTo, now)) {
+      // t143: never a time-based escalation against an agent that is visibly working.
       pokeType = 'escalate_primary';
       pokeNumber = 3;
     } else if (idleSeconds >= thresholds.second && lastPokeNumber < 2) {
@@ -2882,10 +2892,10 @@ function buildPokeMessage(
 
   switch (pokeType) {
     case 'nudge':
-      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call work_update(action="status") with task_id="${task.id}" and status="complete" with notes on what you did.\nIf still working, no action needed.\nIf blocked, call work_update(action="status") with status="blocked" and explain why.`;
+      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call work_update(action="status") with task_id="${task.id}" and status="complete" with notes on what you did.\nIf you are still working on it, say so with work_note(task_id="${task.id}") and carry on; that answers this check-in.\nIf blocked, call work_update(action="status") with status="blocked" and explain why.`;
 
     case 'urgent':
-      return `URGENT: Task "${task.title}" has been idle for ${idleMinutes} minutes. This is poke #${pokeNumber}.\n\n${taskInfo}\n\nYou MUST do one of:\n1. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n2. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck\n3. Continue working on the task`;
+      return `Second check-in: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}\n\nAny one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck`;
 
     case 'escalate_primary':
       // t90 D1 (report #6): this rung NOTIFIES. It used to say "Reassign or unblock the task — or
@@ -2904,8 +2914,8 @@ function buildPokeMessage(
         + `three pokes.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from `
         + `you. Pick it up where you left off and do the next concrete step now, or — if you `
         + `genuinely cannot proceed — call work_update(action="status", task_id="${task.id}", `
-        + `status="blocked", notes="...") naming exactly what you are waiting on. Saying you are `
-        + `blocked is a real answer; silence is not.`;
+        + `status="blocked", notes="...") naming exactly what you are waiting on. If you are still `
+        + `working on it, a work_note saying so is the whole answer.`;
 
     default:
       return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall work_update(action="status", task_id="${task.id}", status="complete") if done.`;

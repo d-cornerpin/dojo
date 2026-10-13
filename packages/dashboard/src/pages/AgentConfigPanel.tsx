@@ -5,6 +5,7 @@ import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { AccessPanel } from '../components/AccessPanel';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
+import { QuietTimeCard } from '../components/QuietTimeCard';
 
 // Agent config overlay. This is the element for the /agents/:id route and
 // renders as a self-headered dojo3 panel (an overlay over the chat in the
@@ -338,6 +339,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 
       {/* Memory */}
       <MemoryCard agent={agent} onUpdated={onUpdated} />
+      <QuietTimeCard agent={agent} onUpdated={onUpdated} />
     </div>
     </>
   );

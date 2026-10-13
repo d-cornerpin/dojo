@@ -34,6 +34,7 @@ import { getAccessGrants } from '../../agent/access/read.js';
 import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
+import { SilentWindowMinutesSchema } from '../../config/schema.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -464,6 +465,12 @@ agentsRouter.put('/:id', async (c) => {
   if (body.equippedTechniques !== undefined) {
     updates.push('equipped_techniques = ?');
     params.push(JSON.stringify(body.equippedTechniques));
+  }
+
+  if (body.silentWindowMinutes !== undefined) { // t143: the per-agent silent window (OR-LONG-JOBS)
+    const w = SilentWindowMinutesSchema.safeParse(body.silentWindowMinutes);
+    if (!w.success) return c.json({ ok: false, error: `silentWindowMinutes: ${w.error.issues[0]?.message ?? 'invalid'} (or null for the 2-hour default)` }, 400);
+    updates.push('silent_window_minutes = ?'); params.push(w.data);
   }
 
   if (body.dreamerIgnore !== undefined) {
@@ -995,6 +1002,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     uptime,
     model,
     dreamerIgnore: row.dreamer_ignore === 1,
+    silentWindowMinutes: (row.silent_window_minutes as number | null) ?? null,
     // A-5b: a READ, never a writer — the registry AND the open job rows, through the one
     // module that owns the question (`agent/live-work.ts`). Three surfaces, one predicate:
     // when the card and the stop ROUTE each had their own, the card offered a button the

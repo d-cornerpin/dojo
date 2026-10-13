@@ -122,7 +122,8 @@ afterEach(() => {
 const ownerTexts = (): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
 ).get(OWNER) as { n: number }).n;
-const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
+/** The phone sends (the bridge's own `--help` probe and path lookups are not sends). */
+const sent = (): string[] => transport.filter((t) => t.includes('"send"'));
 const pokes = (taskId: string): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'poke'",
 ).get(taskId) as { n: number }).n;
@@ -165,7 +166,7 @@ function wedgedToolCall(quietMs: number, now = Date.now()): void {
 }
 
 describe('SILENT: an agent with no movement at all, past its window, is reported to the owner once', () => {
-  it.fails('a wedged tool call (no stream, no tool finish) for 3 hours: ONE owner notice, naming the agent and its task', async () => {
+  it('a wedged tool call (no stream, no tool finish) for 3 hours: ONE owner notice, naming the agent and its task', async () => {
     wedgedToolCall(3 * 60 * MIN);
     await runPokeCheck();
     expect(ownerTexts()).toBe(1);
@@ -176,7 +177,7 @@ describe('SILENT: an agent with no movement at all, past its window, is reported
     expect(ownerTexts()).toBe(1);
   });
 
-  it.fails('the per-agent window, set to 10 minutes through the real agents route, is the one the sweep uses', async () => {
+  it('the per-agent window, set to 10 minutes through the real agents route, is the one the sweep uses', async () => {
     const res = await agentsRouter.request('/helper', {
       method: 'PUT', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ silentWindowMinutes: 10 }),
@@ -191,7 +192,7 @@ describe('SILENT: an agent with no movement at all, past its window, is reported
 });
 
 describe('M3 (t137 review): a task is judged on its OWN activity, not on the engine checkpoint touch', () => {
-  it.fails('an abandoned second task planted BEFORE the parks is still re-driven by the PM; the in-flight one is not', async () => {
+  it('an abandoned second task planted BEFORE the parks is still re-driven by the PM; the in-flight one is not', async () => {
     const now = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
     // The abandoned task: claimed two hours ago from another conversation, never touched since.
