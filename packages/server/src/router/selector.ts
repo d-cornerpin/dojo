@@ -203,14 +203,11 @@ function standingSkip(model: TierModelRow, required: string[], agentId?: string)
   return null;
 }
 
-/** t140 round 7 (re-review H2'): why `selectModel` would not offer a model right now. */
+/** t140 round 7 (H2'): why `selectModel` would not offer a model now. */
 export type RoutedSkip = 'provider_down' | 'capability' | 'rate_limit' | 'budget' | 'excluded';
 
-/**
- * t140 round 7 — WHEN NO PICK HOLDS THE AGENT, WHY. Every model `selectModel` could walk to from
- * `tier`, with the filter that turns it away now (`null`: it would be offered). The same predicates
- * in the same order as `selectModel`, so the owner is told the cause the router actually acted on.
- */
+/** t140 round 7 — every model `selectModel` could walk to from `tier`, with the filter turning it away
+ *  now (`null`: offered). Its predicates, in its order: the owner is told the cause the router acted on. */
 export function routedSkipReasons(
   tier: string | null | undefined, agentId: string, exclude: string[], required: string[],
 ): Array<{ modelId: string; skip: RoutedSkip | null }> {
@@ -235,11 +232,9 @@ export function routedSkipReasons(
  * auto-routed turn is assembled the engine knows these candidates and not yet which of them it
  * dials. The per-call filters are left out on purpose: the budget check carries its own alerting
  * side effects and is the call's to make, and the fit check needs an assembled array.
- * Round 7 (re-review H2'): so are the filters that PASS — a rate limit, a provider's open breaker.
- * A tier opens on its model when that clears; building the turn only for a stand-in left a model
- * big enough for the agent out of the build, failed the assembly, and showed the owner a false
- * "cannot hold a conversation" card. The call step re-fits to the pick it gets, and when no pick
- * can hold the agent it tells the owner why (`call-llm/no-pick-holds.ts`).
+ * Round 7 (H2'): so are the filters that PASS (a rate limit, an open breaker): building only for a
+ * stand-in failed the assembly with a false "cannot hold a conversation" card. The call step re-fits
+ * to the pick it gets, or tells the owner why none holds (`call-llm/no-pick-holds.ts`).
  */
 export function routedFirstPicks(): string[] {
   const picks = new Set<string>();
@@ -254,7 +249,7 @@ export function routedFirstPicks(): string[] {
   return [...picks];
 }
 
-/** The skips that clear without the owner changing the agent: a rate limit, a provider's breaker. */
+/** Skips that clear without the agent changing. */
 const PASSING = new Set<RoutedSkip>(['rate_limit', 'provider_down']);
 
 export function selectModel(
