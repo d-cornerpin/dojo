@@ -372,6 +372,8 @@ export async function callWithRetryAndFallback(
       // re-assembly, or an earlier round-2 rescue this same loop, may already have
       // resized them for a different model, and the fallback pick must be judged
       // against that reality, not the turn's original assembly.
+      /** Fallback candidates refused because their window cannot hold the instructions and tools. */
+      const tooSmallToHold: string[] = [];
       let fallback = selectModel(
         fallbackTier, agentId, excludedModels, ['tools'],
         estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
@@ -395,10 +397,12 @@ export async function callWithRetryAndFallback(
           try {
             reassembly = await reassembleForFitIfNeeded({
               agentId, modelId: fitExcluded.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+              anotherPickMayFollow: true,
             });
           } catch (refitErr) {
             if (!(refitErr instanceof SystemPromptTooLargeError)) throw refitErr;
             excludedModels.push(fitExcluded.modelId);
+            tooSmallToHold.push(fitExcluded.modelId);
             continue;
           }
           if (reassembly) {
@@ -427,6 +431,7 @@ export async function callWithRetryAndFallback(
         try {
           const refit = await reassembleForFitIfNeeded({
             agentId, modelId: fallback.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+            anotherPickMayFollow: true,
           });
           if (refit) {
             messages = refit.messages;
@@ -438,6 +443,7 @@ export async function callWithRetryAndFallback(
         } catch (refitErr) {
           if (!(refitErr instanceof SystemPromptTooLargeError)) throw refitErr;
           excludedModels.push(fallback.modelId);
+          tooSmallToHold.push(fallback.modelId);
           fallback = selectModel(
             fallbackTier, agentId, excludedModels, ['tools'],
             estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
@@ -452,6 +458,18 @@ export async function callWithRetryAndFallback(
           failedModel: modelId, tier: fallbackTier, excludedModels, attempt,
         }, agentId);
         revertTriggerStampOnAbort(); // N-1: all fallbacks exhausted, no answer, re-arm the ask
+        // t140 round 2: when the candidates ran out because none could hold this agent's
+        // instructions and tools, THAT is what the owner is told — the first pick's wire error
+        // alone is not repairable from what they see. Its code and facts are kept, so recovery
+        // decides exactly as before; only the words change.
+        if (tooSmallToHold.length > 0) {
+          const named = `No model this agent could fall back to can hold this agent's instructions and tools `
+            + `(${tooSmallToHold.join(', ')}: window too small) after ${modelId} failed: `
+            + (err instanceof Error ? err.message : String(err));
+          throw err instanceof AgentError
+            ? new AgentError(named, agentId, { code: err.code, retryable: err.retryable, provider: err.provider, preDialRefusal: err.preDialRefusal, cause: err })
+            : new Error(named, { cause: err });
+        }
         throw err;
       }
       logger.warn(`v2 auto-router: ${modelId} failed → falling back to ${fallback.modelId}`, {

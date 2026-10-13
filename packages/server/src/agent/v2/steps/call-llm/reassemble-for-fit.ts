@@ -16,7 +16,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { ModelCallParams } from '../../../model.js';
-import { estimateTokens } from '../../../../memory/budget.js';
+import { estimateTokens, SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { createLogger } from '../../../../logger.js';
@@ -55,6 +55,13 @@ export interface ReassembleForFitInput {
   /** The exact turn context the ORIGINAL `assembleContext` call used, so a re-assembly
    *  reproduces the same content decisions instead of silently diverging from them. */
   readonly assemblyTurnContext: PromptTurnContext;
+  /** t140 round 2 (re-review N1): a FALLBACK candidate is being tried, and another may follow.
+   *  A pick whose window cannot hold the system prompt and tools is then refused WITHOUT the
+   *  owner's "cannot hold a conversation" card — that card says the agent is broken until it is
+   *  reconfigured, which is false while another pick may answer. The caller says so once no
+   *  model is left. Absent (the router's own pick, the budget redirect's only free model), the
+   *  refusal cards exactly as the assembler's own check does. */
+  readonly anotherPickMayFollow?: boolean;
 }
 
 export interface ReassembleForFitResult {
@@ -88,7 +95,7 @@ export interface ReassembleForFitResult {
  * (consumed flags, steer delivery marks).
  */
 export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
-  const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext } = input;
+  const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow } = input;
   const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
     import('../../../../memory/budget.js'),
@@ -101,6 +108,17 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
     providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
   if (assembledEstimate <= policy.assemblyBudgetTokens) return null;
+  // t140 round 2 (re-review N1): whether this pick can hold the system prompt and tools at all is
+  // answered HERE, from the policy above — the same numbers the assembler's own check reads — and
+  // before any context is rebuilt. A pick that cannot is refused by name without assembling.
+  const systemTokens = estimateTokens(systemPrompt);
+  if (systemTokens > policy.assemblyBudgetTokens) {
+    if (!anotherPickMayFollow) {
+      const { reportStarvedWindow } = await import('../../../../memory/window-starvation-card.js');
+      reportStarvedWindow(agentId, systemTokens, policy);
+    }
+    throw new SystemPromptTooLargeError(systemTokens, policy);
+  }
 
   logger.warn('v2: picked model was not the one this assembly was sized for; re-assembling against its own window', {
     agentId, modelId, assembledEstimate, budget: policy.assemblyBudgetTokens, contextWindow: policy.contextWindow,

@@ -466,7 +466,7 @@ function lightTierIs(...ids: string[]): void {
 const windowCards = (): number => owner.cards.filter((c) => c.code === 'WINDOW_TOO_SMALL').length;
 
 describe('t140 round 2 — N1: a too-small fallback is passed over quietly when a later pick answers', () => {
-  it.fails('the 12K pick ahead of the 16K one: never assembled for, no owner card, and the 16K pick answers', async () => {
+  it('the 12K pick ahead of the 16K one: never assembled for, no owner card, and the 16K pick answers', async () => {
     seedConversation(5);            // short: the array is under the 12K fill line, so selection admits it
     addModel('m-routed-12k', 12_288);
     lightTierIs('m-routed-12k', LIGHT);
@@ -499,7 +499,7 @@ describe('t140 round 2 — I1c: the selector judges each candidate against its o
 });
 
 describe('t140 round 2 — when every fallback is too small, the owner is told THAT, not the first wire error', () => {
-  it.fails('the turn fails naming the window cause; no false permanent card; nothing dialed cut down', async () => {
+  it('the turn fails naming the window cause; no false permanent card; nothing dialed cut down', async () => {
     seedConversation(5);
     addModel('m-routed-12k', 12_288);
     lightTierIs(TINY, 'm-routed-12k');
