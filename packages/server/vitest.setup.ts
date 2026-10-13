@@ -96,3 +96,55 @@ Object.defineProperty(os, 'homedir', {
     );
   },
 });
+
+// ════════════════════════════════════════
+// NO TEST MAY START A REAL AGENT CLI, AND NO WORKER CARRIES A REAL CREDENTIAL (t140 round 2).
+//
+// MEASURED: a per-file mock of `@anthropic-ai/claude-agent-sdk` was intermittently bypassed —
+// one dynamic import inside the production transport received the REAL package, which spawned
+// the real Claude CLI. It answered "Not logged in" only because HOME is redirected above; the
+// worker still carried this session's CLAUDE_CODE_* variables into that child, and on a box with
+// an API key or a login the CLI can find, the call would have reached the network.
+//
+// So three nets, each sufficient on its own for what it covers:
+//   1. ENV SCRUB — provider credentials and the coding-agent session variables are removed from
+//      every worker before any code under test runs. A child that does start inherits nothing.
+//   2. THE PACKAGE, MOCKED SUITE-WIDE TO THROW BY NAME. A file that needs a scripted transport
+//      mocks the in-tree `providers/anthropic-sdk.js` instead (t140's two files and the two
+//      agent-sdk transport files do), so nothing legitimate needs the package.
+//   3. THE SPAWN DOOR — even the REAL package (vi.importActual, or a mock that misses) cannot
+//      start the CLI: child_process's spawning functions refuse any command line that names the
+//      Claude CLI or the Agent SDK, loudly. `syncBuiltinESMExports` carries the patch to ESM
+//      named imports, which is how the SDK imports `spawn`.
+// `src/__tests__/t140-no-test-reaches-a-real-agent-cli.test.ts` plants each attempt and asserts
+// it fails loudly.
+// ════════════════════════════════════════
+
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { vi } from 'vitest';
+
+const SCRUBBED_ENV = /^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|OPENAI_|OPENROUTER_|DEEPSEEK_|GEMINI_|GOOGLE_API_KEY$|GOOGLE_APPLICATION_CREDENTIALS$|MISTRAL_|GROQ_|XAI_|AWS_ACCESS_KEY_ID$|AWS_SECRET_ACCESS_KEY$|AWS_SESSION_TOKEN$)/;
+for (const key of Object.keys(process.env)) {
+  if (SCRUBBED_ENV.test(key)) delete process.env[key];
+}
+
+const AGENT_CLI_NET_MESSAGE = 'TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead.';
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: () => { throw new Error(AGENT_CLI_NET_MESSAGE); },
+}));
+
+const AGENT_CLI = /claude-agent-sdk|claude-code|(^|[\\/\s])claude(\.exe|\.cmd)?(\s|$)/i;
+function refuseAgentCli<T extends (...args: never[]) => unknown>(name: string, real: T): T {
+  return function guarded(this: unknown, ...args: unknown[]) {
+    const line = args.flatMap((a) => (Array.isArray(a) ? a : [a]))
+      .filter((a): a is string => typeof a === 'string').join(' ');
+    if (AGENT_CLI.test(line)) throw new Error(`${AGENT_CLI_NET_MESSAGE} (child_process.${name}: ${line.slice(0, 120)})`);
+    return (real as unknown as (...a: unknown[]) => unknown).apply(this, args);
+  } as unknown as T;
+}
+for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'] as const) {
+  (childProcess as unknown as Record<string, unknown>)[name] = refuseAgentCli(name, childProcess[name] as never);
+}
+syncBuiltinESMExports();
