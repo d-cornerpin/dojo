@@ -220,7 +220,7 @@ export function deliveriesLaneWorstCaseTokens(): number {
     // en-US short-month + 2-digit day + 4-digit year + 2-digit clock + AM/PM is fixed-width
     // apart from the month name; September is the longest of the twelve at 3 chars because
     // the format is `month: 'short'`, so any instant produces this width.
-    at: '[Sep 30, 2026, 11:41 PM]',
+    at: recordedInstant('2026-09-30T23:41:59Z'),  // t141: the one formatter (fixed-width offset)
     text: 'x'.repeat(quotedChars()),
   }));
   // `cut: true` so the truncation marker is inside the worst case rather than able to push

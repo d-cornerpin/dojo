@@ -473,7 +473,7 @@ export function renderRecallLane(ctx: RecallLaneContext): LaneRender<RecallLaneP
     const party = recalledRowLabel(row.conversation_id, ctx.conversationId);  // HEAD 2; rule + suppression argument in `party-label.ts`
     msgCandidates.push({
       at: row.created_at,
-      line: `- [${row.created_at}]${party ? ` (${party})` : ''} ${row.role}: ${oneLine(row.content).slice(0, askChars())}`,
+      line: `- ${recordedInstant(row.created_at)}${party ? ` (${party})` : ''} ${row.role}: ${oneLine(row.content).slice(0, askChars())}`,
     });
   }
   msgCandidates.sort((a, b) => a.at.localeCompare(b.at));
@@ -678,7 +678,7 @@ export function recallLaneWorstCaseTokens(): number {
   // `relativeTimeAgo` could. en-US `month: 'short'` + 2-digit day + 4-digit year + 2-digit
   // clock + AM/PM is fixed-width apart from the month name, and every short month is 3 chars,
   // so ANY instant produces this width — the derivation stays a pure function.
-  const longest = '[Sep 30, 2026, 11:41 PM]';
+  const longest = recordedInstant('2026-09-30T23:41:59Z');  // t141: the one formatter, fixed width
   const render = toLaneRender({
     pairs: Array.from({ length: pairCap() }, (_unused, i) => ({
       ask: 'x'.repeat(askChars()),
@@ -688,7 +688,7 @@ export function recallLaneWorstCaseTokens(): number {
       answerAtMs: i,
     })),
     msgLines: Array.from({ length: msgRowCap() }, () =>
-      `- [2026-08-09 12:00:00] assistant: ${'x'.repeat(askChars())}`),
+      `- ${longest} assistant: ${'x'.repeat(askChars())}`),
     vaultLines: Array.from({ length: vaultRowCap() }, () =>
       `- [vault:preference] ${'x'.repeat(vaultChars())}`),
     // T67b: the FN-1 bridge at ITS OWN declared cap (`vault/retrieval.ts`'s UNFILED_*), read

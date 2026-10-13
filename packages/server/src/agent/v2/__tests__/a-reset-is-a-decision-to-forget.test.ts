@@ -384,8 +384,10 @@ describe('§6 one canonical render, pinned', () => {
     // MEASURED, not chosen: the value below was read off this render on 2026-09-26. The stamp is
     // the RECORDED instant (T69b), so it does not move with the clock — if this goes red, the
     // BLOCK'S WORDING changed and somebody meant it to.
-    expect(text).toHaveLength(460);
-    expect(crypto.createHash('sha256').update(text).digest('hex').slice(0, 16)).toBe('a1765347532e9778');
+    // t141 RE-BLESS (deliberate): 460 -> 490 = three instants x ` UTC+00:00`-shaped offset (10
+    // chars each) — the one instant formatter now states its zone. No wording moved.
+    expect(text).toHaveLength(490);
+    expect(crypto.createHash('sha256').update(text).digest('hex').slice(0, 16)).toBe('d3dc69078252fab0');
   });
 });
 

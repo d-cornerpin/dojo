@@ -382,7 +382,7 @@ describe('the receipt attributes the lane to itself, measured', () => {
     expect(del.status).toBe('admitted');
     expect(del.granted).toBeGreaterThan(50);
     expect(del.reason).toContain('deliveries lane, MEASURED');
-    expect(del.reason).toContain('323-token reserve'); // T69b: 316 -> 323, the wider time term
+    expect(del.reason).toContain('331-token reserve'); // T69b: 316 -> 323; t141: 323 -> 331, the stamp's UTC offset
     // The same tokens must not also be billed to the loop tail's 900.
     expect(tail.reason).toContain('msg.turn-context');
     expect(tail.reason).not.toContain('msg.deliveries');

@@ -44,12 +44,21 @@ export function normalizeCreatedAtUtc(createdAt: string | number): string | null
 }
 
 /**
- * Render a recorded time as a compact, deterministic stamp in the box's local timezone:
- * `[Jul 16, 2026, 11:41 AM]`. Same en-US 12-hour family as `renderCurrentTimeMessage` so the
- * model compares like with like. Returns null for missing/unparseable timestamps (the caller
- * renders unstamped, never throws).
+ * Render a recorded time as a compact, deterministic stamp in the box's local timezone, WITH ITS
+ * ZONE: `[Jul 16, 2026, 11:41 AM UTC-07:00]`. Same en-US 12-hour family as
+ * `renderCurrentTimeMessage` so the model compares like with like. Returns null for
+ * missing/unparseable timestamps (the caller renders unstamped, never throws).
+ *
+ * t141 — ONE CLOCK (audit RC6: local-no-zone beside bare UTC). The offset in force AT THAT
+ * INSTANT, numeric and fixed-width on every box, so a stamp never moves once written.
  */
 export function renderMessageTimeStamp(createdAt: string | number | null | undefined): string | null {
+  const instant = renderInstant(createdAt);
+  return instant === null ? null : `[${instant}]`;
+}
+
+/** THE one formatter, unbracketed (an XML attribute brackets it its own way). */
+export function renderInstant(createdAt: string | number | null | undefined): string | null {
   if (!createdAt) return null;
   const iso = normalizeCreatedAtUtc(createdAt);
   if (iso === null) return null;
@@ -65,7 +74,15 @@ export function renderMessageTimeStamp(createdAt: string | number | null | undef
     minute: '2-digit',
     hour12: true,
   });
-  return `[${localStr}]`;
+  return `${localStr} ${utcOffset(d, tz)}`;
+}
+
+/** `UTC±HH:MM` at `d` in `tz` (`longOffset` prints `GMT-07:00`, or bare `GMT` at zero). */
+function utcOffset(d: Date, tz: string): string {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
+    .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value ?? 'GMT';
+  const m = /GMT([+-])(\d{1,2}):?(\d{2})?/.exec(name);
+  return m ? `UTC${m[1]}${m[2].padStart(2, '0')}:${m[3] ?? '00'}` : 'UTC+00:00';
 }
 
 /**

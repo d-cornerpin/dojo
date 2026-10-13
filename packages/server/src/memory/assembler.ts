@@ -12,6 +12,9 @@ import { getContextWindow, getModelOutputCap, getProviderCeilingTokens } from '.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
+import {
+  labelRows, lastFinishedViewingTurnFirstSeq, servedConversationId, subjectOf, withSubjectKinds,
+} from './row-label.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
@@ -251,10 +254,9 @@ type LoopMsg = {
 // append-only property. A box timezone change re-forms the cache once, which is
 // correct and acceptable.
 //
-// Scope: plain-text user/assistant rows only. Tool-call/tool-result rows and
-// attachment (array-content) rows are NOT stamped: inserting text blocks into
-// provider-structured content risks breaking tool_use/tool_result pairing, and
-// tool activity's timing is visible from the surrounding stamped turns.
+// t141: the stamp became the row's LABEL, one subject header per conversation block
+// (`memory/row-label.ts labelRows`); same cache argument — a pure function of stored rows. A tool
+// CALL that opens a block carries it as a leading text block; tool RESULTS stay bare.
 
 /** SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC, no marker); ISO rows carry T/Z; and from
  *  migration 131 `messages.created_at` is epoch-ms INTEGER, so a NUMBER arrives too.
@@ -276,21 +278,19 @@ type LoopMsg = {
 // stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
 // clock and re-bills every token behind it once an hour, a block that states the recorded
 // instant is a pure function of its rows.
-import { renderMessageTimeStamp } from './message-stamp.js';
+import { renderMessageTimeStamp, renderInstant } from './message-stamp.js';
 export { renderMessageTimeStamp };
 
-/**
- * Prefix a plain-text message body with its time stamp. Array content
- * (tool blocks, attachments) and empty/missing stamps pass through untouched.
- */
-export function stampTextContent(
+/** Put a row's label in front of what the model reads: before a text body, or as a leading text
+ *  block on a structured row that is not a tool result. No label, or an empty row: untouched. */
+export function labelContent(
   content: string | Anthropic.ContentBlockParam[],
-  createdAt: string | number | null | undefined,
+  label: string | null,
 ): string | Anthropic.ContentBlockParam[] {
-  if (typeof content !== 'string' || content.length === 0) return content;
-  const stamp = renderMessageTimeStamp(createdAt);
-  if (!stamp) return content;
-  return `${stamp} ${content}`;
+  if (!label) return content;
+  if (typeof content === 'string') return content.length === 0 ? content : `${label} ${content}`;
+  if (content.length === 0 || content.some((b) => (b as { type?: string }).type === 'tool_result')) return content;
+  return [{ type: 'text', text: label }, ...content];
 }
 
 /**
@@ -714,10 +714,9 @@ export function scopeToA2AThread(tail: Message[], threadId: string | null): Mess
       // requirement preserved exactly: an own-output row belonging to a human conversation is
       // dropped from an A2A turn's tail.
       const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-      // `Message` carries no `lane` (it is a row column, not part of the assembler's view),
-      // so "not an a2a stamp" is read off the origin's channel — the same fact, from the
-      // signal this function is already branching on.
-      const humanStamped = !!m.conversationId && o.channel !== 'a2a';
+      // t141: "stamped for a HUMAN conversation" is the insert-time LABEL; it differs from
+      // "carries an id" only on a 188-reconstructed `legacy` row, unstamped (kept) before.
+      const humanStamped = subjectOf(m) === 'conv';
       return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
     // UX-REPAIR ROUND 2 T10 — THE ONE NARROW EXEMPTION, and why it is not a class.
@@ -780,16 +779,17 @@ export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): bo
  * events (the caller lifts those into the EVENTS lane). Drops: all human inbound
  * and all A2A.
  */
-function scopeToEngineTurn(tail: Message[]): Message[] {
+function scopeToEngineTurn(tail: Message[], inFlightTurn: number | null): Message[] {
   return tail.filter((m) => {
     const o = m.origin;
+    const keepOwn = isInFlight(m, inFlightTurn) || subjectOf(m) !== 'conv';
     // Unclassified rows (tool-role rows have no derivable origin) follow the
     // same rule as classified self output below: a conv-stamped row belongs to
     // a prior conversation's turn and is dropped; only untagged (current-turn
     // in-flight / legacy) rows keep the old safe default. Without this, a
     // settled turn's tool debris leaked into engine turns even after the
     // haiku-failure fix dropped the conv-stamped SELF rows.
-    if (!o) return !m.conversationId;
+    if (!o) return keepOwn;
     if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
     if (o.kind === 'self') {
       // Keep ONLY the current turn's own work (untagged — `conversation_id` is stamped at
@@ -801,7 +801,8 @@ function scopeToEngineTurn(tail: Message[]): Message[] {
       // the rundown's exec results, tagged for the human conversation, were tool
       // activity and survived). A scheduled task works from its directive + fresh
       // tools, never a prior conversation's loaded data.
-      return !m.conversationId;
+      // t141: "a prior conversation's" is the `conv` LABEL; the turn's own rows, the in-flight fact.
+      return keepOwn;
     }
     return false;                              // drop human + agent inbound
   });
@@ -834,8 +835,10 @@ export function scopeToHumanConversation(
    *  `conversationKey()` — a human row's membership is decided from its ORIGIN, which the row
    *  carries in full, and that function is the one matcher for the question. The OWN-OUTPUT
    *  half needs the FK: a self row has no origin to key on, so its membership IS the stamp.
-   *  Null = no resolved conversation, and own output falls back to "is it unstamped". */
+   *  t141: own output is kept unless it is POSITIVELY a person's reply in another
+   *  conversation (`subject_kind = 'conv'`); this turn's own rows are the in-flight fact. */
   cpConversationId?: string | null,
+  inFlightTurn: number | null = null,
 ): Message[] {
   const a2aStripped = stripA2AFromTail(tail);
   if (!cp) return a2aStripped;
@@ -864,10 +867,20 @@ export function scopeToHumanConversation(
     // finished, re-answering the user (the months-long re-answer ghost; owner
     // transcripts 2026-07-07 and 2026-07-09, reproduced on dev 2026-07-10).
     // Same rule the engine scoper adopted for the identical bug (the re-emitted
-    // memory-rundown haiku failure), now applied symmetrically. Untagged rows
-    // (current-turn in-flight work, legacy pre-076 history) are kept.
-    return !m.conversationId || m.conversationId === cpConversationId;
+    // memory-rundown haiku failure), now applied symmetrically.
+    //
+    // t141 — NULL NO LONGER MEANS "MINE" (tracker #12: an email wake's searches stayed unstamped
+    // for ever and sat here as the owner's task). Two explicit facts: THIS turn's rows, and a
+    // person's reply in ANOTHER conversation (the re-answer-ghost guard). The rest stay, labelled.
+    return isInFlight(m, inFlightTurn)
+      || m.conversationId === cpConversationId
+      || subjectOf(m) !== 'conv';
   });
+}
+
+/** t141: the in-flight fact. A row belongs to the turn being assembled iff it says so. */
+function isInFlight(m: Message, inFlightTurn: number | null): boolean {
+  return inFlightTurn != null && m.turnNumber === inFlightTurn;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -1217,13 +1230,14 @@ function buildContentLanes(
 function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   let rows = sanitizeToolPairs(payload.rows);
   rows = stubOldToolResults(rows, payload.agentId);
+  const labels = labelRows(payload.agentId, rows);
   const messages: LaneMessage[] = [];
   for (const msg of rows) {
     const parsed = parseMessageContent(msg);
     if (msg.role === 'tool') {
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
-      const out: LaneMessage = { role: msg.role, content: stampTextContent(parsed, msg.createdAt) };
+      const out: LaneMessage = { role: msg.role, content: labelContent(parsed, labels.get(msg.id) ?? null) };
       // T56 leg (b): a row whose reasoning was RETIRED at a compaction boundary renders
       // without it, for ever after. The stamp is durable and one-way, which is what makes
       // this stable: between two compactions the same row renders byte-identically, so no
@@ -1235,6 +1249,8 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
       messages.push(out);
     }
   }
+  // t141: labels ride the uncounted stamp slack, as the instant did; counting them here alone
+  // (not in the horizon) MEASURED 8 prefix rewrites in 200 turns, not 2 (t94 §2). Kept small instead.
   return { messages, tokens: rowTokens(payload.rows), payload };
 }
 
@@ -1459,16 +1475,17 @@ async function assembleMessageContext(
         horizon.keepFromSeq > 0 ? horizon.requestRows + policy.freshTailCount : horizon.requestRows,
         turnCutoff,
       );
-      const freshTailRaw = horizon.keepFromSeq > 0
+      const freshTailRaw = withSubjectKinds(agentId, horizon.keepFromSeq > 0
         ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
-        : freshTailRows;
+        : freshTailRows);
       // Counterparty scoping (attribution redesign): the live conversation is scoped to the
       // ONE counterparty this turn addresses, so the model can never see two senders mixed.
+      const inFlightTurn = liveTurnContext(agentId)?.turnNumber ?? null;
       const scopedTail = turnContext?.counterparty?.kind === 'agent'
         ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
         : turnContext?.isEngineTurn
-        ? scopeToEngineTurn(freshTailRaw)
-        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, liveTurnContext(agentId)?.conversationId ?? null);
+        ? scopeToEngineTurn(freshTailRaw, inFlightTurn)
+        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, servedConversationId(agentId, turnContext), inFlightTurn);
       // EVENTS / awareness lane: engine notices AND unauthorized human inbound — things the
       // agent should be AWARE of but is NOT in conversation with. An action-required
       // engine-origin A2A stays FULL in the live tail on its engine turn.
@@ -1852,11 +1869,14 @@ async function assembleMessageContext(
   try {
     const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
     const cp = turnContext?.counterparty;
-    const stampedConversationId = liveTurnContext(agentId)?.conversationId;
+    // t141 — AN EMAIL IS NEVER "THE USER'S ASK": on a notification turn `null` meant UNSCOPED,
+    // and the newest long unanswered row was the email itself (audit RC2). Same scope as the tail.
     const directiveConversationId =
       (turnContext?.isEngineTurn || cp?.kind === 'agent')
         ? '__none__'
-        : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
+        : (cp && cp.kind === 'user'
+          ? (servedConversationId(agentId, turnContext) ?? (turnContext?.isNotificationTurn ? '__none__' : null))
+          : null);
     const directive = getActiveUserDirective(agentId, {
       excludeEngine: !turnContext?.isEngineTurn,
       conversationId: directiveConversationId,
@@ -1878,7 +1898,7 @@ async function assembleMessageContext(
   const scratchpadLane = renderScratchpadLane(agentId);
   if (scratchpadLane) postBudget.push('lane.scratchpad');
 
-  const eventsLane = renderEventsLane(laneCtx.tail().awarenessEvents);
+  const eventsLane = renderEventsLane(agentId, laneCtx.tail().awarenessEvents);
   if (eventsLane) postBudget.push('lane.events');
 
   // ── T76b (W85): THE LIVE INTEGRATION-STATUS LINE ──────────────────────────────────────
@@ -2036,8 +2056,12 @@ export function compileOrderReachedTheModel(
   return orders.some((m) => text.includes(m.content as string));
 }
 
+// t141 — ONE CLOCK: `earliest`/`latest` were bare UTC beside a local-time tail. Cached region:
+// moves ONCE per agent (argued in the t141 report), never again — stored columns only.
 function formatSummaryXml(summary: Summary): string {
-  return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" earliest="${summary.earliestAt}" latest="${summary.latestAt}">
+  const earliest = renderInstant(summary.earliestAt) ?? summary.earliestAt;
+  const latest = renderInstant(summary.latestAt) ?? summary.latestAt;
+  return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" earliest="${earliest}" latest="${latest}">
 ${summary.content}
 </summary>`;
 }
@@ -2113,11 +2137,13 @@ export function scratchpadWorstCaseTokens(): number {
   return scratchpadWorstCase;
 }
 
+// t141 — the "surface one to the owner" steer is gone (audit RC4); notices stay visible, each
+// marked NEW or HANDLED (OR-V333-SET (7); `row-label.ts lastFinishedViewingTurnFirstSeq`).
 const EVENTS_HEAD =
   '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the '
   + 'owner that you are AWARE of but are NOT in conversation with, NOT the person '
-  + 'you are replying to below. Surface one to the owner only if it genuinely '
-  + 'matters; never reply to its sender) ═══';
+  + 'you are replying to below; never reply to a notice\'s sender. NEW = arrived since '
+  + 'your last finished turn; HANDLED = already in front of you on a finished turn) ═══';
 
 /** The block, from bullets already built. Pure, for the same reason. */
 export function renderEventsBlock(lines: string[]): string | null {
@@ -2125,9 +2151,10 @@ export function renderEventsBlock(lines: string[]): string | null {
   return `${EVENTS_HEAD}\n${lines.join('\n')}`;
 }
 
-function renderEventsLane(awarenessEvents: Message[]): string | null {
+function renderEventsLane(agentId: string, awarenessEvents: Message[]): string | null {
   if (awarenessEvents.length === 0) return null;
   const gistCap = laneLimit('lane.events', 'chars', 'gist');
+  const seenBefore = lastFinishedViewingTurnFirstSeq(agentId);
   const lines = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events')).map((m) => {
     const o = m.origin;
     const rawContent = typeof m.content === 'string' ? m.content : '';
@@ -2138,7 +2165,8 @@ function renderEventsLane(awarenessEvents: Message[]): string | null {
     const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
     const gist = structured ?? body.slice(0, gistCap);
     const at = renderMessageTimeStamp(m.createdAt);
-    return `• ${at ?? ''}[${label}] ${gist}`;
+    const status = seenBefore !== null && m.rowid != null && m.rowid < seenBefore ? 'HANDLED' : 'NEW';
+    return `• ${status} ${at ?? ''}[${label}] ${gist}`;
   });
   return renderEventsBlock(lines);
 }
@@ -2152,7 +2180,7 @@ export function eventsLaneWorstCaseTokens(): number {
   // The widest label the renderer can build, and the widest instant its stamp can print.
   const label = `${'c'.repeat(24)} notice from ${'s'.repeat(64)}`;
   const at = renderMessageTimeStamp('2026-09-30T23:41:59.999Z') ?? '';
-  const lines = Array.from({ length: rows }, () => `• ${at}[${label}] ${'g'.repeat(gistCap)}`);
+  const lines = Array.from({ length: rows }, () => `• HANDLED ${at}[${label}] ${'g'.repeat(gistCap)}`);
   eventsWorstCase = estimateTokens(renderEventsBlock(lines) ?? '');
   return eventsWorstCase;
 }

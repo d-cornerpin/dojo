@@ -37,6 +37,7 @@ import { withUnit } from '../db/unit.js';
 import { openAsk, askIdForMessage } from '../work/store.js';
 import { NOW_MS, createdAtText } from './store.js';
 import { estimateStoredTokens } from './budget.js';
+import { turnContext } from '../agent/turn-context.js';
 
 export { NOW_MS, createdAtText };
 
@@ -94,7 +95,14 @@ export interface NewMessage {
    *  content-free by construction. It is NEVER derived from `content` here:
    *  that mechanism (`content.slice(0, 120)`) is the one T9 removed. */
   askTitle?: string | null;
+  /** t141: what an OWN row belongs to; absent = derived at insert (`ownRowSubject`). */
+  subjectKind?: SubjectKind | null;
 }
+
+/** t141 — what an OWN row belongs to (migration 188's CHECK is the authority). `conv` is the only
+ *  kind a scoper excludes from ANOTHER conversation; the rest stay in view, labelled
+ *  (OR-LABEL-NOT-HIDE). `legacy` is written only by 188, for rows the late stamp missed. */
+export type SubjectKind = 'conv' | 'a2a_thread' | 'engine_event' | 'background' | 'legacy' | 'unknown';
 
 export interface Persisted {
   seq: number;
@@ -211,19 +219,74 @@ const INSERT_SQL = `
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
       external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
-      provenance, sent_at, created_at
+      subject_kind, provenance, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
       @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      'live', @sentAt, ${NOW_MS}
+      @subjectKind, 'live', @sentAt, ${NOW_MS}
     )`;
+
+// ── t141: THE ROW IS LABELLED AT BIRTH ──────────────────────────────────────────────────
+// The conversation used to be stamped LATE (turn end) and only for a person's turn, so an email
+// wake's searches stayed NULL for ever and the scopers kept them as the owner's own work
+// (tracker #12, audit RC1). Now, in this INSERT: the turn RECORD (written at turn start) says
+// what the turn served; the turn's bag (the late stamp's own source) names the person's
+// conversation; an agent thread's id comes from the caller or the turn's earlier row. An own
+// row is `conv` exactly when the late stamp would have stamped it — membership cannot move.
+interface OwnSubject { subjectKind: SubjectKind | null; conversationId: string | null; a2aThreadId: string | null }
+
+function ownRowSubject(m: NewMessage, lane: Lane): OwnSubject {
+  const conversationId = m.conversationId ?? null;
+  const a2aThreadId = m.a2aThreadId ?? null;
+  const given = { conversationId, a2aThreadId };
+  if (m.role !== 'assistant' && m.role !== 'tool') return { subjectKind: m.subjectKind ?? null, ...given };
+  if (m.subjectKind) return { subjectKind: m.subjectKind, ...given };
+  // A writer that stamped a conversation itself made the row a person's — as the late stamp did.
+  if (conversationId && lane === 'owner') return { subjectKind: 'conv', ...given };
+  if (m.turnNumber == null) return { subjectKind: 'unknown', ...given };
+  const db = getDb();
+  const turn = db.prepare('SELECT subject_kind, subject_id FROM turns WHERE agent_id = ? AND turn_number = ?')
+    .get(m.agentId, m.turnNumber) as { subject_kind: string | null; subject_id: string | null } | undefined;
+  if (lane === 'a2a' || turn?.subject_kind === 'a2a_thread') {
+    const thread = a2aThreadId
+      ?? (db.prepare(`SELECT a2a_thread_id FROM messages WHERE agent_id = ? AND turn_number = ?
+                        AND role IN ('assistant','tool') AND a2a_thread_id IS NOT NULL
+                      ORDER BY seq DESC LIMIT 1`).get(m.agentId, m.turnNumber) as
+            { a2a_thread_id: string } | undefined)?.a2a_thread_id
+      ?? (turn?.subject_kind === 'a2a_thread' ? turn.subject_id : null);
+    return { subjectKind: 'a2a_thread', conversationId, a2aThreadId: thread ?? null };
+  }
+  switch (turn?.subject_kind) {
+    case 'conv': case 'continuation': {
+      const bag = turnContext(m.agentId);
+      const conv = bag && bag.turnNumber === m.turnNumber ? (bag.conversationId ?? null) : null;
+      return conv ? { subjectKind: 'conv', conversationId: conv, a2aThreadId } : { subjectKind: 'unknown', ...given };
+    }
+    case 'engine_event': return { subjectKind: 'engine_event', ...given };
+    case 'none': return { subjectKind: 'background', ...given };
+    default: return { subjectKind: 'unknown', ...given };
+  }
+}
+
+/** t141 — the labels, read beside rows the caller already holds (`memory/store.ts`'s tail
+ *  projection predates the column). One indexed query over the given seqs. */
+export function subjectKindsBySeq(agentId: string, seqs: number[]): Map<number, SubjectKind | null> {
+  const out = new Map<number, SubjectKind | null>();
+  if (seqs.length === 0) return out;
+  const rows = getDb().prepare(
+    `SELECT seq, subject_kind FROM messages WHERE agent_id = ? AND seq IN (${seqs.map(() => '?').join(',')})`,
+  ).all(agentId, ...seqs) as Array<{ seq: number; subject_kind: SubjectKind | null }>;
+  for (const r of rows) out.set(r.seq, r.subject_kind);
+  return out;
+}
 
 function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind; displayTier: DisplayTier;
   tokenCount: number; sentAt: number; params: Record<string, unknown> } {
   const lane: Lane = m.lane ?? 'owner';
+  const subject = ownRowSubject(m, lane);
   const id = m.id ?? randomUUID();
   const prepared = prepareContent(m.role, m.content);
   // Classified from the row's OWN stamped facts — lane, role, origin_intent — plus the
@@ -243,13 +306,13 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
   return {
     lane, id, displayKind, displayTier, tokenCount, sentAt,
     params: {
-      id, agentId: m.agentId, conversationId: m.conversationId ?? null, lane,
+      id, agentId: m.agentId, conversationId: subject.conversationId, lane,
       originIntent: m.originIntent ?? null, role: m.role, content: prepared.content,
       mood: m.mood ?? prepared.mood, displayKind, displayTier,
       turnNumber: m.turnNumber ?? null, groupId: m.groupId ?? null,
       channel, senderId: m.senderId ?? null,
       authorized: (m.authorized ?? true) ? 1 : 0,
-      sourceAgentId: m.sourceAgentId ?? null, a2aThreadId: m.a2aThreadId ?? null,
+      sourceAgentId: m.sourceAgentId ?? null, a2aThreadId: subject.a2aThreadId,
       a2aIntent: m.a2aIntent ?? null,
       a2aRequiresResponse: m.a2aRequiresResponse == null ? null : (m.a2aRequiresResponse ? 1 : 0),
       tokenCount, modelId: m.modelId ?? null, cost: m.cost ?? null,
@@ -258,6 +321,7 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
       externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
       voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
       rootKind: m.rootKind ?? null, rootId: m.rootId ?? null,
+      subjectKind: subject.subjectKind,
       sentAt,
     },
   };
@@ -671,23 +735,21 @@ export function stampConversationIdByRowid(
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.conversationId }).changes;
 }
 
-/** Tag this turn's OWN output rows with the conversation they served, so one
- *  counterparty's work cannot bleed into another's turn (content isolation, mig 076;
- *  rekeyed off `conv_key` onto `conversation_id` at PHASE-2 T10I).
+/** SUPERSEDED BY THE AT-INSERT LABEL (t141) — kept only until its three callers can go.
  *
- *  ⚠ THE TWO PREDICATES BELOW ARE THE MECHANISM, NOT DECORATION, AND BOTH SURVIVED THE
- *  REKEY UNCHANGED IN MEANING:
+ *  This was the LATE stamp: at turn end it wrote the served conversation onto the turn's own
+ *  rows, and it was late on purpose, because all three assembler scopers read NULL as "this
+ *  turn's own work, keep it". t141 deleted that reading (in-flight is now the explicit fact
+ *  `turn_number = the live turn`) and labels every own row in its INSERT (`ownRowSubject`
+ *  above) from the SAME bag this read. So on every row written from t141 on, its
+ *  `conversation_id IS NULL` predicate matches nothing: a person's turn wrote the id at insert,
+ *  and a turn with no resolved conversation never reaches this call. Proven, not argued:
+ *  `memory/__tests__/t141-labelled-at-birth.test.ts` drives a full person turn and asserts this
+ *  UPDATE changes ZERO rows afterwards.
  *
- *  `conversation_id IS NULL` — do not re-tag. An own-output row already carrying an id belongs
- *  to an EARLIER turn. It is also why this stamp is LATE rather than at insert: all three
- *  assembler scopers read NULL as "this turn's own work, keep it", so stamping at insert would
- *  make the live turn's own context look like a prior conversation's and be dropped.
- *
- *  `lane` — before T4 this UPDATE could only ever reach owner-lane rows, because the agent's
- *  a2a own output physically lived in `inter_agent_messages` and had its own tagger. T4 folded
- *  that output into `messages` as `lane='a2a'`, so without the predicate the human
- *  conversation's identity would start landing on coordination rows. The lane filter keeps it
- *  byte-identical. */
+ *  ITS DELETION IS HANDED UP, not done: the three callers (`finalize/route-reply.ts`,
+ *  `post-call-classify/no-reply.ts`, `teardown/conversation-tagging.ts`) sit outside t141's
+ *  fence. The exact patch is in `overhaul-plans/t141-report.md`. */
 export function tagTurnOutputConversationId(
   p: { agentId: string; turnNumber: number; conversationId: string; lane?: Lane },
 ): number {

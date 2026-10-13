@@ -26,6 +26,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { renderMessageTimeStamp } from '../message-stamp.js';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -154,23 +155,15 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
     const block = await buildIntegrationStatusLane(AGENT);
     expect(block).toBeTruthy();
     // The newest SUCCESS, rendered in the one stamp format the fresh tail already uses.
-    const expected = new Date(sqliteStamp(DAY_ONE - HOUR) + 'Z');
-    const hh = expected.toLocaleString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    });
-    expect(block).toContain(`Google Workspace — CONNECTED. Last successful use [${hh}].`);
+    // t141: read off THE formatter (it gained its UTC offset), never re-derived beside it.
+    expect(block).toContain(`Google Workspace — CONNECTED. Last successful use ${renderMessageTimeStamp(sqliteStamp(DAY_ONE - HOUR))}.`);
   });
 
   it('a FAILED activity row is never read as a successful use', async () => {
     seedActivity('google_activity', DAY_ONE - 3 * HOUR, 1);
     seedActivity('google_activity', DAY_ONE - HOUR, 0);   // newer, but success = 0
     const block = await buildIntegrationStatusLane(AGENT);
-    const older = new Date(sqliteStamp(DAY_ONE - 3 * HOUR) + 'Z').toLocaleString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', hour12: true,
-    });
-    expect(block).toContain(`Last successful use [${older}].`);
+    expect(block).toContain(`Last successful use ${renderMessageTimeStamp(sqliteStamp(DAY_ONE - 3 * HOUR))}.`);
   });
 
   it("ANOTHER agent's successful call is not reported as this agent's", async () => {

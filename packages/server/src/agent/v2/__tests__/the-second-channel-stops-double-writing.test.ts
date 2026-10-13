@@ -237,7 +237,9 @@ describe('§0 the two channels, measured against the real assembler', () => {
     onTheEventsLane(aRealSteer());
     const seen = await whatTheModelReceives();
     expect(seen).toContain('EVENTS & NOTICES (things that happened');
-    expect(seen).toContain('Surface one to the owner only if it genuinely matters');
+    // t141: the head's "surface one to the owner" steer is deleted (OR-V333-SET 7); the frame
+    // that makes it a NOTICE and not an order is the awareness clause, which stays.
+    expect(seen).toContain('that you are AWARE of but are NOT in conversation with');
   });
 });
 

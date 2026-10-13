@@ -122,6 +122,8 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { startGmailWatcher, stopGmailWatcher } from '../../services/gmail-watcher.js';
+import { deliverA2AMessage } from '../../agent/a2a-transport.js';
+import { tagTurnOutputConversationId } from '../message-store.js';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
@@ -179,10 +181,14 @@ function toolUseMessage(call: Wire[], needle: string): Wire | undefined {
   return call.find((m) => m.role === 'assistant' && Array.isArray(m.content)
     && (m.content as Array<Record<string, unknown>>).some((b) => b.type === 'tool_use' && JSON.stringify(b.input).includes(needle)));
 }
-/** The text blocks riding on that message — where its label has to be. */
-function labelTextOf(m: Wire | undefined): string {
-  if (!m || !Array.isArray(m.content)) return '';
-  return (m.content as Array<Record<string, unknown>>).filter((b) => b.type === 'text').map((b) => String(b.text)).join(' ');
+
+/** The platform's row stamp (`[<instant> · <subject>]`, recognisable by its instant) nearest
+ *  before `needle` in `text` — the label of the row that carries `needle`. Empty if none. */
+function labelBefore(text: string, needle: string): string {
+  const at = text.indexOf(needle);
+  if (at < 0) return '';
+  const stamps = [...text.slice(0, at).matchAll(/\[[A-Z][a-z]{2} \d{1,2}, \d{4}, [^\]]*?UTC[+-]\d{2}:\d{2}[^\]]*\]/g)];
+  return stamps.length ? stamps[stamps.length - 1][0] : '';
 }
 
 async function turn(...steps: typeof script): Promise<Wire[][]> {
@@ -275,7 +281,7 @@ async function orchidThenZebraWake(): Promise<{ t1: Wire[][]; t2: Wire[][] }> {
 }
 
 describe('t141 witnesses — the email wake and the owner conversation', () => {
-  it.fails('W1: the email wake\'s own search is LABELLED in the owner\'s next dashboard turn (not shown as his task)', async () => {
+  it('W1: the email wake\'s own search is LABELLED in the owner\'s next dashboard turn (not shown as his task)', async () => {
     await orchidThenZebraWake();
     await submitUserMessage(AGENT, 'What have you finished for me today?');
     const t3 = await turn({ content: 'The ORCHID note.' });
@@ -283,26 +289,29 @@ describe('t141 witnesses — the email wake and the owner conversation', () => {
     const zebraSearch = toolUseMessage(wire, 'ZEBRA invoice 4471');
     // Label, never hide: the row that was visible before is still visible...
     expect(zebraSearch, 'the email wake\'s search must stay visible (label, never hide)').toBeDefined();
-    // ...and now it says what it was: the agent's own work on a wake that served no person.
-    expect(labelTextOf(zebraSearch)).toMatch(/background wake/i);
-    // Control: the owner-turn search is labelled with HIS conversation.
-    expect(labelTextOf(toolUseMessage(wire, 'ORCHID background'))).toMatch(/dashboard conversation with TestUser/);
+    // ...and now it says what it was: the agent's own work on a wake that served no person. The
+    // label is a block header — the platform's stamp nearest before the call names its subject.
+    const all = wireText(wire);
+    expect(labelBefore(all, 'ZEBRA invoice 4471')).toMatch(/background wake/i);
+    // Controls: the owner's conversation is headed as HIS, before the email work and again after.
+    expect(labelBefore(all, 'Draft a 3-section note about ORCHID')).toMatch(/dashboard conversation with TestUser/);
+    expect(labelBefore(all, 'What have you finished for me today?')).toMatch(/dashboard conversation with TestUser/);
   });
 
-  it.fails('W2: on the email-wake turn the owner\'s answered ask is shown WITH its answer (a complete view)', async () => {
+  it('W2: on the email-wake turn the owner\'s answered ask is shown WITH its answer (a complete view)', async () => {
     const { t2 } = await orchidThenZebraWake();
     const wire = wireText(t2[0]);
     expect(wire).toContain('Draft a 3-section note about ORCHID');
     expect(wire, 'the answer the agent already gave must be in the wake\'s view').toContain('Here is the ORCHID note: one, two, three.');
   });
 
-  it.fails('W2b: on the email-wake turn the email is never pinned as "the user\'s most recent ask"', async () => {
+  it('W2b: on the email-wake turn the email is never pinned as "the user\'s most recent ask"', async () => {
     const { t2 } = await orchidThenZebraWake();
     const pin = t2[0].map(textOf).find((t) => t.includes('ACTIVE USER DIRECTIVE')) ?? '';
     expect(pin).not.toContain('ZEBRA');
   });
 
-  it.fails('W4: on the owner\'s next turn the handled notice is marked HANDLED and carries no "surface it" steer', async () => {
+  it('W4: on the owner\'s next turn the handled notice is marked HANDLED and carries no "surface it" steer', async () => {
     await orchidThenZebraWake();
     await submitUserMessage(AGENT, 'Anything new?');
     const t3 = await turn({ content: 'Nothing new.' });
@@ -315,7 +324,7 @@ describe('t141 witnesses — the email wake and the owner conversation', () => {
 });
 
 describe('t141 witness — two email threads from one sender', () => {
-  it.fails('W3: each thread\'s rows carry their OWN thread label, so one tail never reads as one conversation', async () => {
+  it('W3: each thread\'s rows carry their OWN thread label, so one tail never reads as one conversation', async () => {
     setMailbox('agent', 'agent.box@example.com');
     mockDb.current!.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('gmail_approved_senders_agent', ?, datetime('now'))`)
       .run(JSON.stringify([{ address: 'colleague@example.com', name: 'A Colleague' }]));
@@ -324,14 +333,88 @@ describe('t141 witness — two email threads from one sender', () => {
       { id: 'gm-b', threadId: 'th-beta', from: 'A Colleague <colleague@example.com>', subject: 'BETA offsite', snippet: 'Is the BETA offsite still on?' },
     ]);
     const calls = await turn({ content: 'Checked.' });
-    const rows = calls[0].filter((m) => m.role === 'user').map(textOf);
-    const alpha = rows.find((t) => t.includes('Can you check the ALPHA budget?')) ?? '';
-    const beta = rows.find((t) => t.includes('Is the BETA offsite still on?')) ?? '';
-    expect(alpha, 'thread ALPHA is in view').not.toBe('');
-    expect(beta, 'thread BETA stays in view (label, never hide)').not.toBe('');
-    // Each row's own label names its own thread — the [SOURCE …] body is the producer's
-    // prose, so the label is read off the stamp bracket the platform prefixes.
-    expect(alpha.split(']')[0]).toMatch(/ALPHA budget/);
-    expect(beta.split(']')[0]).toMatch(/BETA offsite/);
+    const wire = wireText(calls[0]);
+    expect(wire, 'thread ALPHA is in view').toContain('Can you check the ALPHA budget?');
+    expect(wire, 'thread BETA stays in view (label, never hide)').toContain('Is the BETA offsite still on?');
+    // Each row's OWN label names its own thread. Consecutive user rows are merged into one wire
+    // message by the integrity pass, so the label is the platform's stamp bracket nearest
+    // BEFORE each row's text — never the producer's own [SOURCE …] prose.
+    expect(labelBefore(wire, 'Can you check the ALPHA budget?')).toMatch(/ALPHA budget/);
+    expect(labelBefore(wire, 'Is the BETA offsite still on?')).toMatch(/BETA offsite/);
+  });
+});
+
+// ── GREEN: the lane's own guarantees, through the same doors ─────────────────────────────
+
+describe('t141 — every own row is labelled AT BIRTH, never late', () => {
+  it('a person turn\'s tool call carries its conversation while the tool is still running; the late stamp then has nothing left to do', async () => {
+    await submitUserMessage(AGENT, 'Look up ORCHID for me.');
+    const seenMidTurn: Array<{ conversation_id: string | null; subject_kind: string | null }> = [];
+    executeToolSpy.mockImplementationOnce(async (...a: unknown[]) => {
+      const tc = a.find((x) => x && typeof x === 'object' && 'id' in (x as object)) as { id: string; name: string };
+      // Before the turn ends — the late stamp has not run, so anything here was written at INSERT.
+      seenMidTurn.push(mockDb.current!.prepare(
+        `SELECT conversation_id, subject_kind FROM messages WHERE role = 'assistant' AND content LIKE '%tool_use%' ORDER BY seq DESC LIMIT 1`,
+      ).get() as { conversation_id: string | null; subject_kind: string | null });
+      return { toolCallId: tc.id, name: tc.name, content: 'ok', isError: false };
+    });
+    await turn({ tool: { name: 'web_search', arguments: { query: 'ORCHID' } } }, { content: 'Found it.' });
+    const conv = (mockDb.current!.prepare(`SELECT id FROM conversations WHERE channel = 'dashboard'`).get() as { id: string }).id;
+    expect(seenMidTurn).toEqual([{ conversation_id: conv, subject_kind: 'conv' }]);
+    expect(tagTurnOutputConversationId({ agentId: AGENT, turnNumber: 1, conversationId: conv }),
+      'the late stamp finds no unlabelled row of a person\'s turn').toBe(0);
+    const unlabelled = mockDb.current!.prepare(
+      `SELECT count(*) AS n FROM messages WHERE role IN ('assistant','tool') AND subject_kind IS NULL`).get() as { n: number };
+    expect(unlabelled.n).toBe(0);
+  });
+
+  it('the email wake\'s own rows are born `background`, with no conversation claimed for them', async () => {
+    await orchidThenZebraWake();
+    const rows = mockDb.current!.prepare(
+      `SELECT DISTINCT subject_kind, conversation_id FROM messages WHERE turn_number = 2 AND role IN ('assistant','tool')`).all();
+    expect(rows).toEqual([{ subject_kind: 'background', conversation_id: null }]);
+  });
+});
+
+describe('t141 GREEN — the ORCHID / ZEBRA / PELICAN drive (identity audit §5)', () => {
+  it('a peer\'s PELICAN request is worked on its thread, labelled with that thread, and shown — labelled — in the owner\'s view', async () => {
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification)
+                             VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
+    const THREAD = '7e1f2a3b-0000-4000-8000-00000000a2a1';
+    await orchidThenZebraWake();
+    const sent = await deliverA2AMessage({
+      intent: 'QUESTION', threadId: THREAD, requiresResponse: true, toAgent: AGENT, fromAgent: 'peer-agent',
+      payload: 'Please search mail for PELICAN status and tell me what you find.',
+    });
+    expect(sent.delivered).toBe(true);
+    await turn({ tool: { name: 'user_gmail_search', arguments: { query: 'PELICAN status' } } }, { content: 'done' });
+    const a2aOwn = mockDb.current!.prepare(
+      `SELECT DISTINCT subject_kind, a2a_thread_id FROM messages WHERE turn_number = 3 AND role IN ('assistant','tool')`).all();
+    expect(a2aOwn, 'the agent-thread turn\'s rows carry THEIR thread from birth').toEqual([{ subject_kind: 'a2a_thread', a2a_thread_id: THREAD }]);
+
+    await submitUserMessage(AGENT, 'What time did I ask for the ORCHID note, and what have you finished for me today?');
+    const t4 = await turn({ content: 'ORCHID, earlier today.' });
+    const all = wireText(t4[0]);
+    // (b)/(e) of the drive: nothing about PELICAN is presented as the owner's — it is fenced as the thread's.
+    expect(labelBefore(all, 'PELICAN status')).toMatch(/agent thread 7e1f2a3b with Peer/);
+    // (c): ZEBRA is in view once, as a HANDLED notice — never as a task.
+    const events = t4[0].map(textOf).find((t) => t.includes('EVENTS & NOTICES')) ?? '';
+    expect(events.split('\n').filter((l) => l.includes('ZEBRA invoice'))).toHaveLength(1);
+    expect(events).toMatch(/• HANDLED \[[^\n]*ZEBRA invoice/);
+    // (d): the owner's ORCHID ask is headed with HIS conversation and an instant WITH its zone.
+    expect(labelBefore(all, 'Draft a 3-section note about ORCHID')).toMatch(/UTC[+-]\d{2}:\d{2} · dashboard conversation with TestUser\]/);
+  });
+});
+
+describe('t141 backwards lifecycle — a notice handled, then a new one from the same sender', () => {
+  it('the handled notice stays visible as HANDLED and the new one arrives as NEW', async () => {
+    await orchidThenZebraWake();
+    await mailArrives([{ ...ZEBRA, id: 'gm-zebra-2', subject: 'ZEBRA invoice reminder', snippet: 'A reminder about invoice 4471.' }]);
+    await submitUserMessage(AGENT, 'Anything new?');
+    const t = await turn({ content: 'One reminder.' });
+    const events = t[0].map(textOf).find((x) => x.includes('EVENTS & NOTICES')) ?? '';
+    const lines = events.split('\n');
+    expect(lines.find((l) => l.includes('"ZEBRA invoice"'))).toMatch(/^• HANDLED /);
+    expect(lines.find((l) => l.includes('"ZEBRA invoice reminder"'))).toMatch(/^• NEW /);
   });
 });

@@ -628,7 +628,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.events',
     slot: MessageSlot.EventsTail,
-    reserveTokens: 1395,
+    reserveTokens: 1453,
     measured:
       'W81, DERIVED BY CALLING THE RENDERER: `eventsLaneWorstCaseTokens()` '
       + '(`memory/assembler.ts`) renders the real frame around 10 bullets (rows.events), each '
@@ -651,7 +651,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.integration-status',
     slot: MessageSlot.IntegrationStatusTail,
-    reserveTokens: 532,
+    reserveTokens: 554,
     measured:
       'T76b, DERIVED BY CALLING THE RENDERER: `integrationStatusWorstCaseTokens()` '
       + '(`memory/integration-status-lane.ts`) builds LANE_LIMITS[\'lane.integration-status\'] '
@@ -683,7 +683,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // `deliveriesLaneWorstCaseTokens()`. WHAT THE 7 BUY: the lane stops being a function of
     // the wall clock, so an identical set of deliveries no longer re-bills every token behind
     // it in the tail once a minute.
-    reserveTokens: 323,
+    reserveTokens: 331,
     measured:
       'PHASE-3 T7, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/deliveries-lane.ts` can render under its own declared caps above — ' +
@@ -746,7 +746,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // renderer — `recall-lane.test.ts` pins the literal to it. The split is about ORDER inside
     // the tail (the snapshot is emitted FIRST, ahead of everything retrieved against the live
     // ask, so an ask no longer re-bills ~1,400 chars of board state), not about size.
-    reserveTokens: 2203,
+    reserveTokens: 2250,
     measured:
       'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
       '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +

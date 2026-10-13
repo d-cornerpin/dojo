@@ -58,6 +58,11 @@ export async function runPersistAssistant(
   } = ctx;
   const chosenConversationId = turnCtx.conversationId ?? null;
   const { interAgentTurn, persistedContent } = sc;
+  // t141: an agent-to-agent turn's rows carry THEIR THREAD from birth (they had neither thread
+  // nor conversation). The writer derives the rest of the label (`ownRowSubject`).
+  const a2aThreadId = counterparty.kind === 'agent'
+    ? (ctx.unrepliedAssign?.threadId ?? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null))
+    : null;
 
   // ── t116 E1 — THE SEAM'S OWN FENCE READ, BECAUSE THE POST-CALL STAGES CAN AWAIT ──
   //
@@ -245,6 +250,7 @@ export async function runPersistAssistant(
         content: assistantContentJson,
         attachments: queuedAttachmentsJson,
         turnNumber,
+        a2aThreadId,
       });
     } else {
       // The old statement's trailing `NULL` was the `source` column — the else arm of
@@ -310,6 +316,7 @@ export async function runPersistAssistant(
         content: persistedContent,
         attachments: queuedAttachmentsJson,
         turnNumber,
+        a2aThreadId,
       });
     } else {
       insertMessageIfAbsent({
