@@ -527,3 +527,26 @@ describe('t140 round 4 — R-V333-12: the fallback never widens who sees the con
     expect(placeholders()).toEqual([]);
   }, 5_000);
 });
+
+describe('t140 round 4 — F1: the turn sets a routine background fold aside to get the lock in time', () => {
+  it('a slow background fold holding the lock is preempted: the door folds UNDER the lock, and the preempted writer is not blamed', async () => {
+    for (let t = 1; t <= 40; t++) appendTurn(false);
+    appendTurn(true);
+    const throughSeq = (await assembleContext(AGENT, OWN)).outOfViewThroughSeq ?? 0;
+    writers.mode = { [OWN]: 'slow:1500', [CHEAP]: 'ok' };
+    const { registerBackgroundCompaction, releaseBackgroundCompaction } = await import('../uncondensed-placeholder.js');
+    const ctl = new AbortController();
+    registerBackgroundCompaction(AGENT, ctl);   // what the gate's pressure-fold launcher does
+    const background = compaction.checkAndCompact(AGENT, OWN, 32_000, { leaving: { cause: 'full', throughSeq, rowsLeaving: 40 }, abortSignal: ctl.signal })
+      .finally(() => releaseBackgroundCompaction(AGENT, ctl));
+    await new Promise((r) => setTimeout(r, 20));
+    const started = Date.now();
+    const ctx = await door();
+    expect(Date.now() - started, 'the door did not sit out its clock behind the background fold').toBeLessThan(BOUNDS.wallClockMs);
+    await background;
+    expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
+    expect(placeholders(), 'the door got the lock in time and wrote real summaries').toEqual([]);
+    expect(coverCounts()).toEqual([]);
+    expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a preempted call is not the writer\'s failure').toBe(OWN);
+  }, 8_000);
+});
