@@ -189,4 +189,18 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('error');
     expect(dialed).toEqual([]);
   });
+
+  // Round 7 (re-review I1'): a model's provider answering a turn's call is one of the three changes
+  // that re-arm a summary writer on that provider that had failed.
+  it('the turn\'s call answers: a summary writer on that provider that had failed is used again', async () => {
+    seed(false);
+    const health = await import('../../../../../memory/summary-writer-health.js');
+    health.__resetSummaryWriterHealthForTests();
+    health.noteSummaryWriterOutcome(ROOMY, false);                     // a summary call on its provider failed
+    expect(health.eligibleSummaryWriters(ROOMY), 'precondition: passed over').not.toContain(ROOMY);
+    const out = await callStep();
+    expect(out.directive).toBe('proceed');
+    expect(dialed).toEqual([ROOMY]);
+    expect(health.eligibleSummaryWriters(ROOMY), 'its provider answered: it is used again').toContain(ROOMY);
+  });
 });
