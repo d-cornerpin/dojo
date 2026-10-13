@@ -7878,6 +7878,13 @@
       "to": 526,
       "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
       "why": "520 -> 526 (+6: -2 code, 8 comment). Review I4: a 'full' answer with less than one trim block above the row floor is null (the pressure sits inside the floor; folding 1-5 rows every turn cost a summariser call and a prefix break each — measured 78 folds on back-to-back turns -> 20 one-block folds ten turns apart). The now-dead floor clamp is deleted with the argument for why it cannot bind."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 513,
+      "to": 528,
+      "by": "t140 fix round 1 — review I1, second pass (full-suite finding)",
+      "why": "513 -> 528 (+15: the always-refit after a fallback pick becomes a bounded loop). A fallback the window check admits (the array is under its fill line) can still have a window that cannot hold this agent's system prompt and tools; its re-fit refuses by name (SystemPromptTooLargeError), and the turn failed on it in a loaded full-suite run. It is now excluded and the fit-aware selection asked again, the same rule the rescue follows; witnessed by its own clause (a short conversation, a 12K pick ahead of the 16K one) and its mutant (rethrow -> the clause reds)."
     }
   ],
   "maxNewFileLines": 400,
@@ -7990,7 +7997,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 244,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 513,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 528,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
