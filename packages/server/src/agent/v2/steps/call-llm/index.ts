@@ -49,6 +49,7 @@ import { selectModel } from './model-selection.js';
 import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
 import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
+import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -134,9 +135,38 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   // ceiling matters. So: once the real model is known, ask `reassembleForFitIfNeeded`
   // (shared with `model-call.ts`'s fallback ladder — the SAME hole one layer deeper,
   // round 2) whether the array this turn already built still fits, and use its answer.
-  const reassembly = await reassembleForFitIfNeeded({
-    agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
-  });
+  // t140 round 6 (H2, R-V333-15): a router pick that cannot hold this agent's instructions and tools
+  // is passed over like a fallback candidate (no card) and the router offers the next. When nothing it
+  // can reach right now holds the agent, the refusal stands by name — and the re-fit shows the "cannot
+  // hold a conversation" card only if that is true (no model of the agent's own holds it).
+  let pick = selection.modelId;
+  const passedOver: string[] = [];
+  let reassembly: Awaited<ReturnType<typeof reassembleForFitIfNeeded>>;
+  for (;;) {
+    try {
+      reassembly = await reassembleForFitIfNeeded({
+        agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,
+      });
+      break;
+    } catch (err) {
+      if (!isAutoRouted || !(err instanceof SystemPromptTooLargeError)) throw err;
+      passedOver.push(pick);
+      const { selectModel: nextRoutedPick } = await import('../../../../router/selector.js');
+      const next = nextRoutedPick(routerTier, agentId, [...excludedModels, ...passedOver], ['tools']);
+      if (!next) {
+        await reassembleForFitIfNeeded({ agentId, modelId: selection.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext });
+        throw err;
+      }
+      logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', {
+        passedOver: pick, next: next.modelId, tier: routerTier,
+      }, agentId);
+      pick = next.modelId;
+    }
+  }
+  if (passedOver.length > 0) {
+    excludedModels.push(...passedOver);
+    state = advance(state, { modelId: pick });
+  }
   if (reassembly) {
     messages = reassembly.messages;
     systemPrompt = reassembly.systemPrompt;
@@ -145,12 +175,12 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   }
 
   const injected = await injectAndRecord(state, {
-    agentId, turnNumber, modelId: selection.modelId, messages, systemPrompt,
+    agentId, turnNumber, modelId: pick, messages, systemPrompt,
     ctx, mctx, volatileFrom, counterparty, steerAwaitingConfirm, turnCtx, db: ctxIn.db,
   });
   state = injected.state;
 
-  const called = await callWithRetryAndFallback(state, selection.modelId, {
+  const called = await callWithRetryAndFallback(state, pick, {
     agentId, turnCtx, turnNumber, messageId, messages, systemPrompt,
     useTools: injected.useTools, isAutoRouted, isA2ATurn, excludedModels,
     revertTriggerStampOnAbort, assembled: ctx, routerTier, counterparty,

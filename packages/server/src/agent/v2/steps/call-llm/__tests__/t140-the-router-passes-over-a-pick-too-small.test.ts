@@ -120,7 +120,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('t140 round 6 — the router\'s own pick, too small for the agent', () => {
-  it.fails('is passed over like a fallback: the next model the router offers answers, and the owner sees the answer, no card', async () => {
+  it('is passed over like a fallback: the next model the router offers answers, and the owner sees the answer, no card', async () => {
     seed(false);
     const out = await callStep();
     expect(out.directive, 'the turn went on').toBe('proceed');
