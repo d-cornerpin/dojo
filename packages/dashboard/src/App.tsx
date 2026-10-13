@@ -258,7 +258,7 @@ const AppRoutes = () => {
 
 // ── Global WebSocket-driven alerts (uses the shared toast system) ──
 
-const GlobalAlerts = () => {
+export const GlobalAlerts = () => {
   const { subscribe } = useWebSocket();
   const toast = useToast();
 
