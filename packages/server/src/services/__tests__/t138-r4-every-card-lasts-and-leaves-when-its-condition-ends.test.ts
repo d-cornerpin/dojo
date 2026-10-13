@@ -254,6 +254,13 @@ describe('ruling 1: the remaining cards last too', () => {
     expect(await m.cards()).toEqual([]);
   });
 
+  it('a watcher card written by a process that has since restarted is not shown: its watcher can no longer see the recovery', async () => {
+    const m = await boot();
+    db().prepare(`INSERT INTO config (key, value) VALUES ('owner_notice_watcher_gmail', ?)`)
+      .run(JSON.stringify({ at: 1_000, words: 'Gmail watcher has been failing for 20 minutes.' }));
+    expect(await m.cards()).toEqual([]);
+  });
+
   it('rate-limit retries exhausted: a card on load; the agent getting through ends it, live', async () => {
     const m = await boot();
     vi.useFakeTimers();
