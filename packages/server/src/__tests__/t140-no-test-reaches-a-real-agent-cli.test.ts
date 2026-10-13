@@ -15,7 +15,12 @@ const NET = /TEST NET: a test tried to start the real Claude CLI/;
 describe('t140 round 2 — no test can start a real Agent CLI', () => {
   it('the package, imported as any test would, is the suite-wide throwing mock', async () => {
     const sdk = await import('@anthropic-ai/claude-agent-sdk');
-    expect(() => sdk.query({ prompt: 'x', options: {} } as never)).toThrow(NET);
+    let message = '';
+    try { sdk.query({ prompt: 'x', options: {} } as never); } catch (e) { message = (e as Error).message; }
+    expect(message).toMatch(NET);
+    // The PACKAGE net answered, not the spawn net behind it: the spawn net names the call it
+    // refused, and a real `query()` would have reached it.
+    expect(message).not.toMatch(/child_process\./);
   });
 
   it('the REAL package (importActual — the shape of a mock that misses) still cannot spawn the CLI', async () => {
