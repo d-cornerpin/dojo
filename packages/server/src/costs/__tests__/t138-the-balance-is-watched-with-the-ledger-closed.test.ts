@@ -257,6 +257,13 @@ describe('fix round 1 (M1): a hung provider never holds the scheduler', () => {
       return new Promise<Response>(() => { /* never */ });
     }));
     const clock = await (async () => { vi.resetModules(); return import('../../scheduler/clock.js'); })();
+    // Load the module graph the tick reaches BEFORE timing anything: a cold first load of it can
+    // take longer than the windows below on a busy box, and that is an import cost, not the hang
+    // this clause is about (it was a coin flip at load ~20-100; t138 round 4).
+    await import('../../costs/provider-balance-check.js');
+    await import('../../services/memory-low-notice.js');
+    await import('../../services/resource-monitor.js');
+    await import('../../scheduler/runner.js');
     const within = <T>(p: Promise<T>, ms: number): Promise<T | 'held'> =>
       Promise.race([p, new Promise<'held'>((res) => setTimeout(() => res('held'), ms))]);
 
