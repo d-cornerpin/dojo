@@ -219,6 +219,24 @@ describe('t140 — rows ABOUT TO LEAVE the view are folded before the ceiling cu
     expect(generateSummarySpy).not.toHaveBeenCalled();
   });
 
+  it('a fold never splits a tool_use from its tool_result: it extends by the one paired row', async () => {
+    // Row 320 (the first row the fold would KEEP) is the tool result of row 319's call.
+    seedBusyHistory(319);
+    insertMessage({
+      agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: 120,
+      content: JSON.stringify([{ type: 'tool_use', id: 'call-dock', name: 'dock_status', input: {} }]),
+    });
+    insertMessage({
+      agentId: AGENT, role: 'tool', lane: 'owner', turnNumber: 120,
+      content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-dock', content: 'open' }]),
+    });
+    seedBusyHistory(290);
+    await runPreCallGates(freshState(), makeCtx());
+    await settle();
+    const seqs = allSeqs(AGENT);
+    expect(summarisedSeqs(AGENT), 'the step (320 rows) plus the tool result paired with its last row').toEqual(seqs.slice(0, 321));
+  });
+
   it('far from the ceiling and with room in the window, the same gate folds nothing', async () => {
     seedBusyHistory(300);
     await runPreCallGates(freshState(), makeCtx());
@@ -269,5 +287,24 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     // maxTrimUnits(100 rows, block 20) = floor(50 / 20) × 20 = 40: the token trim's own bound.
     expect(folded).toEqual(seqs.slice(0, 40));
     expect(folded.some((q) => q > seqs[39]), 'the newest 60 rows are the live view and stay raw').toBe(false);
+  });
+
+  it('THE FLOOR: a full view with few rows folds only down to the newest row cap, never into it', async () => {
+    // 50 heavy rows: full, and the trim's own bound (one block, 20 rows) would reach into the
+    // newest 40 — the floor no compaction folds. The fold is clamped to the 10 rows above it.
+    seedSmallAgent(50);
+    const state = advance(initState({
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
+      turnNumber: 30, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
+      lastUserMessageContent: 'tally?', lastUserMessageId: null,
+      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
+    const ctx = Object.assign(makeCtx(), {
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
+    });
+    await runPreCallGates(state, ctx);
+    for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+    const seqs = allSeqs(SMALL_AGENT);
+    expect(summarisedSeqs(SMALL_AGENT)).toEqual(seqs.slice(0, 10));
   });
 });
