@@ -7633,6 +7633,20 @@
       "to": 1331,
       "by": "t139 round 2 — orchestrator review GO-WITH-FIXES (C1, I1-I5, R-V333-5, hand-up 4, M1-M3)",
       "why": "+2 (+13/-11; 8 comment, 5 code). The active-tasks reserve re-derived 3,444 -> 3,584 with its `measured` text (C1's waiting line, the newer-messages count, the two-shape generator). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 533,
+      "to": 540,
+      "by": "t139 round 3 — R-V333-8 + re-review minors",
+      "why": "+7: the waiting line names WHO paused the task from its own transition (`by`), not `status_before_pause` (written for every pause), so an owner's own pause is no longer presented as 'waiting on <owner> to answer'; the generator takes the widest of the four texts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 578,
+      "to": 583,
+      "by": "t139 round 3 — R-V333-8 + re-review minors",
+      "why": "+5: R-V333-8 computes the recorded exit (`continuing`, the same queued-continuation fact the pause reads) once and passes it to settlement; the comment above the round-2 pause-side flag now says its settlement half was reverted. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7803,7 +7817,7 @@
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 53,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 578,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 583,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
     "packages/server/src/agent/web-tools.ts": 441,
@@ -7862,7 +7876,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/memory/tail-horizon.ts": 391,
-    "packages/server/src/memory/work-board-lane.ts": 533,
+    "packages/server/src/memory/work-board-lane.ts": 540,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
@@ -7932,7 +7946,7 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1403,
+    "packages/server/src/work/ask-settlement.ts": 1382,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
