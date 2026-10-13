@@ -72,6 +72,7 @@ vi.mock('../../services/imessage-bridge.js', () => ({
   parseSafeSenders: (raw: string | null) => (raw ? (JSON.parse(raw) as Array<{ address: string }>) : []),
   sendIMessageWithAttachment: vi.fn(), addressesMatch: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(),
   getInboundSenderFor: () => null, sendAlert: vi.fn(),
+  getTurnScopedImRecipient: () => null, getDefaultSender: () => null,
 }));
 vi.mock('../compaction.js', async () => {
   const actual = await vi.importActual<typeof import('../compaction.js')>('../compaction.js');
@@ -118,12 +119,25 @@ vi.mock('../../google/auth.js', async () => {
   return { ...actual, listGoogleAccountViews: () => googleViews.current };
 });
 
+// The async media door (fix round 1, I-3): the real `image_create` handler runs; only the image
+// model's choice and its HTTP answer are scripted.
+vi.mock('../../services/image-gen-model.js', () => ({ getEffectiveImageGenModel: () => ({ modelId: 'm', providerId: 'p' }) }));
+vi.mock('../../services/image-generation.js', () => ({
+  generateImage: async () => ({ ok: false, code: 'HTTP', error: 'HTTP 500 from the image provider' }),
+}));
+
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { startGmailWatcher, stopGmailWatcher } from '../../services/gmail-watcher.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { tagTurnOutputConversationId, insertEngineEvent } from '../message-store.js';
+import { insertInboundMessageIfAbsent, } from '../../work/ask-title.js';
+import { recordInboundMeta } from '../../agent/v2/inbound-channel.js';
+import { askIdForMessage, openDelegationJoin } from '../../work/store.js';
+import { startTurn, finalizeTurn } from '../../agent/v2/turn-record.js';
+import { mediaHandlers } from '../../agent/tools/cat/media.js';
+import { LabelFacts } from '../row-label.js';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
@@ -148,10 +162,13 @@ const seen: Wire[][] = [];
 /** The script: each entry answers one model call, in order. */
 let script: Array<{ content?: string; tool?: { name: string; arguments: Record<string, unknown> } }> = [];
 let toolSeq = 0;
+/** Fix round 1 (I-2): something that happens WHILE the next model call is in flight. */
+let duringNextCall: (() => void) | null = null;
 
 function installModel(): void {
   callModelSpy.mockImplementation(async (params: { messages: Wire[] }) => {
     seen.push(JSON.parse(JSON.stringify(params.messages)) as Wire[]);
+    if (duringNextCall) { const f = duringNextCall; duringNextCall = null; f(); }
     const step = script.shift() ?? { content: '[no-reply]' };
     if (step.tool) {
       toolSeq += 1;
@@ -247,6 +264,7 @@ beforeEach(() => {
   seen.length = 0;
   script = [];
   toolSeq = 0;
+  duringNextCall = null;
   callModelSpy.mockReset();
   executeToolSpy.mockReset();
   googleReadMock.mockReset();
@@ -434,5 +452,124 @@ describe('t141 — every EVENTS item says who it is addressed to, and from whom'
     expect(lines.find((l) => l.includes('ZEBRA invoice'))).toMatch(/\[email notice TO THE OWNER, from billing@vendor\.example\]/);
     expect(lines.find((l) => l.includes('PM EFFORT REVIEW') || l.includes('many calls without advancing')))
       .toMatch(/\[TO YOU, from Project Lead: agent_notice\]/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1 (review `overhaul-plans/t141-review.md`). RED at 588e3f9e, each named for its finding.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** A notice into the owner's inbox written by the watcher's own two insert calls, at any instant. */
+function noticeNow(id: string, subject: string): void {
+  const conv = mockDb.current!.prepare(`INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, thread_root, created_at)
+                                         VALUES (?, ?, 'email', 'gmail', 'billing@vendor.example', ?, datetime('now'))`);
+  conv.run(`conv-${id}`, AGENT, `th-${id}`);
+  insertInboundMessageIfAbsent({
+    id, agentId: AGENT, role: 'user', conversationId: `conv-${id}`, channel: 'email', senderId: 'billing@vendor.example', authorized: false,
+    content: `[SOURCE: GMAIL NOTIFICATION — owner.inbox@example.com (user's Google account)]\n\nFrom: Billing Desk <billing@vendor.example>\nSubject: ${subject}\nPreview: ${subject} is attached.`,
+  });
+  recordInboundMeta(id, { channel: 'email', accountKind: 'user', authorized: false, sender: 'billing@vendor.example', emailMessageId: `gm-${id}`, emailService: 'gmail', emailAccount: 'owner.inbox@example.com', emailSubject: subject } as never);
+}
+
+describe('fix round 1 — I-1 (ruling R-V333-6, option a): a thread answered elsewhere is not shown as unanswered', () => {
+  it.fails('on thread B\'s turn, the answer already given on thread A sits next to A\'s question, labelled with thread A', async () => {
+    setMailbox('agent', 'agent.box@example.com');
+    mockDb.current!.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('gmail_approved_senders_agent', ?, datetime('now'))`)
+      .run(JSON.stringify([{ address: 'colleague@example.com', name: 'A Colleague' }]));
+    await mailArrives([{ id: 'gm-a', threadId: 'th-alpha', from: 'A Colleague <colleague@example.com>', subject: 'ALPHA budget', snippet: 'Can you check the ALPHA budget?' }]);
+    await turn({ content: 'ALPHA budget is approved by finance, 12k.' });
+    await mailArrives([{ id: 'gm-b', threadId: 'th-beta', from: 'A Colleague <colleague@example.com>', subject: 'BETA offsite', snippet: 'Is the BETA offsite still on?' }]);
+    const t2 = await turn({ content: 'Yes, still on.' });
+    const all = wireText(t2[0]);
+    expect(all, 'thread A\'s question is in B\'s view').toContain('Can you check the ALPHA budget?');
+    expect(all, 'and so is the answer it already got — never an unanswered-looking question').toContain('ALPHA budget is approved by finance, 12k.');
+    expect(labelBefore(all, 'ALPHA budget is approved by finance')).toMatch(/subject "ALPHA budget"/);
+  });
+});
+
+describe('fix round 1 — I-2: HANDLED only for a notice a finished turn actually had in view', () => {
+  it.fails('a notice that lands DURING a turn\'s model call is NEW on the next turn (probe D)', async () => {
+    await submitUserMessage(AGENT, 'Quick question: what is two plus two?');
+    duringNextCall = () => noticeNow('yak-1', 'YAK invoice');
+    const t1 = await turn({ content: 'Four.' });
+    expect(wireText(t1[0])).not.toContain('YAK invoice');
+    await submitUserMessage(AGENT, 'Anything new?');
+    const t2 = await turn({ content: 'One notice.' });
+    const line = (t2[0].map(textOf).find((x) => x.includes('EVENTS & NOTICES')) ?? '').split('\n').find((l) => l.includes('YAK invoice')) ?? '';
+    expect(line).toMatch(/^• NEW /);
+  });
+
+  it('only a turn that SHOWS the notices list can mark one handled — an agent-thread turn cannot (kills M1)', async () => {
+    await submitUserMessage(AGENT, 'Hello.');
+    await turn({ content: 'Hi.' });
+    noticeNow('yak-2', 'YAK reminder');
+    // A finished agent-thread turn whose own trigger came AFTER the notice. It never rendered
+    // EVENTS (agent-thread turns drop the owner's notices), so it cannot have dealt with it.
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
+    await deliverA2AMessage({ intent: 'FYI', threadId: '7e1f2a3b-0000-4000-8000-0000000000f1', requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'fyi' });
+    const peerRow = (mockDb.current!.prepare(`SELECT id FROM messages WHERE source_agent_id = 'peer-agent' ORDER BY seq DESC LIMIT 1`).get() as { id: string }).id;
+    const n = startTurn({ agentId: AGENT, kind: 'a2a', subjectKind: 'a2a_thread', subjectId: null, rootKind: null, rootId: null, sourceMessageId: peerRow, convKey: null });
+    finalizeTurn(AGENT, n, 'answered', true, null);
+    await submitUserMessage(AGENT, 'Anything new?');
+    const t = await turn({ content: 'One reminder.' });
+    const line = (t[0].map(textOf).find((x) => x.includes('EVENTS & NOTICES')) ?? '').split('\n').find((l) => l.includes('YAK reminder')) ?? '';
+    expect(line).toMatch(/^• NEW /);
+  });
+});
+
+describe('fix round 1 — I-4: the email wake\'s own work is labelled with ITS email', () => {
+  it.fails('the wake\'s search reads as work on the ZEBRA notice from its sender, not an anonymous background wake', async () => {
+    await orchidThenZebraWake();
+    await submitUserMessage(AGENT, 'What have you finished for me today?');
+    const t3 = await turn({ content: 'The ORCHID note.' });
+    expect(labelBefore(wireText(t3[0]), 'ZEBRA invoice 4471'))
+      .toMatch(/work on the email notice from billing@vendor\.example, subject "ZEBRA invoice" — not part of any conversation/);
+  });
+});
+
+describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appears in his conversation, labelled as such', () => {
+  it.fails('a delegated result relayed back reads as a result for his request, never "subject not recorded"', async () => {
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
+    await submitUserMessage(AGENT, 'Ask the peer for the PELICAN status.');
+    const ask = mockDb.current!.prepare(`SELECT id, conversation_id FROM messages WHERE role = 'user' ORDER BY seq DESC LIMIT 1`).get() as { id: string; conversation_id: string };
+    const THREAD = '7e1f2a3b-0000-4000-8000-00000000d1e1';
+    openDelegationJoin({ parentWorkId: askIdForMessage(ask.id), agentId: AGENT, replyConversationId: ask.conversation_id,
+      ttlAt: Date.now() + 3_600_000, threads: [{ threadId: THREAD, assigneeAgent: 'peer-agent', intent: 'ASSIGN' }] });
+    await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: THREAD, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'PELICAN status is green across all three sites.' });
+    const relay = mockDb.current!.prepare(`SELECT content FROM messages WHERE role = 'assistant' AND content LIKE '%PELICAN status is green%'`).get() as { content: string } | undefined;
+    expect(relay, 'the engine relayed the delegated result to the owner').toBeDefined();
+    await submitUserMessage(AGENT, 'Thanks — anything else?');
+    const t = await turn({ content: 'No.' });
+    const label = labelBefore(wireText(t[0]), 'PELICAN status is green');
+    expect(label).toMatch(/dashboard conversation with TestUser — result delivered later, for the request of /);
+    expect(label).not.toMatch(/subject not recorded/);
+  });
+
+  it.fails('an image the owner asked for that FAILED later reads as a result for his request', async () => {
+    await submitUserMessage(AGENT, 'Make me an image of a heron at dawn.');
+    executeToolSpy.mockImplementationOnce(async (...a: unknown[]) => {
+      const tc = a.find((x) => x && typeof x === 'object' && 'id' in (x as object)) as { id: string; name: string; arguments: Record<string, unknown> };
+      const out = await (mediaHandlers as Record<string, (c: unknown) => Promise<{ content: string; isError: boolean }>>)
+        .image_create({ agentId: AGENT, args: tc.arguments, toolCallId: tc.id });
+      return { toolCallId: tc.id, name: tc.name, content: out.content, isError: out.isError };
+    });
+    await turn({ tool: { name: 'image_create', arguments: { description: 'a heron at dawn' } } }, { content: 'It is on its way.' });
+    for (let i = 0; i < 40 && !mockDb.current!.prepare(`SELECT 1 FROM messages WHERE content LIKE 'I wasn''t able to generate%'`).get(); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await submitUserMessage(AGENT, 'Did it work?');
+    const t = await turn({ content: 'No.' });
+    const label = labelBefore(wireText(t[0]), 'I wasn\'t able to generate that image');
+    expect(label).toMatch(/dashboard conversation with TestUser — result delivered later, for the request of /);
+  });
+});
+
+describe('fix round 1 — m-3: a thread\'s label is its stable identity', () => {
+  it.fails('the peer named is the thread\'s FIRST sender, read from the store, whatever the tail holds', async () => {
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei'), ('late-agent', 'Latecomer', 'm', 'idle', '{}', 'sensei')`).run();
+    const T = '7e1f2a3b-0000-4000-8000-0000000000aa';
+    await deliverA2AMessage({ intent: 'FYI', threadId: T, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'first' });
+    await deliverA2AMessage({ intent: 'FYI', threadId: T, requiresResponse: false, toAgent: AGENT, fromAgent: 'late-agent', payload: 'second' });
+    expect(new LabelFacts(AGENT, []).thread(T)).toBe('agent thread 7e1f2a3b with Peer');
   });
 });
