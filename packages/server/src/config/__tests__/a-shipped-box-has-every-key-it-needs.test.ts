@@ -288,6 +288,7 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
   openrouter_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',
   deepseek_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',
   deepseek_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',
+  owner_notice_memory_low: 'WRITTEN — the critical-memory latch (t138 round 3): set when memory falls below 512MB and the owner is told, deleted when it is seen back above; absent means not low',
 };
 
 describe('§3 every config key a shipped box needs comes from something that ships', () => {

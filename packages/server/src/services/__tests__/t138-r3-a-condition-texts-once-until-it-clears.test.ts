@@ -124,7 +124,7 @@ const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !
 const about = (word: string): string[] => texts().filter((t) => t.includes(word));
 
 describe('memory below 512MB', () => {
-  it.fails('texts once while it stays low, however long; again only after it recovered and fell again', async () => {
+  it('texts once while it stays low, however long; again only after it recovered and fell again', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     let now = Date.now();
     vi.setSystemTime(now);
@@ -144,7 +144,7 @@ describe('memory below 512MB', () => {
     expect(about('512MB')).toHaveLength(2);
   });
 
-  it.fails('a restart in the middle of a low stretch does not text again', async () => {
+  it('a restart in the middle of a low stretch does not text again', async () => {
     memory.freeMb = 300;
     (await import('../resource-monitor.js')).canSpawnAgent();
     vi.resetModules();
@@ -154,7 +154,7 @@ describe('memory below 512MB', () => {
 });
 
 describe('the Healer itself is broken', () => {
-  it.fails('texts once however many times it is injured; again only after it recovered and broke again', async () => {
+  it('texts once however many times it is injured; again only after it recovered and broke again', async () => {
     vi.useFakeTimers();
     const healer = await import('../../healer/injury-recovery.js');
     healer.onAgentInjured('hl', 'provider down');
@@ -168,7 +168,7 @@ describe('the Healer itself is broken', () => {
 });
 
 describe('the Healer is missing', () => {
-  it.fails('texts once however many agents are injured meanwhile; again only after it was back and went missing again', async () => {
+  it('texts once however many agents are injured meanwhile; again only after it was back and went missing again', async () => {
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET status = 'terminated' WHERE id = 'hl'").run();
     const healer = await import('../../healer/injury-recovery.js');

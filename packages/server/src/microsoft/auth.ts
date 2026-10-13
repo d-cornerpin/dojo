@@ -304,10 +304,10 @@ function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string):
   updateMicrosoftAccount(accountId, { connected: false });
   if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
   broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-  const label = acc?.kind === 'user' ? "user's" : "agent's";
-  const who = acc?.email ? ` (${acc.email})` : '';
-  try { sendAlert(`Microsoft 365 ${label} account${who} connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch { /* alert best effort */ }
+  try { sendAlert(expiredWords(acc), 'critical'); } catch { /* alert best effort */ }
 }
+
+const expiredWords = (acc: { kind?: string; email?: string | null } | null): string => `Microsoft 365 ${acc?.kind === 'user' ? "user's" : "agent's"} account${acc?.email ? ` (${acc.email})` : ''} connection expired. Re-authenticate in Settings > Microsoft.`; // the reconnect all-clear removes this card (t138 r3)
 
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getMicrosoftAccount(accountId);
@@ -398,7 +398,7 @@ export async function attemptMicrosoftReconnect(accountId: string): Promise<'rec
   // self-heal would leave the owner planning a trip to Settings for nothing.
   // One low-key line closes that loop. Not celebration, cancellation.
   try {
-    sendAlert(`Microsoft account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice');
+    sendAlert(`Microsoft account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice', { clears: expiredWords(acc) });
   } catch { /* alert best effort */ }
   return 'reconnected';
 }

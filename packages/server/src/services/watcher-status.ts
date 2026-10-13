@@ -74,6 +74,12 @@ function watcherLabel(name: WatcherStatus['name']): string {
 // minFailureDurationMs AND has hit MIN_CONSECUTIVE_FAILURES_FOR_ALERT.
 // After that, silences itself until the watcher recovers (so a persistently
 // broken watcher doesn't spam).
+// The words of each watcher's failure text, so its recovery all-clear can name the dashboard
+// card it ends (t138 round 3: an all-clear removes the trouble card and raises none). It lives
+// as long as `alreadyAlerted` does — the watcher's own process memory — which is the only time a
+// recovery all-clear is sent.
+const failureWordsTold = new Map<WatcherStatus['name'], string>();
+
 export function maybeAlertOnFailure(params: {
   name: WatcherStatus['name'];
   consecutiveFailures: number;
@@ -108,6 +114,7 @@ export function maybeAlertOnFailure(params: {
   // when Gmail/Outlook/Teams stops polling, the user's email/chat input
   // stops reaching their agents. Real user-impact event, not just noise.
   try { sendAlert(message, 'critical'); } catch { /* best effort */ }
+  failureWordsTold.set(params.name, message);
   return true;
 }
 
@@ -143,7 +150,9 @@ export function maybeAlertOnRecovery(params: {
   // confirmation reaches the same channel (the phone) that got the
   // failure alert. Without this the user is left wondering whether the
   // problem is still ongoing.
-  try { sendAlert(message, 'critical'); } catch { /* best effort */ }
+  const failure = failureWordsTold.get(params.name);
+  failureWordsTold.delete(params.name);
+  try { sendAlert(message, 'critical', failure === undefined ? { card: false } : { clears: failure }); } catch { /* best effort */ }
   return false;
 }
 

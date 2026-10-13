@@ -151,25 +151,47 @@ function thresholdOf(raw: string | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function setLatch(latchKey: string, on: boolean): void {
+/** The latch row holds what the owner was told (`{ at, words }`), so his dashboard card outlives
+ *  the page (t138 round 3); `dismissedAt` is added when he dismisses that card. */
+function setLatch(latchKey: string, told: { words: string } | null): void {
   const db = getDb();
-  if (on) {
-    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, 'true', datetime('now'))
-                ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')`).run(latchKey);
+  if (told) {
+    const value = JSON.stringify({ at: Date.now(), words: told.words });
+    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).run(latchKey, value);
   } else {
     db.prepare('DELETE FROM config WHERE key = ?').run(latchKey);
   }
 }
 
+/** The balance owner cards a dashboard shows on load: each latched, undismissed crossing. A
+ *  top-up deletes the latch, which ends the card; falling again writes a fresh one. */
+export function balanceOwnerCards(): Array<{ words: string; severity: 'notice'; dismiss: () => void }> {
+  const keys = readKeys();
+  return WATCHED.flatMap((w) => {
+    let told: { at?: number; words?: string; dismissedAt?: number } = {};
+    try { told = JSON.parse(keys.get(w.latchKey) ?? '{}') as typeof told; } catch { /* a bare legacy latch: no words */ }
+    if (typeof told.words !== 'string' || told.dismissedAt !== undefined) return [];
+    return [{
+      words: told.words,
+      severity: 'notice' as const,
+      dismiss: () => {
+        getDb().prepare('UPDATE config SET value = ? WHERE key = ?')
+          .run(JSON.stringify({ ...told, dismissedAt: Date.now() }), w.latchKey);
+      },
+    }];
+  });
+}
+
 async function checkOne(w: Watched): Promise<void> {
   const { latchKey } = w;
   const keys = readKeys();
-  const latched = keys.get(latchKey) === 'true';
+  const latched = keys.has(latchKey);
 
   const provider = w.find();
   const credential = provider ? getProviderCredential(provider.id) : null;
   if (!credential) {
-    if (latched) setLatch(latchKey, false);
+    if (latched) setLatch(latchKey, null);
     return;
   }
 
@@ -184,14 +206,12 @@ async function checkOne(w: Watched): Promise<void> {
   if (balance === null || !Number.isFinite(balance) || threshold === null) return;
 
   if (!latched && balance <= threshold) {
-    setLatch(latchKey, true);
+    const words = `${w.label} balance is $${balance.toFixed(2)}, at or below your ${usd(threshold)} warning threshold. Add credits at ${w.topUpAt}.`;
+    setLatch(latchKey, { words });
     logger.warn(`${w.label} balance at or below its warning threshold`, { balance, threshold });
-    sendAlert(
-      `${w.label} balance is $${balance.toFixed(2)}, at or below your ${usd(threshold)} warning threshold. Add credits at ${w.topUpAt}.`,
-      'notice',
-    );
+    sendAlert(words, 'notice');
   } else if (latched && balance > threshold) {
-    setLatch(latchKey, false);
+    setLatch(latchKey, null);
     logger.info(`${w.label} balance back above its warning threshold, re-armed`, { balance, threshold });
   }
 }

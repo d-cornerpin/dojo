@@ -14,7 +14,12 @@ import type { Provider, Model } from '@dojo/shared';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
-import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance } from '../../costs/provider-balance-check.js';
+import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, readDeepSeekBalance, balanceOwnerCards } from '../../costs/provider-balance-check.js';
+import { budgetOwnerCards } from '../../costs/budget.js';
+import { pausedAgentOwnerCards } from '../../agent/paused-owner-card.js';
+import { healerOwnerCards } from '../../healer/owner-notices.js';
+import { memoryOwnerCards } from '../../services/resource-monitor.js';
+import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
@@ -2723,6 +2728,33 @@ configRouter.post('/agent-sdk/verify', async (c) => {
     noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { authenticated: false, error: err instanceof Error ? err.message : String(err) } });
   }
+});
+
+// ── THE OWNER'S CARDS (t138 round 3, ruling R-V333-13) ──
+//
+// Every text the platform sends the owner also waits on his dashboard until he dismisses it.
+// The dashboard asks here on load and on every reconnect. There is no store of cards: each is
+// RE-DERIVED from the alert state its owner already keeps (budget and balance latches, the
+// error loop's paused row, the Healer's durable state, the memory latch), in the words the
+// text carried (as the door scrubs them). Dismissing stamps that incident's own row, so it stays
+// dismissed across reloads and restarts, and a NEW incident is a new card.
+const ownerCards = () => [
+  ...budgetOwnerCards(), ...balanceOwnerCards(), ...pausedAgentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
+].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words) }));
+
+// GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
+configRouter.get('/owner-notices', (c) => {
+  const seen = new Map(ownerCards().map(({ words, severity }) => [words, { words, severity }] as const));
+  return c.json({ ok: true, data: [...seen.values()] });
+});
+
+// POST /api/config/owner-notices/dismiss — { words }: the card's X
+configRouter.post('/owner-notices/dismiss', async (c) => {
+  const body = await c.req.json().catch(() => null) as { words?: unknown } | null;
+  if (typeof body?.words !== 'string') return c.json({ ok: false, error: 'words is required' }, 400);
+  const hits = ownerCards().filter((card) => card.words === body.words);
+  for (const card of hits) card.dismiss();
+  return c.json({ ok: true, data: { dismissed: hits.length } });
 });
 
 // GET /api/config/openrouter/credits — fetch OpenRouter account balance

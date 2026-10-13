@@ -32,7 +32,10 @@ const SRC = path.resolve(HERE, '..', '..');
 
 type NoticeClass = 'budget' | 'agent-trouble' | 'platform-trouble';
 type Severity = 'critical' | 'notice' | 'warning' | 'info';
-interface Site { cls: NoticeClass; severity: Severity; what: string; muted?: string }
+/** The dashboard side of a phone-bound site (t138 round 3): it raises a card (default), raises
+ *  none (`none`, a status line), or removes the trouble card it answers (`clears`, an all-clear). */
+type Card = 'card' | 'none' | 'clears';
+interface Site { cls: NoticeClass; severity: Severity; what: string; muted?: string; card?: Card }
 
 const CLASSES: readonly NoticeClass[] = ['budget', 'agent-trouble', 'platform-trouble'];
 
@@ -61,21 +64,21 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'google/auth.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a Google account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own' },
+    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own', card: 'clears' },
   ],
   'microsoft/auth.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a Microsoft account connection expired' },
-    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own' },
+    { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own', card: 'clears' },
   ],
   'services/resource-monitor.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory' },
   ],
   'services/tunnel.ts': [
-    { cls: 'platform-trouble', severity: 'notice', what: 'the remote address changed; the old link no longer reaches the box' },
+    { cls: 'platform-trouble', severity: 'notice', what: 'the remote address changed; the old link no longer reaches the box', card: 'none' },
   ],
   'services/watcher-status.ts': [
     { cls: 'platform-trouble', severity: 'critical', what: 'a mail/chat watcher has been failing' },
-    { cls: 'platform-trouble', severity: 'critical', what: 'the all-clear: the watcher recovered' },
+    { cls: 'platform-trouble', severity: 'critical', what: 'the all-clear: the watcher recovered', card: 'clears' },
   ],
 };
 
@@ -166,7 +169,7 @@ function bareReferences(code: string): string[] {
   return out;
 }
 
-interface Found { rel: string; severity: string }
+interface Found { rel: string; severity: string; card: Card }
 
 /** Every `sendAlert(…)` CALL in the server's source (the definition excluded), with the
  *  severity literal it passes as its last argument (or `<not a literal>`). */
@@ -187,8 +190,10 @@ function findCalls(): { calls: Found[]; importers: string[]; aliased: string[] }
       if (/function\s+$/.test(code.slice(Math.max(0, m.index - 20), m.index))) continue;
       const open = m.index + m[0].length - 1;
       const text = code.slice(open, closeOf(code, open));
-      const sev = /,\s*'(\w+)'\s*,?\s*\)$/.exec(text);
-      calls.push({ rel, severity: sev ? sev[1] : '<not a literal>' });
+      // The severity is the second argument; an options object may follow it (t138 round 3).
+      const sev = /,\s*'(info|warning|critical|notice)'\s*(?:,[\s\S]*)?\)$/.exec(text);
+      const card: Card = /\bclears\s*:/.test(text) ? 'clears' : /\bcard\s*:\s*false\b/.test(text) ? 'none' : 'card';
+      calls.push({ rel, severity: sev ? sev[1] : '<not a literal>', card });
     }
   }
   return { calls, importers, aliased };
@@ -203,6 +208,16 @@ describe('the owner-notice census', () => {
     const declared: Record<string, string[]> = {};
     for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.severity);
     expect(actual, 'a new or changed sendAlert caller: classify it in CENSUS (budget | agent-trouble | platform-trouble)').toEqual(declared);
+  });
+
+  it('every caller raises, withholds or clears its dashboard card as declared (t138 round 3)', () => {
+    const actual: Record<string, Card[]> = {};
+    for (const c of calls) (actual[c.rel] ??= []).push(c.card);
+    const declared: Record<string, Card[]> = {};
+    for (const [rel, sites] of Object.entries(CENSUS)) declared[rel] = sites.map((s) => s.card ?? 'card');
+    expect(actual, 'an all-clear or status line must declare its card; a trouble notice raises one').toEqual(declared);
+    const noCard = Object.values(CENSUS).flat().filter((s) => (s.card ?? 'card') !== 'card');
+    expect(noCard.every((s) => s.cls === 'platform-trouble'), 'budget and agent-trouble always raise a card').toBe(true);
   });
 
   it('every file that imports the door calls it, and every caller imports it; no alias, re-export or hand-off of the door', () => {

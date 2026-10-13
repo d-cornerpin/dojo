@@ -8,6 +8,7 @@ import { writeAgentStatus } from './agent-status.js';
 import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
 } from './error-loop-state.js';
+import { pausedWords, closePausedCards } from './paused-owner-card.js';
 
 const logger = createLogger('agent-errors');
 
@@ -95,31 +96,13 @@ export function recordError(agentId: string): boolean {
     // records what it was emptied for.
     noteErrorLoopPause(agentId, window, now);
 
-    // Broadcast structured error to dashboard so the chat shows why the agent was paused.
-    // v2.3.19 (error-handling-spec Phase 2) — plain language, no jargon
-    // about thresholds in user-facing copy. The technical count is in logs.
-    const errorMsg = `Agent paused after repeated errors. Open the Vitals page to investigate, or resume the agent from its detail page.`;
-    broadcast({
-      type: 'chat:error',
-      agentId,
-      error: errorMsg,
-      code: 'ERROR_LOOP',
-      severity: 'error',
-      retryable: false,
-    });
-
-    // Notify owner via iMessage
-    try {
-      const db = getDb();
-      const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      const name = agent?.name ?? agentId;
-      // A paused agent is a BROKEN agent: one of the two things the owner ruled the platform
-      // may tell him directly (OR-V333-SET (3)). v2.3.19 had demoted this to 'warning', which
-      // the door drops before the phone. Once per trip: the window empties on the trip.
-      sendAlert(`${name} has been paused after repeated errors. Open the dashboard to investigate.`, 'notice');
-    } catch (err) {
-      logger.warn('Failed to send iMessage alert for error loop', { agentId, error: err instanceof Error ? err.message : String(err) });
-    }
+    // A paused agent is a BROKEN agent: one of the two things the owner ruled the platform may
+    // tell him directly (OR-V333-SET (3)); once per trip, as the window empties on the trip.
+    // The owner first, then the agent's own chat in the SAME words, so on that chat the two
+    // fold into one card (t138 round 3). v2.3.19: plain language, the count stays in logs.
+    const words = pausedWords(agentId);
+    sendAlert(words, 'notice');
+    broadcast({ type: 'chat:error', agentId, error: words, code: 'ERROR_LOOP', severity: 'error', retryable: false });
 
     return true; // Signal: agent was paused
   }
@@ -129,6 +112,7 @@ export function recordError(agentId: string): boolean {
 
 export function clearErrors(agentId: string): void {
   clearErrorLoop(agentId);
+  closePausedCards(agentId); // a clean turn: the agent works again, so the owner's card for the trip ends
 }
 
 /**

@@ -1,0 +1,105 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// WHAT THE OWNER WAS TOLD ABOUT THE HEALER'S CASES, AND WHETHER IT STILL STANDS (t138 round 3).
+//
+// Three owner texts come from `injury-recovery.ts`: an agent auto-recovery gave up on ("stuck"),
+// the Healer itself broken, and an agent stuck while the Healer is missing. Owner ruling
+// (2026-10-13): no hard limits — "the Dojo should be smart enough to know when enough is
+// enough". So each texts ONCE when its condition starts and again only after it genuinely
+// cleared and came back; and (ruling R-V333-13) the same words wait on his dashboard until he
+// dismisses them, re-derived from this state on every load.
+//
+// No new store: the Healer's own durable `healer_state (scope, key, at_ms)` table, which already
+// holds its damping (scopes 'agent_suppression', 'provider_alert'), gains two scope VALUES:
+//   'owner_told'      key = the condition, at_ms = when the owner was told;
+//   'owner_dismissed' key = the same condition, at_ms = when he dismissed its card.
+// A condition's rows are deleted when it clears; telling it again starts fresh.
+//
+// Conditions: `stuck:<agentId>` (clears on that agent's recovery), `healer-broken` (clears when
+// the Healer recovers, or is seen healthy at the next injury of another agent), and
+// `healer-missing:<agentId>` (one at a time, whichever agent found it missing first; clears
+// when an injury finds the Healer present again).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { getDb } from '../db/connection.js';
+
+const TOLD = 'owner_told';
+const DISMISSED = 'owner_dismissed';
+
+/** The words of each text; the owner card carries the same ones. */
+export const HEALER_BROKEN_WORDS = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
+export const stuckWords = (name: string): string =>
+  `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
+export const healerMissingWords = (name: string): string =>
+  `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
+
+/**
+ * True exactly when the owner has NOT yet been told about this condition — its own `key`, or,
+ * for a condition one agent stands for (`healer-missing:`), any key under `family` — and
+ * records that he is being told now.
+ */
+export function tellOwnerOnce(key: string, family?: string): boolean {
+  try {
+    return recordTold(key, family);
+  } catch {
+    return true; // the record could not be read or written: tell him rather than stay silent
+  }
+}
+
+function recordTold(key: string, family?: string): boolean {
+  const db = getDb();
+  const told = db.prepare(`SELECT 1 FROM healer_state WHERE scope = ? AND (key = ? OR (? IS NOT NULL AND key LIKE ? || '%'))`)
+    .get(TOLD, key, family ?? null, family ?? null);
+  if (told) return false;
+  db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
+              ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)
+    .run(TOLD, key, Date.now());
+  db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(DISMISSED, key);
+  return true;
+}
+
+/** The condition cleared (its `key`, or every key under `family`): forget he was told and dismissed. */
+export function ownerConditionCleared(key: string, family = false): void {
+  try {
+    getDb().prepare(`DELETE FROM healer_state WHERE scope IN (?, ?) AND (key = ? OR (? AND key LIKE ? || '%'))`)
+      .run(TOLD, DISMISSED, key, family ? 1 : 0, key);
+  } catch { /* best-effort, like the Healer's own damping: never block recovery */ }
+}
+
+/** An agent recovered: its "stuck" condition is over, and if it is the Healer, so is "broken". */
+export function ownerConditionsOnRecovery(agentId: string): void {
+  ownerConditionCleared(`stuck:${agentId}`);
+  try {
+    const healer = getDb().prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
+    if (healer?.value === agentId) ownerConditionCleared('healer-broken');
+  } catch { /* best-effort */ }
+}
+
+/** An injury found the Healer present: it is no longer missing, and if it is not itself in
+ *  error it is no longer broken either. */
+export function ownerConditionsOnHealerSeen(healerStatus: string): void {
+  ownerConditionCleared('healer-missing:', true);
+  if (healerStatus !== 'error') ownerConditionCleared('healer-broken');
+}
+
+/** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed. */
+export function healerOwnerCards(): Array<{ words: string; severity: 'critical' | 'notice'; dismiss: () => void }> {
+  const db = getDb();
+  const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
+    AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
+  const nameOf = (id: string): string =>
+    (db.prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
+  return rows.map(({ key }) => {
+    const [kind, agentId = ''] = key.split(/:(.*)/s);
+    const words = kind === 'stuck' ? stuckWords(nameOf(agentId))
+      : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
+    return {
+      words,
+      severity: kind === 'stuck' ? 'notice' as const : 'critical' as const,
+      dismiss: () => {
+        db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
+                    ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)
+          .run(DISMISSED, key, Date.now());
+      },
+    };
+  });
+}

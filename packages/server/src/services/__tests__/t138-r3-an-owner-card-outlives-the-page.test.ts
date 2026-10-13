@@ -190,7 +190,7 @@ const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
 const liveCards = () => frames().filter((f) => f.severity !== 'info');
 
 describe('a budget card outlives the page', () => {
-  it.fails('it is there on load and after a restart, carries the text\'s words, and a dismissal survives both', async () => {
+  it('it is there on load and after a restart, carries the text\'s words, and a dismissal survives both', async () => {
     let m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 5.1);
@@ -212,7 +212,7 @@ describe('a budget card outlives the page', () => {
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('a NEW crossing after dismissal is a new card', async () => {
+  it('a NEW crossing after dismissal is a new card', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 5.1);
@@ -224,7 +224,7 @@ describe('a budget card outlives the page', () => {
     expect(shown[0].words).toContain('75%');
   });
 
-  it.fails('once the budget window turns over, the incident is over: no card', async () => {
+  it('once the budget window turns over, the incident is over: no card', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 9.2);
@@ -236,7 +236,7 @@ describe('a budget card outlives the page', () => {
 });
 
 describe('a balance card outlives the page', () => {
-  it.fails('shown on load with the text\'s words; dismissed stays dismissed; a top-up ends it; falling again is a new card', async () => {
+  it('shown on load with the text\'s words; dismissed stays dismissed; a top-up ends it; falling again is a new card', async () => {
     account.openrouter = 2;
     let m = await boot();
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -264,7 +264,7 @@ describe('a balance card outlives the page', () => {
 });
 
 describe('an agent-trouble card outlives the page', () => {
-  it.fails('a paused agent: card on load with the text\'s words; dismissed stays dismissed; a clean turn ends it; a new trip is a new card', async () => {
+  it('a paused agent: card on load with the text\'s words; dismissed stays dismissed; a clean turn ends it; a new trip is a new card', async () => {
     let m = await boot();
     const trip = (): void => { let p = false; for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag'); };
     trip();
@@ -282,7 +282,7 @@ describe('an agent-trouble card outlives the page', () => {
     expect(shown[0].words).toContain('Helper');
   });
 
-  it.fails('the paused agent\'s own chat card carries the owner card\'s words, after it (one card on screen)', async () => {
+  it('the paused agent\'s own chat card carries the owner card\'s words, after it (one card on screen)', async () => {
     const m = await boot();
     let p = false;
     for (let i = 0; i < 10 && !p; i++) p = m.errors.recordError('ag');
@@ -293,7 +293,7 @@ describe('an agent-trouble card outlives the page', () => {
     expect(broadcasts[own].error).toBe(broadcasts[owner].error);
   });
 
-  it.fails('a stuck agent (auto-recovery gave up): card on load; dismissed stays dismissed; recovery ends it; stuck again is a new card', async () => {
+  it('a stuck agent (auto-recovery gave up): card on load; dismissed stays dismissed; recovery ends it; stuck again is a new card', async () => {
     let m = await boot();
     vi.useFakeTimers();
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
@@ -314,7 +314,7 @@ describe('an agent-trouble card outlives the page', () => {
 });
 
 describe('all-clears keep their texts, raise no card, and take the trouble card away', () => {
-  it.fails('a watcher recovering: the text is unchanged, no card, and a removal for the failure card', async () => {
+  it('a watcher recovering: the text is unchanged, no card, and a removal for the failure card', async () => {
     const m = await boot();
     m.watcher.maybeAlertOnFailure({
       name: 'gmail', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),
@@ -329,7 +329,7 @@ describe('all-clears keep their texts, raise no card, and take the trouble card 
     expect(frames().filter((f) => f.severity === 'info').map((f) => f.error)).toEqual([failure]);
   });
 
-  it.fails('a Google account reconnecting on its own: the text is unchanged, no card, and the expired card is removed', async () => {
+  it('a Google account reconnecting on its own: the text is unchanged, no card, and the expired card is removed', async () => {
     const m = await boot();
     const acc = m.googleAccounts.insertGoogleAccount({
       kind: 'agent', email: 'helper@example.test', connected: true,

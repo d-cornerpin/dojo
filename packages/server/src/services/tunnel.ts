@@ -493,7 +493,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         // without the "[CRITICAL]" prefix. This is a friendly status
         // announcement, not an incident, so it shouldn't shout.
         try {
-          sendAlert(`Dojo is online at ${tunnelUrl}`, 'notice');
+          sendAlert(`Dojo is online at ${tunnelUrl}`, 'notice', { card: false }); // a status line, not a card
         } catch { /* iMessage bridge may not be running yet */ }
       }
     };

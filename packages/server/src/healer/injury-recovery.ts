@@ -24,6 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { clearAgentLastError } from '../agent/agent-status.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
+import * as told from './owner-notices.js'; // t138 r3: once per condition, and the owner's cards
 
 const logger = createLogger('injury-recovery');
 
@@ -427,8 +428,8 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
       // toast use the same plain-English wording. Raw provider error stays
       // in logs only (logged at line ~135 above). No JSON, no field paths,
       // no "Error: ..." dump.
-      const userMsg = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
-      sendAlert(userMsg, 'critical');
+      const userMsg = told.HEALER_BROKEN_WORDS;
+      if (told.tellOwnerOnce('healer-broken')) sendAlert(userMsg, 'critical'); // until it recovers
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_SELF_INJURED');
       return;
     }
@@ -475,8 +476,8 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
       try {
         const db = getDb();
         const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        const userMsg = `${agent?.name ?? agentId} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
-        sendAlert(userMsg, 'notice'); // a broken agent: OR-V333-SET (3), once per backoff entry
+        const userMsg = told.stuckWords(agent?.name ?? agentId);
+        if (told.tellOwnerOnce(`stuck:${agentId}`)) sendAlert(userMsg, 'notice'); // a broken agent: OR-V333-SET (3), once per backoff entry
         broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
       } catch { /* best effort */ }
     } else {
@@ -695,6 +696,7 @@ export function onAgentRecovered(agentId: string, basis: RecoveryBasis = 'eviden
   // gets full attention again (don't carry a "muted Healer" state across
   // a successful turn).
   healerSuppressedUntil.delete(agentId);
+  told.ownerConditionsOnRecovery(agentId);
 
   // T82c: a clean recovery ends the current doomed chain — the next injury (of any class)
   // starts the session-reset guard's count at zero again, same reset point
@@ -828,13 +830,14 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       logger.warn('Healer agent not available, cannot auto-recover injured agent', { agentId, healerId });
       // v2.3.19 (error-handling-spec Phase 2): plain language only on
       // user-facing surfaces. Provider error already logged above.
-      const userMsg = `${agent.name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
+      const userMsg = told.healerMissingWords(agent.name);
       // v2.3.19, Healer missing is a true blocker (auto-recovery
-      // entirely off until restored). Critical.
-      try { sendAlert(userMsg, 'critical'); } catch { /* best effort */ }
+      // entirely off until restored). Critical. Once until an injury finds it present (t138 r3).
+      if (told.tellOwnerOnce(`healer-missing:${agentId}`, 'healer-missing:')) sendAlert(userMsg, 'critical');
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_MISSING');
       return;
     }
+    told.ownerConditionsOnHealerSeen(healer.status);
 
     const errorClass = classifyError(agent.last_error ?? errorMessage);
     const errorSnippet = (agent.last_error ?? errorMessage).slice(0, 400);

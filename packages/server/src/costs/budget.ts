@@ -107,9 +107,31 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
     limitUsd,
     percentage: pctLabel,
   });
-  // The text and its dashboard card are one thing (the door makes both); the old `cost:alert`
-  // toast was a second copy that faded at 50% and 75%, and is gone (t138 round 2).
-  sendAlert(ownerWords(b, pctLabel, currentSpend, limitUsd), 'notice');
+  // The text and its dashboard card are one thing (the door makes both; the old `cost:alert`
+  // toast is gone, t138 round 2). The words are kept on the row so the card outlives the page,
+  // and a NEW crossing clears an earlier dismissal (round 3).
+  const words = ownerWords(b, pctLabel, currentSpend, limitUsd);
+  db.prepare('UPDATE budgets SET alert_words = ?, alert_dismissed_at = NULL WHERE id = ?').run(words, b.budgetId);
+  sendAlert(words, 'notice');
+}
+
+/**
+ * The budget owner cards a dashboard shows on load (t138 round 3, ruling R-V333-13), re-derived
+ * from the latches: a budget whose latest crossing is still inside its window, not dismissed.
+ * Once the window turns over the incident is over and so is the card.
+ */
+export function budgetOwnerCards(): Array<{ words: string; severity: 'notice'; dismiss: () => void }> {
+  const db = getDb();
+  const rows = db.prepare(`SELECT id, period, alert_words AS words,
+      MAX(COALESCE(alert_50_sent, 0), COALESCE(alert_75_sent, 0), COALESCE(alert_90_sent, 0)) AS toldAt
+    FROM budgets WHERE alert_words IS NOT NULL AND alert_dismissed_at IS NULL`).all() as
+    Array<{ id: string; period: string; words: string; toldAt: number }>;
+  const nowS = Math.floor(Date.now() / 1000);
+  return rows.filter((r) => r.toldAt > 0 && nowS - r.toldAt < windowOf(r.period).seconds).map((r) => ({
+    words: r.words,
+    severity: 'notice' as const,
+    dismiss: () => { db.prepare('UPDATE budgets SET alert_dismissed_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000), r.id); },
+  }));
 }
 
 // ── Post-Cost Alert Check ──
