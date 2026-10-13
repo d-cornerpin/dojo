@@ -8230,7 +8230,7 @@
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1236,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2837,
+    "packages/server/src/memory/assembler.ts": 2836,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
