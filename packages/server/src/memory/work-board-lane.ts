@@ -52,6 +52,8 @@ import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.j
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
 import { estimateTokens } from './budget.js';
 import { laneLimit, truncateWrappedText } from './lanes.js';
+import { recordedInstant } from './message-stamp.js';
+import { conversationLabel } from './party-label.js';
 
 /** The two ids keep their names: the move is a POSITION change, not a new section. */
 export const ATTEMPT_LEDGER_LANE_ID = 'lane.attempt-ledger';
@@ -70,6 +72,25 @@ export interface BoardTask {
   notes: string | null;
 }
 
+/**
+ * t139 — WHAT WAS ASKED, read through the task's link to the row that carried the request
+ * (`work.source_message_id`, the P1 lineage edge). `messageId` null = the task was opened with
+ * no link; `words` null with a `messageId` = the row is no longer stored. Both are rendered as
+ * exactly what they are, never with a request made up to fill the gap.
+ */
+export interface TaskOrigin {
+  messageId: string | null;
+  words: string | null;
+  /** The row's own recorded instant (`messages.created_at`, epoch ms). */
+  createdAt: number | string | null;
+  /** The conversation the row belongs to, as `conversationLabel` names it, plus its channel. */
+  label: string | null;
+}
+
+/** The one pool of original words the block may spend, shared across its tasks in block order
+ *  (see `LANE_LIMITS['lane.active-tasks'].chars.originalWords`). Mutable: each line spends it. */
+interface WordsPool { remaining: number }
+
 export interface WorkBoardBlocks {
   attemptLedger: string | null;
   activeTasks: string | null;
@@ -85,31 +106,65 @@ const ATTEMPT_LEDGER_HEAD =
 const ATTEMPT_LEDGER_TAIL = '═══ END ATTEMPT LEDGER ═══';
 
 /**
- * One task's line, EXACTLY as `lane.active-tasks` rendered it at slot 600, with one
- * addition: the TITLE is capped.
+ * One task's line.
  *
- * W81: the title was the one unbounded term in this block, and an unbounded term is what
- * stopped the lane from having a derivable worst case — which is precisely why it could
- * never have been declared as a post-budget reserve before. 120 chars is the number
- * `lane.relevant-memory` already declares for `snapshotTitle`, chosen there by the same
- * measurement (the longest title on the worn-in body plus room), so this is one cap with one
- * justification rather than a second opinion about the same string.
+ * W81 capped the TITLE (120 chars, one cap with one justification — `lane.relevant-memory`'s
+ * `snapshotTitle`), because an unbounded term is what stops a post-budget lane having a
+ * derivable worst case.
+ *
+ * t139 (#7, OR-TRACKER-1) replaced the `Instructions: <description, 300 chars>` line with the
+ * REQUESTER'S ORIGINAL WORDS. The 300-char cut is gone; the words are printed verbatim and
+ * contiguous between a labelled head and an end marker, so the list can be asserted
+ * byte-for-byte against the row that carried the request. The head says WHEN (the row's
+ * recorded instant, never a relative time — T67b §3) and WHERE (its conversation). A task with
+ * no link shows its stored description under "(original request not linked)": the gap is
+ * labelled, never filled with an invented request. A cut — only when the shared pool is spent —
+ * says how much is missing and names the message `history_get` returns it from.
  */
-function taskLine(t: BoardTask, stamp: string | null, steps: string | null): string {
+function taskLine(
+  t: BoardTask, stamp: string | null, steps: string | null, origin: TaskOrigin, pool: WordsPool,
+): string {
   const titleCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title');
-  const descCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'description');
   const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
   const title = t.title.length > titleCap ? `${t.title.slice(0, titleCap)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
   if (stamp) line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
-  if (t.description) {
-    line += `\n  Instructions: ${t.description.slice(0, descCap)}${t.description.length > descCap ? '...' : ''}`;
-  }
+  line += originSection(t, origin, pool);
   if (t.notes) {
     const lastNote = t.notes.split('\n').filter(Boolean).pop();
     if (lastNote) line += `\n  Last note: ${lastNote.slice(0, noteCap)}`;
   }
   return line;
+}
+
+/** The origin part of a task line: the original words when linked, the labelled description
+ *  when not. Spends the shared pool; returns '' only for an unlinked task with no description. */
+function originSection(t: BoardTask, origin: TaskOrigin, pool: WordsPool): string {
+  if (origin.messageId && origin.words !== null) {
+    const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
+    const rawLabel = origin.label ?? 'a conversation with no recorded label';
+    const label = rawLabel.length > labelCap ? `${rawLabel.slice(0, labelCap)}...` : rawLabel;
+    const head = `\n  Original request (from ${label}, ${recordedInstant(origin.createdAt)}), word for word:\n`;
+    return head + spend(origin.words, pool,
+      '  [end of original request]',
+      (more) => `  [original request continues: ${more} more characters; history_get(id="${origin.messageId}") returns it in full]`);
+  }
+  const why = origin.messageId
+    ? `(original request no longer stored: message ${origin.messageId})`
+    : '(original request not linked)';
+  if (!t.description) return `\n  Description ${why}: none recorded`;
+  return `\n  Description ${why}:\n` + spend(t.description, pool,
+    '  [end of description]',
+    (more) => `  [description continues: ${more} more characters, not shown]`);
+}
+
+/** Print `text` verbatim up to what the pool has left, then the end marker or the cut line. */
+function spend(text: string, pool: WordsPool, endMarker: string, cutLine: (more: number) => string): string {
+  const shown = text.slice(0, Math.max(0, pool.remaining));
+  pool.remaining -= shown.length;
+  return shown.length === text.length
+    ? `${shown}\n${endMarker}`
+    : `${shown}${shown.length > 0 ? '\n' : ''}${cutLine(text.length - shown.length)}`;
 }
 
 /** The block, from lines already built. Pure — the worst-case generator calls this one. */
@@ -158,12 +213,25 @@ function enforce(block: string | null, maxTokens: number): string | null {
 
 function activeTasksFrom(tasks: BoardTask[]): string | null {
   try {
-    const stampStmt = getDb().prepare(
+    const db = getDb();
+    const stampStmt = db.prepare(
       `SELECT w.id AS id, ${stampColumns('w')},
               w.step_number AS step_number, w.total_steps AS total_steps,
               w.parent_id AS project_id
          FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
     );
+    // t139: the request the task exists for, through the task->row edge. One PK read per task
+    // (<= rows.tasks of them), joined to the row that carried it.
+    const originStmt = db.prepare(
+      `SELECT w.source_message_id AS message_id, m.id AS found_id, m.content AS content,
+              m.created_at AS created_at, m.conversation_id AS conversation_id,
+              COALESCE(c.channel, m.channel) AS channel
+         FROM work w
+         LEFT JOIN messages m ON m.id = w.source_message_id
+         LEFT JOIN conversations c ON c.id = m.conversation_id
+        WHERE w.id = ?`,
+    );
+    const pool: WordsPool = { remaining: laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords') };
     const lines = tasks.slice(0, laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks')).map((t) => {
       let stamp: string | null = null;
       let steps: string | null = null;
@@ -177,10 +245,36 @@ function activeTasksFrom(tasks: BoardTask[]): string | null {
           steps = renderStepFacts(st);
         }
       } catch { /* stamps are best-effort */ }
-      return taskLine(t, stamp, steps);
+      return taskLine(t, stamp, steps, readOrigin(originStmt, t.id), pool);
     });
     return renderActiveTasksBlock(lines);
   } catch { return null; }
+}
+
+/** The task's origin row, labelled. A failed read is "not linked" only when there is no link;
+ *  a link whose row cannot be read reports the link, so the gap is never misnamed. */
+function readOrigin(stmt: { get: (id: string) => unknown }, taskId: string): TaskOrigin {
+  try {
+    const r = stmt.get(taskId) as {
+      message_id: string | null; found_id: string | null; content: string | null;
+      created_at: number | string | null; conversation_id: string | null; channel: string | null;
+    } | undefined;
+    if (!r?.message_id) return { messageId: null, words: null, createdAt: null, label: null };
+    if (!r.found_id) return { messageId: r.message_id, words: null, createdAt: null, label: null };
+    return {
+      messageId: r.message_id, words: r.content ?? '', createdAt: r.created_at,
+      label: originLabel(conversationLabel(r.conversation_id), r.channel),
+    };
+  } catch {
+    return { messageId: null, words: null, createdAt: null, label: null };
+  }
+}
+
+/** "<party> on <channel>", without saying the channel twice when the party label already
+ *  carries it (`conversationLabel` renders a contact as "Name (channel)"). */
+function originLabel(party: string | null, channel: string | null): string | null {
+  if (party && channel && !party.includes(`(${channel})`)) return `${party} on ${channel}`;
+  return party ?? (channel ? `the ${channel} channel` : null);
 }
 
 async function attemptLedgerFrom(tasks: BoardTask[]): Promise<string | null> {
@@ -219,12 +313,21 @@ async function attemptLedgerFrom(tasks: BoardTask[]): Promise<string | null> {
 let activeTasksWorstCase: number | null = null;
 let attemptLedgerWorstCase: number | null = null;
 
-/** Every cap of `lane.active-tasks` flooded at once, through `renderActiveTasksBlock`. */
+/**
+ * Every cap of `lane.active-tasks` flooded at once, through `renderActiveTasksBlock`.
+ *
+ * t139: the words term is ONE POOL, so its worst case is the pool spent in full plus the most
+ * framing five lines can carry around it: every task is linked, every request is over the cap
+ * (so each line carries the longer "continues" line, not the end marker — the first spends the
+ * whole pool, the rest are pointer-only), every label is at its cap, and the message ids and
+ * the "more characters" counts are at their widest.
+ */
 export function activeTasksWorstCaseTokens(): number {
   if (activeTasksWorstCase !== null) return activeTasksWorstCase;
   const rows = laneLimit(ACTIVE_TASKS_LANE_ID, 'rows', 'tasks');
   const titleCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'title');
-  const descCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'description');
+  const wordsCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originalWords');
+  const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
   const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
   // The widest stamp/steps terms the two tracker renderers can produce, measured by CALLING
   // them with every field present rather than by counting characters beside them.
@@ -236,15 +339,28 @@ export function activeTasksWorstCaseTokens(): number {
   const widestSteps = renderStepFacts({
     step_number: 99, total_steps: 99, project_id: 'p'.repeat(36),
   } as unknown as TaskStampFields) ?? '';
+  // A request longer than any message the lane could be asked to cut, so the "continues" count
+  // is as wide as it can get on a real row (10 digits — a message would have to be over 10 GB).
+  const longest = 9_999_999_999;
+  const pool: WordsPool = { remaining: wordsCap };
   const lines: string[] = [];
   for (let i = 0; i < rows; i++) {
     lines.push(taskLine({
       id: 'w'.repeat(36),
       title: 't'.repeat(titleCap + 10),        // over the cap, so the `...` suffix is counted
       priority: 'critical',
-      description: 'd'.repeat(descCap + 10),
+      description: null,
       notes: 'n'.repeat(noteCap + 10),
-    }, widestStamp, widestSteps));
+    }, widestStamp, widestSteps, {
+      messageId: 'm'.repeat(36),
+      // Only the pool's worth is ever printed, so the string need only be that long plus one;
+      // the "continues" count is computed from its length, which is substituted below.
+      words: 'w'.repeat(wordsCap + 1),
+      // Mid-month at mid-day, so every box timezone renders a two-digit day and a two-digit
+      // hour — the widest `[Sep 15, 2026, 12:41 PM]` shape, with no timezone able to move it.
+      createdAt: Date.parse('2026-09-15T12:41:00Z'),
+      label: 'l'.repeat(labelCap + 10),
+    }, pool).replace(/continues: \d+ more/, `continues: ${longest} more`));
   }
   activeTasksWorstCase = estimateTokens(renderActiveTasksBlock(lines) ?? '');
   return activeTasksWorstCase;

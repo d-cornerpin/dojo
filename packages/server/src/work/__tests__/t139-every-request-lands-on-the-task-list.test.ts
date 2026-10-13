@@ -310,7 +310,7 @@ describe('t139 — a presence ping is never turned into a task title', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('t139 — every multi-step request lands on the task list with its words', () => {
-  it.fails('long multi-step (the model opens the task): linked, and the 2,000 characters are on the list byte-for-byte', async () => {
+  it('long multi-step (the model opens the task): linked, and the 2,000 characters are on the list byte-for-byte', async () => {
     const ask = longAsk(2000, 'LONG');
     ownerSays('msg-long', ask);
     script([

@@ -381,9 +381,21 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // opinion: `lane.relevant-memory` above declares the same 120 for `snapshotTitle`, chosen
   // there by measuring the longest commitment title on the worn-in dev body (79 chars on the
   // Bob fixtures) and leaving room. One cap, one justification.
+  // t139 (#7, OR-TRACKER-1): `chars.description` (300) is GONE. It cut every request to a
+  // 300-char stub of the agent's own restatement while the "still in force" pin carried the
+  // owner's words in full; the task list is the one record of what is current now, so it
+  // carries the requester's ORIGINAL words, read through `work.source_message_id`.
+  //   `chars.originalWords` = 8,000 is the pin's own cap (`DIRECTIVE_MAX_CHARS`,
+  //     `memory/directive.ts`), NOT a new opinion: the pin promised one request's words up to
+  //     8,000 chars, and the task list keeps that promise as ONE POOL shared across its open
+  //     tasks in block order. A single request up to 8,000 chars is always shown whole; a cut
+  //     names the message (`history_get`) instead of dropping it. A per-task 8,000 would have
+  //     been five times the pin's reserve, taken off every assembly on every window.
+  //   `chars.originLabel` = 120 bounds the one term the block does not author — the party
+  //     name read off the conversation row — with the same 120 as `chars.title`.
   'lane.active-tasks': {
     rows: { tasks: 5 },
-    chars: { title: 120, description: 300, lastNote: 200 },
+    chars: { title: 120, originalWords: 8000, originLabel: 120, lastNote: 200 },
   },
 
   // §T0-B C `:1185`(−10), D `:1205`(0,400) — the awareness lane's row cap and gist slice.
@@ -538,14 +550,24 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.active-tasks',
     slot: MessageSlot.ActiveTasksTail,
-    reserveTokens: 1239,
+    // t139: 1,239 -> 3,247 (+2,008). The 300-char description term (5 x 300 = 1,500 chars)
+    // left with the cut, and the one 8,000-char pool of original words (chars.originalWords)
+    // plus each line's labelled head and end/continues line arrived. The +2,008 is the price
+    // of the owner's words reaching the list whole; it is 73 tokens UNDER the 2,081 the pin
+    // reserves for the same 8,000 characters, which t145 frees when the pin is deleted.
+    reserveTokens: 3247,
     measured:
-      'W81, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
+      'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
       + '`taskLine` + `renderActiveTasksBlock`, every cap flooded at once — a 120-char title '
       + '(chars.title, NEW at W81 and the one term this move added, because an unbounded '
-      + 'title is why this lane could never declare a worst case), a 300-char description '
-      + '(chars.description), a 200-char last note (chars.lastNote), a full 36-char id and '
+      + 'title is why this lane could never declare a worst case), the ORIGINAL WORDS POOL '
+      + '(chars.originalWords = 8,000, t139: the pin\'s own DIRECTIVE_MAX_CHARS, shared across '
+      + 'the open tasks in block order) spent in full by an over-cap first request, every line '
+      + 'linked and over the cap so each carries the longer "continues … history_get(id=…)" '
+      + 'line with a 36-char message id and a 10-digit count, a 120-char conversation label '
+      + '(chars.originLabel) and the widest recorded-instant stamp, a 200-char last note '
+      + '(chars.lastNote), a full 36-char id and '
       + 'the widest `renderTaskStamps({relative:false})` / `renderStepFacts` terms, both '
       + 'measured by CALLING those two renderers rather than counted beside them. '
       + 'WHY IT IS A RESERVE AT ALL: this lane was a `fitLanes` candidate at '
@@ -555,7 +577,9 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + '(`agent/v2/steps/execute/tracker-floors.ts`), which mints an in_progress row out of '
       + 'six PURE READS: that is why `plaud_*` and `outlook_*` appear in the owner\'s list of '
       + 'six occurrences alongside the two `work_update`s. '
-      + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not.',
+      + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not. '
+      + 't139 adds 2,008 tokens off the top of every assembly for the requester\'s words — '
+      + 'within the pin\'s own 2,081 for the same 8,000 characters, which t145 frees.',
   },
   {
     id: 'lane.scratchpad',

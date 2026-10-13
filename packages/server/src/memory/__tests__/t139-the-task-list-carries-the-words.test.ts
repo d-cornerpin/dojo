@@ -129,7 +129,7 @@ afterEach(() => {
 });
 
 describe('t139 §1 — a linked task shows the requester\'s original words', () => {
-  it.fails('RED at v3.3.2: a 2,000-character multi-step ask appears on the task list byte-for-byte', async () => {
+  it('RED at v3.3.2: a 2,000-character multi-step ask appears on the task list byte-for-byte', async () => {
     const ask = longAsk(2000, 'HARBOUR');
     expect(ask.length).toBe(2000);
     ownerSays('msg-harbour', ask, DAY_ONE - 3_600_000);
@@ -143,14 +143,18 @@ describe('t139 §1 — a linked task shows the requester\'s original words', () 
     expect(board.activeTasks!).toContain(ask);
   });
 
-  it.fails('the words are dated with the message\'s own recorded instant and labelled with its conversation', async () => {
+  it('the words are dated with the message\'s own recorded instant and labelled with its conversation', async () => {
     const ask = longAsk(600, 'DATED');
-    const at = DAY_ONE - 5 * 86_400_000;
-    ownerSays('msg-dated', ask, at);
+    ownerSays('msg-dated', ask, DAY_ONE - 5 * 86_400_000);
     task('Dated ask', undefined, 'msg-dated');
 
+    // Dated with THE ROW'S OWN recorded instant — read back from the row the writer stored,
+    // so the clause holds whatever clock the writer stamps with.
+    const recorded = (mockDb.current!.prepare('SELECT created_at FROM messages WHERE id = ?')
+      .get('msg-dated') as { created_at: number }).created_at;
+    vi.setSystemTime(DAY_ONE + 30 * 86_400_000);   // a month later: the stamp may not follow the clock
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
-    const stamp = renderMessageTimeStamp(at)!;
+    const stamp = renderMessageTimeStamp(recorded)!;
     expect(stamp).toMatch(/^\[.+\]$/);
     expect(block).toContain(stamp);
     expect(block).toMatch(/Original request/);
@@ -160,7 +164,7 @@ describe('t139 §1 — a linked task shows the requester\'s original words', () 
     expect(block).toContain(ask);
   });
 
-  it.fails('an email-channel request is labelled with ITS conversation, not the owner\'s chat', async () => {
+  it('an email-channel request is labelled with ITS conversation, not the owner\'s chat', async () => {
     const ask = 'Could you collect the three supplier quotes and send me a comparison table?';
     ownerSays('msg-mail', ask, DAY_ONE - 7_200_000, 'conv-mail', 'email');
     task('Supplier quotes', undefined, 'msg-mail');
@@ -171,7 +175,7 @@ describe('t139 §1 — a linked task shows the requester\'s original words', () 
     expect(block).toMatch(/email/);
   });
 
-  it.fails('the real assembler carries the same words on the turn\'s task-list lane', async () => {
+  it('the real assembler carries the same words on the turn\'s task-list lane', async () => {
     const ask = longAsk(2000, 'ASSEMBLED');
     ownerSays('msg-assembled', ask, DAY_ONE - 60_000);
     task('Assembled ask', ask, 'msg-assembled');
@@ -182,7 +186,7 @@ describe('t139 §1 — a linked task shows the requester\'s original words', () 
 });
 
 describe('t139 §2 — a task with no linked origin never gets an invented request', () => {
-  it.fails('RED at v3.3.2: the stored description is shown, labelled "(original request not linked)"', async () => {
+  it('RED at v3.3.2: the stored description is shown, labelled "(original request not linked)"', async () => {
     task('Legacy row', 'Tidy the shared drive folders by year.', null);
 
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
@@ -193,7 +197,7 @@ describe('t139 §2 — a task with no linked origin never gets an invented reque
 });
 
 describe('t139 §3 — the words are bounded by a declared cap, and a cut is never silent', () => {
-  it.fails('an over-cap request keeps its first 8,000 characters byte-for-byte and names the full message', async () => {
+  it('an over-cap request keeps its first 8,000 characters byte-for-byte and names the full message', async () => {
     const ask = longAsk(8500, 'OVERCAP');
     ownerSays('msg-overcap', ask, DAY_ONE - 60_000);
     task('Over cap', undefined, 'msg-overcap');
@@ -205,7 +209,7 @@ describe('t139 §3 — the words are bounded by a declared cap, and a cut is nev
     expect(block).toContain('500 more characters');
   });
 
-  it.fails('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
+  it('the cap is shared across open tasks: words appear in full until the pool is spent', async () => {
     const a = longAsk(5000, 'FIRST');
     const b = longAsk(5000, 'SECOND');
     ownerSays('msg-first', a, DAY_ONE - 120_000);
@@ -230,7 +234,7 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
     expect(declared.reserveTokens).toBe(activeTasksWorstCaseTokens());
   });
 
-  it.fails('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
+  it('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
     for (let i = 0; i < 6; i++) {
       const id = `msg-flood-${i}`;
       ownerSays(id, longAsk(12000, `FLOOD${i}`), DAY_ONE - (10 - i) * 60_000);
