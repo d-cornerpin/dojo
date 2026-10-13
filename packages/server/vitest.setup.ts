@@ -145,7 +145,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   },
 }));
 
-const AGENT_CLI = /claude-agent-sdk|claude-code|(^|[\\/\s])claude(\.exe|\.cmd)?(\s|$)/i;
+// Case-SENSITIVE on purpose: the CLI binary is lowercase `claude`, while a checkout can sit under
+// a folder like "Claude Code Projects" — matching that would refuse every ordinary subprocess.
+const AGENT_CLI = /claude-agent-sdk|@anthropic-ai[\\/]claude-code|(^|[\s\\/])claude(\.exe|\.cmd)?(\s|$)/;
 function refuseAgentCli<T extends (...args: never[]) => unknown>(name: string, real: T): T {
   return function guarded(this: unknown, ...args: unknown[]) {
     const line = args.flatMap((a) => (Array.isArray(a) ? a : [a]))

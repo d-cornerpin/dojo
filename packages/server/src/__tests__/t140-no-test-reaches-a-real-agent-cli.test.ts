@@ -50,6 +50,8 @@ describe('t140 round 2 — no test can start a real Agent CLI', () => {
 
   it('…and still runs an ordinary command (the net is narrow, not a blanket ban)', () => {
     expect(String(childProcess.execFileSync('node', ['-e', 'process.stdout.write("ok")']))).toBe('ok');
+    // A checkout under a folder named like the product ("…/Claude Code Projects/…") is not the CLI.
+    expect(String(childProcess.execFileSync('node', ['-e', 'process.stdout.write("ok")', '/srv/Claude Code Projects/repo/node_modules/.bin/t']))).toBe('ok');
   });
 
   it('no worker carries a provider credential or a coding-agent session variable', () => {
