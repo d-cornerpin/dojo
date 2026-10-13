@@ -359,6 +359,17 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
                  VALUES ('d-orphan-rej', 'blocked', 'rejected', 'pm-fixture', 'fixture', ?)`).run(T0 + 500);
   ev.run('d-orphan-rej', 'claim_rejected', JSON.stringify({ claim_state: 'blocked' }), 'pm-fixture', T0 + 500);
 
+  // N1 (re-review 1): a companion-less verdict filed AFTER a stamp that 189d will carry, then a
+  // re-entry. The carry row has a NEW id but the OLD stamp's instant, so a clock floor that can
+  // see it would park the verdict above the re-entry.
+  work.run('d-carry-orphan', 'd-carry-orphan', 'blocked', T0, T0);
+  ev.run('d-carry-orphan', 'transition', tr('blocked'), 'agent', T0 + 600);
+  ev.run('d-carry-orphan', 'validation_escalated', JSON.stringify({ thread_id: 'conv-owner' }), 'scheduler', T0 + 601);
+  built.prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at)
+                 VALUES ('d-carry-orphan', 'blocked', 'upheld', 'pm-fixture', 'fixture', ?)`).run(T0 + 602);
+  ev.run('d-carry-orphan', 'transition', tr('claimed'), 'agent', T0 + 603);
+  ev.run('d-carry-orphan', 'transition', tr('blocked'), 'agent', T0 + 604);
+
   const db = copyOf(built);
   for (const f of SUBJECTS) applyFile(db, f);
 
@@ -385,20 +396,27 @@ describe('vintage D — upgrade day: no escalation about a long-dead, already-es
     expect(await settled('d-claimed'), 'not blocked: base behaviour').toBe(1);
   });
 
-  it('the carry is exactly ONE row, invisible on the dashboard (the original instant and thread)', () => {
+  it('the carry is exactly ONE row per row in the set, invisible on the dashboard (the original instant and thread)', () => {
     const carried = db.prepare(
       `SELECT work_id, actor, created_at, payload FROM work_events
         WHERE kind = 'validation_escalated' AND json_extract(payload, '$.carried') = 1`,
     ).all() as Array<{ work_id: string; actor: string; created_at: number; payload: string }>;
-    expect(carried.map((c) => c.work_id)).toEqual(['d-reblocked']);
-    expect(carried[0].created_at, 'same instant as the stamp it carries').toBe(T0 + 101);
-    expect(JSON.parse(carried[0].payload)).toMatchObject({ thread_id: 'conv-owner', carried_from: origStamp });
+    expect(carried.map((c) => c.work_id).sort()).toEqual(['d-carry-orphan', 'd-reblocked']);
+    const reblocked = carried.find((c) => c.work_id === 'd-reblocked')!;
+    expect(reblocked.created_at, 'same instant as the stamp it carries').toBe(T0 + 101);
+    expect(JSON.parse(reblocked.payload)).toMatchObject({ thread_id: 'conv-owner', carried_from: origStamp });
   });
 
   it('M1: a companion-less verdict filed before a later re-entry reads UNVALIDATED, as base read it', async () => {
     const { validatedExpr } = await import('../../work/tracker-view.js');
     const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan'`).get() as { v: number }).v;
     expect(v).toBe(0);
+  });
+
+  it('N1: an orphan verdict is not parked on 189d\'s CARRY row (new id, old instant)', async () => {
+    const { validatedExpr } = await import('../../work/tracker-view.js');
+    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-carry-orphan'`).get() as { v: number }).v;
+    expect(v, 'the re-entry at +604 was never upheld; clock-base read it unvalidated').toBe(0);
   });
 
   it('M1: an orphan upheld verdict is not parked on a later REJECTION\'s row', async () => {
