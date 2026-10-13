@@ -680,6 +680,67 @@ describe('t139 — backwards lifecycle: the list follows the request, never a st
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
+// R-V333-5 — NO AUTOMATIC REOPEN. An owner message never resumes paused work by itself.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Move a work row and its history back in time, so an "old" task is genuinely old on every
+ *  clock the engine reads (opened, updated, its events, and the message that started it). */
+function backdate(taskId: string, msgId: string, days: number): void {
+  const db = mockDb.current!;
+  const ms = days * 86_400_000;
+  db.prepare('UPDATE work SET opened_at = opened_at - ?, updated_at = updated_at - ? WHERE id = ?').run(ms, ms, taskId);
+  db.prepare('UPDATE work_events SET created_at = created_at - ? WHERE work_id = ?').run(ms, taskId);
+  db.prepare('UPDATE messages SET created_at = created_at - ? WHERE id = ?').run(ms, msgId);
+}
+
+describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
+  it.fails('RED at base: an owner message on an agent with a month-old engine-paused task leaves it paused', async () => {
+    const ask = 'Make nine square headshots for the team page in the same soft studio style.';
+    ownerSays('msg-old-hs', ask);
+    script([{ toolCalls: [openTask('wo-old-hs', 'Team headshots', 'Headshots delivered to the owner')] }, { content: 'Starting on them.' }]);
+    await runV2Turn(PRIMARY);
+    const id = taskIdTitled('Team headshots');
+    const paused = mockDb.current!.prepare('SELECT state, status_before_pause FROM work WHERE id = ?').get(id) as { state: string; status_before_pause: string | null };
+    expect(paused.state).toBe('paused');                 // the engine parked it, waiting on the owner
+    expect(paused.status_before_pause).not.toBeNull();   // ...by its own record
+    backdate(id, 'msg-old-hs', 30);
+
+    ownerSays('msg-ping-2', 'You there?');
+    // What the model SEES is the state at the moment it is called — a reopen followed by the
+    // turn-end re-pause would look identical afterwards, so the state is read mid-turn.
+    const seen: string[] = [];
+    callModelSpy.mockImplementation(async () => {
+      seen.push((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state);
+      return { content: 'Yes, here.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    await runV2Turn(PRIMARY);
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((st) => st === 'paused')).toBe(true);
+    const after = mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string };
+    expect(after.state).toBe('paused');
+    // requirement preserved: the waiting task never vanishes — it is on the list, labelled.
+    expect(await taskList()).toContain('Team headshots');
+  });
+
+  it('when the owner\'s message IS the answer, the agent resumes the task through the tracker', async () => {
+    ownerSays('msg-q', 'Draft the newsletter intro and send it to me for a check before it goes out.');
+    script([{ toolCalls: [openTask('wo-q', 'Newsletter intro', 'An intro the owner approved')] }, { content: 'Do you want it formal or casual?' }]);
+    await runV2Turn(PRIMARY);
+    const id = taskIdTitled('Newsletter intro');
+    expect((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state).toBe('paused');
+
+    ownerSays('msg-a', 'Casual, please.');
+    script([
+      { toolCalls: [call('wu-r', 'work_update', { action: 'status', task_id: id, status: 'in_progress', notes: 'Owner answered: casual.' })] },
+      { content: 'Casual it is.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    expect((mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state).toBe('claimed');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
 // THE COMPILE LINK'S CONTROLS — it never guesses, and it never re-points a served turn
 // ════════════════════════════════════════════════════════════════════════════════════════
 
