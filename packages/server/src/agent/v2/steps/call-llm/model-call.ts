@@ -418,6 +418,33 @@ export async function callWithRetryAndFallback(
         }
       }
 
+      // t140 fix round 1 (review I1): EVERY fallback pick is re-fitted to its own window before it
+      // is dialed — not only the rescue above. The selector prefers a pick that holds the array
+      // as built; this makes the array right for whichever pick it got. A pick whose window cannot
+      // hold the system prompt and tools at all refuses by name and is excluded, and the fit-aware
+      // selection is asked again (bounded), exactly as the rescue does.
+      for (let pickTry = 0; fallback && pickTry < 8; pickTry++) {
+        try {
+          const refit = await reassembleForFitIfNeeded({
+            agentId, modelId: fallback.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+          });
+          if (refit) {
+            messages = refit.messages;
+            systemPrompt = refit.systemPrompt;
+            ctx = refit.assembled;
+            volatileFrom = refit.volatileFrom;
+          }
+          break;
+        } catch (refitErr) {
+          if (!(refitErr instanceof SystemPromptTooLargeError)) throw refitErr;
+          excludedModels.push(fallback.modelId);
+          fallback = selectModel(
+            fallbackTier, agentId, excludedModels, ['tools'],
+            estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
+          );
+        }
+      }
+
       // Existing fallback-exhausted honest-fail path, unchanged: nothing fits, with or
       // without the rescue attempt above.
       if (!fallback) {
@@ -446,18 +473,6 @@ export async function callWithRetryAndFallback(
       // already handed to queueAgentSay stays committed by design;
       // there is no dequeue and none should be added.
       if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
-      // t140 fix round 1 (review I1): EVERY fallback pick is re-fitted to its own window before it
-      // is dialed — not only the rescue above. The selector prefers a pick that holds the array
-      // as built; this makes the array right for whichever pick it got.
-      const refit = await reassembleForFitIfNeeded({
-        agentId, modelId: fallback.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
-      });
-      if (refit) {
-        messages = refit.messages;
-        systemPrompt = refit.systemPrompt;
-        ctx = refit.assembled;
-        volatileFrom = refit.volatileFrom;
-      }
       modelId = fallback.modelId;
       state = advance(state, { modelId });
     } finally {

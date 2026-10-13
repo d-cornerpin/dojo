@@ -23,7 +23,7 @@
 //   3. `callModel({ modelId, messages })`        — the dial, through the boundary validator
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -183,6 +183,15 @@ async function dialAsRouted(pick: string): Promise<{ prompt: string; options: Re
   expect(turnRequests.length, 'the turn must have been dialed exactly once').toBe(1);
   return turnRequests[0];
 }
+
+// Resolve the MOCKED transport once, before any clause can race two first-time dynamic imports
+// of it (a background fold's summariser and the turn's own dial): measured once under that race,
+// one importer received the REAL Agent SDK, which spawned the real CLI ("Not logged in"). With
+// the module already resolved, every later `await import(...)` gets the same mocked instance.
+beforeAll(async () => {
+  await import('@anthropic-ai/claude-agent-sdk');
+  await import('../../../../../providers/anthropic-sdk.js');
+});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -401,7 +410,9 @@ describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick f
     seedConversation(250);
     await dialAsRouted(LIGHT);
     let folded = 0;
-    for (let i = 0; i < 400 && folded === 0; i++) { await new Promise((r) => setTimeout(r, 5)); folded = summarisedRowCount(); }
+    // Polled with a generous bound: under a loaded full suite the background fold (archive,
+    // chunking, the scripted summariser) has been measured to need more than two seconds.
+    for (let i = 0; i < 1000 && folded === 0; i++) { await new Promise((r) => setTimeout(r, 10)); folded = summarisedRowCount(); }
     expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
     expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));

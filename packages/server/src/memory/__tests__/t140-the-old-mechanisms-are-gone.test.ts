@@ -159,7 +159,7 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     const call = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/model-call.ts`)!.code;
     expect(call).toMatch(/reassembleForFitIfNeeded\(\{\s*agentId, modelId: fallback\.modelId,/);
     expect(call.match(/estimateAssembledArrayTokens\(systemPrompt, messages\), getContextWindow,/g)?.length,
-      'both fit-aware selections pass the window resolver').toBe(2);
+      'all three fit-aware selections (first pick, rescue, unholdable-pick retry) pass the window resolver').toBe(3);
     expect(call).toMatch(/refitFor: async \(pick\) =>/);
     const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
     expect(selector).toMatch(/if \(windowOf && inputEstimate > Math\.floor\(CONTEXT_THRESHOLD \* windowOf\(modelId\)\)\) return false;/);

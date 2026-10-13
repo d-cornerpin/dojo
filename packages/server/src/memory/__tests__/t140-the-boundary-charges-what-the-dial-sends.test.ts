@@ -22,7 +22,7 @@
 // "the dial happened" off the scripted provider.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -79,6 +79,12 @@ const SMALL = 'm-small-16k';
 const ZERO = 'm-window-zero';
 
 const db = (): Database.Database => mockDb.current!;
+
+// Resolve the mocked transport once up front (see the same note in the W1 file).
+beforeAll(async () => {
+  await import('@anthropic-ai/claude-agent-sdk');
+  await import('../../providers/anthropic-sdk.js');
+});
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
