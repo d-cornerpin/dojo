@@ -77,6 +77,7 @@ import type { TurnCounterparty } from '../../../counterparty.js';
 
 const AGENT = 'agent-t140-desk-a';
 const OTHER = 'agent-t140-desk-b';
+const THIRD = 'agent-t140-desk-c';   // a person writes to it; it has nothing to replace, so it dials nothing
 const OWN = 'm-t140-own';
 const WRITERS = [OWN, 'm-t140-w2'];
 const db = (): Database.Database => mockDb.current!;
@@ -88,6 +89,7 @@ function seed(): void {
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
                   VALUES (?, ?, ?, ?, '["text","tools"]', 200000, 4096, 1, ?, ?)`).run(id, `p-${i}`, id, id, i + 1, i + 2);
   });
+  db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Desk', ?, 'idle', '{}', datetime('now'))`).run(THIRD, OWN);
   for (const agent of [AGENT, OTHER]) {
     db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Desk', ?, 'idle', '{}', datetime('now'))`).run(agent, OWN);
     for (let i = 0; i < 40; i++) {
@@ -144,6 +146,14 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     await gate(OTHER, 601, 1, false);                        // …and the other agent, whom nobody wrote to, does not
     expect(forThisAgent, 'precondition: this agent retried').toBeGreaterThan(0);
     expect(summariser.calls, 'the other agent dialled nothing').toEqual([]);
+  });
+
+  it('a person writing to an agent that dials nothing does not re-arm the writers for anyone else', async () => {
+    await gate(OTHER, 600, 1, true);                         // the other agent's writers fail
+    summariser.calls = [];
+    await gate(THIRD, 650, 1, true);                         // a person writes to a third agent (nothing to replace)
+    await gate(OTHER, 601, 1, false);                        // nobody wrote to the other agent
+    expect(summariser.calls, 'nothing was dialled for an agent nobody wrote to').toEqual([]);
   });
 
   it('the writer answering any call re-arms it (its provider is back)', async () => {
