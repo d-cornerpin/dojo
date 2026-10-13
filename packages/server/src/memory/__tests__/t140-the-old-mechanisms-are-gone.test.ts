@@ -15,6 +15,12 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The step packages' location comes from the ONE shared derivation (the guard-corpus census
+// refuses a test that spells that path by hand).
+import { ENGINE_STEPS_REL } from '../../agent/v2/__tests__/engine-sources.js';
+
+const GATE_REL = `${ENGINE_STEPS_REL}/pre-call-gates/context-gates.ts`;
+const REFIT_REL = `${ENGINE_STEPS_REL}/call-llm/reassemble-for-fit.ts`;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '../..');   // packages/server/src
@@ -61,12 +67,12 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
 
   it('the replacement is called from exactly the two doors that decide to condense, and nowhere else', () => {
     expect(filesWith(/\browsLeavingView\(/)).toEqual([
-      'agent/v2/steps/pre-call-gates/context-gates.ts',
+      GATE_REL,
       'memory/compaction.ts',
       'memory/tail-horizon.ts',   // its own declaration
     ]);
     // And the gate APPLIES it: the routine condense is handed the leaving span, not a count.
-    const gate = FILES.find((f) => f.rel === 'agent/v2/steps/pre-call-gates/context-gates.ts')!.code;
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     expect(gate).toMatch(/const leaving = rowsLeavingView\(agentId, \{ freshTailCount: getFreshTailCount\(contextWindow\) \}, \{ viewFull \}\);/);
     expect(gate).toMatch(/checkAndCompact\(agentId, dialModelId, contextWindow, \{\s*leaving,/);
   });
@@ -120,7 +126,7 @@ describe('t140 census — the continuity brief is gone', () => {
 
 describe('t140 census — the 200K stand-in and the ceiling-only re-size are gone', () => {
   it('reassemble-for-fit no longer skips a pick for declaring no provider ceiling', () => {
-    const fit = FILES.find((f) => f.rel === 'agent/v2/steps/call-llm/reassemble-for-fit.ts')!.code;
+    const fit = FILES.find((f) => f.rel === REFIT_REL)!.code;
     expect(fit).not.toMatch(/providerCeiling === null\) return null/);
     expect(fit).toMatch(/contextWindowPolicy\(getContextWindow\(modelId\), \{/);
   });
