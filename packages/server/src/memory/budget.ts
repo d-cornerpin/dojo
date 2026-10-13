@@ -116,8 +116,8 @@ export function estimateTokensFromChars(chars: number): number {
 // (`resolveOutputBudget`) reads the same number and over-grants from the same error.
 //
 // ⚠ A CORRECTION TO THAT BACKLOG LINE, re-derived at this head (G11): it names "the v3.1.27
-// unattended budget" as a victim. It is not one. `agent/unattended-budget.ts` contains ZERO token
-// references — it is a budget in MINUTES, and `grep -c 'token' agent/unattended-budget.ts` is 0.
+// unattended budget" as a victim. It was not one: that budget counted MINUTES, never tokens, and
+// v3.3.3 deleted it outright (migration 186 — there is no total-time cap any more).
 // The real consumers keyed on this estimate are the two named above.
 //
 // ── WHY THIS IS A NEW DOOR AND NOT A CHANGE TO `estimateTokens` ──
