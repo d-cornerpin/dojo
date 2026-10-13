@@ -325,7 +325,7 @@ const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
  * destruction — still wrong, and wrong in front of the owner.
  *
  * Now each verdict carries its place on the event log (`adjudications.event_seq`, stamped by
- * migration `189b`'s trigger with the id of the verdict's companion event — the `transition`
+ * migration `189c`'s trigger with the id of the verdict's companion event — the `transition`
  * that filed it, or its `claim_upheld`), and the clause is `event_seq >= <id of the last
  * entry>`. An authoritative entry's own verdict IS that entry's companion, so it is current;
  * an uphold filed after the entry is current; an uphold filed before a re-entry is not —
@@ -505,7 +505,7 @@ export const userVerdictRequestedAtExpr = (a: string): string =>
 export const revertCountExpr = (a: string): string =>
   `(SELECT count(*) FROM adjudications adj WHERE adj.work_id = ${a}.id AND adj.verdict = 'rejected'`
   // t142: "since the last reset" is a position on the log. A rejection's `event_seq` is its
-  // own `claim_rejected` row (migration 189b), so it is AFTER the reset exactly when that row
+  // own `claim_rejected` row (migration 189c), so it is AFTER the reset exactly when that row
   // is — `>`, because the two can never be the same row. It compared instants with `>=`, so a
   // rejection filed in the same millisecond BEFORE the reset survived it and kept counting
   // toward the owner-verdict threshold.

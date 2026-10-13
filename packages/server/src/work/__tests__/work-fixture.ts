@@ -72,7 +72,7 @@ export function createWorkTable(db: DatabaseType.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL,
       claim_state TEXT NOT NULL, verdict TEXT NOT NULL,
       by_agent TEXT NOT NULL, evidence_ref TEXT, note TEXT, created_at INTEGER NOT NULL,
-      -- MIGRATION 189b (t142): the verdict's place on the work_events sequence, which is what
+      -- MIGRATION 189c (t142): the verdict's place on the work_events sequence, which is what
       -- validatedExpr now compares instead of two clocks. Mirrored WITH its trigger, because
       -- the trigger is the only writer of the column; a fixture without it would read every
       -- verdict as unpositioned and measure a box that cannot exist.
@@ -83,9 +83,7 @@ export function createWorkTable(db: DatabaseType.Database): void {
     WHEN NEW.event_seq IS NULL
     BEGIN
       UPDATE adjudications
-         SET event_seq = MAX(
-               COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'work_events'), 0),
-               COALESCE((SELECT MAX(id) FROM work_events), 0)) + 1
+         SET event_seq = COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'work_events'), 0) + 1
        WHERE id = NEW.id;
     END;
     -- MIGRATION 178'S INDEXES, so a fixture's QUERY PLANS are the box's query plans. Behaviour-neutral

@@ -1,4 +1,4 @@
--- 189b (v3.3.3 t142): A VERDICT IS POSITIONED ON THE work_events SEQUENCE, NOT ON A CLOCK.
+-- 189c (v3.3.3 t142): A VERDICT IS POSITIONED ON THE work_events SEQUENCE, NOT ON A CLOCK.
 --
 -- WHAT WAS WRONG. `work/tracker-view.ts:validatedExpr` decides `<state>_validated` by asking
 -- whether an upheld adjudication is "at or after the row last entered that state", and it
@@ -22,8 +22,17 @@
 -- WHY A TRIGGER AND NOT THE WRITERS. The three writers live outside this lane's fence, and a
 -- stamp every writer must remember is the shape this codebase keeps having to repair. The
 -- trigger stamps every insert, by any writer present or future, with the id the NEXT
--- work_events row will receive — AUTOINCREMENT's own rule, MAX(sqlite_sequence.seq, MAX(id))
--- + 1 — which is exactly the companion's id, because the companion is the next row written.
+-- work_events row will receive — AUTOINCREMENT's own counter, `sqlite_sequence.seq + 1`, which
+-- SQLite keeps at or above MAX(id) on every insert — and that is exactly the companion's id,
+-- because the companion is the next row written.
+--
+-- ⚠ THE TRIGGER NAMES NO TABLE BUT sqlite_sequence, AND THAT IS LOAD-BEARING. SQLite >= 3.26
+-- re-validates every trigger on `ALTER TABLE … RENAME`, and work_events gains a new kind by
+-- exactly that move (159, 189: build work_events_new, DROP work_events, RENAME). A trigger body
+-- that read `MAX(id) FROM work_events` — this file's first draft — made that RENAME fail with
+-- "error in trigger …: no such table: main.work_events" on the product's SQLite (3.49.2), so
+-- the NEXT migration to add an event kind would have failed on every box. Rehearsed in
+-- `db/__tests__/t142-migration-189.test.ts` ("a future work_events rebuild still applies").
 -- `work/__tests__/t142-sequence-freshness.test.ts` drives all three writers and asserts the
 -- stamp equals the companion's real id, so a writer that ever slips an event in between
 -- reds a clause instead of silently mis-ordering verdicts. A writer may also supply the value
@@ -45,6 +54,12 @@
 -- A CORRUPTED PAYLOAD CANNOT TAKE THE BOOT DOWN. `json_extract` RAISES on malformed JSON, and a
 -- raise inside a migration aborts the whole chain. Every extract below is behind
 -- `json_valid`, so an unreadable event is simply not a companion (rehearsed with one).
+--
+-- WHY "189c" AND NO "189b". This file was committed once as `189b_…` on its lane branch and then
+-- amended there before it ever left the branch (the json_valid guard, and the trigger form argued above).
+-- No box applied that first version, but `check-migration-freeze` cannot tell branch iteration
+-- from an applied version, and its remedy (a KNOWN_DIVERGENCES entry) would record an
+-- application that never happened. A fresh name has one version, which is the truth.
 --
 -- DOWNGRADE. An older build never reads `event_seq` and lists its INSERT columns explicitly,
 -- so the column is inert to it; the trigger keeps stamping rows that build writes, so a later
@@ -73,8 +88,6 @@ AFTER INSERT ON adjudications
 WHEN NEW.event_seq IS NULL
 BEGIN
   UPDATE adjudications
-     SET event_seq = MAX(
-           COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'work_events'), 0),
-           COALESCE((SELECT MAX(id) FROM work_events), 0)) + 1
+     SET event_seq = COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'work_events'), 0) + 1
    WHERE id = NEW.id;
 END;

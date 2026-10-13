@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// MIGRATIONS 189 + 189b (v3.3.3 t142) — THE REHEARSAL, ON LIVED-IN BODIES.
+// MIGRATIONS 189 + 189c (v3.3.3 t142) — THE REHEARSAL, ON LIVED-IN BODIES.
 //
 // G13: each vintage is built by replaying the REAL chain up to the box's version, given an
 // ADVERSARIAL body (orphans, NULL and corrupted payloads, a deleted tail that leaves the
@@ -8,7 +8,7 @@
 // way `db/migrations.ts` applies a file (one `db.exec` inside one transaction). Every
 // statement's reach is asserted as a count, so no branch passes by touching nothing.
 //
-//   vintage A — a v3.3.2 box: the whole chain except 189/189b (159's CHECK, 178's index).
+//   vintage A — a v3.3.2 box: the whole chain except 189/189c (159's CHECK, 178's index).
 //   vintage B — an older box at 159, which then runs 160..188 and 189 in ONE upgrade.
 //   vintage C — a fresh box with an EMPTY work_events table and no counter row at all.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -23,8 +23,8 @@ const HERE = __dirname;
 const MIGRATIONS_DIR = path.join(HERE, '..', 'migrations');
 const FILES = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
 const M189 = '189_work_told_event.sql';
-const M189B = '189b_verdict_event_sequence.sql';
-const isSubject = (f: string): boolean => f === M189 || f === M189B;
+const M189C = '189c_verdict_event_sequence.sql';
+const isSubject = (f: string): boolean => f === M189 || f === M189C;
 
 function baseSchemaFromRunner(): string {
   const src = fs.readFileSync(path.join(HERE, '..', 'migrations.ts'), 'utf-8');
@@ -170,8 +170,8 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
     db.prepare(`DELETE FROM work_events WHERE kind = 'person_told'`).run();
   });
 
-  it('189b applies over the corrupted payload without raising, and positions EVERY verdict', () => {
-    applyFile(db, M189B);
+  it('189c applies over the corrupted payload without raising, and positions EVERY verdict', () => {
+    applyFile(db, M189C);
     const unpositioned = (db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL').get() as { n: number }).n;
     expect(unpositioned).toBe(0);
     expect((db.prepare('SELECT COUNT(*) AS n FROM adjudications').get() as { n: number }).n,
@@ -216,6 +216,23 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
     expect(next, 'the counter, not MAX(id), decides').toBe(seqNow + 1);
   });
 
+  it('a FUTURE work_events rebuild (how the next event kind is added) still applies after 189c', () => {
+    // The 159/189 shape, replayed on this body after the trigger exists: build work_events_new,
+    // copy, carry the counter, DROP, RENAME. SQLite >= 3.26 re-validates every trigger on the
+    // RENAME, so a trigger that NAMED work_events would make this throw on the product's SQLite.
+    const rebuild = fs.readFileSync(path.join(MIGRATIONS_DIR, M189), 'utf-8');
+    const before = snapshotEvents(db);
+    expect(() => db.transaction(() => db.exec(rebuild))()).not.toThrow();
+    expect(snapshotEvents(db)).toBe(before);
+    db.prepare(
+      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at) VALUES ('w-null', 'done', 'upheld', 'pm', 'n', 9)`,
+    ).run();
+    const next = Number(db.prepare(
+      `INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('w-null', 'claim_upheld', '{"claim_state":"done"}', 'pm', 9)`,
+    ).run().lastInsertRowid);
+    expect(seqOf(db, 'w-null', 'done'), 'and the trigger still stamps the companion after it').toBe(next);
+  });
+
   it('a writer that supplies event_seq itself is left alone', () => {
     db.prepare(
       `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at, event_seq) VALUES ('w-auth', 'paused', 'upheld', 'pm', 'n', 9, 4242)`,
@@ -224,18 +241,18 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 });
 
-describe('vintage B — an older box (at 159) takes 160..189b in one upgrade', () => {
+describe('vintage B — an older box (at 159) takes 160..189c in one upgrade', () => {
   const built = vintage('159_owed_interrupt_event_kind.sql');
   const ids = seedBody(built);
   const db = copyOf(built);
   const before = snapshotEvents(db);
 
-  it('the rest of the chain, 189 and 189b apply in order on the same body', () => {
+  it('the rest of the chain, 189 and 189c apply in order on the same body', () => {
     for (const f of FILES) {
       if (f <= '159_owed_interrupt_event_kind.sql') continue;
       applyFile(db, f);
     }
-    expect(db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(M189B)).toBeDefined();
+    expect(db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(M189C)).toBeDefined();
     // 172/176 sweep orphans; whatever they leave, 189 must carry exactly.
     const survivors = JSON.parse(before) as Array<{ id: number }>;
     const after = JSON.parse(snapshotEvents(db)) as Array<{ id: number }>;
@@ -250,10 +267,10 @@ describe('vintage B — an older box (at 159) takes 160..189b in one upgrade', (
 describe('vintage C — a fresh box with an empty work_events and no counter row', () => {
   const db = copyOf(vintage(null));
 
-  it('189 and 189b apply, and the first verdict ever written is stamped id 1', () => {
+  it('189 and 189c apply, and the first verdict ever written is stamped id 1', () => {
     expect(db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get()).toEqual({ n: 0 });
     applyFile(db, M189);
-    applyFile(db, M189B);
+    applyFile(db, M189C);
     db.prepare(
       `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at) VALUES ('w', 'blocked', 'upheld', 'pm', 'n', 1)`,
     ).run();

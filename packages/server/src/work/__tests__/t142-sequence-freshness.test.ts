@@ -168,7 +168,7 @@ describe('§2 THE POSITIVE CONTROLS — the tie must not cost a verdict that IS 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §3 — THE STAMP IS THE COMPANION'S ID, FOR EVERY WRITER. Migration 189b's trigger stamps a
+// §3 — THE STAMP IS THE COMPANION'S ID, FOR EVERY WRITER. Migration 189c's trigger stamps a
 // verdict with the id the NEXT work_events row receives; that is only the companion's id while
 // every writer appends its companion immediately after the verdict, in the same unit. Driven
 // for each writer, so a writer that ever slips an event in between reds HERE instead of
@@ -220,7 +220,7 @@ describe('§3 every adjudication writer\'s verdict sits exactly on its companion
       expect(m, 'trigger present').not.toBeNull();
       return m![1].replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
     };
-    const mig = fs.readFileSync(path.join(SRC, 'db', 'migrations', '189b_verdict_event_sequence.sql'), 'utf8');
+    const mig = fs.readFileSync(path.join(SRC, 'db', 'migrations', '189c_verdict_event_sequence.sql'), 'utf8');
     const fixture = fs.readFileSync(path.join(SRC, 'work', '__tests__', 'work-fixture.ts'), 'utf8');
     expect(body(fixture)).toBe(body(mig));
   });
