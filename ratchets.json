@@ -8029,9 +8029,9 @@
     {
       "path": "packages/server/src/agent/tools/index.ts",
       "from": 690,
-      "to": 707,
+      "to": 710,
       "by": "t146 (2026-10-13) — the tool-dispatch door records that a person was told about the task a send names",
-      "why": "+17 (690 -> 707): 12 code, 5 comment. The scoped-send branch now builds its intent once (the declaration moved from the call's argument list into a local: +2 net), and a send whose arguments carry the optional `task_id` opens its OWN scope (withOutboundAsync, never the IfAbsent form, per t142 fix round 1's contract) and records the tell from the delivery that scope wrote (recordPersonTold, via send_tool). Imports: +4 (withOutboundAsync/currentOutboundDeliveryId, the argument constant, the record, the task-id resolver). The comment states the ruling the code cannot show: no argument, no record, never inferred from the words or the turn. REFUSED: putting the recording in each of the 11 send handlers (11 sites, and the scope is opened here, not there); a helper module for 9 lines of call-site logic (it would hide the scope the record must be read inside). From 707 this file may only shrink."
+      "why": "+20 (690 -> 710): 15 code, 5 comment. The scoped-send branch now builds its intent once (the declaration moved from the call's argument list into a local: +2 net), and a send whose arguments carry the optional `task_id` opens its OWN scope (withOutboundAsync, never the IfAbsent form, per t142 fix round 1's contract) and records the tell from the delivery that scope wrote (recordPersonTold, via send_tool), and consumes its answer: a refusal is logged (must-consume gate), +3. Imports: +4 (withOutboundAsync/currentOutboundDeliveryId, the argument constant, the record, the task-id resolver). The comment states the ruling the code cannot show: no argument, no record, never inferred from the words or the turn. REFUSED: putting the recording in each of the 11 send handlers (11 sites, and the scope is opened here, not there); a helper module for 9 lines of call-site logic (it would hide the scope the record must be read inside). From 710 this file may only shrink."
     },
     {
       "path": "packages/server/src/microsoft/tools-write.ts",
@@ -8146,7 +8146,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 707,
+    "packages/server/src/agent/tools/index.ts": 710,
     "packages/server/src/agent/tools/surface.ts": 731,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -8318,7 +8318,7 @@
     "packages/server/src/services/generation-jobs.ts": 461,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
-    "packages/server/src/services/imessage-bridge.ts": 2142,
+    "packages/server/src/services/imessage-bridge.ts": 2145,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
