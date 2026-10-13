@@ -244,7 +244,7 @@ async function longJobWithTwoAbandoned(now: number): Promise<void> {
 }
 
 describe('ROUND 2 (2+3): freshness is refreshed only by activity that names the task', () => {
-  it.fails('the close-out gate names BOTH abandoned tasks (another conversation, the same conversation) and never the job in flight', async () => {
+  it('the close-out gate names BOTH abandoned tasks (another conversation, the same conversation) and never the job in flight', async () => {
     await longJobWithTwoAbandoned(Date.now());
     const named = await gateNames();
     expect(named).toContain('task-other-conv');
@@ -252,7 +252,7 @@ describe('ROUND 2 (2+3): freshness is refreshed only by activity that names the 
     expect(named).not.toContain('task-live');
   });
 
-  it.fails('the PM re-drives an abandoned task from the SAME conversation as the long job; the job in flight gets no check-in', async () => {
+  it('the PM re-drives an abandoned task from the SAME conversation as the long job; the job in flight gets no check-in', async () => {
     await longJobWithTwoAbandoned(Date.now());
     await runPokeCheck();
     expect(pokes('task-same-conv')).toBeGreaterThan(0);
@@ -261,7 +261,7 @@ describe('ROUND 2 (2+3): freshness is refreshed only by activity that names the 
     expect(ownerTexts()).toBe(0);
   });
 
-  it.fails('the timestamp itself: a park moves the job\'s own row and no other', async () => {
+  it('the timestamp itself: a park moves the job\'s own row and no other', async () => {
     const now = Date.now();
     await longJobWithTwoAbandoned(now);
     const at = (id: string): number => (db().prepare('SELECT updated_at AS u FROM work WHERE id = ?').get(id) as { u: number }).u;
@@ -272,7 +272,7 @@ describe('ROUND 2 (2+3): freshness is refreshed only by activity that names the 
 });
 
 describe('ROUND 2 (1): the platform notice never depends on the project manager existing', () => {
-  it.fails('with the PM switched off, the scheduler\'s own tick tells the owner about a wedged agent, once', async () => {
+  it('with the PM switched off, the scheduler\'s own tick tells the owner about a wedged agent, once', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_enabled', 'false')").run();
     db().prepare("DELETE FROM agents WHERE id = 'pm'").run();
     wedgedToolCall(3 * 60 * MIN);
@@ -286,7 +286,7 @@ describe('ROUND 2 (1): the platform notice never depends on the project manager 
 });
 
 describe('ROUND 2 (4): "your pause was lifted" wakes the agent and asks for no reply', () => {
-  it.fails('a PM-rejected pause re-drives the agent through a notice that names the task, with no reply owed to the PM', async () => {
+  it('a PM-rejected pause re-drives the agent through a notice that names the task, with no reply owed to the PM', async () => {
     claimedTask('task-paused', 'the price check', Date.now() - 30 * MIN, 'c-1');
     db().prepare("UPDATE work SET state = 'paused' WHERE id = 'task-paused'").run();
     const out = await trackerValidatePause('pm', { task_id: 'task-paused', valid: false, reject_reason: 'no specific wait condition was named' });

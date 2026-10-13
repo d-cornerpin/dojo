@@ -97,6 +97,8 @@ import { trackerAddNotes } from '../tools.js';
 import { recordPoke } from '../../work/poke-ladder.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
@@ -175,15 +177,47 @@ function wedgedToolCall(quietMs: number, now = Date.now()): void {
   db().prepare("UPDATE agents SET status = 'working' WHERE id = 'helper'").run();
 }
 
+/** The long job's own task: opened by the owner's ask `msg-ask` (its `source_message_id`). */
+function jobTask(atMs: number): void {
+  seedTrackerTask(db(), {
+    id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
+    opened_at: atMs, updated_at: atMs, origin_conv_key: 'c-job', source_message_id: 'msg-ask', priority: 'normal',
+  } as never);
+}
+
+/** One 15-minute park of the long job, as the engine leaves it: inside the turn's own context
+ *  (the first turn's trigger is the owner's ask; a continuation's is the engine's self-wake),
+ *  the checkpoint, then the turn-finalize stamp. */
+function park(turnNumber: number, at: number, first: boolean): void {
+  vi.setSystemTime(at);
+  const tc = openTurnContext('helper');
+  tc.turnNumber = turnNumber;
+  tc.root = first ? { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' } : null;
+  modelCallFinished(at);
+  noteEngineCheckpoint('helper', 'turn-budget');
+  stampTasksAtTurnFinalize({
+    agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
+    rootSourceMessageId: first ? 'msg-ask' : null, convKey: 'c-job', servedTaskId: null,
+  });
+  endTurnContext('helper');
+}
+
+/** The sweeps a quiet minute brings: the PM's ladder, and the platform clock's liveness check. */
+async function sweep(): Promise<void> {
+  await runPokeCheck();
+  await runSchedulerTick();
+  await balanceCheckSettled();
+}
+
 describe('SILENT: an agent with no movement at all, past its window, is reported to the owner once', () => {
   it('a wedged tool call (no stream, no tool finish) for 3 hours: ONE owner notice, naming the agent and its task', async () => {
     wedgedToolCall(3 * 60 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     expect(sent()[0]).toContain('Helper');
     expect(sent()[0]).toContain('the quarterly numbers');
     // The same incident on the next sweep: still one.
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
   });
 
@@ -194,7 +228,7 @@ describe('SILENT: an agent with no movement at all, past its window, is reported
     });
     expect(res.status).toBe(200);
     wedgedToolCall(15 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     const detail = (await res.json()) as { data: { silentWindowMinutes?: number | null } };
     expect(detail.data.silentWindowMinutes).toBe(10);
@@ -208,21 +242,13 @@ describe('M3 (t137 review): a task is judged on its OWN activity, not on the eng
     // The abandoned task: claimed two hours ago from another conversation, never touched since.
     claimedTask('task-abandoned', 'the forgotten report', now - 120 * MIN, 'c-old');
     // The long job: claimed 40 minutes ago, worked through three real 15-minute parks.
-    claimedTask('task-live', 'the long research job', now - 40 * MIN, 'c-job');
-    for (const [i, at] of [now - 30 * MIN, now - 15 * MIN, now - MIN].entries()) {
-      vi.setSystemTime(at);
-      modelCallFinished(at);
-      noteEngineCheckpoint('helper', 'turn-budget');
-      stampTasksAtTurnFinalize({
-        agentId: 'helper', turnNumber: 10 + i, outcome: 'budget', answerMessageId: null,
-        rootSourceMessageId: null, convKey: 'c-job', servedTaskId: null,
-      });
-    }
+    jobTask(now - 40 * MIN);
+    for (const [i, at] of [now - 30 * MIN, now - 15 * MIN, now - MIN].entries()) park(10 + i, at, i === 0);
     vi.setSystemTime(now);
-    // Precondition: the checkpoint DID touch the abandoned task (that is what hid it).
+    // Round 2: the park no longer touches the abandoned task at all.
     expect((db().prepare("SELECT updated_at FROM work WHERE id = 'task-abandoned'").get() as { updated_at: number }).updated_at)
-      .toBeGreaterThan(now - 2 * MIN);
-    await runPokeCheck();
+      .toBe(now - 120 * MIN);
+    await sweep();
     expect(pokes('task-abandoned')).toBeGreaterThan(0);
     expect(pokes('task-live')).toBe(0);
     // The agent is moving (its last park was a minute ago): the owner hears nothing.
@@ -249,20 +275,20 @@ describe('GREEN: exactly once, and never for a working agent', () => {
   it('the 30-second status heartbeat is not movement: a wedged agent whose row the heartbeat keeps fresh is still told', async () => {
     wedgedToolCall(3 * 60 * MIN);
     db().prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = 'helper'").run();
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
   });
 
   it('the notice is a lasting owner card in the same words, until the agent moves again (then it leaves every dashboard)', async () => {
     wedgedToolCall(3 * 60 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     const words = JSON.parse(silentNotice()!).words as string;
     expect(await ownerCardWords()).toContain(words);
     // The tool comes back: real movement.
     db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
                   VALUES ('tool-back', 'helper', 'tool', '[]', 7, ?)`).run(Date.now());
-    await runPokeCheck();
+    await sweep();
     expect(silentNotice()).toBeNull();
     expect(ends()).toContain(words);
     expect(await ownerCardWords()).not.toContain(words);
@@ -281,30 +307,24 @@ describe('GREEN: exactly once, and never for a working agent', () => {
     const open = new AbortController();
     expect(registerAbortable('helper', open)).toBe(true);
     try {
-      await runPokeCheck();
+      await sweep();
       expect(ownerTexts()).toBe(0);
     } finally {
       releaseAbortable('helper', open);
     }
     // Its first token arrives and the call completes: still nothing to tell.
     modelCallFinished(Date.now());
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(0);
   });
 
   it('a working long job (a park every 15 minutes for 3 hours) yields ZERO notices and ZERO check-ins on the task it is working', async () => {
     const start = Date.now() - 180 * MIN;
     vi.useFakeTimers({ toFake: ['Date'] });
-    claimedTask('task-live', 'the long research job', start, 'c-job');
+    jobTask(start);
     for (let t = start + 15 * MIN, i = 0; t <= start + 180 * MIN; t += 15 * MIN, i++) {
-      vi.setSystemTime(t);
-      modelCallFinished(t);
-      noteEngineCheckpoint('helper', 'turn-budget');
-      stampTasksAtTurnFinalize({
-        agentId: 'helper', turnNumber: 20 + i, outcome: 'budget', answerMessageId: null,
-        rootSourceMessageId: null, convKey: 'c-job', servedTaskId: null,
-      });
-      await runPokeCheck();
+      park(20 + i, t, i === 0);
+      await sweep();
     }
     expect(ownerTexts()).toBe(0);
     expect(pokes('task-live')).toBe(0);
@@ -317,7 +337,7 @@ describe('BROKEN ends on healthy work the sweep can see', () => {
     expect(noteNoticeOnce('helper', 'broken_notice', 'Helper has stopped: the key stopped working.')).toBe(true);
     await new Promise((r) => setTimeout(r, 5));
     modelCallFinished(Date.now() + 1000);
-    await runPokeCheck();
+    await sweep();
     expect((db().prepare("SELECT broken_notice AS n FROM agents WHERE id = 'helper'").get() as { n: string | null }).n).toBeNull();
     expect(ends()).toContain('Helper has stopped: the key stopped working.');
   });
@@ -326,13 +346,13 @@ describe('BROKEN ends on healthy work the sweep can see', () => {
 describe('BACKWARDS LIFECYCLE', () => {
   it('the window changed mid-job: raised before the quiet reaches it, nothing; lowered past it, one notice; raised again, no second', async () => {
     wedgedToolCall(30 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(0); // inside the 2-hour default
     await setWindow(20);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     await setWindow(600);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     await setWindow(null); // back to the default through the same door
     expect((db().prepare("SELECT silent_window_minutes AS m FROM agents WHERE id = 'helper'").get() as { m: number | null }).m).toBeNull();
@@ -354,17 +374,17 @@ describe('BACKWARDS LIFECYCLE', () => {
     db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")
       .run(sqlTime(Date.now() - MIN));
     db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'helper'").run();
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(0);
   });
 
   it('an agent that recovers after the notice is not told about twice for the same incident', async () => {
     wedgedToolCall(3 * 60 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     modelCallFinished(Date.now());
-    await runPokeCheck();
-    await runPokeCheck();
+    await sweep();
+    await sweep();
     expect(ownerTexts()).toBe(1);
     expect(silentNotice()).toBeNull();
   });
@@ -372,7 +392,7 @@ describe('BACKWARDS LIFECYCLE', () => {
   it('the project manager agent offline (in error, no model to run): the platform notice still fires from the sweep', async () => {
     db().prepare("UPDATE agents SET status = 'error', model_id = NULL WHERE id = 'pm'").run();
     wedgedToolCall(3 * 60 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(1);
   });
 });
@@ -418,12 +438,12 @@ describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation 
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
     claimedTask('task-q', 'the supplier list', t0 - 7 * MIN, 'c-1');
-    await runPokeCheck();
+    await sweep();
     expect(newestPokeRung('task-q')).toBe(1); // the first check-in
     vi.setSystemTime(t0 + MIN);
     expect(trackerAddNotes('helper', { taskId: 'task-q', notes: 'Still working on it: halfway through the list.' })).toMatch(/^\[OK\]/);
     vi.setSystemTime(t0 + 7 * MIN);
-    await runPokeCheck();
+    await sweep();
     const closed = db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-q' AND kind = 'poke_remediation'").get() as { n: number };
     expect(closed.n).toBe(1);
     expect(newestPokeRung('task-q')).toBe(1); // a fresh first check-in, not a second rung
@@ -436,20 +456,20 @@ describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation 
     recordPoke('task-e', 'pm', 1, 'nudge', 'helper');
     recordPoke('task-e', 'pm', 2, 'urgent', 'helper');
     modelCallFinished(t0 - MIN); // working, on something
-    await runPokeCheck();
+    await sweep();
     expect(newestPokeRung('task-e')).toBe(2);
     expect(a2a.filter((m) => m.payload?.startsWith('ESCALATION'))).toHaveLength(0);
     // Control: the same task, the agent with no movement inside its window — the old rung still fires.
     db().prepare("DELETE FROM cost_records WHERE agent_id = 'helper'").run();
     modelCallFinished(t0 - 150 * MIN);
-    await runPokeCheck();
+    await sweep();
     expect(newestPokeRung('task-e')).toBe(3);
   });
 
   it('a BROKEN-class agent (in error) holding work is not ALSO told SILENT: one notice per incident', async () => {
     wedgedToolCall(3 * 60 * MIN);
     db().prepare("UPDATE agents SET status = 'error' WHERE id = 'helper'").run();
-    await runPokeCheck();
+    await sweep();
     expect(ownerTexts()).toBe(0);
   });
 });
