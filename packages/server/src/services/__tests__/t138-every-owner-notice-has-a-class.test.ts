@@ -70,8 +70,8 @@ const CENSUS: Record<string, Site[]> = {
     { cls: 'platform-trouble', severity: 'critical', what: 'a Microsoft account connection expired' },
     { cls: 'platform-trouble', severity: 'notice', what: 'the all-clear: it reconnected on its own', card: 'clears' },
   ],
-  'services/resource-monitor.ts': [
-    { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory' },
+  'services/memory-low-notice.ts': [
+    { cls: 'platform-trouble', severity: 'critical', what: 'the box is nearly out of memory (once per low stretch, round 3)' },
   ],
   'services/tunnel.ts': [
     { cls: 'platform-trouble', severity: 'notice', what: 'the remote address changed; the old link no longer reaches the box', card: 'none' },

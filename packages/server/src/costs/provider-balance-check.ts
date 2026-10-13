@@ -172,14 +172,10 @@ export function balanceOwnerCards(): Array<{ words: string; severity: 'notice'; 
     let told: { at?: number; words?: string; dismissedAt?: number } = {};
     try { told = JSON.parse(keys.get(w.latchKey) ?? '{}') as typeof told; } catch { /* a bare legacy latch: no words */ }
     if (typeof told.words !== 'string' || told.dismissedAt !== undefined) return [];
-    return [{
-      words: told.words,
-      severity: 'notice' as const,
-      dismiss: () => {
-        getDb().prepare('UPDATE config SET value = ? WHERE key = ?')
-          .run(JSON.stringify({ ...told, dismissedAt: Date.now() }), w.latchKey);
-      },
-    }];
+    const dismiss = (): void => {
+      getDb().prepare('UPDATE config SET value = ? WHERE key = ?').run(JSON.stringify({ ...told, dismissedAt: Date.now() }), w.latchKey);
+    };
+    return [{ words: told.words, severity: 'notice' as const, dismiss }];
   });
 }
 

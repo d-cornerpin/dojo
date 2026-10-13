@@ -18,7 +18,7 @@ import { findOpenRouterProvider, findDeepSeekProvider, readOpenRouterCredits, re
 import { budgetOwnerCards } from '../../costs/budget.js';
 import { pausedAgentOwnerCards } from '../../agent/paused-owner-card.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
-import { memoryOwnerCards } from '../../services/resource-monitor.js';
+import { memoryOwnerCards } from '../../services/memory-low-notice.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
