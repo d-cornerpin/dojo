@@ -15,6 +15,7 @@ import type { DimensionScore } from './types.js';
 // T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
 // `providerCeilingTokensFor` below for why the query is mirrored here instead.
 import { resolveStreamPatience, resolveDoomCeiling, providerAwareBudgetTokens } from '../agent/stream-patience.js';
+import { CONTEXT_THRESHOLD } from '../memory/budget.js';
 
 const logger = createLogger('selector');
 
@@ -141,7 +142,15 @@ function providerCeilingTokensFor(modelId: string): number | null {
  * candidate) — the ceiling term is the one that actually binds for a declared-slow box, which
  * is the whole shape of the incident this filter exists to catch.
  */
-function fitsProviderCeiling(modelId: string, inputEstimate: number): boolean {
+function fitsProviderCeiling(
+  modelId: string, inputEstimate: number, windowOf?: (modelId: string) => number,
+): boolean {
+  // t140 fix round 1 (review I1): AND ITS WINDOW. A candidate that declares no ceiling "fit"
+  // any array at all, so a 200K-sized array could be handed to a 32K fallback, refused at the
+  // boundary, and the turn failed. `windowOf` is the caller's window resolver (the selector does
+  // not import `agent/model.ts`, see above); the bound is the window's fill line, the most the
+  // assembler would ever admit on it. The caller still re-fits the array to the pick it gets.
+  if (windowOf && inputEstimate > Math.floor(CONTEXT_THRESHOLD * windowOf(modelId))) return false;
   const ceiling = providerCeilingTokensFor(modelId);
   if (ceiling === null) return true;
   return inputEstimate <= providerAwareBudgetTokens(Number.POSITIVE_INFINITY, ceiling);
@@ -159,6 +168,8 @@ export function selectModel(
    * caller before this task) skips the check entirely: R6's byte-preservation control.
    */
   inputEstimate?: number,
+  /** t140 fix round 1: the caller's window resolver, checked with `inputEstimate`. */
+  windowOf?: (modelId: string) => number,
 ): SelectedModel | null {
   const excluded = new Set(excludeModels ?? []);
   const required = requireCapabilities ?? [];
@@ -233,7 +244,7 @@ export function selectModel(
       // T82a fix wave (round 2): skip a candidate whose own declared ceiling cannot cover
       // what is already assembled. Mirrors the budget check immediately above — same shape,
       // same log level, one more predicate a starved selection can be diagnosed from.
-      if (inputEstimate !== undefined && !fitsProviderCeiling(model.model_id, inputEstimate)) {
+      if (inputEstimate !== undefined && !fitsProviderCeiling(model.model_id, inputEstimate, windowOf)) {
         logger.warn('Model cannot fit the already-assembled input within its declared ceiling, skipping', {
           modelId: model.model_id,
           inputEstimate,

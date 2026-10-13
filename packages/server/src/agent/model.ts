@@ -459,6 +459,11 @@ export interface ModelCallParams {
    *  for LESS than that purpose's ceiling; nobody may ask for more. Ignored unless `purpose` names a
    *  utility dial — see `utility-dial.ts`. */
   utilityTargetTokens?: number | null;
+  /** t140 fix round 1 (review I1): re-fit this call's array for a DIFFERENT model before it is
+   *  dialed — the budget redirect below picks a free model the array was never sized for. The
+   *  served turn supplies it (`model-call.ts`, which holds the turn's assembly context); `null`
+   *  means the array already fits that model. Absent on utility dials, whose arrays are tiny. */
+  refitFor?: (modelId: string) => Promise<{ messages: ModelCallParams['messages']; systemPrompt: string } | null>;
   // External abort signal, when fired, the underlying SDK call aborts
   // and callModel throws. Used by the runtime's stop button to actually
   // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
@@ -3356,8 +3361,11 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
         // Recursively call with the free model. The redirect target may itself be
         // an ollama transport (exempt above) or a paid $0 model (skipped via the
         // budget_fallback tier), either way it dispatches without re-walling.
+        // t140 fix round 1 (review I1): re-fit the array to the free model's own window first.
+        const refit = params.refitFor ? await params.refitFor(fb.modelId) : null;
         return callModel({
           ...params,
+          ...(refit ?? {}),
           modelId: fb.modelId,
           routerTier: 'budget_fallback',
         });

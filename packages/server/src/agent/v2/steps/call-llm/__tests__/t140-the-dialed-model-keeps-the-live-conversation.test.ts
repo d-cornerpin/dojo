@@ -308,7 +308,7 @@ function summarisedRowCount(): number {
 }
 
 describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-fitted to their own window', () => {
-  it.fails('a smaller FALLBACK after the first pick fails on the wire succeeds, with the conversation, and forces no condense', async () => {
+  it('a smaller FALLBACK after the first pick fails on the wire succeeds, with the conversation, and forces no condense', async () => {
     seedConversation(250);
     provider.failNext = 1;   // the heavy (32K) pick dies on the wire; the router falls back to the 16K pick
     const out = await dialStep(HEAVY);
@@ -320,7 +320,26 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     expect(summarisedRowCount(), 'no forced condense: the array was re-fitted, not refused').toBe(0);
   });
 
-  it.fails('the BUDGET redirect to a free model re-fits the array before it dials, and the turn succeeds', async () => {
+  it('the fallback SELECTION checks each candidate against its own window, and skips one that cannot hold the turn at all', async () => {
+    seedConversation(250);
+    // A 12K model ahead of the 16K one in the light tier: it cannot hold this agent's system
+    // prompt and tools at all, so a selector that judged candidates by declared ceiling alone
+    // would hand it the array, the re-fit would refuse it, and the turn would fail.
+    const SMALLER = 'm-routed-smaller';
+    db().prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+       VALUES (?, 'prov-routed', 'Routed Smaller', 'sonnet', '["text","tools"]', 12288, 4096, 1, datetime('now'), datetime('now'))`,
+    ).run(SMALLER);
+    db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
+    db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
+    provider.failNext = 1;
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
+    expect(out.modelId, 'the candidate whose window holds the turn').toBe(LIGHT);
+  });
+
+  it('the BUDGET redirect to a free model re-fits the array before it dials, and the turn succeeds', async () => {
     seedConversation(250);
     // The heavy pick is paid and the day's budget is spent, so `callModel` redirects to the only
     // free model — the 16K pick — inside the same call.

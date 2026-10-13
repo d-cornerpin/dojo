@@ -21,7 +21,7 @@ import type { ModelCallParams } from '../../../model.js';
 
 /** The array the assembler hands over and the injections append to. */
 type ModelMessage = ModelCallParams['messages'][number];
-import { callModel, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
+import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../../../model.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
@@ -154,6 +154,10 @@ export async function callWithRetryAndFallback(
     if (beforeCall) return beforeCall;
 
     const abortController = new AbortController();
+    // The ONE credential read point (PHASE-5 T6B / P5-R11), as a function of the array: t140 fix
+    // round 1 sends a re-fitted array down the budget redirect too, and it must be hydrated at
+    // this same point rather than at a second one.
+    const forTheWire = (arr: ModelMessage[]): ModelMessage[] => hydrateCredentialsInMessages(agentId, arr);
 
     try {
       // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
@@ -172,8 +176,14 @@ export async function callWithRetryAndFallback(
         // this very array when no placeholder is present, hence no effect on
         // the cached prefix (OR7/#10). Full rationale + the three properties
         // that make it safe: `credentials/secret-values.ts`.
-        messages: hydrateCredentialsInMessages(agentId, messages),
+        messages: forTheWire(messages),
         systemPrompt,
+        // t140 fix round 1 (review I1): the budget redirect inside `callModel` dials a free model
+        // this array was never sized for; this re-fits it there, from this turn's own assembly.
+        refitFor: async (pick) => {
+          const r = await reassembleForFitIfNeeded({ agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext });
+          return r ? { messages: forTheWire(r.messages), systemPrompt: r.systemPrompt } : null;
+        },
         // C28 P-2: system-side volatile lane (empty after P-1). Trails the
         // cached stable system block so it can't invalidate the cached prefix.
         systemVolatile: ctx.systemVolatile,
@@ -363,7 +373,7 @@ export async function callWithRetryAndFallback(
       // against that reality, not the turn's original assembly.
       let fallback = selectModel(
         fallbackTier, agentId, excludedModels, ['tools'],
-        estimateAssembledArrayTokens(systemPrompt, messages),
+        estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
       );
 
       if (!fallback) {
@@ -388,7 +398,7 @@ export async function callWithRetryAndFallback(
             // higher-priority candidate the first fit-aware pass had already rejected.
             fallback = selectModel(
               fallbackTier, agentId, excludedModels, ['tools'],
-              estimateAssembledArrayTokens(systemPrompt, messages),
+              estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
             );
           }
         }
@@ -422,6 +432,18 @@ export async function callWithRetryAndFallback(
       // already handed to queueAgentSay stays committed by design;
       // there is no dequeue and none should be added.
       if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
+      // t140 fix round 1 (review I1): EVERY fallback pick is re-fitted to its own window before it
+      // is dialed — not only the rescue above. The selector prefers a pick that holds the array
+      // as built; this makes the array right for whichever pick it got.
+      const refit = await reassembleForFitIfNeeded({
+        agentId, modelId: fallback.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+      });
+      if (refit) {
+        messages = refit.messages;
+        systemPrompt = refit.systemPrompt;
+        ctx = refit.assembled;
+        volatileFrom = refit.volatileFrom;
+      }
       modelId = fallback.modelId;
       state = advance(state, { modelId });
     } finally {
