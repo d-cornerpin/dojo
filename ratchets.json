@@ -7885,6 +7885,41 @@
       "to": 528,
       "by": "t140 fix round 1 — review I1, second pass (full-suite finding)",
       "why": "513 -> 528 (+15: the always-refit after a fallback pick becomes a bounded loop). A fallback the window check admits (the array is under its fill line) can still have a window that cannot hold this agent's system prompt and tools; its re-fit refuses by name (SystemPromptTooLargeError), and the turn failed on it in a loaded full-suite run. It is now excluded and the fit-aware selection asked again, the same rule the rescue follows; witnessed by its own clause (a short conversation, a 12K pick ahead of the 16K one) and its mutant (rethrow -> the clause reds)."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1508,
+      "to": 1580,
+      "by": "t140 round 2 — re-review 1 C1 (overhaul-plans/t140-rereview-1.md)",
+      "why": "1508 -> 1580 (+72: +41 code, +31 comment). The engine's assembly door `assembleWithNothingOutOfViewUnsummarised`: rows the token trim already took out of the view (floor rows included) are folded, awaited, before the turn dials, and the context re-assembled, bounded; a pass that folds nothing is a logged repairable defect. Plus `floorRows` on runLeafCompaction and the 'out-of-view' cause in leavingViewPass. Witness: the reviewer's direct count (rows not in view and not summarised) 7,156 row-turns -> 0 at 32K, both fold timings; 128K unchanged at 0."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 528,
+      "to": 546,
+      "by": "t140 round 2 — re-review 1 N1 + minor",
+      "why": "528 -> 546 (+18: +13 code, +5 comment). Fallback candidates refused for a window too small to hold the instructions and tools are passed over without the owner's permanent 'cannot hold a conversation' card (`anotherPickMayFollow`), and on exhaustion the thrown error names that cause and the excluded picks before the first pick's wire error, keeping its code/retryable/provider facts so recovery decides as before. Witnessed by two W1 clauses (zero cards when the 16K pick answers; exhaustion names the cause)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/index.ts",
+      "from": 386,
+      "to": 390,
+      "by": "t140 round 2 — re-review 1 C1",
+      "why": "386 -> 390 (+4: +2 code, +2 comment). The assemble step goes through the out-of-view door instead of calling assembleContext bare."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 526,
+      "to": 528,
+      "by": "t140 round 2 — re-review 1 C1",
+      "why": "526 -> 528 (+2 comment). The 'out-of-view' LeavingCause, documented."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 236,
+      "to": 237,
+      "by": "t140 round 2 — re-review 1 C1",
+      "why": "236 -> 237 (+1 comment). condenseLeavingInBackground is the gate's PRESSURE fold alone again (un-exported; the re-fit's M3 background fold is deleted); its doc says where exact out-of-view folds now happen."
     }
   ],
   "maxNewFileLines": 400,
@@ -7992,12 +8027,12 @@
     "packages/server/src/agent/v2/state.ts": 769,
     "packages/server/src/agent/v2/steer-queue.ts": 341,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
-    "packages/server/src/agent/v2/steps/assemble/index.ts": 386,
+    "packages/server/src/agent/v2/steps/assemble/index.ts": 390,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 214,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 244,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 528,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 546,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
@@ -8038,7 +8073,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 236,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 237,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8095,7 +8130,7 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1508,
+    "packages/server/src/memory/compaction.ts": 1580,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
@@ -8113,7 +8148,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
-    "packages/server/src/memory/tail-horizon.ts": 526,
+    "packages/server/src/memory/tail-horizon.ts": 528,
     "packages/server/src/memory/work-board-lane.ts": 779,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
