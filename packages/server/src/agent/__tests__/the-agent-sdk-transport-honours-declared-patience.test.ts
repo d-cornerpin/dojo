@@ -45,7 +45,7 @@
 // fires for this transport's own error shape, and that a genuine SDK failure (never our own
 // timer) keeps today's classification.
 // ════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import realOs from 'node:os';
@@ -60,7 +60,9 @@ const agentSdk = vi.hoisted(() => ({
   mode: 'answer' as 'answer' | 'stall' | 'stall-after-content' | 'abort-unrelated',
 }));
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+// The package is scripted through the suite-wide mock in `vitest.setup.ts` (t140 round 2), not a
+// per-file `vi.mock`: a per-file package mock was measured being bypassed, which starts the real CLI.
+(globalThis as { __scriptedAgentSdk?: unknown }).__scriptedAgentSdk = {
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     agentSdk.queryCalls.push(args);
     if (agentSdk.mode === 'abort-unrelated') {
@@ -104,7 +106,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
       };
     })();
   },
-}));
+};
 
 // The platform resolves `~/.dojo` in exactly one place — `src/home.ts` — so that is
 // what a test redirects. Computed inside the factory, which runs before this module's
@@ -694,3 +696,5 @@ describe('T81d §D — FIX ROUND: the trip carries DECLARED_PATIENCE_EXCEEDED_CO
       'the signal the SDK was handed is the one the stop aborted').toBe(true);
   });
 });
+
+afterAll(() => { (globalThis as { __scriptedAgentSdk?: unknown }).__scriptedAgentSdk = undefined; });

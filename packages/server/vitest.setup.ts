@@ -131,8 +131,18 @@ for (const key of Object.keys(process.env)) {
 
 const AGENT_CLI_NET_MESSAGE = 'TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead.';
 
+// A test whose SUBJECT is the in-tree transport itself (it must see the exact `query()` options
+// the transport builds) scripts the package through THIS one mock rather than a per-file
+// `vi.mock` of its own: it sets `globalThis.__scriptedAgentSdk = { query }` and clears it after.
+// Every other caller of `query()` gets the throw. Reset here, before every file, so a script can
+// never leak from one file into the next in a reused worker.
+(globalThis as { __scriptedAgentSdk?: unknown }).__scriptedAgentSdk = undefined;
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: () => { throw new Error(AGENT_CLI_NET_MESSAGE); },
+  query: (args: unknown) => {
+    const script = (globalThis as { __scriptedAgentSdk?: { query?: (a: unknown) => unknown } }).__scriptedAgentSdk;
+    if (typeof script?.query === 'function') return script.query(args);
+    throw new Error(AGENT_CLI_NET_MESSAGE);
+  },
 }));
 
 const AGENT_CLI = /claude-agent-sdk|claude-code|(^|[\\/\s])claude(\.exe|\.cmd)?(\s|$)/i;

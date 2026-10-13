@@ -71,10 +71,7 @@ vi.mock('../../providers/anthropic-sdk.js', async (importOriginal) => ({
     return { content: 'The crew counted the north dock and logged the damaged lids.', toolCalls: [], inputTokens: 40, outputTokens: 12, stopReason: 'end_turn' };
   },
 }));
-// A second net, never expected to be reached: the external package stays mocked too.
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: () => { throw new Error('t140 test: the real Agent SDK must never be reached'); },
-}));
+// The external package needs no per-file net: `vitest.setup.ts` mocks it suite-wide to throw.
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';

@@ -29,7 +29,7 @@
 //
 // Millisecond scale throughout, real timers, no waiting out `resolveTransportTimeouts`'s floor.
 // ════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 
 /**
  * The SDK is mocked module-wide. `mode` picks the generator shape; `chunks` and `gapMs` drive
@@ -43,7 +43,9 @@ const agentSdk = vi.hoisted(() => ({
   gapMs: 25,
 }));
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+// The package is scripted through the suite-wide mock in `vitest.setup.ts` (t140 round 2), not a
+// per-file `vi.mock`: a per-file package mock was measured being bypassed, which starts the real CLI.
+(globalThis as { __scriptedAgentSdk?: unknown }).__scriptedAgentSdk = {
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     agentSdk.queryCalls.push(args);
     const controller = args.options.abortController as AbortController | undefined;
@@ -129,7 +131,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
       };
     })();
   },
-}));
+};
 
 vi.mock('../../home.js', async () => {
   const p = await import('node:path');
@@ -277,3 +279,5 @@ describe('§3 controls — the bound is still a bound, and a NULL row still has 
     expect(err, 'omitting the idle bound must not disarm the clock').toBeInstanceOf(AgentSdkPatienceExceededError);
   });
 });
+
+afterAll(() => { (globalThis as { __scriptedAgentSdk?: unknown }).__scriptedAgentSdk = undefined; });

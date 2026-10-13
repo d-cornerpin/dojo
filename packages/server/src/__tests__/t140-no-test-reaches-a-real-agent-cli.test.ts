@@ -9,6 +9,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import childProcess from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const NET = /TEST NET: a test tried to start the real Claude CLI/;
 
@@ -53,5 +55,31 @@ describe('t140 round 2 — no test can start a real Agent CLI', () => {
   it('no worker carries a provider credential or a coding-agent session variable', () => {
     const leaked = Object.keys(process.env).filter((k) => /^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|OPENAI_|OPENROUTER_|DEEPSEEK_)/.test(k));
     expect(leaked).toEqual([]);
+  });
+
+  it('a file whose subject is the transport scripts query() through the ONE suite mock, and nothing else does it per file', async () => {
+    const g = globalThis as { __scriptedAgentSdk?: unknown };
+    expect(g.__scriptedAgentSdk, 'a script never leaks in from another file').toBeUndefined();
+    g.__scriptedAgentSdk = { query: () => 'scripted' };
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+      expect(sdk.query({ prompt: 'x', options: {} } as never)).toBe('scripted');
+    } finally { g.__scriptedAgentSdk = undefined; }
+
+    // Census: a per-file mock of the package is the shape measured being bypassed. Comments are
+    // stripped first, so a file that only DESCRIBES the old pattern does not count.
+    const SRC = path.resolve(__dirname, '..');
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(full); continue; }
+        if (!/\.test\.tsx?$/.test(e.name)) continue;
+        const code = fs.readFileSync(full, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+        if (/vi\.(do)?mock\(\s*['"`]@anthropic-ai\/claude-agent-sdk['"`]/.test(code)) offenders.push(path.relative(SRC, full));
+      }
+    };
+    walk(SRC);
+    expect(offenders).toEqual([]);
   });
 });
