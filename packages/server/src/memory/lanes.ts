@@ -550,12 +550,15 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.active-tasks',
     slot: MessageSlot.ActiveTasksTail,
-    // t139: 1,239 -> 3,247 (+2,008). The 300-char description term (5 x 300 = 1,500 chars)
-    // left with the cut, and the one 8,000-char pool of original words (chars.originalWords)
-    // plus each line's labelled head and end/continues line arrived. The +2,008 is the price
-    // of the owner's words reaching the list whole; it is 73 tokens UNDER the 2,081 the pin
-    // reserves for the same 8,000 characters, which t145 frees when the pin is deleted.
-    reserveTokens: 3247,
+    // t139: 1,239 -> 3,444 (+2,205). The 300-char description term (5 x 300 = 1,500 chars)
+    // left with the cut; the one 8,000-char pool of original words (chars.originalWords) plus
+    // each line's labelled head and end/continues line arrived; a linked task whose own
+    // description says something the words do not (an amendment the agent recorded) prints it
+    // after the words, from the SAME pool, with its own head and end/cut line; and each line
+    // can carry a `Status: <status>, waiting` line, because the list carries every UNFINISHED
+    // task (`BOARD_STATUSES`), not only in-progress ones. The words pool itself is the pin's
+    // 8,000 characters, so once t145 deletes the pin (-2,081) the net is +124 tokens.
+    reserveTokens: 3444,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
@@ -567,7 +570,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'linked and over the cap so each carries the longer "continues … history_get(id=…)" '
       + 'line with a 36-char message id and a 10-digit count, a 120-char conversation label '
       + '(chars.originLabel) and the widest recorded-instant stamp, a 200-char last note '
-      + '(chars.lastNote), a full 36-char id and '
+      + '(chars.lastNote), the widest waiting-status line (t139: every unfinished task is listed), '
+      + 'a differing task description head and its pointer-only cut line on every task, a full 36-char id and '
       + 'the widest `renderTaskStamps({relative:false})` / `renderStepFacts` terms, both '
       + 'measured by CALLING those two renderers rather than counted beside them. '
       + 'WHY IT IS A RESERVE AT ALL: this lane was a `fitLanes` candidate at '
@@ -578,8 +582,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'six PURE READS: that is why `plaud_*` and `outlook_*` appear in the owner\'s list of '
       + 'six occurrences alongside the two `work_update`s. '
       + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not. '
-      + 't139 adds 2,008 tokens off the top of every assembly for the requester\'s words — '
-      + 'within the pin\'s own 2,081 for the same 8,000 characters, which t145 frees.',
+      + 't139 adds 2,205 tokens off the top of every assembly for the requester\'s words; the '
+      + 'pin\'s own 2,081 for the same 8,000 characters is freed by t145, a net +124.',
   },
   {
     id: 'lane.scratchpad',

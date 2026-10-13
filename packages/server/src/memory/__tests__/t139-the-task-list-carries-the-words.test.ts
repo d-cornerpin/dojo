@@ -55,6 +55,7 @@ vi.mock('../vector-search.js', () => ({ vectorSearch: async () => [] }));
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createTask } from '../../tracker/schema.js';
+import { setTrackerStatus } from '../../work/tracker-store.js';
 import { assembleContext } from '../assembler.js';
 import { buildWorkBoardLane, activeTasksWorstCaseTokens } from '../work-board-lane.js';
 import { POST_BUDGET_LANES } from '../lanes.js';
@@ -193,6 +194,41 @@ describe('t139 §2 — a task with no linked origin never gets an invented reque
     expect(block).toContain('Tidy the shared drive folders by year.');
     expect(block).toContain('(original request not linked)');
     expect(block).not.toMatch(/Original request \(/);
+  });
+});
+
+describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; nothing is hidden', () => {
+  it('a paused task stays on the list with its words, labelled as waiting', async () => {
+    const ask = 'Price three flights to the conference and hold the cheapest until I confirm.';
+    ownerSays('msg-paused', ask, DAY_ONE - 60_000);
+    const id = task('Conference flights', undefined, 'msg-paused');
+    const r = setTrackerStatus(id, 'paused', { by: 'agent', actorId: AGENT, reason: 'waiting on the person' });
+    expect(r.kind).toBe('applied');
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toContain(ask);
+    expect(block).toContain('Status: paused, waiting');
+  });
+
+  it('a task scheduled for later (on_deck) is not current work and is not listed', async () => {
+    ownerSays('msg-later', 'Next month, remind me to renew the domain.', DAY_ONE - 60_000);
+    const id = task('Renew the domain', undefined, 'msg-later');
+    const r = setTrackerStatus(id, 'on_deck', { by: 'agent', actorId: AGENT, reason: 'scheduled for later' });
+    expect(r.kind).toBe('applied');
+    expect((await buildWorkBoardLane(AGENT)).activeTasks).toBeNull();
+  });
+
+  it('a description that records a later change is shown after the words; one that repeats them is not printed twice', async () => {
+    const ask = 'Make nine square headshots for the team page.';
+    ownerSays('msg-desc', ask, DAY_ONE - 60_000);
+    task('Headshots', 'Owner changed it: four, black and white.', 'msg-desc');
+    ownerSays('msg-same', 'Book the Thursday room.', DAY_ONE - 30_000);
+    task('Room', 'Book the Thursday room.', 'msg-same');
+
+    const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
+    expect(block).toContain(ask);
+    expect(block).toContain("The task's own description (as last edited):\nOwner changed it: four, black and white.");
+    expect(block.split('Book the Thursday room.').length - 1).toBe(1);
   });
 });
 

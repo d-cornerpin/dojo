@@ -70,7 +70,26 @@ export interface BoardTask {
   priority: string;
   description: string | null;
   notes: string | null;
+  /** t139: the tracker status. The block carries every UNFINISHED task, not only in-progress
+   *  ones, so a line that is waiting says so (`BOARD_STATUSES`). */
+  status?: string;
 }
+
+/**
+ * t139 (#7, OR-TRACKER-1, OR-LABEL-NOT-HIDE) — WHICH TASKS THE LIST CARRIES: every task assigned
+ * to the agent that is not finished, in-progress first.
+ *
+ * It read `in_progress` alone. Driven through the real dashboard delivery door
+ * (`work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`), an owner's long ask whose
+ * turn answered "on it" and made no effectful call had its task moved to `paused` by the engine
+ * (`agent/v2/answered-edge.ts`), and the task — with the owner's words — vanished from the list
+ * while the work was still owed. The list is the ONE record of what is current; a waiting task
+ * is still current, so it is SHOWN and LABELLED, never hidden.
+ *
+ * Not here, deliberately: `on_deck` (scheduled for later — the scheduler moves it to in_progress
+ * when it is due, and a queued job is not current work) and the terminal states.
+ */
+export const BOARD_STATUSES = ['in_progress', 'blocked', 'paused'] as const;
 
 /**
  * t139 — WHAT WAS ASKED, read through the task's link to the row that carried the request
@@ -98,7 +117,8 @@ export interface WorkBoardBlocks {
 
 const ACTIVE_TASKS_HEAD =
   '═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══\n'
-  + 'You are currently assigned to these in_progress tasks. This is what you should be working on:\n';
+  + 'These are the unfinished tasks assigned to you, each with the request that started it. '
+  + 'The in_progress ones are what you should be working on; a task marked paused or blocked is waiting:\n';
 const ACTIVE_TASKS_TAIL = '═══ END ACTIVE TASKS ═══';
 const ATTEMPT_LEDGER_HEAD =
   '═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts '
@@ -128,6 +148,7 @@ function taskLine(
   const noteCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'lastNote');
   const title = t.title.length > titleCap ? `${t.title.slice(0, titleCap)}...` : t.title;
   let line = `• ${title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
+  if (t.status && t.status !== 'in_progress') line += `\n  Status: ${t.status}, waiting`;
   if (stamp) line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
   line += originSection(t, origin, pool);
   if (t.notes) {
@@ -138,16 +159,26 @@ function taskLine(
 }
 
 /** The origin part of a task line: the original words when linked, the labelled description
- *  when not. Spends the shared pool; returns '' only for an unlinked task with no description. */
+ *  when not. Spends the shared pool.
+ *
+ *  A linked task's OWN description is shown after the words when it says something the words do
+ *  not — it is where an agent records a change the person made later ("only four, in black and
+ *  white"), and hiding it would hide the current state of the job. A description that merely
+ *  repeats the words (models routinely copy the ask into it) is not printed twice. */
 function originSection(t: BoardTask, origin: TaskOrigin, pool: WordsPool): string {
   if (origin.messageId && origin.words !== null) {
     const labelCap = laneLimit(ACTIVE_TASKS_LANE_ID, 'chars', 'originLabel');
     const rawLabel = origin.label ?? 'a conversation with no recorded label';
     const label = rawLabel.length > labelCap ? `${rawLabel.slice(0, labelCap)}...` : rawLabel;
     const head = `\n  Original request (from ${label}, ${recordedInstant(origin.createdAt)}), word for word:\n`;
-    return head + spend(origin.words, pool,
+    const words = head + spend(origin.words, pool,
       '  [end of original request]',
       (more) => `  [original request continues: ${more} more characters; history_get(id="${origin.messageId}") returns it in full]`);
+    const desc = t.description?.trim();
+    if (!desc || desc === origin.words.trim()) return words;
+    return words + '\n  The task\'s own description (as last edited):\n' + spend(t.description!, pool,
+      '  [end of description]',
+      (more) => `  [description continues: ${more} more characters, not shown]`);
   }
   const why = origin.messageId
     ? `(original request no longer stored: message ${origin.messageId})`
@@ -192,14 +223,18 @@ export async function buildWorkBoardLane(agentId: string): Promise<WorkBoardBloc
   let tasks: BoardTask[] = [];
   try {
     const { listTasks } = await import('../tracker/schema.js');
-    tasks = listTasks({ status: 'in_progress', assignedTo: agentId }) as unknown as BoardTask[];
+    // In-progress first, then the waiting ones — each status in the tracker's own order.
+    tasks = BOARD_STATUSES.flatMap((status) =>
+      listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]);
   } catch {
     return { attemptLedger: null, activeTasks: null };   // tracker may not be available
   }
   if (tasks.length === 0) return { attemptLedger: null, activeTasks: null };
 
+  // The attempt ledger keeps its own subject: the work being DONE, i.e. in-progress tasks.
+  const inProgress = tasks.filter((t) => t.status === undefined || t.status === 'in_progress');
   return {
-    attemptLedger: enforce(await attemptLedgerFrom(tasks), attemptLedgerWorstCaseTokens()),
+    attemptLedger: enforce(await attemptLedgerFrom(inProgress), attemptLedgerWorstCaseTokens()),
     activeTasks: enforce(activeTasksFrom(tasks), activeTasksWorstCaseTokens()),
   };
 }
@@ -349,7 +384,12 @@ export function activeTasksWorstCaseTokens(): number {
       id: 'w'.repeat(36),
       title: 't'.repeat(titleCap + 10),        // over the cap, so the `...` suffix is counted
       priority: 'critical',
-      description: null,
+      // The widest status line a task can carry (`Status: <status>, waiting` — in-progress
+      // lines carry none, so the widest WAITING status is the term).
+      status: BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0],
+      // A description that differs from the words, so every line also carries the description
+      // head and its (pointer-only, once the pool is spent) cut line.
+      description: 'd'.repeat(wordsCap + 1),
       notes: 'n'.repeat(noteCap + 10),
     }, widestStamp, widestSteps, {
       messageId: 'm'.repeat(36),
@@ -360,7 +400,7 @@ export function activeTasksWorstCaseTokens(): number {
       // hour — the widest `[Sep 15, 2026, 12:41 PM]` shape, with no timezone able to move it.
       createdAt: Date.parse('2026-09-15T12:41:00Z'),
       label: 'l'.repeat(labelCap + 10),
-    }, pool).replace(/continues: \d+ more/, `continues: ${longest} more`));
+    }, pool).replace(/continues: \d+ more/g, `continues: ${longest} more`));
   }
   activeTasksWorstCase = estimateTokens(renderActiveTasksBlock(lines) ?? '');
   return activeTasksWorstCase;
