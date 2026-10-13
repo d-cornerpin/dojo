@@ -1035,6 +1035,56 @@ describe('t139 — the delegate-reply link has recorded facts behind it, or it i
     expect(rows[0].source_message_id).not.toBe('msg-owed-evt');
   });
 
+  it('an engine rider row landing after the replies does not hide the reply the turn woke on (review M1)', async () => {
+    await fanOutAndLand('msg-owed-rider', 'Combine the two quote sets and pick one.', 'JOBG');
+    // A rider (never drives a turn of its own) written after the pieces: the newest row of all,
+    // but an engine events-lane row, not something the turn woke on.
+    insertEngineEvent({
+      id: 'evt-rider-t139', agentId: PRIMARY, content: '[Engine] fan-out join complete.',
+      originIntent: 'fanout_join', turnNumber: null, work: null,
+    });
+    script([
+      { toolCalls: [openTask('wo-rider', 'Combine quotes', 'A combined pick sent to the owner')] },
+      { content: 'Combining now.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const rows = openTasks().filter((t) => t.title === 'Combine quotes');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-owed-rider');
+  });
+
+  it.fails('a notice arriving INSIDE the wake turn\'s first second is not "the row it woke on" (review M1)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.parse('2026-10-12T16:00:00.050Z'));
+      await fanOutAndLand('msg-owed-sec', 'Combine the two quote sets and pick one.', 'JOBH');
+      vi.setSystemTime(Date.parse('2026-10-12T16:00:05.100Z'));
+      mockDb.current!.prepare(
+        `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name, created_at)
+         VALUES ('conv-notice-2', ?, 'email', 'gmail', 'news@example.test', 'A Newsletter', datetime('now'))`,
+      ).run(PRIMARY);
+      let i = 0;
+      callModelSpy.mockImplementation(async () => {
+        i++;
+        if (i === 1) {
+          // The notice lands 300 ms AFTER the wake turn started — the same wall-clock second.
+          vi.setSystemTime(Date.parse('2026-10-12T16:00:05.400Z'));
+          insertMessage({
+            id: 'msg-notice-2', agentId: PRIMARY, role: 'user', content: 'New email from A Newsletter.',
+            turnNumber: 1, channel: 'email', senderId: 'news@example.test', conversationId: 'conv-notice-2',
+            inboundMeta: JSON.stringify({ channel: 'email', relation: 'unknown' }), authorized: false,
+          });
+          return { content: '', toolCalls: [openTask('wo-sec', 'Combine quotes too', 'A combined pick')], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        }
+        return { content: 'Combining.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+      });
+      await runV2Turn(PRIMARY);
+    } finally { vi.useRealTimers(); }
+    const rows = openTasks().filter((t) => t.title === 'Combine quotes too');
+    expect(rows.length).toBe(1);
+    expect(rows[0].source_message_id).toBe('msg-owed-sec');
+  });
+
   it('a NEW owner ask while a compile is owed: the task opened on that ask\'s turn is linked to the new ask', async () => {
     await fanOutAndLand('msg-owed', 'Compare the two quote sets and pick one.', 'JOBC');
     const fresh = 'Separately: book a meeting room for Thursday afternoon and send me the confirmation.';
