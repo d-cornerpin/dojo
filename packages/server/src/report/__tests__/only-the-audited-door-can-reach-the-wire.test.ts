@@ -232,6 +232,10 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
   'agent/site-snapshot.ts',             // fetch(
   'agent/tools/definitions.ts',         // fetch(
   'agent/web-tools.ts',                 // fetch(
+  'costs/provider-balance-check.ts',    // fetch( — t138 MOVED these out of gateway/routes/config.ts (listed below,
+                                        // and the edge into the closure): two fixed GETs to the OpenRouter/DeepSeek
+                                        // balance endpoints carrying only the provider's own key; no exported
+                                        // function takes content to send.
   'gateway/routes/config.ts',           // fetch(
   'gateway/routes/setup-deps.ts',       // fetch(
   'gateway/routes/system.ts',           // fetch(

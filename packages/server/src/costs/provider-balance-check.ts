@@ -11,7 +11,7 @@
 // So the check lives here, alone. The scheduler's clock kicks it on its 30 s tick; it runs at
 // most once per `BALANCE_CHECK_EVERY_MS`. The Ledger routes read balances through the same
 // readers below and decide nothing. This module is the only writer of the
-// `<provider>_threshold_alerted` latches (pinned by the t138 census).
+// `openrouter_threshold_alerted` / `deepseek_threshold_alerted` latches (pinned by the t138 census).
 //
 // Once per real crossing:
 //   - balance at or below the threshold and not latched → latch, then tell the owner once;
@@ -111,8 +111,10 @@ export async function readDeepSeekBalance(credential: string): Promise<Read<Deep
 }
 
 interface Watched {
-  /** The config-key prefix: `<key>_warning_threshold` (the owner's line), `<key>_threshold_alerted` (the latch). */
-  key: 'openrouter' | 'deepseek';
+  /** The owner's line (set on the Ledger page) and the once-per-crossing latch; both read in
+   *  `readKeys` below, spelled out in full so the shipped-config-keys census sees the read. */
+  thresholdKey: string;
+  latchKey: string;
   label: string;
   topUpAt: string;
   find: () => { id: string } | undefined;
@@ -121,12 +123,14 @@ interface Watched {
 
 const WATCHED: readonly Watched[] = [
   {
-    key: 'openrouter', label: 'OpenRouter', topUpAt: 'openrouter.ai',
+    thresholdKey: 'openrouter_warning_threshold', latchKey: 'openrouter_threshold_alerted',
+    label: 'OpenRouter', topUpAt: 'openrouter.ai',
     find: findOpenRouterProvider,
     balance: async (cred) => { const r = await readOpenRouterCredits(cred); return r.ok ? r.data.balance : null; },
   },
   {
-    key: 'deepseek', label: 'DeepSeek', topUpAt: 'platform.deepseek.com',
+    thresholdKey: 'deepseek_warning_threshold', latchKey: 'deepseek_threshold_alerted',
+    label: 'DeepSeek', topUpAt: 'platform.deepseek.com',
     find: findDeepSeekProvider,
     balance: async (cred) => { const r = await readDeepSeekBalance(cred); return r.ok ? r.data.balance : null; },
   },
@@ -134,9 +138,16 @@ const WATCHED: readonly Watched[] = [
 
 const usd = (n: number): string => (Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`);
 
-function thresholdOf(key: Watched['key']): number | null {
-  const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(`${key}_warning_threshold`) as { value: string } | undefined;
-  const value = row ? parseFloat(row.value) : DEFAULT_THRESHOLD_USD;
+/** Every key the check reads, in one batched read. */
+function readKeys(): Map<string, string> {
+  const rows = getDb().prepare(`SELECT key, value FROM config WHERE key IN (
+    'openrouter_warning_threshold', 'openrouter_threshold_alerted',
+    'deepseek_warning_threshold', 'deepseek_threshold_alerted')`).all() as Array<{ key: string; value: string }>;
+  return new Map(rows.map((r) => [r.key, r.value]));
+}
+
+function thresholdOf(raw: string | undefined): number | null {
+  const value = raw === undefined ? DEFAULT_THRESHOLD_USD : parseFloat(raw);
   return Number.isFinite(value) ? value : null;
 }
 
@@ -151,8 +162,9 @@ function setLatch(latchKey: string, on: boolean): void {
 }
 
 async function checkOne(w: Watched): Promise<void> {
-  const latchKey = `${w.key}_threshold_alerted`;
-  const latched = (getDb().prepare('SELECT value FROM config WHERE key = ?').get(latchKey) as { value: string } | undefined)?.value === 'true';
+  const { latchKey } = w;
+  const keys = readKeys();
+  const latched = keys.get(latchKey) === 'true';
 
   const provider = w.find();
   const credential = provider ? getProviderCredential(provider.id) : null;
@@ -168,7 +180,7 @@ async function checkOne(w: Watched): Promise<void> {
     logger.info(`${w.label} balance check could not reach the provider`, { error: err instanceof Error ? err.message : String(err) });
     return;
   }
-  const threshold = thresholdOf(w.key);
+  const threshold = thresholdOf(keys.get(w.thresholdKey));
   if (balance === null || !Number.isFinite(balance) || threshold === null) return;
 
   if (!latched && balance <= threshold) {

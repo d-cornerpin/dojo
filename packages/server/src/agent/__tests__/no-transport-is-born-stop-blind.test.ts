@@ -468,6 +468,7 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
   const EXEMPT: Record<string, string> = {
     'agent/model.ts': 'the model transport — T83 registered it directly through the registry, before this door existed; it is the one caller that already had the property this census checks for',
     'gateway/routes/config.ts': 'NO AGENT: an operator in Settings validating a provider key from the dashboard',
+    'costs/provider-balance-check.ts': 'NO AGENT: the platform\'s own provider-balance check on the scheduler clock (t138, moved out of the Ledger routes, which read through it); no turn waits on it, and a stop must not cut the check that tells the owner his credit is running out',
     'gateway/routes/setup-deps.ts': 'NO AGENT: first-run dependency install, driven by the installer',
     'gateway/routes/system.ts': 'NO AGENT: the health page probing the box itself',
     'gateway/routes/update.ts': 'NO AGENT: the updater fetching a release; an agent stop must not corrupt a half-downloaded artifact',
@@ -509,7 +510,9 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     'agent/site-snapshot.ts': 1,
     'agent/tools/definitions.ts': 1,
     'agent/web-tools.ts': 2,
-    'gateway/routes/config.ts': 9,
+    // t138: 9 -> 7 — the two balance reads moved to costs/provider-balance-check.ts (pinned below).
+    'gateway/routes/config.ts': 7,
+    'costs/provider-balance-check.ts': 2,
     'gateway/routes/setup-deps.ts': 7,
     'gateway/routes/system.ts': 1,
     'gateway/routes/update.ts': 4,
