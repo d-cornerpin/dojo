@@ -778,48 +778,12 @@ export function pauseDriveWorkWaitingOnOwner(
   return { paused: ids.length, ids };
 }
 
-export interface ResumeResult { resumed: number; ids: string[] }
-
-/**
- * THE REOPEN EDGE (rider b). The owner said something, so work that was waiting on them is
- * waiting no longer: it returns to EXACTLY the state it was paused from.
- *
- * Keyed on `status_before_pause`, which is the engine's own record that IT paused this row.
- * A task the owner or the model paused deliberately has no such record and is never touched
- * — that distinction is the whole reason the column is written rather than assuming
- * `in_progress`.
- */
-export function resumeWorkOnOwnerAsk(agentId: string): ResumeResult {
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT w.id AS id, w.status_before_pause AS prev FROM work w
-      WHERE ${taskScope('w')}
-        AND w.agent_id = ? AND w.state = 'paused' AND w.status_before_pause IS NOT NULL
-        AND w.is_paused = 0
-      ORDER BY w.updated_at DESC LIMIT 10`,
-  ).all(agentId) as Array<{ id: string; prev: string }>;
-  const ids: string[] = [];
-  for (const t of rows) {
-    // `by: 'owner'` is the literal truth of this edge and it is what makes it legal without
-    // evidence: the owner spoke, and their word is the authority G8 recognises.
-    const r = setTrackerStatus(t.id, t.prev as TrackerStatus, {
-      by: 'owner', actorId: 'owner', expectedState: 'paused',
-      reason: 'the engine paused this because the work was waiting on the owner; they have now spoken',
-    });
-    if (r.kind === 'applied') ids.push(t.id);
-  }
-  if (ids.length > 0) {
-    for (const id of ids) {
-      writeTaskLog({
-        taskId: id, fromEntity: 'engine', entryKind: 'transition',
-        fromStatus: 'paused', toStatus: 'in_progress',
-        actionTaken: 'the owner answered; the work is driving again',
-        reason: 'the engine paused this because the work was waiting on the owner; they have now spoken',
-      });
-    }
-    logger.info('reopen edge: the owner answered, so engine-paused work resumed', {
-      agentId, count: ids.length, ids,
-    }, agentId);
-  }
-  return { resumed: ids.length, ids };
-}
+// ── R-V333-5 (t139): THE AUTOMATIC REOPEN EDGE IS DELETED ──────────────────────────────────
+// `resumeWorkOnOwnerAsk` lived here. On ANY owner message — "You there?" included — it flipped
+// up to ten engine-paused tasks of any age and any conversation back to their pre-pause state,
+// so a month-old job became "what you should be working on" on a presence ping: the #7 shape,
+// and the platform doing something nobody asked for (OR-NOTHING-UNASKED). Driven in
+// `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts` (R-V333-5).
+// requirement preserved: a task waiting on the owner never vanishes — it stays on the agent's
+// task list (`memory/work-board-lane.ts`), labelled as waiting and not current; when the
+// owner's message IS the answer, the AGENT resumes it with `work_update(action="status")`.

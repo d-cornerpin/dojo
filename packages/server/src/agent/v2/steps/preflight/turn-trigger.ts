@@ -25,7 +25,7 @@ import { stampConversationIdByRowid } from '../../../../memory/message-store.js'
 import { resolveOrCreateConversation } from '../../../../memory/conversations.js';
 import { claimAsk, isStateConflict } from '../../../../work/store.js';
 import { getWaitingHumanConversations, type WaitingConversation, type TurnCounterparty } from '../../counterparty.js';
-import { hasOpenHumanWork, resumeWorkOnOwnerAsk } from '../../answered-edge.js';
+import { hasOpenHumanWork } from '../../answered-edge.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
@@ -227,18 +227,9 @@ export function runTurnTrigger(
       if (!claimed && !isStateConflict(res)) {
         logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
       }
-      // PHASE-2 T6 (C3) — THE REOPEN EDGE. The owner has spoken, so work the engine parked
-      // because it was waiting on them returns to the state it was paused from. Not
-      // optional: a pause with no reopen is how a ticket rots quietly, which is what the P2
-      // drive boundary was protecting against (T1 adjudication #2, rider b).
-      if (claimed) {
-        try { resumeWorkOnOwnerAsk(agentId); }
-        catch (err) {
-          logger.warn('v2: reopen-on-owner-ask failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
+      // R-V333-5 (t139): the automatic REOPEN EDGE that stood here is DELETED. It resumed
+      // engine-paused work of any age on any owner message; a waiting task now stays waiting,
+      // visible on the task list, until the agent resumes it with the tracker.
     }
     // Identity, always, and independent of the claim: this row belongs to this
     // conversation whether or not this turn won the race to serve it.

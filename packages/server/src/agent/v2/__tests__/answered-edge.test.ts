@@ -52,7 +52,6 @@ import {
   closedWithoutDelivery,
   hasOpenHumanWork,
   pauseDriveWorkWaitingOnOwner,
-  resumeWorkOnOwnerAsk,
   stillClaimedWork,
   terminalDeliveryForTurn,
   turnDeliveredToPerson,
@@ -596,32 +595,41 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
   });
 });
 
-describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
-  it('a new owner ask restores the paused work to the state it was paused from', () => {
+describe('THE REOPEN EDGE IS DELETED (R-V333-5, t139) — the paused work stays paused and visible', () => {
+  // The two clauses that stood here drove `resumeWorkOnOwnerAsk`: any owner message flipped
+  // engine-paused work of any age back to in-progress. R-V333-5 deleted the edge (it resumed a
+  // month-old job on "You there?" — driven in `work/__tests__/t139-every-request-lands-on-the-
+  // task-list.test.ts`). What it protected — "a pause with no reopen is how a ticket rots
+  // quietly" — is now held by the task list, which keeps a waiting task visible and labelled,
+  // and by the agent resuming it with the tracker when the owner's message is the answer.
+  it('the edge has no definition and no caller anywhere in the server', () => {
+    const root = path.join(__dirname, '..', '..', '..');
+    const hits: string[] = [];
+    const walk = (d: string): void => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p2 = path.join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(p2); }
+        else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) {
+          const code = fs.readFileSync(p2, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+          if (/resumeWorkOnOwnerAsk/.test(code)) hits.push(path.relative(root, p2));
+        }
+      }
+    };
+    walk(root);
+    expect(hits).toEqual([]);
+  });
+
+  it('an engine-paused task is left paused when nothing resumes it (no hidden reopen)', () => {
     seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-1');
-    pauseDriveWorkWaitingOnOwner(AGENT, 6);
-
-    const r = resumeWorkOnOwnerAsk(AGENT);
-    expect(r.resumed).toBe(1);
-    const row = db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status, status_before_pause FROM work WHERE id = ?").get('t-1') as
-      { status: string; status_before_pause: string | null };
-    expect(row.status).toBe('in_progress');
-    expect(row.status_before_pause).toBeNull();
-  });
-
-  it('NEGATIVE: work paused by the OWNER or the MODEL is not resumed by the engine', () => {
-    // The distinguisher is `status_before_pause` — the engine's own record that IT parked
-    // this row. A deliberate pause carries no such record and must survive the owner's
-    // next message untouched, which is why the column is written rather than assumed.
-    seedLegacyTask('t-1', { status: 'paused' });
-    expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
-    expect((db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status FROM work WHERE id = ?").get('t-1') as { status: string }).status)
-      .toBe('paused');
-    // ...and a SCHEDULE pause (is_paused) is a different axis again, also untouched.
-    seedLegacyTask('t-2', { status: 'paused', is_paused: 1, status_before_pause: 'in_progress' });
-    expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(1);
+    const row = db().prepare('SELECT state, status_before_pause FROM work WHERE id = ?').get('t-1') as
+      { state: string; status_before_pause: string | null };
+    expect(row.state).toBe('paused');
+    // The engine's own record that IT paused the row is still written — the task list reads
+    // it to say "waiting on the owner".
+    expect(row.status_before_pause).not.toBeNull();
   });
 
   it('NEGATIVE: another agent\'s paused work is untouched', () => {

@@ -694,7 +694,7 @@ function backdate(taskId: string, msgId: string, days: number): void {
 }
 
 describe('t139 R-V333-5 — "You there?" never resumes a paused task', () => {
-  it.fails('RED at base: an owner message on an agent with a month-old engine-paused task leaves it paused', async () => {
+  it('RED at base: an owner message on an agent with a month-old engine-paused task leaves it paused', async () => {
     const ask = 'Make nine square headshots for the team page in the same soft studio style.';
     ownerSays('msg-old-hs', ask);
     script([{ toolCalls: [openTask('wo-old-hs', 'Team headshots', 'Headshots delivered to the owner')] }, { content: 'Starting on them.' }]);
