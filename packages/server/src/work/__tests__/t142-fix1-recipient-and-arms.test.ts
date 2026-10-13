@@ -298,3 +298,40 @@ describe('the told record silences only the news it postdates', () => {
     expect(candidates()).not.toContain('t-news2');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2 (re-review 1, N2): the legacy `imessage_default_sender` key names the owner ONLY when
+// no primary is starred — the bridge's own rule (`getDefaultSender`). Nothing ever clears the
+// legacy key, so honouring it beside a starred primary would let a send to the owner's OLD
+// address count as him being told.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('round 2 N2: the legacy owner key counts only when no primary is starred', () => {
+  const OLD_ADDRESS = '+15550177';
+  const sendTo = (recipient: string): string => withOutbound(
+    { agentId: PRIMARY, tool: 'imessage_send', channel: 'imessage', recipientId: recipient },
+    () => { recordAtDoor({ outcome: 'delivered', channel: 'imessage' }); return currentOutboundDeliveryId()!; },
+  );
+  const setConfig = (key: string, value: string): void => {
+    mockDb.current!.prepare(
+      `INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+    ).run(key, value);
+  };
+
+  it.fails('a starred primary exists: a send to the stale legacy address is NOT the owner told', () => {
+    seedOwnerAddress();
+    setConfig('imessage_default_sender', OLD_ADDRESS);
+    seedBlocked('t-legacy');
+    expect(recordPersonTold('t-legacy', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }))
+      .toMatchObject({ kind: 'refused', reason: 'not-the-owner-or-requester' });
+    expect(recordPersonTold('t-legacy', { deliveryId: sendTo(OWNER_PHONE_PRIMARY), via: 'send_tool' }).kind,
+      'the starred address still is').toBe('applied');
+  });
+
+  it('CONTROL: no primary starred, the legacy key IS the owner (an install that never re-saved Settings)', () => {
+    setConfig('imessage_approved_senders', JSON.stringify([{ address: '+15550199', name: 'Garden supplier', is_primary: false }]));
+    setConfig('imessage_default_sender', OLD_ADDRESS);
+    seedBlocked('t-legacy-only');
+    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }).kind).toBe('applied');
+  });
+});
