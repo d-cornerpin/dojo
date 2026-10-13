@@ -28,7 +28,7 @@ import { createLogger } from '../../../../logger.js';
 import {
   checkAndCompact, estimateAssembledTokens, forcedCompactionOptions, liveViewIsFull,
 } from '../../../../memory/compaction.js';
-import { rowsLeavingView } from '../../../../memory/tail-horizon.js';
+import { rowsLeavingView, type LeavingView } from '../../../../memory/tail-horizon.js';
 import { getFreshTailCount } from '../../../../memory/budget.js';
 import { getContextWindow } from '../../../model.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
@@ -181,40 +181,56 @@ export async function runContextGates(
   const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
   const viewFull = liveViewIsFull(assembledEstimate, systemPromptTokens);
   const leaving = rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull });
-  if (leaving && !backgroundDrains.has(agentId)) {
-    backgroundDrains.add(agentId);
-    const condenseAbort = new AbortController();
-    const condenseTimeout = setTimeout(() => {
-      logger.warn('v2: background condense wall-clock timeout, aborting', {
-        agentId, wallClockTimeoutMs: ROUTINE_CONDENSE_WALL_CLOCK_MS,
-      }, agentId);
-      condenseAbort.abort();
-    }, ROUTINE_CONDENSE_WALL_CLOCK_MS);
-    logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
-      agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
-      dialModelId, contextWindow,
-    }, agentId);
-    checkAndCompact(agentId, configuredModelId, contextWindow, {
-      leaving,
-      dialedModelId: dialModelId,
-      maxChunksPerRun: ROUTINE_CONDENSE_MAX_CHUNKS,
-      abortSignal: condenseAbort.signal,
-    })
-      .then((result) => {
-        logger.info('v2: background condense complete', {
-          agentId, leafCreated: result.leafCreated, cause: leaving.cause,
-        }, agentId);
-      })
-      .catch((err) => {
-        logger.warn('v2: background condense failed or aborted', {
-          agentId, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
-      })
-      .finally(() => {
-        clearTimeout(condenseTimeout);
-        backgroundDrains.delete(agentId);
-      });
+  if (leaving) {
+    condenseLeavingInBackground({ agentId, writerModelId: configuredModelId, dialedModelId: dialModelId, contextWindow, leaving });
   }
 
   return proceed(state);
+}
+
+/**
+ * THE ROUTINE CONDENSE, fire-and-forget (v2.5.14): one in flight per agent (`backgroundDrains`),
+ * under its own wall clock, folding exactly `leaving`. Measured for `dialedModelId`, WRITTEN by the
+ * summary writer resolved from `writerModelId` (fix round 1, review I3). Shared by this gate and,
+ * since fix round 1 (review M3), by `call-llm/reassemble-for-fit.ts` — a re-fit that sets rows
+ * aside for a smaller pick folds them for THAT pick's window. Returns whether a condense started.
+ */
+export function condenseLeavingInBackground(args: {
+  agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView;
+}): boolean {
+  const { agentId, writerModelId, dialedModelId, contextWindow, leaving } = args;
+  if (backgroundDrains.has(agentId)) return false;
+  backgroundDrains.add(agentId);
+  const condenseAbort = new AbortController();
+  const condenseTimeout = setTimeout(() => {
+    logger.warn('v2: background condense wall-clock timeout, aborting', {
+      agentId, wallClockTimeoutMs: ROUTINE_CONDENSE_WALL_CLOCK_MS,
+    }, agentId);
+    condenseAbort.abort();
+  }, ROUTINE_CONDENSE_WALL_CLOCK_MS);
+  logger.info('v2: condensing rows leaving the live view (fire-and-forget)', {
+    agentId, cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
+    dialedModelId, contextWindow,
+  }, agentId);
+  checkAndCompact(agentId, writerModelId, contextWindow, {
+    leaving,
+    dialedModelId,
+    maxChunksPerRun: ROUTINE_CONDENSE_MAX_CHUNKS,
+    abortSignal: condenseAbort.signal,
+  })
+    .then((result) => {
+      logger.info('v2: background condense complete', {
+        agentId, leafCreated: result.leafCreated, cause: leaving.cause,
+      }, agentId);
+    })
+    .catch((err) => {
+      logger.warn('v2: background condense failed or aborted', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    })
+    .finally(() => {
+      clearTimeout(condenseTimeout);
+      backgroundDrains.delete(agentId);
+    });
+  return true;
 }

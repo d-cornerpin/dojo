@@ -95,7 +95,7 @@ import { reassembleForFitIfNeeded } from '../reassemble-for-fit.js';
 import { callModel, getContextWindow } from '../../../../model.js';
 import { __resetAssemblyValidationCounters, AssemblyValidationError } from '../../../../../memory/assembly-validation.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
-import { SystemPromptTooLargeError } from '../../../../../memory/budget.js';
+import { SystemPromptTooLargeError, getFreshTailCount } from '../../../../../memory/budget.js';
 
 const AGENT = 'agent-t140-routed';
 /** Two routed models, both far below the 200K stand-in — the reporting box's shape. */
@@ -189,7 +189,12 @@ beforeEach(() => {
   seedRoutedBox();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // A re-fit that set rows aside starts a background fold (fix round 1, M3); let it settle
+  // before the DB closes, so it cannot hold this agent's compaction lock into the next clause.
+  const { backgroundDrains } = await import('../../../../shared-state.js');
+  for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 50));
   mockDb.current?.close();
   mockDb.current = null;
 });
@@ -316,8 +321,13 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     if (out.abandoned) return;
     expect(out.modelId).toBe(LIGHT);
     expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
-    await new Promise((r) => setTimeout(r, 200));
-    expect(summarisedRowCount(), 'no forced condense: the array was re-fitted, not refused').toBe(0);
+    // No FORCED full condense (that folds every row outside the 16K pick's 24-row floor). What
+    // may run is the routine fold of the rows the re-fit set aside for that window (M3) — the
+    // rows the 16K view's own row ceiling is cutting — and never into the floor.
+    const { backgroundDrains } = await import('../../../../shared-state.js');
+    for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+    const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
+    expect(summarisedRowCount(), 'not the forced full condense').toBeLessThan(total - getFreshTailCount(LIGHT_WINDOW));
   });
 
   it('the fallback SELECTION checks each candidate against its own window, and skips one that cannot hold the turn at all', async () => {
@@ -367,5 +377,18 @@ describe('t140 fix round 1 — M1: a pick that cannot hold even the system promp
     expect((thrown as AssemblyValidationError).code).toBe('UNREPAIRABLE');
     await new Promise((r) => setTimeout(r, 200));
     expect(summarisedRowCount()).toBe(0);
+  });
+});
+
+describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick folds what its re-fit set aside, for that window', () => {
+  it('the 16K pick\'s re-fit sets rows aside, and exactly those (never its floor) are folded in the background', async () => {
+    seedConversation(250);
+    await dialAsRouted(LIGHT);
+    const { backgroundDrains } = await import('../../../../shared-state.js');
+    for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+    const folded = summarisedRowCount();
+    expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
+    const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
+    expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));
   });
 });

@@ -107,6 +107,11 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   }, agentId);
   const { assembleContext } = await import('../../../../memory/assembler.js');
   const reassembled = await assembleContext(agentId, modelId, assemblyTurnContext);
+  // t140 fix round 1 (review M3): a re-fit that had to set live rows aside did so because the
+  // view is full for THIS pick's window — the rows it set aside are leaving the view, and they are
+  // owed their fold now, for this window, rather than whenever the roomier provisional window
+  // next fills. Same background condense as the pre-call gate, written by the agent's own writer.
+  if ((reassembled.freshTailDropped ?? 0) > 0) await foldWhatTheRefitSetAside(agentId, modelId, policy);
   const tail = messages.slice(volatileFrom ?? messages.length);
   return {
     messages: [...reassembled.messages, ...tail],
@@ -114,4 +119,19 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
     assembled: reassembled,
     volatileFrom: reassembled.messages.length,
   };
+}
+
+async function foldWhatTheRefitSetAside(
+  agentId: string, modelId: string, policy: { contextWindow: number; freshTailCount: number },
+): Promise<void> {
+  const [{ rowsLeavingView }, { condenseLeavingInBackground }, { getDb }] = await Promise.all([
+    import('../../../../memory/tail-horizon.js'),
+    import('../pre-call-gates/context-gates.js'),
+    import('../../../../db/connection.js'),
+  ]);
+  const leaving = rowsLeavingView(agentId, { freshTailCount: policy.freshTailCount }, { viewFull: true });
+  if (!leaving) return;
+  const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
+    { model_id: string | null } | undefined)?.model_id ?? modelId;
+  condenseLeavingInBackground({ agentId, writerModelId: configured, dialedModelId: modelId, contextWindow: policy.contextWindow, leaving });
 }

@@ -36,6 +36,7 @@ import type { TurnCounterparty } from '../../counterparty.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
+import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -383,24 +384,37 @@ export async function callWithRetryAndFallback(
         // predicate is unchanged between the two calls, a candidate that call accepts
         // and the fit-aware call did not can only have failed on fit. Reuse the ONE
         // re-assemble helper (round 1's own) rather than a second trimmer.
-        const fitExcluded = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
-        if (fitExcluded) {
-          const reassembly = await reassembleForFitIfNeeded({
-            agentId, modelId: fitExcluded.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
-          });
+        // t140 fix round 1 (review I1): the fit filter now also judges WINDOWS, so a candidate
+        // excluded for fit may be one whose window cannot hold this agent's system prompt and
+        // tools at all — its re-fit refuses by name (`SystemPromptTooLargeError`). That one is
+        // excluded and the next candidate is tried, bounded by the candidates there are.
+        for (let rescue = 0; rescue < 8 && !fallback; rescue++) {
+          const fitExcluded = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
+          if (!fitExcluded) break;
+          let reassembly: Awaited<ReturnType<typeof reassembleForFitIfNeeded>>;
+          try {
+            reassembly = await reassembleForFitIfNeeded({
+              agentId, modelId: fitExcluded.modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext,
+            });
+          } catch (refitErr) {
+            if (!(refitErr instanceof SystemPromptTooLargeError)) throw refitErr;
+            excludedModels.push(fitExcluded.modelId);
+            continue;
+          }
           if (reassembly) {
             messages = reassembly.messages;
             systemPrompt = reassembly.systemPrompt;
             ctx = reassembly.assembled;
             volatileFrom = reassembly.volatileFrom;
-            // Re-run selection with the NEW estimate: the rescue candidate is the most
-            // likely winner, but the smaller re-assembled array may now also fit a
-            // higher-priority candidate the first fit-aware pass had already rejected.
-            fallback = selectModel(
-              fallbackTier, agentId, excludedModels, ['tools'],
-              estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
-            );
           }
+          // Re-run selection with the NEW estimate: the rescue candidate is the most
+          // likely winner, but the smaller re-assembled array may now also fit a
+          // higher-priority candidate the first fit-aware pass had already rejected.
+          fallback = selectModel(
+            fallbackTier, agentId, excludedModels, ['tools'],
+            estimateAssembledArrayTokens(systemPrompt, messages), getContextWindow,
+          );
+          if (!fallback) break;
         }
       }
 
