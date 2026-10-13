@@ -7682,6 +7682,27 @@
       "to": 2816,
       "by": "t139 round 6 — ruling R-V333-14 (assembler hand-off ruled in)",
       "why": "+5 (+19/-14; 2 comment, 16 code). The work-board read moves below the integration-status block (so the list is laid out after every other assembler block) and hands over the array, the kept live rows and the other blocks instead of the allocation and ladder. Board block only; for merge with t141. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2811,
+      "to": 2839,
+      "by": "t141 — every item labelled; NULL no longer means \"mine\"",
+      "why": "2811 -> 2839 (+28). The three scopers' NULL-means-mine predicate is REPLACED (not supplemented) by the insert-time label + the explicit in-flight turn fact (`isInFlight`, 4 lines); the email wake's tail and its directive pin read the served conversation (`servedConversationId`, now in the NEW module); EVENTS' 'surface one to the owner' steer is deleted and each bullet carries NEW/HANDLED; `stampTextContent` became `labelContent` (structured rows that open a block take a leading text block); summaries' earliest/latest go through the one formatter. COMPRESSION TAKEN FIRST: every helper that could leave did — `withSubjectKinds`, `labelRows`, `servedConversationId` and `lastFinishedViewingTurnFirstSeq` live in the new `memory/row-label.ts` (211 lines, under the 240 crossing line), and the t141 comments were cut from ~90 lines to ~30; the remaining +28 is the scoper/label wiring and the reasons a future reader needs to not reintroduce `!m.conversationId ||`. Pinned by `memory/__tests__/t141-membership-and-census.test.ts` (property over every producible row shape + counted censuses) and the five witnesses in `t141-every-item-labelled.test.ts`. From 2839 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 1206,
+      "to": 1268,
+      "by": "t141 — the single writer labels every own row at INSERT",
+      "why": "1206 -> 1268 (+62). `ownRowSubject` (the label decided in the same INSERT from the turn record and the turn's bag: ~40 lines incl. its 7-line reason), the `SubjectKind` vocabulary (migration 188's CHECK words), the `subject_kind` column in INSERT_SQL/bind, and `subjectKindsBySeq` — the sanctioned reader the assembler uses because `memory/store.ts`'s tail projection is outside t141's fence. It lives HERE because this file is the single writer for `messages` (its own header), and a label written anywhere else would be a second writer. The superseded late stamp's comment was REWRITTEN shorter rather than added to; the function itself stays only because its three callers are outside the fence (handed up — its deletion takes this file back down ~12 lines). From 1268 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts",
+      "from": 397,
+      "to": 404,
+      "by": "t141 — an agent-to-agent turn's rows carry their thread from birth",
+      "why": "397 -> 404 (+7): the full thread id derived once from the reply-needed message or the terminal wake's root (5 lines incl. a 2-line reason) and passed to the two a2a-lane inserts (+2). Before this the a2a lane's own output was stored with neither thread nor conversation (identity audit RC1/P4). From 404 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7827,7 +7848,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 275,
-    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 397,
+    "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 404,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
@@ -7888,7 +7909,7 @@
     "packages/server/src/healer/healer-agent.ts": 1163,
     "packages/server/src/healer/injury-recovery.ts": 1233,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2816,
+    "packages/server/src/memory/assembler.ts": 2839,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 624,
     "packages/server/src/memory/budget.ts": 699,
@@ -7900,7 +7921,7 @@
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/memory/lanes.ts": 1350,
-    "packages/server/src/memory/message-store.ts": 1206,
+    "packages/server/src/memory/message-store.ts": 1268,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
