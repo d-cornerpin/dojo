@@ -10,6 +10,16 @@ import { getBudgets, setGlobalBudget, setAgentBudget } from '../../costs/budget.
 const logger = createLogger('costs-routes');
 const costsRouter = new Hono();
 
+/** t148: a changed limit lifts the honest stop it was holding (the agents it no longer stops are
+ *  released and woken). The save has already happened; a failure here never fails it. */
+async function liftClearedBudgetStops(): Promise<void> {
+  try {
+    await (await import('../../agent/v2/honest-stop.js')).releaseClearedBudgetStops();
+  } catch (err) {
+    logger.warn('Could not lift budget stops after a limit change', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // GET /summary, cost summary by period
 costsRouter.get('/summary', (c) => {
   const period = (c.req.query('period') ?? '24h') as '24h' | '7d' | '30d' | 'all';
@@ -82,6 +92,7 @@ costsRouter.put('/budget/global', async (c) => {
 
   try {
     setGlobalBudget(body.limitUsd);
+    await liftClearedBudgetStops();
     return c.json({ ok: true, data: { scope: 'global', limitUsd: body.limitUsd, period: 'daily' } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -107,6 +118,7 @@ costsRouter.put('/budget/agent/:agentId', async (c) => {
 
   try {
     setAgentBudget(agentId, body.limitUsd, period);
+    await liftClearedBudgetStops();
     return c.json({ ok: true, data: { agentId, limitUsd: body.limitUsd, period } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

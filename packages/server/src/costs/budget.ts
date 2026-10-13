@@ -249,6 +249,50 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
   return { allowed: true };
 }
 
+// ── The limit that is stopping an agent (t148) ──
+//
+// The pure half of `checkBudget`: the same two comparisons, with none of its alerts. An honest
+// stop (agent/v2/honest-stop.ts) asks it twice: "which limit is stopping this agent?" when the
+// turn is stopped, and "does it still?" when a limit is raised or a window turns over, so the
+// lock lifts on the real event and never on a timer.
+
+export interface ExceededBudget {
+  budgetId: string;
+  scope: 'global' | 'agent';
+  period: string;
+  spend: number;
+  limitUsd: number;
+}
+
+export function exceededBudget(agentId: string, estimatedCost = 0.01): ExceededBudget | null {
+  const db = getDb();
+  const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
+  if (globalBudget) {
+    const spend = getDailySpend();
+    if (spend + estimatedCost > globalBudget.limit_usd) {
+      return { budgetId: 'global_daily', scope: 'global', period: 'daily', spend, limitUsd: globalBudget.limit_usd };
+    }
+  }
+  const agentBudget = db.prepare('SELECT limit_usd, period FROM budgets WHERE id = ?').get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
+  if (agentBudget) {
+    const spend = agentPeriodSpend(agentId, agentBudget.period);
+    if (spend + estimatedCost > agentBudget.limit_usd) {
+      return { budgetId: `agent_${agentId}`, scope: 'agent', period: agentBudget.period, spend, limitUsd: agentBudget.limit_usd };
+    }
+  }
+  return null;
+}
+
+/** The owner has already been told about this budget inside its current window (the crossing
+ *  alert, which is also his dashboard card): a stop in the same window sends no second text. */
+export function ownerToldBudgetThisWindow(budgetId: string): boolean {
+  const row = getDb().prepare('SELECT period, alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?').get(budgetId) as
+    ({ period: string } & Parameters<typeof latestToldAt>[0]) | undefined;
+  if (!row) return false;
+  const toldAt = latestToldAt(row);
+  return toldAt > 0 && Math.floor(Date.now() / 1000) - toldAt < windowOf(row.period).seconds;
+}
+
 // ── Budget CRUD ──
 
 export interface Budget {

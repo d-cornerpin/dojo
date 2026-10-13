@@ -36,6 +36,9 @@ import {
   declaredPatienceHonestFailTurn,
 } from '../shared-state.js';
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
+import { classifyHonestStop, stopAlreadyTold, parkAgent } from './honest-stop.js';
+import { ownerToldBudgetThisWindow } from '../../costs/budget.js';
+import { sendAlert } from '../../services/imessage-bridge.js';
 import type { AgentTurnState } from './state.js';
 import {
   formatErrorForHuman,
@@ -273,6 +276,14 @@ export async function recoverFromError(
     // still never a dial that would only re-prove the same arithmetic. `declaredPatienceDidCompact`
     // is `true` here iff that spent attempt genuinely ran (on the turn just before this one) —
     // `false` iff it never got the chance to (I2's bail cases).
+  }
+
+  // 0.9. t148 — AN HONEST STOP. The money guardrail stopped the turn, or no model the agent may
+  //      use can hold it. Not an injury: the Healer cannot change either, so it is neither
+  //      called nor counted. The agent is parked on the platform's existing lock (below) and
+  //      released by the real event (agent/v2/honest-stop.ts).
+  if (await tryHonestStopRecovery(state, error)) {
+    return;
   }
 
   // 1. Context overflow — provider rejected because prompt too big.
@@ -644,6 +655,40 @@ async function tryProviderRecovery(
   // Tier B: NO status change. Queue a wakeup so the agent retries with
   // the system note in context.
   queueSelfWake(agentId, 'recovery-tier-b-retry');
+  return true;
+}
+
+/**
+ * t148 — an honest stop: the owner's spending limit, or no model that fits. Parks the agent on
+ * the Tier D lock (see `honest-stop.ts` for the status it uses and how it is released), tells
+ * the owner the true cause ONCE per condition, and never calls the Healer.
+ *
+ * The owner is told when the lock goes on. A stop that finds its own lock already on (the
+ * message was served again, or he sent another) is silent: the card and the status already say it.
+ * The phone text is the budget's own crossing alert (t138), sent once per window; a stop in a
+ * window the owner was already told about sends none.
+ */
+async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
+  const agentId = state.agentId;
+  let stop;
+  try {
+    stop = await classifyHonestStop(agentId, error);
+  } catch (err) {
+    logger.warn('v2: honest-stop classifier threw', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+    return false;
+  }
+  if (!stop) return false;
+
+  const alreadyTold = stopAlreadyTold(agentId, stop.kind);
+  logger.warn('v2: honest stop — parking the agent until the condition clears', { agentId, kind: stop.kind, alreadyTold }, agentId);
+  parkAgent(agentId, stop);
+  if (alreadyTold) return true;
+
+  persistAndBroadcastSystemNote(agentId, `[System (platform notice): ${stop.words}]`);
+  broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
+  if (stop.kind === 'budget_stop' && stop.budget && !ownerToldBudgetThisWindow(stop.budget.budgetId)) {
+    try { sendAlert(stop.words, 'notice'); } catch { /* the chat notice above stands */ }
+  }
   return true;
 }
 

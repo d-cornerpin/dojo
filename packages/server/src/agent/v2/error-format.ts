@@ -218,3 +218,32 @@ export function scrubTechnicalDetail(s: string): string {
   out = out.replace(/\s{2,}/g, ' ').trim();
   return out;
 }
+
+// ── t148: an honest stop ──
+//
+// Two conditions are not faults: the owner's money guardrail stopped the turn, or no model the
+// agent may use can hold it. Nothing is broken and the Healer cannot change either, so the owner
+// reads the TRUE cause, what happens to his message, and the one thing that lifts it. Plain
+// words only; no error codes, no "the Healer is looking into it".
+
+export type HonestStopKind = 'budget_stop' | 'no_model_fits';
+
+export interface HonestStopContext {
+  /** Which limit stopped it: the global daily one or this agent's own. */
+  scope?: 'global' | 'agent';
+  period?: string;
+  spendUsd?: number;
+  limitUsd?: number;
+}
+
+export function honestStopWords(kind: HonestStopKind, ctx: HonestStopContext = {}): string {
+  if (kind === 'no_model_fits') {
+    return 'None of this agent\'s models can hold its instructions and tools, so its turn was not run. '
+      + 'Your message is kept. Pick a bigger model for this agent (or give it fewer tools) and it will answer.';
+  }
+  const money = ctx.spendUsd !== undefined && ctx.limitUsd !== undefined
+    ? ` ($${ctx.spendUsd.toFixed(2)} of $${ctx.limitUsd.toFixed(2)})` : '';
+  const whose = ctx.scope === 'agent' ? `This agent's ${ctx.period ?? 'daily'} spending limit` : 'Today\'s spending limit';
+  return `${whose} is reached${money}, so this agent's turn was not run. `
+    + 'Your message is kept. It will be answered when the limit resets, or as soon as you raise the limit in Settings.';
+}

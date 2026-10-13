@@ -14,12 +14,10 @@
 // selector (its budget filter), the REAL recovery cascade, the real ask spine and the real
 // budget route. Scripted: the tier decision, the assembled array, the provider's answer.
 //
-// ⚠ EXPECTED-FAIL (`it.fails`). Every clause below was run as a plain `it` at `5c61cf7f` and
-// failed ON ITS OWN ASSERTION (the failure lines are in overhaul-plans/t148-report.md). The fix is
-// HANDED UP, not landed: un-erroring the agent opens the runtime's human drain, which re-serves
-// the stopped ask into the same stop and, on the fourth pass, sets the owner's message aside as
-// "poisoned" (`runtime.ts` drain + `work/ask-settlement.ts`) — both outside this lane's fence.
-// The lane that lands the park/resume flips these to `it`.
+// Every clause was RED at `5c61cf7f` on its own assertion (the failure lines are in
+// overhaul-plans/t148-report.md) and passes now. The stop rides the platform's existing lock
+// (`agent/v2/recovery.ts` -> `agent/v2/honest-stop.ts`: status `paused`, the owner's words in
+// `last_error`) and is released by the real event, never a timer.
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -31,6 +29,8 @@ import Database from 'better-sqlite3';
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
+/** What the agent's tools weigh in the context window; a test that needs a window starved by them raises it. */
+const toolPayload = vi.hoisted(() => ({ tokens: 2_000 }));
 const broadcastSpy = vi.fn();
 const callModelSpy = vi.fn();
 const executeToolSpy = vi.fn();
@@ -295,7 +295,7 @@ vi.mock('../../../router/decide.js', () => ({
 vi.mock('../../../router/probe.js', () => ({ maybeProbe: () => undefined }));
 vi.mock('../../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../../tools/tool-docs.js')>('../../../tools/tool-docs.js');
-  return { ...actual, measureAgentToolPayloadTokens: async () => 2_000 };
+  return { ...actual, measureAgentToolPayloadTokens: async () => toolPayload.tokens };
 });
 
 // No-op the logger: the real module buffers every line into the LIVE
@@ -455,7 +455,7 @@ beforeEach(async () => {
   (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
   (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
-    loggerWarnSpy, loggerErrorSpy, assembleContextMock]) s.mockClear();
+    loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock]) s.mockClear();
   callModelSpy.mockReset();
   assembleContextMock.mockImplementation(async () => ({
     systemPrompt: '<system prompt>',
@@ -464,6 +464,7 @@ beforeEach(async () => {
   enforceModelCapabilitiesSpy.mockImplementation(() => ({ useTools: true }));
   isContextOverflowErrorMock.mockImplementation(() => false);
   recordErrorMock.mockImplementation(() => false);
+  toolPayload.tokens = 2_000;
   stoppedAgents.clear(); recoveryRunStreak.clear(); doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear(); turnContinuationCounts.clear(); continuationContext.clear();
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
@@ -487,7 +488,7 @@ function ownerSaw(): string[] {
 const notices = (): string[] => broadcastSpy.mock.calls.map((c) => c[0] as { type?: string; agentId?: string; error?: string })
   .filter((e) => e.type === 'chat:error' && e.agentId === AGENT).map((e) => e.error ?? '');
 const status = (): string => (db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status;
-const ask = (): string => (db().prepare(`SELECT state FROM work WHERE kind = 'ask' AND source_message_id = 'msg-user-1'`).get() as { state: string }).state;
+const ask = (): string => (db().prepare(`SELECT state FROM work WHERE kind = 'ask' AND root_id = 'msg-user-1'`).get() as { state: string }).state;
 
 /** The honest stop, in the owner's terms. */
 function expectAnHonestStop(cause: RegExp): void {
@@ -500,27 +501,28 @@ function expectAnHonestStop(cause: RegExp): void {
 }
 
 describe('t148 — a turn stopped by the money guardrail, or by no model that can hold the agent, is an honest stop', () => {
-  it.fails('a PINNED model with today\'s spending limit reached and no free model: the owner reads the true cause, the agent is not errored, no Healer', async () => {
+  it('a PINNED model with today\'s spending limit reached and no free model: the owner reads the true cause, the agent is not errored, no Healer', async () => {
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     expectAnHonestStop(/spending limit/i);
   });
 
-  it.fails('a PINNED model past the limit whose only free stand-in is too small for the agent: the same honest stop', async () => {
+  it('a PINNED model past the limit whose only free stand-in is too small for the agent: the same honest stop', async () => {
     budget(1.00, 2.00);   // the wall redirects to the free model; the re-fit for it refuses
+  toolPayload.tokens = 7_000;   // the tools alone fill the free model's 8K window, the priced one's 200K holds them
     await runV2Turn(AGENT);
     expectAnHonestStop(/spending limit/i);
   });
 
-  it.fails('an AUTO-ROUTED agent whose every routed model is past the limit: the same honest stop (the router finds no model at all)', async () => {
+  it('an AUTO-ROUTED agent whose every routed model is past the limit: the same honest stop (the router finds no model at all)', async () => {
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     expectAnHonestStop(/spending limit/i);
   });
 
-  it.fails('a PINNED model genuinely too small for the agent: the true card, and no Healer, not errored', async () => {
+  it('a PINNED model genuinely too small for the agent: the true card, and no Healer, not errored', async () => {
     db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
     const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
     const { reportStarvedWindow } = await import('../../../memory/window-starvation-card.js');
@@ -534,7 +536,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expectAnHonestStop(/cannot hold a conversation/i);
   });
 
-  it.fails('the stop is told ONCE: the runtime drain does not serve the stopped message back into the same stop', async () => {
+  it('the stop is told ONCE: the runtime drain does not serve the stopped message back into the same stop', async () => {
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
@@ -551,7 +553,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(['done', 'abandoned']).not.toContain(ask());
   });
 
-  it.fails('the message is answered once the owner raises the limit — driven by that change, not a timer — with no second notice', async () => {
+  it('the message is answered once the owner raises the limit — driven by that change, not a timer — with no second notice', async () => {
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
