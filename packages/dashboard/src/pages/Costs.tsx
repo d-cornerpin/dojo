@@ -535,8 +535,8 @@ export const Costs = () => {
   // which re-aggregates cost tables). Two changes: (1) gate on assistant
   // messages, the only role that carries billed token usage, since user text
   // and other roles can't move the totals; (2) coalesce to ONE trailing timer, so
-  // a burst collapses into a single reload after it settles. Budget-wall alerts
-  // still surface independently via cost:alert, so no urgency is lost here.
+  // a burst collapses into a single reload after it settles. Budget alerts reach
+  // the owner as texts and dashboard cards on their own, so no urgency is lost here.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsub = subscribe('chat:message', (event: WsEvent) => {

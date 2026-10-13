@@ -429,16 +429,6 @@ export interface TrackerPokeEvent {
   data: { taskId: string; agentId: string; pokeType: string };
 }
 
-export interface CostAlertEvent {
-  type: 'cost:alert';
-  data: {
-    scope: string;
-    percentage: number;
-    currentSpend: number;
-    limitUsd: number;
-  };
-}
-
 export interface ProviderStatusEvent {
   type: 'provider:status';
   data: {
@@ -632,7 +622,6 @@ export type WsEvent =
   | TrackerTaskUpdatedEvent
   | TrackerProjectUpdatedEvent
   | TrackerPokeEvent
-  | CostAlertEvent
   | ProviderStatusEvent
   | ResourceWarningEvent
   | SystemDepInstalledEvent
@@ -1214,7 +1203,6 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'tracker:project_updated': false,
   'tracker:poke': false,
   'tracker:task_log': false,
-  'cost:alert': false,
   'provider:status': false,
   'resource:warning': false,
   'system:dep_installed': false,
