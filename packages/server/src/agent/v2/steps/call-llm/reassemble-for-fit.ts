@@ -55,12 +55,10 @@ export interface ReassembleForFitInput {
   /** The exact turn context the ORIGINAL `assembleContext` call used, so a re-assembly
    *  reproduces the same content decisions instead of silently diverging from them. */
   readonly assemblyTurnContext: PromptTurnContext;
-  /** t140 round 2 (re-review N1): a FALLBACK candidate is being tried, and another may follow.
-   *  A pick whose window cannot hold the system prompt and tools is then refused WITHOUT the
-   *  owner's "cannot hold a conversation" card — that card says the agent is broken until it is
-   *  reconfigured, which is false while another pick may answer. The caller says so once no
-   *  model is left. Absent (the router's own pick, the budget redirect's only free model), the
-   *  refusal cards exactly as the assembler's own check does. */
+  /** t140 round 2 (re-review N1): a FALLBACK candidate, and another may follow. A pick that cannot
+   *  hold the system prompt and tools is refused WITHOUT the owner's "cannot hold a conversation"
+   *  card (it says the agent is broken until reconfigured — false while another pick may answer).
+   *  Absent (the router's own pick, the redirect's only free model), it cards as the assembler does. */
   readonly anotherPickMayFollow?: boolean;
 }
 
