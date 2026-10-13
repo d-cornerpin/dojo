@@ -136,18 +136,25 @@ describe('the 15-minute checkpoint hands the circling verdict to the AGENT', () 
     expect(await whatTheModelReceives()).not.toContain(REASON.slice(0, 40));
   });
 
-  it.fails('after a park: the verdict is in what the model receives on its next turn, attributed to the PM', async () => {
+  it('after a park: the verdict is in what the model receives on its next turn, labelled as the PM\'s', async () => {
     const out = await runTurnTimeBudget(stateOverBudget(), ctx());
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
     expect(pendingWakeups.has(AGENT)).toBe(true);
 
     const seen = await whatTheModelReceives();
-    expect(seen).toContain('AGENT NOTICE from PM');
-    expect(seen).toContain(TITLE);
-    expect(seen).toContain(REASON.slice(0, 40));
+    // The events lane renders a gist (its leading `[SOURCE: …]` tag stripped), so the PM's
+    // attribution the model reads is the verdict's own label, on the same line as the task and
+    // the reason — measured: `• [<time>][agent_notice] [PM EFFORT REVIEW — 150+ calls without
+    // advancing on "<title>" (<id>)] <reason>`.
+    const line = seen.split('\n').find((l) => l.includes('[PM EFFORT REVIEW'));
+    expect(line, 'the verdict must be in what the model receives').toBeTruthy();
+    expect(line).toContain('[agent_notice]');
+    expect(line).toContain(TITLE);
+    expect(line).toContain(TASK);
+    expect(line).toContain(REASON);
   });
 
-  it.fails('and NOT to the owner: no chat row, no chat broadcast; the row is on the events lane only', async () => {
+  it('and NOT to the owner: no chat row, no chat broadcast; the row is on the events lane only', async () => {
     await runTurnTimeBudget(stateOverBudget(), ctx());
     expect(chatBroadcasts()).toEqual([]);
     const rows = mockDb.current!.prepare(
@@ -160,7 +167,7 @@ describe('the 15-minute checkpoint hands the circling verdict to the AGENT', () 
     ).get(AGENT)).toEqual({ n: 0 });
   });
 
-  it.fails('delivered exactly once: the sweep\'s own read sees it delivered, and a second park writes nothing new', async () => {
+  it('delivered exactly once: the sweep\'s own read sees it delivered, and a second park writes nothing new', async () => {
     await runTurnTimeBudget(stateOverBudget(), ctx());
     expect(pendingCirclingVerdict(TASK)).toBeNull();
     await runTurnTimeBudget(stateOverBudget(), ctx());

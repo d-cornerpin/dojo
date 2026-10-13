@@ -37,7 +37,7 @@ import { turnContinuationCounts, queueSelfWake, isStopFenced } from '../../../sh
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
-import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../../../work/engine-checkpoint-note.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -182,10 +182,10 @@ export async function runTurnTimeBudget(
       return requestExit(latchEngineCut(state, 'stop'), 'stopped-by-user' satisfies PreCallGatesExitReason);
     }
 
-    // t137: NO PARK ROW AND NO BROADCAST HERE. The circling verdict that used to ride that row
-    // (T79 Finding 2) reached only the owner's chat — the row was role='system', which the tail
-    // renderer never emits — while marking the verdict delivered. Its delivery is the poke
-    // sweep's own guarded fill-in again (and the tool-loop checkpoint's line in `loop.ts`).
+    // t137: NO PARK ROW AND NO BROADCAST HERE. A pending PM circling verdict goes to the AGENT
+    // as a rider notice its continuation reads (`deliverPendingCirclingVerdict`); it used to ride
+    // the park row, which only the owner ever saw.
+    deliverPendingCirclingVerdict(agentId);   // never throws; a failure leaves it pending for the sweep
     //
     // T79a: this checkpoint is about to park the turn with whatever the agent had claimed
     // still in flight. Square the tracker BEFORE queuing the continuation, so the very next

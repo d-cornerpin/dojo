@@ -911,12 +911,14 @@ describe('runV2Turn integration', () => {
     // Hit MAX_TOOL_LOOPS exactly (75 model calls inside the loop).
     expect(modelCallCount).toBe(75);
 
-    // The system message documenting the auto-continue was persisted.
+    // t137 round 2 (R-V333-3, OR-LONG-JOBS): the auto-continue is invisible housekeeping — it no
+    // longer persists a "[System: This turn reached 75 tool calls …]" row for the owner (the
+    // model never read that role='system' row either). The safety valve itself is unchanged:
+    // the continuation below still fires.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sysMsgs).toHaveLength(1);
-    expect(sysMsgs[0].content).toMatch(/75 tool calls.*Starting a fresh turn/);
+    expect(sysMsgs.filter((r) => /tool calls.*Starting a fresh turn/.test(r.content))).toEqual([]);
 
     // handleMessage('') was called to continue.
     expect(handleMessageSpy).toHaveBeenCalledWith('primary', '');

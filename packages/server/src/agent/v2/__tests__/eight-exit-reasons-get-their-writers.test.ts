@@ -469,6 +469,13 @@ describe('§2 the sites that end a turn carry their reason, and the recorder rea
     expect([...code.matchAll(/latchEngineCut\([^;]*?,\s*'budget'\s*\)/g)].length).toBe(1);
     expect(code).toMatch(/latchEngineCut\(state, 'budget'\), 'turn-time-budget'/);
     expect(code).not.toMatch(/'turn-continuation-cap' satisfies/);
+    // t137 round 2: and the step's exit-reason union no longer DECLARES it — a writerless member
+    // is how a deleted exit quietly gets a writer back. Both directions: gone, and the union
+    // still carries the park's own member (the census is reading the right declaration).
+    const union = /export type PreCallGatesExitReason =([\s\S]*?);/.exec(read('agent/v2/steps/pre-call-gates/index.ts'))?.[1] ?? '';
+    expect(union).toContain("'turn-time-budget'");
+    expect(union).not.toContain("'turn-continuation-cap'");
+    expect([...union.matchAll(/'[a-z-]+'/g)].length).toBe(6);
   });
 
   it('BOTH `terminated` CALL SITES are wired, and the statement stays in one module', () => {

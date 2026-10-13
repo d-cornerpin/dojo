@@ -84,8 +84,11 @@ vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
 // try/catch. (t137: the trip's PM hand-off and the circling line that rode the park message
 // are gone with the cap and the park row, so neither is mocked here any more.)
 const noteEngineCheckpointSpy = vi.fn(() => 0);
+// t137 round 2: the checkpoint hands a pending circling verdict to the agent through this door.
+const deliverPendingCirclingVerdictSpy = vi.fn(() => null as string | null);
 vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
   noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
+  deliverPendingCirclingVerdict: (...a: unknown[]) => deliverPendingCirclingVerdictSpy(...(a as [string])),
 }));
 
 const AGENT = 'primary';
@@ -161,6 +164,7 @@ beforeEach(() => {
   insertMessageIfAbsentSpy.mockClear();
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
+  deliverPendingCirclingVerdictSpy.mockClear();
   getDbSpy.mockReset();
   getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
 });
@@ -421,6 +425,7 @@ describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
     expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
     expect(ctx.events).toEqual([]);
     expect(noteEngineCheckpointSpy.mock.calls).toEqual([[AGENT, 'turn-budget']]);
+    expect(deliverPendingCirclingVerdictSpy.mock.calls).toEqual([[AGENT]]);
     expect(ctx.stashContinuationIfHuman).toHaveBeenCalledTimes(1);
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });

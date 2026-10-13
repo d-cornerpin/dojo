@@ -880,7 +880,7 @@ describe('t137 round 2: the 75-call checkpoint writes nothing to the owner and h
     await runV2Turn('primary');
   }
 
-  it.fails('no system row, no chat broadcast of one — and the continuation is still scheduled', async () => {
+  it('no system row, no chat broadcast of one — and the continuation is still scheduled', async () => {
     seedInFlightTask();
     await seventyFiveReadsThenTheCap();
     expect(continuationContext.has('primary')).toBe(true);   // positive control: the cap was reached
@@ -889,7 +889,7 @@ describe('t137 round 2: the 75-call checkpoint writes nothing to the owner and h
     expect(chatBroadcasts().filter((m) => m.role === 'system' && !(m.content ?? '').startsWith('[working-note]'))).toEqual([]);
   });
 
-  it.fails('a pending circling verdict leaves as a PM-attributed events-lane notice, once, and the sweep sees it delivered', async () => {
+  it('a pending circling verdict leaves as a PM-attributed events-lane notice, once, and the sweep sees it delivered', async () => {
     seedInFlightTask();
     writeTaskLog({ taskId: 'w-long-job', fromEntity: 'pm', entryKind: 'effort_review_intervene',
       reason: 'the same three files were re-read with nothing new landing' });
@@ -938,6 +938,22 @@ describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone
     // above is a fact about the code and not about a walk that read nothing.
     expect(sources.filter((f) => /\/prefill-throughput/.test(f.code)).map((f) => f.rel).sort())
       .toEqual(['packages/dashboard/src/lib/api.ts', 'packages/server/src/gateway/routes/config.ts']);
+  });
+
+  it('round 2: BOTH checkpoints hand the circling verdict over through the one door, and neither writes the owner a row', () => {
+    const code = (rel: string): string => stripComments(fs.readFileSync(path.join(SERVER_SRC, rel), 'utf8'));
+    const tb = code('agent/v2/steps/pre-call-gates/turn-budget.ts');
+    const loop = code('agent/v2/loop.ts');
+    // The tool-loop checkpoint's block: from the cap test to the continuation's own setTimeout.
+    const capBlock = loop.slice(loop.indexOf('loopCount >= MAX_TOOL_LOOPS'), loop.indexOf("getAgentRuntime().handleMessage(agentId, '')"));
+    expect(capBlock.length, 'the tool-loop checkpoint moved — re-point this census').toBeGreaterThan(200);
+    for (const [name, src] of [['turn-budget', tb], ['tool-loop', capBlock]] as const) {
+      expect((src.match(/deliverPendingCirclingVerdict\(agentId\)/g) ?? []).length, `${name} hands the verdict over once`).toBe(1);
+      expect(src.match(/insertMessage(IfAbsent)?\(|type: 'chat:message'/g) ?? [], `${name} writes the owner nothing`).toEqual([]);
+    }
+    expect((capBlock.match(/noteEngineCheckpoint\(agentId, 'tool-loop'\)/g) ?? []).length).toBe(1);
+    // The old carrier is gone everywhere it could be called from.
+    expect(shippedSources().filter((f) => /pendingCirclingVerdictParkLine/.test(f.code)).map((f) => f.rel)).toEqual([]);
   });
 
   it('the pause has exactly ONE production caller, and that caller passes the continuation fact', () => {

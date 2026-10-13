@@ -95,11 +95,10 @@ function estimateRequestCost(model: TierModelRow): number {
 // `selector-latency.test.ts` sub-2ms guard: the fit check below never runs, never queries
 // the two ceiling columns, when the caller doesn't supply an estimate.
 //
-// WHY A LOCAL, MIRRORED QUERY AND NOT `agent/model.js`'s `getProviderCeilingTokens`: the
-// EXACT precedent `agent/v2/steps/pre-call-gates/turn-budget.ts`'s
-// `readProviderUnattendedBudgetMinutes` states for the identical situation — `agent/model.ts`
-// carries the Anthropic/OpenAI SDKs and undici, and this selector has never needed any of
-// that for the sake of two already-declared columns. It also keeps `selectModel` SYNCHRONOUS:
+// WHY A LOCAL, MIRRORED QUERY AND NOT `agent/model.js`'s `getProviderCeilingTokens`:
+// `agent/model.ts` carries the Anthropic/OpenAI SDKs and undici, and this selector has never
+// needed any of that for the sake of two already-declared columns. (The turn-budget reader
+// that once set the same precedent was deleted with the total-time cap, t137.) It also keeps `selectModel` SYNCHRONOUS:
 // `getProviderCeilingTokens` only ever does a synchronous indexed read, so mirroring it here
 // costs nothing async and every one of this function's three existing callers, none of which
 // await it today, keeps working unchanged.

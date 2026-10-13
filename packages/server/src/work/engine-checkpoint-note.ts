@@ -54,6 +54,7 @@ import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
 import { pendingCirclingVerdict, EFFORT_REVIEW_DELTA_CALLS } from '../tracker/effort-governor.js';
 import { recordPoke } from './poke-ladder.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
@@ -129,48 +130,48 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// T79 FIX WAVE, FINDING 2 — THE CIRCLING VERDICT RIDES THE CHECKPOINT PARK MESSAGE.
+// T79 FIX WAVE, FINDING 2 — THE CIRCLING VERDICT IS HANDED OVER AT THE CHECKPOINT.
 //
 // THE DEFECT: the PM's circling verdict (`tracker/pm-agent.ts`'s `runEffortReview`) had
 // exactly ONE delivery path — the guarded poke sweep's fill-in, behind the `assigneeStatus
-// === 'working'` guard. A continuously-continuing agent (the exact shape this whole SLOW-
-// INFERENCE plan exists for) is 'working' except for the ~0.5-2s a checkpoint like this one
-// occupies roughly every 15 minutes, so with the sweep's own 60s tick, the EXPECTED delivery
-// latency after the PM had already ruled circling was measured in HOURS, not seconds.
+// === 'working'` guard. A continuously-continuing agent is 'working' except for the ~0.5-2s a
+// checkpoint occupies, so the expected delivery latency was measured in HOURS.
 //
-// THE FIX (plan owner-orchestrator ruling): surface it here instead — in the tail-side system
-// row this checkpoint ALREADY writes as its own park message, at the exact moment the agent's
-// next turn is about to read fresh context. This never touches the working guard or the busy-
-// deferral (both stay the sweep's own backstop for an agent that DOES go idle); it is a
-// second, independent delivery surface for the case the sweep structurally cannot reach in
-// good time.
+// t137 ROUND 2 (R-V333-3, OR-LONG-JOBS) — WHERE IT TRAVELS NOW, AND WHY THE OLD CARRIER WENT.
+// Finding 2 put the line on the checkpoints' park rows. Those rows were role='system', which
+// the tail renderer never emits: the AGENT never read the verdict, the OWNER read it in his
+// chat, and the latch below was written anyway — cancelling the sweep's real delivery too. Both
+// park rows are deleted (the checkpoints are invisible housekeeping). The verdict now leaves as
+// a PM-attributed RIDER notice (`postAgentNotice`, intent `agent_notice` — a declared
+// `ENGINE_RIDER_INTENTS` member, so it can never drive a turn of its own): an events-lane row,
+// lifted into the agent's NEXT turn (the continuation the checkpoint queues), broadcast on the
+// inter-agent lane, never on the owner's chat. Both checkpoints call this one function.
 //
-// NO DOUBLE DELIVERY, EITHER DIRECTION: `pendingCirclingVerdict` (`tracker/effort-governor.
-// ts`) is the SAME read both this function and the poke sweep's own guarded fill-in call, and
-// whichever one delivers first marks it via `recordPoke` — a rung>=2 `work_events` row, the
-// EXACT marker `pendingCirclingVerdict`'s own `circlingPokeAlreadyDelivered` check reads. The
-// other side's next read of the same taskId then sees it as already delivered and does
-// nothing. One latch, two writers, no coordination needed between them.
+// NO DOUBLE DELIVERY, EITHER DIRECTION: `pendingCirclingVerdict` is the SAME read the poke
+// sweep's guarded fill-in makes, and the latch (`recordPoke`, rung 2 — the marker
+// `circlingPokeAlreadyDelivered` reads) is written ONLY once the notice row exists. A failed
+// write leaves the verdict pending for the sweep rather than marking a delivery that did not
+// happen.
 //
-// SCOPE: the agent's own CLAIMED (in_progress) tasks — the query mirrors `noteEngineCheckpoint`
-// `inProgress` query above (same predicate: `taskScope`, `state = 'claimed'`, `is_paused = 0`)
-// plus the task's `title`, needed to name it honestly in the line. Stranded on_deck tasks are
-// NOT in scope here: nothing is actively being worked on one (the effort meter only ever
-// charges a CLAIMED task, per `tracker-counting.ts`'s `resolveCurrentClaimedTaskId`), so a
-// circling verdict against one could not exist in the first place.
+// SCOPE: the agent's own CLAIMED tasks (same predicate as `noteEngineCheckpoint`'s
+// `inProgress`), plus the title, to name the task in the notice.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Look up an undelivered circling verdict for the agent's own claimed task(s) and, if one
- * exists, return ONE honest line — naming the task and quoting the PM's reason — to append to
- * the checkpoint's own park message. As a side effect, marks that verdict delivered through
- * the SAME marker the guarded poke sweep checks, so the sweep can never re-deliver what this
- * checkpoint just surfaced.
- *
- * Returns `null` when there is nothing pending — the common case, and the ONLY case in which
- * the caller's park message stays byte-identical to before this fix.
+ * Hand one undelivered circling verdict on this agent's claimed work to the agent itself, as a
+ * PM-attributed rider notice its next turn reads. Returns the notice row id, or `null` when
+ * nothing was pending (the common case) or the hand-over failed (verdict left pending). Never
+ * throws: a checkpoint is not the place to discover a broken read, and both callers park anyway.
  */
-export function pendingCirclingVerdictParkLine(agentId: string): string | null {
+export function deliverPendingCirclingVerdict(agentId: string): string | null {
+  try {
+    return handOverOneVerdict(agentId);
+  } catch {
+    return null;
+  }
+}
+
+function handOverOneVerdict(agentId: string): string | null {
   const db = getDb();
   const claimed = db.prepare(`
     SELECT w.id AS id, w.title AS title FROM work w
@@ -182,15 +183,16 @@ export function pendingCirclingVerdictParkLine(agentId: string): string | null {
   for (const task of claimed) {
     const circling = pendingCirclingVerdict(task.id);
     if (!circling) continue;
-    // Mark delivered NOW, before returning — the exact marker `circlingPokeAlreadyDelivered`
-    // reads, so a poke sweep tick landing a moment later (or a moment earlier, on a different
-    // process) cannot also deliver this same verdict. `rung: 2` matches the sweep's own
-    // "urgent" rung for a circling verdict; the distinct `poke_type` string makes this
-    // delivery's origin readable on the record without changing what either reader checks
-    // (`circlingPokeAlreadyDelivered` only inspects `rung`).
-    recordPoke(task.id, 'engine', 2, 'checkpoint_circling_verdict', agentId);
     const title = task.title ?? '(untitled task)';
-    return `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing on "${title}" (${task.id})] ${circling.reason}`;
+    const noticeId = postAgentNotice({
+      toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice',
+      brief: `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing on "${title}" (${task.id})] ${circling.reason}`,
+    });
+    if (!noticeId) return null;
+    // `rung: 2` matches the sweep's own urgent rung for a circling verdict; the `poke_type`
+    // names this delivery's origin without changing what either reader checks.
+    recordPoke(task.id, 'engine', 2, 'checkpoint_circling_verdict', agentId);
+    return noticeId;
   }
   return null;
 }

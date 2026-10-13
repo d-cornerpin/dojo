@@ -32,7 +32,6 @@
 //   • Phase 7, squad shared memory namespaces
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -68,7 +67,6 @@ import { getAgentRuntime } from '../runtime.js';
 
 import { advance } from './state.js';
 import { canonicalToolSignature } from './classifiers/loop.js';
-import { insertMessageIfAbsent } from '../../memory/message-store.js';
 // PHASE-6 T8: the first step cut out of this driver. `steps/step-outcome.ts`
 // carries the contract every step package shares, including the exit-request
 // channel this call site honours.
@@ -97,7 +95,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
 
 const logger = createLogger('v2-loop');
 
@@ -644,27 +642,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         agentId, maxLoops: MAX_TOOL_LOOPS,
       }, agentId);
       turnCtx.toolLoopCapReached = true;   // C2: teardown records the CUT, not the model's intent
-      // T79 FIX WAVE, FINDING 2: same reasoning as the turn-budget checkpoint's continuation path —
-      // read BEFORE the park message is built, so an undelivered circling verdict rides this SAME
-      // tail-side system row rather than waiting on the poke sweep's 60s tick behind a `working`
-      // guard this never-idle agent may not clear for hours. `null` leaves `sysMsg` unchanged.
-      const circlingLine = pendingCirclingVerdictParkLine(agentId);
-      const sysMsg = (
-        `[System: This turn reached ${MAX_TOOL_LOOPS} tool calls. Starting a fresh turn ` +
-        `to continue your work. Pick up where you left off.]`
-      ) + (circlingLine ? `\n\n${circlingLine}` : '');
-      const sysMsgId = uuidv4();
-      insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
-      broadcast({
-        type: 'chat:message',
-        agentId,
-        message: {
-          id: sysMsgId, agentId, role: 'system' as const,
-          content: sysMsg,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
+      // t137 ROUND 2 (R-V333-3, OR-LONG-JOBS): this checkpoint is invisible housekeeping, like the
+      // 15-minute park — it no longer writes or broadcasts a "[System: This turn reached N tool
+      // calls …]" row to the owner's chat (role='system', so the model never read it either). A
+      // pending PM circling verdict goes to the AGENT as a rider notice its continuation reads.
+      deliverPendingCirclingVerdict(agentId);   // never throws; a failure leaves it pending for the sweep
       // T79a: same reasoning as the turn-budget checkpoint (`pre-call-gates/turn-budget.ts`)
       // — this checkpoint is about to park the turn and self-continue with whatever the
       // agent had claimed still in flight. Square the tracker BEFORE scheduling that

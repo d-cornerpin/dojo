@@ -75,15 +75,15 @@ export const PRE_CALL_GATES_PHASE: TurnPhase = 'preCallGates';
 /**
  * Why this step asked the driver to leave the loop.
  *
- * Seven of the `while` body's exits live in this step — it is the loop's first, so it
+ * Six of the `while` body's exits live in this step — it is the loop's first, so it
  * is the only one that can refuse an iteration outright — and every one of them is a
- * guard with an incident behind it.
+ * guard with an incident behind it. (t137: the seventh, `turn-continuation-cap`, went with
+ * the total-time cap — OR-LONG-JOBS.)
  */
 export type PreCallGatesExitReason =
   | 'stopped-by-user'
   | 'preempted'
   | 'thrash-auto-block'
-  | 'turn-continuation-cap'
   | 'turn-time-budget'
   | 'context-emergency-compact'
   | 'context-full';

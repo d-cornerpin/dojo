@@ -30,7 +30,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { listTaskLog, writeTaskLog } from '../../tracker/task-log.js';
-import { noteEngineCheckpoint, pendingCirclingVerdictParkLine } from '../engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../engine-checkpoint-note.js';
 import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
 
@@ -203,57 +203,82 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// T79 FIX WAVE, FINDING 2 — the circling verdict rides the checkpoint park message.
+// T79 FIX WAVE, FINDING 2 — the circling verdict is handed over at the checkpoint.
+// t137 ROUND 2 (R-V333-3): it no longer rides an owner-visible park row (role='system', which the
+// model never read); it is handed to the AGENT as a PM-attributed rider notice on the events lane.
+// The model-visibility half is driven against the real assembler in
+// `agent/v2/__tests__/t137-the-circling-verdict-reaches-the-agent.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('pendingCirclingVerdictParkLine — a never-idle agent gets the verdict on its own checkpoint', () => {
+describe('deliverPendingCirclingVerdict — a never-idle agent gets the verdict at its own checkpoint', () => {
   /** Simulates `runEffortReview`'s own circling-branch write (`tracker/pm-agent.ts`): the
    *  durable `effort_review_intervene` task_log entry `pendingCirclingVerdict` reads back. */
   function recordCirclingVerdict(taskId: string, reason: string): void {
     writeTaskLog({ taskId, fromEntity: 'pm', entryKind: 'effort_review_intervene', reason });
   }
+  const notices = (): Array<{ lane: string; role: string; origin_intent: string; content: string }> =>
+    mockDb.current!.prepare(
+      `SELECT lane, role, origin_intent, content FROM messages WHERE agent_id = ? AND content LIKE '%PM EFFORT REVIEW%'`,
+    ).all(AGENT) as Array<{ lane: string; role: string; origin_intent: string; content: string }>;
 
-  it('no pending verdict: returns null, the byte-identical-message case', () => {
-    seedWork('w-quiet', { title: 'Quiet task' });
-    expect(pendingCirclingVerdictParkLine(AGENT)).toBeNull();
+  beforeEach(() => {
+    for (const id of [AGENT, OTHER_AGENT]) {
+      mockDb.current!.prepare(
+        "INSERT OR IGNORE INTO agents (id, name, status, session_started_at) VALUES (?, ?, 'working', '1970-01-01')",
+      ).run(id, `Agent ${id}`);
+    }
   });
 
-  it('a claimed task with a recorded circling verdict: returns a line naming the task and quoting the PM\'s reason, and latches the delivery marker', () => {
+  it('no pending verdict: returns null and writes nothing', () => {
+    seedWork('w-quiet', { title: 'Quiet task' });
+    expect(deliverPendingCirclingVerdict(AGENT)).toBeNull();
+    expect(notices()).toEqual([]);
+  });
+
+  it('a claimed task with a recorded circling verdict: a PM-attributed events-lane notice naming the task and quoting the reason, and the latch', () => {
     seedWork('w-circling', { title: 'Sweep the mailbox' });
     recordCirclingVerdict('w-circling', 'same three calls repeated with nothing new landing');
 
-    const line = pendingCirclingVerdictParkLine(AGENT);
+    expect(deliverPendingCirclingVerdict(AGENT), 'a pending circling verdict must be handed over').not.toBeNull();
 
-    expect(line, 'a pending circling verdict must produce a line').not.toBeNull();
-    expect(line).toContain('Sweep the mailbox');
-    expect(line).toContain('w-circling');
-    expect(line).toContain('same three calls repeated with nothing new landing');
-
-    // THE LATCH: the SAME read the guarded poke sweep uses now sees this verdict as already
-    // delivered — proven directly against `tracker/effort-governor.ts`'s real export, not a
-    // re-invocation of this function.
-    expect(pendingCirclingVerdict('w-circling'), 'the marker this checkpoint just wrote must be visible to the sweep\'s own read').toBeNull();
+    const rows = notices();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ lane: 'events', role: 'user', origin_intent: 'agent_notice' });
+    expect(rows[0].content).toContain('AGENT NOTICE from PM');
+    expect(rows[0].content).toContain('Sweep the mailbox');
+    expect(rows[0].content).toContain('w-circling');
+    expect(rows[0].content).toContain('same three calls repeated with nothing new landing');
+    // THE LATCH: the SAME read the guarded poke sweep uses now sees this verdict as delivered.
+    expect(pendingCirclingVerdict('w-circling'), 'the marker must be visible to the sweep\'s own read').toBeNull();
   });
 
-  it('the sweep does NOT redeliver what the checkpoint already surfaced: a second checkpoint call also returns null', () => {
+  it('the sweep does NOT redeliver what the checkpoint handed over: a second call writes nothing', () => {
     seedWork('w-circling-2', { title: 'Long research sweep' });
     recordCirclingVerdict('w-circling-2', 'circling on the same three files');
+    expect(deliverPendingCirclingVerdict(AGENT)).not.toBeNull();
+    expect(deliverPendingCirclingVerdict(AGENT), 'already delivered once').toBeNull();
+    expect(notices()).toHaveLength(1);
+  });
 
-    const first = pendingCirclingVerdictParkLine(AGENT);
-    expect(first).toContain('circling on the same three files');
-
-    const second = pendingCirclingVerdictParkLine(AGENT);
-    expect(second, 'already delivered once; a second checkpoint must not re-surface it').toBeNull();
+  it('a notice that could not be written is NOT marked delivered: the verdict stays pending for the sweep', () => {
+    seedWork('w-circling-3', { title: 'Inbox triage' });
+    recordCirclingVerdict('w-circling-3', 'the same search, five times');
+    // The notice door's write fails (the row's agent does not exist, so the FK refuses it) —
+    // `postAgentNotice` is best-effort and answers null.
+    mockDb.current!.prepare('UPDATE work SET agent_id = ? WHERE id = ?').run('ghost-agent', 'w-circling-3');
+    mockDb.current!.pragma('foreign_keys = ON');
+    expect(deliverPendingCirclingVerdict('ghost-agent')).toBeNull();
+    expect(pendingCirclingVerdict('w-circling-3'), 'no row, no latch').not.toBeNull();
   });
 
   it('an agent with no claimed task at all: returns null', () => {
-    expect(pendingCirclingVerdictParkLine('nobody-claims-anything')).toBeNull();
+    expect(deliverPendingCirclingVerdict('nobody-claims-anything')).toBeNull();
   });
 
-  it('a DIFFERENT agent\'s circling verdict is never surfaced for this agent', () => {
+  it('a DIFFERENT agent\'s circling verdict is never handed to this agent', () => {
     seedWork('w-other-circling', { agent_id: OTHER_AGENT, title: 'Someone else\'s task' });
     recordCirclingVerdict('w-other-circling', 'not this agent\'s problem');
-
-    expect(pendingCirclingVerdictParkLine(AGENT)).toBeNull();
+    expect(deliverPendingCirclingVerdict(AGENT)).toBeNull();
+    expect(notices()).toEqual([]);
   });
 });
