@@ -231,6 +231,7 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     const m = await boot();
     failing(m, 'acct-a');
     failing(m, 'acct-b');
+    expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-a'), 'both accounts are on record').toBe(true);
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', accountId: 'acct-a', alreadyAlerted: true, totalNotificationsSinceFailure: 0 } as Parameters<typeof m.watcher.maybeAlertOnRecovery>[0]);
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-b')).toBe(true);
     expect(await m.cards(), 'acct-b is still failing').toHaveLength(1);
