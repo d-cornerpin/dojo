@@ -337,7 +337,7 @@ describe('t139 round 2 (I5) — the floor names its task from ENGINE FACTS, neve
     await runV2Turn(PRIMARY);
 
     const row = openTasks()[0];
-    expect(row.title).toMatch(/^Multi-step task — 9 calls: image_create \[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2} [AP]M\]$/);
+    expect(row.title).toMatch(/^Multi-step task — 9 calls: image_create \[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2} [AP]M UTC[+-]\d{2}:\d{2}\]$/);
     expect(row.title).not.toMatch(/you there/i);
     const note = mockDb.current!.prepare(
       "SELECT content FROM messages WHERE role = 'system' AND content LIKE '[System] The engine opened tracker task%' ORDER BY seq DESC LIMIT 1",
