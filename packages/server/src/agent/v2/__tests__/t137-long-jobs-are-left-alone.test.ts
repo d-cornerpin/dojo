@@ -399,6 +399,8 @@ import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { unvalidatedPauseExpr } from '../../../work/tracker-view.js';
+import { writeTaskLog } from '../../../tracker/task-log.js';
+import { pendingCirclingVerdict } from '../../../tracker/effort-governor.js';
 import { engineSources, SERVER_SRC } from './engine-sources.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -855,6 +857,57 @@ function shippedSources(): Array<{ rel: string; code: string }> {
   for (const pkg of ['packages/server/src', 'packages/dashboard/src', 'packages/shared/src']) walk(path.join(REPO, pkg));
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2 (R-V333-3) — THE 75-CALL CHECKPOINT IS HOUSEKEEPING TOO, AND THE CIRCLING VERDICT IT
+// CARRIED NOW REACHES THE AGENT. Same shape as the 15-minute park: nothing in the owner's chat;
+// the PM's verdict travels as a rider notice on the events lane (model-visible on the next turn —
+// proven against the real assembler in `t137-the-circling-verdict-reaches-the-agent.test.ts`).
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('t137 round 2: the 75-call checkpoint writes nothing to the owner and hands the verdict to the agent', () => {
+  async function seventyFiveReadsThenTheCap(): Promise<void> {
+    let call = 0;
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      return {
+        content: call === 1 ? 'Starting on the research folder now.' : '',
+        toolCalls: [{ id: `tc-cap-${call}`, name: 'file_read', arguments: { path: `/research/file-${call}.txt` } }],
+        inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      };
+    });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => (
+      { toolCallId: tc.id, name: tc.name, content: `body of ${tc.id}`, isError: false }));
+    await runV2Turn('primary');
+  }
+
+  it.fails('no system row, no chat broadcast of one — and the continuation is still scheduled', async () => {
+    seedInFlightTask();
+    await seventyFiveReadsThenTheCap();
+    expect(continuationContext.has('primary')).toBe(true);   // positive control: the cap was reached
+    expect(messageRows().filter((m) => m.role === 'system' && !m.content.startsWith('[working-note]')).map((m) => m.content))
+      .toEqual([]);
+    expect(chatBroadcasts().filter((m) => m.role === 'system' && !(m.content ?? '').startsWith('[working-note]'))).toEqual([]);
+  });
+
+  it.fails('a pending circling verdict leaves as a PM-attributed events-lane notice, once, and the sweep sees it delivered', async () => {
+    seedInFlightTask();
+    writeTaskLog({ taskId: 'w-long-job', fromEntity: 'pm', entryKind: 'effort_review_intervene',
+      reason: 'the same three files were re-read with nothing new landing' });
+    expect(pendingCirclingVerdict('w-long-job')).not.toBeNull();
+
+    await seventyFiveReadsThenTheCap();
+
+    const rows = mockDb.current!.prepare(
+      `SELECT role, lane, origin_intent, content FROM messages WHERE agent_id = 'primary' AND content LIKE '%PM EFFORT REVIEW%'`,
+    ).all() as Array<{ role: string; lane: string; origin_intent: string; content: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ role: 'user', lane: 'events', origin_intent: 'agent_notice' });
+    expect(rows[0].content).toContain('AGENT NOTICE from PM');
+    expect(rows[0].content).toContain('summarise the research folder');
+    expect(pendingCirclingVerdict('w-long-job')).toBeNull();
+    expect(chatBroadcasts().some((m) => (m.content ?? '').includes('PM EFFORT REVIEW'))).toBe(false);
+  });
+});
 
 describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone', () => {
   it('turn-budget.ts writes ZERO message rows and broadcasts nothing — and still checkpoints, squares the tracker and queues the continuation', () => {
