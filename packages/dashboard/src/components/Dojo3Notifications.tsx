@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
-import { useToast, type ToastAction } from '../hooks/useToast';
+import { useToast, OWNER_ALERT_SPEAKER, type ToastAction } from '../hooks/useToast';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useDojoOrb } from './orb/OrbProvider';
 
@@ -102,6 +102,7 @@ export function Dojo3Notifications() {
   useEffect(() => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
+      if (e.agentId === OWNER_ALERT_SPEAKER) return; // an owner all-clear is no agent recovering
       if (e.code === 'AGENT_RECOVERED' || e.severity === 'info') {
         for (const t of toastsRef.current) if (t.level === 'error' && !t.sticky) removeToast(t.id);
       }
@@ -150,7 +151,7 @@ export function Dojo3Notifications() {
             <button
               type="button"
               className="dojo3-note__x"
-              onClick={() => removeToast(t.id)}
+              onClick={() => { t.onDismiss?.(); removeToast(t.id); }}
               aria-label="Dismiss notification"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>

@@ -108,13 +108,13 @@ beforeEach(() => {
 });
 
 describe('on load, the server\'s owner cards are shown, pinned', () => {
-  it.fails('a card the server still holds is on screen after a reload', async () => {
+  it('a card the server still holds is on screen after a reload', async () => {
     server.cards = [{ words: BUDGET, severity: 'notice' }];
     render(tree());
     expect(await screen.findByText(BUDGET)).toBeTruthy();
   });
 
-  it.fails('its X tells the server, so the dismissal holds on the next load', async () => {
+  it('its X tells the server, so the dismissal holds on the next load', async () => {
     server.cards = [{ words: BUDGET, severity: 'notice' }];
     const first = render(tree());
     await screen.findByText(BUDGET);
@@ -126,7 +126,7 @@ describe('on load, the server\'s owner cards are shown, pinned', () => {
     expect(screen.queryByText(BUDGET)).toBeNull();
   });
 
-  it.fails('a live card the server also lists is ONE card, and its X dismisses on the server', async () => {
+  it('a live card the server also lists is ONE card, and its X dismisses on the server', async () => {
     render(tree());
     await waitFor(() => expect(server.gets).toBe(1));
     server.cards = [{ words: BUDGET, severity: 'notice' }];
@@ -138,7 +138,7 @@ describe('on load, the server\'s owner cards are shown, pinned', () => {
 });
 
 describe('on reconnect, the cards are asked for again', () => {
-  it.fails('a card whose condition ended while away is gone; a new one is shown', async () => {
+  it('a card whose condition ended while away is gone; a new one is shown', async () => {
     server.cards = [{ words: BUDGET, severity: 'notice' }];
     const view = render(tree());
     await screen.findByText(BUDGET);
@@ -153,7 +153,7 @@ describe('on reconnect, the cards are asked for again', () => {
 });
 
 describe('an all-clear removes the trouble card and raises none', () => {
-  it.fails('the info frame takes the expired card away; no card for the all-clear itself', async () => {
+  it('the info frame takes the expired card away; no card for the all-clear itself', async () => {
     render(tree());
     emit('chat:error', { agentId: 'platform', error: EXPIRED, severity: 'error', retryable: false });
     expect(screen.getByText(EXPIRED)).toBeTruthy();
@@ -162,7 +162,7 @@ describe('an all-clear removes the trouble card and raises none', () => {
     expect(dismissButtons()).toHaveLength(0);
   });
 
-  it.fails("it is not an agent recovering: an agent's own error card stays (control: a recovery sweeps it)", async () => {
+  it("it is not an agent recovering: an agent's own error card stays (control: a recovery sweeps it)", async () => {
     render(tree());
     fireEvent.click(screen.getByText('post plain error'));
     emit('chat:error', { agentId: 'platform', error: EXPIRED, severity: 'info', retryable: false });
@@ -173,7 +173,7 @@ describe('an all-clear removes the trouble card and raises none', () => {
 });
 
 describe('one card per incident on screen', () => {
-  it.fails("the paused agent's own chat card with the owner card's words does not make a second card", async () => {
+  it("the paused agent's own chat card with the owner card's words does not make a second card", async () => {
     render(tree());
     emit('chat:error', { agentId: 'platform', error: PAUSED, severity: 'warning', retryable: false });
     fireEvent.click(screen.getByText('chat posts the paused error'));

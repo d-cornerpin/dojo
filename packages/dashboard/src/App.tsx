@@ -1,8 +1,8 @@
 import { Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react-router-dom';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
-import { ToastProvider, useToast } from './hooks/useToast';
+import { ToastProvider, useToast, OWNER_ALERT_SPEAKER } from './hooks/useToast';
 import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
@@ -258,12 +258,10 @@ const AppRoutes = () => {
 
 // ── Global WebSocket-driven alerts (uses the shared toast system) ──
 
-/** The server's `PLATFORM_SENDER` (agent/v2/outbound.ts): the platform, not an agent, speaking. */
-const PLATFORM_SPEAKER = 'platform';
-
 export const GlobalAlerts = () => {
-  const { subscribe } = useWebSocket();
+  const { subscribe, connectionStatus } = useWebSocket();
   const toast = useToast();
+  const { addActionToast, removeToastByKey } = toast;
 
   // D-B v2 (owner-directed): the Healer's consent asks no longer toast. They queue
   // in the Healer section of Vitals (HealerVitals) in plain language, and the only
@@ -275,17 +273,39 @@ export const GlobalAlerts = () => {
 
   // Every text the Dojo sends the owner (the server's owner-notice door, `sendAlert`) also
   // arrives here, in the same words, as a `chat:error` spoken by the platform rather than an
-  // agent. It is pinned (sticky) until he dismisses it, so a missed text is not a missed
-  // warning; the same words already on screen stay one card. It replaces the budget's old
-  // `cost:alert` toast, which faded at 50% and 75% (t138 round 2).
+  // agent, and stays (sticky) until he presses its X, which tells the server. The same words on
+  // screen are one card. An all-clear's `info` frame removes the card it names and raises none.
+  // On load and on every reconnect the server's cards are asked for again, re-derived from the
+  // alert state it keeps, so a card outlives the page (t138 rounds 2-3).
+  const showOwnerCard = useCallback((words: string, critical: boolean) => addActionToast({
+    title: '', message: words, actions: [], dedupeKey: `owner-alert:${words}`, level: critical ? 'error' : 'warning',
+    onDismiss: () => {
+      void api.request('/config/owner-notices/dismiss', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ words }),
+      });
+    },
+  }), [addActionToast]);
+
+  const fromServer = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (connectionStatus !== 'connected') return;
+    let current = true;
+    void api.request<Array<{ words: string; severity: string }>>('/config/owner-notices').then((r) => {
+      if (!current || !r.ok || !Array.isArray(r.data)) return;
+      const standing = new Set(r.data.map((c) => c.words));
+      for (const words of fromServer.current) if (!standing.has(words)) removeToastByKey(`owner-alert:${words}`);
+      fromServer.current = standing;
+      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical');
+    });
+    return () => { current = false; };
+  }, [connectionStatus, showOwnerCard, removeToastByKey]);
+
   useEffect(() => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
-      if (e.agentId !== PLATFORM_SPEAKER) return;
-      toast.addActionToast({
-        title: '', message: e.error, actions: [], dedupeKey: `owner-alert:${e.error}`,
-        level: e.severity === 'error' ? 'error' : 'warning',
-      });
+      if (e.agentId !== OWNER_ALERT_SPEAKER) return;
+      if (e.severity === 'info') removeToastByKey(`owner-alert:${e.error}`);
+      else showOwnerCard(e.error, e.severity === 'error');
     });
 
     const unsub2 = subscribe('resource:warning', (event: WsEvent) => {
@@ -310,7 +330,7 @@ export const GlobalAlerts = () => {
     // subscription for its live refresh.
 
     return () => { unsub(); unsub2(); unsub3(); };
-  }, [subscribe, toast]);
+  }, [subscribe, toast, showOwnerCard, removeToastByKey]);
 
   return null; // rendering is handled by ToastContainer
 };

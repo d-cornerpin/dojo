@@ -46,7 +46,12 @@ export interface ActionToastOptions {
   dedupeKey: string;
   /** Card tone; defaults to 'warning' (amber, matching the Vitals pending tone). */
   level?: ToastLevel;
+  /** Called when the person presses the card's X (an owner card tells the server, t138 r3). */
+  onDismiss?: () => void;
 }
+
+/** Who speaks an owner card's frame: the server's `PLATFORM_SENDER`, the platform, not an agent. */
+export const OWNER_ALERT_SPEAKER = 'platform';
 
 export interface Toast {
   id: number;
@@ -70,6 +75,8 @@ export interface Toast {
   /** Stable external id (e.g. a Healer proposal id) so a re-emit updates the
    *  same toast in place and a later resolved frame can dismiss it by key. */
   dedupeKey?: string;
+  /** Called when the person presses the X — not when a timer, a sweep or a key removes it. */
+  onDismiss?: () => void;
 }
 
 // Auto-dismiss timing per level (ms). Errors stay until dismissed.
@@ -126,6 +133,7 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
         sticky: true,
         alertOrb: true,
         dedupeKey: opts.dedupeKey,
+        onDismiss: opts.onDismiss,
       };
       const idx = prev.findIndex(t => t.dedupeKey === opts.dedupeKey);
       if (idx >= 0) {
@@ -140,8 +148,10 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
   const addToast = useCallback((message: string, level: ToastLevel) => {
     const id = ++toastIdCounter;
     setToasts(prev => {
-      // Deduplicate: if the same message + level is already showing, don't add again
-      if (prev.some(t => t.message === message && t.level === level)) return prev;
+      // Deduplicate: if the same message + level is already showing, don't add again — nor when
+      // a pinned card already carries these words (an owner card supersedes an agent's own chat
+      // copy of the same incident: one card per incident, t138 round 3).
+      if (prev.some(t => t.message === message && (t.level === level || t.sticky))) return prev;
       return [...prev, { id, message, level, timestamp: Date.now() }];
     });
 
@@ -253,7 +263,7 @@ export const ToastContainer = () => {
                 )}
               </div>
               <button
-                onClick={() => removeToast(t.id)}
+                onClick={() => { t.onDismiss?.(); removeToast(t.id); }}
                 className="text-ui/40 hover:text-ui shrink-0 ml-1 text-lg leading-none"
               >
                 ×
