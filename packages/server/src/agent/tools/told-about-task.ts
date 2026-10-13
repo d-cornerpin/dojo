@@ -17,9 +17,32 @@
 // moves the prompt prefix once for every agent holding a send tool (G2).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { getDb } from '../../db/connection.js';
+import { isPrimaryAgent } from '../../config/platform.js';
+
 export const TOLD_ABOUT_TASK_ARG = 'task_id';
 
 export const TOLD_ABOUT_TASK_PROPERTY = {
   type: 'string',
   description: 'Optional. The id of the task this message tells them about (e.g. raising a blocked task), so the platform knows they were told.',
 };
+
+/**
+ * May `agentId` say a send was about work row `workId`? The agent that holds the row
+ * (`agent_id`), its named assignee, the agent that opened it (a requester of kind agent), and the
+ * primary — the one agent the escalation ladder steers to raise a blocked row with the owner, and
+ * the only one that can text him. Any other agent naming a row it has no part in records nothing
+ * (the send itself still goes out), so it cannot settle another agent's escalation episode.
+ */
+export function agentMayNameTask(agentId: string, workId: string): boolean {
+  try {
+    const row = getDb().prepare('SELECT agent_id, assignee_agent, requester, requester_id FROM work WHERE id = ?')
+      .get(workId) as { agent_id: string; assignee_agent: string | null; requester: string; requester_id: string | null } | undefined;
+    if (!row) return false;
+    return row.agent_id === agentId || row.assignee_agent === agentId
+      || (row.requester === 'agent' && row.requester_id === agentId)
+      || isPrimaryAgent(agentId);
+  } catch {
+    return false;
+  }
+}

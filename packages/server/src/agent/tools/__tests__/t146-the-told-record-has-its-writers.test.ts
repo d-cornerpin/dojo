@@ -101,6 +101,7 @@ describe('§2 the told record is written by exactly the two doors, each in its o
     expect(s.slice(scope, at + 120)).toMatch(/recordPersonTold\(task\.id, \{ deliveryId, via: 'send_tool' \}\)/);
     expect(s).toMatch(/\(resolved\.args as Record<string, unknown>\)\[TOLD_ABOUT_TASK_ARG\]/);
     expect(s).toMatch(/const task = resolveTaskId\(named\);/);
+    expect(s, 'round 3 (M1): only a caller who may name the task records').toMatch(/task\.ok && agentMayNameTask\(agentId, task\.id\)/);
   });
 });
 

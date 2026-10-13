@@ -67,7 +67,7 @@ import {
   withOutboundAsync, withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
   currentOutboundDeliveryId,
 } from '../v2/outbound.js';
-import { TOLD_ABOUT_TASK_ARG } from './told-about-task.js';
+import { TOLD_ABOUT_TASK_ARG, agentMayNameTask } from './told-about-task.js';
 import { recordPersonTold } from '../../work/validation-drive.js';
 import { resolveTaskId } from '../../tracker/schema.js';
 import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
@@ -200,7 +200,8 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
     };
     // t146: a send whose ARGUMENTS name its task (`task_id`, ./told-about-task.ts) opens its OWN
     // scope, and the person is recorded as told about that task from the row THIS send wrote.
-    // The record itself refuses anyone but the owner or the row's requester. No argument, no
+    // The record itself refuses anyone but the owner or the row's requester, and only a caller who
+    // holds, was assigned or opened the row (or the primary) may name it. No argument, no
     // record: never inferred from the words or from what the turn was serving. Whether the send
     // reached the person is the ledger's answer (the record checks the delivery's outcome).
     const named = (resolved.args as Record<string, unknown>)[TOLD_ABOUT_TASK_ARG];
@@ -211,7 +212,7 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
       const r = await dispatchResolved(agentId, toolCall, resolved);
       const deliveryId = currentOutboundDeliveryId();
       const task = resolveTaskId(named);
-      if (deliveryId && task.ok) {
+      if (deliveryId && task.ok && agentMayNameTask(agentId, task.id)) {
         const told = recordPersonTold(task.id, { deliveryId, via: 'send_tool' });
         if (told.kind === 'refused') logger.info('a send named its task but is not recorded as a tell', { taskId: task.id, reason: told.reason }, agentId);
       }

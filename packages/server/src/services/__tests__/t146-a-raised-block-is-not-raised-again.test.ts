@@ -288,6 +288,18 @@ describe('§3 the record refuses what is not a tell to the owner or the requeste
     expect(toldEvents('t-requested')).toEqual([{ actor: PRIMARY, via: 'send_tool' }]);
   });
 
+  it('round 3 (M1): who may name a task — its holder, its assignee, the agent that opened it, and the primary (the ladder\'s teller); nobody else', async () => {
+    const { agentMayNameTask } = await import('../../agent/tools/told-about-task.js');
+    for (const id of ['stranger', 'opener', 'helper']) db().prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')`).run(id, id);
+    seedBlocked('t-who', { requester: 'agent', requester_id: 'opener', assignee_agent: 'helper' });
+    expect(agentMayNameTask(ASSIGNEE, 't-who'), 'holder').toBe(true);
+    expect(agentMayNameTask('helper', 't-who'), 'assignee').toBe(true);
+    expect(agentMayNameTask('opener', 't-who'), 'opener').toBe(true);
+    expect(agentMayNameTask(PRIMARY, 't-who'), 'primary').toBe(true);
+    expect(agentMayNameTask('stranger', 't-who'), 'another agent\'s task').toBe(false);
+    expect(agentMayNameTask(ASSIGNEE, 'no-such-row')).toBe(false);
+  });
+
   it('an unknown task id records nothing and does not fail the send', async () => {
     seedBlocked('t-real');
     const r = await agentTexts(OWNER_PHONE, 'The greenhouse firmware task is stuck.', { task_id: 'no-such-task-anywhere' });
