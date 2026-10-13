@@ -325,3 +325,47 @@ describe('§4 the owner-notice record says whether a dashboard card was raised',
     expect(allClear.map((m) => m?.card)).toEqual(['none_by_design']);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §5 — ROUND 2 (ruling 4): with no phone, the dashboard card IS the owner being told (t138's
+// cards). A notice about a work row that raises a card records the tell from the card's own
+// ledger row (`via: 'owner_card'`); a status line or an all-clear raises no card by design and
+// records nothing. When the phone carried it, the phone delivery is the one record.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§5 no phone: the owner card about a work row is the tell', () => {
+  const noPhone = (): void => {
+    stopIMBridge();
+    db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run();
+  };
+
+  it.fails('a card raised for a notice about the blocked task records the tell, and the ladder does not raise it again', async () => {
+    seedBlocked('t-card');
+    noPhone();
+    noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-card');
+    await driveLadderToTheEnd();
+    expect(steersOn('t-card'), 'the card told him; nobody is steered to tell him again').toBe(0);
+    expect(toldEvents('t-card')).toEqual([{ actor: 'platform', via: 'owner_card' }]);
+    const row = db().prepare(
+      `SELECT d.agent_id, d.channel, d.recipient_id, d.outcome FROM work_events e
+         JOIN deliveries d ON d.id = json_extract(e.payload, '$.delivery_id')
+        WHERE e.work_id = 't-card' AND e.kind = 'person_told'`,
+    ).get();
+    expect(row, 'the card is on the ledger as a platform dashboard delivery to the owner')
+      .toEqual({ agent_id: 'platform', channel: 'dashboard', recipient_id: 'owner', outcome: 'delivered' });
+  });
+
+  it('a status line or an all-clear about the row raises no card and records nothing', () => {
+    seedBlocked('t-nocard');
+    noPhone();
+    (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('A status line.', 'notice', { card: false, aboutWorkId: 't-nocard' });
+    (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('It cleared.', 'notice', { clears: 'A status line.', aboutWorkId: 't-nocard' });
+    expect(toldEvents('t-nocard')).toEqual([]);
+  });
+
+  it('the phone carried it: ONE record, the phone delivery — not a second one for the card', () => {
+    seedBlocked('t-phone');
+    noticeAbout('The greenhouse firmware task is blocked.', 't-phone');
+    expect(toldEvents('t-phone')).toEqual([{ actor: 'platform', via: 'owner_notice' }]);
+  });
+});
