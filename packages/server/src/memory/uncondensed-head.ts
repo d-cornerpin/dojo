@@ -24,6 +24,15 @@ import type { Message } from '@dojo/shared';
 export const UNCONDENSED_PLACEHOLDER_HEAD = '[Not yet condensed]';
 export const isUncondensedPlaceholder = (content: string): boolean => content.startsWith(UNCONDENSED_PLACEHOLDER_HEAD);
 
+/** For a HAND-WRITTEN summary (the memory routes' inject and edit): the reason it is refused when it
+ *  borrows the head, else null. The engine replaces notes with model summaries and drops ones with no
+ *  rows, so an owner's text wearing the head would be overwritten or deleted. */
+export function reservedHeadRefusal(content: string): string | null {
+  return isUncondensedPlaceholder(content.trimStart())
+    ? `A summary may not begin with "${UNCONDENSED_PLACEHOLDER_HEAD}": that heading marks the engine's own not-yet-condensed notes.`
+    : null;
+}
+
 /** The ONLY words a note uses to say where its messages came from. Own-property lookups only. */
 const CHANNEL_WORDS: Readonly<Record<string, string>> = {
   dashboard: 'the dashboard conversation', voice: 'a voice conversation', phone: 'a phone call',
