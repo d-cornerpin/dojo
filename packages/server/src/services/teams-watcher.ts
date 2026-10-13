@@ -21,7 +21,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
 const logger = createLogger('teams-watcher');
 
@@ -59,7 +59,7 @@ function recordPollSuccess(): void {
   status.lastPollError = null;
   status.consecutiveFailures = 0;
   status.firstFailureAt = null;
-  if (alreadyAlerted) {
+  if (alreadyAlerted || watcherFailingOnRecord('teams')) {
     logger.info('Teams watcher recovered — sending recovery alert');
     alreadyAlerted = maybeAlertOnRecovery({
       name: 'teams', alreadyAlerted, totalNotificationsSinceFailure: notificationsSinceFailureAlert,

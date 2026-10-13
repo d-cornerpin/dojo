@@ -22,6 +22,7 @@ import { memoryOwnerCards } from '../../services/memory-low-notice.js';
 import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
+import { ownerCardEnded } from '../../services/owner-card-frames.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
@@ -2758,6 +2759,7 @@ configRouter.post('/owner-notices/dismiss', async (c) => {
   if (typeof body?.words !== 'string') return c.json({ ok: false, error: 'words is required' }, 400);
   const hits = ownerCards().filter((card) => card.words === body.words);
   for (const card of hits) card.dismiss();
+  if (hits.length > 0) ownerCardEnded(body.words); // round 5: every other open tab drops it too
   return c.json({ ok: true, data: { dismissed: hits.length } });
 });
 

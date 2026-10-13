@@ -26,7 +26,7 @@ import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.j
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
 
@@ -203,10 +203,10 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
     s.lastPollError = null;
     s.consecutiveFailures = 0;
     s.firstFailureAt = null;
-    if (s.alreadyAlerted) {
+    if (s.alreadyAlerted || watcherFailingOnRecord('gmail', accountId)) {
       logger.info('Gmail watcher recovered — sending recovery alert', { accountId });
       s.alreadyAlerted = maybeAlertOnRecovery({
-        name: 'gmail', alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
+        name: 'gmail', accountId, alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
       });
       s.notificationsSinceFailureAlert = 0;
     }
@@ -220,7 +220,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
     s.consecutiveFailures++;
     if (!s.firstFailureAt) s.firstFailureAt = nowIso;
     s.alreadyAlerted = maybeAlertOnFailure({
-      name: 'gmail',
+      name: 'gmail', accountId,
       consecutiveFailures: s.consecutiveFailures,
       firstFailureAt: s.firstFailureAt,
       lastError: msg,

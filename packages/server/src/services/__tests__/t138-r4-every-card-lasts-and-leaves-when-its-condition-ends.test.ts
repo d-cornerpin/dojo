@@ -239,7 +239,7 @@ describe('ruling 1: the remaining cards last too', () => {
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('a watcher failing: a card on load; a restart mid-failure does not text again; recovery ends it', async () => {
+  it('a watcher failing: a card on load; a restart mid-failure does not text again; recovery ends it', async () => {
     let m = await boot();
     const failing = (): boolean => m.watcher.maybeAlertOnFailure({
       name: 'gmail', consecutiveFailures: 3, firstFailureAt: new Date(Date.now() - 20 * 60_000).toISOString(),

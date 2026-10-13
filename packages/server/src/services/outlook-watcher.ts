@@ -18,7 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
 
@@ -192,10 +192,10 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
     s.lastPollError = null;
     s.consecutiveFailures = 0;
     s.firstFailureAt = null;
-    if (s.alreadyAlerted) {
+    if (s.alreadyAlerted || watcherFailingOnRecord('outlook', accountId)) {
       logger.info('Outlook watcher recovered — sending recovery alert', { accountId });
       s.alreadyAlerted = maybeAlertOnRecovery({
-        name: 'outlook', alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
+        name: 'outlook', accountId, alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
       });
       s.notificationsSinceFailureAlert = 0;
     }
@@ -209,7 +209,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
     s.consecutiveFailures++;
     if (!s.firstFailureAt) s.firstFailureAt = nowIso;
     s.alreadyAlerted = maybeAlertOnFailure({
-      name: 'outlook',
+      name: 'outlook', accountId,
       consecutiveFailures: s.consecutiveFailures,
       firstFailureAt: s.firstFailureAt,
       lastError: msg,

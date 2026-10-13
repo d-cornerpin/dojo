@@ -186,7 +186,7 @@ const failing = (m: Awaited<ReturnType<typeof boot>>, accountId: string): boolea
 } as Parameters<typeof m.watcher.maybeAlertOnFailure>[0]);
 
 describe('ruling 1: a dismissal reaches every open tab', () => {
-  it.fails('the dismiss route sends the card\'s END on the owner-card frame path', async () => {
+  it('the dismiss route sends the card\'s END on the owner-card frame path', async () => {
     const m = await boot();
     m.budget.setGlobalBudget(10);
     spend(m.recordCost, 5.1);
@@ -203,7 +203,7 @@ describe('ruling 1: a dismissal reaches every open tab', () => {
 });
 
 describe('ruling 2: a watcher\'s failing state survives a restart, per account', () => {
-  it.fails('a still-failing account after a restart: no second text, and its card is still there', async () => {
+  it('a still-failing account after a restart: no second text, and its card is still there', async () => {
     let m = await boot();
     expect(failing(m, 'acct-a')).toBe(true);
     m = await boot(); // restart: the watcher's in-memory flag is gone
@@ -212,7 +212,7 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     expect(await m.cards()).toHaveLength(1);
   });
 
-  it.fails('an account that recovered while the server was down: its first good poll clears it, and the all-clear goes', async () => {
+  it('an account that recovered while the server was down: its first good poll clears it, and the all-clear goes', async () => {
     let m = await boot();
     failing(m, 'acct-a');
     const words = (await m.cards())[0].words;
@@ -227,7 +227,7 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-a')).toBe(false);
   });
 
-  it.fails('one account recovering does not clear another account\'s failure', async () => {
+  it('one account recovering does not clear another account\'s failure', async () => {
     const m = await boot();
     failing(m, 'acct-a');
     failing(m, 'acct-b');
@@ -237,7 +237,7 @@ describe('ruling 2: a watcher\'s failing state survives a restart, per account',
     expect(m.watcher.watcherFailingOnRecord('gmail', 'acct-c'), 'a healthy account has nothing on record').toBe(false);
   });
 
-  it.fails('census: every watcher passes its account and consults the record before deciding "not alerted"', () => {
+  it('census: every watcher passes its account and consults the record before deciding "not alerted"', () => {
     const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
     const read = (rel: string): string => strip(fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8'));
     for (const [file, name, account] of [

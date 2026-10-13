@@ -10,7 +10,8 @@
 
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
-import { readTold, writeTold } from './watcher-owner-cards.js';
+import { recordFailureTold, clearFailure, watcherFailingOnRecord } from './watcher-owner-cards.js';
+export { watcherFailingOnRecord };
 
 export interface RecentNotification {
   at: string;       // ISO timestamp
@@ -79,13 +80,16 @@ function watcherLabel(name: WatcherStatus['name']): string {
 
 export function maybeAlertOnFailure(params: {
   name: WatcherStatus['name'];
+  accountId?: string;               // the failing account (t138 r5); Teams has one, its name
   consecutiveFailures: number;
   firstFailureAt: string | null;   // ISO when this failure streak started
   minFailureDurationMs?: number;   // override; defaults to FAILURE_DURATION_MS_DEFAULT[name]
   lastError: string;
   alreadyAlerted: boolean;
 }): boolean {
-  if (params.alreadyAlerted) return true;
+  const account = params.accountId ?? params.name;
+  // Told already — by this process, or on the record from before a restart: never a second text.
+  if (params.alreadyAlerted || watcherFailingOnRecord(params.name, account)) return true;
   if (params.consecutiveFailures < MIN_CONSECUTIVE_FAILURES_FOR_ALERT) return false;
 
   const minDurationMs = params.minFailureDurationMs ?? FAILURE_DURATION_MS_DEFAULT[params.name];
@@ -111,7 +115,7 @@ export function maybeAlertOnFailure(params: {
   // when Gmail/Outlook/Teams stops polling, the user's email/chat input
   // stops reaching their agents. Real user-impact event, not just noise.
   try { sendAlert(message, 'critical'); } catch { /* best effort */ }
-  writeTold(params.name, { at: Date.now(), words: message });
+  recordFailureTold(params.name, account, message);
   return true;
 }
 
@@ -125,11 +129,14 @@ export function maybeAlertOnFailure(params: {
 // assign to clear).
 export function maybeAlertOnRecovery(params: {
   name: WatcherStatus['name'];
+  accountId?: string;
   alreadyAlerted: boolean;
   totalNotificationsSinceFailure: number;
 }): boolean {
-  if (!params.alreadyAlerted) return false;
-  const told = readTold(params.name);
+  // The record decides as much as this process's flag: an account that recovered while the
+  // server was down still has its all-clear sent and its card ended (t138 r5).
+  const told = clearFailure(params.name, params.accountId ?? params.name);
+  if (!params.alreadyAlerted && told === null) return false;
   const label = watcherLabel(params.name);
   const tail = params.totalNotificationsSinceFailure > 0
     ? ` ${params.totalNotificationsSinceFailure} new ${params.name === 'teams' ? 'message' : 'email'}${params.totalNotificationsSinceFailure === 1 ? '' : 's'} delivered since recovery.`
@@ -148,7 +155,6 @@ export function maybeAlertOnRecovery(params: {
   // confirmation reaches the same channel (the phone) that got the
   // failure alert. Without this the user is left wondering whether the
   // problem is still ongoing.
-  writeTold(params.name, null);
   try { sendAlert(message, 'critical', told === null ? { card: false } : { clears: told.words }); } catch { /* best effort */ }
   return false;
 }
