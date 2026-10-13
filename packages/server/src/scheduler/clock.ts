@@ -37,7 +37,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { kickBalanceCheck, kickMemoryRecheck, backgroundChecksSettled } from './background-checks.js';
+import { kickBalanceCheck, kickMemoryRecheck, kickLivenessSweep, backgroundChecksSettled } from './background-checks.js';
 
 const logger = createLogger('scheduler-clock');
 
@@ -74,6 +74,7 @@ const defaultBody: TickBody = async () => {
   const { checkScheduledTasks } = await import('./runner.js');
   await checkScheduledTasks();
   kickMemoryRecheck(); // after the due scan: never ahead of it, never awaited by it
+  kickLivenessSweep(); // t143: silent agents, whether or not the PM is enabled
 };
 
 /**

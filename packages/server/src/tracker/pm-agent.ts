@@ -46,7 +46,7 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
-import { sweepSilentAgents, taskLastMovedAt, agentIsMoving } from './liveness.js';
+import { taskLastMovedAt, agentIsMoving } from './liveness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 
 const logger = createLogger('pm-agent');
@@ -2495,9 +2495,6 @@ export async function runPokeCheck(): Promise<void> {
     });
   }
 
-  // t143: liveness — an agent silent past its window is told to the owner ONCE (tracker/liveness.ts).
-  sweepSilentAgents();
-
   // ── Engine-level quick checks (still needed for immediate alerts) ──
   const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'cancelled', 'paused'].includes(t.status));
 
@@ -2588,7 +2585,7 @@ export async function runPokeCheck(): Promise<void> {
     // by task staleness alone. "Is the agent active on THIS task" is the task
     // row's clock, not the agent's chatter.
     // t143 (M3): the task's OWN movement, never the engine checkpoint's touch of every claim.
-    const movedAt = taskLastMovedAt(task.id, task.assignedTo, taskUpdated);
+    const movedAt = taskLastMovedAt(task.id, taskUpdated);
     const idleSeconds = Math.max(0, Math.floor((now - movedAt) / 1000));
 
     // SLOW-INFERENCE T79d: queue an effort review REGARDLESS of the `assigneeStatus ===

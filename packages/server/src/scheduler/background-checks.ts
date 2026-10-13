@@ -51,7 +51,18 @@ export function kickMemoryRecheck(): void {
   });
 }
 
+// t143 r2: the liveness sweep — an agent silent past its window is told to the owner once. On the
+// platform's clock, not the PM's: the owner's notice must never depend on the PM being enabled.
+let lastLivenessKick: Promise<void> = Promise.resolve();
+
+export function kickLivenessSweep(): void {
+  lastLivenessKick = balanceModuleLoaded.then(() => import('../tracker/liveness.js')).then((m) => { m.sweepSilentAgents(); })
+    .catch((err) => {
+      logger.warn('Liveness sweep could not run', { error: err instanceof Error ? err.message : String(err) });
+    });
+}
+
 /** Resolves when the most recently kicked checks have finished (or were not due). */
 export function backgroundChecksSettled(): Promise<void> {
-  return Promise.all([lastBalanceKick, lastMemoryKick]).then(() => undefined);
+  return Promise.all([lastBalanceKick, lastMemoryKick, lastLivenessKick]).then(() => undefined);
 }
