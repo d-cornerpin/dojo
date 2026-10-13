@@ -10,10 +10,10 @@
 // search, and condensation carries them upward into depth-1/2 summaries.
 //
 // This module regenerates flagged summaries from their DAG descendants
-// through the CURRENT summarization path and filter, a bounded batch per
-// night so the cost stays a few cents. It is:
-//   - self-limiting: at most NIGHTLY_SUMMARY_REBUILD_LIMIT model rebuilds
-//     per run; once the stock is clean the nightly scan finds nothing.
+// through the CURRENT summarization path and filter. It is:
+//   - self-limiting: once the stock is clean the nightly scan finds nothing.
+//     t144 (owner ruling 2026-10-13, no hard limits): no per-night count — a
+//     run works through everything flagged while its writer is answering.
 //   - idempotent + crash-safe: there is no "done" flag anywhere. A summary
 //     is clean purely by virtue of its content no longer matching the
 //     contamination taxonomy; a crash mid-batch just means the next run
@@ -46,18 +46,18 @@ import {
   getSummaryChildren,
   getDescendantMessages,
   updateSummaryContent,
-  type Summary,
 } from './dag.js';
-import { generateSummary } from './summarize.js';
+import { generateSummary, condensedSummaryInput } from './summarize.js';
+import { eligibleSummaryWriters } from './summary-writer-health.js';
+import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 
 const logger = createLogger('summary-rebuild');
 
-/** Max LLM/placeholder rebuilds per nightly run. ~30 keeps the nightly cost
- *  at a few cents on the cheap summary-writer model and clears a ~180-summary
- *  backlog in about a week. Skipped/deferred summaries do NOT consume slots. */
-export const NIGHTLY_SUMMARY_REBUILD_LIMIT = 30;
+// STRIP (t144, owner ruling 2026-10-13 "no hard limits"): `NIGHTLY_SUMMARY_REBUILD_LIMIT` (30 per
+// night). A count decided how long the owner waited; the run now stops only when its writer stops
+// answering (`summary-writer-health.ts`, which honours the provider's breaker).
 
 // ── Detection taxonomy ──
 //
@@ -136,12 +136,6 @@ export function isContaminatedSummaryContent(content: string | null | undefined)
 // replaying a summariser that does not exist. ONE builder, imported.
 const buildLeafInput = buildLeafSummaryInput;
 
-function buildCondensedInput(children: Summary[]): string {
-  return children
-    .map(s => `<summary id="${s.id}" depth="${s.depth}" earliest="${s.earliestAt}" latest="${s.latestAt}">\n${s.content}\n</summary>`)
-    .join('\n\n');
-}
-
 /** Conversational prose remaining in a leaf input once role tags and the
  *  condensed tool one-liners ("(called tool …)" / "(tool result: …)") are
  *  stripped. Used to decide placeholder vs. LLM rebuild. */
@@ -149,7 +143,7 @@ function proseChars(leafInput: string): number {
   let total = 0;
   for (const rawLine of leafInput.split('\n')) {
     const line = rawLine.replace(ROLE_TAG_RE, '').trim();
-    if (line.length === 0 || line === '---') continue;
+    if (line.length === 0 || line === '---' || line.startsWith('CONVERSATION: ')) continue;   // t144's header is not prose
     if (/^\(called tool /.test(line) || /^\(tool result/.test(line)) continue;
     total += line.length;
   }
@@ -303,7 +297,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       writeRebuiltContent(flag, NO_CONVERSATION_PLACEHOLDER);
       return 'placeholder';
     }
-    input = buildCondensedInput(children);
+    input = condensedSummaryInput(children);
     depth = flag.depth;
     targetTokens = SUMMARY_TARGET_TOKENS.condensed;
   }
@@ -377,6 +371,8 @@ export interface SummaryRebuildStats {
   /** Consecutive runs, INCLUDING this one, that scanned a non-empty stock and found
    *  nothing contaminated. Reset to 0 the moment anything is flagged. */
   consecutiveCleanRuns: number;
+  /** t144: the second selection — recent mixed notes rebuilt one conversation each. */
+  legacy?: LegacyRebuildStats;
 }
 
 let rebuildRunning = false;
@@ -387,12 +383,10 @@ let rebuildRunning = false;
  * window (vault/maintenance.ts), and callable directly on a dev box to run
  * one batch immediately for verification.
  *
- * opts.limit caps LLM/placeholder rebuilds this run (deferred/skipped items
- * cost nothing and do not consume slots). opts.modelId overrides the writer
- * model (default: same resolution as live compaction, cheap text model).
+ * opts.modelId overrides the writer model (default: same resolution as live
+ * compaction). t144: then the recent mixed notes (`legacy-notes-rebuild.ts`).
  */
-export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: string }): Promise<SummaryRebuildStats> {
-  const limit = opts?.limit ?? NIGHTLY_SUMMARY_REBUILD_LIMIT;
+export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
   const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0, stockScanned: 0, consecutiveCleanRuns: 0 };
 
   if (rebuildRunning) {
@@ -401,6 +395,21 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
   }
   rebuildRunning = true;
   try {
+    const stats = await runContaminationPass(empty, opts);
+    // t144: the second selection runs whatever the first found — its notes are another question.
+    try {
+      stats.legacy = await rebuildLegacyMixedNotes();
+    } catch (err) {
+      logger.warn('Older mixed notes: rebuild pass failed; the next run resumes it', { error: err instanceof Error ? err.message : String(err) });
+    }
+    return stats;
+  } finally {
+    rebuildRunning = false;
+  }
+}
+
+async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
+  {
     const flagged = findContaminatedSummaries();
     const stockScanned = countSummaryStock();
     if (flagged.length === 0) {
@@ -423,7 +432,8 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
 
     const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
     for (const flag of flagged) {
-      if (stats.rebuilt + stats.placeholders >= limit) break;
+      // t144: paced by the writer, not a count — a writer that stopped answering ends the pass.
+      if (!eligibleSummaryWriters(modelId, flag.agentId).includes(modelId) && stats.rebuilt + stats.placeholders + stats.skipped > 0) break;
       try {
         const outcome = await rebuildOneSummary(flag, modelId);
         if (outcome === 'rebuilt') stats.rebuilt++;
@@ -440,7 +450,7 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
     }
 
     stats.remainingAfter = findContaminatedSummaries().length;
-    logger.info('Summary rebuild nightly batch done', { ...stats, limit, modelId });
+    logger.info('Summary rebuild nightly batch done', { ...stats, modelId });
     if (stats.remainingAfter === 0) {
       // The streak starts at the FIRST run that both scanned a real stock and found it
       // clean — this run repaired its way there, so it counts.
@@ -452,7 +462,5 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
       );
     }
     return stats;
-  } finally {
-    rebuildRunning = false;
   }
 }

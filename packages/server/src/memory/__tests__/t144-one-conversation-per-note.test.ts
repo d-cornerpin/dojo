@@ -250,7 +250,7 @@ describe('t144 — membership: a fold never leaves a row out of view that nothin
 });
 
 describe('t144 — the rebuild of mixed notes from before the update', () => {
-  it.fails('W7: a mixed note from the last two weeks is rebuilt by the nightly job into one note per conversation', async () => {
+  it('W7: a mixed note from the last two weeks is rebuilt by the nightly job into one note per conversation', async () => {
     interleave(6);
     const now = Date.now();
     db().prepare('UPDATE messages SET created_at = ? + seq * 60000 WHERE agent_id = ?').run(now - 3 * 86_400_000, AGENT);
