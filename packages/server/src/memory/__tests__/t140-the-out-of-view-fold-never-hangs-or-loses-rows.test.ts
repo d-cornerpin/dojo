@@ -213,8 +213,10 @@ describe('t140 round 3 — a failing writer is passed over for the next one, wit
       expect(writers.calls, 'the next eligible writer was tried').toContain(CHEAP);
       expect(placeholders(), 'a real summary, not a placeholder').toEqual([]);
       expect(failingCards()).toBe(0);
-      // …and the failed writer is not picked first again while it is cooling down.
-      expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'an unreachable writer is not picked again and again').not.toBe(OWN);
+      // …and a writer that FAILED is not picked first again while it cools down — but one the turn's
+      // own clock merely cut (round 4, re-review 3 F4) is not failing, and is not benched.
+      if (mode === 'hang') expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'cut by the in-turn clock is not a failure').toBe(OWN);
+      else expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'an unreachable writer is not picked again and again').not.toBe(OWN);
     }, 5_000);
   }
 });
@@ -360,7 +362,7 @@ const coolAll = async (...ids: string[]) => {
 };
 
 describe('t140 round 4 — F1: never two notes for one row', () => {
-  it.fails('a background fold that lands on rows the door covered with placeholders while it held the lock: every row ends with exactly one covering summary', async () => {
+  it('a background fold that lands on rows the door covered with placeholders while it held the lock: every row ends with exactly one covering summary', async () => {
     // Enough history that rows ABOVE the newest-row floor are cut too: those the routine fold may take.
     for (let t = 1; t <= 40; t++) appendTurn(false);
     appendTurn(true);
@@ -380,7 +382,7 @@ describe('t140 round 4 — F1: never two notes for one row', () => {
 });
 
 describe('t140 round 4 — F2: placeholder rows reach the vault archive', () => {
-  it.fails('an outage of several turns with every writer cooling: every placeholder-covered row is archived', async () => {
+  it('an outage of several turns with every writer cooling: every placeholder-covered row is archived', async () => {
     seedACut();
     await coolAll(OWN, CHEAP, NEXT);
     for (let t = 0; t < 4; t++) { await door(); appendTurn(t % 2 === 0); }
@@ -468,7 +470,7 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
 });
 
 describe('t140 round 4 — F4: the in-turn limit is not a writer failure', () => {
-  it.fails('a writer slower than the in-turn slice is not benched and raises no card; the background replacement uses it', async () => {
+  it('a writer slower than the in-turn slice is not benched and raises no card; the background replacement uses it', async () => {
     writers.mode = { [OWN]: 'slow:400', [CHEAP]: 'slow:400', [NEXT]: 'slow:400' };
     seedACut();
     const ctx = await door();
@@ -485,7 +487,7 @@ describe('t140 round 4 — F4: the in-turn limit is not a writer failure', () =>
 });
 
 describe('t140 round 4 — card noise: one card per incident', () => {
-  it.fails('a flaky writer that fails, recovers and fails again within the hour raises ONE card', async () => {
+  it('a flaky writer that fails, recovers and fails again within the hour raises ONE card', async () => {
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
     seedACut();
     await door();
@@ -505,7 +507,7 @@ describe('t140 round 4 — card noise: one card per incident', () => {
 });
 
 describe('t140 round 4 — R-V333-12: the fallback never widens who sees the conversation', () => {
-  it.fails('with a Settings writer: Settings writer, then the agent\'s own model — never a third provider', async () => {
+  it('with a Settings writer: Settings writer, then the agent\'s own model — never a third provider', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
     writers.mode = { [NEXT]: 'empty', [OWN]: 'empty', [CHEAP]: 'ok' };
     seedACut();

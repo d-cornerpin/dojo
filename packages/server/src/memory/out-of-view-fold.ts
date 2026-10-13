@@ -30,8 +30,8 @@ import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { leavingViewPass } from './compaction.js';
-import { eligibleSummaryWriters, summaryWriterCandidates, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
-import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
+import { abortBlamesWriter, eligibleSummaryWriters, summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
+import { owedThrough, preemptBackgroundCompaction, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
 import { registerAbortable, releaseAbortable } from '../agent/shared-state.js';
 
@@ -62,17 +62,23 @@ export function __setOutOfViewFoldBoundsForTests(b: { wallClockMs: number; perWr
   bounds = b ?? { wallClockMs: OUT_OF_VIEW_FOLD_WALL_CLOCK_MS, perWriterMs: OUT_OF_VIEW_FOLD_PER_WRITER_MS };
 }
 
-interface TurnBudget { deadline: number; chunks: number; stop?: AbortSignal }
+interface TurnBudget { deadline: number; chunks: number; stop?: AbortSignal; tried: Set<string> }
 
-/** An abort that fires at `deadline` or when `stop` fires (with the owner's reason), whichever first. */
+/** After the clock, how long the door still waits for a lock its own fold holds (that fold is
+ *  aborting and only has its placeholders left to write), or for a holder it asked to yield. */
+const LOCK_GRACE_MS = 1_000;
+
+/** An abort that fires at `deadline` (the in-turn limit) or on Stop, carrying which one it was. */
 function boundedSignal(deadline: number, stop?: AbortSignal): { signal: AbortSignal; done: () => void } {
   const ctl = new AbortController();
   const onStop = (): void => ctl.abort(FOLD_STOPPED_BY_OWNER);
   if (stop?.aborted) onStop(); else stop?.addEventListener('abort', onStop, { once: true });
-  const timer = setTimeout(() => ctl.abort('out-of-view fold deadline'), Math.max(0, deadline - Date.now()));
+  const timer = setTimeout(() => ctl.abort(FOLD_IN_TURN_LIMIT), Math.max(0, deadline - Date.now()));
   (timer as unknown as { unref?: () => void }).unref?.();
   return { signal: ctl.signal, done: () => { clearTimeout(timer); stop?.removeEventListener('abort', onStop); } };
 }
+
+const sleep = (ms: number): Promise<'grace-over'> => new Promise((r) => { const t = setTimeout(() => r('grace-over'), ms); (t as unknown as { unref?: () => void }).unref?.(); });
 
 /**
  * THE ENGINE'S ASSEMBLY DOOR. `assemble` is the one assembly this turn will dial (the assemble
@@ -88,7 +94,7 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
   registerAbortable(agentId, stop, 'turn');
   const onCaller = (): void => stop.abort();
   if (opts.abortSignal?.aborted) onCaller(); else opts.abortSignal?.addEventListener('abort', onCaller, { once: true });
-  const budget: TurnBudget = { deadline: Date.now() + bounds.wallClockMs, chunks: OUT_OF_VIEW_FOLD_MAX_CHUNKS, stop: stop.signal };
+  const budget: TurnBudget = { deadline: Date.now() + bounds.wallClockMs, chunks: OUT_OF_VIEW_FOLD_MAX_CHUNKS, stop: stop.signal, tried: new Set() };
   try {
     let assembled = await assemble();
     for (let pass = 0; pass < OUT_OF_VIEW_FOLD_PASSES; pass++) {
@@ -98,10 +104,12 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
       assembled = await assemble();
     }
     const throughSeq = assembled.outOfViewThroughSeq ?? 0;
-    if (throughSeq > 0 && writeUncondensedPlaceholders(agentId, throughSeq) > 0) {
+    if (throughSeq > 0 && owedThrough(agentId, throughSeq).length > 0) {
       logger.error('DEFECT: the out-of-view fold did not converge within its passes; placeholders cover the rest', {
         passes: OUT_OF_VIEW_FOLD_PASSES, throughSeq,
       }, agentId);
+      budget.chunks = 0;   // placeholders only — through the same locked path
+      await foldOutOfView(agentId, contextWindow, throughSeq, budget);
       assembled = await assemble();
     }
     return assembled;
@@ -111,55 +119,82 @@ export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOf
   }
 }
 
-/** Fold what is owed through `throughSeq` within the turn's budget; placeholders for the rest. */
+/**
+ * Fold what is owed through `throughSeq` within the turn's budget, and cover the rest with
+ * placeholders — all UNDER the compaction lock (round 4, re-review 3 F1). A routine background
+ * compaction holding the lock is set aside first. Only a holder that will not yield (a manual or
+ * recovery compaction) can keep the lock past the clock and a short grace; then, rather than dial a
+ * turn with rows nobody represents, the synchronous placeholder write lands outside it — safe,
+ * because a real summary landing later takes its rows out of the note (`uncondensed-head.ts`).
+ */
 async function foldOutOfView(agentId: string, contextWindow: number, throughSeq: number, budget: TurnBudget): Promise<void> {
   const bound = boundedSignal(budget.deadline, budget.stop);
   let failedWriter: string | null = null;
   let noWriter = false;
+  let covered = 0;
+  let started = false;
+  let gaveUp = false;
+  preemptBackgroundCompaction(agentId);
   try {
-    let gaveUp = false;
     const locked = withLock(`compact:${agentId}`, async () => {
+      if (gaveUp) return;   // the turn already covered these rows and moved on
+      started = true;
       for (let tries = 0; tries < OUT_OF_VIEW_FOLD_WRITER_TRIES; tries++) {
-        if (gaveUp || bound.signal.aborted || budget.chunks <= 0) return;
+        if (bound.signal.aborted || budget.chunks <= 0) break;
         const owed = owedThrough(agentId, throughSeq).length;
-        if (owed === 0) return;
+        if (owed === 0) break;
         const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
           { model_id: string | null } | undefined)?.model_id ?? undefined;
-        const writer = eligibleSummaryWriters(configured)[0];
-        if (!writer) { noWriter = true; return; }
+        const eligible = eligibleSummaryWriters(configured);
+        if (eligible.length === 0) { noWriter = true; break; }
+        // One try per writer per turn: a writer the in-turn slice cut is not failing — it is simply
+        // not retried in THIS turn, and the background replacement gives it the longer bound.
+        const writer = eligible.find((w) => !budget.tried.has(w));
+        if (!writer) break;
+        budget.tried.add(writer);
         // This writer's slice of the clock, ended early by the door's own bound or Stop.
         const slice = new AbortController();
         const onBound = (): void => slice.abort(bound.signal.reason);
-        bound.signal.addEventListener('abort', onBound, { once: true });
-        const sliceTimer = setTimeout(() => slice.abort('summary writer took too long'),
+        if (bound.signal.aborted) onBound(); else bound.signal.addEventListener('abort', onBound, { once: true });
+        const sliceTimer = setTimeout(() => slice.abort(FOLD_IN_TURN_LIMIT),
           Math.max(0, Math.min(budget.deadline, Date.now() + bounds.perWriterMs) - Date.now()));
         try {
           const r = await leavingViewPass(agentId, writer, contextWindow,
             { cause: 'out-of-view', throughSeq, rowsLeaving: owed },
             { maxChunksPerRun: budget.chunks, abortSignal: slice.signal });
           budget.chunks -= r.leafCreated;
-          if (r.leafCreated === 0 && !bound.signal.aborted) failedWriter = writer;
+          if (r.leafCreated === 0 && abortBlamesWriter(slice.signal)) failedWriter = writer;
         } finally {
           clearTimeout(sliceTimer);
           bound.signal.removeEventListener('abort', onBound);
         }
       }
+      // Still under the lock: whatever is owed is represented now — model-free, so this always lands.
+      covered += writeUncondensedPlaceholders(agentId, throughSeq);
     }, { ifBusy: 'wait' });
-    const outOfTime = new Promise<'out-of-time'>((resolve) => {
-      if (bound.signal.aborted) resolve('out-of-time');
-      else bound.signal.addEventListener('abort', () => resolve('out-of-time'), { once: true });
-    });
     const finished = locked.then(() => 'done' as const, (err: unknown) => {
       logger.error('The out-of-view fold failed; placeholders cover its rows', { error: err instanceof Error ? err.message : String(err) }, agentId);
       return 'done' as const;
     });
-    if (await Promise.race([finished, outOfTime]) === 'out-of-time') gaveUp = true;
+    const outOfTime = new Promise<'out-of-time'>((resolve) => {
+      if (bound.signal.aborted) resolve('out-of-time');
+      else bound.signal.addEventListener('abort', () => resolve('out-of-time'), { once: true });
+    });
+    let outcome: 'done' | 'out-of-time' | 'grace-over' = await Promise.race([finished, outOfTime]);
+    // Our own fold holds the lock and is aborting: it only has its placeholders left to write. A
+    // holder we asked to yield gets the same short grace — unless the owner stopped the turn.
+    if (outcome === 'out-of-time' && (started || budget.stop?.aborted !== true)) outcome = await Promise.race([finished, sleep(LOCK_GRACE_MS)]);
+    if (outcome !== 'done' && !started) {
+      gaveUp = true;
+      covered += writeUncondensedPlaceholders(agentId, throughSeq);
+      logger.warn('The compaction lock was held past the out-of-view fold\'s clock by a compaction that would not yield; placeholders were written beside it', {
+        throughSeq, covered,
+      }, agentId);
+    }
   } finally {
     bound.done();
   }
 
-  // Whatever is still owed is REPRESENTED now — model-free, so this always lands.
-  const covered = writeUncondensedPlaceholders(agentId, throughSeq);
   const stopped = budget.stop?.aborted === true;
   if (covered > 0 && !stopped && (failedWriter !== null || noWriter)) {
     const none = noWriter && summaryWriterCandidates().length === 0;

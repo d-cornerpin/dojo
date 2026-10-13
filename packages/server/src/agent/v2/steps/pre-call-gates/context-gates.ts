@@ -37,7 +37,7 @@ import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
-import { replacePlaceholdersInBackground } from '../../../../memory/uncondensed-placeholder.js';
+import { replacePlaceholdersInBackground, registerBackgroundCompaction, releaseBackgroundCompaction } from '../../../../memory/uncondensed-placeholder.js';
 
 const logger = createLogger('v2-loop');
 
@@ -204,6 +204,7 @@ function condenseLeavingInBackground(args: {
   if (backgroundDrains.has(agentId)) return false;
   backgroundDrains.add(agentId);
   const condenseAbort = new AbortController();
+  registerBackgroundCompaction(agentId, condenseAbort);   // the turn's out-of-view fold may set it aside
   const condenseTimeout = setTimeout(() => {
     logger.warn('v2: background condense wall-clock timeout, aborting', {
       agentId, wallClockTimeoutMs: ROUTINE_CONDENSE_WALL_CLOCK_MS,
@@ -232,6 +233,7 @@ function condenseLeavingInBackground(args: {
     })
     .finally(() => {
       clearTimeout(condenseTimeout);
+      releaseBackgroundCompaction(agentId, condenseAbort);
       backgroundDrains.delete(agentId);
     });
   return true;

@@ -12,6 +12,11 @@
 // (`uncondensed-head.ts`), one per leaf chunk. Condensation never merges one. When a writer answers again the
 // placeholder's own row is REWRITTEN in place with a real summary of exactly its rows — the links
 // never move — in the background, and the 15-minute low-yield brake does not hold it back.
+//
+// Round 4 (re-review 3): placeholders are written UNDER the per-agent compaction lock (their caller
+// holds it); a real leaf summary landing on a placeholder's rows takes them out of it
+// (`uncondensed-head.ts`), so no row ever carries two notes; and placeholder rows reach the vault
+// archive exactly as summarised rows do (`archiveBeforeCovering`, the one shared step).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -19,15 +24,15 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { getMessagesOutsideFreshTail } from './store.js';
 import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
-import { UNCONDENSED_PLACEHOLDER_HEAD } from './uncondensed-head.js';
+import { UNCONDENSED_PLACEHOLDER_HEAD, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
-  buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, getLeafTargetTokens, rebuildContextItems,
+  archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, getLeafTargetTokens, rebuildContextItems,
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { generateSummary } from './summarize.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
-import { eligibleSummaryWriters } from './summary-writer-health.js';
+import { abortBlamesWriter, eligibleSummaryWriters, FOLD_PREEMPTED } from './summary-writer-health.js';
 import { noteCompactionRecovered, reportCompactionDefect } from './compaction-defect.js';
 import { backgroundDrains } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
@@ -38,46 +43,6 @@ const logger = createLogger('memory-uncondensed-placeholder');
 const REPLACE_MAX_PER_RUN = 10;
 const REPLACE_WALL_CLOCK_MS = 180_000;
 
-/** The ONLY words a placeholder uses to say where its messages came from — channel and lane names
- *  mapped to a fixed vocabulary, so nothing a sender wrote or was called can reach the note. */
-const CHANNEL_WORDS: Record<string, string> = {
-  dashboard: 'the dashboard conversation', voice: 'a voice conversation', phone: 'a phone call',
-  imessage: 'an iMessage conversation', sms: 'a text-message conversation', email: 'an email conversation',
-  telegram: 'a Telegram conversation', slack: 'a Slack conversation', a2a: 'an agent thread',
-};
-const LANE_WORDS: Record<string, string> = {
-  owner: "the owner's conversation", a2a: 'an agent thread', events: 'engine notices',
-};
-
-function whereFrom(rows: readonly Message[]): string {
-  const channelOf = getDb().prepare('SELECT channel FROM conversations WHERE id = ?');
-  const words = new Set<string>();
-  for (const m of rows) {
-    const conv = (m as { conversationId?: string | null }).conversationId;
-    const channel = conv ? (channelOf.get(conv) as { channel?: string } | undefined)?.channel : undefined;
-    const lane = (m as { lane?: string | null }).lane ?? undefined;
-    words.add((channel && CHANNEL_WORDS[channel]) ?? (lane && LANE_WORDS[lane]) ?? "this agent's own work");
-  }
-  const list = [...words];
-  if (list.length === 1) return list[0];
-  if (list.length === 2) return `${list[0]} and ${list[1]}`;
-  return `${list.length} conversations`;
-}
-
-function stamp(at: unknown): string {
-  const d = new Date(typeof at === 'number' ? at : String(at));
-  return Number.isNaN(d.getTime()) ? 'an unrecorded time' : `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
-
-/** The note, from stored columns only. Exported so a clause can read the sentence. */
-export function placeholderText(rows: readonly Message[]): string {
-  const n = rows.length;
-  const first = stamp(rows[0]?.createdAt);
-  const last = stamp(rows[n - 1]?.createdAt);
-  return `${UNCONDENSED_PLACEHOLDER_HEAD} ${n} message${n === 1 ? '' : 's'} from ${whereFrom(rows)}, `
-    + `${first}${last !== first ? ` – ${last}` : ''}, not yet condensed — the originals are kept and searchable.`;
-}
-
 /** Unsummarised rows of this session at or below `throughSeq` (the fold's own reader). */
 export function owedThrough(agentId: string, throughSeq: number): Message[] {
   const compacted = getCompactedMessageIds(agentId);
@@ -86,11 +51,13 @@ export function owedThrough(agentId: string, throughSeq: number): Message[] {
 }
 
 /** Cover every still-unsummarised row at or below `throughSeq` with placeholders, one per leaf
- *  chunk. Synchronous and model-free, so it can run at any instant; re-reads what is owed, so a
- *  second call (or a fold that landed meanwhile) covers nothing twice. Returns rows covered. */
+ *  chunk. The CALLER HOLDS the per-agent compaction lock. Synchronous and model-free; re-reads what
+ *  is owed, so it never covers a row twice. The rows are archived to the vault first, and a failed
+ *  archive refuses the cover, as it does for a summary. Returns rows covered. */
 export function writeUncondensedPlaceholders(agentId: string, throughSeq: number): number {
   const owed = owedThrough(agentId, throughSeq);
   if (owed.length === 0) return 0;
+  if (!archiveBeforeCovering(agentId, owed)) return 0;
   for (const chunk of chunkMessages(owed, getLeafChunkTokens())) {
     if (chunk.length === 0) continue;
     const text = placeholderText(chunk);
@@ -142,12 +109,15 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   let failedWriter: string | null = null;
   for (const { id } of ids) {
     if (opts.abortSignal?.aborted) break;
-    const source = getSummarySourceMessages(id);
-    if (source.length === 0 || source.every((m) => coveredElsewhere(m.id, id))) {
+    const all = getSummarySourceMessages(id);
+    const source = all.filter((m) => !coveredElsewhere(m.id, id));
+    if (source.length === 0) {
       deleteSummary(id);
       replaced++;
       continue;
     }
+    // Rows a real summary already covers leave this placeholder before it is summarised.
+    if (source.length < all.length) supersedeUncondensedPlaceholders(agentId, all.filter((m) => !source.includes(m)).map((m) => m.id));
     const content = buildLeafSummaryInput(source);
     let done = content.trim().length === 0;
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
@@ -155,7 +125,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       const writer = eligibleSummaryWriters(preferred)[0];
       if (!writer) break;
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
-      if (!summary.ok) { failedWriter = writer; continue; }
+      if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
       const text = annotateSummaryObligations(summary.text, agentId);
       updateSummaryContent(id, text, text === summary.text ? summary.tokenCount : estimateTokens(text));
       done = true;
@@ -175,6 +145,23 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   return replaced;
 }
 
+// ── Round 4 (re-review 3 F1): ROUTINE BACKGROUND COMPACTIONS ARE PREEMPTIBLE BY THE TURN ─────────
+// The gate's background pressure fold and this replacement register their abort here. When the turn's
+// own out-of-view fold needs the compaction lock, it sets them aside (reason `FOLD_PREEMPTED`, never a
+// writer failure) so it can write its summaries — or its placeholders — UNDER the lock in time.
+const backgroundCompactions = new Map<string, AbortController>();
+export function registerBackgroundCompaction(agentId: string, ctl: AbortController): void { backgroundCompactions.set(agentId, ctl); }
+export function releaseBackgroundCompaction(agentId: string, ctl: AbortController): void {
+  if (backgroundCompactions.get(agentId) === ctl) backgroundCompactions.delete(agentId);
+}
+export function preemptBackgroundCompaction(agentId: string): boolean {
+  const ctl = backgroundCompactions.get(agentId);
+  if (!ctl || ctl.signal.aborted) return false;
+  ctl.abort(FOLD_PREEMPTED);
+  logger.info('A routine background compaction was set aside for this turn\'s out-of-view fold', {}, agentId);
+  return true;
+}
+
 /** THE GATE'S LAUNCHER: one background replacement per agent (sharing the routine condense's
  *  one-in-flight slot), only when a placeholder exists and some writer is eligible. */
 export function replacePlaceholdersInBackground(agentId: string): boolean {
@@ -186,10 +173,13 @@ export function replacePlaceholdersInBackground(agentId: string): boolean {
   }
   backgroundDrains.add(agentId);
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort('deadline'), REPLACE_WALL_CLOCK_MS);
+  registerBackgroundCompaction(agentId, ctl);
+  // The LONGER bound (re-review 3 F4): a writer too slow for the turn's own clock gets three minutes
+  // here, and only a timeout at THIS bound counts against it.
+  const timer = setTimeout(() => ctl.abort('placeholder replacement wall clock'), REPLACE_WALL_CLOCK_MS);
   (timer as unknown as { unref?: () => void }).unref?.();
   replaceUncondensedPlaceholders(agentId, { abortSignal: ctl.signal, maxChunks: REPLACE_MAX_PER_RUN })
     .catch((err) => logger.warn('Placeholder replacement failed', { error: err instanceof Error ? err.message : String(err) }, agentId))
-    .finally(() => { clearTimeout(timer); backgroundDrains.delete(agentId); });
+    .finally(() => { clearTimeout(timer); releaseBackgroundCompaction(agentId, ctl); backgroundDrains.delete(agentId); });
   return true;
 }

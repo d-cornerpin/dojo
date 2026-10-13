@@ -24,6 +24,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters } from './summary-writer-health.js';
+import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -969,6 +970,20 @@ async function condenseOnlyPass(
 }
 
 /**
+ * t140 round 4 (re-review 3 F2): THE ONE ARCHIVE STEP before rows are covered — by a summary or by a
+ * not-yet-condensed placeholder. Rows past the vault's high-water mark are copied to the vault first;
+ * a failed archive REFUSES the cover, so nothing is marked done that the vault never received.
+ */
+export function archiveBeforeCovering(agentId: string, rows: readonly Message[]): boolean {
+  const highWater = getArchiveHighWaterMark(agentId);
+  const toArchive = rows.filter(m => highWater == null || m.rowid == null || m.rowid > highWater);
+  if (toArchive.length === 0 || isDreamerIgnored(agentId) || isSystemServiceAgent(agentId)) return true;
+  if (archiveMessagesBeforeCompaction(agentId, [...toArchive])) return true;
+  logger.error('Archive failed, refusing to cover these rows to prevent data loss', { agentId, messageCount: toArchive.length }, agentId);
+  return false;
+}
+
+/**
  * t140 — THE LEAVING-VIEW PASS. Fold exactly the rows `rowsLeavingView` named, and nothing the
  * agent is still reading.
  *
@@ -994,18 +1009,11 @@ export async function leavingViewPass(
     cause: leaving.cause, rowsLeaving: leaving.rowsLeaving, throughSeq: leaving.throughSeq,
   }, agentId);
 
-  const archiveHighWater = getArchiveHighWaterMark(agentId);
   const compactedIds = getCompactedMessageIds(agentId);
   const floorRows = outOfView ? 1 : getFreshTailCount(contextWindow);
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
-  const toArchive = span.filter(m => archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater);
-  if (toArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
-    if (!archiveMessagesBeforeCompaction(agentId, toArchive)) {
-      logger.error('Archive failed, aborting the leaving-view condense to prevent data loss', { agentId, messageCount: toArchive.length }, agentId);
-      return NO_COMPACTION;
-    }
-  }
+  if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
   const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow, {
     maxChunks: options?.maxChunksPerRun,
@@ -1333,6 +1341,7 @@ export async function runLeafCompaction(
           earliestAt,
           latestAt,
         );
+        supersedeUncondensedPlaceholders(agentId, messageIds);   // t140 round 4: one note per row
         summariesCreated++;
         continue;
       }
@@ -1392,6 +1401,7 @@ export async function runLeafCompaction(
         earliestAt,
         latestAt,
       );
+      supersedeUncondensedPlaceholders(agentId, messageIds);   // t140 round 4: one note per row
 
       summariesCreated++;
     } catch (err) {

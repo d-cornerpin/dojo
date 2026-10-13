@@ -61,6 +61,12 @@ export interface CompactionPassFacts {
 
 const failures = new Map<string, CompactionFailure>();
 
+/** t140 round 4 (re-review 3): ONE CARD PER INCIDENT, where an incident ends only after a SUSTAINED
+ *  recovery. A flaky writer fails, recovers, fails again — measured at five cards an hour. A new
+ *  outage within this long of the last card is recorded and logged but not carded again. */
+export const CARD_QUIET_AFTER_MS = 60 * 60_000;
+const lastCardAt = new Map<string, number>();
+
 /** The stages the owner can repair. Everything else is the platform's own bug. */
 const REPAIRABLE_BY_THE_OWNER = new Set([
   'summary_writer_unavailable', 'summariser_refused', 'summariser_threw',
@@ -143,6 +149,14 @@ export function reportCompactionDefect(
     }, agentId);
     return note;
   }
+  const carded = lastCardAt.get(agentId);
+  if (carded !== undefined && Date.now() - carded < CARD_QUIET_AFTER_MS) {
+    logger.info('Compaction failure card not repeated: the owner was told about this agent within the hour', {
+      stage, lastCardAt: new Date(carded).toISOString(),
+    }, agentId);
+    return note;
+  }
+  lastCardAt.set(agentId, Date.now());
   try {
     broadcast({
       type: 'chat:error',
@@ -170,6 +184,7 @@ export function noteCompactionRecovered(agentId: string, tokensReclaimed: number
 
 /** Drop the note without a recovery claim — a reset gave the agent a fresh start. */
 export function clearCompactionFailure(agentId: string): boolean {
+  lastCardAt.delete(agentId);   // a reset is a fresh start for the card too
   return failures.delete(agentId);
 }
 
@@ -181,4 +196,5 @@ export function compactionFailureReason(agentId: string): string | null {
 /** Test-only reset; the map is per-process. */
 export function __resetCompactionFailuresForTests(): void {
   failures.clear();
+  lastCardAt.clear();
 }
