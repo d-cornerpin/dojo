@@ -252,3 +252,12 @@ describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, 
     expect(filesWith(/\bturnPatienceMs\(/)).toEqual([GATE_REL, 'memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
   });
 });
+
+describe('t140 census, round 6 (H2) — the router\'s own pick is passed over like a fallback', () => {
+  it('the call step re-fits the router\'s pick as a candidate and asks the router for the next, excluding refused picks', () => {
+    const step = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/index.ts`)!.code;
+    expect(step).toMatch(/agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,/);
+    expect(step).toMatch(/const next = nextRoutedPick\(routerTier, agentId, \[\.\.\.excludedModels, \.\.\.passedOver\], \['tools'\]\);/);
+    expect(step).toMatch(/const called = await callWithRetryAndFallback\(state, pick, \{/);
+  });
+});
