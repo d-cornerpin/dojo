@@ -180,7 +180,7 @@ describe('the 15-minute checkpoint hands the circling verdict to the AGENT', () 
   // broadcast that throws after the insert makes it answer null although the row exists. The
   // delivery is the ROW (that is what the next turn reads), so the door must count it as delivered
   // and latch — otherwise the next checkpoint (or the sweep) hands the same verdict over again.
-  it.fails('IDEMPOTENT: a broadcast that fails after the row was written still counts as delivered — one row, latched, never twice', async () => {
+  it('IDEMPOTENT: a broadcast that fails after the row was written still counts as delivered — one row, latched, never twice', async () => {
     broadcastSpy.mockImplementationOnce((e: unknown) => {
       if ((e as { type?: string }).type === 'interagent:message') throw new Error('socket gone');
     });

@@ -184,10 +184,13 @@ function handOverOneVerdict(agentId: string): string | null {
     const circling = pendingCirclingVerdict(task.id);
     if (!circling) continue;
     const title = task.title ?? '(untitled task)';
-    const noticeId = postAgentNotice({
-      toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice',
-      brief: `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing on "${title}" (${task.id})] ${circling.reason}`,
-    });
+    const brief = `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing on "${title}" (${task.id})] ${circling.reason}`;
+    // t137 round 3 (review M4): the ROW is the delivery — it is what the next turn reads. A row
+    // already written for THIS verdict (a post whose broadcast threw after the insert answers
+    // null) counts as delivered, so the verdict is latched once and never handed over twice.
+    const noticeId = noticeRowFor(agentId, brief, circling.sinceEventId)
+      ?? postAgentNotice({ toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice', brief })
+      ?? noticeRowFor(agentId, brief, circling.sinceEventId);
     if (!noticeId) return null;
     // `rung: 2` matches the sweep's own urgent rung for a circling verdict; the `poke_type`
     // names this delivery's origin without changing what either reader checks.
@@ -195,4 +198,19 @@ function handOverOneVerdict(agentId: string): string | null {
     return noticeId;
   }
   return null;
+}
+
+/** The rider notice already written for this verdict: same text (as `postAgentNotice` stores it),
+ *  on this agent's events lane, written no earlier than the PM's verdict itself (floored to the
+ *  second: `messages.created_at` is stored at second precision, `work_events` in ms — measured).
+ *  Runs only while a verdict is pending — a checkpoint-time read, never a hot path. */
+function noticeRowFor(agentId: string, brief: string, sinceEventId: number): string | null {
+  const row = getDb().prepare(
+    `SELECT m.id AS id FROM messages m
+      WHERE m.agent_id = ? AND m.lane = 'events' AND m.origin_intent = 'agent_notice'
+        AND instr(m.content, ?) > 0
+        AND m.created_at >= (SELECT (e.created_at / 1000) * 1000 FROM work_events e WHERE e.id = ?)
+      LIMIT 1`,
+  ).get(agentId, brief.replace(/\s+/g, ' ').trim(), sinceEventId) as { id: string } | undefined;
+  return row?.id ?? null;
 }
