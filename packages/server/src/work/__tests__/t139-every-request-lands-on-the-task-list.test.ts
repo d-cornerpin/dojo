@@ -556,7 +556,7 @@ describe('t139 — every multi-step request lands on the task list with its word
   // user-visible bubble — the owner's "filler line every 15 minutes" (#10). On a turn the engine
   // is CONTINUING, the finalize recovery must not turn the held-back line into an answer bubble;
   // the line stays the working-note it already is, and the continuation's answer arrives once.
-  it.fails('a parked job never re-delivers its held-back narration as a visible bubble; the real answer arrives once', async () => {
+  it('a parked job never re-delivers its held-back narration as a visible bubble; the real answer arrives once', async () => {
     const line = 'Page 3 found one wrong line. Onward';
     ownerSays('msg-pages', 'Proofread the five report pages for wrong lines.');
     const realNow = Date.now.bind(Date);

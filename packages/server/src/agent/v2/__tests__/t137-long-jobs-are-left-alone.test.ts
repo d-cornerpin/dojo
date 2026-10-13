@@ -651,11 +651,16 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     await readOnlyTurnAcrossTheCheckpoint({ narrate: 'Still reading the second half of the folder.' });
     expect(workState('w-long-job')).toBe('claimed');
 
-    // Positive controls: both turns parked, both SPOKE to the owner (answered + delivered),
-    // and neither performed an effectful call — every condition of the old pause held.
+    // Positive controls: both turns parked and neither performed an effectful call.
+    // t139 round 4 (R-V333-11): the parked turns are NOT `answered` any more — the finalize
+    // recovery used to deliver the held-back working line as the turn's answer bubble at the park
+    // (the owner's "filler line every 15 minutes", #10), and a continuing turn no longer does. So
+    // the old pause's `answered` condition no longer holds here at all; the queued-continuation
+    // refusal stays as the guard for a continuing turn that DID answer (a live-ask answer
+    // delivered mid-turn). Was: `t.answered === 1`.
     const turns = turnRows();
     expect(turns.filter((t) => t.exit_reason === 'budget')).toHaveLength(2);
-    expect(turns.every((t) => t.answered === 1 && t.effectful_calls === 0)).toBe(true);
+    expect(turns.every((t) => t.answered === 0 && t.effectful_calls === 0)).toBe(true);
     expect(pauseDriveWorkWaitingOnOwnerSpy).toHaveBeenCalledTimes(2);
 
     // Nothing for the PM to judge, nothing rejected, nothing reverted, no stalemate.
@@ -686,7 +691,9 @@ describe('t137 (b): a parked turn never moves its task to "paused, waiting on th
     await runV2Turn('primary');
 
     const [t] = turnRows();
-    expect(t.answered).toBe(1);
+    // t139 round 4 (R-V333-11): the held-back working line is not delivered as the answer of a
+    // turn the engine is continuing. Was: `toBe(1)`.
+    expect(t.answered).toBe(0);
     expect(t.effectful_calls).toBe(0);
     expect(t.exit_reason).not.toBe('budget');
     expect(continuationContext.has('primary')).toBe(true);   // the engine queued its continuation

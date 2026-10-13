@@ -18,6 +18,8 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { decideClaimedDelivery } from '../../claimed-delivery.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed } from '../../outbound-ledger.js';
 import { advance, type AgentTurnState } from '../../state.js';
+import { continuationContext } from '../../../turn-state.js';
+import { isStopFenced } from '../../../shared-state.js';
 import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -37,7 +39,23 @@ export function recoverDeferredReply(state: AgentTurnState, ctx: FinalizeContext
   // to the dashboard chat AND hand it to the channel router below. When a real
   // tool-less reply DID land, lastAssistantTextForIM is set and this is skipped,
   // so there is no double-reply.
-  if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM) {
+  // ⚠ R-V333-11 (t139 round 4): NOT ON A TURN THE ENGINE IS CONTINUING. Live at v3.3.2 (t136
+  // run bmv64ib0rkc, row #99007) the 15-minute park turned a narration line the model had written
+  // pages earlier ("Page 3 found one wrong line. Onward") into a NEW user-visible bubble — the
+  // owner's "filler line every 15 minutes" (#10). A turn the engine queued its own continuation
+  // for (the same recorded exit fact finalize-record reads: the park, the tool-loop cap, a context
+  // rebuild — every one writes the C3 stash, consumed by the next preflight) did not end: the
+  // person is not left in silence, the work goes on, and its real answer comes from the
+  // continuation. The held-back line stays the working-note it already is.
+  // requirement preserved: a turn that genuinely ENDS with only text that rode a tool call still
+  // delivers that text, so a waiting human is never answered by silence (G-SUP-2).
+  const continuing = continuationContext.has(agentId) && !isStopFenced(agentId);
+  if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM && continuing) {
+    logger.info('v2 G-SUP-2 recovery skipped: the engine is continuing this work; the held-back line stays a working note', {
+      agentId, turnNumber,
+    }, agentId);
+  }
+  if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM && !continuing) {
     const recoveredId = uuidv4();
     try {
       // RC-12 item 6: the recovery path used to route deferred text WITHOUT the
