@@ -47,6 +47,7 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
 import { sweepSilentAgents, taskLastMovedAt, agentIsMoving } from './liveness.js';
+import { reportCirclingToOwner } from './pm-owner-report.js';
 
 const logger = createLogger('pm-agent');
 
@@ -1516,6 +1517,7 @@ async function runEffortReviewOnce(taskId: string): Promise<void> {
     taskId, fromEntity: 'pm', entryKind: 'effort_review_intervene',
     reason: verdict.reason,
   });
+  reportCirclingToOwner(taskId, row.title, row.assigned_to, verdict.reason); // t143 SPINNING
   // Re-arm even though delivery is deferred to the guarded sweep: without this, a stalled task
   // would be QUEUED for a brand new review on every sweep tick until the poke actually lands,
   // instead of after another 150 calls (T79d's brief, explicitly). Delivery-tracking for the
