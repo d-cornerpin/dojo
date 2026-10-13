@@ -18,7 +18,7 @@
 //
 // What is real: the DB, the message rows, the provider/model join `getProviderCeilingTokens`
 // reads, `runCheckAndCompact`'s whole trigger and all three yield guards, `runLeafCompaction`,
-// the park message the checkpoint writes, the continuation counter. What is mocked: the
+// the continuation counter. (t137: the checkpoint no longer writes a park message at all.) What is mocked: the
 // summarizer LLM call, the vault archive, the websocket — none of them participates in the
 // decision this file is about.
 //
@@ -228,26 +228,26 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
     expect(rawHistoryIds()).toEqual(before);
 
     // THE AUTO-CONTINUE IS UNCHANGED, which is the other half of the requirement: the turn
-    // still parks, the person is still told, the wakeup is still queued.
+    // still parks and the wakeup is still queued. (t137: and nobody is told — the park is
+    // housekeeping, so it writes no row.)
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
     expect(pendingWakeups.has(AGENT)).toBe(true);
     expect(turnContinuationCounts.get(AGENT)).toBe(1);
-    expect(lastSystemMessage()).toContain('Pausing here and continuing on a fresh turn (1 of 3)');
+    expect(lastSystemMessage()).toBeNull();
   });
 
-  it('and the receipt tells the truth: no rebuild happened, so the park message does not claim one', async () => {
-    // The engine claiming a rebuild it did not perform is the same class of untruth the
-    // incident was filed over ("the work ledger records a delivery claim that did not
-    // happen"). The re-homed recap content the person is owed — pick up where you left off,
-    // do not start over — rides both arms unchanged.
+  it('and the checkpoint claims nothing it did not do: it writes no receipt row at all, on either arm (t137)', async () => {
+    // The engine claiming a rebuild it did not perform was the untruth this clause guarded.
+    // t137 retired the park row outright (it was role='system', so it only ever reached the
+    // owner's chat), so the property now holds by construction — and this clause pins that no
+    // row comes back, rebuilt history or not.
     seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
+    const ctx = makeCtx();
 
-    await runTurnTimeBudget(stateOverBudget(), makeCtx());
+    await runTurnTimeBudget(stateOverBudget(), ctx);
 
-    const sys = lastSystemMessage()!;
-    expect(sys).not.toContain('has been summarized');
-    expect(sys).toContain('Your conversation history is intact, pick up where you left off');
-    expect(sys).toContain('do not start over');
+    expect(lastSystemMessage()).toBeNull();
+    expect(ctx.events).toEqual([]);
   });
 
   it('an UNDECLARED provider, far under the flat threshold: same answer — the clock is not evidence about size', async () => {
@@ -278,29 +278,29 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
 
     expect(generateSummarySpy).toHaveBeenCalled();
     expect(summaryCount()).toBeGreaterThan(0);
-    // And THIS receipt says the thing that is now true of it, in the bytes it always used.
-    expect(lastSystemMessage()).toContain('Your earlier conversation has been summarized, pick up where you left off');
+    // t137: the checkpoint adds no row of its own on this arm either. The one system row is
+    // the compaction's own marker (memory/compaction.ts), which is that module's, not the park's.
+    const sysRows = mockDb.current!
+      .prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'system'`).all(AGENT) as Array<{ content: string }>;
+    expect(sysRows.map((r) => r.content)).toEqual([expect.stringMatching(/^── Memory Compacted/)]);
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
-  it('THE CONTINUATION LADDER IS UNTOUCHED: the count climbs on every park, and the cap still trips without compacting', async () => {
-    // Ticket clause (d), driven rather than read: the fix is about WHAT the checkpoint does to
-    // the history, never about how many times it may do it. An undeclared provider caps at 3.
+  it('THE CONTINUATION LADDER HAS NO CAP (t137): the count climbs on every park and the fourth parks like the first', async () => {
+    // The fix is about WHAT the checkpoint does to the history, never about how many times it
+    // may do it — and since t137 (OR-LONG-JOBS) nothing bounds how many times either. The
+    // crossing that used to trip the standard 3-continuation cap parks, asks the token math
+    // (which, far under threshold, still declines), and queues its continuation.
     seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
 
-    await runTurnTimeBudget(stateOverBudget(), makeCtx());
-    expect(turnContinuationCounts.get(AGENT)).toBe(1);
-    await runTurnTimeBudget(stateOverBudget(), makeCtx());
-    expect(turnContinuationCounts.get(AGENT)).toBe(2);
-    await runTurnTimeBudget(stateOverBudget(), makeCtx());
-    expect(turnContinuationCounts.get(AGENT)).toBe(3);
-
-    // The fourth crossing is one too many: the turn STOPS, the counter is cleared, and — as
-    // before this task — the trip arm never reaches a compaction at all.
-    const capped = await runTurnTimeBudget(stateOverBudget(), makeCtx());
-    expect(capped).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' });
-    expect(turnContinuationCounts.has(AGENT)).toBe(false);
+    for (let n = 1; n <= 5; n++) {
+      pendingWakeups.clear();
+      const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
+      expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
+      expect(turnContinuationCounts.get(AGENT)).toBe(n);
+      expect(pendingWakeups.has(AGENT)).toBe(true);
+    }
     expect(generateSummarySpy).not.toHaveBeenCalled();
     expect(summaryCount()).toBe(0);
   });

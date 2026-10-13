@@ -596,7 +596,7 @@ async function readsThenSaysNothing(): Promise<number> {
 // simply no longer gets a line in the chat every fifteen minutes about it.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () => {
-  it.fails('the park happens (exit `budget`, continuation queued), and it leaves ZERO system rows and ZERO chat broadcasts', async () => {
+  it('the park happens (exit `budget`, continuation queued), and it leaves ZERO system rows and ZERO chat broadcasts', async () => {
     seedInFlightTask();
     await readOnlyTurnAcrossTheCheckpoint();
 
@@ -757,7 +757,11 @@ describe('t137 (a): a continuation that ends quietly after its tools ends quietl
 // and handed the job to the PM. A long job now parks and continues for as long as it needs.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137: a long job is never cut off by elapsed time', () => {
-  it.fails('five consecutive parks (75+ minutes) each queue the next continuation; nothing is said to anyone', async () => {
+  it('five consecutive parks (75+ minutes) each queue the next continuation; nothing is said to anyone', async () => {
+    mockDb.current!.prepare(
+      `INSERT INTO agents (id, name, model_id, status, config, classification)
+       VALUES ('pm', 'PM', 'test-model', 'idle', '{}', 'sensei')`,
+    ).run();
     seedInFlightTask();
     for (let i = 1; i <= 5; i++) {
       pendingWakeups.clear();
@@ -771,8 +775,9 @@ describe('t137: a long job is never cut off by elapsed time', () => {
     expect(messageRows().filter((m) => m.role === 'system').map((m) => m.content))
       .toEqual(['[working-note] Starting on the research folder now.']);
     expect(workState('w-long-job')).toBe('claimed');
-    // The PM was never handed the job (PM offline or not, the park does not involve it).
-    expect(mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM inter_agent_messages`).get()).toEqual({ n: 0 });
+    // The PM was never handed the job: nothing landed in its inbox. (The PM is present here,
+    // so a hand-off WOULD land; the PM-offline arm is the clause below.)
+    expect(mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'pm'`).get()).toEqual({ n: 0 });
   });
 });
 
@@ -780,6 +785,17 @@ describe('t137: a long job is never cut off by elapsed time', () => {
 // BACKWARDS LIFECYCLE — what must still hold around a silent park.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 lifecycle: the park stays honest around stops and stale work', () => {
+  it('the PM is offline (no PM agent exists): the job parks and continues exactly the same', async () => {
+    seedInFlightTask();
+    for (let i = 1; i <= 4; i++) {
+      pendingWakeups.clear();
+      await readOnlyTurnAcrossTheCheckpoint(i === 1 ? { narrate: 'Starting on the research folder now.' } : {});
+      expect(pendingWakeups.has('primary'), `park ${i} queued its continuation`).toBe(true);
+    }
+    expect(turnRows().map((t) => t.exit_reason)).toEqual(['budget', 'budget', 'budget', 'budget']);
+    expect(workState('w-long-job')).toBe('claimed');
+  });
+
   it('the owner presses Stop during the park\'s compaction check: nothing parked, nothing queued (T83 fence)', async () => {
     seedInFlightTask();
     checkAndCompactSpy.mockImplementationOnce(async () => {

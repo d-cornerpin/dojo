@@ -65,36 +65,12 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
 }));
 
-// SLOW-INFERENCE T79b fix round (Finding 1): `getDb` is a SPY, not a fixed factory, so a
-// handful of tests can hand `readProviderUnattendedBudgetMinutes` a fake row-returning
-// database — still no real DB file opened, which is the file's own standing rule — while
-// every OTHER test keeps the original "throws" default unchanged. Without this, every test
-// that reached the cap check saw `getDb()` throw, `readProviderUnattendedBudgetMinutes` catch
-// and fall back to `null`, and the cap land on 3 — which is INDISTINGUISHABLE from "the real
-// query ran and read a declared value of 60". The new describe block below drives the real
-// query with a real (fake) row and asserts the cap that produces, which only a working query
-// can produce.
+// `getDb` throws: a unit test must not open the dev database. (t137: the one test block that
+// handed this a fake provider row went with the per-provider continuation cap it measured.)
 const getDbSpy = vi.fn(() => { throw new Error('no database in a contract test'); });
 vi.mock('../../../../../db/connection.js', () => ({
   getDb: (...a: unknown[]) => getDbSpy(...(a as [])),
 }));
-
-/**
- * A fake `Database.Database`-shaped object carrying exactly one row for
- * `readProviderUnattendedBudgetMinutes`'s `models JOIN providers` query — `prepare` and the
- * returned `get` are themselves spies, so a test can assert the REAL query ran (the SQL text
- * it was handed, the model id it was asked about) rather than merely that a NUMBER came back,
- * which a silent catch-and-fallback could also produce by coincidence.
- */
-function fakeProviderDb(maxUnattendedMinutes: number | null): {
-  db: { prepare: (sql: string) => { get: (modelId: string) => { max_unattended_minutes: number | null } } };
-  prepareSpy: ReturnType<typeof vi.fn>;
-  getSpy: ReturnType<typeof vi.fn>;
-} {
-  const getSpy = vi.fn((_modelId: string) => ({ max_unattended_minutes: maxUnattendedMinutes }));
-  const prepareSpy = vi.fn((_sql: string) => ({ get: getSpy }));
-  return { db: { prepare: prepareSpy }, prepareSpy, getSpy };
-}
 
 const setTrackerStatusSpy = vi.fn(() => ({ kind: 'no_change' as const }));
 vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
@@ -103,27 +79,13 @@ vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
   upholdClaim: vi.fn(),
 }));
 
-// SLOW-INFERENCE T79b — the trip path's two best-effort side calls, mocked so this contract
-// test can assert THAT they were called (with what) rather than relying on `getDb()`'s throw
-// above to silently swallow them via the call sites' own try/catch, which is what happened
-// here for `noteEngineCheckpoint`'s pre-existing 'turn-budget' call before this task (still
-// true, still fine — but a mock makes the NEW 'unattended-budget' call a positive assertion
-// instead of an unobserved side effect).
+// The checkpoint's tracker note, mocked so this contract test can assert THAT it was called
+// (with what) rather than relying on `getDb()`'s throw to swallow it via the call site's own
+// try/catch. (t137: the trip's PM hand-off and the circling line that rode the park message
+// are gone with the cap and the park row, so neither is mocked here any more.)
 const noteEngineCheckpointSpy = vi.fn(() => 0);
-// T79 FIX WAVE, FINDING 2: `turn-budget.ts` now also reads `pendingCirclingVerdictParkLine`
-// from this same module, right before it builds the continuation's park message. Stubbed to
-// `null` (no pending verdict) so every existing assertion in this file about that message's
-// text is completely unaffected — `null` is the one case FINDING 2's own fix leaves the
-// message byte-identical for.
-const pendingCirclingVerdictParkLineSpy = vi.fn(() => null as string | null);
 vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
   noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
-  pendingCirclingVerdictParkLine: (...a: unknown[]) => pendingCirclingVerdictParkLineSpy(...(a as [string])),
-}));
-
-const escalateUnattendedBudgetTripToPMSpy = vi.fn(async () => {});
-vi.mock('../../../../../tracker/pm-agent.js', () => ({
-  escalateUnattendedBudgetTripToPM: (...a: unknown[]) => escalateUnattendedBudgetTripToPMSpy(...(a as [])),
 }));
 
 const AGENT = 'primary';
@@ -199,12 +161,6 @@ beforeEach(() => {
   insertMessageIfAbsentSpy.mockClear();
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
-  pendingCirclingVerdictParkLineSpy.mockClear();
-  escalateUnattendedBudgetTripToPMSpy.mockClear();
-  // T79b fix round: same discipline as `checkAndCompactSpy` above — re-arm the THROWING
-  // default every test, so the one describe block below that overrides it with a fake,
-  // row-returning database (via `getDbSpy.mockImplementation(...)`) cannot leak that override
-  // into any later test in file order.
   getDbSpy.mockReset();
   getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
 });
@@ -373,7 +329,7 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
     expect((await runPreCallGates(stateInStep(), makeCtx())).directive).toBe('exit');
   });
 
-  it('the turn-time budget is still 15 minutes and the continuation ladder is still 3', async () => {
+  it('the turn-time budget is still 15 minutes, and there is no continuation cap (t137)', async () => {
     // Just inside: the turn proceeds and nothing is compacted.
     const inside = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (14 * 60 * 1000) }), makeCtx());
     expect(inside.directive).toBe('proceed');
@@ -384,13 +340,18 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
     expect(outside).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
     expect(turnContinuationCounts.get(AGENT)).toBe(1);
 
-    // The fourth crossing is one too many.
-    turnContinuationCounts.set(AGENT, 3);
-    checkAndCompactSpy.mockClear();
-    const capped = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-    expect(capped).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
-    expect(turnContinuationCounts.has(AGENT)).toBe(false);
+    // The crossing that used to be "one too many" (the 4th; 3 was the old standing cap) parks
+    // exactly like the first, and so does the fiftieth: OR-LONG-JOBS, no total-time cap.
+    for (const already of [3, 49]) {
+      turnContinuationCounts.set(AGENT, already);
+      checkAndCompactSpy.mockClear();
+      const later = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+      expect(later).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
+      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+      expect(pendingWakeups.has(AGENT)).toBe(true);
+      expect(turnContinuationCounts.get(AGENT)).toBe(already + 1);
+      pendingWakeups.clear();
+    }
   });
 
   it('the thrash drift ladder still nudges once at 8 and blocks at 24, and the PM is exempt from both', async () => {
@@ -443,137 +404,32 @@ describe('the background gap-drain stays fire-and-forget', () => {
   });
 });
 
-describe('SLOW-INFERENCE T79b — the trip is an honest pause with a PM hand-off, not a silent death', () => {
-  it('an undeclared provider (getDb throws -> null -> the standing default) still trips at exactly the 4th crossing, unchanged', async () => {
-    // The NULL-row control, wired: with no database to read a provider's declaration from,
-    // `readProviderUnattendedBudgetMinutes` catches and returns null, `resolveUnattendedBudget`
-    // turns that into 60, and `continuationCapFor(60, 15)` is exactly 3 — the same cap this
-    // replaced. Three crossings still park; the fourth still trips.
-    turnContinuationCounts.set(AGENT, 3);
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
-    expect(turnContinuationCounts.has(AGENT)).toBe(false);
-  });
-
-  it('the trip squares the tracker: noteEngineCheckpoint fires with reason \'unattended-budget\'', async () => {
-    turnContinuationCounts.set(AGENT, 3);
-    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'unattended-budget');
-  });
-
-  it('the trip hands resumption to the PM — no silent death', async () => {
-    turnContinuationCounts.set(AGENT, 3);
-    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledTimes(1);
-    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: AGENT,
-      budgetMinutes: 60,
-      continuationCap: 3,
-      elapsedMinutes: 60,
-      declaredByProvider: false,
-    }));
-  });
-
-  it('a parked (non-trip) checkpoint does NOT ring the PM — only a trip does', async () => {
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
+// ════════════════════════════════════════════════════════════════════════════════
+// t137 (OR-LONG-JOBS) — THE PARK IS HOUSEKEEPING. Two describe blocks stood here pinning the
+// T79b continuation-cap trip (its honest message, its tracker note, its PM hand-off) and the
+// per-provider budget that set the cap. Their subject is DELETED, not reworded, so their
+// assertions are replaced by the opposite ones below; the driven proof (five consecutive parks,
+// nothing said to anyone, the PM never handed the job) is
+// `agent/v2/__tests__/t137-long-jobs-are-left-alone.test.ts`.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
+  it('a park inserts no message row and broadcasts nothing; it squares the tracker and queues the continuation', async () => {
+    const ctx = makeCtx();
+    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), ctx);
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
-    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
-    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
+    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
+    expect(ctx.events).toEqual([]);
+    expect(noteEngineCheckpointSpy.mock.calls).toEqual([[AGENT, 'turn-budget']]);
+    expect(ctx.stashContinuationIfHuman).toHaveBeenCalledTimes(1);
+    expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
-  it('a failed PM hand-off does not throw out of the step — best effort, same as the checkpoint note', async () => {
-    escalateUnattendedBudgetTripToPMSpy.mockRejectedValueOnce(new Error('PM offline'));
-    turnContinuationCounts.set(AGENT, 3);
-
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
-  });
-
-  it('the trip message is honest: names the budget and the PM hand-off, and drops the stuck-loop guess', async () => {
-    turnContinuationCounts.set(AGENT, 3);
-    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    const call = insertMessageIfAbsentSpy.mock.calls.find(
-      (c) => typeof (c[0] as { content?: string }).content === 'string'
-        && (c[0] as { content: string }).content.includes('running for about'),
-    );
-    expect(call, 'no trip message was inserted').toBeTruthy();
-    const content = (call![0] as { content: string }).content;
-    expect(content).toMatch(/standard 60-minute unattended budget/);
-    expect(content).toMatch(/project manager has been handed the resumption/);
-    expect(content).not.toMatch(/stuck loop/);
-  });
-});
-
-describe('SLOW-INFERENCE T79b fix round (Finding 1) — a DECLARED provider budget drives the real gate, not just the resolver', () => {
-  // Every test above this block reaches the cap check with `getDb()` throwing, which
-  // `readProviderUnattendedBudgetMinutes` catches and turns into `null` — the SAME value a
-  // genuinely-declared-nothing row would produce. That makes "the query works and read 60" and
-  // "the query silently failed and fell back to 60" INDISTINGUISHABLE at cap 3. These tests
-  // drive the real query against a real (fake) row and assert the cap boundary ONLY a working
-  // read of a NON-default value can produce — 31/32, not 3/4 — which is proof the SQL path ran.
-
-  it('a declared 480-minute budget: the query itself is driven, with the real SQL and the real model id', async () => {
-    const fake = fakeProviderDb(480);
-    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
-
-    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(fake.prepareSpy).toHaveBeenCalledWith(expect.stringContaining('JOIN providers'));
-    expect(fake.getSpy).toHaveBeenCalledWith('deepseek-v4-flash'); // stateInStep's configuredModelId
-  });
-
-  it('a declared 480-minute budget: the 31st continuation still PARKS — cap is 31, not 3', async () => {
-    const fake = fakeProviderDb(480);
-    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
-    turnContinuationCounts.set(AGENT, 30);
-
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).toHaveBeenCalled();
-    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
-    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
-    expect(turnContinuationCounts.get(AGENT)).toBe(31);
-  });
-
-  it('a declared 480-minute budget: the 32nd continuation TRIPS — the boundary is 31, not the old 3', async () => {
-    const fake = fakeProviderDb(480);
-    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
-    turnContinuationCounts.set(AGENT, 31);
-
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-continuation-cap' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
-    expect(turnContinuationCounts.has(AGENT)).toBe(false);
-    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'unattended-budget');
-    expect(escalateUnattendedBudgetTripToPMSpy).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: AGENT,
-      budgetMinutes: 480,
-      continuationCap: 31,
-      elapsedMinutes: 32 * 15, // (cap + 1) * turn-budget-minutes
-      declaredByProvider: true,
-    }));
-  });
-
-  it('a declared 0 (uncapped) budget: the 50th continuation still PARKS, never trips', async () => {
-    const fake = fakeProviderDb(0);
-    getDbSpy.mockImplementation(() => fake.db as unknown as ReturnType<typeof getDbSpy>);
+  it('a long-running ladder (the 50th park) writes nothing either', async () => {
     turnContinuationCounts.set(AGENT, 49);
-
-    const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).toHaveBeenCalled();
-    expect(noteEngineCheckpointSpy).toHaveBeenCalledWith(AGENT, 'turn-budget');
-    expect(escalateUnattendedBudgetTripToPMSpy).not.toHaveBeenCalled();
-    expect(turnContinuationCounts.get(AGENT)).toBe(50);
+    const ctx = makeCtx();
+    await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), ctx);
+    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
+    expect(ctx.events).toEqual([]);
   });
 });

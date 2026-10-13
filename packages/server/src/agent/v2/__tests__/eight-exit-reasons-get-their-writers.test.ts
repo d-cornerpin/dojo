@@ -462,10 +462,13 @@ describe('§2 the sites that end a turn carry their reason, and the recorder rea
     expect(code).toMatch(/preemptedAgents\.has\(agentId\)[\s\S]{0,400}latchEngineCut\([^;]*'preempt'\)/);
   });
 
-  it('both turn-budget arms latch `budget` — the cap trip and the checkpoint continuation', () => {
+  it('the turn-budget checkpoint latches `budget` — its ONE arm since t137 retired the cap trip', () => {
+    // Exactly one: the continuation-cap arm that was the second writer is deleted (OR-LONG-JOBS:
+    // no total-time cap), and the checkpoint continuation is the only `budget` writer left.
     const code = engine();
-    expect([...code.matchAll(/latchEngineCut\([^;]*?,\s*'budget'\s*\)/g)].length).toBeGreaterThanOrEqual(2);
-    expect(code).toMatch(/turn-continuation-cap/);
+    expect([...code.matchAll(/latchEngineCut\([^;]*?,\s*'budget'\s*\)/g)].length).toBe(1);
+    expect(code).toMatch(/latchEngineCut\(state, 'budget'\), 'turn-time-budget'/);
+    expect(code).not.toMatch(/'turn-continuation-cap' satisfies/);
   });
 
   it('BOTH `terminated` CALL SITES are wired, and the statement stays in one module', () => {

@@ -3271,7 +3271,8 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
 // the person's own receipt row, and `sys.compaction-continuity` on the system prompt.
 //
 // The three clauses that were never about the recap — the positive control, the parking
-// behaviour and the continuation cap — are UNTOUCHED and still guard this branch.
+// behaviour and the continuation cap — still guard this branch, the last one inverted by t137
+// (OR-LONG-JOBS: no cap, and the park writes no row).
 // ════════════════════════════════════════════════════════════════════════════════
 describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only when token math wants it) and hands the turn its own receipts', () => {
   /**
@@ -3374,12 +3375,13 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
       'primary', expect.any(String), expect.any(Number),
     );
 
-    // The turn parks rather than dying: the person is told, and a wakeup is queued so
-    // the work resumes on a fresh turn.
+    // The turn parks rather than dying: a wakeup is queued so the work resumes on a fresh
+    // turn. t137 (OR-LONG-JOBS): the park is housekeeping — it no longer tells the owner, so
+    // it writes no system row at all.
     const sys = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sys[0].content).toMatch(/This turn ran for \d+ minutes[\s\S]*continuing on a fresh turn \(1 of 3\)/);
+    expect(sys).toEqual([]);
     expect(pendingWakeups.has('primary')).toBe(true);
   });
 
@@ -3405,12 +3407,16 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   //      `engineStartAckDeliveredThisTurn` were removed from `PreCallGatesContext` in
   //      the same commit, because this step was their only reader here.
   // ══════════════════════════════════════════════════════════════════════════════
+  // t137: `elapsedMin` used to surface in the owner's park row; that row is retired, and the
+  // number's one carrier now is the operator's log line — so the crossing is read there.
+  const parkLogElapsed = (): number[] => loggerWarnSpy.mock.calls
+    .filter((c) => c[0] === 'v2 turn time budget reached, auto-continuing')
+    .map((c) => (c[1] as { elapsedMin: number }).elapsedMin);
+
   it('THE CROSSING TEST: the checkpoint reads LIVE turn state, not a snapshot taken at turn start', async () => {
     await runAcrossTheBudget();
-    const firstArm = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
-      .all() as Array<{ content: string }>;
-    expect(firstArm[0].content).toContain('This turn ran for 16 minutes');
+    expect(parkLogElapsed()).toEqual([16]);
+    loggerWarnSpy.mockClear();
 
     enqueueSteerSpy.mockClear();
     checkAndCompactSpy.mockClear();
@@ -3419,11 +3425,8 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     mockDb.current = setupTestDb();
 
     await runAcrossTheBudget({ extraMs: 19 * 60 * 1000 });
-    const secondArm = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
-      .all() as Array<{ content: string }>;
     // A snapshot of `turnStartMs` taken before the loop would make both arms identical.
-    expect(secondArm[0].content).toContain('This turn ran for 35 minutes');
+    expect(parkLogElapsed()).toEqual([35]);
   });
 
   it('T13 (CUT 3\'s H1) SURVIVES ITS SUBJECT: the branch reports the TURN\'s ledger, never the last response\'s batch', () => {
@@ -3451,28 +3454,24 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(pendingWakeups.has('primary')).toBe(true);
   });
 
-  it('past MAX_TURN_AUTO_CONTINUATIONS the turn STOPS instead: no compaction, no recap, and the person is told', async () => {
-    // SLOW-INFERENCE T79b — message expectation updated (per that task's brief): the old
-    // wording guessed "usually means a stuck loop, an over-scoped task, or a slow model" with
-    // no evidence for any of the three. The engine now says only what it actually knows — the
-    // budget it spent, named honestly (this provider declared none, so it is the standard
-    // 60-minute default) — and that the PM, not the owner noticing silence, has been handed
-    // the resumption. Nothing else about this test changed: same 60-minute NULL-row control,
-    // same no-compaction / no-recap / no-wakeup / cleared-counter shape.
+  it('t137 (OR-LONG-JOBS): past the old MAX_TURN_AUTO_CONTINUATIONS the turn PARKS like any other — no total-time cap', async () => {
+    // This clause used to pin the cap trip (no compaction, no wakeup, a "running for about 60
+    // minutes … Pausing here" row and a PM hand-off). The cap is deleted, so the fourth
+    // crossing is asserted to be an ordinary park: the token math is asked, the continuation is
+    // queued, the counter climbs, and nobody is told.
     await runAcrossTheBudget({ continuationsAlready: 3 });
 
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
+    expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
     expect(recaps()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(false);
-    // The counter is CLEARED at the cap, so a later turn starts the ladder again.
-    expect(turnContinuationCounts.has('primary')).toBe(false);
+    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(turnContinuationCounts.get('primary')).toBe(4);
+    // No park or trip row. (A seeded fourth continuation also crosses the untracked-work floor,
+    // whose own "[System] The engine opened tracker task" row is that mechanism's, not this one's.)
     const sys = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sys[0].content).toMatch(/running for about 60 minutes without finishing/);
-    expect(sys[0].content).toMatch(/standard 60-minute unattended budget/);
-    expect(sys[0].content).toMatch(/project manager has been handed the resumption/);
-    expect(sys[0].content).not.toMatch(/stuck loop/);
+    expect(sys.filter((r) => /This turn ran for|Pausing here|running for about|unattended budget/.test(r.content))).toEqual([]);
+    expect(sys.every((r) => r.content.startsWith('[System] The engine opened tracker task'))).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3558,41 +3557,24 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(recaps()).toEqual([]);
   });
 
-  it('THE RE-HOME, half 1 — the PERSON still gets the whole receipt, in the bytes they already got', async () => {
-    // "Your earlier conversation has been summarized, pick up where you left off …
-    // do not start over" is the recap's own content, on the surface that actually
-    // reaches somebody. Unchanged by the retirement, and pinned here so it cannot
-    // quietly follow the recap out.
-    //
-    // ⚠ T84: this row is the RECEIPT for a rebuild, and the rebuild is now conditional — so
-    // the clause is driven on the arm where one HAPPENED (the spy reports a summary written),
-    // where the bytes are the same bytes. The other arm is the clause below.
+  it('t137: THE RE-HOME, half 1 is RETIRED — neither arm of the checkpoint writes the person a receipt row', async () => {
+    // "Pick up where you left off … do not start over" rode a role='system' row, which the tail
+    // renderer never emits: the MODEL never read it, and the owner read it every fifteen
+    // minutes (tracker #10). OR-LONG-JOBS makes the park invisible housekeeping. The model's
+    // half is unchanged (half 2, below); the operator's half is the log line. Both arms —
+    // rebuilt history or not — are driven here and both leave no row.
     checkAndCompactSpy.mockResolvedValueOnce({ leafCreated: 1, condensedCreated: 0, tokensReclaimed: 4000 });
     await runAcrossTheBudget();
-    const sys = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
-      .all() as Array<{ content: string }>;
-    expect(sys[0].content).toContain('Your earlier conversation has been summarized, pick up where you left off');
-    expect(sys[0].content).toContain('do not start over');
+    const sysOf = (): unknown[] => mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'").all();
+    expect(sysOf()).toEqual([]);
     expect(pendingWakeups.has('primary')).toBe(true);
-  });
 
-  it('T84 — THE RECEIPT IS HONEST: a checkpoint that rebuilt NOTHING does not tell the agent its history was summarized', async () => {
-    // The other arm of the clause above, and the reason it is here rather than folded into
-    // it: an engine that claims a rebuild it did not perform is the same class of untruth
-    // this task was filed over (the blast subject's work ledger recorded a delivery that
-    // never happened). The default spy result is the zero result `checkAndCompact` returns
-    // whenever its own token math declines — which, after this fix, is the COMMON case at
-    // this checkpoint.
+    pendingWakeups.clear();
+    turnContinuationCounts.clear();
+    mockDb.current = setupTestDb();
     await runAcrossTheBudget();
-    const sys = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
-      .all() as Array<{ content: string }>;
-    expect(sys[0].content).not.toContain('has been summarized');
-    expect(sys[0].content).toContain('Your conversation history is intact, pick up where you left off');
-    // The re-homed content the person is owed rides BOTH arms, unchanged.
-    expect(sys[0].content).toContain('do not start over');
-    expect(sys[0].content).toContain('Check work_update(action="list")');
+    expect(sysOf()).toEqual([]);
     expect(pendingWakeups.has('primary')).toBe(true);
   });
 
