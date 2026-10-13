@@ -184,7 +184,8 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     // The opening picks are the selector's own: ONE standing-filter predicate, read by both.
     const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
     expect(selector.match(/passesStandingFilters\(/g)?.length, 'declaration + selectModel + routedFirstPicks').toBe(3);
-    expect(filesWith(/\broutedFirstPicks\(/)).toEqual(['agent/model.ts', 'router/selector.ts']);
+    // Its readers: the turn's building window, and the card's "can a model of its own hold it" (round 5 b).
+    expect(filesWith(/\broutedFirstPicks\(/)).toEqual(['agent/model.ts', REFIT_REL, 'router/selector.ts']);
   });
 
   it('ONE routine check, measured for the dialed model: called by the gate for a model it knows and by the call step for the router\'s pick', () => {

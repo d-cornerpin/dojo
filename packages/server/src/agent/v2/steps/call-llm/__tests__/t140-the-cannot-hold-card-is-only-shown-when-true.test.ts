@@ -157,7 +157,7 @@ afterEach(async () => {
 });
 
 describe('t140 round 5 (a) — the fit pre-check measures the prompt the assembler will build for the pick', () => {
-  it.fails('a fallback candidate a few tokens short is refused BEFORE assembling, with no card', async () => {
+  it('a fallback candidate a few tokens short is refused BEFORE assembling, with no card', async () => {
     const AGENT = 'agent-edge';
     seedAgent(AGENT, 'auto');
     seedConversation(AGENT, 40);
@@ -180,7 +180,7 @@ describe('t140 round 5 (a) — the fit pre-check measures the prompt the assembl
 });
 
 describe('t140 round 5 (b) — the card is shown only when the agent itself cannot hold a conversation', () => {
-  it.fails('the ROUTER\'S OWN pick is too small, but another model the router opens on holds the agent: refused by name, no card', async () => {
+  it('the ROUTER\'S OWN pick is too small, but another model the router opens on holds the agent: refused by name, no card', async () => {
     const AGENT = 'agent-routed-tiny';
     seedAgent(AGENT, 'auto');
     seedConversation(AGENT, 40);
@@ -190,7 +190,7 @@ describe('t140 round 5 (b) — the card is shown only when the agent itself cann
     expect(starvedCards(), 'the agent can hold a conversation on its other routed picks').toBe(0);
   });
 
-  it.fails('the BUDGET REDIRECT\'S free model is too small, but the agent\'s own model holds it: refused by name, no card', async () => {
+  it('the BUDGET REDIRECT\'S free model is too small, but the agent\'s own model holds it: refused by name, no card', async () => {
     const AGENT = 'agent-fixed-redirect';
     seedAgent(AGENT, ROOMY);
     seedConversation(AGENT, 40);

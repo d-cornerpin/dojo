@@ -117,8 +117,9 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
     import('../../../../tools/tool-docs.js'),
   ]);
   const assembledEstimate = estimateAssembledArrayTokens(systemPrompt, messages);
+  const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
   const policy = contextWindowPolicy(getContextWindow(modelId), {
-    toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+    toolPayloadTokens,
     maxOutputTokens: getModelOutputCap(modelId),
     providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
@@ -126,9 +127,15 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
   // t140 round 2 (re-review N1): whether this pick can hold the system prompt and tools at all is
   // answered HERE, from the policy above — the same numbers the assembler's own check reads — and
   // before any context is rebuilt. A pick that cannot is refused by name without assembling.
-  const systemTokens = estimateTokens(systemPrompt);
+  // Round 5: the prompt measured is the one the assembler WILL build for this pick (its runtime
+  // section names the pick), by the assembler's own two functions — so a pick a few tokens short
+  // cannot pass here and then card from inside `assembleContext`.
+  const systemTokens = await systemTokensFor(agentId, modelId, assemblyTurnContext);
   if (systemTokens > policy.assemblyBudgetTokens) {
-    if (!anotherPickMayFollow) {
+    // Round 5: the card says the AGENT cannot hold a conversation until its model or tools change.
+    // That is true only when no model of its own (its configured model, or every pick the router
+    // opens on) can hold it — not when one stand-in pick is too small.
+    if (!anotherPickMayFollow && !(await anOwnModelHolds(agentId, toolPayloadTokens, assemblyTurnContext))) {
       const { reportStarvedWindow } = await import('../../../../memory/window-starvation-card.js');
       reportStarvedWindow(agentId, systemTokens, policy);
     }
@@ -154,4 +161,28 @@ async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleF
     assembled: reassembled,
     volatileFrom: reassembled.messages.length,
   };
+}
+
+/** The system prompt the assembler builds for `modelId`, by the assembler's own two functions, in tokens. */
+async function systemTokensFor(agentId: string, modelId: string, turnContext: PromptTurnContext): Promise<number> {
+  const { buildAssemblyContext, assembleSystemFromRegistry } = await import('../../../../prompt/registry/assembler.js');
+  return estimateTokens(assembleSystemFromRegistry(buildAssemblyContext(agentId, modelId, turnContext)).text);
+}
+
+/** Whether a model of the agent's OWN can hold its system prompt and tools: its configured model, or,
+ *  auto-routed, any model the router opens a tier on (`router/selector.ts`'s `routedFirstPicks`). */
+async function anOwnModelHolds(agentId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
+  const [{ getDb }, { routedFirstPicks }, { contextWindowPolicy }, model] = await Promise.all([
+    import('../../../../db/connection.js'), import('../../../../router/selector.js'),
+    import('../../../../memory/budget.js'), import('../../../model.js'),
+  ]);
+  const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
+  if (!configured) return false;
+  for (const own of configured === 'auto' ? routedFirstPicks() : [configured]) {
+    const budget = contextWindowPolicy(model.getContextWindow(own), {
+      toolPayloadTokens, maxOutputTokens: model.getModelOutputCap(own), providerCeilingTokens: model.getProviderCeilingTokens(own),
+    }).assemblyBudgetTokens;
+    if (await systemTokensFor(agentId, own, turnContext) <= budget) return true;
+  }
+  return false;
 }
