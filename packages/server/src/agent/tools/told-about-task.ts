@@ -21,5 +21,5 @@ export const TOLD_ABOUT_TASK_ARG = 'task_id';
 
 export const TOLD_ABOUT_TASK_PROPERTY = {
   type: 'string',
-  description: 'Optional. The id of the task this message tells the person about (for example, raising a blocked task with the owner). Pass it and the platform knows they were told, so it will not raise that task with them again. Leave it out for anything else.',
+  description: 'Optional. The id of the task this message tells them about (e.g. raising a blocked task), so the platform knows they were told.',
 };
