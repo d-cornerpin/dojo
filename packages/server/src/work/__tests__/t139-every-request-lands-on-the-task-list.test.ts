@@ -492,35 +492,21 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(await taskList()).toContain(ask);
   });
 
-  // ROUND 2, I4 (fence widened to ask settlement this round). A long multi-step request answered
-  // with an acknowledgement alone closed the owner's ask DONE on the dashboard delivery, and
-  // nothing else recorded the request. The fix keys on the ENGINE'S OWN JUDGEMENT, recorded at
-  // loop 1 (`assemble/multistep-detection.ts` arms the start-ack steer and sets
-  // `inboundClassifiedAsWork` — the "[Engine hint: … being worked as a tracked job" row is its
-  // durable trace), never on the reply's text: on such a turn with ZERO effectful calls, the
-  // reply is the start line, not the answer, so the ask goes back OWED (CT0's hand-back,
-  // bounded by the re-serve ladder) and work it touched is not parked as "waiting on the owner".
+  // ROUND 3, R-V333-8 (replaces round 2's classifier rule, which held genuinely answered asks for
+  // ever — re-review B1). The rule is keyed on the turn's recorded EXIT, never a classifier and
+  // never the prose: when the turn ends with the engine CONTINUING the same work (a queued
+  // self-continuation — the 15-minute park, the tool-loop cap, a context rebuild), the opening
+  // line it held back ("On it.", text that rode with a tool call) is not the ask's answer, so the
+  // ask stays owed for the continuation and closes when the continuation delivers. A turn that
+  // genuinely ends settles exactly as before.
   const askStateOf = (msgId: string): string =>
     (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${msgId}`) as { state: string }).state;
-  const engineJudgedWork = (turn: number): boolean => !!mockDb.current!.prepare(
-    "SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'system' AND content LIKE '[Engine hint: the user has not heard anything%'",
-  ).get(PRIMARY, turn);
 
-  it('a multi-step request ACKNOWLEDGED without work stays OWED (timer branch: chat-shaped, no tools)', async () => {
-    const ask = longAsk(900, 'ACKED');
-    ownerSays('msg-acked', ask);
-    script([{ content: 'On it — I will work through the venues and report back.' }]);
-    await runV2Turn(PRIMARY);
-
-    expect(engineJudgedWork(1)).toBe(true);           // the engine's own record, not the prose
-    // HELD owed — visible on the open-work surface, and NOT handed back `open` for the drain to
-    // serve again (the bubble may have been a question; serving it again asks it twice).
-    expect(askStateOf('msg-acked')).toBe('blocked');
-  });
-
-  it('acknowledged with only a READ (timer branch: tools started past the threshold) stays OWED', async () => {
-    const ask = longAsk(900, 'ACKREAD');
-    ownerSays('msg-ackread', ask);
+  it.fails('a long job that parks after "On it." keeps the ask owed; the continuation\'s delivery closes it', async () => {
+    // A one-verb request the start-ack classifier does not arm on, so "On it." riding with the
+    // tool call is HELD BACK (not promoted as a start line) — the shape the t137 reviewer found
+    // delivered as the answer at the park.
+    ownerSays('msg-parked', 'Research the cheapest venue near the station for forty people.');
     const realNow = Date.now.bind(Date);
     let offset = 0;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
@@ -529,21 +515,58 @@ describe('t139 — every multi-step request lands on the task list with its word
       callModelSpy.mockImplementation(async () => {
         i++;
         if (i === 1) {
-          offset = 31_000;                              // past the 30 s start-ack threshold
-          return { content: 'On it.', toolCalls: [call('ws-r', 'web_search', { query: 'venues' })], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+          offset = 16 * 60_000;                         // the call returns past the turn budget
+          return { content: 'On it.', toolCalls: [call('ws-p', 'web_search', { query: 'venues' })], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
         }
-        return { content: 'I have a first look; will report back with the comparison.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+        return { content: 'unreachable', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
       });
       await runV2Turn(PRIMARY);
     } finally { nowSpy.mockRestore(); }
-    expect(askStateOf('msg-ackread')).not.toBe('done');
+    const parked = mockDb.current!.prepare(
+      'SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1',
+    ).get(PRIMARY) as { exit_reason: string };
+    expect(parked.exit_reason).toBe('budget');           // the engine continued the work
+    expect(askStateOf('msg-parked')).not.toBe('done');   // "On it." was not the answer
+
+    script([{ content: 'Here is the venue comparison: Dock 700, Ferry 640, Elm Hall 850 — Ferry is cheapest.' }]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-parked')).toBe('done');        // the continuation's delivery closes it
+  });
+
+  // CONTROLS — re-review B1's four cases: genuinely answered requests settle as they always did.
+  it('CONTROL (B1): a lookup answered in text after one read closes on its answer', async () => {
+    ownerSays('msg-b1a', 'Look up the population of France and compare it to Germany.');
+    script([{ toolCalls: [call('ws-b1', 'web_search', { query: 'population France Germany' })] },
+      { content: 'France has about 68 million people; Germany about 84 million.' }]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-b1a')).toBe('done');
+  });
+
+  it('CONTROL (B1): a draft written in the bubble closes on the bubble', async () => {
+    ownerSays('msg-b1b', 'Draft a two-line thank-you note to the caterer and summarize what we agreed on the menu.');
+    script([{ content: 'Thank you for the wonderful spread on Friday — everyone loved it.\nWe agreed: two mains, one vegetarian, dessert platter.' }]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-b1b')).toBe('done');
+  });
+
+  it('CONTROL (B1): a yes/no comparison answered in one line closes', async () => {
+    ownerSays('msg-b1c', 'Can you check whether 2026 is a leap year and compare it with 2024?');
+    script([{ content: 'No — 2026 is not a leap year; 2024 was.' }]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-b1c')).toBe('done');
+  });
+
+  it('CONTROL (B1): "create a task" answered with work_open then "Done" closes', async () => {
+    ownerSays('msg-b1d', 'Create a task to remind me to call the venue on Friday.');
+    script([{ toolCalls: [openTask('wo-b1d', 'Call the venue', 'The owner reminded on Friday')] }, { content: 'Done — the task is on the list.' }]);
+    await runV2Turn(PRIMARY);
+    expect(askStateOf('msg-b1d')).toBe('done');
   });
 
   it('CONTROL: a quick question the engine did NOT judge as work closes on its answer, as always', async () => {
     ownerSays('msg-quick', 'What is 15% of 240?');
     script([{ content: '36.' }]);
     await runV2Turn(PRIMARY);
-    expect(engineJudgedWork(1)).toBe(false);
     expect(askStateOf('msg-quick')).toBe('done');
   });
 

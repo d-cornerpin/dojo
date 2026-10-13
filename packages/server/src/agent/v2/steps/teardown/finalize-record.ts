@@ -123,13 +123,12 @@ export async function finalizeTurnRecord(
       // only when the turn produced no answer AND executed zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
-    // t139 round 2 (I4): THE ENGINE'S OWN JUDGEMENT, never the reply's text. The multistep
-    // classifier decided at loop 1 that this turn's request is WORK (`inboundClassifiedAsWork`,
-    // the decision that also arms the start-ack steer), and the turn then performed nothing
-    // (zero effectful calls). Its bubble was the start line: the ask goes back OWED
-    // (`settleAsksAtTurnFinalize`) and the work it touched is not parked "waiting on the owner"
-    // (`pauseDriveWorkWaitingOnOwner`). Driven both timer branches in
-    // `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`.
+    // t139 round 2 (I4), PAUSE SIDE ONLY: the multistep classifier judged this turn's request to
+    // be WORK (`inboundClassifiedAsWork`) and the turn performed nothing (zero effectful calls),
+    // so the work it touched is not parked "waiting on the owner" (`pauseDriveWorkWaitingOnOwner`).
+    // A misclassification here only leaves a task unpaused. The SETTLEMENT half of this rule was
+    // reverted in round 3 (R-V333-8, re-review B1: it held genuinely answered asks for ever); the
+    // ask side is now keyed on the turn's recorded exit — see `continuing` below.
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
     // ── UX-REPAIR ROUND 13 T61(b), READ 1 of 2 — THE TRIGGER ASK ──
     // Two columns and no judgment, for the marker below.
@@ -171,7 +170,7 @@ export async function finalizeTurnRecord(
       const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, startLineOnly });
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
