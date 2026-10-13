@@ -214,6 +214,17 @@ describe('§3 every adjudication writer\'s verdict sits exactly on its companion
     expect(adj.event_seq).toBe(ev.id);
   });
 
+  it('the shared fixture\'s trigger IS the migration\'s trigger (30 fixture-built files rely on it)', () => {
+    const body = (src: string): string => {
+      const m = /CREATE TRIGGER(?: IF NOT EXISTS)? adjudications_event_seq([\s\S]*?END;)/.exec(src);
+      expect(m, 'trigger present').not.toBeNull();
+      return m![1].replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim();
+    };
+    const mig = fs.readFileSync(path.join(SRC, 'db', 'migrations', '189b_verdict_event_sequence.sql'), 'utf8');
+    const fixture = fs.readFileSync(path.join(SRC, 'work', '__tests__', 'work-fixture.ts'), 'utf8');
+    expect(body(fixture)).toBe(body(mig));
+  });
+
   it('no verdict is ever left unpositioned', () => {
     upheldThenReblocked('w-any');
     const n = mockDb.current!.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL')
