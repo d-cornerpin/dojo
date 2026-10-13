@@ -24,7 +24,9 @@ const MIGRATIONS_DIR = path.join(HERE, '..', 'migrations');
 const FILES = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
 const M189 = '189_work_told_event.sql';
 const M189C = '189c_verdict_event_sequence.sql';
-const isSubject = (f: string): boolean => f === M189 || f === M189C;
+/** Every lane-t142 migration, whatever letters exist: 189, 189c and the fix round's files. */
+const SUBJECTS = FILES.filter((f) => f.startsWith('189'));
+const isSubject = (f: string): boolean => SUBJECTS.includes(f);
 
 function baseSchemaFromRunner(): string {
   const src = fs.readFileSync(path.join(HERE, '..', 'migrations.ts'), 'utf-8');
@@ -279,5 +281,91 @@ describe('vintage C — a fresh box with an empty work_events and no counter row
     ).run().lastInsertRowid);
     expect(id).toBe(1);
     expect((db.prepare('SELECT event_seq FROM adjudications').get() as { event_seq: number }).event_seq).toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// vintage D — FIX ROUND 1: what the owner hears on the FIRST BOOT after the upgrade (I1), and
+// a verdict with no companion read conservatively (M1). The body is pre-upgrade HISTORY: rows
+// the ladder already escalated, then reopened and blocked again, long ago. Upgraded through
+// every 189* file in order, exactly as a box takes them.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('vintage D — upgrade day: no escalation about a long-dead, already-escalated row', () => {
+  const built = vintage(null);
+  const ev = built.prepare('INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)');
+  const tr = (to: string) => JSON.stringify({ from: 'claimed', to, by: 'agent', note: 'fixture obstacle' });
+  built.prepare(`INSERT INTO agents (id, name, status) VALUES ('fixture-agent', 'Fixture', 'idle')`).run();
+  const work = built.prepare(
+    `INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id, state,
+                       intent, wakes, closes_thread, title, opened_at, updated_at)
+     VALUES (?, 'task', 'fixture-agent', 'owner', 'owner', 'tracker', ?, ?, 'do-it', 1, 0, 'fixture row', ?, ?)`,
+  );
+  // THE SET: blocked, escalated (the ladder ran to its end), resolved, blocked AGAIN — months ago.
+  work.run('d-reblocked', 'd-reblocked', 'blocked', T0, T0);
+  ev.run('d-reblocked', 'transition', tr('blocked'), 'agent', T0 + 100);
+  const origStamp = Number(ev.run('d-reblocked', 'validation_escalated', JSON.stringify({ thread_id: 'conv-owner' }), 'scheduler', T0 + 101).lastInsertRowid);
+  ev.run('d-reblocked', 'transition', tr('claimed'), 'agent', T0 + 102);
+  ev.run('d-reblocked', 'transition', tr('blocked'), 'agent', T0 + 103);
+  // CONTROLS: escalated in its CURRENT block (already settled), and never escalated (eligible today).
+  work.run('d-current', 'd-current', 'blocked', T0, T0);
+  ev.run('d-current', 'transition', tr('blocked'), 'agent', T0 + 110);
+  ev.run('d-current', 'validation_escalated', JSON.stringify({ thread_id: null }), 'scheduler', T0 + 111);
+  work.run('d-never', 'd-never', 'blocked', T0, T0);
+  ev.run('d-never', 'transition', tr('blocked'), 'agent', T0 + 120);
+  // NOT BLOCKED NOW: escalated once, now claimed — base behaviour keeps it settled (I3).
+  work.run('d-claimed', 'd-claimed', 'claimed', T0, T0);
+  ev.run('d-claimed', 'transition', tr('blocked'), 'agent', T0 + 130);
+  ev.run('d-claimed', 'validation_escalated', JSON.stringify({ thread_id: null }), 'scheduler', T0 + 131);
+  ev.run('d-claimed', 'transition', tr('claimed'), 'agent', T0 + 132);
+  // M1: a verdict with NO companion, filed between an entry and a LATER re-entry into the
+  // same state. Base read it unvalidated for the re-entry; so must the upgraded box.
+  work.run('d-orphan', 'd-orphan', 'blocked', T0, T0);
+  ev.run('d-orphan', 'transition', tr('blocked'), 'agent', T0 + 150);
+  built.prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at)
+                 VALUES ('d-orphan', 'blocked', 'upheld', 'pm-fixture', 'fixture', ?)`).run(T0 + 200);
+  ev.run('d-orphan', 'transition', tr('claimed'), 'agent', T0 + 250);
+  ev.run('d-orphan', 'transition', tr('blocked'), 'agent', T0 + 300);
+
+  const db = copyOf(built);
+  for (const f of SUBJECTS) applyFile(db, f);
+
+  const settled = async (id: string): Promise<number> => {
+    const { ownerEpisodeSettledExpr } = await import('../../work/validation-drive.js');
+    return (db.prepare(`SELECT (CASE WHEN ${ownerEpisodeSettledExpr('w')} THEN 1 ELSE 0 END) AS s FROM work w WHERE w.id = ?`)
+      .get(id) as { s: number }).s;
+  };
+
+  it.fails('THE MEASURE: rows the old suppressor silenced and the new one would not — zero after upgrade', async () => {
+    const { ownerEpisodeSettledExpr } = await import('../../work/validation-drive.js');
+    const newlyEligible = (db.prepare(
+      `SELECT COUNT(*) AS n FROM work w
+        WHERE EXISTS (SELECT 1 FROM work_events s WHERE s.work_id = w.id AND s.kind = 'validation_escalated')
+          AND NOT ${ownerEpisodeSettledExpr('w')}`,
+    ).get() as { n: number }).n;
+    expect(newlyEligible).toBe(0);
+  });
+
+  it.fails('the already-escalated, re-blocked row is carried as settled; the controls are untouched', async () => {
+    expect(await settled('d-reblocked'), 'carried').toBe(1);
+    expect(await settled('d-current'), 'already settled').toBe(1);
+    expect(await settled('d-never'), 'never escalated: eligible exactly as at base').toBe(0);
+    expect(await settled('d-claimed'), 'not blocked: base behaviour').toBe(1);
+  });
+
+  it.fails('the carry is exactly ONE row, invisible on the dashboard (the original instant and thread)', () => {
+    const carried = db.prepare(
+      `SELECT work_id, actor, created_at, payload FROM work_events
+        WHERE kind = 'validation_escalated' AND json_extract(payload, '$.carried') = 1`,
+    ).all() as Array<{ work_id: string; actor: string; created_at: number; payload: string }>;
+    expect(carried.map((c) => c.work_id)).toEqual(['d-reblocked']);
+    expect(carried[0].created_at, 'same instant as the stamp it carries').toBe(T0 + 101);
+    expect(JSON.parse(carried[0].payload)).toMatchObject({ thread_id: 'conv-owner', carried_from: origStamp });
+  });
+
+  it.fails('M1: a companion-less verdict filed before a later re-entry reads UNVALIDATED, as base read it', async () => {
+    const { validatedExpr } = await import('../../work/tracker-view.js');
+    const v = (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = 'd-orphan'`).get() as { v: number }).v;
+    expect(v).toBe(0);
   });
 });
