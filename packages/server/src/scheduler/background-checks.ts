@@ -1,0 +1,44 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE BACKGROUND CHECKS THAT RIDE THE SCHEDULER'S CLOCK (t138).
+//
+// The platform keeps one clock (`scheduler/clock.ts`, 30 s). Two owner-notice checks ride it
+// instead of owning timers of their own. Both are KICKED, never awaited by the tick — a slow
+// provider API or a module load must never hold the due scan or the re-entrancy guard hostage —
+// and the last kick of each is kept so "has it settled" is answerable.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import { createLogger } from '../logger.js';
+
+const logger = createLogger('scheduler-background-checks');
+
+/** The provider-balance check (#8): a balance that was only checked while the Ledger page was
+ *  open is the defect it replaces. It decides for itself whether it is due (`BALANCE_CHECK_EVERY_MS`). */
+let lastBalanceKick: Promise<void> = Promise.resolve();
+
+export function kickBalanceCheck(): void {
+  lastBalanceKick = import('../costs/provider-balance-check.js')
+    .then(async (m) => { await m.maybeCheckProviderBalances(); })
+    .catch((err) => {
+      logger.error('Provider balance check could not start', { error: err instanceof Error ? err.message : String(err) });
+    });
+}
+
+// r4: while the owner's low-memory card stands, the tick re-measures memory so its recovery
+// ends the card (and re-arms the text) without waiting for the next spawn attempt. Nothing is
+// measured while memory has not been reported low.
+let lastMemoryKick: Promise<void> = Promise.resolve();
+
+export function kickMemoryRecheck(): void {
+  lastMemoryKick = import('../services/memory-low-notice.js').then(async (m) => {
+    if (!m.memoryLowStanding()) return;
+    const { getResourceInfo } = await import('../services/resource-monitor.js');
+    m.noteCriticalMemory(getResourceInfo().memory.free);
+  }).catch((err) => {
+    logger.warn('Memory re-check could not run', { error: err instanceof Error ? err.message : String(err) });
+  });
+}
+
+/** Resolves when the most recently kicked checks have finished (or were not due). */
+export function backgroundChecksSettled(): Promise<void> {
+  return Promise.all([lastBalanceKick, lastMemoryKick]).then(() => undefined);
+}

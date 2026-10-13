@@ -20,7 +20,7 @@ import { agentOwnerCards } from '../../agent/agent-owner-cards.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
 import { memoryOwnerCards } from '../../services/memory-low-notice.js';
 import { accountOwnerCards } from '../../services/account-owner-cards.js';
-import { watcherOwnerCards } from '../../services/watcher-status.js';
+import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';

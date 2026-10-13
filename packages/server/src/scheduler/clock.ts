@@ -37,6 +37,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
+import { kickBalanceCheck, kickMemoryRecheck, backgroundChecksSettled } from './background-checks.js';
 
 const logger = createLogger('scheduler-clock');
 
@@ -62,45 +63,12 @@ export function schedulerClockState(): {
   return { running: timer !== null, inFlight, overlapsSkipped, everyMs: SCHEDULER_INTERVAL_MS };
 }
 
-/**
- * The provider-balance check (t138, #8) rides this clock rather than owning a timer of its own:
- * the platform already keeps one clock, and a balance that only got checked while the Ledger
- * page was open is the defect it replaces. It is KICKED, not awaited — a slow provider API must
- * never hold the due scan, or the re-entrancy guard, hostage — and it decides for itself whether
- * it is due (`BALANCE_CHECK_EVERY_MS`). The last kick is kept so "has it settled" is answerable.
- */
-let lastBalanceKick: Promise<void> = Promise.resolve();
+/** Resolves when the background checks kicked by the last tick (scheduler/background-checks.ts:
+ *  the provider balances, t138; the low-memory re-measure, t138 r4) have finished. */
+export const balanceCheckSettled = backgroundChecksSettled;
 
-function kickBalanceCheck(): void {
-  lastBalanceKick = import('../costs/provider-balance-check.js')
-    .then(async (m) => { await m.maybeCheckProviderBalances(); })
-    .catch((err) => {
-      logger.error('Provider balance check could not start', { error: err instanceof Error ? err.message : String(err) });
-    });
-}
-
-// t138 r4: while the owner's low-memory card stands, this tick re-measures memory so its recovery
-// ends the card (and re-arms the text) without waiting for the next spawn attempt. Nothing is
-// measured while memory has not been reported low.
-let lastMemoryKick: Promise<void> = Promise.resolve();
-
-function kickMemoryRecheck(): void {
-  lastMemoryKick = import('../services/memory-low-notice.js').then(async (m) => {
-    if (!m.memoryLowStanding()) return;
-    const { getResourceInfo } = await import('../services/resource-monitor.js');
-    m.noteCriticalMemory(getResourceInfo().memory.free);
-  }).catch((err) => {
-    logger.warn('Memory re-check could not run', { error: err instanceof Error ? err.message : String(err) });
-  });
-}
-
-/** Resolves when the most recently kicked balance check has finished (or was not due). */
-export function balanceCheckSettled(): Promise<void> {
-  return Promise.all([lastBalanceKick, lastMemoryKick]).then(() => undefined);
-}
-
-/** The default body: the balance check's kick, then the scheduler's own due scan. Injectable so
- *  the guard can be driven. */
+/** The default body: the background checks' kicks around the scheduler's own due scan. Injectable
+ *  so the guard can be driven. */
 const defaultBody: TickBody = async () => {
   kickBalanceCheck();
   const { checkScheduledTasks } = await import('./runner.js');
