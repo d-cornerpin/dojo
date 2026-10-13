@@ -154,7 +154,9 @@ describe('§3 a stored row of a retired kind is excluded by the read, and nothin
     const db = new Database(':memory:');
     db.exec(`
       CREATE TABLE messages (id TEXT PRIMARY KEY);
-      CREATE TABLE summaries (id TEXT PRIMARY KEY);
+      -- t140: the liveness predicate reads summaries.kind (a not-yet-condensed note is not
+      -- embeddable); every real schema has the column since migration 002.
+      CREATE TABLE summaries (id TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'leaf');
       CREATE TABLE techniques (id TEXT PRIMARY KEY);
       CREATE TABLE briefings (id TEXT PRIMARY KEY, agent_id TEXT, content TEXT);
       CREATE TABLE embeddings (
