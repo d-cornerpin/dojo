@@ -67,7 +67,8 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
 
   it('the replacement is called from exactly the two doors that decide to condense, and nowhere else', () => {
     expect(filesWith(/\browsLeavingView\(/)).toEqual([
-      REFIT_REL,                  // fix round 1 (M3): what a re-fit set aside, for that pick's window
+      // (round 2: the re-fit no longer predicts its leaving rows; it folds what its assembly
+      // actually took out of view, through `assembleWithNothingOutOfViewUnsummarised`)
       GATE_REL,
       'memory/compaction.ts',
       'memory/tail-horizon.ts',   // its own declaration
@@ -151,8 +152,13 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts', 'memory/compaction.ts']);
   });
 
-  it('M3/I3: ONE background-condense launcher, used by the gate and the re-fit and nowhere else', () => {
-    expect(filesWith(/\bcondenseLeavingInBackground\(/)).toEqual([REFIT_REL, GATE_REL]);
+  it('M3/I3 (round 2): ONE background PRESSURE-fold launcher, the gate\'s; ONE out-of-view door, used by the turn\'s assembly and the re-fit', () => {
+    expect(filesWith(/\bcondenseLeavingInBackground\(/)).toEqual([GATE_REL]);
+    // The re-fit's own background fold (fix round 1's M3) is gone: it folded above the floor only.
+    expect(filesWith(/\bfoldWhatTheRefitSetAside\b/)).toEqual([]);
+    expect(filesWith(/\bassembleWithNothingOutOfViewUnsummarised[<(]/)).toEqual([
+      `${ENGINE_STEPS_REL}/assemble/index.ts`, REFIT_REL, 'memory/compaction.ts',
+    ]);
   });
 
   it('I1: every fallback pick is re-fitted, the fit filter judges windows, and the budget redirect re-fits', () => {

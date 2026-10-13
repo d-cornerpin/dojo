@@ -434,14 +434,17 @@ describe('t140 fix round 1 — M1: a pick that cannot hold even the system promp
 });
 
 describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick folds what its re-fit set aside, for that window', () => {
-  it('the 16K pick\'s re-fit sets rows aside, and exactly those (never its floor) are folded in the background', async () => {
+  it('the 16K pick\'s re-fit sets rows aside, and exactly those are folded before it is dialed (round 2: awaited, through the assembly door)', async () => {
     seedConversation(250);
     await dialAsRouted(LIGHT);
+    const summarisedAtDial = summarisedRowCount();
     let folded = 0;
     // Polled with a generous bound: under a loaded full suite the background fold (archive,
     // chunking, the scripted summariser) has been measured to need more than two seconds.
     for (let i = 0; i < 1000 && folded === 0; i++) { await new Promise((r) => setTimeout(r, 10)); folded = summarisedRowCount(); }
     expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
+    // Round 2: folded BEFORE the dial — the turn's own request already sat behind the summary.
+    expect(summarisedAtDial, 'folded before the pick was dialed, not after').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
     expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));
   });

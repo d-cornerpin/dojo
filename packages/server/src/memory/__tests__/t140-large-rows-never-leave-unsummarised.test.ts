@@ -53,7 +53,7 @@ vi.mock('../../agent/model.js', () => ({
 
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
-import { checkAndCompact, estimateAssembledTokens, liveViewIsFull } from '../compaction.js';
+import { checkAndCompact, estimateAssembledTokens, liveViewIsFull, assembleWithNothingOutOfViewUnsummarised } from '../compaction.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { getFreshTailCount, estimateTokens } from '../budget.js';
 import { rowsLeavingView, tailTrimBlockGroups } from '../tail-horizon.js';
@@ -82,11 +82,17 @@ function appendTurn(large: boolean): void {
   });
 }
 
-interface RunLog { trimmedTurns: number[]; folds: Array<{ turn: number; rows: number }> }
+interface RunLog {
+  trimmedTurns: number[];
+  /** The gate's PRESSURE folds (ahead of need, whole blocks above the floor). */
+  folds: Array<{ turn: number; rows: number }>;
+  /** Round 2: turns on which the engine's assembly door had to fold rows its assembly took out. */
+  outOfViewFoldTurns: number[];
+}
 
 /** The production pre-call gate's routine arm, then the assembly — once per turn. */
 async function drive(turns: number, largeEvery: number): Promise<RunLog> {
-  const log: RunLog = { trimmedTurns: [], folds: [] };
+  const log: RunLog = { trimmedTurns: [], folds: [], outOfViewFoldTurns: [] };
   let lastSystemTokens = 0;
   for (let t = 1; t <= turns; t++) {
     appendTurn(t % largeEvery === 0);
@@ -97,9 +103,18 @@ async function drive(turns: number, largeEvery: number): Promise<RunLog> {
       const r = await checkAndCompact(AGENT, MODEL, windowNow.value, { leaving, maxChunksPerRun: 10 });
       if (r.leafCreated > 0) log.folds.push({ turn: t, rows: leaving.rowsLeaving });
     }
-    const ctx = await assembleContext(AGENT, MODEL);
+    // The engine's own door (round 2). "Trimmed" still reads the FIRST assembly's cut — what the
+    // trim had to take — so the 128K clause keeps meaning "the pressure folds ran ahead of need".
+    let firstDropped: number | null = null;
+    const before = summariser.calls;
+    const ctx = await assembleWithNothingOutOfViewUnsummarised(AGENT, windowNow.value, async () => {
+      const a = await assembleContext(AGENT, MODEL);
+      if (firstDropped === null) firstDropped = a.freshTailDropped ?? 0;
+      return a;
+    });
+    if (summariser.calls > before) log.outOfViewFoldTurns.push(t);
     lastSystemTokens = estimateTokens(ctx.systemPrompt);
-    if ((ctx.freshTailDropped ?? 0) > 0) log.trimmedTurns.push(t);
+    if ((firstDropped ?? 0) > 0) log.trimmedTurns.push(t);
   }
   return log;
 }
@@ -138,17 +153,22 @@ describe('t140 C1 — large rows never make the trim set unsummarised rows aside
 });
 
 describe('t140 I4 — a full view whose pressure sits in the newest-row floor does not fold a few rows every turn', () => {
-  it('32K window, a ~12K row every 15 turns, 220 turns: every fold is at least one trim block, never on consecutive turns', async () => {
+  it('32K window, a ~12K row every 15 turns, 220 turns: pressure folds are whole blocks, never back to back; exact folds only where a large row forces the trim', async () => {
     seed(32_000);
     const log = await drive(220, 15);
     const block = tailTrimBlockGroups(getFreshTailCount(32_000));
     // eslint-disable-next-line no-console
-    console.log(`t140 I4 32K/15: trimmed ${log.trimmedTurns.length} turns · ${log.folds.length} folds ${JSON.stringify(log.folds)}`);
-    expect(log.folds.filter((f) => f.rows < block), 'a fold smaller than one trim block').toEqual([]);
+    console.log(`t140 I4 32K/15: trimmed ${log.trimmedTurns.length} turns · ${log.folds.length} pressure folds ${JSON.stringify(log.folds)} · out-of-view folds on ${log.outOfViewFoldTurns.length} turns ${JSON.stringify(log.outOfViewFoldTurns)}`);
+    // PRESSURE folds (the gate's, ahead of need): whole blocks, never back to back.
+    expect(log.folds.filter((f) => f.rows < block), 'a pressure fold smaller than one trim block').toEqual([]);
     const consecutive = log.folds.filter((f, i) => i > 0 && f.turn === log.folds[i - 1].turn + 1);
-    expect(consecutive, 'folds on back-to-back turns').toEqual([]);
-    // Bounded: a 32K view with 12K rows in it may fold, but never on more than one turn in ten.
-    expect(log.folds.length).toBeLessThanOrEqual(22);
+    expect(consecutive, 'pressure folds on back-to-back turns').toEqual([]);
+    // OUT-OF-VIEW folds (round 2) are exact, not block-sized — they cover what the trim took. They
+    // happen only where a large row forces the trim: on its turn, and the next (a ~12K row in a
+    // 32K view is itself cut one turn after it arrives). Never on an ordinary small ask.
+    const largeOrNext = (t: number) => t % 15 === 0 || (t - 1) % 15 === 0;
+    expect(log.outOfViewFoldTurns.filter((t) => !largeOrNext(t)), 'an out-of-view fold on a turn with no large row').toEqual([]);
+    expect(log.folds.length + log.outOfViewFoldTurns.length, 'at most two folds per large row').toBeLessThanOrEqual(2 * Math.floor(220 / 15));
   }, 600_000);
 });
 
@@ -163,8 +183,10 @@ describe('t140 I4 — a full view whose pressure sits in the newest-row floor do
 type FoldTiming = 'awaited' | 'after-assembly';
 interface CountLog { lostRowTurns: number; turnsWithLoss: number; worstTurn: { turn: number; lost: string[] } | null; folds: number }
 
-/** The assembly the turn actually dials. Round 2's fix changes which door the engine uses. */
-const turnAssembly = async () => assembleContext(AGENT, MODEL);
+/** The assembly the turn actually dials: the engine's door (`runAssemble` and the re-fit both go
+ *  through it). At the RED commit this was the bare `assembleContext`, which is what the engine
+ *  called then; the counting is unchanged. */
+const turnAssembly = async () => assembleWithNothingOutOfViewUnsummarised(AGENT, windowNow.value, () => assembleContext(AGENT, MODEL));
 
 function lostRows(view: string): string[] {
   const rows = db().prepare(
@@ -215,8 +237,7 @@ describe('t140 round 2 — C1 direct count: no row is ever out of view without a
         console.log(`t140 C1-direct ${window / 1000}K/${every} ${timing}: ${log.turnsWithLoss} turns with loss, ${log.lostRowTurns} lost row-turns, worst ${JSON.stringify(log.worstTurn && { turn: log.worstTurn.turn, n: log.worstTurn.lost.length })} · ${log.folds} fold turns`);
         expect(log.worstTurn, 'a row was out of view with no summary covering it').toBeNull();
       };
-      if (window === 32_000) it.fails(clause, body, 600_000);
-      else it(clause, body, 600_000);
+      it(clause, body, 600_000);
     }
   }
 });

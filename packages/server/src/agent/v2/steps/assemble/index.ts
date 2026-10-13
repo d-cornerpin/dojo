@@ -36,6 +36,7 @@
 
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
 import { estimateTokens } from '../../../../memory/budget.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/compaction.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
@@ -247,7 +248,10 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     turnCtx.kind = 'a2a';
     broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
   }
-  const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
+  // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
+  // rows the trim took are folded (awaited) and the context assembled again (`compaction.ts`).
+  const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, contextWindow,
+    () => assembleContext(agentId, contextModelId, sharedTurnContext));
   // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──
   // `memory/assembler.ts` used to `UPDATE agents SET config` from inside its own read
   // path to clear the one-shot A2A-preempt and Stop markers it had just rendered. That

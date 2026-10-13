@@ -446,7 +446,9 @@ export function groupsToDropForBudget(
 // includes rows an earlier refused chunk stranded before the boundary.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-export type LeavingCause = 'ceiling' | 'full';
+/** 'out-of-view' (round 2): rows an assembly ALREADY took out of the view — the trim's front cut,
+ *  floor rows included — owed their fold before the turn dials (`compaction.ts`). */
+export type LeavingCause = 'ceiling' | 'full' | 'out-of-view';
 
 export interface LeavingView {
   cause: LeavingCause;

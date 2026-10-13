@@ -1000,7 +1000,8 @@ async function leavingViewPass(
 
   const archiveHighWater = getArchiveHighWaterMark(agentId);
   const compactedIds = getCompactedMessageIds(agentId);
-  const span = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow))
+  const floorRows = leaving.cause === 'out-of-view' ? 1 : getFreshTailCount(contextWindow);
+  const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
   const toArchive = span.filter(m => archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater);
   if (toArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
@@ -1014,6 +1015,7 @@ async function leavingViewPass(
     maxChunks: options?.maxChunksPerRun,
     abortSignal: options?.abortSignal,
     throughSeq: leaving.throughSeq,
+    floorRows,
   }));
   rebuildContextItems(agentId);
   // T56 leg (b): the prefix has just been rewritten at the summaries lane, so this is the one
@@ -1030,6 +1032,72 @@ async function leavingViewPass(
   }
   logger.info('Leaving-view condense complete', { ...result, cause: leaving.cause }, agentId);
   return result;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// t140 round 2 (re-review C1) — NO ROW IS EVER OUT OF VIEW WITHOUT A SUMMARY COVERING IT.
+//
+// The routine gate's folds are PRESSURE folds: they run ahead of need, in the background, in whole
+// trim blocks above the newest-row floor (I4's rule), so on a roomy window the trim never has to
+// cut. On a small window one large row (a file read, a long paste) makes the token trim cut THIS
+// assembly — floor rows included when the floor itself does not fit — and no fold started earlier
+// can know which rows. So the assembly the turn dials is checked against itself: the assembler
+// reports the newest seq it took out of view (`outOfViewThroughSeq`, read off the trim's own
+// result), and every unsummarised row at or below it is folded NOW, awaited, then the context is
+// assembled again — which may cut again (the new summary costs room), so it recurses, bounded, as
+// OR-COMPACT-1 requires. The low-yield brake bounds it the way it bounds every fold: a pass that
+// folds nothing ends the recursion and is reported as a repairable defect, never a silent loss.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** Recursion bound: each pass folds everything the last assembly cut; a re-assembly can only cut
+ *  again by the room the new summary took, so this is never reached on a healthy writer. */
+const OUT_OF_VIEW_FOLD_PASSES = 4;
+
+/** Unsummarised rows of this session at or below `throughSeq` — the same reader (and session
+ *  boundary) the fold itself selects from, so "owed" and "folded" can never disagree. */
+function unsummarisedThrough(agentId: string, throughSeq: number): number {
+  const compacted = getCompactedMessageIds(agentId);
+  return getMessagesOutsideFreshTail(agentId, 1)
+    .filter((m) => !compacted.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= throughSeq).length;
+}
+
+/**
+ * THE ENGINE'S ASSEMBLY DOOR. `assemble` is the one assembly this turn will dial (the assemble
+ * step's, or a re-fit's for a smaller pick); `contextWindow` is that assembly's window. The fold is
+ * written by the agent's own summary writer, under the same per-agent lock as every compaction —
+ * WAITING for one already running (the gate's background fold may be covering these very rows).
+ */
+export async function assembleWithNothingOutOfViewUnsummarised<T extends { outOfViewThroughSeq?: number }>(
+  agentId: string, contextWindow: number, assemble: () => Promise<T>,
+): Promise<T> {
+  let assembled = await assemble();
+  for (let pass = 0; pass < OUT_OF_VIEW_FOLD_PASSES; pass++) {
+    const throughSeq = assembled.outOfViewThroughSeq ?? 0;
+    if (throughSeq <= 0 || unsummarisedThrough(agentId, throughSeq) === 0) return assembled;
+    const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
+      { model_id: string | null } | undefined)?.model_id ?? undefined;
+    const writer = resolveSummaryWriterModel(agentId, configured);
+    const covered = writer === null ? 0 : await withLock(`compact:${agentId}`, async () => {
+      const owed = unsummarisedThrough(agentId, throughSeq);
+      if (owed === 0) return 0;
+      await leavingViewPass(agentId, writer, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: owed });
+      return owed - unsummarisedThrough(agentId, throughSeq);
+    }, { ifBusy: 'wait' }) ?? 0;
+    if (covered <= 0 && unsummarisedThrough(agentId, throughSeq) > 0) {
+      logger.error('DEFECT: rows are out of the live view with no summary, and the fold covering them did not run', {
+        throughSeq, owed: unsummarisedThrough(agentId, throughSeq), writer,
+        repair: writer === null ? 'no text-capable model can write summaries for this agent' : 'the summary writer failed or is braked; see the compaction defect line',
+      }, agentId);
+      return assembled;
+    }
+    assembled = await assemble();
+  }
+  if ((assembled.outOfViewThroughSeq ?? 0) > 0 && unsummarisedThrough(agentId, assembled.outOfViewThroughSeq ?? 0) > 0) {
+    logger.error('DEFECT: the out-of-view fold did not converge within its bound', {
+      passes: OUT_OF_VIEW_FOLD_PASSES, throughSeq: assembled.outOfViewThroughSeq,
+    }, agentId);
+  }
+  return assembled;
 }
 
 // ── T56 leg (b) — the age-out, and the boundary it may never cross ──────────────────────
@@ -1242,10 +1310,14 @@ export async function runLeafCompaction(
     /** t140: fold only rows with `seq <= throughSeq` (the leaving-view span). Absent: every
      *  unsummarised row outside the floor, the pressure path's input. */
     throughSeq?: number;
+    /** t140 round 2: the newest rows this fold may not take. Absent: the window's floor. A fold
+     *  of rows the trim already took out of view passes 1 — the floor bounds what PRESSURE may
+     *  fold, not what the trim takes, and the newest row is never out of view. */
+    floorRows?: number;
   },
 ): Promise<number> {
   const cw = contextWindow ?? 200000;
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, getFreshTailCount(cw));
+  const messagesOutside = getMessagesOutsideFreshTail(agentId, opts?.floorRows ?? getFreshTailCount(cw));
   const compactedIds = getCompactedMessageIds(agentId);
   const through = opts?.throughSeq;
 

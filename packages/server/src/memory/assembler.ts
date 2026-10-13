@@ -431,6 +431,15 @@ export interface AssembledContext {
    */
   freshTailDropped?: number;
   /**
+   * t140 round 2 (re-review C1): the newest `messages.seq` this assembly took OUT of the live
+   * view — the token trim's front cut (`budgetFreshTail`) or the horizon's row-ceiling skip,
+   * whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
+   * below it is out of view with no summary, which the engine's assembly door
+   * (`compaction.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
+   * Read off the trim's own result, so the fold covers exactly what the trim took.
+   */
+  outOfViewThroughSeq?: number;
+  /**
    * PHASE-3 T4: what this assembly set aside for tool schemas + output, MEASURED — the
    * tools payload this agent's transport will serialise plus the derived output allowance.
    * The loop reads it to size the compaction gate's compressible budget; before T4 it
@@ -924,7 +933,11 @@ interface LaneRenderCtx {
 /** Every lane declares a floor of at least this — a header and a sentence still say something. */
 const MIN_LANE_FLOOR_TOKENS = 64;
 
-type TailPayload = { rows: Message[]; agentId: string; dropped: number };
+type TailPayload = {
+  rows: Message[]; agentId: string; dropped: number;
+  /** t140 round 2: the newest seq the token trim has taken off this tail's front (0: none). */
+  droppedThroughSeq?: number;
+};
 
 // STRIP (T56): `storedRowCost` MOVED to `memory/budget.ts`, with its PHASE-3 T3 history
 // attached, because the compaction gate spends the same unit and held its own copy of the
@@ -1177,7 +1190,10 @@ function buildContentLanes(
         const p = render.payload as TailPayload;
         const kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         const dropped = Math.max(0, p.rows.length - kept.length);
-        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped });
+        // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
+        // at the row just before it.
+        const droppedThroughSeq = Math.max(p.droppedThroughSeq ?? 0, dropped > 0 ? (p.rows[dropped - 1].rowid ?? 0) : 0);
+        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq });
       },
       render: (ctx) => {
         const { freshTail } = ctx.tail();
@@ -1382,6 +1398,8 @@ async function assembleMessageContext(
   // large one, and "large and rare" is only safe if it is also LOUD in the channel a person
   // reads: the same one, with the same words, now carrying the real number.
   let horizonSkippedRows = 0;
+  /** t140 round 2: the newest seq the horizon's row ceiling skipped (0: it skipped nothing). */
+  let horizonSkippedThroughSeq = 0;
   let summaryCache: Summary[] | null = null;
   const laneCtx: LaneRenderCtx = {
     agentId,
@@ -1427,6 +1445,7 @@ async function assembleMessageContext(
       // whole derivation, the ceiling and its hysteresis.
       const horizon = freshTailHorizon(agentId, policy);
       horizonSkippedRows = horizon.skippedRows;
+      horizonSkippedThroughSeq = horizon.ceilingBound && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0;
       // THE ASK, and the slack is CONDITIONAL — review I1. The slack exists for ONE reason:
       // `turnCutoff` excludes the newest user rows, so a `LIMIT` sized to the span would
       // reach that many rows further back, and the seq filter below is what trims them off
@@ -1594,6 +1613,7 @@ async function assembleMessageContext(
   // FA-M1: >0 means the model lost recent turns from its live view. The dropped rows are
   // persisted and later summarized, so it is live-view loss, not data loss.
   const freshTailDropped = (tailPayload?.dropped ?? 0) + horizonSkippedRows;
+  const outOfViewThroughSeq = Math.max(tailPayload?.droppedThroughSeq ?? 0, horizonSkippedThroughSeq);
 
   // ── Integrity pass (R6): post-combine repairs, one named stage ──
   let merged = applyIntegrityPass(messages, agentId);
@@ -1963,6 +1983,7 @@ async function assembleMessageContext(
     // mutation above, so it is aligned by construction rather than by maintenance.
     messageEntryIds: collectMessageLaneIds(merged),
     freshTailDropped,
+    outOfViewThroughSeq,
     reserveTokens: policy.toolAndOutputReserve,
     allocation: report,
     consumedOneShotFlags,

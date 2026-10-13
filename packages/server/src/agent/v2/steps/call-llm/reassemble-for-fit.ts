@@ -123,13 +123,15 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   logger.warn('v2: picked model was not the one this assembly was sized for; re-assembling against its own window', {
     agentId, modelId, assembledEstimate, budget: policy.assemblyBudgetTokens, contextWindow: policy.contextWindow,
   }, agentId);
-  const { assembleContext } = await import('../../../../memory/assembler.js');
-  const reassembled = await assembleContext(agentId, modelId, assemblyTurnContext);
-  // t140 fix round 1 (review M3): a re-fit that had to set live rows aside did so because the
-  // view is full for THIS pick's window — the rows it set aside are leaving the view, and they are
-  // owed their fold now, for this window, rather than whenever the roomier provisional window
-  // next fills. Same background condense as the pre-call gate, written by the agent's own writer.
-  if ((reassembled.freshTailDropped ?? 0) > 0) await foldWhatTheRefitSetAside(agentId, modelId, policy);
+  const [{ assembleContext }, { assembleWithNothingOutOfViewUnsummarised }] = await Promise.all([
+    import('../../../../memory/assembler.js'),
+    import('../../../../memory/compaction.js'),
+  ]);
+  // t140 round 2 (re-review C1; replaces fix round 1's background M3 fold): a re-fit for a smaller
+  // pick may take rows out of the view for THAT window — floor rows included — and they are folded
+  // before this pick is dialed, through the same door as the turn's own assembly.
+  const reassembled = await assembleWithNothingOutOfViewUnsummarised(agentId, policy.contextWindow,
+    () => assembleContext(agentId, modelId, assemblyTurnContext));
   const tail = messages.slice(volatileFrom ?? messages.length);
   return {
     messages: [...reassembled.messages, ...tail],
@@ -137,19 +139,4 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
     assembled: reassembled,
     volatileFrom: reassembled.messages.length,
   };
-}
-
-async function foldWhatTheRefitSetAside(
-  agentId: string, modelId: string, policy: { contextWindow: number; freshTailCount: number },
-): Promise<void> {
-  const [{ rowsLeavingView }, { condenseLeavingInBackground }, { getDb }] = await Promise.all([
-    import('../../../../memory/tail-horizon.js'),
-    import('../pre-call-gates/context-gates.js'),
-    import('../../../../db/connection.js'),
-  ]);
-  const leaving = rowsLeavingView(agentId, { freshTailCount: policy.freshTailCount }, { viewFull: true });
-  if (!leaving) return;
-  const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as
-    { model_id: string | null } | undefined)?.model_id ?? modelId;
-  condenseLeavingInBackground({ agentId, writerModelId: configured, dialedModelId: modelId, contextWindow: policy.contextWindow, leaving });
 }

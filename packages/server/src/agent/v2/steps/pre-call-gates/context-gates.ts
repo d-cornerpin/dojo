@@ -191,11 +191,12 @@ export async function runContextGates(
 /**
  * THE ROUTINE CONDENSE, fire-and-forget (v2.5.14): one in flight per agent (`backgroundDrains`),
  * under its own wall clock, folding exactly `leaving`. Measured for `dialedModelId`, WRITTEN by the
- * summary writer resolved from `writerModelId` (fix round 1, review I3). Shared by this gate and,
- * since fix round 1 (review M3), by `call-llm/reassemble-for-fit.ts` — a re-fit that sets rows
- * aside for a smaller pick folds them for THAT pick's window. Returns whether a condense started.
+ * summary writer resolved from `writerModelId` (fix round 1, review I3). A PRESSURE fold, ahead of
+ * need; rows an assembly has already taken out of view are folded, awaited, by the engine's
+ * assembly door instead (`compaction.ts`'s `assembleWithNothingOutOfViewUnsummarised`, round 2 —
+ * which is also what a re-fit for a smaller pick now goes through). Returns whether one started.
  */
-export function condenseLeavingInBackground(args: {
+function condenseLeavingInBackground(args: {
   agentId: string; writerModelId: string; dialedModelId: string; contextWindow: number; leaving: LeavingView;
 }): boolean {
   const { agentId, writerModelId, dialedModelId, contextWindow, leaving } = args;
