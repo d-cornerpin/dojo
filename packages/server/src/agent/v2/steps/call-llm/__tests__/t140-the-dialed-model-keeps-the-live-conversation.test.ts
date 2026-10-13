@@ -44,10 +44,26 @@ vi.mock('../../../../../memory/embeddings.js', () => ({
   refreshEmbedding: () => { /* not exercised */ },
 }));
 
+/** Round 2 (N1): every card the owner is sent, so a clause can assert none was. */
+const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string }> }));
 vi.mock('../../../../../gateway/ws.js', () => ({
-  broadcast: () => { /* not exercised */ },
+  broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); },
   stampPersistedRow: (e: unknown) => e,
 }));
+
+/** Round 2 (N1 / I1c): every model a context was ASSEMBLED for. Checking whether a fallback fits
+ *  must not rebuild the context, so a pick that cannot hold the turn is never assembled for. */
+const assembledFor = vi.hoisted(() => [] as string[]);
+vi.mock('../../../../../memory/assembler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../../memory/assembler.js')>();
+  return {
+    ...actual,
+    assembleContext: (agentId: string, modelId: string, ...rest: unknown[]) => {
+      assembledFor.push(modelId);
+      return (actual.assembleContext as (...a: unknown[]) => unknown)(agentId, modelId, ...rest);
+    },
+  };
+});
 
 /** The agent's tool payload, as the budget measures it. A fixed number so the arithmetic in
  *  this file is derivable by hand; `filterToolsForApiCall` is the transport's own list. */
@@ -188,6 +204,8 @@ beforeEach(() => {
   runMigrations();
   provider.requests.length = 0;
   provider.failNext = 0;
+  owner.cards.length = 0;
+  assembledFor.length = 0;
   __resetAssemblyValidationCounters();
   // Module state keyed by agent id: a low-yield brake armed by one clause's fold must not brake
   // the next clause's (the trap the t94 file documents).
@@ -426,5 +444,75 @@ describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick f
     expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
     expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2 (re-review N1, I1c, exhaustion). Checking whether a fallback can hold the turn is a
+// question, not an assembly: it must not rebuild the context and must not send the owner the
+// "this agent cannot hold a conversation" card, which says the agent is broken until someone
+// reconfigures it. That card is for when no model is left; a turn the next pick answers is fine.
+// ════════════════════════════════════════════════════════════════════════════════════════
+function addModel(id: string, window: number): void {
+  db().prepare(
+    `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+     VALUES (?, 'prov-routed', ?, 'sonnet', '["text","tools"]', ?, 4096, 1, datetime('now'), datetime('now'))`,
+  ).run(id, `Routed ${window}`, window);
+}
+function lightTierIs(...ids: string[]): void {
+  db().prepare("DELETE FROM router_tier_models WHERE tier_id = 'light'").run();
+  ids.forEach((id, i) => db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, ?)").run(id, i));
+}
+const windowCards = (): number => owner.cards.filter((c) => c.code === 'WINDOW_TOO_SMALL').length;
+
+describe('t140 round 2 — N1: a too-small fallback is passed over quietly when a later pick answers', () => {
+  it.fails('the 12K pick ahead of the 16K one: never assembled for, no owner card, and the 16K pick answers', async () => {
+    seedConversation(5);            // short: the array is under the 12K fill line, so selection admits it
+    addModel('m-routed-12k', 12_288);
+    lightTierIs('m-routed-12k', LIGHT);
+    provider.failNext = 1;          // the heavy pick dies on the wire
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
+    expect(out.modelId).toBe(LIGHT);
+    expect(assembledFor, 'the fit check did not rebuild the context for a pick that cannot hold it').not.toContain('m-routed-12k');
+    expect(windowCards(), 'no "cannot hold a conversation" card on a turn that was answered').toBe(0);
+  });
+});
+
+describe('t140 round 2 — I1c: the selector judges each candidate against its own window', () => {
+  it('a higher-priority pick too small for the turn as built is passed over for one that holds it, and is never assembled for', async () => {
+    seedConversation(250);
+    // 14K holds the system prompt and tools (so only the SELECTOR's window check can pass it
+    // over), but not this turn as built; 64K holds the turn as built.
+    addModel('m-routed-14k', 14_336);
+    addModel('m-routed-64k', 65_536);
+    lightTierIs('m-routed-14k', 'm-routed-64k');
+    provider.failNext = 1;
+    const out = await dialStep(HEAVY);
+    expect(out.abandoned).toBeUndefined();
+    if (out.abandoned) return;
+    expect(out.modelId, 'the candidate whose window holds the turn as built').toBe('m-routed-64k');
+    expect(assembledFor, 'the too-small candidate was never assembled for').not.toContain('m-routed-14k');
+    expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
+  });
+});
+
+describe('t140 round 2 — when every fallback is too small, the owner is told THAT, not the first wire error', () => {
+  it.fails('the turn fails naming the window cause; no false permanent card; nothing dialed cut down', async () => {
+    seedConversation(5);
+    addModel('m-routed-12k', 12_288);
+    lightTierIs(TINY, 'm-routed-12k');
+    provider.failNext = 1;
+    let thrown: unknown = null;
+    try { await dialStep(HEAVY); } catch (e) { thrown = e; }
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message, 'names the real cause').toMatch(/no model .*can hold this agent's instructions and tools/i);
+    expect(message, 'and still says what happened to the first pick').toMatch(/socket hang up/);
+    expect(provider.requests.filter((r) => shown(r).includes('Runtime Information')).length, 'only the first pick was dialed').toBe(1);
+    expect(assembledFor.filter((m) => m === TINY || m === 'm-routed-12k')).toEqual([]);
+    // The starved-window card says the agent's OWN model is too small and that it will not work
+    // until reconfigured. Here its own model is fine and died on the wire: that card would be false.
+    expect(windowCards()).toBe(0);
   });
 });
