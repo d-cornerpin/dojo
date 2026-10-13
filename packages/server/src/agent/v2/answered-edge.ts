@@ -696,8 +696,7 @@ export function pauseDriveWorkWaitingOnOwner(
     /** SWEEP-A TB2: did this turn DELEGATE the ask it was serving (a join under the trigger
      *  work row)? See the refusal below. */
     delegatedThisTurn?: boolean;
-    /** t137: did the ENGINE queue this turn's own continuation (the C3 stash or the tool-loop
-     *  cap's latch)? Read off engine state by the caller, never off what the turn said. */
+    /** t137: the engine queued this turn's own continuation (engine state, never prose). */
     queuedOwnContinuation?: boolean;
   },
 ): PauseResult {
@@ -722,18 +721,10 @@ export function pauseDriveWorkWaitingOnOwner(
   // exactly one shape, and the shape is a ROW (`joinState(triggerWorkId) !== null`), never a
   // reading of what the turn said.
   if (opts?.delegatedThisTurn) return none;
-  // ⚠ t137 (OR-LONG-JOBS) — A TURN THAT PARKED OR QUEUED ITS OWN CONTINUATION IS STILL WORKING.
-  //
-  // The owner's ruling: "The Dojo stops marking a task 'paused, waiting on you' while the agent
-  // is still on it." A turn that parked at the 15-minute checkpoint, hit the tool-loop cap or
-  // rebuilt its context has queued its own continuation: it has not handed the ball to anyone —
-  // the engine itself just scheduled the next turn of the same work. Pausing it here wrote "waiting on the owner"
-  // in the same turn the checkpoint note wrote "still in flight", and the project manager then
-  // rejected that engine-made pause as vague (tracker #9).
-  //
-  // requirement preserved: PHASE-2 T1 adjudication #2 still fires for a turn that answered,
-  // performed nothing and STOPPED — narrowed for working turns only, never removed. Keyed on
-  // the turn RECORD and engine state, never on prose.
+  // ⚠ t137 (OR-LONG-JOBS): a turn that queued its own continuation (15-minute park, tool-loop
+  // cap, context rebuild) is still WORKING; pausing it "waiting on the owner" is the pause the PM
+  // rejected as vague (#9). requirement preserved: adjudication #2 still fires for a turn that
+  // answered, did nothing and STOPPED — narrowed for working turns, never removed.
   if (opts?.queuedOwnContinuation) return none;
   const outcome = turnOutcome(agentId, turnNumber);
   if (!outcome || !outcome.answered) return none;

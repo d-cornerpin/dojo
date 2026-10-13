@@ -190,11 +190,8 @@ export async function finalizeTurnRecord(
           // A turn that delegated did not hand the ball back to the owner; the work is
           // waiting on the delegated pieces. See the refusal in `answered-edge.ts`.
           delegatedThisTurn,
-          // t137: a turn whose own continuation is queued is still working. The C3 stash is
-          // written by every engine auto-continue (checkpoint, tool-loop cap, context rebuild)
-          // and consumed by the next preflight, so at finalize it is THIS turn's; the tool-loop
-          // latch covers the non-human arm. A stop refuses the wake, so a stopped turn is not
-          // continuing.
+          // t137: every engine auto-continue writes the C3 stash (consumed by the next preflight,
+          // so it is THIS turn's); the latch covers the non-human arm; a stop refuses the wake.
           queuedOwnContinuation: !isStopFenced(agentId)
             && (continuationContext.has(agentId) || toolLoopCapReached),
           // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
