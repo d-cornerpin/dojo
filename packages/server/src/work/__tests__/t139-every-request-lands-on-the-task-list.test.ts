@@ -901,6 +901,39 @@ async function fanOutAndLand(msgId: string, ask: string, tag: string): Promise<v
   }
 }
 
+describe('t139 round 2 (hand-up 4) — a delegation joins only the sends of ITS OWN turn', () => {
+  it.fails('two delegating turns inside one wall-clock second: the second join holds only its own piece', async () => {
+    // The clock is pinned (Date only — timers stay real) so both turns start in the same second,
+    // 500 ms apart: the shape a whole-second lower bound cannot tell apart.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.parse('2026-10-12T15:00:00.100Z'));
+      ownerSays('msg-sec-a', 'Have the helper collect caterer quotes and venue quotes, then combine them.');
+      script([
+        { toolCalls: [
+          call('sa-sa', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'SECA: caterer quotes.' }),
+          call('sa-sb', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'SECA: venue quotes.' }),
+        ] },
+        { content: 'Asked Helper for both.' },
+      ]);
+      await runV2Turn(PRIMARY);
+      vi.setSystemTime(Date.parse('2026-10-12T15:00:00.600Z'));
+      ownerSays('msg-sec-b', 'Separately, have the helper check the train times for Thursday.');
+      script([
+        { toolCalls: [call('sa-sc', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'SECB: train times.' })] },
+        { content: 'Asked Helper for the train times.' },
+      ]);
+      await runV2Turn(PRIMARY);
+    } finally { vi.useRealTimers(); }
+
+    const pieces = (askId: string): number => (mockDb.current!.prepare(
+      "SELECT COUNT(*) AS n FROM work WHERE parent_id = ? AND root_kind = 'a2a_thread'",
+    ).get(askId) as { n: number }).n;
+    expect(pieces('ask:msg-sec-a')).toBe(2);
+    expect(pieces('ask:msg-sec-b')).toBe(1);
+  });
+});
+
 describe('t139 — the delegate-reply link has recorded facts behind it, or it is not made', () => {
   it('two owed compiles at once: the wake turn is tied to the ask whose piece reply woke it, never the other', async () => {
     await fanOutAndLand('msg-two-a', 'Compare the two caterer quote sets and pick one.', 'JOBA');
