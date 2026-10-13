@@ -305,3 +305,28 @@ describe('t140 round 3 — the brake and a busy lock', () => {
     expect(writers.calls.length).toBeGreaterThan(0);
   }, 5_000);
 });
+
+describe('t140 round 3 — condensation never merges a placeholder', () => {
+  it('a condensation pass under pressure merges the real summaries and leaves every placeholder where its replacement can find it', async () => {
+    writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
+    seedACut();
+    await door();
+    expect(placeholders().length).toBeGreaterThan(0);
+    writers.mode = {};
+    __resetSummaryWriterHealthForTests();
+    const { createLeafSummary } = await import('../dag.js');
+    for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot.`, 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
+    compaction.rebuildContextItems(AGENT);
+    const { condenseUntilFits } = await import('../condense-until-fits.js');
+    await condenseUntilFits({
+      agentId: AGENT, modelId: CHEAP, minFanout: 2, targetTokens: 500,
+      measure: async () => ({ total: 999_999, summaryTokens: 0 }),   // never fits: condense all it may
+      rebuild: () => compaction.rebuildContextItems(AGENT),
+    });
+    const merged = (sql: string) => (db().prepare(sql).get(AGENT) as { n: number }).n;
+    expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE 'Real summary%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
+      'precondition: the pass did condense the real summaries').toBeGreaterThan(0);
+    expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE '[Not yet condensed]%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
+      'a placeholder was merged into a parent').toBe(0);
+  }, 10_000);
+});
