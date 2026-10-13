@@ -51,6 +51,8 @@ import { POST_BUDGET_LANES } from '../lanes.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';
 import { assemblyTokens } from '../assembly-validation.js';
 import { injectTechniqueAndGapHints } from '../../agent/v2/steps/assemble/technique-hints.js';
+import { TECHNIQUE_INLINE_CHARS, TECHNIQUE_FRAME_CHARS } from '../work-board-lane.js';
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 const AGENT = 'agent-whole';
 const MODEL = 'model-whole';
@@ -155,7 +157,7 @@ afterEach(() => {
 });
 
 describe('the whole array — assembly + every late addition + a strong technique — fits the budget', () => {
-  it.fails('(RED at df98f44c) 16K window, a strong technique match: the whole array stays within the validator budget, so nothing is repair-dropped', async () => {
+  it('(RED at df98f44c) 16K window, a strong technique match: the whole array stays within the validator budget, so nothing is repair-dropped', async () => {
     seed();
     publishTechnique(14_000);
     condensedTasks();
@@ -184,5 +186,31 @@ describe('the whole array — assembly + every late addition + a strong techniqu
     const policy = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 2048 });
     const budget = policy.assemblyBudgetTokens - estimateTokens(ctx.systemPrompt);
     expect(assemblyTokens(whole as never), 'within the budget the repair enforces').toBeLessThanOrEqual(budget);
+  });
+});
+
+describe('the technique allowance is pinned to the injector it accounts for', () => {
+  // Comment-stripped source of the loop's injector (G4: the clause reads code, not prose), found
+  // through the shared engine corpus rather than by a hand-written path.
+  const injector = engineFileContaining('const MAX_INLINE_CHARS');
+  const src = (injector?.text ?? '')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  it('the inline cap is the injector\'s own MAX_INLINE_CHARS', () => {
+    const m = /const MAX_INLINE_CHARS = ([\d_]+);/.exec(src);
+    expect(m, 'the injector still declares its cap').not.toBeNull();
+    expect(Number(m![1].replace(/_/g, ''))).toBe(TECHNIQUE_INLINE_CHARS);
+  });
+
+  it('the frame bound covers the injector\'s fixed text in either form, with room for a 10-digit length', () => {
+    // The literal text of a template, its \${…} substitutions removed.
+    const literal = (expr: string): number =>
+      [...expr.matchAll(/`([^`]*)`/g)].map((x) => x[1].replace(/\$\{[^}]*\}/g, '').replace(/\\n/g, '\n')).join('').length;
+    // Each expression runs to its closing "`;" (the header's own text contains a ';').
+    const header = literal(/const header =([\s\S]*?`);\n/.exec(src)![1]);
+    const forms = [...src.matchAll(/techniqueInjection =([\s\S]*?`);\n/g)].map((x) => literal(x[1]));
+    expect(header, 'the header was read').toBeGreaterThan(100);
+    expect(forms.length, 'both forms found (inline and too-large)').toBe(2);
+    for (const f of forms) expect(header + f + 10).toBeLessThanOrEqual(TECHNIQUE_FRAME_CHARS);
   });
 });

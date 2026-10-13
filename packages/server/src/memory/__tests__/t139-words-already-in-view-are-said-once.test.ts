@@ -39,6 +39,7 @@ import { insertMessage } from '../message-store.js';
 import { createTask } from '../../tracker/schema.js';
 import { assembleContext } from '../assembler.js';
 import { estimateTokens } from '../budget.js';
+import { buildWorkBoardLane } from '../work-board-lane.js';
 
 const AGENT = 'agent-view';
 const MODEL = 'model-view';
@@ -141,7 +142,7 @@ afterEach(() => {
 });
 
 describe('§1 asks still in the live conversation are pointed to, not repeated', () => {
-  it.fails('(RED at df98f44c) twelve visible 8,000-char asks: the list carries pointers, and each ask is seen exactly once', async () => {
+  it('(RED at df98f44c) twelve visible 8,000-char asks: the list carries pointers, and each ask is seen exactly once', async () => {
     seed(128_000);
     const tasks = twelveLiveTasks();
     exchange();
@@ -174,5 +175,49 @@ describe('§2 asks that have been condensed out of the live view come back whole
       expect(occurrences(seen, ask), `${id} seen exactly once`).toBe(1);
     }
     expect(block).not.toContain('original request continues');
+  });
+});
+
+describe('§3 "in view" is what the assembly actually emitted — never the row id alone', () => {
+  const ask = longAsk(3000, 'SOLO');
+  function oneTask(): void {
+    seed(128_000);
+    insertMessage({
+      id: 'msg-solo', agentId: AGENT, role: 'user', content: ask, turnNumber: 1,
+      channel: 'dashboard', senderId: 'owner', conversationId: 'conv-dash',
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    });
+    createTask({
+      title: 'Solo job', assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'model', sourceMessageId: 'msg-solo', turn: 1, convKey: null },
+    });
+  }
+
+  it('a kept row whose words a later pass removed from the array (e.g. the A2A salience filter) is NOT in view: the words are printed', async () => {
+    oneTask();
+    const block = (await buildWorkBoardLane(AGENT, {
+      availableTokens: 50_000, emitted: [{ role: 'user', content: 'something else entirely' }], blocks: [],
+      liveRows: [{ id: 'msg-solo' }],
+    })).activeTasks!;
+    expect(block).toContain(ask);
+    expect(block).not.toContain('in the conversation above');
+  });
+
+  it('a kept row whose words are on the array (as the tail renders them, stamped) IS in view: a pointer, with label and time', async () => {
+    oneTask();
+    const block = (await buildWorkBoardLane(AGENT, {
+      availableTokens: 50_000, emitted: [{ role: 'user', content: `[Oct 13, 2026, 09:00 AM] ${ask}` }], blocks: [],
+      liveRows: [{ id: 'msg-solo' }],
+    })).activeTasks!;
+    expect(block).not.toContain(ask);
+    expect(block).toMatch(/Original request \(from [^,]+, \[[^\]]+\]\): it is in the conversation above, message msg-solo; read it there, it is not repeated here\./);
+  });
+
+  it('the same words on the array but NOT in the row this assembly kept (sent again in another message, say) are not that request "in view": the pointer would name a message the agent cannot see', async () => {
+    oneTask();
+    const block = (await buildWorkBoardLane(AGENT, {
+      availableTokens: 50_000, emitted: [{ role: 'user', content: ask }], blocks: [], liveRows: [{ id: 'msg-other' }],
+    })).activeTasks!;
+    expect(block).toContain(ask);
   });
 });

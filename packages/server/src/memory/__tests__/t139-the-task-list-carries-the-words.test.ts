@@ -60,7 +60,7 @@ import { updateTask, listTasks } from '../../tracker/schema.js';
 import { writeTaskLog } from '../../tracker/task-log.js';
 import { assembleContext } from '../assembler.js';
 import {
-  buildWorkBoardLane, activeTasksWorstCaseTokens, activeTasksRoomTokens, type TaskListRoom,
+  buildWorkBoardLane, activeTasksWorstCaseTokens, type TaskListView,
 } from '../work-board-lane.js';
 import { POST_BUDGET_LANES } from '../lanes.js';
 import { renderMessageTimeStamp } from '../message-stamp.js';
@@ -101,11 +101,15 @@ function seed(): void {
   ).run(AGENT);
 }
 
-/** A room of exactly `tokens` for the list, in the shape the assembler passes: the ladder scaled
- *  so the lane's share is `tokens`, and a content fit with nothing left over. */
-function roomOf(tokens: number): TaskListRoom {
-  const reserve = activeTasksRoomTokens();
-  return { allocation: { budgetTokens: 0, spentTokens: 0 }, ladder: { scaled: true, offTheTop: tokens, declared: reserve } };
+/** The list's room with no view passed: its declared reserve. */
+const reserveRoom = (): number => POST_BUDGET_LANES.find((l) => l.id === 'lane.active-tasks')!.reserveTokens;
+/** A room of exactly `tokens` for the list, in the shape the assembler passes (round 6): an
+ *  empty array so far, and the loop's declared appends on top of the room. No technique is
+ *  published in this file's fixture, so none is counted. */
+function roomOf(tokens: number): TaskListView {
+  const loop = ['lane.loop-tail', 'lane.deliveries']
+    .reduce((t, id) => t + POST_BUDGET_LANES.find((l) => l.id === id)!.reserveTokens, 0);
+  return { availableTokens: tokens + loop, emitted: [], blocks: [], liveRows: [] };
 }
 
 /** The owner's message, through the REAL writer (it opens the ask the message belongs to). */
@@ -187,13 +191,19 @@ describe('t139 §1 — a linked task shows the requester\'s original words', () 
     expect(block).toMatch(/email/);
   });
 
-  it('the real assembler carries the same words on the turn\'s task-list lane', async () => {
+  it('the real assembler carries the same words exactly once: in view, the list points to them', async () => {
     const ask = longAsk(2000, 'ASSEMBLED');
     ownerSays('msg-assembled', ask, DAY_ONE - 60_000);
     task('Assembled ask', ask, 'msg-assembled');
 
+    // Round 6 (R-V333-14): the ask is still in the live conversation, so the list points to it
+    // rather than printing it twice — the words reach the model exactly once, and the pointer
+    // names the message.
     const assembled = await assembleContext(AGENT, MODEL);
-    expect(assembled.activeTasksLane).toContain(ask);
+    expect(assembled.activeTasksLane).toContain('it is in the conversation above, message msg-assembled');
+    const seen = [...assembled.messages.map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))),
+      assembled.activeTasksLane ?? ''].join('\n');
+    expect(seen.split(ask).length - 1).toBe(1);
   });
 });
 
@@ -326,7 +336,7 @@ describe('t139 §3 — the words get the room the view has (round 5), and a cut 
     expect(block).toContain('history_get(id="msg-overcap")');
     // The LARGEST pool the room holds, not merely one that fits: one more character of words
     // moves the block by at most one character, so a cut block fills the room exactly.
-    expect(block.length, 'fills the room to the character').toBe(activeTasksRoomTokens() * 4);
+    expect(block.length, 'fills the room to the character').toBe(reserveRoom() * 4);
   });
 
   it('the room is shared across open tasks, newest first: words appear in full until the room is spent', async () => {
@@ -456,7 +466,7 @@ describe('t139 §5 — round 5: rows, titles and notes follow the room too', () 
     expect(block.match(/^• Big /gm)?.length).toBe(5);
     expect(block).toContain('…and 2 more unfinished tasks not shown here: this view has no room left for them. '
       + 'work_update(action="list") lists every task.');
-    expect(estimateTokens(block)).toBeLessThanOrEqual(activeTasksRoomTokens());
+    expect(estimateTokens(block)).toBeLessThanOrEqual(reserveRoom());
     // With the room, all seven are listed and whole.
     const roomy = (await buildWorkBoardLane(AGENT, roomOf(20_000))).activeTasks!;
     expect(roomy.match(/^• Big /gm)?.length).toBe(7);
@@ -476,6 +486,20 @@ describe('t139 §5 — round 5: rows, titles and notes follow the room too', () 
     expect(block).toMatch(/…and [1-4] more unfinished tasks? not shown here/);
     expect(block).toContain('═══ END ACTIVE TASKS ═══');
     expect(block).toContain('• Tiny 4 ');   // the newest is the one that stays
+  });
+
+  it('a room that holds not even one bare row still says the tasks exist and where they are (round 6)', async () => {
+    for (let i = 0; i < 3; i++) {
+      ownerSays(`msg-none-${i}`, longAsk(1500, `NONE${i}`), DAY_ONE - (20 - i) * 60_000);
+      vi.setSystemTime(DAY_ONE - (20 - i) * 60_000 + 1000);
+      task(`None ${i}`, undefined, `msg-none-${i}`);
+    }
+    vi.setSystemTime(DAY_ONE);
+    const block = (await buildWorkBoardLane(AGENT, roomOf(0))).activeTasks!;
+    expect(block).toContain('You have 3 unfinished tasks; this view has no room left to list them. '
+      + 'work_update(action="list") lists every task.');
+    expect(block).not.toContain('shortened to fit');
+    expect(estimateTokens(block)).toBeLessThan(60);
   });
 
   it('a long title and a long last note are whole when the view holds them, and cut only when it cannot', async () => {

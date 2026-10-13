@@ -45,10 +45,9 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createTask } from '../../tracker/schema.js';
 import { assembleContext } from '../assembler.js';
-import {
-  POST_BUDGET_LANES, POST_BUDGET_RESERVE_TOKENS, SCAFFOLDING_ACK_RESERVE_TOKENS,
-} from '../lanes.js';
-import { estimateTokens } from '../budget.js';
+import { POST_BUDGET_LANES } from '../lanes.js';
+import { estimateTokens, contextWindowPolicy } from '../budget.js';
+import { assemblyTokens } from '../assembly-validation.js';
 
 const AGENT = 'agent-room';
 const MODEL = 'model-room';
@@ -121,18 +120,39 @@ function exchange(): void {
   });
 }
 
+/** A compaction covered these rows (one summary linked to them), so the live tail's front moves
+ *  past them and the task list is the only place their words are (round 6: words still in the
+ *  live conversation are pointed to, not repeated). */
+function condense(messageIds: string[]): void {
+  db().prepare(
+    `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count,
+                            earliest_at, latest_at, created_at)
+     VALUES ('sum-asks', ?, 1, 'leaf', 'The owner asked for several depot jobs.', 10, ?,
+             datetime('now'), datetime('now'), datetime('now'))`,
+  ).run(AGENT, messageIds.length);
+  db().prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-asks', 0)")
+    .run(AGENT);
+  const link = db().prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)');
+  for (const id of messageIds) link.run('sum-asks', id);
+}
+const idsOf = (tags: string[]): string[] => tags.map((t) => `msg-${t.toLowerCase()}`);
+
 /**
- * The room the assembly left the task list, computed from the receipt alone (independently of
- * the code under test): the lane's own share of the reserve ladder (scaled with the ladder when
- * the window could not hold all of it) plus whatever the content fit did not spend.
+ * ROUND 6 (R-V333-14, review M1): the room is read against the WHOLE array. This is that array's
+ * cost as the provider boundary measures it — the assembled messages, every post-budget block
+ * the assembler returns, and the loop's own appends at their declared reserves — and the budget
+ * that boundary enforces (the assembly budget minus the system prompt).
  */
-function roomFromReceipt(allocation: NonNullable<Awaited<ReturnType<typeof assembleContext>>['allocation']>): number {
-  const reserve = POST_BUDGET_LANES.find((l) => l.id === 'lane.active-tasks')!.reserveTokens;
-  const declared = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS;
-  const share = allocation.offTheTopTokens >= declared
-    ? reserve
-    : Math.floor((reserve * allocation.offTheTopTokens) / declared);
-  return share + Math.max(0, allocation.budgetTokens - allocation.spentTokens);
+function wholeArray(ctx: Awaited<ReturnType<typeof assembleContext>>, window: number): { tokens: number; budget: number } {
+  const msgs: Array<{ role: 'user' | 'assistant'; content: unknown }> = [...(ctx.messages as never[])];
+  for (const b of [ctx.recallLane, ctx.openCommitmentsLane, ctx.directiveLane, ctx.attemptLedgerLane,
+    ctx.activeTasksLane, ctx.scratchpadLane, ctx.eventsLane, ctx.integrationStatusLane]) {
+    if (b) msgs.push({ role: 'user', content: b });
+  }
+  const loop = ['lane.loop-tail', 'lane.deliveries']
+    .reduce((t, id) => t + POST_BUDGET_LANES.find((l) => l.id === id)!.reserveTokens, 0);
+  const policy = contextWindowPolicy(window, { toolPayloadTokens: 1000, maxOutputTokens: 2048 });
+  return { tokens: assemblyTokens(msgs as never) + loop, budget: policy.assemblyBudgetTokens - estimateTokens(ctx.systemPrompt) };
 }
 
 beforeEach(() => {
@@ -149,6 +169,7 @@ describe('§1 a 200K window has room for every live request, whole', () => {
   it('(RED at f58214e5) three 4,000-character requests all appear whole on a 200K window', async () => {
     seed(200_000);
     const asks = threeLiveTasks();
+    condense(idsOf(['ALPHA', 'BRAVO', 'CHARLIE']));
     exchange();
 
     const ctx = await assembleContext(AGENT, MODEL);
@@ -162,7 +183,9 @@ describe('§1 a 200K window has room for every live request, whole', () => {
 
   it('more words than the list\'s own reserve holds (six 4,000-character requests) are all whole when the view has the room', async () => {
     seed(200_000);
-    const asks = liveTasks(['ALPHA', 'BRAVO', 'CHARLIE', 'DELTA', 'ECHO', 'FOXTROT']);
+    const tags = ['ALPHA', 'BRAVO', 'CHARLIE', 'DELTA', 'ECHO', 'FOXTROT'];
+    const asks = liveTasks(tags);
+    condense(idsOf(tags));
     exchange();
     const reserve = POST_BUDGET_LANES.find((l) => l.id === 'lane.active-tasks')!.reserveTokens;
     expect(estimateTokens(asks.join('')), 'the premise: the words alone exceed the reserve').toBeGreaterThan(reserve);
@@ -172,15 +195,18 @@ describe('§1 a 200K window has room for every live request, whole', () => {
     for (const ask of asks) expect(block).toContain(ask);
     expect(block).not.toContain('original request continues');
     expect(block, 'every task listed, the sixth included').not.toContain('not shown here');
-    expect(estimateTokens(block)).toBeLessThanOrEqual(roomFromReceipt(ctx.allocation!));
+    const whole = wholeArray(ctx, 200_000);
+    expect(whole.tokens).toBeLessThanOrEqual(whole.budget);
   });
 
-  it('the block still stays inside the room the assembly left it', async () => {
+  it('the whole array, the list included, stays inside the budget the provider boundary enforces', async () => {
     seed(200_000);
     threeLiveTasks();
+    condense(idsOf(['ALPHA', 'BRAVO', 'CHARLIE']));
     exchange();
     const ctx = await assembleContext(AGENT, MODEL);
-    expect(estimateTokens(ctx.activeTasksLane ?? '')).toBeLessThanOrEqual(roomFromReceipt(ctx.allocation!));
+    const whole = wholeArray(ctx, 200_000);
+    expect(whole.tokens).toBeLessThanOrEqual(whole.budget);
   });
 });
 
@@ -206,8 +232,11 @@ describe('§2 a 16K window: cut only because the view cannot hold them, and the 
     expect(ctx.allocation!.admittedIds).toContain('lane.fresh-tail');
   });
 
-  it('(RED at f58214e5) the task list spends no more than the room the 16K assembly left it', async () => {
-    const { ctx, block } = await smallBox();
-    expect(estimateTokens(block)).toBeLessThanOrEqual(roomFromReceipt(ctx.allocation!));
+  // Round 5's RED (`f58214e5`: the list outspent its room) restated in round 6 against the whole
+  // array, which is what the room is now read against (R-V333-14, M1).
+  it('(RED at f58214e5) the whole 16K array, the list included, stays inside the provider boundary\'s budget', async () => {
+    const { ctx } = await smallBox();
+    const whole = wholeArray(ctx, 16_000);
+    expect(whole.tokens).toBeLessThanOrEqual(whole.budget);
   });
 });

@@ -1875,20 +1875,6 @@ async function assembleMessageContext(
   // whatever a tool can mutate must render below the conversation, because a block ahead of
   // it re-bills every token behind it whenever it moves. Best-effort, each in its own try, so
   // one failed read costs its own block and never the assembly.
-  let attemptLedgerLane: string | null = null;
-  let activeTasksLane: string | null = null;
-  try {
-    const board = await buildWorkBoardLane(agentId, { allocation: report, ladder });
-    attemptLedgerLane = board.attemptLedger;
-    activeTasksLane = board.activeTasks;
-  } catch (err) {
-    logger.warn('Work-board lane failed — the active task board is NOT in front of the model', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-  if (attemptLedgerLane) postBudget.push('lane.attempt-ledger');
-  if (activeTasksLane) postBudget.push('lane.active-tasks');
-
   const scratchpadLane = renderScratchpadLane(agentId);
   if (scratchpadLane) postBudget.push('lane.scratchpad');
 
@@ -1913,6 +1899,25 @@ async function assembleMessageContext(
     }, agentId);
   }
   if (integrationStatusLane) postBudget.push('lane.integration-status');
+
+  // The work board is read LAST of these blocks (t139 R-V333-14): the task list is laid out in
+  // the room the whole array leaves, and points to requests the live conversation already shows.
+  let attemptLedgerLane: string | null = null;
+  let activeTasksLane: string | null = null;
+  try {
+    const board = await buildWorkBoardLane(agentId, {
+      availableTokens: maxTokens - systemTokens, emitted: merged, liveRows: tailPayload?.rows ?? [],
+      blocks: [recallLane, openCommitmentsLane, directiveLane, scratchpadLane, eventsLane, integrationStatusLane],
+    });
+    attemptLedgerLane = board.attemptLedger;
+    activeTasksLane = board.activeTasks;
+  } catch (err) {
+    logger.warn('Work-board lane failed — the active task board is NOT in front of the model', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+  if (attemptLedgerLane) postBudget.push('lane.attempt-ledger');
+  if (activeTasksLane) postBudget.push('lane.active-tasks');
 
   // Record the post-budget lanes that actually fired, against their declared reserves.
   // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,

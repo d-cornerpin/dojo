@@ -50,10 +50,10 @@
 import { getDb } from '../db/connection.js';
 import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
-import { estimateTokens, CHARS_PER_TOKEN } from './budget.js';
-import {
-  laneLimit, truncateWrappedText, POST_BUDGET_LANES, type AllocationReport, type ReserveLadder,
-} from './lanes.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budget.js';
+import { laneLimit, truncateWrappedText, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { conversationLabel } from './party-label.js';
 
@@ -131,6 +131,9 @@ interface TaskView {
   edited: boolean;
   /** Newer messages in the request's conversation (item 6's factual line). */
   newer: { count: number; newestAt: number | string | null };
+  /** R-V333-14: the request message is in the live conversation this assembly emitted, so the
+   *  line points to it instead of printing it a second time. */
+  inView?: boolean;
 }
 
 type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other';
@@ -164,6 +167,7 @@ const ACTIVE_TASKS_HEAD =
   + 'should be working on, each with the request that started it; a paused or blocked one is NOT '
   + 'current and says what it is waiting on:\n';
 const ACTIVE_TASKS_TAIL = '═══ END ACTIVE TASKS ═══';
+const ACTIVE_TASKS_HEAD_COMPACT = '═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══';
 const ATTEMPT_LEDGER_HEAD =
   '═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts '
   + 'already logged here) ═══';
@@ -243,6 +247,11 @@ function capLabel(raw: string | null | undefined, fallback: string, caps: TermCa
 /** A current task's request: the linked words, or the labelled description when unlinked. */
 function requestSection(v: TaskView, pool: WordsPool, caps: TermCaps): string {
   const { t, origin } = v;
+  if (v.inView && origin.messageId) {
+    return `\n  Original request (from ${capLabel(origin.label, 'a conversation with no recorded label', caps)}, `
+      + `${recordedInstant(origin.createdAt)}): it is in the conversation above, message ${origin.messageId}; `
+      + 'read it there, it is not repeated here.';
+  }
   if (origin.messageId && origin.words !== null) {
     const head = `\n  Original request (from ${capLabel(origin.label, 'a conversation with no recorded label', caps)}, `
       + `${recordedInstant(origin.createdAt)}), word for word:\n`;
@@ -296,33 +305,44 @@ export function renderActiveTasksBlock(lines: string[], hidden = 0): string | nu
   return `${ACTIVE_TASKS_HEAD}\n${lines.join('\n\n')}${more}\n\n${ACTIVE_TASKS_TAIL}`;
 }
 
-// ── ROUND 5: THE ROOM THE VIEW ACTUALLY HAS ─────────────────────────────────────────────
+// ── THE ROOM THE WHOLE ARRAY LEAVES (rounds 5-6) ────────────────────────────────────────
 //
 // Owner ruling, 2026-10-13: "I don't want to put hard limits on the dojo. The dojo should be
 // smart enough to know when enough is enough." Rounds 1-4 spent ONE fixed 8,000-character pool
 // across every task, so three 4,000-character requests lost the third to a pointer on a 200K
 // window with tens of thousands of tokens unused.
 //
-// THE SIGNAL. The list is a post-budget lane: the assembler took its declared reserve off the
-// top BEFORE the content fit (`reserveLadderFor`), then ran the fit (`fitLanes`). So the room
-// the list really has on this assembly is two numbers the assembler already holds:
-//   * its OWN SHARE of the ladder — the declared reserve, scaled by the same factor as the whole
-//     ladder when the window could not hold all of it (`ladder.offTheTop / ladder.declared`), so
-//     on a small window the list never spends the share the other appends were promised; and
-//   * the content fit's UNSPENT budget (`allocation.budgetTokens - allocation.spentTokens`):
-//     room the conversation, summaries and recall were offered and did not need.
+// ROUND 6 (R-V333-14, review M1) — THE ROOM IS READ AGAINST THE WHOLE ARRAY, NOT ONE LANE'S SHARE.
+// Round 5 gave the list its ladder share plus the content fit's unspent budget, which is right
+// only if every other late addition stays inside its own reserve; two do not (on a small window
+// the other post-budget blocks are not scaled down, and the loop's strong-technique match is
+// unreserved by declaration). So the board is now read LAST of the assembler's post-budget
+// blocks, and the room is what the provider boundary's own budget (`assembly-validation.ts`:
+// the assembly budget minus the system prompt) has left after
+//   * everything ALREADY on the array, measured: the assembled messages and every post-budget
+//     block the assembler rendered, the attempt ledger included;
+//   * what the LOOP appends after the assembler returns, at its declared bound: `lane.loop-tail`
+//     and `lane.deliveries` at their reserves, and the strong-technique match at the largest
+//     injection a technique this agent may use could produce (`techniqueAllowanceTokens`).
+// THE CLAIM, precisely: the whole array, the list included, fits that budget whenever the
+// assembly without the list did and the loop's appends stay within those declared bounds. The
+// one exception is the list's compact line (`compactBlock`, a few dozen tokens), emitted even
+// into a room smaller than itself, because hiding every task is not an option the list has.
+//
 // Nothing new is reserved and the content budget does not move, so the cached region's bytes
 // are exactly what they were (G2): what changes is only how much of THIS block, which sits
 // below the conversation and is uncached by construction, the view can carry.
-//
-// WHY THE CONVERSATION CANNOT BE STARVED. The fit has already run when this is read; the list
-// is offered only what the fit left. A full conversation leaves no slack and the list falls
-// back to its own reserve, which is the guarantee the reserve was derived for (below).
 
-/** The fit's two outputs this lane reads; the assembler passes them through unchanged. */
-export interface TaskListRoom {
-  allocation: Pick<AllocationReport, 'budgetTokens' | 'spentTokens'>;
-  ladder: Pick<ReserveLadder, 'offTheTop' | 'declared' | 'scaled'>;
+/** What the assembler hands the board (R-V333-14): the array so far and the rows it kept live. */
+export interface TaskListView {
+  /** The assembly budget minus the system prompt — the budget the provider boundary enforces. */
+  availableTokens: number;
+  /** The assembled messages, exactly as emitted. */
+  emitted: ReadonlyArray<{ role: string; content: unknown }>;
+  /** Every other post-budget block the assembler rendered (each becomes one message). */
+  blocks: ReadonlyArray<string | null | undefined>;
+  /** The live-conversation rows this assembly included (the fresh tail the fit kept). */
+  liveRows: ReadonlyArray<{ id: string }>;
 }
 
 /** The lane's declared reserve: what the budget took off the top for it. */
@@ -330,17 +350,72 @@ function declaredReserveTokens(): number {
   const lane = POST_BUDGET_LANES.find((l) => l.id === ACTIVE_TASKS_LANE_ID);
   return lane ? lane.reserveTokens : activeTasksWorstCaseTokens();
 }
+const reserveOf = (id: string): number => POST_BUDGET_LANES.find((l) => l.id === id)?.reserveTokens ?? 0;
 
-/** Tokens this assembly can give the task list. With no room passed (a caller outside the
- *  assembler), the declared reserve — the guarantee and nothing more. */
-export function activeTasksRoomTokens(room?: TaskListRoom): number {
-  const reserve = declaredReserveTokens();
-  if (!room) return reserve;
-  const { allocation, ladder } = room;
-  const share = ladder.scaled && ladder.declared > 0
-    ? Math.floor((reserve * Math.max(0, ladder.offTheTop)) / ladder.declared)
-    : reserve;
-  return share + Math.max(0, allocation.budgetTokens - allocation.spentTokens);
+/**
+ * The loop's strong-technique injector (`agent/v2/steps/assemble/technique-hints.ts`) inlines
+ * a technique's TECHNIQUE.md up to this many characters (its `MAX_INLINE_CHARS`), and frames it
+ * in fixed text plus the technique's name (twice) and id. Both numbers are pinned to that file's
+ * own source by `t139-the-whole-array-holds-with-a-technique.test.ts`. They are accounting
+ * bounds on ANOTHER block's size, not limits on anything the agent reads.
+ */
+export const TECHNIQUE_INLINE_CHARS = 25_000;
+export const TECHNIQUE_FRAME_CHARS = 512;
+
+/**
+ * The most a strong technique match can add after this assembly: the largest injection any
+ * PUBLISHED technique this agent MAY use (the matcher's own candidate set) could produce, read
+ * from the file sizes on disk (bytes, never fewer than characters). Zero when the agent has none
+ * — the real signal on most boxes. The matcher runs only on a turn's first call; this does not
+ * know which call it is, so it is counted on every call (an upper bound, stated).
+ */
+async function techniqueAllowanceTokens(agentId: string): Promise<number> {
+  try {
+    const { listTechniques } = await import('../techniques/store.js');
+    const { mayUseTechnique } = await import('../agent/access/read.js');
+    let worst = 0;
+    for (const t of listTechniques({ state: 'published' })) {
+      if (!mayUseTechnique(agentId, t.id)) continue;
+      let bytes = 0;
+      try { bytes = fs.statSync(path.join(t.directoryPath, 'TECHNIQUE.md')).size; } catch { continue; }
+      worst = Math.max(worst,
+        TECHNIQUE_FRAME_CHARS + 2 * t.name.length + t.id.length + Math.min(bytes, TECHNIQUE_INLINE_CHARS));
+    }
+    return estimateTokensFromChars(worst);
+  } catch {
+    return estimateTokensFromChars(TECHNIQUE_FRAME_CHARS + TECHNIQUE_INLINE_CHARS);   // unreadable: the bound
+  }
+}
+
+/** Tokens this assembly can give the task list. With no view (a caller outside the assembler),
+ *  the declared reserve — the guarantee and nothing more. */
+async function activeTasksRoomTokens(agentId: string, view: TaskListView | undefined, ledger: string | null): Promise<number> {
+  if (!view) return declaredReserveTokens();
+  const onTheArray = renderTokens(view.emitted as never)
+    + view.blocks.reduce((t, b) => t + (b ? estimateTokens(b) : 0), 0)
+    + (ledger ? estimateTokens(ledger) : 0);
+  const loopAppends = reserveOf('lane.loop-tail') + reserveOf('lane.deliveries') + await techniqueAllowanceTokens(agentId);
+  return Math.max(0, view.availableTokens - onTheArray - loopAppends);
+}
+
+/**
+ * R-V333-14 (review I1) — THE "ENOUGH" SIGNAL: THE WORDS ARE ALREADY IN VIEW. A task's request
+ * message is in view when it is one of the live rows this assembly KEPT and its words are on
+ * the emitted array verbatim (a later pass — the A2A salience filter — can still remove a kept
+ * row, so the row id alone is not proof). Such a task's line points to it instead of
+ * re-printing it; once the message is condensed or trimmed away it is no longer a kept row, and
+ * the words come back on the list. The agent reads the words exactly once.
+ */
+function inViewCheck(view: TaskListView | undefined): (origin: TaskOrigin) => boolean {
+  if (!view) return () => false;
+  const live = new Set(view.liveRows.map((r) => r.id));
+  let texts: string[] | null = null;
+  const emittedTexts = (): string[] => texts ??= view.emitted.filter((m) => m.role === 'user').map((m) =>
+    typeof m.content === 'string' ? m.content
+      : Array.isArray(m.content) ? m.content.map((b) => (b as { text?: unknown }).text).filter((x) => typeof x === 'string').join('\n')
+        : '');
+  return (origin) => !!origin.messageId && origin.words !== null && live.has(origin.messageId)
+    && emittedTexts().some((t) => t.includes(origin.words as string));
 }
 
 /**
@@ -354,7 +429,7 @@ export function activeTasksRoomTokens(room?: TaskListRoom): number {
  *   3. the words get every character left — the largest pool the room holds, found by stepping
  *      down from the room by exactly the overshoot (one character of pool moves the block by at
  *      most one character, so a step can never skip a pool that fits).
- * `enforce` stays behind it as the backstop for a room smaller than the block's bare framing.
+ * A room smaller than one bare row gets the compact line (`compactBlock`) instead.
  */
 function fitTaskList(count: number, viewAt: (i: number) => TaskView, roomTokens: number): string | null {
   if (count === 0) return null;
@@ -399,7 +474,14 @@ function fitTaskList(count: number, viewAt: (i: number) => TaskView, roomTokens:
     pool = Math.max(0, pool - (block.length - roomChars));
     block = renderActiveTasksBlock(renderTaskLines(shown, pool, caps), count - n) ?? '';
   }
-  return block;
+  // Not even one bare row fits: the list still says the tasks exist and where they are.
+  return block.length > roomChars ? compactBlock(count) : block;
+}
+
+/** The list when the room holds not even one bare row: a count and the door, never nothing. */
+function compactBlock(count: number): string {
+  return `${ACTIVE_TASKS_HEAD_COMPACT}\nYou have ${count} unfinished task${count === 1 ? '' : 's'}; this view has no room `
+    + 'left to list them. work_update(action="list") lists every task.\n' + ACTIVE_TASKS_TAIL;
 }
 
 /** A pure safety backstop on the step-down above, never what decides the words: each step lands
@@ -416,11 +498,12 @@ export function renderAttemptLedgerBlock(sections: string[]): string | null {
 /**
  * Both blocks, from ONE tracker read.
  *
- * `room` is the assembler's own fit result (round 5): the task list is laid out in the room it
- * leaves (`activeTasksRoomTokens`). Absent, the list gets its declared reserve and no more.
- * The attempt ledger is unchanged: its own declared ceiling, enforced at the render.
+ * `view` is what the assembler hands over (R-V333-14): the array so far, so the task list is
+ * laid out in the room the whole array leaves and points to requests already in view. Absent,
+ * the list gets its declared reserve and nothing is in view. The attempt ledger is unchanged:
+ * its own declared ceiling, enforced at the render.
  */
-export async function buildWorkBoardLane(agentId: string, room?: TaskListRoom): Promise<WorkBoardBlocks> {
+export async function buildWorkBoardLane(agentId: string, view?: TaskListView): Promise<WorkBoardBlocks> {
   let tasks: BoardTask[] = [];
   try {
     const { listTasks } = await import('../tracker/schema.js');
@@ -437,22 +520,20 @@ export async function buildWorkBoardLane(agentId: string, room?: TaskListRoom): 
 
   // The attempt ledger keeps its own subject: the work being DONE, i.e. in-progress tasks.
   const inProgress = tasks.filter((t) => t.status === undefined || t.status === 'in_progress');
-  return {
-    attemptLedger: enforce(await attemptLedgerFrom(inProgress), attemptLedgerWorstCaseTokens()),
-    activeTasks: enforce(activeTasksFrom(tasks, activeTasksRoomTokens(room)), activeTasksRoomTokens(room)),
-  };
+  const attemptLedger = enforce(await attemptLedgerFrom(inProgress), attemptLedgerWorstCaseTokens());
+  const room = await activeTasksRoomTokens(agentId, view, attemptLedger);
+  return { attemptLedger, activeTasks: activeTasksFrom(tasks, room, inViewCheck(view)) };
 }
 
-/** A post-budget lane may not exceed the room it was given (the ledger: its declared reserve;
- *  the task list: `activeTasksRoomTokens`). `lanes.ts`'s truncate contract applied at the
- *  render, because there is no allocator downstream of a post-budget lane. For the task list it
- *  is a backstop only: `fitTaskList` already lays the block out inside the room. */
+/** A post-budget lane may not exceed the reserve it declared — the attempt ledger's contract,
+ *  applied at the render because no allocator runs downstream of a post-budget lane. (The task
+ *  list lays itself out inside its room, `fitTaskList`.) */
 function enforce(block: string | null, maxTokens: number): string | null {
   if (!block) return null;
   return estimateTokens(block) > maxTokens ? truncateWrappedText(block, maxTokens) : block;
 }
 
-function activeTasksFrom(tasks: BoardTask[], roomTokens: number): string | null {
+function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: TaskOrigin) => boolean): string | null {
   try {
     const db = getDb();
     const stampStmt = db.prepare(
@@ -521,7 +602,7 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number): string | null 
         const r = newerStmt.get(conversationId, seq) as { n: number; newest: number | null } | undefined;
         if (r) newer = { count: r.n, newestAt: r.newest };
       }
-      return { t, stamp, steps, origin, waiting, edited, newer };
+      return { t, stamp, steps, origin, waiting, edited, newer, inView: !isWaiting && inView(origin) };
     };
     const seen: TaskView[] = [];
     const viewAt = (i: number): TaskView => (seen[i] ??= read(tasks[i]));
@@ -649,12 +730,12 @@ export function activeTasksWorstCaseTokens(): number {
     .map((by) => ({ by, len: waitingOn({ origin: { party }, waiting: { since: null, by } } as TaskView, caps).length }))
     .sort((a, b) => b.len - a.len)[0].by;
   const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
-  const view = (waiting: boolean): TaskView => ({
+  const view = (shape: 'current' | 'waiting' | 'inView'): TaskView => ({
     t: {
       id: 'w'.repeat(36),
       title: 't'.repeat(titleCap + 10),        // over the cap, so the `...` suffix is counted
       priority: 'critical',
-      status: waiting ? widestWaitingStatus : 'in_progress',
+      status: shape === 'waiting' ? widestWaitingStatus : 'in_progress',
       description: 'd'.repeat(wordsCap + 1),
       notes: 'n'.repeat(noteCap + 10),
     },
@@ -663,13 +744,16 @@ export function activeTasksWorstCaseTokens(): number {
       messageId: 'm'.repeat(36), words: 'w'.repeat(wordsCap + 1),
       createdAt: widestInstant, label: party, party,
     },
-    waiting: waiting ? { since: widestInstant, by: widestWaitingBy } : null,
+    waiting: shape === 'waiting' ? { since: widestInstant, by: widestWaitingBy } : null,
     edited: true,
     newer: { count: longest, newestAt: widestInstant },
+    inView: shape === 'inView',
   });
   let worst = 0;
-  for (let waitingRows = 0; waitingRows <= rows; waitingRows++) {
-    const views = Array.from({ length: rows }, (_, i) => view(i >= rows - waitingRows));
+  // Round 6: three line shapes — current, waiting, and in view (a pointer to the conversation).
+  for (let waitingRows = 0; waitingRows <= rows; waitingRows++) for (let inViewRows = 0; inViewRows <= rows - waitingRows; inViewRows++) {
+    const views = Array.from({ length: rows }, (_, i) =>
+      view(i >= rows - waitingRows ? 'waiting' : i >= rows - waitingRows - inViewRows ? 'inView' : 'current'));
     const lines = renderTaskLines(views, wordsCap, caps)
       .map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`));
     // The closing "N more not shown" line at a count no real board reaches.
