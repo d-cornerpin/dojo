@@ -7549,6 +7549,27 @@
       "to": 567,
       "by": "t137 — finalize hands the pause the continuation fact",
       "why": "562 -> 567 (+5: 3 code, 2 comment). CODE: one import line (`isStopFenced`; `continuationContext` joins an existing import) and the two-line `queuedOwnContinuation` argument to the one production caller of pauseDriveWorkWaitingOnOwner: the C3 stash every engine auto-continue writes (consumed by the next preflight, so at finalize it is this turn's), the tool-loop latch for the non-human arm, and a stop fence that refuses the wake. COMMENT: why those three facts and not prose. The census clause in t137-long-jobs-are-left-alone.test.ts counts exactly one caller and asserts this argument's shape. From 567 this file may only shrink.\n\nGate-side-only commit; no product file."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 266,
+      "to": 422,
+      "by": "t139 — the task list carries the requester's own words (#7 part 1, OR-TRACKER-1)",
+      "why": "+156 (+178/-22; added 74 comment, 7 blank, 97 code). The code is the lane's new job and nothing else: (1) the origin read — one PK join from the task to the row that carried the request and its conversation, plus `readOrigin`/`originLabel` turning it into a dated, labelled head (`recordedInstant`, `conversationLabel`, both REUSED, not rewritten); (2) `originSection`/`spend` — the words printed verbatim between a head and an end marker out of ONE shared 8,000-char pool, the honest cut line naming the `history_get` id, the `(original request not linked)` / `no longer stored` labels, and the task's own description only when it records something the words do not; (3) `BOARD_STATUSES` — the list now carries every UNFINISHED task (driven: the engine paused a task whose owner's words then vanished from the list while the work was owed), with a `Status: <s>, waiting` line; (4) the worst-case generator re-derived for all of it, because the reserve is pinned to the renderer. WHAT LEFT: the 300-char description cut. The 74 comment lines carry why the cut went, why the pool is the pin's 8,000 shared rather than 8,000 per task (5x the pin's reserve on every assembly), why on_deck stays off, and why a repeating description is not printed twice. REFUSED: moving the origin read into `tracker/delivery-evidence.ts` beside `findTaskOriginChain` — outside this lane's fence and a 160-char excerpt reader by design, not the verbatim words. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 1019,
+      "to": 1069,
+      "by": "t139 — a task opened on a delegate-reply wake is linked to the ask it continues",
+      "why": "+50 (+56/-6; added 30 comment, 1 blank, 25 code). The 25 code lines are ONE function, `askOfDelegateReplyWake`, and the two-line hand-off into it: three point reads (the turn record, the newest inbound row at the turn's start, the piece -> parent ask join). It closes the gap `work/join-drive.ts` names in its own header (a task opened while serving a delegated ask was born with no edge, so the owner's words could never reach the task list). The 30 comment lines are the recorded-facts argument the link rests on — served-nothing turn, woken by a delegate's reply on a piece, never a notice (#12) — because a link that rests on an unstated rule is the next mislink. Mutants driven per fact (woke-row check, served-nothing guard, the tie itself). REFUSED: putting the read in `agent/turn-context.ts` (outside the fence) or in `turn-classification.ts` (which would re-root the turn — a much wider change to what every reader of `turns` sees). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1301,
+      "to": 1329,
+      "by": "t139 — the active-tasks lane re-declares its reserve and caps",
+      "why": "+28 (+34/-6; added 20 comment, 14 code — the 14 are the `measured` derivation string each POST_BUDGET_LANES entry is REQUIRED to carry, the cap literal, and the reserve). `chars.description` (300) is deleted; `chars.originalWords` (8,000 = the pin's DIRECTIVE_MAX_CHARS) and `chars.originLabel` (120 = chars.title's own number) are declared with their derivation; the reserve 1,239 -> 3,444 is re-derived by calling the renderer, net +124 once t145 frees the pin's 2,081. No smaller version is true: a cap without its derivation is the rumour `PostBudgetLane.measured` forbids. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7671,10 +7692,9 @@
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 404,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 147,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
-    "packages/server/src/agent/v2/steps/execute/scaffold-title.ts": 149,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 97,
     "packages/server/src/agent/v2/steps/execute/tracker-counting.ts": 203,
-    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 332,
+    "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 316,
     "packages/server/src/agent/v2/steps/execute/work-status.ts": 52,
     "packages/server/src/agent/v2/steps/execute/xml-fallback.ts": 155,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
@@ -7767,7 +7787,7 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1301,
+    "packages/server/src/memory/lanes.ts": 1329,
     "packages/server/src/memory/message-store.ts": 1206,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -7779,7 +7799,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/memory/tail-horizon.ts": 391,
-    "packages/server/src/memory/work-board-lane.ts": 266,
+    "packages/server/src/memory/work-board-lane.ts": 422,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
@@ -7857,7 +7877,7 @@
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
-    "packages/server/src/work/tracker-store.ts": 1019,
+    "packages/server/src/work/tracker-store.ts": 1069,
     "packages/server/src/work/tracker-view.ts": 649,
     "packages/server/src/work/validation-drive.ts": 1078,
     "packages/server/src/work/work-reaper.ts": 694,
