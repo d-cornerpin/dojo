@@ -268,16 +268,9 @@ export const alreadyDeliveredReceiptExpr = (a: string): string =>
 // ════════════════════════════════════════════════════════════════════════════════════════
 // 2b · A PERSON WAS TOLD ABOUT THIS WORK — THE RECORD (v3.3.3 t142, migration 189)
 //
-// ── WHAT WAS MISSING ──
-// The owner-escalation ladder's verify step asks one question — *has a person already been
-// told about THIS row?* — and until now the platform had nowhere to read an answer from.
-// `deliveries` carries `root_kind`/`root_id` and no work reference, so the ladder tried the
-// turn roots: the `ask` edge (structurally older than the steer, so always false for a plain
-// task) and the `occurrence` edge (true for ANY output of a scheduled run, including one that
-// said nothing about the block — the over-credit). The pm-cluster ruling refused the two
-// remaining shortcuts by name: TURN COINCIDENCE ("any delivery on the turn that happened to
-// serve the notice would credit the row") and CONTENT INSPECTION ("never"). The interim was
-// fail-safe: the owner told twice rather than never.
+// ── WHAT WAS MISSING ── the ladder's verify step ("has a person already been told about THIS
+// row?") had nowhere to read an answer from; its turn-root guess is tombstoned, with the
+// ruling's reasons, at its old site in `scheduler/runner.ts`, and migration 189's header.
 //
 // ── THE RECORD ──
 // One `work_events` row of kind `person_told` on the work's own spine (OR-TRACKER-1: the
