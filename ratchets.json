@@ -7794,6 +7794,13 @@
       "to": 700,
       "by": "t142 fix round 1 — the escalation-stamp label's docstring tells the truth",
       "why": "696 -> 700 (+4: 0 code, 6 comment added, 2 removed). t142 fix round 1, review M2: `validationEscalatedAtExpr`'s docstring said 'a permanent stamp … so no scoping', which t142 made false for a blocked row. It now says what the expression is (unscoped DISPLAY for the dashboard label), names the known gap after a re-block, and records that migration 189d's carried stamps copy the original instant so the upgrade moves no label. Comment only. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 1233,
+      "to": 1236,
+      "by": "t138 round 3 (2026-10-13), ruling R-V333-13 + owner ruling 'no hard limits; the Dojo should be smart enough to know when enough is enough'",
+      "why": "+3, and every one is a CALL, not a comment. The Healer-broken and Healer-missing texts fired on every injury (witnessed RED: 3 texts in 3 injuries each); they now text once per condition. The latch, its clearing rules and the owner-card reader were put in a NEW module (healer/owner-notices.ts, 99 lines) precisely so this pinned file pays only for its wiring: one import line, one call where an injury finds the Healer present (`ownerConditionsOnHealerSeen`, which ends 'missing' and, if healthy, 'broken'), and one call in onAgentRecovered (`ownerConditionsOnRecovery`, which ends 'stuck' and, for the Healer, 'broken'). The three message literals moved OUT to that module (their words are shared with the owner's dashboard card), which is why the three gated sendAlert sites themselves cost nothing. Each clearing call must sit at the moment the condition is observed to end, and those moments are in this file; moving them elsewhere would mean a second reader re-deriving 'the Healer recovered' from status prose, which is the drift this campaign keeps deleting. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -7997,7 +8004,7 @@
     "packages/server/src/healer/auto-fix.ts": 519,
     "packages/server/src/healer/diagnostic.ts": 1071,
     "packages/server/src/healer/healer-agent.ts": 1163,
-    "packages/server/src/healer/injury-recovery.ts": 1233,
+    "packages/server/src/healer/injury-recovery.ts": 1236,
     "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2856,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
