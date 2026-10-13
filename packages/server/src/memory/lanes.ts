@@ -560,7 +560,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.active-tasks',
     slot: MessageSlot.ActiveTasksTail,
-    // t139: 1,239 -> 3,584 (+2,345), then 3,618 at round 5. The 300-char description term (5 x 300 = 1,500 chars)
+    // t139: 1,239 -> 3,584 (+2,345), 3,618 at round 5, 3,643 at the t141 merge. The 300-char description term (5 x 300 = 1,500 chars)
     // left with the cut; the one 8,000-char pool of original words (chars.originalWordsFloor) plus
     // each current line's labelled head and end/continues line arrived. Round 2: the pool is
     // spent in passes (every current request first, newest task first, then descriptions the
@@ -573,8 +573,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // 10-digit count — a row the room cannot hold is now COUNTED, never dropped silently. And the
     // reserve is now the list's GUARANTEE, not its ceiling: at run time it is laid out in this
     // reserve PLUS the content fit's unspent budget (`activeTasksRoomTokens`), so on a roomy view
-    // every request is whole. Net once the pin goes: +298.
-    reserveTokens: 3618,
+    // every request is whole. Net once the pin goes: +323 (t141 merge, +25: a fixed 10-char zone on each of its 10 instants).
+    reserveTokens: 3643,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
