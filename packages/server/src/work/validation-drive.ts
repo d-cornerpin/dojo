@@ -1128,6 +1128,9 @@ export function ownerEscalationAlertLine(p: {
   return parts.join(' ');
 }
 
+// t146 round 2: the last sentence names the send tools' optional `task_id` (agent/tools/
+// told-about-task.ts), so a tell by text or email is recorded and the ladder stops. The copy
+// was tightened to keep the whole steer inside the events lane's 400-char gist.
 export function ownerVerdictNudgeText(p: {
   taskId: string; title: string; status: string; agentName: string;
   ownerName: string; boundMin: number;
@@ -1136,9 +1139,9 @@ export function ownerVerdictNudgeText(p: {
   const title = p.title.length > 60 ? `${p.title.slice(0, 60)}…` : p.title;
   return (
     `${p.agentName} marked "${title}" (${shortId}) ${p.status} over ${p.boundMin} minutes ago `
-    + `and the PM still cannot confirm it. If you can settle it yourself, do that and leave `
-    + `${p.ownerName} out of it. If only he can say whether it is really done, ask him in your `
-    + `own voice — then record his answer with work_validate (apply_user_validation), quoting him.`
+    + `and the PM cannot confirm it. Settle it yourself if you can; leave ${p.ownerName} out of `
+    + `it. If only he can decide, ask him in your own voice, then record it with work_validate `
+    + `(apply_user_validation), quoting him. If you text or email him, pass task_id ${shortId}.`
   );
 }
 

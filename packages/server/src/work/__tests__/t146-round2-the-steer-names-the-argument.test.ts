@@ -16,7 +16,7 @@ const nudge = (agentName = 'HarnessBot', ownerName = 'Marcus'): string => ownerV
 });
 
 describe('round 2: the steer names the argument', () => {
-  it.fails('it tells the agent to pass task_id with this task\'s short id when it texts or emails the owner', () => {
+  it('it tells the agent to pass task_id with this task\'s short id when it texts or emails the owner', () => {
     expect(nudge()).toMatch(/If you text or email him, pass task_id 77cba094\./);
   });
 
