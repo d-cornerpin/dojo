@@ -114,9 +114,11 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
     const s = stripComments(src('packages/server/src/memory/recall.ts'));
     expect(s).not.toMatch(/conv_key/);
     expect(s).toMatch(/conversation_id = \?/);
-    // The three-valued semantics must survive: an untagged row is still restricted to the
-    // agent's OWN activity, never a bare `IS NULL` (inv 4 — another human's unclaimed inbound).
-    expect(s).toMatch(/conversation_id IS NULL AND \(role IN \('assistant','tool'\)/);
+    // t141 round 2: the untagged-is-mine branch is gone — an own row is kept on its LABEL
+    // (`subject_kind`, the scopers' rule) — and inv 4 still holds: no bare `IS NULL` that would
+    // match ANOTHER human's unclaimed inbound; peer rows keep their own narrow clause.
+    expect(s).toMatch(/role IN \('assistant','tool'\) AND \(turn_number = \? OR IFNULL\(subject_kind/);
+    expect(s).not.toMatch(/conversation_id IS NULL AND \(role IN \('assistant','tool'\)/);
   });
 
   it('the active-directive pin scopes on conversation_id', () => {

@@ -30,6 +30,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 
 const logger = createLogger('memory-recall');
 
@@ -276,21 +277,20 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
           .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conversation_id: string } | undefined;
         scopeConversationId = cur?.conversation_id;
       }
+      // t141 round 2 — the scopers' rule, not a missing stamp: an OWN row stays unless POSITIVELY a
+      // person's reply in another conversation (`subject_kind='conv'`; unlabelled = judged by its
+      // stamp); the live turn's rows are the turn fact. C17 stands: never ANOTHER human's inbound.
+      const ownKept = "(role IN ('assistant','tool') AND (turn_number = ? OR IFNULL(subject_kind, "
+        + "CASE WHEN conversation_id IS NULL THEN '' ELSE 'conv' END) <> 'conv'))";
+      const peerUnfiled = '(source_agent_id IS NOT NULL AND conversation_id IS NULL)';
+      const inFlight = liveTurnContext(agentId)?.turnNumber ?? -1;
       if (scopeConversationId) {
-        // C17: keep the current conversation's stamped rows, but restrict the NULL part to
-        // the agent's OWN activity (assistant/tool) or A2A rows, NEVER a bare
-        // `conversation_id IS NULL`, which also matches ANOTHER human's not-yet-claimed
-        // waiting inbound and legacy rows, bleeding a different human's conversation into
-        // this recall (inv 4). The current conversation's own user rows are stamped at ingest
-        // by their producer (C15), so they're covered by `conversation_id = ?`; the NULL
-        // branch is only for this turn's still-untagged own scratch.
-        clauses.push("(conversation_id = ? OR (conversation_id IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)))");
-        params.push(scopeConversationId);
+        clauses.push(`(conversation_id = ? OR ${ownKept} OR ${peerUnfiled})`);
+        params.push(scopeConversationId, inFlight);
       } else if (opts.turnConversationId === null) {
-        // Engine/A2A turn (no human conversation): restrict to the agent's own untagged
-        // activity / A2A rows, never a human's unclaimed inbound or a prior human
-        // conversation's tagged output.
-        clauses.push("conversation_id IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)");
+        // Engine/A2A turn: no human conversation, so no person's reply and no person's inbound.
+        clauses.push(`(${ownKept} OR ${peerUnfiled})`);
+        params.push(inFlight);
       }
     }
     if (opts.since) {

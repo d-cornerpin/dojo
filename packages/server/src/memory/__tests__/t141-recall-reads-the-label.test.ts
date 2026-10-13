@@ -57,7 +57,7 @@ function recalled(turnConversationId: string | null): string {
 }
 
 describe('round 2 — scoped recall reads the label', () => {
-  it.fails('a person turn\'s recall keeps every row it kept before, labelled, and still drops another conversation\'s reply', () => {
+  it('a person turn\'s recall keeps every row it kept before, labelled, and still drops another conversation\'s reply', () => {
     const out = recalled(C);
     expect(out).toContain('MY-OWN-REPLY');
     expect(out).toContain('BG-ROW');
@@ -67,7 +67,7 @@ describe('round 2 — scoped recall reads the label', () => {
     expect(out, 'the re-answer-ghost guard is unchanged').not.toContain('OTHER-REPLY');
   });
 
-  it.fails('an engine / agent-thread turn\'s recall keeps the unlabelled-as-a-person\'s rows and no person\'s reply', () => {
+  it('an engine / agent-thread turn\'s recall keeps the unlabelled-as-a-person\'s rows and no person\'s reply', () => {
     const out = recalled(null);
     expect(out).toContain('BG-ROW');
     expect(out).toContain('LEGACY-ROW');

@@ -135,6 +135,29 @@ describe('§2 the deletions, counted', () => {
     }
   });
 
+  it('round 2: NO reader anywhere in memory/ or agent/ treats a missing conversation stamp as "mine"', () => {
+    // Every production source under the two trees, comments stripped. The engine's step
+    // packages come through the shared corpus (engine-sources.ts); the rest is a plain walk.
+    const walk = (dir: string): string[] => fs.readdirSync(path.join(SRC, dir), { withFileTypes: true }).flatMap((d) => {
+      const rel = `${dir}/${d.name}`;
+      if (d.isDirectory()) return d.name === '__tests__' ? [] : walk(rel);
+      return d.name.endsWith('.ts') ? [rel] : [];
+    });
+    const corpus = new Map<string, string>();
+    for (const rel of [...walk('memory'), ...walk('agent')]) corpus.set(rel, stripComments(read(rel)));
+    for (const e of engineSources()) corpus.set(e.rel, stripComments(e.text));
+    expect(corpus.has('memory/recall.ts') && corpus.has('memory/assembler.ts') && corpus.size > 150, 'the corpus is whole').toBe(true);
+    const NULL_AS_MINE = [
+      /!\s*[\w.]+\??\.conversationId\s*\|\|/,                              // TS: `!m.conversationId || …`
+      /conversation_id IS NULL\s+AND\s+\(?\s*role IN \('assistant'/,            // SQL: untagged own row = mine
+      /\(\s*conversation_id IS NULL\s+OR\s+conversation_id\s*=/,               // SQL: NULL-or-this-one
+    ];
+    const hits = [...corpus].flatMap(([rel, text]) => NULL_AS_MINE.filter((re) => re.test(text)).map((re) => `${rel} ${re}`));
+    expect(hits).toEqual([]);
+    // ...and the positive half: recall now reads the LABEL, as the scopers do.
+    expect(corpus.get('memory/recall.ts')).toMatch(/IFNULL\(subject_kind/);
+  });
+
   it('the late stamp is DELETED with its three callers: one conversation writer is left, for inbound rows', () => {
     const store = stripComments(read('memory/message-store.ts'));
     // The one `UPDATE messages SET conversation_id` left is the inbound pickup repair (a
