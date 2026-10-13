@@ -26,7 +26,7 @@ import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.j
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
 
@@ -88,7 +88,7 @@ function makeEmptyState(): AccountWatchState {
 
 /** An account this watcher should be monitoring right now. */
 function isMonitored(v: GoogleAccountView): boolean {
-  return v.enabled && v.connected && v.watchEmail && v.services.gmail;
+  return v.connected && watchedForMail(v, 'gmail');
 }
 
 // ── Aggregated status (single-row view for dashboard Health panel) ──

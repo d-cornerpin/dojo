@@ -211,7 +211,7 @@ describe('P7: turning an account or its mail service off ends its watcher card, 
     lastError: 'boom', alreadyAlerted: false,
   } as Parameters<typeof m.watcher.maybeAlertOnFailure>[0]);
 
-  it.fails('Gmail: the account disabled; another account\'s Gmail service turned off', async () => {
+  it('Gmail: the account disabled; another account\'s Gmail service turned off', async () => {
     const m = await boot();
     const a = m.googleAccounts.insertGoogleAccount({ kind: 'agent', email: 'one@example.test', connected: true, watchEmail: true });
     const b = m.googleAccounts.insertGoogleAccount({ kind: 'user', email: 'two@example.test', connected: true, watchEmail: true });
@@ -227,7 +227,7 @@ describe('P7: turning an account or its mail service off ends its watcher card, 
     expect(await m.cards()).toEqual([]);
   });
 
-  it.fails('Outlook: the account disabled; its Outlook service turned off', async () => {
+  it('Outlook: the account disabled; its Outlook service turned off', async () => {
     const m = await boot();
     const a = m.msAccounts.insertMicrosoftAccount({ kind: 'agent', email: 'one@example.test', connected: true, enabled: true, watchEmail: true });
     const b = m.msAccounts.insertMicrosoftAccount({ kind: 'user', email: 'two@example.test', connected: true, enabled: true, watchEmail: true });
@@ -249,7 +249,7 @@ describe('P7: turning an account or its mail service off ends its watcher card, 
     expect(await m.cards()).toHaveLength(1);
   });
 
-  it.fails('census: the watchers and the card share ONE "is this account watched" predicate', () => {
+  it('census: the watchers and the card share ONE "is this account watched" predicate', () => {
     const strip = (code: string): string => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
     const read = (rel: string): string => strip(fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8'));
     expect(read('gmail-watcher.ts')).toMatch(/function isMonitored\(v: GoogleAccountView\): boolean \{\s*return v\.connected && watchedForMail\(v, 'gmail'\);/);

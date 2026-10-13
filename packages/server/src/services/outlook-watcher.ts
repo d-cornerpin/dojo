@@ -18,7 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
 
@@ -73,7 +73,7 @@ function makeEmptyState(): AccountWatchState {
 }
 
 function isMonitored(v: MicrosoftAccountView): boolean {
-  return v.enabled && v.connected && v.watchEmail && v.services.outlook;
+  return v.connected && watchedForMail(v, 'outlook');
 }
 
 // ── Aggregated status ──

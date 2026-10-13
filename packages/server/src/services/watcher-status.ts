@@ -10,8 +10,8 @@
 
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
-import { recordFailureTold, clearFailure, watcherFailingOnRecord } from './watcher-owner-cards.js';
-export { watcherFailingOnRecord };
+import { recordFailureTold, clearFailure, watcherFailingOnRecord, watchedForMail } from './watcher-owner-cards.js';
+export { watcherFailingOnRecord, watchedForMail };
 
 export interface RecentNotification {
   at: string;       // ISO timestamp

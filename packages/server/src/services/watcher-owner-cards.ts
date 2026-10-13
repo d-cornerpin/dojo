@@ -60,11 +60,30 @@ export function clearFailure(name: Name, account: string): Entry | null {
   return told;
 }
 
+/** THE "is this account's mail watched" rule, shared: the Gmail and Outlook watchers poll an
+ *  account when it is connected AND this holds (their `isMonitored`), and a watcher card's
+ *  subject stands while this holds (round 7, re-review P7). Connected is left out here on purpose:
+ *  a benched account's failure is still live, and reconnecting resumes polls that clear it. A
+ *  service missing from `services` defaults on, as both workspaces' service defaults do. */
+export function watchedForMail(
+  v: { enabled: boolean; watchEmail: boolean; services: Partial<Record<string, boolean>> }, service: 'gmail' | 'outlook',
+): boolean {
+  return v.enabled && v.watchEmail && v.services[service] !== false;
+}
+
 /** Is the watched subject still there and still watched? */
 function subjectStands(name: Name, account: string): boolean {
   const db = getDb();
-  if (name === 'gmail') return !!db.prepare('SELECT 1 FROM google_accounts WHERE id = ? AND watch_email = 1').get(account);
-  if (name === 'outlook') return !!db.prepare('SELECT 1 FROM microsoft_accounts WHERE id = ? AND watch_email = 1').get(account);
+  if (name !== 'teams') {
+    const row = db.prepare(name === 'gmail'
+      ? 'SELECT enabled, watch_email, enabled_services FROM google_accounts WHERE id = ?'
+      : 'SELECT enabled, watch_email, enabled_services FROM microsoft_accounts WHERE id = ?')
+      .get(account) as { enabled: number; watch_email: number; enabled_services: string | null } | undefined;
+    if (!row) return false;
+    let services: Partial<Record<string, boolean>> = {};
+    try { services = JSON.parse(row.enabled_services ?? '{}') as Partial<Record<string, boolean>>; } catch { /* defaults */ }
+    return watchedForMail({ enabled: !!row.enabled, watchEmail: !!row.watch_email, services }, name === 'gmail' ? 'gmail' : 'outlook');
+  }
   const ms = db.prepare("SELECT enabled, enabled_services FROM microsoft_accounts WHERE kind = 'agent' ORDER BY position LIMIT 1")
     .get() as { enabled: number; enabled_services: string | null } | undefined;
   if (!ms || !ms.enabled) return false;
