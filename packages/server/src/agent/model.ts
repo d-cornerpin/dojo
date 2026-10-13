@@ -27,6 +27,7 @@ import { recordCost } from '../costs/tracker.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
+import { routedFirstPicks } from '../router/selector.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
@@ -3893,7 +3894,7 @@ export function clearClientCache(providerId?: string): void {
  *     per-call window protects the box" — names that mechanism; this keeps it.
  */
 export function getContextWindow(modelId: string): number {
-  if (isAutoRouteSentinel(modelId)) return routedContextWindow();
+  if (isAutoRouteSentinel(modelId)) return routedOpeningWindow();
   try {
     const info = getModelInfo(modelId);
     return effectiveContextWindow(info.contextWindow, resolveNumCtx(info).effective);
@@ -3908,12 +3909,15 @@ export function getContextWindow(modelId: string): number {
 //    dial on that row to "N tokens against 0"), and an id with no row at all.
 //  * THE AUTO-ROUTER: a routed turn is assembled before the router names its model, against the
 //    `'__auto__'` sentinel (and `'auto'`, the seeded row agents point at). It fell into the catch
-//    above and was sized for 200K whatever the box routes to, so on a box whose routed models are
-//    smaller the provider boundary cut the overflow out a lane at a time, the live conversation
-//    last (#13's "45K family"). It is now the LARGEST effective window among the enabled routed
-//    picks: `reassemble-for-fit.ts` sizes the array DOWN to the actual pick before every dial,
-//    and the smallest would give a large pick a small model's view and condense against a model
-//    nobody was using.
+//    above and was sized for 200K whatever the box routes to (#13's "45K family").
+//    Round 5: it is the largest window among the models the router OPENS each tier on
+//    (`router/selector.ts`'s `routedFirstPicks`) — never a model the router only reaches past them
+//    (a box with several 1M rows enabled below its 128K picks builds for 128K). This is a BUILDING
+//    size, not a measuring one: the tier is decided from the assembled array, so the turn's first
+//    assembly cannot know which opening pick it will dial, and it must not be smaller than the
+//    one it does dial (the assembly door folds whatever its view cuts). Every condensing decision
+//    for the call is made once the router has named the pick, against that pick's own window
+//    (`pre-call-gates/context-gates.ts`, `call-llm/reassemble-for-fit.ts`).
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 function declaredContextWindow(stored: number | null | undefined): number {
@@ -3924,22 +3928,12 @@ function isAutoRouteSentinel(modelId: string): boolean {
   return modelId === '__auto__' || modelId === 'auto';
 }
 
-/** The tiers `router/selector.ts` walks for a routed pick (its `TIER_FALLBACK` union). */
-const ROUTED_TIERS = ['light', 'standard', 'heavy'] as const;
-
-/** The largest effective window any routed pick can dial; the default when nothing is routed. */
-function routedContextWindow(): number {
+/** The largest effective window among the router's opening picks; the default when nothing is routed. */
+function routedOpeningWindow(): number {
   try {
-    const rows = getDb().prepare(`
-      SELECT DISTINCT tm.model_id AS id
-        FROM router_tier_models tm
-        JOIN models m ON m.id = tm.model_id
-       WHERE tm.tier_id IN (${ROUTED_TIERS.map(() => '?').join(', ')}) AND m.is_enabled = 1
-    `).all(...ROUTED_TIERS) as Array<{ id: string }>;
     let largest = 0;
-    for (const { id } of rows) {
-      if (isAutoRouteSentinel(id)) continue;
-      largest = Math.max(largest, getContextWindow(id));
+    for (const id of routedFirstPicks()) {
+      if (!isAutoRouteSentinel(id)) largest = Math.max(largest, getContextWindow(id));
     }
     return largest > 0 ? largest : DEFAULT_CONTEXT_WINDOW;
   } catch {

@@ -153,8 +153,10 @@ function seedBox(shape: 'owner' | 'mixed'): void {
   ).run(AGENT);
 }
 
-/** Fictional bodies (G1). ~130K tokens over 400 rows: a full view for 128K, a light one for 1M,
- *  and under both windows' row ceilings (512 and 640), so only the WINDOW can make it full. */
+/** Fictional bodies (G1). 150 exchanges ≈ 94K tokens over 300 rows — measured: FULL for the 128K
+ *  pick (the trim's one-block lead is crossed) yet nothing is cut and the gate's emergency arms stay
+ *  quiet (ratio 0.74); nowhere near full for 1M; under both windows' row ceilings (512 and 640). That
+ *  is the band where only a check measured for the dialed model condenses ahead of the cut. */
 const ASK = 'Please keep counting the crates on the north dock and tell me the running total.';
 const REPLY = 'Counted another stack on the north dock; the running total is written on the board beside the ramp, '
   + 'and the damaged lids are set aside for the repair bench this afternoon. ';
@@ -229,14 +231,14 @@ afterEach(async () => {
 });
 
 describe('t140 round 5 — an auto-routed turn is measured against the model the router dials', () => {
-  it.fails('the reporting box\'s shape: every tier picks the 128K model first and a 1M model is enabled below it — the turn\'s window is the 128K pick\'s, not the 1M row\'s', () => {
+  it('the reporting box\'s shape: every tier picks the 128K model first and a 1M model is enabled below it — the turn\'s window is the 128K pick\'s, not the 1M row\'s', () => {
     seedBox('owner');
     expect(getContextWindow('__auto__'), 'the window the turn builds against is the window of the model the router dials first').toBe(WINDOW_128K);
   });
 
-  it.fails('the reporting box\'s shape: the condensing check measures 128K for the 128K call, and condenses for it', async () => {
+  it('the reporting box\'s shape: the condensing check measures 128K for the 128K call, and condenses for it', async () => {
     seedBox('owner');
-    seedConversation(200);
+    seedConversation(150);
     const { dialedModelId } = await oneRoutedCall();
     expect(dialedModelId, 'the router dialed the 128K pick').toBe(PICK_128K);
     expect(provider.dialed, 'the provider received the 128K pick\'s request').toEqual([API_128K]);
@@ -247,9 +249,9 @@ describe('t140 round 5 — an auto-routed turn is measured against the model the
     }
   });
 
-  it.fails('a box whose HEAVY tier picks the 1M model first: a STANDARD-routed call to the 128K model is measured for 128K, never 1M', async () => {
+  it('a box whose HEAVY tier picks the 1M model first: a STANDARD-routed call to the 128K model is measured for 128K, never 1M', async () => {
     seedBox('mixed');
-    seedConversation(200);
+    seedConversation(150);
     route.tier = 'standard';
     const { dialedModelId } = await oneRoutedCall();
     expect(dialedModelId).toBe(PICK_128K);
@@ -263,7 +265,7 @@ describe('t140 round 5 — an auto-routed turn is measured against the model the
 
   it('the same mixed box, a HEAVY-routed call to the 1M model: nothing is condensed — the view is nowhere near full for the model dialed', async () => {
     seedBox('mixed');
-    seedConversation(200);
+    seedConversation(150);
     route.tier = 'heavy';
     const { dialedModelId } = await oneRoutedCall();
     expect(dialedModelId).toBe(BIG_1M);

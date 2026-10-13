@@ -76,7 +76,7 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
     // And the gate APPLIES it: the routine condense is handed the leaving span, not a count.
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     expect(gate).toMatch(/const leaving = rowsLeavingView\(agentId, \{ freshTailCount: getFreshTailCount\(contextWindow\) \}, \{ viewFull \}\);/);
-    expect(gate).toMatch(/condenseLeavingInBackground\(\{ agentId, writerModelId: configuredModelId, dialedModelId: dialModelId, contextWindow, leaving \}\);/);
+    expect(gate).toMatch(/return leaving \? condenseLeavingInBackground\(\{ agentId, writerModelId, dialedModelId, contextWindow, leaving \}\) : false;/);
     expect(gate).toMatch(/checkAndCompact\(agentId, writerModelId, contextWindow, \{\s*leaving,/);
   });
 
@@ -171,5 +171,30 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     expect(selector).toMatch(/if \(windowOf && inputEstimate > Math\.floor\(CONTEXT_THRESHOLD \* windowOf\(modelId\)\)\) return false;/);
     const model = FILES.find((f) => f.rel === 'agent/model.ts')!.code;
     expect(model).toMatch(/const refit = params\.refitFor \? await params\.refitFor\(fb\.modelId\) : null;/);
+  });
+});
+
+describe('t140 census, round 5 — the turn is measured against the model the router dials', () => {
+  it('the "largest enabled routed row" window is gone; the turn builds against the router\'s opening picks', () => {
+    expect(filesWith(/\broutedContextWindow\b/)).toEqual([]);
+    expect(filesWith(/\bROUTED_TIERS\b/)).toEqual([]);
+    const model = FILES.find((f) => f.rel === 'agent/model.ts')!.code;
+    expect(model).toMatch(/if \(isAutoRouteSentinel\(modelId\)\) return routedOpeningWindow\(\);/);
+    expect(model).toMatch(/for \(const id of routedFirstPicks\(\)\) \{/);
+    // The opening picks are the selector's own: ONE standing-filter predicate, read by both.
+    const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
+    expect(selector.match(/passesStandingFilters\(/g)?.length, 'declaration + selectModel + routedFirstPicks').toBe(3);
+    expect(filesWith(/\broutedFirstPicks\(/)).toEqual(['agent/model.ts', 'router/selector.ts']);
+  });
+
+  it('ONE routine check, measured for the dialed model: called by the gate for a model it knows and by the call step for the router\'s pick', () => {
+    expect(filesWith(/\bcondenseForTheDialedModel\(/)).toEqual([REFIT_REL, GATE_REL]);
+    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
+    // The gate does not run it on an auto-routed iteration with nothing locked …
+    expect(gate).toMatch(/if \(isAutoRouted && !lockedModelId\) \{\s*routineMeasuredAtGate\.delete\(agentId\);\s*\} else \{\s*routineMeasuredAtGate\.set\(agentId, dialModelId\);/);
+    // … and the call step runs it for the pick it is about to dial, unless the gate already did.
+    const fit = FILES.find((f) => f.rel === REFIT_REL)!.code;
+    expect(fit).toMatch(/if \(!gates\.routineCheckMeasuredAtGate\(input\.agentId, input\.modelId\)\) \{/);
+    expect(fit).toMatch(/agentId: input\.agentId, dialedModelId: input\.modelId, contextWindow: getContextWindow\(input\.modelId\),/);
   });
 });

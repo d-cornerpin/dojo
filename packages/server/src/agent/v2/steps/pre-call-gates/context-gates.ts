@@ -16,11 +16,12 @@
 // blocked the turn for up to ten minutes with no error and no log line. It runs in the
 // background under its own wall-clock abort, one in flight per agent.
 //
-// t140: EVERY ARM MEASURES THE WINDOW OF THE MODEL THIS ITERATION WILL DIAL. On an auto-routed
-// turn whose tool loop has locked a model, that is the locked model, not the turn's provisional
-// `'__auto__'` window (which is the roomiest routed pick — `agent/model.ts`'s
-// `routedContextWindow`). Before the lock, the provisional window is the best fact there is,
-// and `reassemble-for-fit` sizes the array down to the real pick before dial.
+// t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL, AND ONLY THAT ONE. A
+// fixed-model agent's, or an auto-routed tool loop's locked model, is known here. An auto-routed
+// iteration with nothing locked is not: the router decides the tier from the assembled array, which
+// does not exist yet. That iteration's routine check therefore runs once the router has named its
+// pick (`condenseForTheDialedModel`, called by `call-llm/reassemble-for-fit.ts`), never here against
+// the turn's building window (`agent/model.ts`'s `routedOpeningWindow`, round 5).
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -48,6 +49,17 @@ const logger = createLogger('v2-loop');
  * measurement stands in for it rather than letting the view-full check run blind for one call.
  */
 const lastSystemPromptTokens = new Map<string, number>();
+
+/**
+ * Round 5: the model each agent's routine check last measured at the gate (absent: the gate left it
+ * to the call step). The call step reads it so the check runs exactly once per dialed model.
+ */
+const routineMeasuredAtGate = new Map<string, string>();
+
+/** Whether this iteration's gate already measured the routine check for `modelId`. */
+export function routineCheckMeasuredAtGate(agentId: string, modelId: string): boolean {
+  return routineMeasuredAtGate.get(agentId) === modelId;
+}
 
 /**
  * The routine condense's bounds: the most leaf chunks one background run may summarise and its
@@ -180,14 +192,46 @@ export async function runContextGates(
   const measuredSystemTokens = Math.max(0, assemblerOverheadTokens - (assembledEstimate.reserveTokens ?? 0));
   if (assemblerOverheadTokens > 0) lastSystemPromptTokens.set(agentId, measuredSystemTokens);
   const systemPromptTokens = assemblerOverheadTokens > 0 ? measuredSystemTokens : (lastSystemPromptTokens.get(agentId) ?? 0);
-  const viewFull = liveViewIsFull(assembledEstimate, systemPromptTokens);
-  const leaving = rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull });
   // t140 round 3: placeholders are replaced first, in the background, when a writer is eligible.
-  if (!replacePlaceholdersInBackground(agentId) && leaving) {
-    condenseLeavingInBackground({ agentId, writerModelId: configuredModelId, dialedModelId: dialModelId, contextWindow, leaving });
+  const replacing = replacePlaceholdersInBackground(agentId);
+  // Round 5: an auto-routed iteration with nothing locked has no dialed model yet (header).
+  if (isAutoRouted && !lockedModelId) {
+    routineMeasuredAtGate.delete(agentId);
+  } else {
+    routineMeasuredAtGate.set(agentId, dialModelId);
+    if (!replacing) {
+      await condenseForTheDialedModel({
+        agentId, dialedModelId: dialModelId, contextWindow, writerModelId: configuredModelId, systemPromptTokens, estimate: assembledEstimate,
+      });
+    }
   }
 
   return proceed(state);
+}
+
+/**
+ * THE ROUTINE CHECK, for the model a call will actually dial: is the view full for ITS window, or
+ * are rows about to leave it? If so, fold exactly those rows in the background
+ * (`condenseLeavingInBackground`). The gate runs it for a model it knows; the call step runs it
+ * once the router has named an auto-routed pick (round 5). `estimate` is the gate's own dry run
+ * when it already has one for this window and model. Never throws; returns whether a fold started.
+ */
+export async function condenseForTheDialedModel(args: {
+  agentId: string; dialedModelId: string; contextWindow: number; writerModelId: string; systemPromptTokens: number;
+  estimate?: Awaited<ReturnType<typeof estimateAssembledTokens>>;
+}): Promise<boolean> {
+  const { agentId, dialedModelId, contextWindow, writerModelId, systemPromptTokens } = args;
+  try {
+    const estimate = args.estimate ?? await estimateAssembledTokens(agentId, contextWindow, dialedModelId);
+    const viewFull = liveViewIsFull(estimate, systemPromptTokens);
+    const leaving = rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull });
+    return leaving ? condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving }) : false;
+  } catch (err) {
+    logger.warn('v2: the routine condense check could not be measured', {
+      agentId, dialedModelId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return false;
+  }
 }
 
 /**

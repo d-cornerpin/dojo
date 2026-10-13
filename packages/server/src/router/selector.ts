@@ -156,6 +156,69 @@ function fitsProviderCeiling(
   return inputEstimate <= providerAwareBudgetTokens(Number.POSITIVE_INFINITY, ceiling);
 }
 
+/**
+ * The filters a candidate must pass whatever the call: its provider is not circuit-broken, it has
+ * the capabilities asked for, it is not rate-limited. (Enabled is the tier query's own `WHERE`.)
+ * `selectModel` applies these, then the per-call ones (budget, fit); `routedFirstPicks` applies
+ * only these — one predicate, so the two can never disagree about which model a tier opens on.
+ */
+function passesStandingFilters(model: TierModelRow, required: string[], agentId?: string): boolean {
+  // ── v3.2.3 LAYER 3: DO NOT OFFER A PROVIDER THAT IS OUT OF MONEY ──
+  // The incident's auto-router kept ranking the CHEAPEST model first, which was the
+  // one answering 402 — so every turn paid a full round trip to a wall before falling
+  // back. The public report measured that tax at +15-20 s per turn. A provider whose
+  // breaker is OPEN is not a candidate: the owner has been carded and nothing here can
+  // change the answer. It comes back the moment they clear it or a call succeeds.
+  if (!mayDialProvider(model.provider_id)) {
+    logger.debug('Model skipped: its provider is circuit-broken (permanent failure)', {
+      modelId: model.model_id, providerId: model.provider_id,
+    }, agentId);
+    return false;
+  }
+
+  // Skip models lacking required capabilities (e.g., tools, vision)
+  if (required.length > 0) {
+    const caps = getModelCapabilities(model.model_id);
+    // Only filter if the model has known capabilities (non-empty).
+    // Models with no capability data (empty) are allowed through
+    // since we don't want a missing probe to block selection.
+    if (caps.length > 0 && required.some(req => !caps.includes(req as never))) {
+      logger.debug('Model lacks required capabilities, skipping', {
+        modelId: model.model_id, required, caps,
+      }, agentId);
+      return false;
+    }
+  }
+
+  // Skip rate-limited models
+  if (isRateLimited(model.model_id)) {
+    logger.debug('Model rate-limited, skipping', { modelId: model.model_id }, agentId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * t140 round 5 — THE MODEL EACH TIER OPENS ON: for every tier an auto-routed turn can be decided
+ * into, the model `selectModel` would return first for it (the turn's own call asks for `tools`,
+ * so this does too). The router decides the tier from the ASSEMBLED array (`router/decide.ts`
+ * reads it for images, a confirmation's prior request and the keyword fallback), so before an
+ * auto-routed turn is assembled the engine knows these candidates and not yet which of them it
+ * dials. The per-call filters are left out on purpose: the budget check carries its own alerting
+ * side effects and is the call's to make, and the fit check needs an assembled array.
+ */
+export function routedFirstPicks(): string[] {
+  const picks = new Set<string>();
+  for (const chain of Object.values(TIER_FALLBACK)) {
+    walk: for (const candidateTier of chain) {
+      for (const model of getTierModels(candidateTier)) {
+        if (passesStandingFilters(model, ['tools'])) { picks.add(model.model_id); break walk; }
+      }
+    }
+  }
+  return [...picks];
+}
+
 export function selectModel(
   tier: string | null | undefined,
   agentId: string,
@@ -197,38 +260,7 @@ export function selectModel(
       // Skip excluded models
       if (excluded.has(model.model_id)) continue;
 
-      // ── v3.2.3 LAYER 3: DO NOT OFFER A PROVIDER THAT IS OUT OF MONEY ──
-      // The incident's auto-router kept ranking the CHEAPEST model first, which was the
-      // one answering 402 — so every turn paid a full round trip to a wall before falling
-      // back. The public report measured that tax at +15-20 s per turn. A provider whose
-      // breaker is OPEN is not a candidate: the owner has been carded and nothing here can
-      // change the answer. It comes back the moment they clear it or a call succeeds.
-      if (!mayDialProvider(model.provider_id)) {
-        logger.debug('Model skipped: its provider is circuit-broken (permanent failure)', {
-          modelId: model.model_id, providerId: model.provider_id,
-        }, agentId);
-        continue;
-      }
-
-      // Skip models lacking required capabilities (e.g., tools, vision)
-      if (required.length > 0) {
-        const caps = getModelCapabilities(model.model_id);
-        // Only filter if the model has known capabilities (non-empty).
-        // Models with no capability data (empty) are allowed through
-        // since we don't want a missing probe to block selection.
-        if (caps.length > 0 && required.some(req => !caps.includes(req as never))) {
-          logger.debug('Model lacks required capabilities, skipping', {
-            modelId: model.model_id, required, caps,
-          }, agentId);
-          continue;
-        }
-      }
-
-      // Skip rate-limited models
-      if (isRateLimited(model.model_id)) {
-        logger.debug('Model rate-limited, skipping', { modelId: model.model_id }, agentId);
-        continue;
-      }
+      if (!passesStandingFilters(model, required, agentId)) continue;
 
       // Check budget
       const estimatedCost = estimateRequestCost(model);

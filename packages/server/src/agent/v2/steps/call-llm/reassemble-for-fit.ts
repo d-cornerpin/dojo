@@ -93,6 +93,23 @@ export interface ReassembleForFitResult {
  * (consumed flags, steer delivery marks).
  */
 export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
+  const refit = await refitToThePick(input);
+  // t140 round 5: the routine condense check, measured for THIS pick if the gate could not
+  // (`pre-call-gates/context-gates.ts`'s header). After any re-fit, so the assembly door's own
+  // fold is not set aside by a background one started here.
+  const gates = await import('../pre-call-gates/context-gates.js');
+  if (!gates.routineCheckMeasuredAtGate(input.agentId, input.modelId)) {
+    const [{ getContextWindow }, { getDb }] = await Promise.all([import('../../../model.js'), import('../../../../db/connection.js')]);
+    const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as { model_id: string | null } | undefined)?.model_id;
+    await gates.condenseForTheDialedModel({
+      agentId: input.agentId, dialedModelId: input.modelId, contextWindow: getContextWindow(input.modelId),
+      writerModelId: configured ?? input.modelId, systemPromptTokens: estimateTokens(refit?.systemPrompt ?? input.systemPrompt),
+    });
+  }
+  return refit;
+}
+
+async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
   const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow } = input;
   const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
