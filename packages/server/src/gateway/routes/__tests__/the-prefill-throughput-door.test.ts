@@ -11,8 +11,8 @@
 // ── THE BOUNDS ──
 // 1 – 100,000 tokens per second — `PREFILL_THROUGHPUT_MIN_TOK_PER_SEC` /
 // `PREFILL_THROUGHPUT_MAX_TOK_PER_SEC`, the SAME constants `resolveDoomCeiling` trusts,
-// imported from the one module that owns them. Unlike the unattended-budget door, there is no
-// legal value below the floor: zero tokens/sec is not a real speed, not a "no cap" sentinel.
+// imported from the one module that owns them. There is no legal value below the floor: zero
+// tokens/sec is not a real speed, not a "no cap" sentinel.
 //
 // ── CONTROL ──
 // Every provider that exists stores NULL, reads back null on the wire, and a create that
@@ -115,7 +115,7 @@ describe('T81b — the manual form creates a provider carrying its own prefill t
     expect(await data(await get('/providers/local-ds4'))).toMatchObject({ prefillTokensPerSec: null });
   });
 
-  it('refuses zero — unlike the unattended-budget door, there is no uncapped sentinel here', async () => {
+  it('refuses zero — there is no uncapped sentinel here', async () => {
     const res = await post('/providers', { ...MANUAL_BODY, prefillTokensPerSec: 0 });
     expect(res.status).toBe(400);
     expect(row()).toBeUndefined();

@@ -1,0 +1,43 @@
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- 186 (t137, v3.3.3) — `providers.max_unattended_minutes` IS DROPPED. THERE IS NO TOTAL-TIME CAP.
+--
+-- verdict: STRIP.
+-- ruling: OR-LONG-JOBS (owner, 2026-10-12): "I want agents to be able to continue working long
+--   jobs… as long as they need… we can't have the dojo panic every 15 minutes because an agent
+--   isn't responding." The design he confirmed the same day says, in as many words, "no
+--   total-time cap".
+--
+-- WHAT THIS COLUMN WAS. Migration 164 (SLOW-INFERENCE T79b) let a provider declare how many
+-- minutes a turn's 15-minute checkpoint ladder could run before the engine stopped the job,
+-- wrote "running for about N minutes … Pausing here" into the owner's chat and handed the job
+-- to the PM. NULL meant the standard 60 minutes (3 continuations); 0 meant no cap.
+--
+-- WHY THE WHOLE COLUMN GOES, NOT ONLY ITS READER. Its one reader (the cap arm in
+-- `agent/v2/steps/pre-call-gates/turn-budget.ts`), the module that resolved it
+-- (`agent/unattended-budget.ts`), its write doors (`POST /config/providers`,
+-- `PATCH /config/providers/:id/unattended-budget`), its dashboard field and its PM hand-off are
+-- all deleted in the same change. A column nothing writes and nothing honours, still shown in
+-- telemetry and restored from backups, is the old mechanism kept alive under another name.
+--
+-- requirement preserved: what the cap was FOR is carried by the mechanisms that can measure it
+--   — the money guardrail is the budget alerts reaching the owner (t138), and a genuinely stuck
+--   job is the liveness lane's (t143: BROKEN / SILENT / SPINNING) and the thrash gate's. Elapsed
+--   time alone is never evidence of trouble.
+--
+-- THE DATA THAT GOES. Only owner declarations on this one column: a number of minutes, 0, or
+-- (on every provider that never opened the door) NULL. Every value now means the same thing —
+-- the job may run as long as it needs — so no value carries information that survives the
+-- rule it configured. No other column and no row is touched; `DROP COLUMN` rewrites the table
+-- in place and SQLite keeps every other value byte-for-byte (rehearsed per G13, see the t137
+-- report, and pinned by `db/__tests__/t137-migration-186-drops-the-unattended-budget.test.ts`).
+-- Nothing indexes, constrains, views or triggers on this column (`164` added it bare), so the
+-- drop has nothing to trip over.
+--
+-- A BODY WITHOUT THE COLUMN. Every body that reaches 186 in order ran 164 first, but an imported
+-- or hand-repaired body may not carry it. The runner's one-line directive below records this
+-- file as run without executing it on such a body — the result the file exists to produce is
+-- already true there.
+--
+-- REQUIRES-COLUMN: providers.max_unattended_minutes
+
+ALTER TABLE providers DROP COLUMN max_unattended_minutes;

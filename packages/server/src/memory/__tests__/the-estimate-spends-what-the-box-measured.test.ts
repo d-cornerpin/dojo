@@ -85,16 +85,11 @@ describe('§THE PREMISE — the numbers, and a correction to the line that repor
     expect(PROSE_TRUTH / DENSE_TRUTH).toBeGreaterThan(1.5);
   });
 
-  it('⚠ CORRECTION: the unattended budget is NOT keyed on this estimate — it is a MINUTES budget', () => {
-    // BACKLOG 56 names it as a victim. It is not one, and a reader who inherits that claim will
-    // go looking for a token path that does not exist. Measured, not argued:
-    const src = read('agent/unattended-budget.ts');
-    expect(
-      /token/i.test(src),
-      'agent/unattended-budget.ts now mentions tokens. If the unattended budget has genuinely '
-      + 'become keyed on an estimate, BACKLOG line 56\'s parenthetical stops being wrong and THIS '
-      + 'clause is where that is noticed rather than assumed.',
-    ).toBe(false);
+  it('⚠ CORRECTION, OUTLIVED: the unattended budget was never keyed on this estimate, and is now deleted', () => {
+    // BACKLOG 56 named it as a victim; it was a MINUTES budget with zero token references. t137
+    // (OR-LONG-JOBS: no total-time cap) deleted the module outright, so the correction's subject
+    // is gone — asserted, so a resurrected copy is noticed here rather than assumed harmless.
+    expect(fs.existsSync(path.join(SERVER_SRC, 'agent/unattended-budget.ts'))).toBe(false);
   });
 
   it('the two real consumers of the estimate are the fit gate and the output budget', () => {

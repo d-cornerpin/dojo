@@ -56,15 +56,13 @@ import { pendingCirclingVerdict, EFFORT_REVIEW_DELTA_CALLS } from '../tracker/ef
 import { recordPoke } from './poke-ladder.js';
 import { taskScope } from './tracker-view.js';
 
-/** Why the checkpoint fired. `unattended-budget` is declared for a third checkpoint site this
- *  task does not wire (see the T79a brief's file list) — the union is complete even though
- *  only two of its members have a call site today. */
-export type EngineCheckpointReason = 'turn-budget' | 'tool-loop' | 'unattended-budget';
+/** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
+ *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
+export type EngineCheckpointReason = 'turn-budget' | 'tool-loop';
 
 const REASON_TEXT: Record<EngineCheckpointReason, string> = {
   'turn-budget': 'the 15-minute turn-time budget parked this turn for a fresh continuation',
   'tool-loop': 'the 75-tool-call loop cap parked this turn for a fresh continuation',
-  'unattended-budget': 'the unattended-run budget parked this turn for a fresh continuation',
 };
 
 /**

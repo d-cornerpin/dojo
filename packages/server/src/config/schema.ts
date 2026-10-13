@@ -4,7 +4,6 @@ import {
   STREAM_PATIENCE_MIN_MS, STREAM_PATIENCE_MAX_MS,
   PREFILL_THROUGHPUT_MIN_TOK_PER_SEC, PREFILL_THROUGHPUT_MAX_TOK_PER_SEC,
 } from '../agent/stream-patience.js';
-import { UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNCAPPED } from '../agent/unattended-budget.js';
 
 // ── Secrets.yaml Schema ──
 export const SecretsSchema = z.object({
@@ -44,33 +43,11 @@ const streamPatienceFields = {
   streamIdleTimeoutMs: patienceMs('streamIdleTimeoutMs'),
 };
 
-// ── The declarable unattended budget (SLOW-INFERENCE T79b), shared by both write doors ──
-//
-// Minutes, not milliseconds — the unit a person configuring a local box thinks in, and the
-// unit `providers.max_unattended_minutes` (migration 164) stores. `0` is a LEGAL value here,
-// unlike the patience pair above: it means "no cap" (`UNCAPPED`), not "broken" — see the
-// migration's own header for why zero cannot be reached by a typo. Every other legal value
-// must clear `UNATTENDED_MIN_MINUTES`, the floor a checkpoint needs to survive even once.
-// Bounds imported from the one module `agent/unattended-budget.ts`'s reader also imports them
-// from, so a value that can be stored can always be honoured.
-const unattendedBudgetMinutes: z.ZodOptional<z.ZodNullable<z.ZodEffects<z.ZodNumber, number, number>>> =
-  z.number()
-    .int('`unattendedBudgetMinutes` must be a whole number of minutes')
-    .refine(
-      (v) => v === UNCAPPED || (v >= UNATTENDED_MIN_MINUTES && v <= UNATTENDED_MAX_MINUTES),
-      { message: `\`unattendedBudgetMinutes\` must be ${UNCAPPED} (no cap) or between ${UNATTENDED_MIN_MINUTES} and ${UNATTENDED_MAX_MINUTES} minutes` },
-    )
-    .nullable()
-    .optional();
-
-const unattendedBudgetFields = { unattendedBudgetMinutes };
-
 // ── The declarable prefill throughput (NO-DOOMED-DIALS T81b), shared by both write doors ──
 //
 // Tokens per second — the unit a benchmark reports, and the unit `providers.prefill_tokens_per_sec`
-// (migration 166) stores. Unlike the unattended-budget field above, there is no "0 means no
-// cap" exception here: throughput answers a different question (how FAST, not how LONG), and
-// zero tokens/sec is not a real speed for a machine that answers requests at all — see the
+// (migration 166) stores. There is no "0 means no cap" exception here: throughput answers how
+// FAST a box is, and zero tokens/sec is not a real speed for a machine that answers requests at all — see the
 // migration's own header. Bounds imported from `agent/stream-patience.ts`, the one module
 // `resolveDoomCeiling` also imports them from, so a value that can be stored can always be
 // honoured.
@@ -101,12 +78,8 @@ export const CreateProviderSchema = z.object({
   // that can be stored can always be honoured. Whole milliseconds only — a fractional
   // timeout is a unit mistake, not a preference.
   ...streamPatienceFields,
-  // T79b: how long this provider may run a turn's continuation ladder before the engine hands
-  // resumption to the PM. See `unattendedBudgetMinutes` above for the bounds and why 0 is legal.
-  ...unattendedBudgetFields,
   // T81b: how fast this box's owner says it chews through a prompt. See `prefillTokensPerSec`
-  // above for the bounds and why (unlike the two fields above it) there is no zero-means-uncapped
-  // exception.
+  // above for the bounds.
   ...prefillThroughputFields,
 });
 
@@ -129,24 +102,9 @@ export const ProviderPatienceSchema = z.object(streamPatienceFields).strict()
 
 export type ProviderPatienceInput = z.infer<typeof ProviderPatienceSchema>;
 
-// ── Provider Unattended-Budget Schema (SLOW-INFERENCE T79b) ──
-//
-// The same narrow-door shape as `ProviderPatienceSchema` immediately above, for the same
-// reason: a provider that is already configured (the owner's local box, most of all) is not
-// going to be deleted and re-added to change one number, and `POST /providers` over an
-// existing id is a full replace that would clear every OTHER identity field an edit form did
-// not happen to re-send. `.strict()` refuses a body carrying anything else.
-export const ProviderUnattendedBudgetSchema = z.object(unattendedBudgetFields).strict()
-  .refine(
-    b => b.unattendedBudgetMinutes !== undefined,
-    { message: 'Body must name `unattendedBudgetMinutes` (a whole number of minutes, 0 for no cap, or null to use the standard 60-minute default)' },
-  );
-
-export type ProviderUnattendedBudgetInput = z.infer<typeof ProviderUnattendedBudgetSchema>;
-
 // ── Provider Prefill-Throughput Schema (NO-DOOMED-DIALS T81b) ──
 //
-// The same narrow-door shape as the two schemas immediately above, for the same reason: the
+// The same narrow-door shape as the patience schema above, for the same reason: the
 // owner's local box is already a configured provider, and `POST /providers` over an existing
 // id is a full replace that would clear every OTHER identity field an edit form did not happen
 // to re-send. `.strict()` refuses a body carrying anything else.

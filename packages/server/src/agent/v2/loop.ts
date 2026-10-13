@@ -131,9 +131,8 @@ const STALE_TASK_WINDOW_MINUTES = 30;
 const MAX_TOOL_LOOPS = 75;                     // matches v1
 // PHASE-6 T3: TURN_TIME_BUDGET_MS (15 min) and MAX_TURN_AUTO_CONTINUATIONS (3) went
 // with the budget checkpoint to `steps/pre-call-gates/turn-budget.ts`, unchanged at the time.
-// SLOW-INFERENCE T79b later replaced the flat `3` there with a per-provider derived cap
-// (`agent/unattended-budget.ts`) — floored at exactly 3 for a provider that declares nothing,
-// so this relocation note's "unchanged" still describes the common case, just no longer all of them.
+// t137 (OR-LONG-JOBS) later deleted the continuation cap outright: the 15-minute park repeats
+// for as long as a job needs.
 // Elapsed-based start-ack floor (F10). The classifier and scaffold acks key off
 // call accounting (project-worthy classification / 6 work calls), which can land
 // long after the person started waiting or, on a quiet-phrased ask, never. This

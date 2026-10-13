@@ -331,21 +331,6 @@ export const updateProviderPrefillThroughput = async (
   });
 };
 
-// T79b — set or clear how long an agent on this provider may keep working unattended before it
-// has to check in, in minutes. `null` clears it back to the standard hour; `0` declares NO CAP.
-// Its own narrow route for the same reason the patience pair has one: the identity door
-// full-replaces what it is given, and this door refuses to touch any column but this one. The
-// server refuses the field BY NAME on the identity door, so there is no shortcut here.
-export const updateProviderUnattendedBudget = async (
-  providerId: string,
-  unattendedBudgetMinutes: number | null,
-): Promise<ApiResponse<ProviderResponse>> => {
-  return request<ProviderResponse>(`/config/providers/${providerId}/unattended-budget`, {
-    method: 'PATCH',
-    body: JSON.stringify({ unattendedBudgetMinutes }),
-  });
-};
-
 export const updateProviderHostRam = async (
   providerId: string,
   ramGb: number | null,

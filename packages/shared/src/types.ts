@@ -29,16 +29,8 @@ export interface Provider {
   // 10 s – 30 min, enforced at the write door and again by the reader.
   firstChunkTimeoutMs: number | null;
   streamIdleTimeoutMs: number | null;
-  // T79b (SLOW-INFERENCE) — how many minutes this provider's own owner says a turn may run
-  // unattended (checkpointing and self-continuing) before the engine hands resumption to the
-  // PM, in minutes. Null means "declared nothing", which is the standard 60-minute budget (the
-  // same ceiling every provider has always had: a 15-minute turn budget times 1 + 3
-  // continuations). `0` means NO CAP — the box may run to completion, however long that takes.
-  // Legal range otherwise 15 – 1440 minutes, enforced at the write door and again by the
-  // reader (`agent/unattended-budget.ts`).
-  unattendedBudgetMinutes: number | null;
   // T81b (NO-DOOMED-DIALS) — how many tokens per second this box's owner says it chews through
-  // a prompt at, as declared on the SERVING MACHINE (same argument as the two fields above:
+  // a prompt at, as declared on the SERVING MACHINE (same argument as the patience pair above:
   // every model on a provider waits behind the same processor). Null means "declared nothing",
   // which turns the pre-dial doomed-request gate OFF entirely for this provider — every
   // request dials exactly as it does today. Paired with `firstChunkTimeoutMs` above,

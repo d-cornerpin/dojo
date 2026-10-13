@@ -9,7 +9,6 @@ import * as api from '../../lib/api';
 import {
   numberEditsFor, numInput,
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
-  UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNATTENDED_STANDARD_MINUTES, UNATTENDED_UNCAPPED,
 } from '../../lib/provider-edits';
 import { AgentSdkSetup } from './PlatformTab';
 
@@ -330,17 +329,16 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   // Blank therefore means KEEP, and the help text under the field says exactly that.
   const [credential, setCredential] = useState('');
   // The fold opens by itself when ANY of the advanced numbers is already set — a value the user
-  // cannot see is a value they cannot check, and this fold now holds four of them, not two.
+  // cannot see is a value they cannot check, and this fold holds three of them.
   const [showPatience, setShowPatience] = useState(
     provider.firstChunkTimeoutMs !== null || provider.streamIdleTimeoutMs !== null
-    || provider.prefillTokensPerSec !== null || provider.unattendedBudgetMinutes !== null,
+    || provider.prefillTokensPerSec !== null,
   );
   const [firstChunkSec, setFirstChunkSec] = useState(msToSecInput(provider.firstChunkTimeoutMs));
   const [idleSec, setIdleSec] = useState(msToSecInput(provider.streamIdleTimeoutMs));
-  // '' is "say nothing". For reading speed that means "use whatever the engine measured";
-  // for working time it means "the standard hour". Neither is a number the user has to supply.
+  // '' is "say nothing": for reading speed that means "use whatever the engine measured", not a
+  // number the user has to supply.
   const [tokensPerSec, setTokensPerSec] = useState(numInput(provider.prefillTokensPerSec));
-  const [unattendedMinutes, setUnattendedMinutes] = useState(numInput(provider.unattendedBudgetMinutes));
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -352,9 +350,9 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
 
     const first = parsePatienceSeconds(firstChunkSec, 'The wait for the first word');
     const idle = parsePatienceSeconds(idleSec, 'The wait during an answer');
-    // The only-what-moved rule for the two narrow-door numbers, decided in `lib/provider-edits.ts`
+    // The only-what-moved rule for the narrow-door number, decided in `lib/provider-edits.ts`
     // where it can be argued with in a test rather than only observed in a browser.
-    const numbers = numberEditsFor(provider, { tokensPerSec, unattendedMinutes });
+    const numbers = numberEditsFor(provider, { tokensPerSec });
     if (!first.ok) { setError(first.error); setShowPatience(true); return; }
     if (!idle.ok) { setError(idle.error); setShowPatience(true); return; }
     if (!numbers.ok) { setError(numbers.error); setShowPatience(true); return; }
@@ -374,16 +372,15 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
     const patienceMoved = armsTheWatchdog && (
       first.ms !== provider.firstChunkTimeoutMs || idle.ms !== provider.streamIdleTimeoutMs
     );
-    // Two more narrow doors, each with its own flag for the same reason the patience pair has
-    // one: the server REFUSES both of these fields by name on the identity door, so they can
-    // never ride along in `edit`, and a field the user did not touch must not be mentioned to
-    // its own door either — sending an untouched value back is how a blank clears a number
-    // nobody meant to clear. An ABSENT key is "do not call this door"; a `null` key is "call it
-    // and clear the number". Those are different requests.
+    // One more narrow door, with its own flag for the same reason the patience pair has one:
+    // the server REFUSES this field by name on the identity door, so it can never ride along in
+    // `edit`, and a field the user did not touch must not be mentioned to its own door either —
+    // sending an untouched value back is how a blank clears a number nobody meant to clear. An
+    // ABSENT key is "do not call this door"; a `null` key is "call it and clear the number".
+    // Those are different requests.
     const speedMoved = 'prefillTokensPerSec' in numbers.edits;
-    const unattendedMoved = 'unattendedBudgetMinutes' in numbers.edits;
 
-    if (Object.keys(edit).length === 0 && !patienceMoved && !speedMoved && !unattendedMoved) {
+    if (Object.keys(edit).length === 0 && !patienceMoved && !speedMoved) {
       onCancel(); return;
     }
 
@@ -397,10 +394,6 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
     if (speedMoved) {
       const s = await api.updateProviderPrefillThroughput(provider.id, numbers.edits.prefillTokensPerSec ?? null);
       if (!s.ok) { setError(s.error); setStatus('idle'); return; }
-    }
-    if (unattendedMoved) {
-      const u = await api.updateProviderUnattendedBudget(provider.id, numbers.edits.unattendedBudgetMinutes ?? null);
-      if (!u.ok) { setError(u.error); setStatus('idle'); return; }
     }
 
     let revalidationRequired = false;
@@ -541,25 +534,6 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
                   it in only to overrule that — a figure you type here always wins. Be careful
                   with a low one: it tells the engine to turn away long messages before it even
                   tries them. Clear the box to undo that.
-                </p>
-              </div>
-              <div>
-                <label className="flabel">Working time on its own</label>
-                <input
-                  type="number" step="1"
-                  min={UNATTENDED_UNCAPPED} max={UNATTENDED_MAX_MINUTES}
-                  placeholder={`${UNATTENDED_STANDARD_MINUTES} (standard)`}
-                  value={unattendedMinutes}
-                  onChange={(e) => setUnattendedMinutes(e.target.value)}
-                  disabled={busy}
-                  className="finput disabled:opacity-60"
-                />
-                <p className="text-[11px] text-ui/40 mt-1">
-                  Minutes. How long an agent on this machine may keep working before it has to
-                  stop and check in. Blank is the standard {UNATTENDED_STANDARD_MINUTES} minutes;{' '}
-                  {UNATTENDED_MIN_MINUTES} minutes to {UNATTENDED_MAX_MINUTES / 60} hours is
-                  allowed. Type <strong>0</strong> to let it run as long as the job takes — worth
-                  it on a slow machine of your own, rarely worth it on a paid service.
                 </p>
               </div>
             </div>

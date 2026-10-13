@@ -131,7 +131,7 @@ export function readWork(agentId: string, sinceMs: number): Row[] {
 
 /**
  * 6. SETTINGS. THIS READER IS THE SPEC'S "REDACTED CONFIG SNAPSHOT", built as a
- * CONSTRUCTED eight-field record — `getAllPlatformConfig()` returns the whole
+ * CONSTRUCTED seven-field record — `getAllPlatformConfig()` returns the whole
  * `config` table unredacted and is deliberately never called here. LEFT JOINs
  * because `agents.model_id` is nullable: an agent with no model yields nulls,
  * not a dropped row and not a thrown query.
@@ -139,7 +139,7 @@ export function readWork(agentId: string, sinceMs: number): Row[] {
 export function readSettings(agentId: string): SettingsFacts {
   const row = (getDb().prepare(
     `SELECT p.type AS provider_kind, p.behaves_like, p.first_chunk_timeout_ms, p.stream_idle_timeout_ms,
-            p.max_unattended_minutes, p.prefill_tokens_per_sec
+            p.prefill_tokens_per_sec
        FROM agents a LEFT JOIN models m ON m.id = a.model_id
                      LEFT JOIN providers p ON p.id = m.provider_id
       WHERE a.id = ? LIMIT 1`,
@@ -148,7 +148,6 @@ export function readSettings(agentId: string): SettingsFacts {
     providerKind: str(row.provider_kind), behavesLike: str(row.behaves_like),
     firstChunkTimeoutMs: numOrNull(row.first_chunk_timeout_ms),
     streamIdleTimeoutMs: numOrNull(row.stream_idle_timeout_ms),
-    maxUnattendedMinutes: numOrNull(row.max_unattended_minutes),
     prefillTokensPerSec: numOrNull(row.prefill_tokens_per_sec),
     toolsGrantedCount: getFilteredTools(agentId).length,
     // Binding forward from T1: the RESOLVED mode through its front door, never the

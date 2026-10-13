@@ -7,11 +7,10 @@
 // checked it — `packages/dashboard` has no test runner, so every rule inside `Settings.tsx`
 // was a rule nothing held.
 //
-// Two of that form's fields are new (2026-09-22): the unattended budget, whose PATCH door has
-// existed since T79b with no way to reach it, and the reading-speed override beside the
-// engine's own measurement. Both are REFUSED BY NAME on the identity door, so an
-// only-what-changed bug here is not cosmetic: it either 400s the whole save or silently clears
-// a number its owner deliberately set.
+// The reading-speed override beside the engine's own measurement is REFUSED BY NAME on the
+// identity door, so an only-what-changed bug here is not cosmetic: it either 400s the whole save
+// or silently clears a number its owner deliberately set. (Its sibling field, the unattended
+// budget, was deleted by t137 with the total-time cap it set — OR-LONG-JOBS.)
 //
 // ── WHY THIS FILE LIVES IN `packages/server` ──
 // The decision it tests is a pure module in the dashboard (`lib/provider-edits.ts`), imported
@@ -54,26 +53,22 @@ import { runMigrations } from '../../../db/migrations.js';
 import { configRouter } from '../config.js';
 import {
   numberEditsFor,
-  parseUnattendedMinutes,
   parseReadingSpeed,
-  UNATTENDED_MIN_MINUTES,
-  UNATTENDED_MAX_MINUTES,
-  UNATTENDED_UNCAPPED,
   THROUGHPUT_MIN_TOK_PER_SEC,
   THROUGHPUT_MAX_TOK_PER_SEC,
 } from '../../../../../dashboard/src/lib/provider-edits.js';
 
 const db = (): Database.Database => mockDb.current!;
 
-const seed = (over: Partial<{ prefill: number | null; unattended: number | null }> = {}): void => {
+const seed = (over: Partial<{ prefill: number | null }> = {}): void => {
   db().prepare(`
     INSERT INTO providers (id, name, type, base_url, auth_type, behaves_like,
                            first_chunk_timeout_ms, stream_idle_timeout_ms,
-                           prefill_tokens_per_sec, max_unattended_minutes,
+                           prefill_tokens_per_sec,
                            is_validated, created_at, updated_at)
     VALUES ('local', 'Local DS4', 'openai-compatible', 'http://localhost:8000/v1', 'none', 'deepseek',
-            600000, 120000, ?, ?, 1, datetime('now'), datetime('now'))
-  `).run(over.prefill ?? null, over.unattended ?? null);
+            600000, 120000, ?, 1, datetime('now'), datetime('now'))
+  `).run(over.prefill ?? null);
 };
 
 const row = (): Record<string, unknown> =>
@@ -101,68 +96,44 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE FORM'S HALF — only what moved is ever mentioned.
 // ════════════════════════════════════════════════════════════════════════════════════════
+// t137 (OR-LONG-JOBS): the per-provider unattended budget is deleted with the total-time cap it
+// set, so the form holds ONE narrow-door number now. The only-what-moved rule is unchanged.
 describe('the editor mentions a number only when the user moved it', () => {
-  const stored = { prefillTokensPerSec: 200, unattendedBudgetMinutes: 120 };
+  const stored = { prefillTokensPerSec: 200 };
 
-  it('an untouched form sends NOTHING — not the stored values back, not nulls', () => {
-    const r = numberEditsFor(stored, { tokensPerSec: '200', unattendedMinutes: '120' });
+  it('an untouched form sends NOTHING — not the stored value back, not a null', () => {
+    const r = numberEditsFor(stored, { tokensPerSec: '200' });
     expect(r.ok && r.edits).toEqual({});
-    // The clause that matters: the keys are ABSENT, so neither door is called at all. A `null`
+    // The clause that matters: the key is ABSENT, so the door is not called at all. A `null`
     // here would clear a number nobody touched, which is the trap this rule exists for.
     expect(r.ok && 'prefillTokensPerSec' in r.edits).toBe(false);
-    expect(r.ok && 'unattendedBudgetMinutes' in r.edits).toBe(false);
   });
 
-  it('a moved BUDGET sends the budget and nothing else', () => {
-    const r = numberEditsFor(stored, { tokensPerSec: '200', unattendedMinutes: '240' });
-    expect(r.ok && r.edits).toEqual({ unattendedBudgetMinutes: 240 });
-    expect(r.ok && 'prefillTokensPerSec' in r.edits).toBe(false);
-  });
-
-  it('a moved READING SPEED sends the speed and nothing else', () => {
-    const r = numberEditsFor(stored, { tokensPerSec: '250', unattendedMinutes: '120' });
+  it('a moved READING SPEED sends the speed', () => {
+    const r = numberEditsFor(stored, { tokensPerSec: '250' });
     expect(r.ok && r.edits).toEqual({ prefillTokensPerSec: 250 });
-    expect(r.ok && 'unattendedBudgetMinutes' in r.edits).toBe(false);
   });
 
   it('a CLEARED field is a present null — "call the door and clear it", not "do not call"', () => {
-    const r = numberEditsFor(stored, { tokensPerSec: '', unattendedMinutes: '' });
-    expect(r.ok && r.edits).toEqual({ prefillTokensPerSec: null, unattendedBudgetMinutes: null });
+    const r = numberEditsFor(stored, { tokensPerSec: '' });
+    expect(r.ok && r.edits).toEqual({ prefillTokensPerSec: null });
   });
 
   it('a provider that had declared nothing, and still has, mentions nothing', () => {
-    const blank = { prefillTokensPerSec: null, unattendedBudgetMinutes: null };
-    const r = numberEditsFor(blank, { tokensPerSec: '', unattendedMinutes: '  ' });
+    const r = numberEditsFor({ prefillTokensPerSec: null }, { tokensPerSec: '  ' });
     expect(r.ok && r.edits).toEqual({});
   });
 
-  it('ZERO is a real declaration on the budget and a real change from blank', () => {
-    const blank = { prefillTokensPerSec: null, unattendedBudgetMinutes: null };
-    const r = numberEditsFor(blank, { tokensPerSec: '', unattendedMinutes: '0' });
-    expect(r.ok && r.edits).toEqual({ unattendedBudgetMinutes: UNATTENDED_UNCAPPED });
-  });
-
-  it('refuses the whole batch on an unparseable field rather than sending half of it', () => {
-    const r = numberEditsFor(stored, { tokensPerSec: '999999999', unattendedMinutes: '240' });
+  it('refuses an unparseable field rather than sending anything', () => {
+    const r = numberEditsFor(stored, { tokensPerSec: '999999999' });
     expect(r.ok).toBe(false);
   });
 });
 
 describe('the form pre-validates with the SERVER\'s own bounds', () => {
-  it('the budget: blank, 0, and the declared range — everything else is a sentence, not a 400', () => {
-    expect(parseUnattendedMinutes('')).toEqual({ ok: true, value: null });
-    expect(parseUnattendedMinutes('0')).toEqual({ ok: true, value: 0 });
-    expect(parseUnattendedMinutes(String(UNATTENDED_MIN_MINUTES))).toEqual({ ok: true, value: UNATTENDED_MIN_MINUTES });
-    expect(parseUnattendedMinutes(String(UNATTENDED_MAX_MINUTES))).toEqual({ ok: true, value: UNATTENDED_MAX_MINUTES });
-    expect(parseUnattendedMinutes(String(UNATTENDED_MIN_MINUTES - 1)).ok).toBe(false);
-    expect(parseUnattendedMinutes(String(UNATTENDED_MAX_MINUTES + 1)).ok).toBe(false);
-    expect(parseUnattendedMinutes('30.5').ok).toBe(false);
-    expect(parseUnattendedMinutes('soon').ok).toBe(false);
-  });
-
   it('the reading speed: no zero sentinel here — 0 is simply out of range', () => {
     expect(parseReadingSpeed('')).toEqual({ ok: true, value: null });
-    expect(parseReadingSpeed('0').ok, 'unlike the budget, zero means nothing here').toBe(false);
+    expect(parseReadingSpeed('0').ok, 'zero means nothing here').toBe(false);
     expect(parseReadingSpeed(String(THROUGHPUT_MIN_TOK_PER_SEC)).ok).toBe(true);
     expect(parseReadingSpeed(String(THROUGHPUT_MAX_TOK_PER_SEC)).ok).toBe(true);
     expect(parseReadingSpeed(String(THROUGHPUT_MAX_TOK_PER_SEC + 1)).ok).toBe(false);
@@ -172,39 +143,24 @@ describe('the form pre-validates with the SERVER\'s own bounds', () => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE DOORS' HALF — what the form decides, the server accepts, and nothing else moves.
 // ════════════════════════════════════════════════════════════════════════════════════════
-describe('the budget door still enforces its own validation, whatever the form did', () => {
-  it('accepts what the form would send and touches NOTHING else on the row', async () => {
-    seed({ prefill: 200, unattended: 120 });
+describe('the narrow doors, and the one t137 deleted', () => {
+  it('t137: the unattended-budget door is GONE, and the identity door refuses the field rather than storing it', async () => {
+    seed();
     const before = row();
-    const res = await patch('/providers/local/unattended-budget', { unattendedBudgetMinutes: 240 });
-    expect(res.status).toBe(200);
+    expect(before, 'the column is dropped by migration 186').not.toHaveProperty('max_unattended_minutes');
+    expect((await patch('/providers/local/unattended-budget', { unattendedBudgetMinutes: 240 })).status).toBe(404);
+    // `.strict()` on the identity door: an old client still sending the field is told no, and
+    // nothing on the row moves.
+    expect((await patch('/providers/local', { unattendedBudgetMinutes: 240 })).status).toBe(400);
     const after = row();
-    expect(after.max_unattended_minutes).toBe(240);
     for (const key of Object.keys(before)) {
-      if (key === 'max_unattended_minutes' || key === 'updated_at') continue;
+      if (key === 'updated_at') continue;
       expect(after[key], `${key} must be untouched`).toEqual(before[key]);
     }
   });
 
-  it('stores 0 as NO CAP, and clears back to the standard hour with null', async () => {
-    seed({ unattended: 120 });
-    expect((await patch('/providers/local/unattended-budget', { unattendedBudgetMinutes: 0 })).status).toBe(200);
-    expect(row().max_unattended_minutes).toBe(0);
-    expect((await patch('/providers/local/unattended-budget', { unattendedBudgetMinutes: null })).status).toBe(200);
-    expect(row().max_unattended_minutes).toBeNull();
-  });
-
-  it('REFUSES the values the form refuses, and does not mutate on the way out', async () => {
-    seed({ unattended: 120 });
-    for (const bad of [UNATTENDED_MIN_MINUTES - 1, UNATTENDED_MAX_MINUTES + 1, 30.5, -1]) {
-      const res = await patch('/providers/local/unattended-budget', { unattendedBudgetMinutes: bad });
-      expect(res.status, `${bad} must be refused`).toBe(400);
-      expect(row().max_unattended_minutes, 'a refusal is not a write').toBe(120);
-    }
-  });
-
-  it('the speed door is the same door for the other number, and equally narrow', async () => {
-    seed({ prefill: null, unattended: 120 });
+  it('the speed door is narrow: it moves its own number and nothing else on the row', async () => {
+    seed({ prefill: null });
     const before = row();
     expect((await patch('/providers/local/prefill-throughput', { prefillTokensPerSec: 250 })).status).toBe(200);
     const after = row();
@@ -215,15 +171,13 @@ describe('the budget door still enforces its own validation, whatever the form d
     }
   });
 
-  it('and NEITHER door may be reached through the identity door — both are refused by name', async () => {
-    // The reason the form cannot shortcut by folding these into `edit`. If this ever stops
-    // being true, the editor's "two doors" invariant has quietly become one door.
+  it('and the speed door may not be reached through the identity door — refused by name', async () => {
+    // The reason the form cannot shortcut by folding it into `edit`. If this ever stops being
+    // true, the editor's "two doors" invariant has quietly become one door.
     seed();
-    for (const body of [{ unattendedBudgetMinutes: 240 }, { prefillTokensPerSec: 250 }]) {
-      const res = await patch('/providers/local', body);
-      expect(res.status).toBe(400);
-      expect(JSON.stringify(await res.json())).toMatch(/unattended-budget|prefill-throughput/);
-    }
+    const res = await patch('/providers/local', { prefillTokensPerSec: 250 });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toMatch(/prefill-throughput/);
   });
 });
 
@@ -233,7 +187,6 @@ describe('the measured reading is READ-ONLY — the platform observes, the form 
     const attempts: Array<[string, unknown]> = [
       ['/providers/local', { measuredPrefillTokensPerSec: 181 }],
       ['/providers/local/prefill-throughput', { measuredPrefillTokensPerSec: 181 }],
-      ['/providers/local/unattended-budget', { measuredPrefillTokensPerSec: 181 }],
     ];
     for (const [path, body] of attempts) {
       expect((await patch(path, body)).status, `${path} must refuse it`).toBe(400);

@@ -8,7 +8,7 @@
 // prompt could still be dialed that provably could not finish inside it, on that box, at any
 // speed it has ever shown. The GPU livelock incident is what happens when nobody asks first.
 //
-// ── THE RULE THIS FILE PINS, MIRRORING `a-provider-declares-its-own-unattended-budget.test.ts` ──
+// ── THE RULE THIS FILE PINS (it mirrored the unattended-budget file t137 deleted with its subject) ──
 //  1. A provider may declare its own prefill throughput, in TOKENS PER SECOND, and a coherent
 //     declaration is honoured verbatim by `resolveDoomCeiling`.
 //  2. `null` (or an incoherent stored value) means "declared nothing", and `resolveDoomCeiling`

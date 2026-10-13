@@ -71,18 +71,20 @@ const rewindTo166 = (): void => {
 /** The rows a box that has been in use actually holds. */
 const fillLivedIn = (): void => {
   const d = db();
-  // A provider that declared its patience and its throughput (the owner's local box), one that
-  // declared a budget only, and a cloud provider that declared nothing at all.
+  // A provider that declared its patience and its throughput (the owner's local box), and two
+  // cloud providers that declared nothing at all. (t137: the third declaration this body used to
+  // carry, 164's unattended budget, is dropped by migration 186 — the head chain has no column
+  // to seed it into.)
   d.prepare(`
     INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
-                           stream_idle_timeout_ms, prefill_tokens_per_sec, max_unattended_minutes,
+                           stream_idle_timeout_ms, prefill_tokens_per_sec,
                            behaves_like, is_validated, validated_at, created_at, updated_at)
     VALUES ('local', 'Local DS4', 'openai-compatible', 'http://192.168.1.9:8000/v1', 'none',
-            600000, 120000, 200, 0, 'deepseek', 1, '2026-08-01 10:00:00', '2026-07-01 09:00:00', '2026-09-01 09:00:00')
+            600000, 120000, 200, 'deepseek', 1, '2026-08-01 10:00:00', '2026-07-01 09:00:00', '2026-09-01 09:00:00')
   `).run();
   d.prepare(`
-    INSERT INTO providers (id, name, type, auth_type, max_unattended_minutes, is_validated, created_at, updated_at)
-    VALUES ('anthropic', 'Anthropic', 'anthropic', 'api_key', 120, 1, '2026-06-01 09:00:00', '2026-06-01 09:00:00')
+    INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
+    VALUES ('anthropic', 'Anthropic', 'anthropic', 'api_key', 1, '2026-06-01 09:00:00', '2026-06-01 09:00:00')
   `).run();
   d.prepare(`
     INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
@@ -127,7 +129,7 @@ const fillLivedIn = (): void => {
 const snapshot = (): Record<string, unknown> => ({
   providers: db().prepare(`
     SELECT id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms,
-           stream_idle_timeout_ms, prefill_tokens_per_sec, max_unattended_minutes,
+           stream_idle_timeout_ms, prefill_tokens_per_sec,
            is_validated, validated_at, created_at, updated_at
       FROM providers ORDER BY id
   `).all(),
@@ -212,16 +214,17 @@ describe('BODY B — A LIVED-IN STABLE BODY (the one that decides the entry)', (
   });
 
   it('and the declarations a person actually made are still theirs', () => {
-    // The columns 163/164/166 added are the ones a reader would most plausibly disturb by
+    // The columns 163/166 added are the ones a reader would most plausibly disturb by
     // rewriting a table, and they are exactly the ones this feature's precedence rests on.
+    // (164's column is dropped by 186 — t137 — so it is no longer a declaration to preserve.)
     rewindTo166();
     fillLivedIn();
     runMigrations();
     expect(db().prepare(`
       SELECT first_chunk_timeout_ms AS patience, prefill_tokens_per_sec AS speed,
-             max_unattended_minutes AS budget, behaves_like AS dialect
+             behaves_like AS dialect
         FROM providers WHERE id = 'local'
-    `).get()).toEqual({ patience: 600_000, speed: 200, budget: 0, dialect: 'deepseek' });
+    `).get()).toEqual({ patience: 600_000, speed: 200, dialect: 'deepseek' });
   });
 });
 

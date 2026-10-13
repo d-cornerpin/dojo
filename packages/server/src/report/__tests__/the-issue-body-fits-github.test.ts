@@ -80,7 +80,7 @@ function maximalTelemetry(): Record<string, unknown> {
     })),
     settings: {
       providerKind: 'anthropic', behavesLike: 'claude', firstChunkTimeoutMs: 999_999,
-      streamIdleTimeoutMs: 999_999, maxUnattendedMinutes: 999_999, prefillTokensPerSec: 999_999,
+      streamIdleTimeoutMs: 999_999, prefillTokensPerSec: 999_999,
       toolsGrantedCount: 999, contextReceiptMode: 'full',
     },
   }) as Record<string, unknown>;

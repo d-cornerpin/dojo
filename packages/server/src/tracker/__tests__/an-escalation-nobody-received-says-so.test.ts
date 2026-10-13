@@ -78,7 +78,7 @@ vi.mock('../../agent/a2a-transport.js', () => ({
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
 
-import { escalateCloseoutMissToPM, escalateUnattendedBudgetTripToPM } from '../pm-agent.js';
+import { escalateCloseoutMissToPM } from '../pm-agent.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 
@@ -167,38 +167,12 @@ describe('§1 the closeout-miss escalation', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §2 THE UNATTENDED-BUDGET TRIP SITE
+// §2 THE UNATTENDED-BUDGET TRIP SITE — DELETED (t137, OR-LONG-JOBS)
 // ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§2 the unattended-budget trip escalation', () => {
-  const run = () => escalateUnattendedBudgetTripToPM({
-    agentId: WORKER,
-    budgetMinutes: 60,
-    continuationCap: 3,
-    elapsedMinutes: 60,
-    declaredByProvider: false,
-  });
-
-  it('a DELIVERED hand-off still says it escalated, and warns about nothing', async () => {
-    await run();
-    expect(deliverSpy).toHaveBeenCalledTimes(1);
-    expect(matching('info', 'Unattended-budget trip escalated to PM').length).toBe(1);
-    expect(matching('warn', 'NOT delivered')).toEqual([]);
-  });
-
-  it('⚠ C: a DROPPED hand-off is warned with its reason, and never recorded as escalated', async () => {
-    drops.next = 'AGENT_NOT_FOUND';
-    await run();
-
-    expect(matching('info', 'Unattended-budget trip escalated to PM'),
-      'nobody is holding this turn, and the record says so').toEqual([]);
-    const warns = matching('warn', 'Unattended-budget trip escalation to the PM was NOT delivered');
-    expect(warns.length, 'said once, out loud').toBe(1);
-    expect(warns[0].meta.reason).toBe('AGENT_NOT_FOUND');
-    expect(warns[0].meta.pmId).toBe(PM_ID);
-    expect(warns[0].meta.agentId).toBe(WORKER);
-  });
-});
+//
+// Its subject, `escalateUnattendedBudgetTripToPM`, went with the total-time cap it reported.
+// There is no trip to escalate, so there is no site to keep honest; §3 below still counts every
+// delivery that remains in `pm-agent.ts`.
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §3 THE WIRE CLAUSE — BOTH DIRECTIONS, AND IT COUNTS
@@ -229,7 +203,8 @@ describe('§3 every delivery in pm-agent.ts reads its own result', () => {
       [...src.matchAll(/(?:const|let)\s+\w+\s*=\s*await\s+deliverA2AMessage\(/g)].length +
       [...src.matchAll(/deliverA2AMessage\([\s\S]{0,4000}?\}\)\s*\.then\(/g)].length;
 
-    expect(calls, 'precondition: the sites still exist').toBeGreaterThanOrEqual(3);
+    // t137: two sites since the unattended-budget hand-off was deleted (it was the third).
+    expect(calls, 'precondition: the sites still exist').toBeGreaterThanOrEqual(2);
     expect(bound, `every one of the ${calls} deliveries must bind its result`).toBe(calls);
     expect(src, 'and the bare discarding form may not come back')
       .not.toMatch(/^\s*await deliverA2AMessage\(/m);

@@ -212,7 +212,6 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     members: [...BEHAVES_LIKE_PROFILES, 'none'] },
   { path: 'settings.first_chunk_timeout_ms',  kind: 'millis', source: 'providers.first_chunk_timeout_ms' },
   { path: 'settings.stream_idle_timeout_ms',  kind: 'millis', source: 'providers.stream_idle_timeout_ms' },
-  { path: 'settings.max_unattended_minutes',  kind: 'count',  source: 'providers.max_unattended_minutes' },
   { path: 'settings.prefill_tokens_per_sec',  kind: 'count',  source: 'providers.prefill_tokens_per_sec' },
   { path: 'settings.tools_granted_count',     kind: 'count',  source: 'getFilteredTools(agentId).length' },
   { path: 'settings.context_receipt_mode',    kind: 'enum',   source: 'config.context_receipt_mode',

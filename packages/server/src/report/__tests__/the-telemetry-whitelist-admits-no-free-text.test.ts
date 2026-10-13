@@ -26,7 +26,7 @@ function sources(over: Partial<TelemetrySources> = {}): TelemetrySources {
     turns: [], calls: [], toolCalls: [], work: [],
     settings: {
       providerKind: 'ollama', behavesLike: null, firstChunkTimeoutMs: null, streamIdleTimeoutMs: null,
-      maxUnattendedMinutes: null, prefillTokensPerSec: null, toolsGrantedCount: 12,
+      prefillTokensPerSec: null, toolsGrantedCount: 12,
       contextReceiptMode: 'off',
     },
     ...over,
@@ -48,7 +48,7 @@ function fullSources(): TelemetrySources {
     work: [{ kind: 'task', state: 'open', ageMinutes: 5 }],
     settings: {
       providerKind: 'ollama', behavesLike: 'deepseek-native', firstChunkTimeoutMs: 1000,
-      streamIdleTimeoutMs: 2000, maxUnattendedMinutes: 30, prefillTokensPerSec: 900,
+      streamIdleTimeoutMs: 2000, prefillTokensPerSec: 900,
       toolsGrantedCount: 12, contextReceiptMode: 'off',
     },
   });
@@ -394,7 +394,7 @@ describe('(6) a null source is ABSENT, and a sentinel is never a member', () => 
     work: [{ kind: null, state: null, ageMinutes: 0 }],
     settings: {
       providerKind: null, behavesLike: null, firstChunkTimeoutMs: null, streamIdleTimeoutMs: null,
-      maxUnattendedMinutes: null, prefillTokensPerSec: null, toolsGrantedCount: 0,
+      prefillTokensPerSec: null, toolsGrantedCount: 0,
       contextReceiptMode: null,
     },
   });

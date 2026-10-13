@@ -399,7 +399,9 @@ import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { unvalidatedPauseExpr } from '../../../work/tracker-view.js';
-import { engineSources } from './engine-sources.js';
+import { engineSources, SERVER_SRC } from './engine-sources.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 /** Comments blanked (line structure kept), so a clause over source reads CODE, never prose. */
 const stripComments = (src: string): string => src
@@ -828,5 +830,68 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     expect(gate).toHaveLength(1);
     expect(gate[0].content).toContain('the abandoned spreadsheet');
     expect(gate[0].content).not.toContain('summarise the research folder');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// CENSUS — "is the old mechanism gone?", counted in both directions over comment-stripped code.
+// ════════════════════════════════════════════════════════════════════════════════════════
+const REPO = path.resolve(SERVER_SRC, '..', '..', '..');
+
+/** Every shipped source file under the three packages: no tests, no migrations, no builds. */
+function shippedSources(): Array<{ rel: string; code: string }> {
+  const out: Array<{ rel: string; code: string }> = [];
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (['__tests__', 'node_modules', 'dist', 'migrations'].includes(e.name)) continue;
+        walk(full);
+      } else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+        out.push({ rel: path.relative(REPO, full), code: stripComments(fs.readFileSync(full, 'utf8')) });
+      }
+    }
+  };
+  for (const pkg of ['packages/server/src', 'packages/dashboard/src', 'packages/shared/src']) walk(path.join(REPO, pkg));
+  return out;
+}
+
+describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone', () => {
+  it('turn-budget.ts writes ZERO message rows and broadcasts nothing — and still checkpoints, squares the tracker and queues the continuation', () => {
+    const tb = engineSources().find((f) => f.rel.endsWith('pre-call-gates/turn-budget.ts'));
+    expect(tb, 'the turn-budget step moved — re-point this census').toBeTruthy();
+    const code = stripComments(tb!.text);
+    expect(code.match(/insertMessage(IfAbsent)?\(|insertEngineEvent\w*\(|broadcast\(/g) ?? []).toEqual([]);
+    // The other direction: deleting the WHOLE step would pass the half above.
+    expect((code.match(/queueSelfWake\(agentId, 'turn-budget-continuation'\)/g) ?? []).length).toBe(1);
+    expect((code.match(/noteEngineCheckpoint\(agentId, 'turn-budget'\)/g) ?? []).length).toBe(1);
+    expect((code.match(/checkAndCompact\(/g) ?? []).length).toBe(1);
+    expect((code.match(/latchEngineCut\(state, 'budget'\)/g) ?? []).length).toBe(1);
+  });
+
+  it('the cap and its setting: zero shipped references; only the two migrations that add and drop the column name it', () => {
+    const DEAD = /max_unattended_minutes|maxUnattendedMinutes|unattendedBudgetMinutes|continuationCapFor|resolveUnattendedBudget|escalateUnattendedBudgetTripToPM|UNATTENDED_(?:MIN|MAX|STANDARD|DEFAULT)_MINUTES|UNATTENDED_UNCAPPED|\/unattended-budget|unattended-budget\.js|'unattended-budget'/;
+    const sources = shippedSources();
+    expect(sources.length, 'the walk found the packages').toBeGreaterThan(300);
+    expect(sources.filter((f) => DEAD.test(f.code)).map((f) => f.rel)).toEqual([]);
+    expect(fs.existsSync(path.join(SERVER_SRC, 'agent/unattended-budget.ts'))).toBe(false);
+
+    const migrations = fs.readdirSync(path.join(SERVER_SRC, 'db/migrations'))
+      .filter((f) => fs.readFileSync(path.join(SERVER_SRC, 'db/migrations', f), 'utf8')
+        .split('\n').filter((l) => !l.trimStart().startsWith('--')).join('\n').includes('max_unattended_minutes'));
+    expect(migrations).toEqual(['164_provider_unattended_budget.sql', '186_drop_provider_unattended_budget.sql']);
+
+    // Positive control: the same walk DOES see the sibling the deletion left standing, so a zero
+    // above is a fact about the code and not about a walk that read nothing.
+    expect(sources.filter((f) => /\/prefill-throughput/.test(f.code)).map((f) => f.rel).sort())
+      .toEqual(['packages/dashboard/src/lib/api.ts', 'packages/server/src/gateway/routes/config.ts']);
+  });
+
+  it('the pause has exactly ONE production caller, and that caller passes the continuation fact', () => {
+    const callers = shippedSources().flatMap((f) => [...f.code.matchAll(/pauseDriveWorkWaitingOnOwner\(([\s\S]*?)\}\);/g)]
+      .filter((m) => !/^\s*agentId: string/.test(m[1]))
+      .map((m) => ({ rel: f.rel, args: m[1] })));
+    expect(callers.map((c) => c.rel)).toEqual(['packages/server/src/agent/v2/steps/teardown/finalize-record.ts']);
+    expect(callers[0].args).toMatch(/queuedOwnContinuation: !isStopFenced\(agentId\)\s*&& \(continuationContext\.has\(agentId\) \|\| toolLoopCapReached\)/);
   });
 });

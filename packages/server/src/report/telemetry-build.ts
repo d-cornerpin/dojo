@@ -55,7 +55,7 @@ export interface WorkFacts { kind: string | null; state: string | null; ageMinut
 export interface SettingsFacts {
   providerKind: string | null; behavesLike: string | null;
   firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null;
-  maxUnattendedMinutes: number | null; prefillTokensPerSec: number | null;
+  prefillTokensPerSec: number | null;
   toolsGrantedCount: number; contextReceiptMode: string | null;
 }
 
@@ -157,7 +157,6 @@ export function buildTelemetry(sources: TelemetrySources): TelemetryAttachment {
       behaves_like: asEnum('settings.behaves_like', s.settings.behavesLike),
       first_chunk_timeout_ms: nonNeg(s.settings.firstChunkTimeoutMs),
       stream_idle_timeout_ms: nonNeg(s.settings.streamIdleTimeoutMs),
-      max_unattended_minutes: nonNeg(s.settings.maxUnattendedMinutes),
       prefill_tokens_per_sec: nonNeg(s.settings.prefillTokensPerSec),
       tools_granted_count: nonNeg(s.settings.toolsGrantedCount),
       context_receipt_mode: asEnum('settings.context_receipt_mode', s.settings.contextReceiptMode),

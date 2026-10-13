@@ -80,11 +80,11 @@ const fillAdversarial = (): void => {
 
   d.prepare(`
     INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms,
-                           stream_idle_timeout_ms, prefill_tokens_per_sec, max_unattended_minutes,
+                           stream_idle_timeout_ms, prefill_tokens_per_sec,
                            measured_chars_per_token, measured_chars_per_token_at,
                            behaves_like, is_validated, validated_at, created_at, updated_at)
     VALUES ('local', 'Local Floor', 'openai-compatible', 'http://10.0.0.4:8000/v1', 'none',
-            600000, 120000, 200, 0, 2.07, '2026-09-20 11:00:00',
+            600000, 120000, 200, 2.07, '2026-09-20 11:00:00',
             'deepseek', 1, '2026-08-01 10:00:00', '2026-07-01 09:00:00', '2026-09-01 09:00:00')
   `).run();
   // A provider with NO prior reading at all — the state every box is in before 174 fires.
@@ -158,7 +158,7 @@ const fillAdversarial = (): void => {
 const snapshot = (): Record<string, unknown> => ({
   providers: db().prepare(`
     SELECT id, name, type, base_url, auth_type, behaves_like, first_chunk_timeout_ms,
-           stream_idle_timeout_ms, prefill_tokens_per_sec, max_unattended_minutes,
+           stream_idle_timeout_ms, prefill_tokens_per_sec,
            measured_chars_per_token, measured_chars_per_token_at,
            is_validated, validated_at, created_at, updated_at
       FROM providers ORDER BY id

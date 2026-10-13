@@ -11,7 +11,6 @@ import {
 import {
   numberEditsFor, numInput,
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
-  UNATTENDED_MIN_MINUTES, UNATTENDED_MAX_MINUTES, UNATTENDED_STANDARD_MINUTES, UNATTENDED_UNCAPPED,
 } from '../lib/provider-edits';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
