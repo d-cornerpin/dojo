@@ -7836,6 +7836,48 @@
       "to": 216,
       "by": "t140 — condense only when needed (#13; decision #16 reversed; OR-COMPACT-1 kept)",
       "why": "197 -> 216 (+19: 4 code, 13 comment, 2 blank). The 49-line v2.5.11 row-gap drain was DELETED and its fire-and-forget body replaced, nearly line for line, by the leaving-view condense (net +4 code: the dialed-window resolution for a locked auto-routed tool loop, and the per-agent remembered system-prompt size the view-full check needs on a turn's first gate). The +13 comment lines are the STRIP record of the drain (what it did, why it was wrong after t94, which requirement moved where) and the owner's ruling it implements."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 477,
+      "to": 513,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "477 -> 513 (+36: 24 code, 12 comment). Review I1 (fence extended to this file for the round): every same-turn FALLBACK pick is now re-fitted to its own window before it is dialed (reassembleForFitIfNeeded after selection, not only in the rescue), both fit-aware selections pass the window resolver, the rescue skips a candidate whose window cannot hold the system prompt and tools (SystemPromptTooLargeError) instead of failing the turn, and callModel receives refitFor so the budget redirect re-fits too. The credential hydration stays ONE read point (a local forTheWire used for both arrays). Before this, a no-ceiling 32K fallback was dialed with the 32K-pick's array, refused at the boundary, fired a forced condense and failed the turn (witnessed RED)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": 216,
+      "to": 236,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "216 -> 236 (+20: 9 code, 10 comment). Review I3 and M3: the routine condense's launcher is lifted out of the gate's body into one exported function (condenseLeavingInBackground) that the call-llm re-fit now shares — one latch, one wall clock — and every condense is MEASURED for the dialed model but WRITTEN by the summary writer resolved from the configured model, so an auto-routed loop locked to an expensive routed model no longer has its summaries written by that model (witnessed RED: received the locked model)."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1494,
+      "to": 1508,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "1494 -> 1508 (+14: 3 code, 11 comment). Review C1 (Critical): the dry run returns liveTailTokens, the live tail priced by storedRowCost — the token trim's own function — uncapped, and liveViewIsFull reads it instead of the 4K-per-row-capped figure, which let large rows fill the view unnoticed while the trim set unsummarised rows aside (128K window, ~12K row every 10 turns: 131 trimmed turns -> 0). checkAndCompact gains dialedModelId (I3). The comment lines replace the first cut's (wrong) argument for the cap with the measured reason. The always-0 briefTokens field is removed."
+    },
+    {
+      "path": "packages/server/src/memory/assembly-validation.ts",
+      "from": 703,
+      "to": 713,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "703 -> 713 (+10: 5 code, 5 comment). Review M1: a refusal is LIVE_CONVERSATION_PROTECTED (and condensed) only when dropping the conversation WOULD fit; otherwise it is UNREPAIRABLE with no condense (a window that cannot hold the system prompt and tools). Review I3: the refusal's condense is written by the agent's configured summary writer."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3994,
+      "to": 4002,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "3994 -> 4002 (+8: 3 code, 5 comment). Review I1 (fence extended to the budget redirect for the round): ModelCallParams.refitFor, and the budget redirect to a free model re-fits the array to that model's window before it recurses (witnessed RED: LIVE_CONVERSATION_PROTECTED on the redirect)."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 520,
+      "to": 526,
+      "by": "t140 fix round 1 — review C1/I1/I2/I3/I4/M1/M3 (overhaul-plans/t140-review.md)",
+      "why": "520 -> 526 (+6: -2 code, 8 comment). Review I4: a 'full' answer with less than one trim block above the row floor is null (the pressure sits inside the floor; folding 1-5 rows every turn cost a summariser call and a prefix break each — measured 78 folds on back-to-back turns -> 20 one-block folds ten turns apart). The now-dead floor clamp is deleted with the argument for why it cannot bind."
     }
   ],
   "maxNewFileLines": 400,
@@ -7900,7 +7942,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3994,
+    "packages/server/src/agent/model.ts": 4002,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -7948,7 +7990,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 244,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 477,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 513,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
@@ -7989,7 +8031,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
-    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 216,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 236,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
@@ -8043,10 +8085,10 @@
     "packages/server/src/index.ts": 1325,
     "packages/server/src/memory/assembler.ts": 2856,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
-    "packages/server/src/memory/assembly-validation.ts": 703,
+    "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 306,
-    "packages/server/src/memory/compaction.ts": 1494,
+    "packages/server/src/memory/compaction.ts": 1508,
     "packages/server/src/memory/condense-until-fits.ts": 427,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
@@ -8064,7 +8106,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 458,
-    "packages/server/src/memory/tail-horizon.ts": 520,
+    "packages/server/src/memory/tail-horizon.ts": 526,
     "packages/server/src/memory/work-board-lane.ts": 779,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
