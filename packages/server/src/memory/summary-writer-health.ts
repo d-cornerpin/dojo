@@ -23,7 +23,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writerBreaker } from './compaction-defect.js';
-import { contextWindowPolicy, estimateRequestTokens, estimateTokens } from './budget.js';
+import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import type { SummaryResult } from './summarize.js';
