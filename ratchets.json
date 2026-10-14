@@ -8256,6 +8256,20 @@
       "to": 304,
       "by": "t145 group A (the pin's preconditions)",
       "why": "+1: the pickup high-water is read at the top of the trigger claim, before anything awaits."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1355,
+      "to": 1360,
+      "by": "t145 round 2 (group A)",
+      "why": "+5 comment lines: the reserve comment now describes the partial-remainder case and the re-derived 3,980."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 779,
+      "to": 783,
+      "by": "t145 round 2 (group A)",
+      "why": "+4 over the group A pin: the generator sweeps the first row's newest later message across the lengths that leave a pool remainder (the partial-remainder case), and the later-message pass runs before the requests."
     }
   ],
   "maxNewFileLines": 400,
@@ -8472,7 +8486,7 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1355,
+    "packages/server/src/memory/lanes.ts": 1360,
     "packages/server/src/memory/message-store.ts": 1257,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -8485,7 +8499,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 464,
     "packages/server/src/memory/tail-horizon.ts": 552,
-    "packages/server/src/memory/work-board-lane.ts": 779,
+    "packages/server/src/memory/work-board-lane.ts": 783,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
