@@ -47,7 +47,7 @@ vi.mock('../../agent/tools/index.js', async () => {
     ...actual,
     executeTool: async (...a: unknown[]) => {
       const tc = a[1] as { name?: string } | undefined;
-      if (tc?.name?.startsWith('work_')) return (actual.executeTool as (...x: unknown[]) => Promise<unknown>)(...a);
+      if (tc?.name?.startsWith('work_') || tc?.name === 'send_to_agent') return (actual.executeTool as (...x: unknown[]) => Promise<unknown>)(...a);
       return classifyToolResult(await executeToolSpy(...a));
     },
     getFilteredTools: () => [],
@@ -120,6 +120,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { checkAndCompact } from '../compaction.js';
+import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { buildWorkBoardLane } from '../work-board-lane.js';
 import { assembleContext } from '../assembler.js';
@@ -226,6 +227,8 @@ beforeEach(() => {
               VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 200000, 1)`).run();
   db.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification)
               VALUES ('primary', 'Primary', 'm', 'idle', '{}', 'sensei')`).run();
+  db.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification)
+              VALUES ('helper', 'Helper', 'm', 'idle', '{}', 'worker')`).run();
   seen.length = 0; script = []; toolSeq = 0;
   __resetBrakesForTests();   // a low-yield backoff from an earlier clause must not decide this one
   callModelSpy.mockReset(); executeToolSpy.mockReset();
@@ -377,5 +380,52 @@ describe('t145 B round 2 — a KNOWN GAP, driven: an ask with NO task whose raw 
     const row = mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE ? LIMIT 1").get(`%${JOB}%`) as { id: string };
     // KNOWN GAP (3/3): ... no history_get pointer to it.
     expect(after).not.toContain(row.id);
+  });
+});
+
+describe('t145 B round 2 — a REAL unstamped finished ask: delegated, the helper answers, a wake turn delivers', () => {
+  /** The owner's long ask is handed to a helper (the turn ends with no reply row), the helper's
+   *  piece lands, and the wake turn gives the owner the result. No hand-cleared stamp. */
+  async function delegatedAndDelivered(): Promise<string> {
+    await submitUserMessage(AGENT, LONG_ASK);
+    await turn(
+      { tool: { name: 'send_to_agent', arguments: { agent: 'Helper', intent: 'ASSIGN', payload: 'Write the three venue notes.' } } },
+      { content: '[no-reply]' },   // handed off silently: the serving turn leaves no reply row
+    );
+    const thread = (mockDb.current!.prepare(
+      "SELECT a2a_thread_id AS t FROM messages WHERE source_agent_id = ? AND a2a_intent = 'ASSIGN' ORDER BY rowid LIMIT 1",
+    ).get(AGENT) as { t: string }).t;
+    const back = await deliverA2AMessage({
+      intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
+      payload: 'All three venue notes are written and filed.', toAgent: AGENT, fromAgent: 'helper',
+    });
+    expect(back.delivered).toBe(true);
+    await turn({ content: 'Your three venue notes are done and filed.' });
+    return (mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE ? ORDER BY seq LIMIT 1").get(`%${JOB}%`) as { id: string }).id;
+  }
+
+  it('the ask is finished and its answer stamp is NULL by the engine itself, then "You there?" re-runs nothing and gets a presence reply', async () => {
+    const askRow = await delegatedAndDelivered();
+    // THE PREMISE, REAL THIS TIME: nobody touched the stamp. The serving turn ended without a reply
+    // row and the answer was delivered by a different (wake) turn, so the ask's row was never stamped.
+    const row = mockDb.current!.prepare('SELECT answer_message_id AS a FROM messages WHERE id = ?').get(askRow) as { a: string | null };
+    expect(row.a, 'premise: the finished ask carries no answer stamp').toBeNull();
+    const delivered = mockDb.current!.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'assistant' AND content LIKE '%venue notes are done%'").get() as { n: number };
+    expect(delivered.n, 'premise: the result really reached the owner').toBeGreaterThan(0);
+
+    await newerTraffic();
+    const mark = executeToolSpy.mock.calls.length;
+    const sendsBefore = (mockDb.current!.prepare("SELECT COUNT(*) AS n FROM messages WHERE a2a_intent = 'ASSIGN'").get() as { n: number }).n;
+    await submitUserMessage(AGENT, 'You there?');
+    const calls = await turn({ content: 'Yes, I am here.' });
+    expect(effectfulSince(mark), 'the finished job was run again').toEqual([]);
+    expect((mockDb.current!.prepare("SELECT COUNT(*) AS n FROM messages WHERE a2a_intent = 'ASSIGN'").get() as { n: number }).n, 'the job was handed out again').toBe(sendsBefore);
+    expect(calls.map(wireText).join('\n')).not.toContain(PIN);
+    const reply = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1").get() as { content: string };
+    expect(reply.content).toContain('Yes, I am here.');
+    // and no work was resurrected for it
+    // (the helper's own piece-task is the helper's; the owner's agent holds none)
+    const open = mockDb.current!.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND agent_id = ? AND state IN ('open','claimed')").get(AGENT) as { n: number };
+    expect(open.n).toBe(0);
   });
 });
