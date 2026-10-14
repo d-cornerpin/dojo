@@ -299,8 +299,7 @@ function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   ).get(agentId, turn) as { subject_kind: string | null; subject_id: string | null; root_kind: string | null; started_ms: number | null } | undefined;
   let thread = t?.subject_kind === 'a2a_thread' ? t.subject_id : null;
   if (t && t.subject_kind === 'none' && t.root_kind === null && t.started_ms !== null) {
-    // The row the turn woke on: the newest inbound row (not an engine events-lane row) at its start.
-    // t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
+    // The row the turn woke on: the newest inbound row (not an engine events-lane row). t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
     // clock here is whole-second and a notice landing in the turn's first second is not separable by
     // time. A turn this process did not pick up (no bag for it) keeps the whole-second bound.
     const bag = turnContext(agentId);
