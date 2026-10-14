@@ -8305,6 +8305,13 @@
       "to": 912,
       "by": "t145 round 6 (group A)",
       "why": "+1: one import of the park helper; the two forced-compaction wakes call it instead of a bare queueSelfWake (same line count at the sites)."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1545,
+      "to": 1557,
+      "by": "t149 (2026-10-14), F4: the summary writer is chosen by what it can hold",
+      "why": "+12 at compaction.ts, offset by -47 at agent/model.ts in this same commit (4002 -> 3955: the money wall's free-model redirect, ~45 lines, moved out to the new agent/budget-redirect.ts and its three now-unused imports dropped), so the campaign's net is -35. The +12 is the leaf loop's own sizing and stop, which cannot live anywhere else: the chunk is capped by the writer's room (3 lines), a writer that failed on the chunk before ends its pass (1), a chunk the writer cannot hold is halved (4), the owner's Stop ends the walk (1), the pass is handed to the writer fallback (3 net across the two call sites), one import (1) less one line folded. The fallback itself (26 lines), the room/hold arithmetic and the stop policy were put in NEW modules (leaf-writer-fallback.ts 33 lines, summary-writer-health.ts) rather than here. REFUSED: raising summarize.ts and tracker-store.ts and shared-state.ts, which were brought back to their ceilings by moving the policy out. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8369,7 +8376,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 4002,
+    "packages/server/src/agent/model.ts": 3955,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -8515,7 +8522,7 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 298,
-    "packages/server/src/memory/compaction.ts": 1545,
+    "packages/server/src/memory/compaction.ts": 1557,
     "packages/server/src/memory/condense-until-fits.ts": 415,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
