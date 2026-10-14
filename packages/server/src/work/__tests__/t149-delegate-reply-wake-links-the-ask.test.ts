@@ -333,7 +333,7 @@ async function helperReplies(thread: string, payload: string, intent = 'DELIVERA
 }
 
 describe('t149 F1 — a task opened on the turn a helper\'s reply wakes is linked to the owner\'s ask', () => {
-  it.fails('one helper, whose first reply wakes the agent as an a2a_thread turn: the task is linked to the owner\'s ask', async () => {
+  it('one helper, whose first reply wakes the agent as an a2a_thread turn: the task is linked to the owner\'s ask', async () => {
     const ask = 'Have the helper collect three caterer quotes, then compare them and tell me which one to book.';
     ownerSays('msg-t149-one', ask);
     script([
@@ -358,7 +358,7 @@ describe('t149 F1 — a task opened on the turn a helper\'s reply wakes is linke
     expect(await taskList()).toContain(ask);
   });
 
-  it.fails('two helpers, a task opened on EACH reply\'s wake turn: each is linked to the owner\'s ask', async () => {
+  it('two helpers, a task opened on EACH reply\'s wake turn: each is linked to the owner\'s ask', async () => {
     const ask = 'Have the helper collect caterer quotes and venue quotes separately, then combine them and tell me the cheapest pairing.';
     ownerSays('msg-t149-two', ask);
     script([

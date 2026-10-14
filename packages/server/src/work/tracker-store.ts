@@ -277,14 +277,16 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
  * never the owner's words (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
  *
  * The tie is RECORDED facts, never a guess by text:
- *   * the creating turn's own record says it serves NOTHING (`turns.subject_kind = 'none'`, no
- *     root) — an ask turn is linked by its root above, and an engine, occurrence, A2A or
- *     continuation turn has a subject of its own, so none of them is ever re-pointed here;
- *   * the newest inbound row the agent had when that turn started is a delegate's reply on a
- *     PIECE of one of its asks (`work.root_kind = 'a2a_thread'`, `root_id` = the reply's thread,
- *     `parent_id` = the ask) — so a turn woken by anything else (a mailbox notice, a contact) is
- *     never tied to the owner's ask, which would present someone else's message as the owner's
- *     request (#12).
+ *   * the creating turn's own record names the thread of a delegate's reply: either the reply
+ *     woke it (`turns.subject_kind = 'a2a_thread'`, `subject_id` = the thread — the live order
+ *     for the first reply, t149 F1) or the engine woke it to compile with no subject at all
+ *     (`subject_kind = 'none'`, no root; the thread is then the newest inbound row's). An ask
+ *     turn is linked by its root above, and an engine, occurrence or continuation turn has a
+ *     subject of its own, so none of them is ever re-pointed here;
+ *   * that thread is a PIECE of one of this agent's asks (`work.root_kind = 'a2a_thread'`,
+ *     `root_id` = the thread, `parent_id` = the ask) — so a turn woken by anything else (a
+ *     mailbox notice, a contact, a peer's own thread) is never tied to the owner's ask, which
+ *     would present someone else's message as the owner's request (#12).
  * The ask's own state is deliberately NOT a condition: whether the engine already relayed a
  * single piece (the ask is done) or is waiting for the agent to combine several (blocked,
  * compile pending), a task opened on the turn that reply woke continues THAT request.
@@ -295,28 +297,30 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
 function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   const db = getDb();
   const t = db.prepare(
-    `SELECT subject_kind, root_kind, (unixepoch(started_at) * 1000 + 999) AS started_ms
+    `SELECT subject_kind, subject_id, root_kind, (unixepoch(started_at) * 1000 + 999) AS started_ms
        FROM turns WHERE agent_id = ? AND turn_number = ?`,
-  ).get(agentId, turn) as { subject_kind: string | null; root_kind: string | null; started_ms: number | null } | undefined;
-  if (!t || t.subject_kind !== 'none' || t.root_kind !== null || t.started_ms === null) return null;
-  // The row the turn woke on: the newest inbound row (not an engine events-lane row) at its start.
-  // t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
-  // clock here is whole-second and a notice landing in the turn's first second is not separable by
-  // time. A turn this process did not pick up (no bag for it) keeps the whole-second bound.
-  const bag = turnContext(agentId);
-  const pickup = bag && bag.turnNumber === turn ? bag.pickupSeq : null;
-  const woke = db.prepare(
-    `SELECT a2a_thread_id FROM messages
-      WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND ${pickup === null ? 'created_at' : 'seq'} <= ?
-      ORDER BY created_at DESC, seq DESC LIMIT 1`,
-  ).get(agentId, pickup ?? t.started_ms) as { a2a_thread_id: string | null } | undefined;
-  if (!woke?.a2a_thread_id) return null;
+  ).get(agentId, turn) as { subject_kind: string | null; subject_id: string | null; root_kind: string | null; started_ms: number | null } | undefined;
+  let thread = t?.subject_kind === 'a2a_thread' ? t.subject_id : null;
+  if (t && t.subject_kind === 'none' && t.root_kind === null && t.started_ms !== null) {
+    // The row the turn woke on: the newest inbound row (not an engine events-lane row) at its start.
+    // t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
+    // clock here is whole-second and a notice landing in the turn's first second is not separable by
+    // time. A turn this process did not pick up (no bag for it) keeps the whole-second bound.
+    const bag = turnContext(agentId);
+    const pickup = bag && bag.turnNumber === turn ? bag.pickupSeq : null;
+    thread = (db.prepare(
+      `SELECT a2a_thread_id FROM messages
+        WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND ${pickup === null ? 'created_at' : 'seq'} <= ?
+        ORDER BY created_at DESC, seq DESC LIMIT 1`,
+    ).get(agentId, pickup ?? t.started_ms) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
+  }
+  if (!thread) return null;
   const ask = db.prepare(
     `SELECT a.root_id AS root_id FROM work p JOIN work a ON a.id = p.parent_id
       WHERE p.kind = 'task' AND p.root_kind = 'a2a_thread' AND p.root_id = ?
         AND a.kind = 'ask' AND a.agent_id = ?
       ORDER BY p.opened_at DESC LIMIT 1`,
-  ).get(woke.a2a_thread_id, agentId) as { root_id: string } | undefined;
+  ).get(thread, agentId) as { root_id: string } | undefined;
   return ask?.root_id ?? null;
 }
 
