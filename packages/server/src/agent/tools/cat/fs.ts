@@ -36,6 +36,7 @@ import * as effectFs from '../../effects/fs.js';
 import path from 'node:path';
 import { getDb } from '../../../db/connection.js';
 import { coerceNumberArg } from '../pagination.js';
+import { TOOL_RESULT_VIEW_CHARS } from '../../../memory/tool-result-view.js';
 import { queueLinkArtifact } from '../../pending-attachments.js';
 import { resolvePath, isSensitivePath } from '../../path-guards.js';
 import { resolveArgvArg } from '../../brokers/resolve.js';
@@ -304,16 +305,9 @@ async function executeFileRead(
       const requestedCount = limit ?? 5000;
       const endLine = Math.min(startLine + requestedCount, totalLines);
 
-      // v2.7.2, cap raised from 30_000 chars (~7.5K tokens) to 240_000
-      // (~60K tokens). The old cap was 5-7% of a typical model's context
-      // window, so agents kept truncating mid-document, restarting the
-      // task, and giving up. Modern model contexts are 128K-200K+; a
-      // ~60K cap lets a 120-page document land in one call. The friendly
-      // pagination trailer still fires when the file is bigger than the
-      // cap, and the per-tool maxResultTokens (also 60000) keeps any
-      // edge cases from blowing the runtime cap. Leaves headroom for
-      // the trailer text itself.
-      const MAX_CHARS = 240_000;
+      // The page is sized to what the model's VIEW will show of one tool result (`memory/tool-result-view.ts`):
+      // the page, line-number gutters and footer included, fits whole, so the "continue at offset N" footer
+      // at its end is always seen. (It was 240_000 chars against a view of ~60_000; run 7, S4.)
       // Per-line cap: protects against files where a single line is huge, 
       // e.g. an HTML file with embedded `<img src="data:image/png;base64,...">`.
       // Without this, the whole-file cap below was bypassed via the
@@ -325,33 +319,29 @@ async function executeFileRead(
         line.length > MAX_LINE_CHARS
           ? `${line.slice(0, MAX_LINE_CHARS)} … [line truncated; original ${line.length} chars, likely contains base64/binary data. Use grep/exec to inspect specific patterns.]`
           : line;
+      const lineWidth = String(endLine).length;   // gutter width: the widest line number this page can hold
+      // The footer is worst-cased up front (this page ends at the file's last line) and reserved out of the budget.
+      const footerFor = (end: number): string => {
+        const remaining = totalLines - end;
+        return `\n\n[Read lines ${startLine}-${end - 1} of ${totalLines} total. ${remaining} more lines remain.\n` +
+          ` To continue: file_read(path="${filePath}", offset=${end}, limit=${Math.min(remaining, 5000)}).\n` +
+          ` To search for specific content: use grep instead.]`;
+      };
+      const budget = TOOL_RESULT_VIEW_CHARS - footerFor(totalLines).length;
       const slice: string[] = [];
       let chars = 0;
       let actualEnd = startLine;
       for (let i = startLine; i < endLine; i++) {
-        const line = truncateLine(allLines[i] ?? '');
-        if (chars + line.length + 1 > MAX_CHARS && slice.length > 0) break;
-        slice.push(`${i + 1}\t${line}`);
-        chars += line.length + 1;
+        const row = `${String(i + 1).padStart(lineWidth)}\t${truncateLine(allLines[i] ?? '')}`;
+        if (chars + row.length + 1 > budget && slice.length > 0) break;
+        slice.push(row);
+        chars += row.length + 1;
         actualEnd = i + 1;
       }
 
-      const linesShown = actualEnd - startLine;
-      const lineWidth = String(actualEnd).length;
-      // Re-format with right-aligned line numbers like Read tool does
-      const formatted = slice
-        .map((s) => {
-          const [num, ...rest] = s.split('\t');
-          return `${num.padStart(lineWidth)}\t${rest.join('\t')}`;
-        })
-        .join('\n');
-
-      let result = formatted;
+      let result = slice.join('\n');
       if (actualEnd < totalLines) {
-        const remaining = totalLines - actualEnd;
-        result += `\n\n[Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total. ${remaining} more lines remain.\n` +
-          ` To continue: file_read(path="${filePath}", offset=${actualEnd}, limit=${Math.min(remaining, 5000)}).\n` +
-          ` To search for specific content: use grep instead.]`;
+        result += footerFor(actualEnd);
       } else if (startLine > 0) {
         result += `\n\n[End of file. Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total.]`;
       }

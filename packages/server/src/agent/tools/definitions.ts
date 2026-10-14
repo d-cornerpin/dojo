@@ -55,6 +55,7 @@ import { microsoftWriteToolDefinitions } from '../../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions } from '../../microsoft/tools-office.js';
 import { unifiedToolDefinitions } from '../../tools/unified-read.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from './told-about-task.js';
+import { V2_MAX_TOOL_RESULT_TOKENS } from '../../memory/tool-result-view.js';
 
 
 /**
@@ -237,7 +238,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_read',
-    description: 'Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 5000) to paginate when a file is genuinely huge, for typical documents (code files, transcripts, briefs, reports) you should not need to paginate at all. Per-call cap is ~60K tokens, which covers ~120 pages of text. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html" }).',
+    description: `Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 5000) to read a long file page by page. One call returns at most ~${Math.round(V2_MAX_TOOL_RESULT_TOKENS / 1000)}K tokens (about ${Math.round(V2_MAX_TOOL_RESULT_TOKENS * 4 / 2000)} pages of text); a longer file comes back as a page that ends with a "continue at offset N" line, so keep reading from that offset until the end-of-file line shows. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html" }).`,
     effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
@@ -252,21 +253,14 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         limit: {
           type: 'number',
-          description: 'Maximum number of lines to return. Default 5000. Combined with a per-call cap (~60K tokens), large lines may produce fewer.',
+          description: 'Maximum number of lines to return. Default 5000. A page also stops at the per-call size cap, so long lines may give fewer; the closing line says where to continue.',
         },
       },
       required: ['path'],
     },
     concurrency: 'safe',
-    // v2.7.2, was 8000 tokens (~30KB). Pushed to 60000 (~240KB, ~120
-    // pages of text). Rationale: model context windows are 128K–200K+
-    // routinely now. Holding file_read to a fraction of that meant agents
-    // got truncated mid-document on anything beyond a long blog post, then
-    // either gave up, started over, or tried to "summarize" what they'd
-    // half-read. The new cap lets a typical document land in one call.
-    // Pagination via offset/limit still exists for the genuinely
-    // outsized cases (whole books, sprawling logs).
-    maxResultTokens: 60000,
+    // The cap is the model's own per-result view (`memory/tool-result-view.ts`); the handler sizes each page to it.
+    maxResultTokens: V2_MAX_TOOL_RESULT_TOKENS,
   },
   {
     name: 'file_write',

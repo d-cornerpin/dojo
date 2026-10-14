@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { applyMaxResultTokensCap } from '../tools/index.js';
 import { applyTextPagination } from '../tools/pagination.js';
+import { V2_MAX_TOOL_RESULT_TOKENS, TOOL_RESULT_VIEW_CHARS } from '../../memory/tool-result-view.js';
 
 describe('applyMaxResultTokensCap', () => {
   it('returns content unchanged when under the cap', () => {
@@ -25,13 +26,13 @@ describe('applyMaxResultTokensCap', () => {
     expect(applyMaxResultTokensCap('file_write', huge)).toBe(huge);
   });
 
-  it('truncates file_read output above 60000 tokens (~240000 chars)', () => {
-    // e465cf2 (2026-05-22, v2.7.2): file_read cap raised 8000 → 60000 tokens
-    // so a typical document lands in one call on modern context windows.
-    const huge = 'x'.repeat(250_000);
+  it('truncates file_read output above the model\'s per-result view (V2_MAX_TOOL_RESULT_TOKENS)', () => {
+    // t159 H: the cap is the SAME number the assembler's view applies (it was 60000 tokens, four times
+    // what the model could see, so the page's footer was cut away unseen).
+    const huge = 'x'.repeat(TOOL_RESULT_VIEW_CHARS + 10_000);
     const out = applyMaxResultTokensCap('file_read', huge);
-    expect(out.length).toBeLessThanOrEqual(60000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~60000 tokens of/);
+    expect(out.length).toBeLessThanOrEqual(TOOL_RESULT_VIEW_CHARS);
+    expect(out).toMatch(new RegExp(`\\[Truncated by engine: returned ~${V2_MAX_TOOL_RESULT_TOKENS} tokens of`));
     // file_read has pagination, so the trailer suggests offset/limit (not the
     // generic "narrow your query" message).
     expect(out).toMatch(/Re-call with offset\/limit/);
@@ -79,7 +80,7 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('reports an approximate original token count in the trailer', () => {
-    const huge = 'x'.repeat(400_000); // ~100K tokens, over file_read's 60K cap
+    const huge = 'x'.repeat(400_000); // ~100K tokens, over file_read's cap
     const out = applyMaxResultTokensCap('file_read', huge);
     expect(out).toMatch(/of ~100000 total/);
   });
@@ -90,10 +91,9 @@ describe('applyMaxResultTokensCap', () => {
     // when it returns less than the full file. The generic engine cap
     // must NOT re-truncate that output and replace the friendly trailer
     // with a generic one, the per-tool guidance is more useful.
-    // Exceeds file_read's 60K-token (240K-char) budget on its own, but stays
-    // under the 2x hard-overshoot cutoff (480K chars) so the carve-out
-    // actually executes. (Was 40K chars, vacuous once e465cf2 raised the cap.)
-    const body = 'x'.repeat(300_000);
+    // Exceeds file_read's per-result budget on its own, but stays under the 2x
+    // hard-overshoot cutoff so the carve-out actually executes.
+    const body = 'x'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 1.5));
     const friendly =
       body +
       '\n\n[Read lines 0-2000 of 4280 total. 2280 more lines remain.\n' +
@@ -106,8 +106,8 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('Phase 3.5, does not re-truncate content with end-of-file trailer', () => {
-    // Over the 240K-char budget, under the 480K 2x cutoff (see above).
-    const body = 'y'.repeat(300_000);
+    // Over the per-result budget, under the 2x cutoff (see above).
+    const body = 'y'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 1.5));
     const friendly = body + '\n\n[End of file. Read lines 100-180 of 180 total.]';
     const out = applyMaxResultTokensCap('file_read', friendly);
     expect(out).toBe(friendly);

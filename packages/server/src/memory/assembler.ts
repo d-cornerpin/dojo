@@ -21,6 +21,7 @@ import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
+import { capToolResultView } from './tool-result-view.js';
 // t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
@@ -70,27 +71,16 @@ const logger = createLogger('memory-assembler');
 // `memory/budget.ts`, decided by the owner at T0b — 0.96.
 
 // ── Per-tool-result cap (Part V + Part XVIII §A) ──
-// Raw tool results stay capped at assembly time so a single oversized
-// tool result can't dominate context. Always enforced, the runtime
-// version flag was removed in Phase 9 Stage 2.
-//
-// v2.7.3, raised from 3000 → 15000 tokens. The v2.7.2 release bumped
-// file_read's execution cap from 8K → 60K tokens, but the assembler
-// re-truncated tool_result blocks back down to 3K (~12K chars, roughly
-// "8000 characters" by the user's eyeball estimate) on every subsequent
-// turn, so the bigger read at execution time was invisible from turn 2
-// onward, defeating the bump. 15K tokens (~60K chars, ~30 pages) lets a
-// typical document the agent just read stay intact through the rest of
-// the session, while still preventing one runaway result from blowing
-// the entire context budget on a 200K-window model.
-const V2_MAX_TOOL_RESULT_TOKENS = 15000;
+// Raw tool results stay capped at assembly time so a single oversized tool result can't dominate
+// context. The number and the cut note live in `./tool-result-view.ts`, one source for this file's two
+// cap sites and for the paging tool that sizes its page to it (t159 H).
 
 // ── v2 stub-and-store age (Part XVIII §E) ──
 // After this many turns, a tool_result message in the assembled context
 // gets replaced by a stub. Combined with the vault as long-term memory
 // (§C), the agent doesn't need the raw result kept around.
 //
-// v2.7.3, raised from 5 → 12. Paired with the V2_MAX_TOOL_RESULT_TOKENS
+// v2.7.3, raised from 5 → 12. Paired with the per-result cap
 // bump above: lifting the per-result cap didn't help if the result was
 // stubbed out 5 turns later. A "read doc → think → make changes" cycle
 // routinely spans 6-10 turns; under the old threshold the source doc
@@ -2328,15 +2318,8 @@ export function capLargeToolResultStrings(messages: Message[]): Message[] {
       if (blk.type !== 'tool_result') return block;
       const c = blk.content;
       if (typeof c !== 'string') return block;
-      const tokens = estimateTokens(c);
-      if (tokens <= V2_MAX_TOOL_RESULT_TOKENS) return block;
-      const keepChars = Math.max(
-        500,
-        Math.floor(c.length * (V2_MAX_TOOL_RESULT_TOKENS / tokens)),
-      );
-      const truncated =
-        c.slice(0, keepChars) +
-        `\n\n[... ${tokens - V2_MAX_TOOL_RESULT_TOKENS} tokens truncated. Call the same tool again with narrower arguments (e.g. file_read with offset/limit) to see more.]`;
+      const truncated = capToolResultView(c, 'Call the same tool again with narrower arguments (e.g. file_read with offset/limit) to see more.');
+      if (truncated === c) return block;
       mutated = true;
       return { ...blk, content: truncated };
     });
@@ -2366,19 +2349,11 @@ function capLargeToolResultsInPlace(
       const content = blk.content;
       if (typeof content !== 'string') return block;
 
-      const tokens = estimateTokens(content);
-      if (tokens <= V2_MAX_TOOL_RESULT_TOKENS) return block;
-
-      const keepChars = Math.max(
-        500,
-        Math.floor(content.length * (V2_MAX_TOOL_RESULT_TOKENS / tokens)),
-      );
-      const truncated =
-        content.slice(0, keepChars) +
-        `\n\n[... ${tokens - V2_MAX_TOOL_RESULT_TOKENS} tokens truncated. Call the same tool again with narrower arguments (e.g. file_read with offset/limit, or grep with a more specific pattern) to see more.]`;
+      const truncated = capToolResultView(content, 'Call the same tool again with narrower arguments (e.g. file_read with offset/limit, or grep with a more specific pattern) to see more.');
+      if (truncated === content) return block;
 
       cappedCount++;
-      tokensSaved += tokens - estimateTokens(truncated);
+      tokensSaved += estimateTokens(content) - estimateTokens(truncated);
       return { ...blk, content: truncated } as unknown as Anthropic.ContentBlockParam;
     });
 
