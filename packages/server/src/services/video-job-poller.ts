@@ -28,6 +28,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
+import { settleAskOnAsyncResult } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
 import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
@@ -175,6 +176,7 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
     },
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
+  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
 }
 
 function deliverError(row: VideoJobRow, error: string): void {
@@ -192,6 +194,7 @@ function deliverError(row: VideoJobRow, error: string): void {
     },
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
+  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
 }
 
 /**

@@ -78,6 +78,7 @@ import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
+import { settleAskOnAsyncResult } from '../../../work/ask-settlement.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
@@ -289,6 +290,7 @@ const handlers = {
             type: 'chat:chunk', agentId,
             messageId: errMsgId, content: '', done: true, modelId: null,
           });
+          settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: errMsgId });   // t152: the owner was told; no job out, the ask settles
           return;
         }
 
@@ -412,6 +414,7 @@ const handlers = {
           });
 
           setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
+          settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: deliveryMsgId });   // t152: the job is finished and its result reached the owner
 
           logger.info('image_create: image delivered via synthetic assistant message', {
             requestId, requesterId: agentId, filePath: deliveredPath,

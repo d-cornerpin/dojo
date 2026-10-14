@@ -33,6 +33,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
+import { settleAskOnAsyncResult } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { homeDir } from '../home.js';
 import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
@@ -299,6 +300,7 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
     },
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
+  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
 }
 
 function deliverError(row: GenerationJobRow, error: string): void {
@@ -317,6 +319,7 @@ function deliverError(row: GenerationJobRow, error: string): void {
     },
   });
   broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
+  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // t152: the work the ask waited on reached the owner
 }
 
 // ── Audio / music run loop ──

@@ -53,6 +53,7 @@
 import { getDb } from '../db/connection.js';
 import { engineCutHandBackReason, turnWasEngineCut } from './exit-attribution.js';
 import { createLogger } from '../logger.js';
+import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // FROM THE LEAF (t117). `NOT_A_START_ACK` below reads this constant at MODULE SCOPE, and
 // `message-store` reaches this file again through its own dependency graph — so while the
@@ -151,8 +152,13 @@ export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
  *  that opened the join, so "this turn's delivery" cannot be the test. What replaces it is
  *  strictly narrower, never wider — the delivery must postdate the join's own `join_complete`
  *  event, so nothing the delegating turn said about STARTING the work can ever be read as the
- *  answer to it. */
-export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join';
+ *  answer to it.
+ *
+ *  `async` (t152) is the fifth, and the second whose evidence is not "this turn's delivery": a
+ *  background job (an image, a song, a video) the ask's turn started delivers its result AFTER the
+ *  turn, with no turn of its own. It settles the ask when the result reaches the owner and no job for
+ *  that request is still out. */
+export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join' | 'async';
 
 export type AskSettlementVerdict = 'closed' | 'held' | 'reopened' | 'unchanged';
 
@@ -783,6 +789,9 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
 
   if (isTerminal(ask.state)) return out('unchanged', `already ${ask.state}`);
 
+  // ── THE ASYNC ARM (t152). A background job's result reached the owner, after the turn that started it. ──
+  if (ctx.at === 'async') return settleOnAsyncResult(ask, ctx, actorId, out);
+
   // ── THE JOIN ARM (SWEEP-A TB2). The delegated job's own settlement, on the same rule. ──
   //    It is ABOVE the hold arm deliberately: at this moment `compile_pending` is still 1 —
   //    it is `transition()` that clears it on a terminal move — so a hold tested first would
@@ -1104,6 +1113,81 @@ function settleOnJoin(
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
   return out('closed', reason, evidence.id);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE ASYNC ARM — t152 (walks round 2, the image shape)
+//
+// An ask whose work is a background job (`image_create`, music, speech, video) is not answered by the
+// turn that started the job: the turn ends, and the result is posted later by the job's own worker, with
+// no turn and so no turn-bound delivery. Before this arm nothing closed an ask on such a result: a
+// request for seven images stayed `blocked` for ever after all seven had reached the owner, and an
+// unsettled ask is what a later "You there?" relaunches the work on.
+//
+// The rule is the join arm's, with the one fact that differs: the ask settles when a result has
+// actually been DELIVERED to the owner for it (the delivery row is the receipt; the same checks the
+// join arm's evidence makes: delivered, this agent's, not a chip, postdating the ask) AND no job for
+// that request is still out, AND no delegated work is (`joinOutstanding`). The first of seven images is
+// not the answer; the seventh is. A job that FAILED has told the owner too, so a failure notice counts.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** Background media jobs started for this request (its message id is their lineage) that are not finished. */
+function mediaJobsOutstanding(askRootId: string): number {
+  const db = getDb();
+  let n = 0;
+  for (const table of ['generation_jobs', 'video_jobs']) {
+    n += (db.prepare(
+      `SELECT COUNT(*) AS n FROM ${table} WHERE source_message_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
+    ).get(askRootId) as { n: number } | undefined)?.n ?? 0;
+  }
+  return n;
+}
+
+function settleOnAsyncResult(
+  ask: AskRow, ctx: SettlementContext, actorId: string,
+  out: (v: AskSettlementVerdict, detail: string, deliveryId?: string | null) => AskSettlementOutcome,
+): AskSettlementOutcome {
+  if (joinOutstanding(ask)) return out('unchanged', 'delegated work is still outstanding');
+  const outstanding = mediaJobsOutstanding(ask.root_id);
+  if (outstanding > 0) return out('unchanged', `${outstanding} background job(s) for this request are still out`);
+  if (!ctx.deliveryId) return out('unchanged', 'no delivery named for the result');
+  const evidence = compiledDelivery(ask, ask.opened_at, ctx.deliveryId, null);
+  if (!evidence) return out('unchanged', 'the result has no delivery that can be pointed at');
+  const reason = ctx.reason ?? 'the background work it waited on finished and its result reached the owner';
+  const r = transition(ask.id, {
+    to: 'done', by: 'engine', actorId, reason, evidenceRef: evidence.id, resultDeliveryId: evidence.id,
+  });
+  if (r.kind !== 'applied') return out('unchanged', `async close refused: ${r.kind}`, evidence.id);
+  logger.info('ask settled: the background work it waited on reached the owner', {
+    agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
+  }, ask.agent_id);
+  return out('closed', reason, evidence.id);
+}
+
+/**
+ * INVOCATION (e) — A BACKGROUND JOB'S RESULT WAS DELIVERED (t152). Scope only; the decision is
+ * `settleAsk`'s. `askMessageId` is the request the result is labelled with (`deliveredResult`),
+ * `resultMessageId` the bubble the owner was given. Never throws: a result already delivered must not
+ * be broken by its bookkeeping.
+ */
+export function settleAskOnAsyncResult(
+  p: { agentId: string; askMessageId: string | null | undefined; resultMessageId: string },
+): AskSettlementOutcome | null {
+  if (!p.askMessageId) return null;
+  try {
+    const delivery = getDb().prepare(
+      `SELECT id FROM deliveries WHERE agent_id = ? AND message_id = ? AND outcome = 'delivered' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(p.agentId, p.resultMessageId) as { id: string } | undefined;
+    if (!delivery) return null;
+    return settleAsk(askIdForMessage(p.askMessageId), {
+      agentId: p.agentId, turnNumber: null, at: 'async', deliveryId: delivery.id, actorId: 'async-result',
+    });
+  } catch (err) {
+    logger.warn('async result: could not settle the ask it answers (the result itself was delivered)', {
+      agentId: p.agentId, askMessageId: p.askMessageId, error: err instanceof Error ? err.message : String(err),
+    }, p.agentId);
+    return null;
+  }
 }
 
 /**
