@@ -8340,6 +8340,34 @@
       "to": 423,
       "by": "t149 round 4 (2026-10-14), review Important 2 and 3",
       "why": "+3: the lone-summary arm and the batch arm each report a Stop as a stop ('bounded_without_progress', ending the walk) instead of as the writer refusing (+1 and +1), and the batch arm hands a pair to generateOnAWriterThatHolds (leaf-writer-fallback.ts) before giving up (+1 net, one import line changed). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5185,
+      "to": 5199,
+      "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
+      "why": "+14: work_update with a status the task already holds used to answer NO-OP and drop the note it carried; it now records the note exactly as work_note does (+12, one writeTaskLog) and says so in its reply (+2). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/task-stamps.ts",
+      "from": 323,
+      "to": 336,
+      "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
+      "why": "+13: a turn woken by a check-in stamps its task only if it did something (tangible delivery, or an effectful call on the turn's own record): the helper that reads turns.effectful_calls (+8) and the argued condition (+5). The reply to a check-in is an answer, not progress. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2995,
+      "to": 3002,
+      "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
+      "why": "+7: the ladder's clock stops while the sweep may not poke (+4 net: hold/resume call and the subtraction, with the idle computation moved below the working guard), and the check-in words state the number of check-ins on the record instead of a fixed 'two pokes' / 'three pokes' (+3). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3955,
+      "to": 3959,
+      "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
+      "why": "+4: the OpenAI-compatible and Anthropic direct catches stop filing 'quota' (out of credit) as a rate limit, so the silent retry no longer hides it from the owner: two class tests narrowed, each with its two-line why. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8404,7 +8432,7 @@
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3955,
+    "packages/server/src/agent/model.ts": 3959,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -8619,11 +8647,11 @@
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 2995,
+    "packages/server/src/tracker/pm-agent.ts": 3002,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
-    "packages/server/src/tracker/task-stamps.ts": 323,
-    "packages/server/src/tracker/tools.ts": 5185,
+    "packages/server/src/tracker/task-stamps.ts": 336,
+    "packages/server/src/tracker/tools.ts": 5199,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
