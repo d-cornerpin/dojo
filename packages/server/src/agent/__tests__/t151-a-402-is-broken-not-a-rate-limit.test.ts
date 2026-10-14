@@ -79,6 +79,7 @@ import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { recoverFromError, classifyError } from '../v2/recovery.js';
 import { initState } from '../v2/state.js';
 import { AgentError } from '../errors.js';
+import { classifyProviderErrorText, providerClassOf } from '../provider-error.js';
 import { configRouter } from '../../gateway/routes/config.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -223,5 +224,57 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
     const err = await pinnedCall();
     expect(err.provider?.class).toBe('rate_limit');
     expect(hasActiveRateLimitRetry(AGENT)).toBe(true);
+  });
+});
+
+// ── ROUND 2: "quota" is a word for two different facts. Out of CREDIT (a 402, or money words) is the
+// owner's to fix; a per-minute / per-day limit that happens to say "quota" is a wait. ──
+const GEMINI_PER_MINUTE = '429 RESOURCE_EXHAUSTED: Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15 per minute';
+
+describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceeded" is a rate limit', () => {
+  it.fails('the Gemini per-minute text is a rate limit, read the same way by the classifier, classifyError and the retry manager', () => {
+    expect(classifyProviderErrorText(GEMINI_PER_MINUTE).class).toBe('rate_limit');
+    expect(providerClassOf(new Error(GEMINI_PER_MINUTE))).toBe('rate_limit');
+    expect(classifyError(new Error(GEMINI_PER_MINUTE)).kind).toBe('rate_limit');
+  });
+
+  it.fails('through recovery the Gemini per-minute error is NOT the Tier-D lock: agent not in error, no card, no owner text', async () => {
+    await recover(new Error(GEMINI_PER_MINUTE));
+    const agent = db().prepare('SELECT status, last_error FROM agents WHERE id = ?').get(AGENT) as { status: string; last_error: string | null };
+    expect(agent.status).not.toBe('error');
+    expect(agent.last_error ?? '').not.toMatch(/quota_exhausted/);
+    expect(ownerTexts()).toBe(0);
+    expect(cards()).toHaveLength(0);
+  });
+
+  it.fails('a 429 whose provider type says "quota" but names no money is a rate limit: the call arms the silent retry', async () => {
+    answer.status = 429; answer.body = { error: { message: 'Quota exceeded for requests per minute', type: 'quota_exceeded' } };
+    const err = await pinnedCall();
+    expect(err.provider?.class).toBe('rate_limit');
+    expect(hasActiveRateLimitRetry(AGENT)).toBe(true);
+  });
+
+  it('CONTROL: OpenAI\'s 429 insufficient_quota is out of credit: the call is `quota`, no retry, and recovery locks with the card', async () => {
+    answer.status = 429; answer.body = { error: { message: 'You exceeded your current quota, please check your plan and billing details.', type: 'insufficient_quota', code: 'insufficient_quota' } };
+    const err = await pinnedCall();
+    expect(err.provider?.class).toBe('quota');
+    expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
+    await recover(err);
+    expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('error');
+    expect(ownerTexts()).toBe(1);
+    expect(cards()).toHaveLength(1);
+  });
+
+  it('CONTROL: the DeepSeek 402 body is out of credit, as text and as a status', async () => {
+    expect(classifyProviderErrorText('API error 402: {"message":"Insufficient Balance"}').class).toBe('quota');
+    answer.status = 402; answer.body = { error: { message: 'Insufficient Balance', type: 'unknown_error' } };
+    expect((await pinnedCall()).provider?.class).toBe('quota');
+  });
+
+  it('CONTROL: money words in text without a status are still out of credit', () => {
+    for (const t of ['insufficient_quota', 'Insufficient Balance', 'insufficient funds in account', 'insufficient credit',
+      'You exceeded your current quota, please check your plan and billing details.']) {
+      expect(classifyProviderErrorText(t).class, t).toBe('quota');
+    }
   });
 });
