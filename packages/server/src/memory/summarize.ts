@@ -3,7 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
-import type { ProviderErrorFacts } from '../agent/provider-error.js';
+import { isContextOverflowError, type ProviderErrorFacts } from '../agent/provider-error.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
@@ -375,6 +375,14 @@ async function writeSummary(params: {
     // PHASE-3 T5: this used to truncate the RAW input and persist it. The model failing is
     // not a reason to write the conversation back into the summary store verbatim.
     const message = err instanceof Error ? err.message : String(err);
+    // ── t152 (walks round 2, step 21): THE WRITER'S OWN "TOO LONG" IS THE REAL SIGNAL ──
+    // The size guard above is a guess; the provider's refusal is the writer's own word that this input is
+    // more than it holds. That is `tooBig`, like a writer the guard turned away: not a failure of the
+    // writer (nothing recorded against it), so the span is halved, or the next writer that holds it takes it.
+    if (isContextOverflowError(message)) {
+      logger.warn('SUMMARY_REFUSED the writer answered that the input is too long; it was not the writer for this input', { modelId, depth, error: message }, agentId);
+      return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
+    }
     // ── v3.2.3 LAYER 3: A WALL IS NOT A BAD MINUTE ──
     // The incident: this catch fired ~4,000 times per prompt against a provider
     // answering 402, and every failure was logged and forgotten. The classifier now

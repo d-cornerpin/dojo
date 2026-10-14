@@ -23,7 +23,8 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writerBreaker } from './compaction-defect.js';
-import { contextWindowPolicy, estimateTokens } from './budget.js';
+import { contextWindowPolicy, estimateRequestTokens, estimateTokens } from './budget.js';
+import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import type { SummaryResult } from './summarize.js';
 
@@ -96,8 +97,11 @@ export function summaryRoom(modelId: string, systemPromptTokens = 0): number {
 export function refuseWhatTheWriterCannotHold(
   modelId: string, systemPrompt: string, content: string, agentId: string,
 ): SummaryResult | null {
-  const inputTokens = estimateTokens(content);
-  if (inputTokens <= summaryRoom(modelId, estimateTokens(systemPrompt))) return null;
+  // The size of the input as the fit gate sizes a request: the constant, or this writer's provider's own
+  // measured ratio where it has measured itself (never smaller than the constant's answer).
+  const divisors = measuredDivisorsFor(providerKey(modelId));
+  const inputTokens = estimateRequestTokens({ proseChars: content.length, schemaChars: 0 }, divisors).tokens;
+  if (inputTokens <= summaryRoom(modelId, estimateRequestTokens({ proseChars: systemPrompt.length, schemaChars: 0 }, divisors).tokens)) return null;
   logger.warn('SUMMARY_REFUSED the writer cannot hold this input; it was not dialled', { modelId, inputTokens, agentId });
   return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
 }

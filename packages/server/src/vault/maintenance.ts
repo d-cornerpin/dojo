@@ -1671,25 +1671,9 @@ export function markDreamerArchivesProcessed(
 
 // ── Context Overflow Recovery ──
 
-/**
- * Detect provider responses that indicate the prompt exceeded the model's
- * context window. Different providers phrase this differently, so we match
- * on common substrings rather than error codes.
- */
-export function isContextOverflowError(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes('maximum context length') ||
-    lower.includes('context_length_exceeded') ||
-    lower.includes('prompt is too long') ||
-    lower.includes('context length is') ||
-    lower.includes('exceeds the context window') ||
-    lower.includes('reduce the length') ||
-    lower.includes('please reduce the length of the messages') ||
-    lower.includes('input is too long') ||
-    lower.includes('context window of')
-  );
-}
+// The predicate lives with the other provider-answer vocabulary (a leaf the summary writer can import
+// without this module's graph); re-exported so the recovery cascade reads it from here as before.
+export { isContextOverflowError } from '../agent/provider-error.js';
 
 /**
  * Recover the Dreamer when its current batch produced a context-overflow error
