@@ -16,7 +16,7 @@ import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
-import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
+import { freshTailHorizon, groupsToDropForBudget, servedAskFloorSeq, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
@@ -1189,7 +1189,7 @@ function buildContentLanes(
       maxTokens: Infinity,
       truncate: (render, maxTokens) => {
         const p = render.payload as TailPayload;
-        const kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
+        const kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount), servedAskFloorSeq(p.agentId));
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
         // at the row just before it.
@@ -2496,6 +2496,8 @@ function pruneOldImageBlocksInPlace(
 
 function budgetFreshTail(
   messages: Message[], availableTokens: number, blockGroups: number,
+  /** t145 round 3: `messages.seq` of the owner message a running turn serves; 0 = none. */
+  protectedFromSeq = 0,
 ): Message[] {
   // Group messages into atomic units: tool_use + tool_result pairs must stay together.
   // A "group" is either a standalone message or an [assistant(tool_use), tool(tool_result)] pair.
@@ -2543,7 +2545,12 @@ function budgetFreshTail(
   // from the front of this array. The front of this array is the compaction boundary (the
   // horizon above), which is what makes an index into it a stable address rather than a
   // scrolling one. `memory/tail-horizon.ts` carries the derivation of the block.
-  const dropped = groupsToDropForBudget(groups.map((g) => g.tokens), availableTokens, blockGroups);
+  // The group holding the served owner message, and everything after it, is never dropped (older go first).
+  const protectedAt = protectedFromSeq > 0
+    ? groups.findIndex((g) => g.messages.some((m) => (m.rowid ?? 0) >= protectedFromSeq))
+    : -1;
+  const dropped = groupsToDropForBudget(
+    groups.map((g) => g.tokens), availableTokens, blockGroups, protectedAt >= 0 ? protectedAt : Infinity);
   const includedGroups = groups.slice(Math.min(dropped, Math.max(0, groups.length - 1)));
 
   // Safety, unchanged in effect: an over-budget context is better than no context at all, so

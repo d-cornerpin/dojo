@@ -35,6 +35,7 @@ import {
   servedAskFloorSeq, rowsLeavingView, freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups,
 } from '../tail-horizon.js';
 import { contextWindowPolicy } from '../budget.js';
+import { assembleContext } from '../assembler.js';
 
 const AGENT = 'primary';
 let image: Buffer | null = null;
@@ -147,5 +148,20 @@ describe('t145 R3 — the served owner message is a floor no fold and no cut pas
     expect(groupsToDropForBudget(tokens, 3000, block, 0)).toBe(0);
     // everything fits: unchanged
     expect(groupsToDropForBudget(tokens, 100_000, block, 8)).toBe(0);
+  });
+
+  it('the assembled array still carries the ask when the token trim wants the front, and older rows go instead', async () => {
+    mockDb.current!.prepare("UPDATE models SET context_window = 40000 WHERE id = 'm'").run();
+    for (let i = 0; i < 10; i++) { say('user', `older question ${i} ${'pad '.repeat(300)}`); say('assistant', `older answer ${i} ${'pad '.repeat(300)}`); }
+    say('user', 'THE-LONG-ASK '.repeat(8), 'ask-row');
+    claimAsk('ask:ask-row', AGENT);
+    for (let i = 0; i < 40; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i} ${'pad '.repeat(300)}`);
+    const text = (c: Awaited<ReturnType<typeof assembleContext>>): string => JSON.stringify(c.messages);
+    const free = await assembleContext(AGENT, 'm');
+    expect(text(free), 'control: unprotected, the trim drops the ask with the front').not.toContain('THE-LONG-ASK');
+    openTurnContext(AGENT);
+    const guarded = await assembleContext(AGENT, 'm');
+    expect(text(guarded)).toContain('THE-LONG-ASK');
+    expect(text(guarded)).not.toContain('older question 0');   // older rows are what went
   });
 });

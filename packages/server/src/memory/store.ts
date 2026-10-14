@@ -28,6 +28,7 @@
 // the fail-closed `chat_messages` view (`lane='owner'`), never these.
 
 import { getDb } from '../db/connection.js';
+import { servedAskFloorSeq } from './tail-horizon.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
@@ -234,10 +235,14 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
   const clauses = ['agent_id = @agentId'];
   if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
   const where = clauses.join(' AND ');
+  // t145 round 3: rows from the owner message a running turn serves onward never leave (see
+  // `servedAskFloorSeq`); 0 = nothing protected, no extra clause.
+  const served = servedAskFloorSeq(agentId);
+  if (served > 0) params.served = served;
 
   const rows = db.prepare(`
     SELECT ${SELECT_COLS} FROM messages
-     WHERE ${where}
+     WHERE ${where}${served > 0 ? ' AND seq < @served' : ''}
        AND seq < (SELECT MIN(seq) FROM (
              SELECT seq FROM messages WHERE ${where} ORDER BY seq DESC LIMIT @freshTailCount
            ))
