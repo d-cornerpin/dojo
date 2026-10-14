@@ -8095,6 +8095,41 @@
       "to": 711,
       "by": "t146 round 3 (2026-10-13) — review fixes",
       "why": "+1 (710 -> 711): the send_tool record is also gated by agentMayNameTask(agentId, task.id) (the caller holds, was assigned or opened the task, or is the primary), plus a two-line comment, net +1 after tightening the existing comment. The rule itself lives in agent/tools/told-about-task.ts. From 711 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1519,
+      "to": 1545,
+      "by": "t144 per-conversation condensed notes",
+      "why": "+26 (code 19, comment 7). (a) `chunkMessages` groups by conversation before it cuts by size — the deletion of agent-wide mixed chunking; the size cut keeps its own function. (b) the leaf input carries each message's recorded instant and a CONVERSATION header (the label logic itself lives in summary-subject.ts, moved out to keep this +8 smaller). (c) the boundary invariant: a fold that strands a refused conversation's rows below the anchor covers them with placeholders (6 lines + its call). Refused: a per-row membership query in the assembler (every turn) — the anchor stays, the fold keeps it true."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 528,
+      "to": 552,
+      "by": "t144 per-conversation condensed notes",
+      "why": "+24 (code 17, comment 7): `rowsStrandedBelowBoundary`, the membership owner's reader of rows left below its own MAX(seq) anchor, bounded by the fold's span (grown-fixture EXPLAIN in the t144 report). It must live here: it reads the private `readBoundary`, so the anchor has one definition."
+    },
+    {
+      "path": "packages/server/src/memory/summary-rebuild.ts",
+      "from": 458,
+      "to": 464,
+      "by": "t144 per-conversation condensed notes",
+      "why": "+6: the nightly job runs its second selection (`legacy-notes-rebuild.ts`, a new module holding the rest) and its contamination pass is paced by the writer answering instead of a 30-per-night count (NIGHTLY_SUMMARY_REBUILD_LIMIT deleted, owner ruling 2026-10-13). Its private condensed-input copy is deleted in favour of the one shared builder."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2836,
+      "to": 2839,
+      "by": "t144 per-conversation condensed notes",
+      "why": "+3: the summaries lane renders each note's ONE conversation (`conversation=\"…\"`, OR-LABEL-NOT-HIDE): one import, one LabelFacts per render, one comment line. The label function is in summary-subject.ts."
+    },
+    {
+      "path": "packages/server/src/memory/condense-until-fits.ts",
+      "from": 423,
+      "to": 415,
+      "by": "t144 per-conversation condensed notes",
+      "why": "a LOWERED pin (-8): its private batchesOf and summaryInput are deleted for summary-subject.ts's per-conversation `subjectBatches` and summarize.ts's one `condensedSummaryInput`."
     }
   ],
   "maxNewFileLines": 400,
@@ -8300,13 +8335,13 @@
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1236,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2836,
+    "packages/server/src/memory/assembler.ts": 2839,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 298,
-    "packages/server/src/memory/compaction.ts": 1519,
-    "packages/server/src/memory/condense-until-fits.ts": 423,
+    "packages/server/src/memory/compaction.ts": 1545,
+    "packages/server/src/memory/condense-until-fits.ts": 415,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
@@ -8322,8 +8357,8 @@
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
-    "packages/server/src/memory/summary-rebuild.ts": 458,
-    "packages/server/src/memory/tail-horizon.ts": 528,
+    "packages/server/src/memory/summary-rebuild.ts": 464,
+    "packages/server/src/memory/tail-horizon.ts": 552,
     "packages/server/src/memory/work-board-lane.ts": 779,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
