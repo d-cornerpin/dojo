@@ -2,6 +2,7 @@
 // 2055-line runAgentLoop they fed. What stays serves the v2 dispatch shell,
 // the helpers re-exported via getAgentRuntime (notifyPrimaryOfInjury,
 // stopAgent, preempt, etc.), and shared module-level state.
+import { launchContinuation, settleJobCarry, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -472,7 +473,7 @@ export function stopAgent(agentId: string): void {
   const runInFlight = activeRuns.has(agentId);
   if (runInFlight) stopFencedRuns.set(agentId, Date.now());
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
-  pendingWakeups.delete(agentId);
+  pendingWakeups.delete(agentId); endJobCarry(agentId); // t143 r5: a stopped agent's job has no continuation coming
   // Abort EVERY in-flight API call — not just the turn's own. With the abortSignal threaded
   // through `model.ts`'s one dial door, this actually cancels the underlying fetch (vs. v1's
   // pre-fix behavior where the call kept running until natural completion), and it now reaches
@@ -793,7 +794,7 @@ class AgentRuntime {
       // reads no `activeRuns` entry, no `working` status and no live work, and the stop door
       // used to answer it with "nothing is happening". The stamp is what makes the tail
       // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
-      lastRunEndedAt.set(agentId, Date.now());
+      lastRunEndedAt.set(agentId, Date.now()); settleJobCarry(agentId); // t143 r5: a continuation that queued no further one ends the chain
       // Safety net for any path that broke out of runAgentLoop without
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent, no-op if the heartbeat was already stopped.
@@ -1134,7 +1135,7 @@ class AgentRuntime {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
             return;
           }
-          logger.info('Processing queued wakeup', { agentId }, agentId);
+          logger.info('Processing queued wakeup', { agentId }, agentId); launchContinuation(agentId); // t143 r5: a park's continuation starts now
           // Don't pass empty content, the wakeup will pick up all new
           // messages from the DB via context assembly. The content param
           // is unused by runAgentLoop (it reads from DB).

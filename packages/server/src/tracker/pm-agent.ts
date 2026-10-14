@@ -2615,7 +2615,7 @@ export async function runPokeCheck(): Promise<void> {
     // recently": an agent that said "on it" and left a task claimed, or a busy agent with a second
     // task it dropped, is still nudged on schedule. (A PM-recorded circling verdict is evidence of
     // what the agent is doing, not an idle clock, and still goes through the fill-in below.)
-    const leftAlone = jobCarriedIds(task.assignedTo, now).includes(task.id) || agentIsLive(task.assignedTo);
+    const leftAlone = jobCarriedIds(task.assignedTo).includes(task.id) || agentIsLive(task.assignedTo);
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
@@ -2780,18 +2780,22 @@ export async function runPokeCheck(): Promise<void> {
     }
 
     // ── Normal poke (nudge / urgent / escalate) ──
+    // Rung 3 goes to the primary; with no usable primary on the box (none, or a terminated one) the
+    // assignee is re-driven instead, in words addressed to it (t143 round 5).
+    const escalateToAssignee = pokeType === 'escalate_primary'
+      && !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId));
     const basePokeMessage = deliveryEvidence && tangibleHandover
       ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
         `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
         `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
         `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
-      : buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
+      : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds);
     // FIX ROUND, Finding 1: the PM's own reason, when this send is the guarded delivery of a
     // recorded circling verdict rather than an ordinary idle-based rung.
     const pokeMessage = effortReviewReason
       ? `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${effortReviewReason}\n\n${basePokeMessage}`
       : basePokeMessage;
-    const recipient = pokeType === 'escalate_primary' ? (primaryId && pokeDb.prepare('SELECT 1 FROM agents WHERE id = ?').get(primaryId) ? primaryId : task.assignedTo) : task.assignedTo; // no primary on this box: the assignee is re-driven instead
+    const recipient = pokeType === 'escalate_primary' && !escalateToAssignee ? primaryId : task.assignedTo;
 
     // Busy deferral (owner request 2026-07-23): a poke landing while the
     // assignee is mid-run queues up and then collides with that work, and to
@@ -2892,6 +2896,10 @@ function buildPokeMessage(
       // about work that was already delivered is a repair, not a transfer — and the one thing the
       // primary is now told about reassignment is that it is not its call.
       return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
+
+    case 'escalate_assignee':
+      // Rung 3 with nobody else to tell: the same facts, addressed to the assignee itself.
+      return `Third check-in: task "${task.title}" has had no update for ${idleMinutes} minutes through two earlier check-ins.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
 
     case 'redrive':
       // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a

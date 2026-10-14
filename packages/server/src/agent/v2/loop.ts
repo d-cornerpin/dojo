@@ -96,6 +96,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
 import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
+import { launchContinuation } from '../../work/task-freshness.js';
 
 const logger = createLogger('v2-loop');
 
@@ -664,7 +665,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // naturally. 1s delay lets DB writes settle.
       stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
       setTimeout(() => {
-        try {
+        try { launchContinuation(agentId); // t143 r5: the park's continuation starts now
           getAgentRuntime().handleMessage(agentId, '').catch((err) => {
             logger.error('v2 auto-continuation after tool limit failed', {
               agentId, error: err instanceof Error ? err.message : String(err),

@@ -26,32 +26,49 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
 
 /** The job's work, handed from a park to the continuation it queues. In memory on purpose: a
  *  restart ends the job's turn, and nothing should inherit it after that.
- *  The marker is "this agent has a job parked": it is NOT a turn number, so any number of other
- *  turns (an owner's message, an A2A) may run first. It is never consumed by a turn that merely
- *  has no trigger (t143 round 4: a scheduler wake is not the continuation); it ends when the job's
- *  tasks are no longer open, or when no park has refreshed it for `CARRY_TTL_MS` (a continuation
- *  follows its park within seconds; the next park refreshes it). */
-const jobWork = new Map<string, { at: number; ids: string[] }>();
-const CARRY_TTL_MS = 20 * 60_000;
+ *  The carry has NO CLOCK (t143 round 5): a call or tool may run for hours, and elapsed time is not
+ *  evidence. It ends only when (a) its tasks are no longer open, or (b) the chain ends cleanly — a
+ *  continuation the park queued has RUN and queued no further one — or (c) the owner stops the
+ *  agent. The continuation is marked itself: the park sets `queued`; the two places that launch a
+ *  park's self-wake (the runtime's queued-wakeup drain, the tool-loop timer) call
+ *  `launchContinuation`, making it `running`; the run's end (`settleJobCarry`) deletes a carry still
+ *  `running` (a further park would have set it `queued` again). A scheduler or any other wake touches
+ *  none of this, so it can never consume the carry. */
+const jobWork = new Map<string, { ids: string[]; state: 'queued' | 'running' }>();
 
 /** A park hands its job to the continuation it queues. Never replaces a standing job with less:
  *  a park that tied nothing leaves the carry as it was, and a park that tied work adds to it. */
-export function carryJobWork(agentId: string, ids: string[], now = Date.now()): void {
-  const all = [...new Set([...jobCarriedIds(agentId, now), ...ids])];
-  if (all.length > 0) jobWork.set(agentId, { at: now, ids: all });
+export function carryJobWork(agentId: string, ids: string[]): void {
+  const all = [...new Set([...jobCarriedIds(agentId), ...ids])];
+  if (all.length > 0) jobWork.set(agentId, { ids: all, state: 'queued' });
 }
 
-/** The tasks this agent's job is carrying right now: still open, and parked within the TTL. The
- *  one answer to "is this task the job in flight?" (the PM ladder and the close-out gate leave
- *  exactly these alone while the agent works them). */
-export function jobCarriedIds(agentId: string, now = Date.now()): string[] {
+/** The park's self-wake is being launched now (see above). */
+export function launchContinuation(agentId: string): void {
+  const carried = jobWork.get(agentId);
+  if (carried?.state === 'queued') carried.state = 'running';
+}
+
+/** A run ended: a continuation that queued no further one ends the chain, and the carry with it. */
+export function settleJobCarry(agentId: string): void {
+  if (jobWork.get(agentId)?.state === 'running') jobWork.delete(agentId);
+}
+
+/** The owner stopped the agent: no continuation follows, so the job's chain is over. */
+export function endJobCarry(agentId: string): void {
+  jobWork.delete(agentId);
+}
+
+/** The tasks this agent's job is carrying right now: those still open. The one answer to "is this
+ *  task the job in flight?" (the PM ladder and the close-out gate leave exactly these alone). */
+export function jobCarriedIds(agentId: string): string[] {
   const carried = jobWork.get(agentId);
   if (!carried) return [];
-  const open = carried.ids.length === 0 || now - carried.at > CARRY_TTL_MS ? [] : (getDb().prepare(
+  const open = (getDb().prepare(
     `SELECT w.id AS id FROM work w WHERE w.id IN (${carried.ids.map(() => '?').join(', ')})
        AND w.state IN ('claimed', 'on_deck', 'blocked')`).all(...carried.ids) as Array<{ id: string }>).map((r) => r.id);
   if (open.length === 0) jobWork.delete(agentId);
-  else if (open.length !== carried.ids.length) jobWork.set(agentId, { at: carried.at, ids: open });
+  else if (open.length !== carried.ids.length) carried.ids = open;
   return open;
 }
 
@@ -70,8 +87,7 @@ export function turnWorkIds(agentId: string): string[] {
   const ctx = turnContext(agentId);
   if (!ctx || ctx.turnNumber === undefined) return [];
   const inherited = !ctx.root && !ctx.servedWork ? jobCarriedIds(agentId) : [];
-  const served = ctx.servedWork?.taskId && !servedByNotice(agentId, ctx.turnNumber, ctx.servedWork.taskId) ? [ctx.servedWork.taskId] : [];
-  const named = [...inherited, ...served];
+  const named = [...inherited, ...(ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [])];   // the served task IS the job, whatever woke the turn
   const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
   const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
   const list = named.length > 0 ? named.map(() => '?').join(', ') : 'NULL';

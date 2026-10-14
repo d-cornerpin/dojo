@@ -176,11 +176,11 @@ export function stampTasksAtTurnFinalize(input: {
     const db = getDb();
     // t143 r2: only work THIS turn's trigger names (a continuation inherits its job from the park
     // that queued it) — never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
-    const carried = turnWorkIds(input.agentId);
     const deliverySummary = composeTurnDeliverySummary(input.agentId, input.turnNumber);
     const hasDelivery = deliverySummary.length > 0;
-    // t143 r4: being woken by a PM re-drive is not progress on its task; a delivery about it is.
-    const servedId = !hasDelivery && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? null : input.servedTaskId;
+    // t143 r4: being woken by a re-drive or assignment notice is not progress (a delivery is); the carry decides "the job".
+    const woken = !hasDelivery && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
+    const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}
@@ -197,7 +197,7 @@ export function stampTasksAtTurnFinalize(input: {
       input.agentId,
       input.rootSourceMessageId ?? '',
       input.turnNumber,
-      servedId ?? '',
+      woken ? '' : (input.servedTaskId ?? ''),
       ...carried,
     ) as Array<{ id: string }>;
     if (tied.length === 0) return;
