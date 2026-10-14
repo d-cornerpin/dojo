@@ -117,13 +117,13 @@ export enum MessageSlot {
   // nothing was deleted. The numbers stay RETIRED, not reused: the slot values are a
   // byte-equivalence contract, so re-pointing 500 or 600 at a different section would
   // silently reorder a future array — the same disposition RelevantMemory=400,
-  // TrackerNotif=1500 and ActiveDirective=900 got.
+  // TrackerNotif=1500 and the directive pin's 900 got.
   // 700 RETIRED (v3.3.3): was CompactionContinuity (A8, post-compaction <24h); nothing used it.
   // W81: MessageSlot.Scratchpad (800) was STRIPPED with its lane — `scratchpad_set`,
   // `scratchpad_clear` and `reset_session` all rewrite it MID-CONVERSATION, and the block's
   // own header says the agent maintains it "as I make progress". It moved WHOLE to
   // `ScratchpadTail = 1830`. RETIRED, not reused, per the paragraph above.
-  ActiveDirective = 900, // A10 (tier 2; sits closest to the tail)
+  // 900 RETIRED (v3.3.3): was ActiveDirective (A10), the "still in force" pin; deleted with its module.
   ScaffoldingAck = 1000, // A11 (assistant beat closing the scaffolding block)
   // W81: MessageSlot.Events (1050) was STRIPPED with its lane. Its content is
   // `awarenessEvents.slice(-10)` taken from the fresh tail's FIXED ROW WINDOW
@@ -211,13 +211,7 @@ export enum MessageSlot {
   // A number BETWEEN two existing ones renumbers nothing, so the byte-equivalence contract
   // above is untouched — the same move Events=1050, Deliveries=1860 and the W81 four made.
   IntegrationStatusTail = 1877,
-  // T67b §7: THE ACTIVE USER DIRECTIVE, MOVED OUT OF THE CACHED PREFIX.
-  // It was `ActiveDirective = 900`, ahead of the fresh tail, while its content IS the newest
-  // unanswered user ask — so every substantive user message rewrote the front of the message
-  // array and re-billed the whole history behind it. Second-to-last on purpose: it is the
-  // most volatile block that carries content (only the clock is more so), and the position
-  // after the live conversation is the recency-salient one, which is what a pin wants.
-  ActiveDirectiveTail = 1890,
+  // 1890 RETIRED (v3.3.3): was ActiveDirectiveTail, the pin's tail slot; the task list is the one record.
   CurrentTime = 1900, // precise clock time, most volatile, always last (cache tail)
 }
 
@@ -302,13 +296,6 @@ export interface AssemblyContext {
    *  `volatileFrom`, which is the deliveries split in mirror image. Volatile by construction:
    *  its content is retrieved against the live ask, so it may never sit in the cached prefix. */
   recallLane?: string | null;
-  /** T67b §7: the ACTIVE USER DIRECTIVE block (`memory/directive.ts`), rendered by the
-   *  assembler — it owns the counterparty/conversation scoping the pin is subject to — and
-   *  appended by the loop past `volatileFrom`. Volatile by construction in the strongest
-   *  sense of the phrase: its content IS the newest unanswered user ask, so it changes on
-   *  every substantive user turn and may never sit in the cached prefix. It was
-   *  `MessageSlot.ActiveDirective = 900` until this task. */
-  directiveLane?: string | null;
   /** W81: the four blocks the owner's DS4 FINDING 2 moved out of the cached region — the
    *  attempt ledger and the active-task board (`memory/work-board-lane.ts`, ONE tracker read),
    *  the scratchpad and the events block. All four are rendered by the assembler and appended
@@ -375,11 +362,6 @@ export const VOLATILE_TURN_FIELDS = [
   'delegationHint',
   'deliveriesLane',
   'recallLane',
-  // W81: `directiveLane` was MISSING from this list — T67b added the field and not the row,
-  // so a system render could still have read the newest user ask straight into the cached
-  // prefix. Added here with the four this task moved, because the omission is the same kind
-  // of gap in every case and fixing one while leaving the other is the disease.
-  'directiveLane',
   'attemptLedgerLane',
   'activeTasksLane',
   'scratchpadLane',

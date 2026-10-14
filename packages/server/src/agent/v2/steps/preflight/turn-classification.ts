@@ -228,7 +228,7 @@ export async function runTurnClassification(
   // tail to the engine event (scopeToEngineTurn) instead of the owner's human
   // chat, so an hour-old already-answered request can't be run in place of the
   // scheduled task (the gastro-digest-ran-a-stale-RAM-rundown hijack). The
-  // scheduler payload itself is the ACTIVE USER DIRECTIVE this turn.
+  // scheduler payload itself is the directive this turn.
   // E-A2: detect the engine turn from a PENDING (unprocessed) engine event, not
   // just "the most-recent inbound is engine." A human message that arrives in the
   // same window as a scheduler/reminder event makes mostRecentInbound non-engine;

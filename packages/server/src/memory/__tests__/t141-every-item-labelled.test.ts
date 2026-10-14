@@ -283,7 +283,7 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 // The ZEBRA email: an unauthorized notice into the owner's own inbox. Long enough to be
-// "substantive" by the directive pin's 200-char rule — the shape that made it the pin.
+// "substantive" by the (since deleted) directive pin's 200-char rule — the shape that made it the pin.
 const ZEBRA = {
   id: 'gm-zebra-1', threadId: 'th-zebra', from: 'Billing Desk <billing@vendor.example>',
   subject: 'ZEBRA invoice',
@@ -335,8 +335,10 @@ describe('t141 witnesses — the email wake and the owner conversation', () => {
 
   it('W2b: on the email-wake turn the email is never pinned as "the user\'s most recent ask"', async () => {
     const { t2 } = await orchidThenZebraWake();
-    const pin = t2[0].map(textOf).find((t) => t.includes('ACTIVE USER DIRECTIVE')) ?? '';
-    expect(pin).not.toContain('ZEBRA');
+    // The pin is gone (t145), so the email can be pinned nowhere: no block calls anything "the
+    // user's most recent substantive ask", and the email appears only as the labelled notice.
+    expect(wireText(t2[0])).not.toContain('most recent substantive ask');
+    expect(t2[0].map(textOf).some((t) => t.includes(['ACTIVE USER', 'DIRECTIVE'].join(' ')))).toBe(false);
   });
 
   it('W4: on the owner\'s next turn the handled notice is marked HANDLED and carries no "surface it" steer', async () => {

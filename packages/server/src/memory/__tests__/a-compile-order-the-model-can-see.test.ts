@@ -372,40 +372,8 @@ describe('T68b §2 — CONTROL: the awareness lane\'s charter is unchanged', () 
   });
 });
 
-describe('T68b §3 — the ACTIVE USER DIRECTIVE pins the ASK, never a helper\'s piece', () => {
-  it('RED: with both deliverables in, the pin still holds the owner\'s ask', async () => {
-    insertRow({ role: 'user', content: compileOrderContent(), lane: 'events', originIntent: 'fanout_join' });
-
-    const pin = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
-
-    expect(pin).toContain(ASK_FP);
-    expect(pin).not.toContain(PIECE1_FP);
-    expect(pin).not.toContain(PIECE2_FP);
-  });
-
-  it('RED: the pin does not OSCILLATE as recovery attempts land more pieces', async () => {
-    // The loop W61 measured: each re-ask destroys the piece the previous one recovered, so
-    // the agent can never hold both, so it can never compile, so the engine redrives.
-    insertRow({ role: 'user', content: compileOrderContent(), lane: 'events', originIntent: 'fanout_join' });
-    const first = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
-
-    insertRow({
-      role: 'user', lane: 'a2a', conversationId: 'conv-healer-2', sourceAgentId: 'healer',
-      content: `[A2A:ANSWER thread:25c60ce3 from:Healer] ${PIECE_1}`,
-    });
-    const second = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
-
-    insertRow({
-      role: 'user', lane: 'a2a', conversationId: 'conv-tyndo-2', sourceAgentId: 'tyndo',
-      content: `[A2A:ANSWER thread:18068b11 from:Tyndo] ${PIECE_2}`,
-    });
-    const third = (await assembleContext(AGENT, MODEL)).directiveLane ?? '';
-
-    expect(second).toBe(first);
-    expect(third).toBe(first);
-    expect(first).toContain(ASK_FP);
-  });
-});
+// T68b §3 (the pin holds the ASK, never a helper's piece) retired with the pin: t145 deleted it, and the
+// pieces reach the model whole through the fan-out compile order, which the clauses above pin.
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // §T68b §4 — THE VERDICT THE GATE IS ALLOWED TO SPEAK FROM.

@@ -268,7 +268,7 @@ describe('§A the conversation survives the sweep that used to erase it', () => 
     // PM's own recall tools can reach them again.
     //
     // The remaining gap — guaranteeing the owner's LIVE ask is in the window regardless of what
-    // the tail does — is the triage's item 4 (give the PM branch the ACTIVE USER DIRECTIVE pin).
+    // the tail does — is the triage's item 4 (give the PM branch a pin of the owner's live ask — the pin itself was deleted at t145).
     // It is deliberately NOT in this lane: it adds a prompt-assembly surface, which carries the
     // cache-preservation tenet and wants its own measurement. Recorded in the lane report.
     seedTheOwnersConversation(80);

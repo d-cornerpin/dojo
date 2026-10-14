@@ -121,12 +121,6 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
     expect(s).not.toMatch(/conversation_id IS NULL AND \(role IN \('assistant','tool'\)/);
   });
 
-  it('the active-directive pin scopes on conversation_id', () => {
-    const s = stripComments(src('packages/server/src/memory/directive.ts'));
-    expect(s).not.toMatch(/conv_key/);
-    expect(s).toMatch(/conversation_id = \?/);
-  });
-
   it('the answered-in-this-conversation edge scopes on conversation_id', () => {
     const s = stripComments(src('packages/server/src/agent/v2/answered-edge.ts'));
     // `turns.conv_key` is a DIFFERENT column on a DIFFERENT table and is NOT in scope —

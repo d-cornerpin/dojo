@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t145 group B — THE "STILL IN FORCE" PIN IS GONE, AND A PRESENCE PING IS ANSWERED AS ONE (#7 part 2)
 //
-// The pin (`ACTIVE USER DIRECTIVE`) carried the owner's newest long unanswered ask into every
+// The pin (the "active user directive" block) carried the owner's newest long unanswered ask into every
 // turn under a header that said it was "still in force". A long ask whose answer stamp stayed
 // NULL (the stale-work analysis §2A: a delegated, parked or background-finishing turn) was
 // re-pinned for weeks, and on "You there?" the agent re-ran the finished work. The owner ruled
@@ -122,6 +122,11 @@ import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { checkAndCompact } from '../compaction.js';
 import { buildWorkBoardLane } from '../work-board-lane.js';
 import { assembleContext } from '../assembler.js';
+import { POST_BUDGET_LANES } from '../lanes.js';
+import { MessageSlot } from '../../prompt/registry/types.js';
+import { registeredIds } from '../../prompt/registry/registry.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
@@ -156,6 +161,9 @@ function textOf(m: Wire): string {
 }
 const wireText = (call: Wire[]): string => call.map(textOf).join('\n\n');
 
+/** The header the deleted pin printed, spelled in parts so this file is not itself a match for the grep-zero proof. */
+const PIN = ['ACTIVE USER', 'DIRECTIVE'].join(' ');
+
 /** The marker inside the finished long ask: the thing a re-run would act on. */
 const JOB = 'VENUE-JOB-7731';
 const LONG_ASK = `Please do this whole job, in order. ${JOB}: write three notes into the shared folder, `
@@ -170,7 +178,7 @@ function installModel(): void {
     seen.push(JSON.parse(JSON.stringify(params.messages)) as Wire[]);
     // THE FAILURE, FAITHFULLY: a model shown the job inside a block that calls itself "still in
     // force" does the job. Anything else follows the script (a presence ping gets a presence reply).
-    const pinned = params.messages.map(textOf).some((t) => t.includes('ACTIVE USER DIRECTIVE') && t.includes(JOB));
+    const pinned = params.messages.map(textOf).some((t) => t.includes(PIN) && t.includes(JOB));
     const last = params.messages[params.messages.length - 1];
     const alreadyActed = params.messages.some((m) => m.role === 'assistant' && Array.isArray(m.content)
       && (m.content as Array<Record<string, unknown>>).some((b) => b.type === 'tool_use' && b.name === 'file_write' && JSON.stringify(b.input).includes('resumed')));
@@ -253,7 +261,7 @@ async function newerTraffic(): Promise<void> {
 }
 
 describe('t145 B — "You there?" after a finished long ask and newer traffic is answered as presence', () => {
-  it.fails('leg (a) the routine drain: no effectful call, a presence reply, and no pin in the prompt', async () => {
+  it('leg (a) the routine drain: no effectful call, a presence reply, and no pin in the prompt', async () => {
     await finishedLongAsk();
     await newerTraffic();
     const mark = executeToolSpy.mock.calls.length;
@@ -261,13 +269,13 @@ describe('t145 B — "You there?" after a finished long ask and newer traffic is
     const calls = await turn({ content: 'Yes, I am here.' });
     const all = calls.map(wireText).join('\n');
     expect(effectfulSince(mark), 'the finished job was run again').toEqual([]);
-    expect(all).not.toContain('ACTIVE USER DIRECTIVE');
+    expect(all).not.toContain(PIN);
     expect(all).not.toContain('still in force');
     const reply = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1").get() as { content: string };
     expect(reply.content).toContain('Yes, I am here.');
   });
 
-  it.fails('leg (b) after a FORCED condense: the job is folded into a note, and still no effectful call', async () => {
+  it('leg (b) after a FORCED condense: the job is folded into a note, and still no effectful call', async () => {
     await finishedLongAsk();
     await newerTraffic();
     const out = await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true });
@@ -276,9 +284,11 @@ describe('t145 B — "You there?" after a finished long ask and newer traffic is
     await submitUserMessage(AGENT, 'You there?');
     const calls = await turn({ content: 'Yes, I am here.' });
     expect(effectfulSince(mark), 'the finished job was run again').toEqual([]);
-    expect(calls.map(wireText).join('\n')).not.toContain('ACTIVE USER DIRECTIVE');
+    expect(calls.map(wireText).join('\n')).not.toContain(PIN);
     // the job really is folded: the note carries it, the raw ask is no longer a live row
     expect(calls.map(wireText).join('\n')).toContain('COMPRESSED HISTORY');
+    const reply = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1").get() as { content: string };
+    expect(reply.content).toContain('Yes, I am here.');
   });
 });
 
@@ -301,6 +311,7 @@ describe('t145 B — backwards lifecycle: the owner\'s long ask MID-JOB survives
     const reopened = new Database(mockDb.current!.serialize());
     mockDb.current!.close();
     mockDb.current = reopened;
+    runMigrations();   // the next boot's migration pass over the existing body (an update that adds nothing)
     const listAfterReboot = (await buildWorkBoardLane(AGENT)).activeTasks ?? '';
     expect(listAfterReboot).toContain(LONG_ASK);
 
@@ -308,8 +319,32 @@ describe('t145 B — backwards lifecycle: the owner\'s long ask MID-JOB survives
     const ctx = await assembleContext(AGENT, 'm');
     const wire = [...ctx.messages.map((m) => textOf(m as Wire)), ctx.activeTasksLane ?? ''].join('\n');
     expect(wire).toContain(LONG_ASK);
-    expect(wire).not.toContain('ACTIVE USER DIRECTIVE');
+    expect(wire).not.toContain(PIN);
     // the ask is on the list and ONLY there: its raw row left the live conversation
     expect(ctx.messages.map((m) => textOf(m as Wire)).join('\n')).not.toContain(LONG_ASK);
+  });
+});
+
+describe('t145 B — the pin is deleted, not hidden: no module, no lane, no registry entry, no slot, no field', () => {
+  const SRC = path.resolve(__dirname, '..', '..');
+  const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? (e.name === 'node_modules' || e.name === 'db' ? [] : walk(path.join(dir, e.name)))
+      : /\.(ts|tsx)$/.test(e.name) ? [path.join(dir, e.name)] : []);
+
+  it('the proof the plan names: grep-zero for the pin\'s header, its context field and its reader', () => {
+    const parts = [['ACTIVE USER', 'DIRECTIVE'].join(' '), ['directive', 'Lane'].join(''), ['getActive', 'UserDirective'].join('')];
+    const hits = walk(SRC).filter((f) => {
+      const text = fs.readFileSync(f, 'utf8');
+      return parts.some((x) => text.includes(x));
+    });
+    expect(hits.map((f) => path.relative(SRC, f))).toEqual([]);
+  });
+
+  it('the module, the lane, the registry entry, the reserve and the slot are all gone', () => {
+    expect(fs.existsSync(path.join(SRC, 'memory', ['direc', 'tive.ts'].join('')))).toBe(false);
+    expect(POST_BUDGET_LANES.map((l) => l.id)).not.toContain('lane.directive');
+    expect(registeredIds()).not.toContain('msg.directive');
+    expect(Object.keys(MessageSlot)).not.toContain('ActiveDirectiveTail');
+    expect(Object.keys(MessageSlot)).not.toContain('ActiveDirective');
   });
 });

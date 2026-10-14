@@ -407,14 +407,14 @@ describe('T67b §5 — nothing rewrites history outside a compaction boundary', 
 
 // ── §7 THE LANE THE CENSUS FOUND THAT NOBODY HAD NAMED ──────────────────────────────────
 //
-// `lane.directive` (MessageSlot.ActiveDirective = 900) pins THE NEWEST UNANSWERED USER ASK
-// and emits it AHEAD of the fresh tail. Its content is therefore a function of the newest
-// exchange, and it is rendered at the FRONT of the cacheable region: every substantive user
-// message rewrites message ~0 of the array and re-bills the entire history behind it. It is
-// the same shape as the recall lane at slot 400 (CORE-2 item 4) and HL5's snapshot, one
-// noun over, and it is the largest single term in the owner's per-turn recompute.
+// `lane.directive` pinned THE NEWEST UNANSWERED USER ASK and emitted it AHEAD of the fresh
+// tail (T67b moved it to the tail). t145 deleted it: the task list is the one record of what is
+// current. What this clause keeps is the property that mattered, which now holds by absence — a
+// second ask rewrites nothing ahead of the first, and no pin block exists to ride anywhere.
 
-describe('T67b §7 — the directive pin is volatile by construction and rides the tail', () => {
+const PIN_HEADER = ['ACTIVE USER', 'DIRECTIVE'].join(' ');
+
+describe('T67b §7 / t145 — a second ask rewrites nothing ahead of the first, and there is no pin', () => {
   it('RED: a second ask does not rewrite the block ahead of the first one', async () => {
     seedTurn(1);
     const ask1 = `Please work out ${'x'.repeat(220)} the porch light wiring order`;
@@ -422,12 +422,9 @@ describe('T67b §7 — the directive pin is volatile by construction and rides t
 
     const a1 = await assembleContext(AGENT, MODEL);
     const first = clone(a1.messages);
-    // It LEFT the cacheable region and it is CARRIED, not deleted — both halves asserted,
-    // because a lane that quietly stopped rendering would satisfy the invariance clause below
-    // while costing the model the pin.
-    expect(textOf(a1.messages)).not.toContain('ACTIVE USER DIRECTIVE');
-    expect(a1.directiveLane).toContain('ACTIVE USER DIRECTIVE');
-    expect(a1.directiveLane).toContain('the porch light wiring order');
+    // The pin is gone from the prefix AND from the assembly: nothing carries it.
+    expect(textOf(a1.messages)).not.toContain(PIN_HEADER);
+    expect(Object.keys(a1)).not.toContain(['directive', 'Lane'].join(''));
 
     row('assistant', 'on it', 1);
     seedTurn(2);
@@ -436,9 +433,7 @@ describe('T67b §7 — the directive pin is volatile by construction and rides t
     const a2 = await assembleContext(AGENT, MODEL);
 
     expectAppendOnly(first, clone(a2.messages));
-    // The pin itself DID move — it is the newest ask — which is exactly why it may not sit
-    // in the prefix. Volatility is not the defect; volatility AHEAD OF THE TAIL is.
-    expect(a2.directiveLane).toContain('chase the invoice with Zargo');
+    expect(textOf(a2.messages)).not.toContain(PIN_HEADER);
   });
 });
 

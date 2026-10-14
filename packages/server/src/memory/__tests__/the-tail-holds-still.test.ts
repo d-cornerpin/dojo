@@ -19,7 +19,7 @@
 //   =  engine.recent-outbound     216 chars  IDENTICAL
 //   ≠  engine.recently-answered   589 chars  MOVED   <- FIRST DIVERGENCE on all three pairs
 //   ≠  msg.relevant-memory      3,868 chars  MOVED   (carrying ~1,400 chars of BOARD STATE)
-//   ≠  msg.directive              524 chars  MOVED   (deliberate: it IS the ask)
+//   ≠  msg.directive              524 chars  MOVED   (deliberate then; the lane was deleted at t145)
 //   ≠  msg.current-time           344 chars  MOVED   (deliberate: it IS the clock)
 //
 //   re-billed from the first divergence: 5,325–5,380 chars ≈ 1,331–1,345 tokens PER TURN.
@@ -30,8 +30,8 @@
 //   DELIBERATE — `engine.recently-answered` (its source is the last three answered asks of
 //                THIS conversation, and a turn answers one), `msg.relevant-memory` (retrieved
 //                against the LIVE ASK: roadmap #10 is the reason it rides the tail at all),
-//                `msg.directive` (its content IS the newest ask) and `msg.current-time` (its
-//                content IS the clock). These four are REGISTERED in §4 below, by id, and are
+//                `msg.directive` (its content IS the newest ask; deleted at t145) and
+//                `msg.current-time` (its content IS the clock). Three are REGISTERED in §4 below, by id, and are
 //                the only exemptions this gate grants. The first was added AFTER the fix was
 //                measured, not before it: at `2557747` it was also a clock reader and it also
 //                sat ahead of every stable block, and both of those are gone.
@@ -439,14 +439,13 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
    * order fix the dev box showed it still moving on every judged pair, and the diff says why —
    * a new answer stamp enters the top-three and the oldest falls out. Its source is "the last
    * three answered asks of THIS conversation", and a conversational turn answers one. That is
-   * per-turn material by construction, the same class as the directive pin; what T69b removed
+   * per-turn material by construction, the same class as the (since deleted) directive pin; what T69b removed
    * from it was the WALL-CLOCK read on top of that (§1) and its position in FRONT of every
    * block that changes rarely (below).
    */
   const DELIBERATE: ReadonlyArray<readonly [string, string]> = [
     ['engine.recently-answered', 'its source IS the last three answered asks of THIS conversation, and a conversational turn answers one — per-turn material by construction, not a clock read'],
     ['msg.relevant-memory', 'retrieved against the LIVE ASK — roadmap #10 is why it rides the tail'],
-    ['msg.directive', 'its content IS the newest unanswered ask (T67b §7)'],
     ['msg.current-time', 'its content IS the clock'],
   ];
 
@@ -518,14 +517,13 @@ describe('T69b §4 — the tail is ordered most-stable-first and the deliberate 
     expect(MessageSlot.PeerStatus).toBeLessThan(MessageSlot.IntegrationStatusTail);   // T76b
     expect(MessageSlot.IntegrationStatusTail).toBeLessThan(MessageSlot.RecalledMemory);
     expect(MessageSlot.PeerStatus).toBeLessThan(MessageSlot.RecalledMemory);
-    expect(MessageSlot.RecalledMemory).toBeLessThan(MessageSlot.ActiveDirectiveTail);
-    expect(MessageSlot.ActiveDirectiveTail).toBeLessThan(MessageSlot.CurrentTime);
+    expect(MessageSlot.RecalledMemory).toBeLessThan(MessageSlot.CurrentTime);
   });
 
   it('the deliberate list is a REGISTRY, not a habit — each entry states why it is exempt', () => {
     for (const [id, why] of DELIBERATE) {
       expect(why.length, `${id} is exempt with no reason recorded`).toBeGreaterThan(20);
     }
-    expect(DELIBERATE).toHaveLength(4);
+    expect(DELIBERATE).toHaveLength(3);
   });
 });

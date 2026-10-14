@@ -11,8 +11,8 @@
 // ── THE NAMED MECHANISM: SILENT CONVERSATION-SCOPED ELISION WITH NO CAPABILITY DECLARATION ───
 // On a human turn every default-path surface is filtered to the one conversation being served —
 // the fresh tail's inbound half and own-output half (`memory/assembler.ts`), the deliveries ledger
-// (`memory/deliveries-lane.ts`), the active-directive lane (`memory/directive.ts`), and
-// `recall_recent_thread`'s default scope (`memory/recall.ts`). Every one of those filters is
+// (`memory/deliveries-lane.ts`), and `recall_recent_thread`'s
+// default scope (`memory/recall.ts`). Every one of those filters is
 // CORRECT and each has a named incident behind it — a friend's iMessage bleeding into a dashboard
 // turn, and a months-long re-answer ghost. They are not bugs. THEY ARE SILENT.
 //

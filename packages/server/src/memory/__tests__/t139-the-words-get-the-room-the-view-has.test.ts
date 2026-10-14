@@ -5,7 +5,7 @@
 // smart enough to know when enough is enough."
 //
 // Rounds 1-4 printed the owner's original words for every open task out of ONE fixed pool of
-// 8,000 characters (inherited from the pin's `DIRECTIVE_MAX_CHARS`). With three live tasks of
+// 8,000 characters (inherited from the deleted pin's cap). With three live tasks of
 // 4,000 characters each, the third was cut to a pointer even on a 200K-window model whose view
 // had room for all of them many times over. The signal that should decide is the room this
 // assembly actually left: the lane's own share of the reserve ladder plus whatever the content
@@ -145,7 +145,7 @@ const idsOf = (tags: string[]): string[] => tags.map((t) => `msg-${t.toLowerCase
  */
 function wholeArray(ctx: Awaited<ReturnType<typeof assembleContext>>, window: number): { tokens: number; budget: number } {
   const msgs: Array<{ role: 'user' | 'assistant'; content: unknown }> = [...(ctx.messages as never[])];
-  for (const b of [ctx.recallLane, ctx.openCommitmentsLane, ctx.directiveLane, ctx.attemptLedgerLane,
+  for (const b of [ctx.recallLane, ctx.openCommitmentsLane, ctx.attemptLedgerLane,
     ctx.activeTasksLane, ctx.scratchpadLane, ctx.eventsLane, ctx.integrationStatusLane]) {
     if (b) msgs.push({ role: 'user', content: b });
   }

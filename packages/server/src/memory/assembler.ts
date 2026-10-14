@@ -487,21 +487,9 @@ export interface AssembledContext {
    */
   openCommitmentsLane?: string | null;
   /**
-   * T67b §7 — THE ACTIVE USER DIRECTIVE, COMPUTED HERE AND EMITTED BY THE LOOP.
-   *
-   * Same split as `recallLane`, for the same reason one noun over. This assembly owns the
-   * read (the pin is scoped to the turn's counterparty and conversation — comms-audit T-1 —
-   * and nothing else knows that scoping), but the block's CONTENT IS THE NEWEST UNANSWERED
-   * USER ASK, so it cannot sit in `messages`: everything in that array is the cacheable
-   * region by definition. The loop appends it past the boundary as `msg.directive`
-   * (slot 1890). It was `MessageSlot.ActiveDirective = 900` until this task, where every
-   * substantive user turn rewrote the front of the prefix.
-   */
-  directiveLane?: string | null;
-  /**
    * W81 — THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED OUT OF THE CACHED REGION.
    *
-   * Same split as `directiveLane`, four nouns over, and for the one rule this task turns on:
+   * Same split as `recallLane`, and for the one rule this task turns on:
    * whatever a tool can mutate must render BELOW the conversation. Each is READ by this
    * assembly — the work board and the pad are agent-scoped reads only the assembler holds the
    * scoping for, and the events block is derived from the tail this assembly already
@@ -783,9 +771,8 @@ export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): bo
  * the owner's whole recent tail live, so an hour-old, already-answered request
  * (e.g. "give me a RAM rundown") sat at full salience and the model ran THAT
  * instead of the scheduled task (the gastro-digest hijack). Here we drop the
- * human conversation entirely: the task lives in the ACTIVE USER DIRECTIVE (the
- * engine event) and the EVENTS lane, and the agent works it from there + memory,
- * exactly the way an A2A turn answers from memory rather than the raw user tail.
+ * human conversation entirely: the task lives in the engine event and the EVENTS lane,
+ * and the agent works it from there + memory, exactly the way an A2A turn answers from memory rather than the raw user tail.
  * Keeps: the agent's own current-turn work (untagged / tool activity) and engine
  * events (the caller lifts those into the EVENTS lane). Drops: all human inbound
  * and all A2A.
@@ -1129,7 +1116,7 @@ function buildContentLanes(
     // post-budget tail lanes now — `memory/work-board-lane.ts`, MessageSlot.AttemptLedgerTail
     // = 1810 and MessageSlot.ActiveTasksTail = 1820 — rendered from ONE tracker read and
     // appended by the loop past `volatileFrom`, each with a DECLARED RESERVE derived by
-    // calling its own renderer. Same move as `lane.directive`'s at T67b §7, two nouns over.
+    // calling its own renderer.
 
     // ── STRIP (t140): `lane.continuity` (slot 700) IS GONE, with the brief it rendered ──────
     // It injected the pre-compaction continuity brief for three turns after a compaction —
@@ -1147,27 +1134,9 @@ function buildContentLanes(
     // content priority in the assembly, at slot 800: ahead of the whole conversation and
     // first in line to be paid for. The scaffolding ack's own sentence stated the volatility
     // out loud ("I maintain it via scratchpad_set as I make progress"), which is the same
-    // shape of self-witness `lane.directive` carried at T67b. It is a post-budget tail lane
+    // shape of self-witness the deleted directive pin carried. It is a post-budget tail lane
     // now at MessageSlot.ScratchpadTail = 1830, and its pad is capped where it was not.
 
-    // ── T67b §7: `lane.directive` LEFT this candidate list ────────────────────────────────
-    //
-    // It was `MessageSlot.ActiveDirective = 900` with priority 10 — the highest-priority,
-    // earliest-emitted block of the whole assembly — and its CONTENT IS THE NEWEST UNANSWERED
-    // USER ASK. So it changed on every substantive user turn and it changed at the FRONT of
-    // the cacheable region, which re-billed the entire message history behind it, every turn,
-    // forever. That is the single largest term in the owner's ~14,200-tokens-per-turn
-    // recompute, and this census is where it was first named.
-    //
-    // The move is `lane.relevant-memory`'s (CORE-2 item 4) and HL5's, one noun over, and the
-    // rule is the same one: a lane whose content is a function of the live ask may not sit
-    // ahead of the cache boundary. It is a post-budget tail lane now — `renderDirectiveLane`
-    // below, `MessageSlot.ActiveDirectiveTail = 1890` — appended by the loop past
-    // `volatileFrom`, one position ahead of `msg.current-time`.
-    //
-    // ITS SALIENCE DOES NOT DROP, it rises: the pin now sits AFTER the live conversation
-    // instead of before it, in the recency-salient position the tail exists to give, which is
-    // the same argument `memory/recall-lane.ts` makes for the HL5 snapshot's placement.
     // ── W81: `lane.events` (1050) LEFT THIS LIST, AND IT IS THE SUBTLEST OF THE FOUR ─────
     //
     // NO TOOL WRITES IT. Its content is `awarenessEvents.slice(-10)` taken from the fresh
@@ -1866,43 +1835,12 @@ async function assembleMessageContext(
   // renderer. Either half firing is the lane firing.
   if (recallLane || openCommitmentsLane) postBudget.push('lane.relevant-memory');
 
-  // ── THE ACTIVE USER DIRECTIVE (T67b §7) ─────────────────────────────────────────────────
-  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.relevant-
-  // memory` uses and for the same reason: the pin is scoped to the turn's counterparty and
-  // conversation (comms-audit T-1) and only the assembler holds that scoping, while the
-  // block's content is the newest unanswered ask and may therefore never sit in the prefix.
-  // Best-effort in exactly the way the lane render was: a failed read costs the pin, never
-  // the assembly.
-  let directiveLane: string | null = null;
-  try {
-    const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
-    const cp = turnContext?.counterparty;
-    // t141 — AN EMAIL IS NEVER "THE USER'S ASK": on a notification turn `null` meant UNSCOPED,
-    // and the newest long unanswered row was the email itself (audit RC2). Same scope as the tail.
-    const directiveConversationId =
-      (turnContext?.isEngineTurn || cp?.kind === 'agent')
-        ? '__none__'
-        : (cp && cp.kind === 'user'
-          ? (servedConversationId(agentId, turnContext) ?? (turnContext?.isNotificationTurn ? '__none__' : null))
-          : null);
-    const directive = getActiveUserDirective(agentId, {
-      excludeEngine: !turnContext?.isEngineTurn,
-      conversationId: directiveConversationId,
-    });
-    directiveLane = directive ? formatDirectiveBlock(directive) : null;
-  } catch (err) {
-    logger.warn('Active directive injection failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-  if (directiveLane) postBudget.push('lane.directive');
-
   // ── W81: THE FOUR LANES THE OWNER'S FINDING 2 MOVED BELOW THE CONVERSATION ─────────────
-  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.directive`
-  // and `lane.relevant-memory` use. The reason is the one sentence this whole task turns on:
-  // whatever a tool can mutate must render below the conversation, because a block ahead of
-  // it re-bills every token behind it whenever it moves. Best-effort, each in its own try, so
-  // one failed read costs its own block and never the assembly.
+  // Read HERE and emitted by the loop past `volatileFrom`, the same split `lane.relevant-memory`
+  // uses. The reason is the one sentence this whole task turns on: whatever a tool can mutate
+  // must render below the conversation, because a block ahead of it re-bills every token
+  // behind it whenever it moves. Best-effort, each in its own try, so one failed read costs its
+  // own block and never the assembly.
   const scratchpadLane = renderScratchpadLane(agentId);
   if (scratchpadLane) postBudget.push('lane.scratchpad');
 
@@ -1935,7 +1873,7 @@ async function assembleMessageContext(
   try {
     const board = await buildWorkBoardLane(agentId, {
       availableTokens: maxTokens - systemTokens, emitted: merged, liveRows: tailPayload?.rows ?? [],
-      blocks: [recallLane, openCommitmentsLane, directiveLane, scratchpadLane, eventsLane, integrationStatusLane],
+      blocks: [recallLane, openCommitmentsLane, scratchpadLane, eventsLane, integrationStatusLane],
     });
     attemptLedgerLane = board.attemptLedger;
     activeTasksLane = board.activeTasks;
@@ -2008,7 +1946,6 @@ async function assembleMessageContext(
     consumedOneShotFlags,
     recallLane,
     openCommitmentsLane,
-    directiveLane,
     attemptLedgerLane,
     activeTasksLane,
     scratchpadLane,

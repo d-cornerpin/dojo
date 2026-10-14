@@ -483,25 +483,6 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'most-stable-first and a peer status flip is rarer than a new ask.',
     render: (ctx) => (ctx.recallLane ? { role: 'user', content: ctx.recallLane } : null),
   },
-  {
-    id: 'msg.directive',
-    target: 'messages',
-    slot: MessageSlot.ActiveDirectiveTail,
-    reason:
-      'T67b §7: THE ACTIVE USER DIRECTIVE. It was a `fitLanes` candidate at ' +
-      'MessageSlot.ActiveDirective = 900 with priority 10 — the earliest-emitted, ' +
-      'highest-priority block of the assembly — while its CONTENT IS THE NEWEST UNANSWERED ' +
-      'USER ASK. So every substantive user turn rewrote the front of the cacheable message ' +
-      'region and re-billed the whole history behind it: the largest single term in the ' +
-      'owner\'s measured ~14,200-tokens-per-turn recompute, and the same shape roadmap ' +
-      'non-negotiable #10 forbids and CORE-2 item 4 already moved `lane.relevant-memory` ' +
-      'out of position for. It rides the tail at 1890, one place ahead of the clock. The ' +
-      'ASSEMBLER computes it because the pin is scoped to the turn\'s counterparty and ' +
-      'conversation (comms-audit T-1) and only the assembler holds that; the loop appends ' +
-      'it past `volatileFrom`. Its salience RISES with the move: after the live ' +
-      'conversation is the recency-salient position, which is what a pin wants.',
-    render: (ctx) => (ctx.directiveLane ? { role: 'user', content: ctx.directiveLane } : null),
-  },
   // ── W81: THE FOUR LANES THE OWNER'S DS4 FINDING 2 MOVED BELOW THE CONVERSATION ─────────
   // One rule, four applications: whatever a tool can mutate must render BELOW the
   // conversation, because a block ahead of it re-bills every token behind it whenever it
@@ -548,7 +529,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       + 'tools rewrite `agents.config.scratchpad` mid-conversation: `scratchpad_set`, '
       + '`scratchpad_clear` and `reset_session`. The scaffolding ack\'s own sentence said the '
       + 'volatility out loud ("I maintain it via scratchpad_set as I make progress"), which '
-      + 'is the same self-witness `lane.directive` carried at T67b §7. Its pad is capped at '
+      + 'is the same self-witness the (since deleted) directive pin carried at T67b §7. Its pad is capped at '
       + 'LANE_LIMITS[\'lane.scratchpad\'].chars.pad now, because a post-budget lane must be '
       + 'able to declare a worst case and an unbounded pad cannot.',
     render: (ctx) => (ctx.scratchpadLane ? { role: 'user', content: ctx.scratchpadLane } : null),

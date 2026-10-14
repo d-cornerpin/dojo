@@ -156,7 +156,6 @@ describe('§1 the recall lane rides the tail', () => {
     // is untouched and a number between two existing ones renumbers nothing.
     expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.Deliveries);
     expect(RECALL_LANE.slot).toBeGreaterThan(MessageSlot.PeerStatus);
-    expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.ActiveDirectiveTail);
     expect(RECALL_LANE.slot).toBeLessThan(MessageSlot.CurrentTime);
   });
 
@@ -229,12 +228,11 @@ describe('§1 the recall lane rides the tail', () => {
     const at = (id: string) => home.text.indexOf(`injectRegistryMessage('${id}'`);
     expect(at(RECALL_LANE_ENTRY_ID)).toBeGreaterThan(-1);
     expect(at('msg.turn-context')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
-    // T67b: peer-status now injects BEFORE this lane (most-stable-first) and the directive
-    // pin after it — the injection order and the slot numbers say the same thing, which is
-    // what makes either one auditable.
+    // T67b: peer-status injects BEFORE this lane (most-stable-first) and the clock after it —
+    // the injection order and the slot numbers say the same thing, which is what makes either
+    // one auditable. (The directive pin that once sat between them was deleted at t145.)
     expect(at('msg.peer-status')).toBeLessThan(at(RECALL_LANE_ENTRY_ID));
-    expect(at(RECALL_LANE_ENTRY_ID)).toBeLessThan(at('msg.directive'));
-    expect(at('msg.directive')).toBeLessThan(at('msg.current-time'));
+    expect(at(RECALL_LANE_ENTRY_ID)).toBeLessThan(at('msg.current-time'));
   });
 
   it('ENABLED: no flag can switch per-message recall off (owner decision 2026-07-26)', () => {

@@ -166,7 +166,7 @@ describe('the whole array — assembly + every late addition + a strong techniqu
     const ctx = await assembleContext(AGENT, MODEL);
     type Msg = { role: 'user' | 'assistant'; content: string | unknown[] };
     const whole: Msg[] = [...(ctx.messages as Msg[])];
-    for (const block of [ctx.recallLane, ctx.openCommitmentsLane, ctx.directiveLane, ctx.attemptLedgerLane,
+    for (const block of [ctx.recallLane, ctx.openCommitmentsLane, ctx.attemptLedgerLane,
       ctx.activeTasksLane, ctx.scratchpadLane, ctx.eventsLane, ctx.integrationStatusLane]) {
       if (block) whole.push({ role: 'user', content: block });
     }

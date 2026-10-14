@@ -95,11 +95,10 @@ describe('the lane table declares priority as data, independent of position', ()
   it("keeps the owner-facing ladder the ack has always printed, in that exact order", () => {
     // research 06 §2 quotes it verbatim from `assembler.ts:1118`.
     // T67b §7: `'lane.directive'` LEFT this list with the lane. Its rung read 10 — the top —
-    // and a priority rung is a statement about what to DROP under budget pressure; the pin is
-    // a post-budget tail lane now (`MessageSlot.ActiveDirectiveTail = 1890`) with a reserve
-    // off the top, which is a stronger guarantee than any priority, because a reserve cannot
-    // be outbid. Same exit `lane.relevant-memory` made at CORE-2 item 4. The ladder the ack
-    // prints is unchanged for every rung that remains, in the same relative order.
+    // and a priority rung is a statement about what to DROP under budget pressure; the pin
+    // became a post-budget tail lane with a reserve off the top, and t145 deleted it. Same
+    // exit `lane.relevant-memory` made at CORE-2 item 4. The ladder the ack prints is
+    // unchanged for every rung that remains, in the same relative order.
     // W81: `'lane.scratchpad'` and `'lane.active-tasks'` LEFT this list with their lanes,
     // for the reason the note above gives one noun over. Both were rewritten MID-CONVERSATION
     // by tools — `scratchpad_set`/`scratchpad_clear`/`reset_session` for one, every `work_*`
@@ -405,10 +404,10 @@ describe('the scaffolding ack is GENERATED and BYTE-STABLE', () => {
     expect(ack).not.toContain('continuity');
   });
 
-  it('T67b: the ack no longer names the ACTIVE USER DIRECTIVE at all', () => {
+  it('T67b: the ack no longer names the active user directive at all', () => {
     // The ack closes the SCAFFOLDING BLOCK it sits inside (slot 1000) and the directive is
-    // not in that block any more — it is a tail lane at 1890. An ack naming a section that
-    // is not there is the exact defect this generator exists to make impossible.
+    // not in that block any more (t145 deleted the lane). An ack naming a section that is not
+    // there is the exact defect this generator exists to make impossible.
     const ack = renderScaffoldingAck(Object.keys(LANE_SECTION_LABEL))!;
     expect(ack).not.toContain('active user directive');
     expect(LANE_PRIORITY['lane.directive']).toBeUndefined();
@@ -487,7 +486,7 @@ describe('over-budget is a recorded EVENT, not a shrug (B8)', () => {
     const tail = textLane('lane.fresh-tail', LANE_PRIORITY['lane.fresh-tail'], 1100, {
       minTokens: 500, mandatoryFloor: true,
     });
-    const first = textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900);
+    const first = textLane('lane.summaries', LANE_PRIORITY['lane.summaries'], 900);
     // 400-token budget, the directive takes all of it, the tail's floor is 500.
     const { report } = fitLanes([candidate(first, 400), candidate(tail, 5000)], 400);
     expect(report.grants.find((g) => g.id === 'lane.fresh-tail')!.granted).toBeGreaterThan(0);
@@ -500,7 +499,7 @@ describe('over-budget is a recorded EVENT, not a shrug (B8)', () => {
 
   it('a NON-mandatory floor that cannot be covered is a rejection with a reason, not silence', () => {
     const vault = textLane('lane.vault', LANE_PRIORITY['lane.vault'], 200, { minTokens: 500 });
-    const first = textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900);
+    const first = textLane('lane.summaries', LANE_PRIORITY['lane.summaries'], 900);
     const { report } = fitLanes([candidate(first, 400), candidate(vault, 5000)], 400);
     const g = report.grants.find((x) => x.id === 'lane.vault')!;
     expect(g.status).toBe('rejected');

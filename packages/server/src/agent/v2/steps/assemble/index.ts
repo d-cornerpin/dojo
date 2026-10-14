@@ -159,7 +159,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // claim: it is true iff `pendingEngineEvent != null` (`preflight/turn-classification.ts`
   // `isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null`), and
   // OPEN-11's own comment on that line says it plainly for every engine turn, not one
-  // intent: "The scheduler payload itself is the ACTIVE USER DIRECTIVE this turn."
+  // intent: "The scheduler payload itself is the directive this turn."
   // `engine-riders.ts` draws the real line, structurally, upstream of this file: a
   // **deliverable event** (schedule fire, tracker assignment, reminder, healer action, "a
   // peer's completion report", an a2a request, a spawn kickoff, a PM review) IS the reason

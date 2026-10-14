@@ -176,13 +176,9 @@ export interface Lane<C = unknown, P = unknown> {
 // dropped is a lie, and one that drops while sections survive leaves an unclosed block.
 // Its reservation is taken off the top (see `SCAFFOLDING_ACK_RESERVE_TOKENS`), so its
 // priority only decides whether it renders at all.
-// T67b §7: `lane.directive` LEFT this table. Its rung read 10 — the highest priority in the
-// assembly — and a priority rung is a statement about what to DROP under budget pressure. A
-// lane the fit never ranks has nothing to say there: it is a post-budget tail lane now
-// (`MessageSlot.ActiveDirectiveTail = 1890`) with a reserve taken off the top, which is
-// STRONGER than priority 10 — the reserve cannot be outbid, where a priority can. Same shape
-// as `lane.relevant-memory`'s exit at CORE-2 item 4, and for the same reason: its content is
-// the newest unanswered user ask, so it may not sit ahead of the cache boundary at all.
+// T67b §7: `lane.directive` LEFT this table (a post-budget tail lane with a reserve, which a
+// priority cannot outbid), and t145 deleted it outright: the task list is the one record of
+// what is current (OR-TRACKER-1), so no pin carries the newest ask into every turn.
 //
 // ── W81: FOUR MORE LANES LEFT THIS TABLE, AND THE RULE IS THE ONE ABOVE ─────────────────
 // `lane.active-tasks` (50), `lane.attempt-ledger` (60), `lane.events` (40) and
@@ -204,7 +200,7 @@ export interface Lane<C = unknown, P = unknown> {
 // A priority rung is a statement about what to DROP under budget pressure, and a lane the
 // fit no longer ranks has nothing to say there. Each carries a DECLARED RESERVE in
 // `POST_BUDGET_LANES` instead, which is stronger: a reserve cannot be outbid where a
-// priority can (T67b §5's argument for `lane.directive`, unchanged).
+// priority can (T67b §5's argument, unchanged).
 // t140: `lane.continuity` (70) LEFT this table with the continuity brief it rendered — the
 // writer is deleted and migration 187 removes the stored keys. Its two label entries below
 // went with it, so the ack can never name a section that no longer exists.
@@ -259,7 +255,7 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   //
   // ── t123 RAISED THIS FROM 10 TO 40, and the raise is the whole reason the PM could not hold
   // a conversation. The PM path is the ONLY assembly in the tree with no other lane: no
-  // summaries, no recall, no directive pin, no empty-context fallback (`assembler.ts`'s PM
+  // summaries, no recall, no empty-context fallback (`assembler.ts`'s PM
   // branch returns early, ahead of all of them). For the PM the tail IS the context, so this
   // number is not a trim knob — it is the entire size of the PM's mind.
   //
@@ -382,15 +378,15 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // there by measuring the longest commitment title on the worn-in dev body (79 chars on the
   // Bob fixtures) and leaving room. One cap, one justification.
   // t139 (#7, OR-TRACKER-1): `chars.description` (300) is GONE. It cut every request to a
-  // 300-char stub of the agent's own restatement while the "still in force" pin carried the
-  // owner's words in full; the task list is the one record of what is current now, so it
-  // carries the requester's ORIGINAL words, read through `work.source_message_id`.
-  //   `chars.originalWordsFloor` = 8,000 is the pin's own cap (`DIRECTIVE_MAX_CHARS`,
-  //     `memory/directive.ts`), NOT a new opinion: the pin promised one request's words up to
-  //     8,000 chars, and the task list keeps that promise as ONE POOL shared across its open
-  //     tasks in block order. A single request up to 8,000 chars is always shown whole; a cut
-  //     names the message (`history_get`) instead of dropping it. A per-task 8,000 would have
-  //     been five times the pin's reserve, taken off every assembly on every window.
+  // 300-char stub of the agent's own restatement while the (since deleted) "still in force"
+  // pin carried the owner's words in full; the task list is the one record of what is current
+  // now, so it carries the requester's ORIGINAL words, read through `work.source_message_id`.
+  //   `chars.originalWordsFloor` = 8,000 is the old pin's own cap, NOT a new opinion: the pin
+  //     promised one request's words up to 8,000 chars, and the task list keeps that promise
+  //     as ONE POOL shared across its open tasks in block order. A single request up to 8,000
+  //     chars is always shown whole; a cut names the message (`history_get`) instead of
+  //     dropping it. A per-task 8,000 would have been five times the pin's reserve, taken off
+  //     every assembly on every window.
   //   `chars.originLabel` = 120 bounds the one term the block does not author — the party
   //     name read off the conversation row — with the same 120 as `chars.title`.
   // t139 ROUND 5 (owner, 2026-10-13: "no hard limits … smart enough to know when enough is
@@ -588,7 +584,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + '`taskLine` + `renderActiveTasksBlock`, every cap flooded at once — a 120-char title '
       + '(chars.title, NEW at W81 and the one term this move added, because an unbounded '
       + 'title is why this lane could never declare a worst case), the GUARANTEED WORDS FLOOR '
-      + '(chars.originalWordsFloor = 8,000, t139: the pin\'s own DIRECTIVE_MAX_CHARS, shared across '
+      + '(chars.originalWordsFloor = 8,000, t139: the deleted pin\'s own cap, shared across '
       + 'the open tasks in block order) spent in full by an over-cap first request, the closing '
       + '"N more unfinished tasks not shown" line at a 10-digit count (round 5), every line '
       + 'linked and over the cap so each carries the longer "continues … history_get(id=…)" '
@@ -716,28 +712,6 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'truncated because it is indistinguishable from history.',
   },
   {
-    id: 'lane.directive',
-    slot: MessageSlot.ActiveDirectiveTail,
-    reserveTokens: 2081,
-    measured:
-      'T67b §7, DERIVED FROM THE GENERATOR: the worst case `memory/directive.ts` can render '
-      + 'under its own declared cap — `formatDirectiveBlock` at DIRECTIVE_MAX_CHARS = 8,000 '
-      + 'body chars, plus the two frame lines and the `history_get` truncation pointer with a '
-      + 'full 36-char message id = 8,321 chars = 2,081 tokens. '
-      + 'WHY IT IS A RESERVE AT ALL, stated rather than assumed: this lane was a `fitLanes` '
-      + 'candidate at MessageSlot.ActiveDirective = 900 with PRIORITY 10 — the highest in the '
-      + 'assembly — while its content IS the newest unanswered user ask. So it changed on '
-      + 'every substantive user turn, at the FRONT of the cacheable region, re-billing the '
-      + 'whole message history behind it: the largest single term in the owner\'s measured '
-      + '~14,200-tokens-per-turn recompute (2026-08-31). Priority 10 said "never drop this"; '
-      + 'a reserve says it more strongly, because a reserve cannot be outbid where a priority '
-      + 'can. Same disposition as `lane.relevant-memory`, whose exit from the fit at CORE-2 '
-      + 'item 4 is the precedent this follows. '
-      + 'WHAT IT COSTS: 2,081 tokens leave the content budget on every assembly. What it '
-      + 'replaces spent the SAME tokens — it just spent them from inside the prefix, where '
-      + 'they were re-billed with everything behind them on every turn instead of once.',
-  },
-  {
     id: 'lane.relevant-memory',
     slot: MessageSlot.RecalledMemory,
     // T69b: 2,179 -> 2,203, and the lane now renders TWO messages rather than one.
@@ -837,18 +811,16 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   // BOTH halves through the real renderer, so nothing about the budget changed — only the
   // position in the array, and the fact that the receipt can now price the two separately.
   'engine.open-commitments': 'lane.relevant-memory',
-  // T67b §7: the directive pin, same split for the same reason — it declares its own reserve.
-  'msg.directive': 'lane.directive',
   // W81: the four lanes the owner's FINDING 2 moved out of the cached region. Each declares
   // its own reserve above, so each entry is attributed to its own lane rather than to the
-  // tail it now sits inside — the same split `msg.deliveries` and `msg.directive` make.
+  // tail it now sits inside — the same split `msg.deliveries` makes.
   'msg.attempt-ledger': 'lane.attempt-ledger',
   'msg.active-tasks': 'lane.active-tasks',
   'msg.scratchpad': 'lane.scratchpad',
   'msg.events': 'lane.events',
   // T76b: the live integration-status line declares its own reserve, so its entry is
   // attributed to its own lane rather than to the tail it sits inside — the same split
-  // `msg.deliveries`, `msg.directive` and the W81 four make.
+  // `msg.deliveries` and the W81 four make.
   'msg.integration-status': 'lane.integration-status',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).
   'engine.open-work': 'lane.loop-tail',
@@ -910,12 +882,10 @@ export function isProtectedLaneId(id: string): boolean {
 const ACK_HEAD = 'Understood, I have reviewed my background context (';
 const ACK_MID = '). Source priority for this turn: ';
 // T67b: the sentence "The active user directive is the WHAT, never lose it." LEFT this
-// string. The ack closes the SCAFFOLDING BLOCK it sits inside, and the directive is no
-// longer in that block — it is a tail lane at 1890 now. An ack that names a section the
-// array does not contain at this position is the exact defect this generator was built to
-// make impossible (research 06 §2: the ack's prose and the budget's order disagreeing). The
-// sentence itself is not lost: `formatDirectiveBlock` carries the pin's own framing, and the
-// tail position states the same primacy by construction.
+// string. The ack closes the SCAFFOLDING BLOCK it sits inside, and the directive was no
+// longer in that block. An ack that names a section the array does not contain at this
+// position is the exact defect this generator was built to make impossible (research 06 §2:
+// the ack's prose and the budget's order disagreeing). t145 deleted the pin itself.
 // W81: the sentence "The scratchpad is my own working outline; I maintain it via
 // scratchpad_set as I make progress and read from it when I need to remember where I am."
 // LEFT this string, for the identical reason T67b's note above gives. `lane.scratchpad` is a
@@ -1219,7 +1189,7 @@ export function fitLanes(
   // reserved before the briefing's; and `cachedRegionCap` below gives the conversation a
   // DECLARED 30% of the content budget, which is stronger than a priority — a declared floor
   // cannot be outbid, the way `POST_BUDGET_RESERVE_TOKENS` is stronger than the priority-10
-  // rung `lane.directive` traded for it (T67b §5).
+  // rung the directive lane traded for it (T67b §5).
   //
   // The trade is also the right way round on the bill: a cached token is paid once and read
   // from cache thereafter, where a tail token is recomputed EVERY turn (T69b §5 measured the

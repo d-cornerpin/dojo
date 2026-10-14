@@ -68,11 +68,6 @@ const AUTOMATIC_PATHS = [
     boundaryVar: 'sessionBoundary',
     what: 'empty-context recovery of the last user message at assembly time',
   },
-  {
-    rel: 'memory/directive.ts',
-    boundaryVar: 'sessionStart',
-    what: "the owner's standing directives",
-  },
 ] as const;
 
 /** The INVOKED searches — a tool call or a search box. Reaching history is their purpose. */

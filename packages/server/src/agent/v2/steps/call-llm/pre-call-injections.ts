@@ -35,10 +35,9 @@
 //   msg.integration-status     live connection truth; moves on a SUCCESSFUL call  ← T76b
 //   engine.recently-answered   moves on EVERY answered turn                       ← T69b
 //   msg.relevant-memory        retrieved against the LIVE ASK: moves every turn, BY DESIGN
-//   msg.directive              IS the newest ask: moves every turn, BY DESIGN
 //   msg.current-time           the clock: moves every call, BY DESIGN
 //
-// The last three are the DELIBERATE churn — registered as such in
+// The last two are the DELIBERATE churn — registered as such in
 // `memory/__tests__/the-tail-holds-still.test.ts`, which is the gate that judges this order.
 // Everything above them is required to be byte-identical between two turns that changed no
 // source data, and every one of them had a wall-clock read in it before this task.
@@ -346,17 +345,6 @@ export async function injectAndRecord(
   // a peer's idle/working flip is rare, so most-stable-first puts peer-status ahead of it.
   mctx.recallLane = ctx.recallLane ?? null;
   injectRegistryMessage('msg.relevant-memory', messages, mctx);
-
-  // ── THE ACTIVE USER DIRECTIVE (T67b §7), at 1890 ──
-  // It was `lane.directive` at MessageSlot.ActiveDirective = 900 — inside the cacheable
-  // prefix — while its content IS the newest unanswered user ask, so every substantive user
-  // turn rewrote the front of the message array and re-billed the whole history behind it.
-  // The assembler computes it (`ctx.directiveLane`) because the pin is scoped to this turn's
-  // counterparty and conversation; it enters the array HERE, last before the clock, which is
-  // both the most-volatile-last position the tail's ordering rule asks for and the
-  // recency-salient one a pin wants.
-  mctx.directiveLane = ctx.directiveLane ?? null;
-  injectRegistryMessage('msg.directive', messages, mctx);
 
   injectRegistryMessage('msg.current-time', messages, mctx);
 

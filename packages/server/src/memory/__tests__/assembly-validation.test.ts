@@ -287,18 +287,19 @@ describe('repairAssembly — C10, priority order and not one message older', () 
     }
   });
 
-  it('T67b: `lane.directive` is PROTECTED now — the repair may not drop the pin', () => {
-    // Its old guarantee was priority 10, which the fit could still outbid under enough
-    // pressure. Its guarantee now is a declared reserve taken off the top, and the repair
-    // recognises the lane without being allowed to drop it — strictly stronger, and the
-    // reason the move out of the fit is not a demotion.
-    expect(isProtectedLaneId('lane.directive')).toBe(true);
+  it('a post-budget tail lane is PROTECTED — the repair may not drop it (and the deleted pin is no lane at all)', () => {
+    // A declared reserve taken off the top is a stronger guarantee than a priority the fit
+    // could outbid; the repair recognises such a lane without being allowed to drop it. The
+    // directive pin that this clause was first written for was deleted at t145: its id is no
+    // longer protected because it is no longer anything.
+    expect(isProtectedLaneId('lane.active-tasks')).toBe(true);
+    expect(isProtectedLaneId('lane.directive')).toBe(false);
     const messages: ValidatedMessage[] = [
       user('BRIEFING '.repeat(200)),
-      user('DIRECTIVE '.repeat(200)),
+      user('TASKS '.repeat(200)),
       user('the live question'),
     ];
-    const laneIds = ['lane.briefing', 'lane.directive', null];
+    const laneIds = ['lane.briefing', 'lane.active-tasks', null];
     try {
       repairAssembly(messages, { budgetTokens: 1, laneIds });
     } catch (e) {
