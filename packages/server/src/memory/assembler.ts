@@ -13,7 +13,7 @@ import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js'
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import {
-  eventAddressee, labelRows, labelText, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
+  eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
@@ -278,7 +278,7 @@ type LoopMsg = {
 // stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
 // clock and re-bills every token behind it once an hour, a block that states the recorded
 // instant is a pure function of its rows.
-import { renderMessageTimeStamp, renderInstant, recordedInstant } from './message-stamp.js';
+import { renderMessageTimeStamp, renderInstant } from './message-stamp.js';
 import { servedRowsOutOfView } from './served-ask.js';
 export { renderMessageTimeStamp };
 
@@ -1199,11 +1199,19 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   rows = stubOldToolResults(rows, payload.agentId);
   const labels = labelRows(payload.agentId, rows);
   const messages: LaneMessage[] = [];
-  // t145 round 4: the served owner message(s), verbatim and plainly labelled with their time, ahead of
-  // the live rows they precede. Emitted only when not otherwise in view, so exactly once.
-  for (const msg of payload.served ?? []) {
-    const label = `The message from you this work is answering (sent ${recordedInstant(msg.createdAt)}):`;
-    messages.push({ role: 'user', content: labelContent(parseMessageContent(msg), label) });
+  // t145 round 4: the served owner message(s), verbatim, ahead of the live rows they precede. Emitted
+  // only when not otherwise in view, so exactly once.
+  // t158 B: it wears the SAME label as every other row (`renderRowLabel`: instant, conversation,
+  // channel, sender — what `labelRows` would give it in place), then a short pronoun-free phrase
+  // saying what it is for. The old sentence carried the time only, and "from you" in a user-role
+  // block read as if the agent had sent it. Still a pure function of the stored row (G2).
+  const served = payload.served ?? [];
+  if (served.length > 0) {
+    const facts = new LabelFacts(payload.agentId);
+    for (const msg of withSubjectKinds(payload.agentId, served)) {
+      const label = `${renderRowLabel(msg, facts)} (the message this work is answering)`;
+      messages.push({ role: 'user', content: labelContent(parseMessageContent(msg), label) });
+    }
   }
   for (const msg of rows) {
     const parsed = parseMessageContent(msg);

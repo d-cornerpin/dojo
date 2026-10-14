@@ -50,7 +50,7 @@ import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js
 
 const AGENT = 'primary';
 const WINDOW = 40000;   // the smallest window the assembler can admit a message into (the system prompt and tools take the rest)
-const LABEL = 'The message from you this work is answering';
+const LABEL = '(the message this work is answering)';
 const ASK = 'THE-LONG-ASK '.repeat(30);
 const count = (hay: string, needle: string): number => hay.split(needle).length - 1;
 

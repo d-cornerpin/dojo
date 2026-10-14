@@ -97,7 +97,7 @@ function servedAsk(after: number): { askSeq: number; lastSeq: number } {
 }
 
 const policy = { freshTailCount: 24 };
-const LABEL = 'The message from you this work is answering';
+const LABEL = '(the message this work is answering)';
 const occurrences = (hay: string, needle: string): number => hay.split(needle).length - 1;
 const wire = async (): Promise<string> => JSON.stringify((await assembleContext(AGENT, 'm')).messages);
 

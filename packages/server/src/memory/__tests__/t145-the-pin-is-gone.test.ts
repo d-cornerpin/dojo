@@ -384,8 +384,8 @@ describe('t145 B round 4 — a long turn on an ask with NO task: its own tool ro
     expect((mockDb.current!.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task'").get() as { n: number }).n).toBe(0);
     // THE WORDS: verbatim, labelled with their time, exactly once
     expect(after).toContain('COMPRESSED HISTORY');
-    expect(after).toContain('The message from you this work is answering (sent ');
-    expect(after.split('The message from you this work is answering').length - 1).toBe(1);
+    expect(after).toContain('(the message this work is answering)');
+    expect(after.split('(the message this work is answering)').length - 1).toBe(1);
     expect(after.split(LONG_ASK).length - 1).toBe(1);
     expect(after).not.toContain('Quick question number 0:');
   });
@@ -397,7 +397,7 @@ describe('t145 B round 4 — a long turn on an ask with NO task: its own tool ro
     await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true });
     await submitUserMessage(AGENT, 'You there?');
     const calls = await turn({ content: 'Yes, I am here.' });
-    expect(calls.map(wireText).join('\n')).not.toContain('The message from you this work is answering (sent ');
+    expect(calls.map(wireText).join('\n')).not.toContain('(the message this work is answering)');
   });
 });
 
