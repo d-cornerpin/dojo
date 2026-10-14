@@ -828,6 +828,16 @@
       "disposition": "Stays and grows \u2014 turn identity allocated at turn start in Phase 2."
     },
     {
+      "name": "summaries",
+      "definedIn": "packages/server/src/db/migrations/002_memory_engine.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "rebuild_state",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "An agent's condensed notes. `rebuild_state` (t144, migration 192) is a LABEL on a note written before notes were kept one conversation each: legacy_mixed (labelled 'older mixed notes', never rebuilt), legacy_mixed_rebuild (the nightly job re-condenses it from its original messages), lineage_lost (its rows are gone; labelled 'conversation unknown'). It is not an obligation anyone owes, and nothing reads it as work: the task list stays the only record of what is current (OR-TRACKER-1). Caught by the structural trigger and declared not-work on purpose.",
+      "disposition": "Stays. legacy_mixed_rebuild empties as the nightly job rebuilds the recent notes; legacy_mixed and lineage_lost rows remain, labelled, by owner ruling OR-REBUILD-SCOPE."
+    },
+    {
       "name": "deliveries",
       "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
       "agentLink": "agent_id",
