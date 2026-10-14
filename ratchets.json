@@ -8368,6 +8368,13 @@
       "to": 3959,
       "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
       "why": "+4: the OpenAI-compatible and Anthropic direct catches stop filing 'quota' (out of credit) as a rate limit, so the silent retry no longer hides it from the owner: two class tests narrowed, each with its two-line why. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/provider-error.ts",
+      "from": 400,
+      "to": 407,
+      "by": "t151 round 2 (2026-10-14), coordinator regression finding",
+      "why": "+7: one predicate `namesMoney` (money words: insufficient_quota/balance/funds/credit, billing or OpenAI's 'exceeded your current quota' unless the text names a per-window limit) with its argument (+11), replacing the prose arm's 'quota + exceed/exhaust' clause and three inlined money tests (-4). A per-minute 'quota exceeded' (Gemini RESOURCE_EXHAUSTED) is a rate limit again; only out-of-credit is `quota`, in the status path, the structured-type path and the prose path alike. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8436,7 +8443,7 @@
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
-    "packages/server/src/agent/provider-error.ts": 400,
+    "packages/server/src/agent/provider-error.ts": 407,
     "packages/server/src/agent/runtime.ts": 1788,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1466,
