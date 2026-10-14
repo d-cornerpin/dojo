@@ -22,7 +22,7 @@ import { providerAwareBudgetTokens } from '../agent/stream-patience.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
-import { V2_STUB_AFTER_TURNS } from './assembler.js';
+import { V2_STUB_AFTER_TURNS, capLargeToolResultStrings } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
 import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
@@ -227,11 +227,19 @@ export async function estimateAssembledTokens(
   // "should this agent summarise" stops being decided against a number that omitted, on the
   // dev body, an average of 3,981 tokens per 40-row window. The per-row cap is unchanged and
   // still applies to the whole row, exactly as it does to an oversized tool result.
-  const freshTailTokens = freshTail.reduce(
+  //
+  // t158 C — PRICED ON THE ROWS THE ASSEMBLER WILL BUDGET. The assembler's tail render runs
+  // `capLargeToolResultStrings` (every tool result cut to 15K tokens, `tokenCount` cleared) BEFORE
+  // `budgetFreshTail` spends, so a 61K file read costs the trim 15K. Pricing the stored rows read
+  // that one row as 61K, called a 53K prompt on a 128K window "full", and folded 64 old rows with
+  // nothing leaving the view (ritual run 6, S4). Both numbers below now read the capped rows, by
+  // the SAME function, so the trigger and the trim cannot disagree about a row's size.
+  const budgeted = capLargeToolResultStrings(freshTail);
+  const freshTailTokens = budgeted.reduce(
     (sum, m) => sum + Math.min(storedRowCost(m), policy.gateMessageCap),
     0,
   );
-  const liveTailTokens = freshTail.reduce((sum, m) => sum + storedRowCost(m), 0);
+  const liveTailTokens = budgeted.reduce((sum, m) => sum + storedRowCost(m), 0);
 
   // Cap summary tokens at the same budget the assembler applies (assembler.ts:
   // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
@@ -274,9 +282,10 @@ export async function estimateAssembledTokens(
  * row at `storedRowCost` — what `budgetFreshTail` spends before it takes rows off the front.
  * The first cut used the gate's 4K-per-row cap here, on the theory that one large row is "the
  * trim's to handle"; the trim handles it by setting the OLDEST rows aside unsummarised, so a
- * file-reading agent on a 128K window lost rows for 131 turns with no fold (measured). Where the
- * assembler pre-caps a tool result above 15K tokens this overstates, which folds earlier, never
- * later. `systemPromptTokens` is the caller's measurement of the system prompt last assembled
+ * file-reading agent on a 128K window lost rows for 131 turns with no fold (measured). The rows
+ * are the ones the assembler budgets — the tool results already cut to its 15K cap, by the same
+ * function (t158 C) — so a big file read is priced at what the trim will spend, no higher.
+ * `systemPromptTokens` is the caller's measurement of the system prompt last assembled
  * for this agent; 0 makes the check more lenient, never stricter.
  *
  * AND IT LEADS BY ONE TRIM BLOCK. The token trim moves the view's front in whole blocks

@@ -143,7 +143,9 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     // The trim (budgetFreshTail) costs each row with storedRowCost …
     expect(assembler).toMatch(/const tokens = storedRowCost\(msg\);/);
     // … and so does the view-full measure, with no per-row cap.
-    expect(compaction).toMatch(/const liveTailTokens = freshTail\.reduce\(\(sum, m\) => sum \+ storedRowCost\(m\), 0\);/);
+    // t158 C: … over the rows the assembler budgets (its own pre-budget cap applied, by the same function).
+    expect(compaction).toMatch(/const budgeted = capLargeToolResultStrings\(freshTail\);/);
+    expect(compaction).toMatch(/const liveTailTokens = budgeted\.reduce\(\(sum, m\) => sum \+ storedRowCost\(m\), 0\);/);
     const fn = compaction.slice(compaction.indexOf('export function liveViewIsFull('));
     const body = fn.slice(0, fn.indexOf('\n}\n'));
     expect(body).toMatch(/est\.liveTailTokens/);

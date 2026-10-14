@@ -2313,7 +2313,7 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
  * fresh-tail budget and force older messages, including the user's
  * question, out of context.
  */
-function capLargeToolResultStrings(messages: Message[]): Message[] {
+export function capLargeToolResultStrings(messages: Message[]): Message[] {
   return messages.map((msg) => {
     if (msg.role !== 'tool') return msg;
     let parsed: unknown;
