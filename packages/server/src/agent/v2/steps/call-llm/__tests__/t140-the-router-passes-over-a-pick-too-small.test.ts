@@ -133,8 +133,13 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
   it('when nothing the router can reach right now holds the agent (the roomy model is over budget): the turn ends with one notice to the owner, and no false card', async () => {
     seed(true);
     // Round 7 (re-review H2'): judged by what the OWNER is sent, not by a thrown error's text.
-    const out = await callStep();
-    expect(out.directive, 'the turn ends cleanly').toBe('exit');
+    // t148: the limit alone is an honest stop. The call step throws it to the platform's lock (the ask
+    // re-armed, nothing handed back), and the lock tells the owner once.
+    const { recoverFromError } = await import('../../../recovery.js');
+    const thrown = await callStep().then(() => null, (err: unknown) => err);
+    expect(thrown, 'the call step hands the honest stop to the lock').toMatchObject({ code: 'BUDGET_STOP' });
+    await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), thrown, { isUserFacingTurn: true });
+    expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('paused');
     const notices = owner.cards.filter((c) => c.type === 'chat:error');
     expect(notices.length, 'one notice to the owner').toBe(1);
     expect(notices[0].code).toBe('NO_MODEL');
@@ -158,7 +163,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
       outcome = await callStep();
     } catch (err) {
       // The turn's teardown does exactly this with an error the call step throws.
-      await recoverFromError(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
+      await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
     }
     const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
     expect(said, `what the owner was shown:\n${said}`).toMatch(/spending limit/i);
@@ -166,7 +171,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     const status = (db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status;
     expect(status, 'a budget stop is not an injury').not.toBe('error');
     expect(dialed, 'nothing that cannot hold the agent was dialled').toEqual([]);
-    expect((outcome as { directive?: string } | null)?.directive ?? 'threw').toBe('exit');
+    expect((outcome as { directive?: string } | null)?.directive ?? 'threw', 't148: the honest stop is thrown to the lock, not ended as a turn that chose silence').toBe('threw');
   });
 
   // The roomy model is turned away for a reason that passes (a rate limit): the turn must still be
@@ -180,7 +185,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     try {
       await callStep();
     } catch (err) {
-      await recoverFromError(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
+      await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
     }
     const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
     expect(said, `what the owner was shown:\n${said}`).toMatch(/rate-limited/);

@@ -6,19 +6,10 @@ import { Hono } from 'hono';
 import { createLogger } from '../../logger.js';
 import { getCostSummary, getCostRecords, getCacheStats } from '../../costs/tracker.js';
 import { getBudgets, setGlobalBudget, setAgentBudget } from '../../costs/budget.js';
+import { releaseClearedBudgetStops } from '../../agent/v2/honest-stop-lock.js';
 
 const logger = createLogger('costs-routes');
 const costsRouter = new Hono();
-
-/** t148: a changed limit lifts the honest stop it was holding (the agents it no longer stops are
- *  released and woken). The save has already happened; a failure here never fails it. */
-async function liftClearedBudgetStops(): Promise<void> {
-  try {
-    await (await import('../../agent/v2/honest-stop.js')).releaseClearedBudgetStops();
-  } catch (err) {
-    logger.warn('Could not lift budget stops after a limit change', { error: err instanceof Error ? err.message : String(err) });
-  }
-}
 
 // GET /summary, cost summary by period
 costsRouter.get('/summary', (c) => {
@@ -92,7 +83,7 @@ costsRouter.put('/budget/global', async (c) => {
 
   try {
     setGlobalBudget(body.limitUsd);
-    await liftClearedBudgetStops();
+    await releaseClearedBudgetStops();   // t148: a changed limit lifts the honest stop it was holding
     return c.json({ ok: true, data: { scope: 'global', limitUsd: body.limitUsd, period: 'daily' } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -118,7 +109,7 @@ costsRouter.put('/budget/agent/:agentId', async (c) => {
 
   try {
     setAgentBudget(agentId, body.limitUsd, period);
-    await liftClearedBudgetStops();
+    await releaseClearedBudgetStops();   // t148: a changed limit lifts the honest stop it was holding
     return c.json({ ok: true, data: { agentId, limitUsd: body.limitUsd, period } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

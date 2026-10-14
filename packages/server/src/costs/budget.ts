@@ -283,16 +283,6 @@ export function exceededBudget(agentId: string, estimatedCost = 0.01): ExceededB
   return null;
 }
 
-/** The owner has already been told about this budget inside its current window (the crossing
- *  alert, which is also his dashboard card): a stop in the same window sends no second text. */
-export function ownerToldBudgetThisWindow(budgetId: string): boolean {
-  const row = getDb().prepare('SELECT period, alert_50_sent, alert_75_sent, alert_90_sent FROM budgets WHERE id = ?').get(budgetId) as
-    ({ period: string } & Parameters<typeof latestToldAt>[0]) | undefined;
-  if (!row) return false;
-  const toldAt = latestToldAt(row);
-  return toldAt > 0 && Math.floor(Date.now() / 1000) - toldAt < windowOf(row.period).seconds;
-}
-
 // ── Budget CRUD ──
 
 export interface Budget {

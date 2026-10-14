@@ -113,7 +113,7 @@ agentsRouter.patch('/:id/model', async (c) => {
   sanitizeMessagesOnModelChange(id);
 
   // t148: a model that fits may now be in place — an agent parked as "no model fits" gets another look.
-  await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged(id);
+  await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);
 
   // Keep config-table model keys in sync for persistent agents whose runtime
   // reads from config rather than agents.model_id directly.
@@ -523,7 +523,7 @@ agentsRouter.put('/:id', async (c) => {
 
   // t148: its model or tools may have changed — an agent parked as "no model fits" gets another look.
   if (body.modelId !== undefined || body.toolsPolicy !== undefined || pendingGrants) {
-    await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged(id);
+    await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged(id);
   }
 
   const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown>;

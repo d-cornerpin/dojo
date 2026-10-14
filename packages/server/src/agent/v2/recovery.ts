@@ -37,8 +37,6 @@ import {
 } from '../shared-state.js';
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import { classifyHonestStop, stopAlreadyTold, parkAgent } from './honest-stop.js';
-import { ownerToldBudgetThisWindow } from '../../costs/budget.js';
-import { sendAlert } from '../../services/imessage-bridge.js';
 import type { AgentTurnState } from './state.js';
 import {
   formatErrorForHuman,
@@ -665,8 +663,10 @@ async function tryProviderRecovery(
  *
  * The owner is told when the lock goes on. A stop that finds its own lock already on (the
  * message was served again, or he sent another) is silent: the card and the status already say it.
- * The phone text is the budget's own crossing alert (t138), sent once per window; a stop in a
- * window the owner was already told about sends none.
+ * It sends NO text of its own. A budget stop is always preceded by the budget's own crossing alert
+ * (t138: the wall and the router's budget filter both run `checkBudget`, which texts and raises
+ * the dashboard card before it refuses), sent once per window. A second text would be a second
+ * telling of the same window, and a no-fit is not a class the platform may text (OR-V333-SET (3)).
  */
 async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
   const agentId = state.agentId;
@@ -689,9 +689,6 @@ async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Pro
 
   persistAndBroadcastSystemNote(agentId, `[System (platform notice): ${stop.words}]`);
   broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
-  if (stop.kind === 'budget_stop' && stop.budget && !ownerToldBudgetThisWindow(stop.budget.budgetId)) {
-    try { sendAlert(stop.words, 'notice'); } catch { /* the chat notice above stands */ }
-  }
   return true;
 }
 

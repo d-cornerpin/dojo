@@ -42,7 +42,7 @@ export function kickMemoryRecheck(): void {
     (await import('../costs/budget-cards.js')).endTurnedOverBudgetCards();
     // t148: and an agent parked on that budget's limit is released when the window turned over.
     try {
-      await (await import('../agent/v2/honest-stop.js')).releaseClearedBudgetStops();
+      await (await import('../agent/v2/honest-stop-lock.js')).releaseClearedBudgetStops();
     } catch (err) {
       logger.warn('Could not release budget stops on the window turnover', { error: err instanceof Error ? err.message : String(err) });
     }

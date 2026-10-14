@@ -30,6 +30,7 @@ import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
 import { exceededBudget, type ExceededBudget } from '../../costs/budget.js';
 import { honestStopWords, type HonestStopKind } from './error-format.js';
+import { lockTag, parkedAgents } from './honest-stop-lock.js';
 
 const logger = createLogger('honest-stop');
 
@@ -43,8 +44,6 @@ export interface HonestStop {
   /** The limit that stopped it, for `budget_stop` when one still stands. */
   budget: ExceededBudget | null;
 }
-
-const lockTag = (kind: HonestStopKind): string => `[${kind}]`;
 
 function causeChain(error: unknown): unknown[] {
   const links: unknown[] = [];
@@ -125,12 +124,9 @@ export async function releaseHonestStops(
   kind: HonestStopKind,
   opts: { agentId?: string; onlyWhereCleared?: boolean } = {},
 ): Promise<string[]> {
-  const tag = lockTag(kind);
-  const rows = getDb().prepare(
-    `SELECT id FROM agents WHERE status = 'paused' AND substr(last_error, 1, ?) = ? AND (? IS NULL OR id = ?)`,
-  ).all(tag.length, tag, opts.agentId ?? null, opts.agentId ?? null) as Array<{ id: string }>;
+  const ids = parkedAgents(kind, opts.agentId);
   const released: string[] = [];
-  for (const { id } of rows) {
+  for (const id of ids) {
     if (opts.onlyWhereCleared && kind === 'budget_stop' && exceededBudget(id)) continue;
     setAgentStatus(id, 'idle', { clearError: true });
     released.push(id);
@@ -138,18 +134,4 @@ export async function releaseHonestStops(
   }
   if (released.length > 0) logger.info('honest stop released on the real event', { kind, agentIds: released });
   return released;
-}
-
-/** A limit was raised or a window turned over: release the agents it no longer stops. */
-export const releaseClearedBudgetStops = (): Promise<string[]> => releaseHonestStops('budget_stop', { onlyWhereCleared: true });
-
-/** A model, tier or tool list changed: every no-fit lock gets another look (it re-parks if it still does not fit). */
-export const releaseNoModelFits = (agentId?: string): Promise<string[]> => releaseHonestStops('no_model_fits', { agentId });
-
-/** The route-side call: a model, tier or tool-list change gives the no-fit locks another look. The
- *  change is already saved, so a failure here is logged and never fails the route. */
-export async function noteModelsChanged(agentId?: string): Promise<void> {
-  try { await releaseNoModelFits(agentId); } catch (err) {
-    logger.warn('honest stop: could not re-check no-fit locks after a change', { error: err instanceof Error ? err.message : String(err) });
-  }
 }

@@ -144,7 +144,7 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
     transaction();
 
     logger.info('Tier models updated', { tierId, modelCount: body.models.length });
-    await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged();   // t148: a tier changed; no-fit locks get another look
+    await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // t148: a tier changed; no-fit locks get another look
     return c.json({ ok: true, data: { tierId, models: body.models } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
