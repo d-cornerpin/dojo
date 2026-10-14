@@ -8375,6 +8375,34 @@
       "to": 407,
       "by": "t151 round 2 (2026-10-14), coordinator regression finding",
       "why": "+7: one predicate `namesMoney` (money words: insufficient_quota/balance/funds/credit, billing or OpenAI's 'exceeded your current quota' unless the text names a per-window limit) with its argument (+11), replacing the prose arm's 'quota + exceed/exhaust' clause and three inlined money tests (-4). A per-minute 'quota exceeded' (Gemini RESOURCE_EXHAUSTED) is a rate limit again; only out-of-credit is `quota`, in the status path, the structured-type path and the prose path alike. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1382,
+      "to": 1453,
+      "by": "t152 (2026-10-14), walks round 2 image shape",
+      "why": "+71: the async arm of the one settlement authority (about 40 code, 31 comment). A background job's result (image, music, speech, video) is posted after the turn that started it, with no turn, and nothing closed an ask on such a result: seven images reached the owner and the ask stayed blocked. The new moment 'async' reuses the join arm's evidence reader (`compiledDelivery`) and adds only what is different: the outstanding-jobs count (`mediaJobsOutstanding`, both media tables), the transition, and the wrapper the three media workers call. REFUSED: a second settlement function outside this file (the census counts done-writers; the authority stays one function), and folding it into `settleOnJoin` (it would write `compile_resolved` for work that was never compiled). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 907,
+      "to": 910,
+      "by": "t152 (2026-10-14), walks round 2 image shape",
+      "why": "+3: one import and the two calls (the success and the failure result of `image_create`) that hand a delivered result to the settlement authority. No comment lines. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/generation-jobs.ts",
+      "from": 461,
+      "to": 464,
+      "by": "t152 (2026-10-14), walks round 2 image shape",
+      "why": "+3: one import and the two calls (audio/music result and failure notice) that hand a delivered result to the settlement authority. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/video-job-poller.ts",
+      "from": 508,
+      "to": 511,
+      "by": "t152 (2026-10-14), walks round 2 image shape",
+      "why": "+3: one import and the two calls (video result and failure notice) that hand a delivered result to the settlement authority. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8454,7 +8482,7 @@
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
-    "packages/server/src/agent/tools/cat/media.ts": 907,
+    "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 996,
     "packages/server/src/agent/tools/definitions.ts": 2912,
@@ -8630,7 +8658,7 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
-    "packages/server/src/services/generation-jobs.ts": 461,
+    "packages/server/src/services/generation-jobs.ts": 464,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
@@ -8642,7 +8670,7 @@
     "packages/server/src/services/transcription.ts": 447,
     "packages/server/src/services/tunnel.ts": 730,
     "packages/server/src/services/video-generation.ts": 444,
-    "packages/server/src/services/video-job-poller.ts": 508,
+    "packages/server/src/services/video-job-poller.ts": 511,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 311,
@@ -8666,7 +8694,7 @@
     "packages/server/src/update/disk-preflight.ts": 246,
     "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/bounded-reads.ts": 606,
-    "packages/server/src/vault/maintenance.ts": 2166,
+    "packages/server/src/vault/maintenance.ts": 2150,
     "packages/server/src/vault/retrieval.ts": 425,
     "packages/server/src/vault/store.ts": 1297,
     "packages/server/src/vault/tools.ts": 658,
@@ -8675,7 +8703,7 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1382,
+    "packages/server/src/work/ask-settlement.ts": 1453,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
