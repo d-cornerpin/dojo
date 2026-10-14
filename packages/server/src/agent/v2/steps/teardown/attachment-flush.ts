@@ -13,11 +13,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { turnParkedTheJob } from '../../engine-exit.js';
+import type { AgentTurnState } from '../../state.js';
 import type { TeardownContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-export async function flushStrandedAttachments(ctx: TeardownContext): Promise<void> {
+export async function flushStrandedAttachments(ctx: TeardownContext, state: AgentTurnState): Promise<void> {
   const { agentId, turnNumber, chosenConversationId, counterparty } = ctx;
 
   // FA-TS4: pending-attachments teardown net. The three normal drain sites
@@ -30,12 +32,9 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
   // exit path, scoped to THIS turn: surface the files to their own conversation
   // now, then clear so they can never carry forward.
   //
-  // Idempotence vs the normal drains: every drain is a destructive read
-  // (buffers.delete in pending-attachments.ts). On a clean turn the safety net
-  // above already emptied the buffer, so this reads nothing and is a no-op.
-  // Only an error/abort path (where that net was skipped) still has content
-  // here, and this is then the SOLE drainer, so no double-surface is possible.
-  //
+  // A drain marks the rows delivered (`delivered_at`): a clean turn's net has emptied the queue, so only
+  // an error/abort path has content here. t159 G: a PARK is not the job's end either, so nothing is
+  // drained then; the files stay queued and ride the reply of the turn that ends it.
   // Degraded delivery: a thrown turn has no clean reply row to ride on and the
   // channel router never ran, so we attach the files to a minimal assistant
   // message in this turn's OWN conversation (conv_key = chosenConvKey) on the
@@ -45,6 +44,7 @@ export async function flushStrandedAttachments(ctx: TeardownContext): Promise<vo
   // non-idempotent side effect we won't risk here. The v2.9.20 requirement
   // (queued files are never silently lost) is met via the dashboard surface
   // plus a loud warning.
+  if (turnParkedTheJob(agentId, { toolLoopCapReached: ctx.toolLoopCapReached, engineCutExit: state.engineCutExit })) return;
   try {
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const leftover = drainPendingAttachmentsWithCaptions(agentId);

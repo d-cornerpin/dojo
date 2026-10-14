@@ -18,8 +18,7 @@ import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { decideClaimedDelivery } from '../../claimed-delivery.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed } from '../../outbound-ledger.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { continuationContext } from '../../../turn-state.js';
-import { isStopFenced } from '../../../shared-state.js';
+import { turnParkedTheJob } from '../../engine-exit.js';
 import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -49,7 +48,7 @@ export function recoverDeferredReply(state: AgentTurnState, ctx: FinalizeContext
   // continuation. The held-back line stays the working-note it already is.
   // requirement preserved: a turn that genuinely ENDS with only text that rode a tool call still
   // delivers that text, so a waiting human is never answered by silence (G-SUP-2).
-  const continuing = continuationContext.has(agentId) && !isStopFenced(agentId);
+  const continuing = turnParkedTheJob(agentId, { toolLoopCapReached: turnCtx.toolLoopCapReached, engineCutExit: state.engineCutExit });
   if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM && continuing) {
     logger.info('v2 G-SUP-2 recovery skipped: the engine is continuing this work; the held-back line stays a working note', {
       agentId, turnNumber,

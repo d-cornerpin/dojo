@@ -17,6 +17,7 @@ import type { Message } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { advance, type AgentTurnState } from '../../state.js';
+import { turnParkedTheJob } from '../../engine-exit.js';
 import type { FinalizeContext } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -26,7 +27,8 @@ export async function surfaceStrandedAttachments(
   state: AgentTurnState,
   ctx: FinalizeContext,
 ): Promise<AgentTurnState> {
-  const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer } = ctx;
+  const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer, turnCtx } = ctx;
+  if (turnParkedTheJob(agentId, { toolLoopCapReached: turnCtx.toolLoopCapReached, engineCutExit: state.engineCutExit })) return state;   // t159 G: a park is not the job's end; its queued files ride the reply that is
 
   // v2.9.20, show_to_user end-of-turn safety net.
   //
@@ -114,10 +116,8 @@ export async function surfaceStrandedAttachments(
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
         }
       }
-      if (stranded.attachments.length > 0) {
-        state = advance(state, { lastAssistantTextForIM: captionText });
-        noteTerminalAnswer(synthId, 'stranded files surfaced');
-      }
+      state = advance(state, { lastAssistantTextForIM: captionText });
+      noteTerminalAnswer(synthId, 'stranded files surfaced');
     }
   } catch (err) {
     logger.warn('show_to_user safety net failed (non-fatal)', {
