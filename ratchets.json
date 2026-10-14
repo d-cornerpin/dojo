@@ -8298,6 +8298,13 @@
       "to": 2857,
       "by": "t145 round 4 (group A)",
       "why": "+11 over the group A pin of 2,846 (which was itself +7 for the removed round 3 trim parameter; net +18 against 2,839): the live-tail lane re-trims once with the served row's cost reserved, and tailRender emits the served owner message(s) labelled at the front of the tail."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 911,
+      "to": 912,
+      "by": "t145 round 6 (group A)",
+      "why": "+1: one import of the park helper; the two forced-compaction wakes call it instead of a bare queueSelfWake (same line count at the sites)."
     }
   ],
   "maxNewFileLines": 400,
@@ -8400,7 +8407,7 @@
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
-    "packages/server/src/agent/v2/recovery.ts": 911,
+    "packages/server/src/agent/v2/recovery.ts": 912,
     "packages/server/src/agent/v2/refused-delivery.ts": 111,
     "packages/server/src/agent/v2/state.ts": 769,
     "packages/server/src/agent/v2/steer-queue.ts": 341,
