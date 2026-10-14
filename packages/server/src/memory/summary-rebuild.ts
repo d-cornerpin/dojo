@@ -418,6 +418,28 @@ export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promi
   }
 }
 
+/**
+ * t144: the update's own start of the rebuild of older mixed notes, once per boot instead of waiting for
+ * the first nightly window. SAFE FORM ONLY: just the legacy pass (never the contamination scan), only if a
+ * queued note exists, never alongside another run, and a run that throws is logged and swallowed — it
+ * holds no state, so a crash cannot repeat at the next boot, and the nightly job stays the backstop.
+ */
+export async function runLegacyRebuildAtBoot(): Promise<LegacyRebuildStats | null> {
+  if (rebuildRunning) return null;
+  try {
+    if (!getDb().prepare("SELECT 1 FROM summaries WHERE rebuild_state = 'legacy_mixed_rebuild' LIMIT 1").get()) return null;
+  } catch { return null; }
+  rebuildRunning = true;
+  try {
+    return await rebuildLegacyMixedNotes();
+  } catch (err) {
+    logger.warn('Older mixed notes: the boot-time rebuild failed; the nightly job resumes it', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  } finally {
+    rebuildRunning = false;
+  }
+}
+
 async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
     const flagged = findContaminatedSummaries();
     const stockScanned = countSummaryStock();

@@ -85,7 +85,7 @@ import { insertMessage } from '../message-store.js';
 import { createLeafSummary, createCondensedSummary } from '../dag.js';
 import { rebuildContextItems } from '../compaction.js';
 import { assembleContext } from '../assembler.js';
-import { runSummaryRebuildBatch } from '../summary-rebuild.js';
+import { runSummaryRebuildBatch, runLegacyRebuildAtBoot } from '../summary-rebuild.js';
 import { subjectBatches } from '../summary-subject.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
@@ -400,5 +400,37 @@ describe('t144 round 2 — the contamination pass is paced like the rebuild: age
     activeRuns.delete(AGENT);
     await runSummaryRebuildBatch();
     expect(contentOf(id)).not.toMatch(/DREAM CYCLE/);
+  });
+});
+
+describe('t144 round 2 — the rebuild also starts once after an update boots, in the safe form (boot hook)', () => {
+  /** A note as migration 192 leaves it: already queued. */
+  const queuedNote = (): void => { db().prepare("UPDATE summaries SET rebuild_state = 'legacy_mixed_rebuild', subject_key = NULL WHERE id = ?").run(olderNote(history(2, 2))); };
+  it('with a queued note it rebuilds the legacy notes and only them (the contamination pass is not run)', async () => {
+    queuedNote();
+    rebuildContextItems(AGENT);
+    const stats = await runLegacyRebuildAtBoot();
+    expect(stats?.notesReplaced).toBe(1);
+    expect(live()).toHaveLength(2);
+  });
+
+  it('with nothing queued it does nothing at all — no scan, no model call', async () => {
+    expect(await runLegacyRebuildAtBoot()).toBeNull();
+    expect(model.calls).toHaveLength(0);
+  });
+
+  it('a run that throws is logged and swallowed — a crash cannot loop an update', async () => {
+    queuedNote();
+    db().exec('DROP TABLE summary_rebuild_staged');
+    await expect(runLegacyRebuildAtBoot()).resolves.toBeNull();
+  });
+
+  it('it does not overlap the nightly job: while one run holds the guard, the boot start steps aside', async () => {
+    queuedNote();
+    rebuildContextItems(AGENT);
+    const nightly = runSummaryRebuildBatch();
+    expect(await runLegacyRebuildAtBoot()).toBeNull();
+    await nightly;
+    expect(live()).toHaveLength(2);
   });
 });
