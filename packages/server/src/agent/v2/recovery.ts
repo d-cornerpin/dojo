@@ -27,6 +27,7 @@ import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
+import { parkJob } from '../../work/job-continuation.js';
 import {
   queueSelfWake,
   recoveryRunStreak,
@@ -412,7 +413,7 @@ async function tryContextOverflowRecovery(
     const cw = getContextWindow(compactModelId);
     await checkAndCompact(agentId, compactModelId, cw, { force: true });
     logger.warn('v2: forced compaction after context overflow on non-Dreamer agent', { agentId }, agentId);
-    queueSelfWake(agentId, 'recovery-forced-compaction');
+    parkJob(agentId, 'recovery-forced-compaction');
     return true;
   } catch (recovErr) {
     logger.warn('v2: context overflow recovery attempt failed', {
@@ -503,7 +504,7 @@ async function tryDeclaredPatienceCompactOnceRecovery(
     await checkAndCompact(agentId, compactModelId, cw, { force: true });
     doomedPrefillCompactionSpent.set(agentId, turnNumber);
     logger.warn('v2: forced compaction after a declared-patience exhaustion (T81b/T82b)', { agentId, turnNumber }, agentId);
-    queueSelfWake(agentId, 'recovery-doomed-prefill-compaction');
+    parkJob(agentId, 'recovery-doomed-prefill-compaction');
     return { recovered: true, didCompact: true };
   } catch (recovErr) {
     // BAIL ARM 2 (I2) — the attempt STARTED but did not complete: `checkAndCompact` threw

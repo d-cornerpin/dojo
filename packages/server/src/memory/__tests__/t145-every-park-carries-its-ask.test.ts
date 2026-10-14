@@ -49,7 +49,7 @@ import { AgentError } from '../../agent/errors.js';
 import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 const AGENT = 'primary';
-const SMALL_WINDOW = 16000;
+const WINDOW = 40000;   // the smallest window the assembler can admit a message into (the system prompt and tools take the rest)
 const LABEL = 'The message from you this work is answering';
 const ASK = 'THE-LONG-ASK '.repeat(30);
 const count = (hay: string, needle: string): number => hay.split(needle).length - 1;
@@ -81,7 +81,7 @@ beforeEach(() => {
   mockDb.current = db;
   db.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')").run();
   db.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
-              VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 16000, 1)`).run();
+              VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 40000, 1)`).run();
   db.prepare("INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('primary', 'Primary', 'm', 'idle', '{}', 'sensei')").run();
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
               VALUES ('conv-dash', 'primary', 'dashboard', NULL, 'owner', datetime('now'))`).run();
@@ -91,12 +91,12 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(AGENT); endJobCarry(AGENT); pendingWakeups.clear(); mockDb.current?.close(); mockDb.current = null; });
 
-/** The FIRST turn of a job: older talk, the owner's long ask (claimed), then 40 rows of the turn's own work. No task, no earlier park. */
+/** The FIRST turn of a job: older talk, the owner's long ask (claimed), then 70 rows of the turn's own work. No task, no earlier park. */
 function firstTurnOfAJob(): void {
   for (let i = 0; i < 5; i++) { say('user', `older question ${i}`); say('assistant', `older answer ${i}`); }
   say('user', ASK, 'ask-row');
   expect(claimAsk('ask:ask-row', AGENT).kind).toBe('applied');
-  for (let i = 0; i < 40; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i}`);
+  for (let i = 0; i < 70; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i}`);
   const bag = openTurnContext(AGENT);
   bag.root = { kind: 'ask', id: 'ask-row', sourceMessageId: 'ask-row' };
   bag.conversationId = 'conv-dash';
@@ -113,7 +113,7 @@ const wire = async (): Promise<string> => JSON.stringify((await assembleContext(
 describe('t145 R6 — a park that is not the turn-budget or tool-loop park still carries the job\'s ask', () => {
   it('emergency compaction / context-full (the gates\' sequence): fold, park, continue: the ask is verbatim and labelled', async () => {
     firstTurnOfAJob();
-    const out = await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true });   // what the gate runs
+    const out = await checkAndCompact(AGENT, 'm', WINDOW, { force: true });   // what the gate runs
     expect(out.leafCreated).toBeGreaterThan(0);
     expect(foldedIntoNote(), 'premise: the compaction took the ask behind the boundary').toBe(true);
     expect(parkJob(AGENT, 'context-gate-rebuild')).toBe(true);                       // what the gate then queues
@@ -126,7 +126,7 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
 
   it('CONTROL: an unrelated wake after that carries nothing', async () => {
     firstTurnOfAJob();
-    await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true });
+    await checkAndCompact(AGENT, 'm', WINDOW, { force: true });
     parkJob(AGENT, 'context-gate-rebuild');
     continuationRun();
     endTurnContext(AGENT);
@@ -141,7 +141,7 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
   it('a recovery site, through the real recoverFromError: a context overflow forces a compaction and the continuation holds the ask', async () => {
     firstTurnOfAJob();
     const state = initState({
-      agentId: AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: 'm', turnNumber: 1,
+      agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: 'm', turnNumber: 1,
       triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: ASK, lastUserMessageId: 'ask-row',
       inboundChannel: null, inboundContext: null, pendingTechniqueAck: null,
     });

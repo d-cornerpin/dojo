@@ -96,7 +96,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
 import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
-import { armToolLoopContinuation } from '../../work/job-continuation.js';
+import { parkJob } from '../../work/job-continuation.js';
 
 const logger = createLogger('v2-loop');
 
@@ -664,7 +664,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // sees its full history including the work it just did and continues
       // naturally. 1s delay lets DB writes settle.
       stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-      armToolLoopContinuation(agentId); // t143 r6: the job travels on this wake; only the run it starts carries it
+      parkJob(agentId, 'tool-loop', 'timer'); // t143 r6: the job travels on this wake; only the run it starts carries it
     }
 
     // The engine-composed silent-close "Done:" line that briefly lived here is

@@ -7,7 +7,8 @@
 
 import { createLogger } from '../logger.js';
 import { queueSelfWake } from '../agent/shared-state.js';
-import { registerDrainWake, registerTimerWake } from './task-freshness.js';
+import { registerDrainWake, registerTimerWake, carryJobWork, turnWorkIds } from './task-freshness.js';
+import { servedOwnerMessageIds } from '../memory/served-ask.js';
 
 const logger = createLogger('job-continuation');
 
@@ -32,6 +33,17 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
   }, delayMs);
 }
 
-export function parkJob(agentId: string, reason: string, _how: 'drain' | 'timer' = 'drain'): boolean {
+/**
+ * THE ONE DEFINITION OF "PARK" (t145 round 6): hand the running job on, then queue the wake that resumes it.
+ * Carries the job's own tasks and the owner message(s) the parking turn served on the job record (so a job
+ * with no task still has its words re-shown to its continuation, and only to it), then queues exactly one
+ * continuation: on the shared wake set the drain serves (`'drain'`) or on the tool-loop park's own timer
+ * (`'timer'`). Every site that parks a job calls this and nothing else: the turn-budget park, the tool-loop
+ * park, the emergency compaction and context-full block (`context-gates.ts`) and the two forced compactions
+ * of error recovery (`recovery.ts`). On a turn that is not a job it carries nothing and is a plain wake.
+ */
+export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain'): boolean {
+  carryJobWork(agentId, turnWorkIds(agentId), servedOwnerMessageIds(agentId));
+  if (how === 'timer') { armToolLoopContinuation(agentId); return true; }
   return queueJobContinuation(agentId, reason);
 }

@@ -33,7 +33,8 @@ import { rowsLeavingView, type LeavingView } from '../../../../memory/tail-horiz
 import { getFreshTailCount } from '../../../../memory/budget.js';
 import { getContextWindow } from '../../../model.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { backgroundDrains, queueSelfWake } from '../../../shared-state.js';
+import { backgroundDrains } from '../../../shared-state.js';
+import { parkJob } from '../../../../work/job-continuation.js';
 import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
@@ -127,7 +128,7 @@ export async function runContextGates(
     }
     // Queue wakeup so the next iteration assembles fresh post-compaction context
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    queueSelfWake(agentId, 'context-gate-rebuild');
+    parkJob(agentId, 'context-gate-rebuild');
     return requestExit(state, 'context-emergency-compact' satisfies PreCallGatesExitReason);
   } else if (gateResult.decision === 'block') {
     logger.error(gateResult.reason ?? 'context impossibly full', {
@@ -154,7 +155,7 @@ export async function runContextGates(
       await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    queueSelfWake(agentId, 'context-gate-rebuild');
+    parkJob(agentId, 'context-gate-rebuild');
     return requestExit(state, 'context-full' satisfies PreCallGatesExitReason);
   }
 
