@@ -355,14 +355,13 @@ describe('t145 B — the pin is deleted, not hidden: no module, no lane, no regi
   });
 });
 
-describe('t145 B round 2 — a KNOWN GAP, driven: an ask with NO task whose raw row is folded mid-turn', () => {
-  // The pin used to hold such an ask whole on every call. With it gone, the only carrier is the
-  // summariser's note. Reaching the shape takes a very long turn of tracker-only calls (the engine
-  // floor opens a task at six non-tracker calls, which would put the words on the list), and a
-  // pressure fold in the middle of it. Per the ruling, no new machinery: this test PINS what the
-  // agent sees so the gap is a recorded fact, not a surprise. If it is ever closed (the words kept
-  // whole, or labelled with a history_get pointer), flip the three marked assertions.
-  it('after the fold the agent holds the note and not the ask: no task, no raw row, no pointer to the words', async () => {
+describe('t145 B round 3 — an ask with NO task, folded mid-turn: the owner\'s words stay verbatim', () => {
+  // The shape that made this a known gap in round 2: a long, tool-heavy turn on an ask with no task
+  // (tracker-only calls, so the engine floor opens none) and a pressure fold in the middle of it.
+  // The root fix (`tail-horizon.ts` `servedAskFloorSeq`): while a turn is running, the owner message
+  // it serves is a floor no fold, cut or trim passes. Older rows go first.
+  it('after a mid-turn fold the agent still has the ask verbatim on the very next call; older traffic is what was folded', async () => {
+    await newerTraffic();   // older rows, so the fold has somewhere to go
     await submitUserMessage(AGENT, LONG_ASK);
     const folded: Array<{ leafCreated: number }> = [];
     const reads = Array.from({ length: 30 }, (_, i) => ({
@@ -371,15 +370,11 @@ describe('t145 B round 2 — a KNOWN GAP, driven: an ask with NO task whose raw 
     }));
     const calls = await turn(...reads, { content: 'Carrying on with the three notes.' });
     const after = wireText(calls[calls.length - 1]);
-    expect(folded[0]?.leafCreated, 'the pressure fold really ran mid-turn').toBeGreaterThan(0);
+    expect(folded[0]?.leafCreated, 'the pressure fold really ran mid-turn and folded something').toBeGreaterThan(0);
     expect((mockDb.current!.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task'").get() as { n: number }).n).toBe(0);
-    expect(after).toContain('COMPRESSED HISTORY');
-    // KNOWN GAP (1/3): the owner's words are no longer in the array whole.
-    expect(after).not.toContain(LONG_ASK);
-    // KNOWN GAP (2/3): and nothing on the array names the row that holds them.
-    const row = mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE ? LIMIT 1").get(`%${JOB}%`) as { id: string };
-    // KNOWN GAP (3/3): ... no history_get pointer to it.
-    expect(after).not.toContain(row.id);
+    expect(after).toContain('COMPRESSED HISTORY');               // the older traffic is what became a note
+    expect(after).toContain(LONG_ASK);                            // the owner's words, verbatim
+    expect(after).not.toContain('Quick question number 0:');     // and the older rows are the ones that went
   });
 });
 
