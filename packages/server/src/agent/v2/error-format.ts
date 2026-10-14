@@ -232,10 +232,8 @@ export function honestStopWords(kind: HonestStopKind, ctx: HonestStopContext = {
   }
   const money = ctx.spendUsd !== undefined && ctx.limitUsd !== undefined ? ` ($${ctx.spendUsd.toFixed(2)} of $${ctx.limitUsd.toFixed(2)})` : '';
   const whose = ctx.scope === 'agent' ? `This agent's ${ctx.period ?? 'daily'} spending limit` : 'Today\'s spending limit';
-  if (ctx.freeDown) {
-    return `${whose} is reached${money}, and none of the free models it can still use answered, so this agent's turn was not run. `
-      + 'Your message is kept. It is tried again when you send this agent another message, and answered when the limit resets or is raised, or its models change.';
-  }
+  if (ctx.freeDown) return `${whose} is reached${money}, and none of the free models it can still use answered, so this agent's turn was not run. `
+    + 'Your message is kept. It is tried again when you send this agent another message, and answered when the limit resets or is raised, or its models change.';
   return `${whose} is reached${money}, so this agent's turn was not run. `
     + 'Your message is kept. It will be answered when the limit resets, or as soon as you raise the limit in Settings.';
 }

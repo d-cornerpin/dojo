@@ -90,7 +90,6 @@ async function agentFits(agentId: string): Promise<boolean> {
 }
 
 function budgetStop(agentId: string, freeDown = false): HonestStop {
-  // A routed agent offered free models has no `budgetStopFor` (a free model is under the line): the wall's own reading names the limit.
   const budget = budgetStopFor(agentId) ?? (freeDown ? exceededBudget(agentId, WALL_ESTIMATE_USD) : null);
   return {
     kind: 'budget_stop',
@@ -175,9 +174,7 @@ async function wake(agentId: string): Promise<void> {
 export async function releaseHonestStops(kind: HonestStopKind, opts: { agentId?: string; onModelsChange?: boolean } = {}): Promise<string[]> {
   const released: string[] = [];
   for (const id of parkedAgents(kind, opts.agentId)) {
-    // A "free fallback did not answer" park (t149 round 3) is not lifted by a free model merely existing (the
-    // 30-second tick would flip it): a limit change or the window turning over lifts it, a model/tier change
-    // lifts it for a fresh try, and a person's message tries the redirect again (runtime -> the turn).
+    // t149 r3: a "free fallback did not answer" park is lifted by the limit moving or a model/tier change, never by a free model merely existing.
     const freeDown = kind === 'budget_stop' && parkedForFreeDown(id);
     if (opts.onModelsChange && !freeDown) continue;
     const stands = freeDown ? !opts.onModelsChange && exceededBudget(id, WALL_ESTIMATE_USD) !== null
