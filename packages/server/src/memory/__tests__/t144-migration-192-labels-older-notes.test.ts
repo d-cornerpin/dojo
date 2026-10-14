@@ -158,7 +158,7 @@ describe('migration 192 — the notes already on a box', () => {
   });
 
   it('ONE RULE: the nightly job re-runs exactly these statements for notes a downgraded version wrote', async () => {
-    const { CLASSIFY_SQL } = await import('../legacy-notes-rebuild.js');
+    const { CLASSIFY_SQL } = await import('../notes-classify-sql.js');
     expect(CLASSIFY_SQL.split(';').map((x) => x.trim()).filter(Boolean)).toEqual(body());
   });
 
