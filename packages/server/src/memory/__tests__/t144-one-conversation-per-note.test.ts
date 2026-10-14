@@ -71,6 +71,7 @@ import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
+import { archiveMessagesBeforeCompaction } from '../../vault/archive.js';
 
 const AGENT = 'agent-t144-depot';
 const WRITER = 'model-t144-writer';
@@ -246,6 +247,28 @@ describe('t144 — membership: a fold never leaves a row out of view that nothin
     model.window = 1_000_000;   // the view is roomy: only the fold, never the token trim, decides what is out of view
     const view = viewText(await assembleContext(AGENT, WRITER));
     expect(lostRows(view)).toEqual([]);
+  });
+});
+
+describe('t144 round 2 — rows stranded below the boundary are always retried (I5)', () => {
+  it('W6b: the cover fails (the vault write is refused after a chunk landed); the next fold covers the stranded rows EVEN WHEN it lands nothing new', async () => {
+    interleave(40, 'Crate manifest: bay, weight, seal number, inspector initials and remarks for the night shift. '.repeat(45));
+    const archive = vi.mocked(archiveMessagesBeforeCompaction);
+    archive.mockImplementation(() => {
+      const landed = (db().prepare("SELECT COUNT(*) AS k FROM summaries WHERE agent_id = ? AND depth = 0").get(AGENT) as { k: number }).k;
+      return landed > 0 ? null : 'archive-1';   // refused once something has landed: the cover cannot be written
+    });
+    model.refuseWhen = '[b2]';
+    await foldThrough('[b60]');
+    expect(model.written).toBeGreaterThan(0);
+    // The vault is back. This fold's writer refuses everything, so NOTHING new lands — the stranded rows are still owed.
+    archive.mockImplementation(() => 'archive-1');
+    model.refuseWhen = 'Crate manifest';
+    __resetSummaryWriterHealthForTests(); __resetBrakesForTests();
+    await foldThrough('[b60]');
+    model.window = 1_000_000;
+    expect(lostRows(viewText(await assembleContext(AGENT, WRITER)))).toEqual([]);
+    archive.mockImplementation(() => 'archive-1');
   });
 });
 
