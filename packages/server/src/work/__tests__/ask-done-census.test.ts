@@ -104,9 +104,14 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
     // authority's delivery/finalize/boot close and its join close. Both are the same
     // predicate in the same function — `settleOnJoin` is an arm of `settleAsk`, reached only
     // through it — which is exactly what "one authority" was supposed to mean.
-    done: 2, dynamic: 0, subjects: 'ask',
+    //
+    // t152 adds the third: the async arm (`settleOnAsyncResult`), for a background job's result that
+    // reaches the owner after the turn that started it. Same function, same predicate family, reached
+    // only through `settleAsk`; the writer outside the authority is still zero.
+    done: 3, dynamic: 0, subjects: 'ask',
     owner: 'settleAsk — the ONE settlement authority for owner asks (SWEEP-A TB1), including '
-      + 'its join arm (SWEEP-A TB2: children settled + the compiled delivery, `compile_resolved` written)',
+      + 'its join arm (SWEEP-A TB2: children settled + the compiled delivery, `compile_resolved` written) '
+      + 'and its async arm (t152: the background work finished and its result reached the owner)',
   },
   'work/store.ts': {
     // TB2 TIGHTENING: 3 -> 2. `settleJoinDelivered` is GONE from this file; it took the last
