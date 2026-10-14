@@ -134,6 +134,13 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { mediaHandlers } from '../../agent/tools/cat/media.js';
+import { untrackedWorkAcrossTurns } from '../../agent/turn-state.js';
+import { createTask } from '../../tracker/schema.js';
+import { transition } from '../../work/store.js';
+import { carryJobWork, registerDrainWake, endJobCarry } from '../../work/task-freshness.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
+import { cancelAgentGenerationJobs } from '../../services/generation-jobs.js';
 
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
@@ -228,6 +235,7 @@ async function turn(...steps: typeof script): Promise<Wire[][]> {
 }
 
 beforeEach(() => {
+  untrackedWorkAcrossTurns.clear(); endJobCarry(AGENT);   // nothing from an earlier clause carries over
   const db = freshDb();
   mockDb.current = db;
   db.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')`).run();
@@ -340,5 +348,109 @@ describe('t152 — an ask whose request was background jobs settles when the las
     await until(() => imageBubbles() === 1);
     await new Promise((r) => setTimeout(r, 200));
     expect(mockDb.current!.prepare(`SELECT state FROM work WHERE id = ?`).get(first.id), 'the other request stays as it was').toEqual({ state: 'blocked' });
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2 (coordinator): the agent may STILL OWE work on the request when its images land, and a
+// request whose jobs are out is held, not re-served; a request whose last job was cancelled settles.
+// ════════════════════════════════════════════════════════════════════════════════════════
+const rowidOf = (messageId: string): number => (mockDb.current!.prepare(`SELECT rowid AS r FROM messages WHERE id = ?`).get(messageId) as { r: number }).r;
+const latestImageDelivery = (): string => (mockDb.current!.prepare(
+  `SELECT d.id AS id FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE m.attachments IS NOT NULL ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`).get() as { id: string }).id;
+const reServes = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served'`).get() as { n: number }).n;
+
+describe('t152 round 2 — nothing is settled while the agent still owes work on the request', () => {
+  it('images land while a tracker task linked to the request is open: the ask stays open; it settles when the task closes', async () => {
+    await submitUserMessage(AGENT, 'Make one small image of a heron, then write a post about it.');
+    const ask = askRow();
+    createTask({ title: 'Write the heron post', createdBy: AGENT, assignedTo: AGENT, origin: { kind: 'ask', sourceMessageId: ask.root_id, turn: null, convKey: null } });
+    const taskId = (mockDb.current!.prepare(`SELECT id FROM work WHERE kind = 'task' AND source_message_id = ?`).get(ask.root_id) as { id: string }).id;
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state, 'the image landed but the post is still owed').not.toBe('done');
+    const r = transition(taskId, { to: 'done', by: 'pm', claim: 'authoritative', resultDeliveryId: latestImageDelivery(), reason: 'the post was written' });
+    expect(r.kind).toBe('applied');
+    expect(askRow().state, 'the work ended and the result had reached the owner: it settles').toBe('done');
+  });
+
+  it('images land during a parked job that carries the ask: no settle; the continuation\'s finalize settles it', async () => {
+    await submitUserMessage(AGENT, 'Make one small image of a heron, then keep working on the post.');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    const ask = askRow();
+    mockDb.current!.prepare(`UPDATE work SET state = 'claimed' WHERE id = ?`).run(ask.id);   // the parking turn served it
+    carryJobWork(AGENT, [], [ask.root_id]); registerDrainWake(AGENT);
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state, 'a parked job carries the ask: the image does not settle it').toBe('claimed');
+    endJobCarry(AGENT);   // the continuation ran and finished its work
+    const out = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 99, assembled: [{ workId: ask.id, rowid: rowidOf(ask.root_id) }] });
+    expect(out.closed, 'the continuation\'s finalize settles it on the delivered result').toBe(1);
+    expect(askRow().state).toBe('done');
+  });
+
+  it('images land while a turn serving the ask is running: no settle; that turn\'s finalize settles it', async () => {
+    await submitUserMessage(AGENT, 'Make one small image of a heron.');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    const ask = askRow();
+    const bag = openTurnContext(AGENT);   // a later turn is serving the ask right now
+    bag.turnNumber = 41; bag.root = { kind: 'ask', id: ask.root_id, sourceMessageId: ask.root_id };
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state, 'a turn is serving the ask: the image does not settle it under that turn').not.toBe('done');
+    const out = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 41, assembled: [{ workId: ask.id, rowid: rowidOf(ask.root_id) }] });
+    endTurnContext(AGENT);
+    expect(out.closed, 'at that turn\'s own finalize the delivered result settles it').toBe(1);
+    expect(askRow().state).toBe('done');
+  });
+});
+
+describe('t152 round 2 — a request whose jobs are out is held, not re-served', () => {
+  it('the turn that started the jobs ends with no reply: the ask is held at once and no re-serve rung is spent', async () => {
+    await submitUserMessage(AGENT, 'Make three small images.');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(3), { content: '[no-reply]' });
+    expect(askRow().state, 'held: its answer is on the way').toBe('blocked');
+    expect(reServes(), 'nothing was handed back to be served again').toBe(0);
+  });
+});
+
+describe('t152 round 2 — a request whose last job was cancelled', () => {
+  const cancelAndRelease = async (): Promise<void> => {
+    cancelAgentGenerationJobs(AGENT);
+    imageGate.waiting.forEach((w) => w({ ok: false, code: 'STOPPED', error: 'stopped' }));   // let the dialled one unwind
+    await new Promise((r) => setTimeout(r, 300));
+  };
+  it('all jobs cancelled (the owner\'s Stop), nothing delivered: the ask is abandoned as cancelled, not left held for ever', async () => {
+    await submitUserMessage(AGENT, 'Make two small images.');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(2), { content: '[no-reply]' });
+    expect(askRow().state).toBe('blocked');
+    await cancelAndRelease();
+    expect(askRow().state).toBe('abandoned');
+    expect(imageBubbles(), 'nothing was delivered').toBe(0);
+  });
+  it('one image delivered, the rest cancelled: the ask settles on the delivered image', async () => {
+    await submitUserMessage(AGENT, 'Make two small images.');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(2), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await cancelAndRelease();
+    expect(askRow().state).toBe('done');
   });
 });

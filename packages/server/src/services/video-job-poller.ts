@@ -28,7 +28,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
-import { settleAskOnAsyncResult } from '../work/ask-settlement.js';
+import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
 import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
@@ -219,7 +219,7 @@ async function markCancelled(jobId: string, reason: string): Promise<void> {
   `).run(jobId);
   if (res.changes === 0) return;
   const fresh = getJob(jobId);
-  if (fresh) emitUpdate(fresh);
+  if (fresh) { emitUpdate(fresh); settleAskOnJobEnded(fresh.agent_id, jobId); }   // t152: the last job of a request called off
   logger.info('video job cancelled', { jobId, reason });
 }
 

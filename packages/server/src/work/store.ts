@@ -46,6 +46,7 @@ import type { WorkEventKind } from './event-kinds.js';
 import { ringValidationDoorbell } from './validation-drive.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
+import { notifyTaskEnded } from './task-ended.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
@@ -209,6 +210,7 @@ interface WorkRow {
    *  second SELECT because this row is already the transition's own read of the work item. */
   agent_id: string;
   title: string | null;
+  source_message_id: string | null;
 }
 
 const now = (): number => Date.now();
@@ -266,7 +268,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   //        recorded baseline red; it must be REFUSED with something steerable, never
   //        silently create or silently succeed. ──
   const row = db.prepare(
-    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title FROM work WHERE id = ?',
+    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
@@ -567,6 +569,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   if (row.kind === 'commitment' && terminal && !isTerminal(from)) {
     retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
+
+  // t152: a tracker task linked to an owner's request ended — what it held back from settling may settle now.
+  if (row.kind === 'task' && terminal && !isTerminal(from)) notifyTaskEnded(row.agent_id, row.source_message_id);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };

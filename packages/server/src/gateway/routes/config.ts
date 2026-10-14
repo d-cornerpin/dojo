@@ -28,6 +28,7 @@ import { getPrimaryAgentId } from '../../config/platform.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
+import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
 
 // ── Model Usage Helper ──
 
@@ -1111,6 +1112,7 @@ configRouter.post('/video-jobs/:id/cancel', async (c) => {
   db.prepare(
     `UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
+  settleAskOnJobEnded(row.agent_id, id);   // t152: the last job of a request called off settles it
 
   try {
     const { broadcast } = await import('../ws.js');
@@ -1200,6 +1202,7 @@ configRouter.post('/generation-jobs/:id/cancel', async (c) => {
   db.prepare(
     `UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`
   ).run(id);
+  settleAskOnJobEnded(row.agent_id, id);   // t152: as above
 
   try {
     const { broadcast } = await import('../ws.js');

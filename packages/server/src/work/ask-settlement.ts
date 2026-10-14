@@ -54,6 +54,9 @@ import { getDb } from '../db/connection.js';
 import { engineCutHandBackReason, turnWasEngineCut } from './exit-attribution.js';
 import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
+import { turnContext } from '../agent/turn-context.js';
+import { onTaskEnded } from './task-ended.js';
+import { jobCarriedAsks } from './task-freshness.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // FROM THE LEAF (t117). `NOT_A_START_ACK` below reads this constant at MODULE SCOPE, and
 // `message-store` reaches this file again through its own dependency graph — so while the
@@ -830,6 +833,13 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
+  // ── t152: NO TURN-BOUND EVIDENCE, BUT THE REQUEST WAS BACKGROUND JOBS whose result already reached the owner
+  //    and nothing else is owed: that result is the evidence (the finalize of the turn that was still serving it). ──
+  if (ctx.at === 'finalize') {
+    const late = settleOnAsyncResult(ask, { ...ctx, deliveryId: null }, actorId, out);
+    if (late.verdict === 'closed') return late;
+  }
+
   // ── NO EVIDENCE. ──
   // Mid-turn this means nothing yet: the turn may be about to answer, and re-opening a live
   // claim would race the turn that holds it.
@@ -837,6 +847,14 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // At boot the second arm below (`reconcileOrphanedClaims`) owns the no-evidence case,
   // because a crashed turn's disposition is P6b's counted question, not this one.
   if (ctx.at === 'boot') return out('unchanged', 'no qualifying delivery; the crash arm decides');
+  // t152: a request whose background jobs are still out is HELD, not re-served — the answer is on its way, and
+  // serving the question again is what lets a model start the same work twice. No rung is spent.
+  if (mediaJobs(ask.root_id).out > 0) {
+    if (ask.state === 'blocked') return out('held', 'already held on its background jobs');
+    const why = 'held: the background jobs this request started are still out; their result is the answer';
+    const h = transition(workId, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: why });
+    return h.kind === 'applied' ? out('held', why) : out('unchanged', `hold refused: ${h.kind}`);
+  }
   // At turn finalize the question is settled: this turn is over, nothing was delivered for
   // this ask, and the person is still waiting. It goes back — visible.
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
@@ -1114,20 +1132,37 @@ function settleOnJoin(
 
 // THE ASYNC ARM (t152). The result of a background job (image, music, speech, video) is posted by the
 // job's worker after the turn that started it, with no turn, so no turn-bound delivery ever closed the
-// ask: seven images reached the owner and the ask stayed `blocked`. The ask settles when a result has
-// been DELIVERED for it (the join arm's evidence checks) AND no job for the request is still out AND no
-// delegated work is. The first of seven images is not the answer; a failure notice has told the owner too.
+// ask: seven images reached the owner and the ask stayed `blocked`. The ask settles on a DELIVERED
+// result (the join arm's evidence checks) once nothing is owed on the request: no job out, no delegated
+// work, no open tracker task linked to it, no turn or parked job serving it. Whichever of those ends
+// last re-asks: a result (delivery), a turn's finalize, a linked task's close (`transition`), a job's end.
+// A request whose jobs were ALL cancelled and delivered nothing is the owner's own call-off: abandoned.
 
-/** Background media jobs started for this request (its message id is their lineage) that are not finished. */
-function mediaJobsOutstanding(askRootId: string): number {
+/** The background media jobs started for this request (its message id is their lineage). */
+function mediaJobs(askRootId: string): { all: number; out: number; cancelled: number } {
   const db = getDb();
-  let n = 0;
+  const t = { all: 0, out: 0, cancelled: 0 };
   for (const table of ['generation_jobs', 'video_jobs']) {
-    n += (db.prepare(
-      `SELECT COUNT(*) AS n FROM ${table} WHERE source_message_id = ? AND status NOT IN (${TERMINAL_JOB_STATUS_SQL})`,
-    ).get(askRootId) as { n: number } | undefined)?.n ?? 0;
+    const r = db.prepare(
+      `SELECT COUNT(*) AS n, SUM(status NOT IN (${TERMINAL_JOB_STATUS_SQL})) AS o, SUM(status = 'cancelled') AS c FROM ${table} WHERE source_message_id = ?`,
+    ).get(askRootId) as { n: number; o: number | null; c: number | null };
+    t.all += r.n; t.out += r.o ?? 0; t.cancelled += r.c ?? 0;
   }
-  return n;
+  return t;
+}
+
+/** Why the agent still owes work on this request (so a landed result must not settle it yet), or null. */
+function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
+  if (getDb().prepare(
+    `SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
+        AND t.state NOT IN ('done', 'failed', 'abandoned') LIMIT 1`,
+  ).get(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open';
+  const bag = turnContext(ask.agent_id);
+  if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {
+    return 'a turn serving this request is running';
+  }
+  if (jobCarriedAsks(ask.agent_id).includes(ask.root_id)) return 'a parked job carries this request';
+  return null;
 }
 
 function settleOnAsyncResult(
@@ -1135,10 +1170,26 @@ function settleOnAsyncResult(
   out: (v: AskSettlementVerdict, detail: string, deliveryId?: string | null) => AskSettlementOutcome,
 ): AskSettlementOutcome {
   if (joinOutstanding(ask)) return out('unchanged', 'delegated work is still outstanding');
-  const outstanding = mediaJobsOutstanding(ask.root_id);
-  if (outstanding > 0) return out('unchanged', `${outstanding} background job(s) for this request are still out`);
-  if (!ctx.deliveryId) return out('unchanged', 'no delivery named for the result');
-  const evidence = compiledDelivery(ask, ask.opened_at, ctx.deliveryId, null);
+  const jobs = mediaJobs(ask.root_id);
+  if (jobs.all === 0) return out('unchanged', 'no background job was started for this request');
+  if (jobs.out > 0) return out('unchanged', `${jobs.out} background job(s) for this request are still out`);
+  // The result the owner was given: the one named, else the latest bubble labelled with this request.
+  const named = ctx.deliveryId ?? (getDb().prepare(
+    `SELECT d.id AS id FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE d.agent_id = ? AND d.outcome = 'delivered' AND m.root_kind = 'ask' AND m.root_id = ? AND m.subject_kind = 'delivered'
+      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
+  ).get(ask.agent_id, ask.root_id) as { id: string } | undefined)?.id ?? null;
+  if (!named) {
+    if (jobs.cancelled === 0) return out('unchanged', 'no result has reached the owner');
+    const r = transition(ask.id, {
+      to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: ask.state,
+      reason: 'the owner cancelled the background work this request waited on, and nothing was delivered',
+    });
+    return r.kind === 'applied' ? out('closed', 'cancelled by the owner') : out('unchanged', `cancel close refused: ${r.kind}`);
+  }
+  const owed = stillOwed(ask, ctx.turnNumber);
+  if (owed) return out('unchanged', owed);
+  const evidence = compiledDelivery(ask, ask.opened_at, named, null);
   if (!evidence) return out('unchanged', 'the result has no delivery that can be pointed at');
   const reason = ctx.reason ?? 'the background work it waited on finished and its result reached the owner';
   const r = transition(ask.id, {
@@ -1151,31 +1202,48 @@ function settleOnAsyncResult(
   return out('closed', reason, evidence.id);
 }
 
+/** Re-ask `settleAsk` for the request `askMessageId` labels, at the async moment. Never throws. */
+function reaskAsync(agentId: string, askMessageId: string | null | undefined, deliveryId: string | null): AskSettlementOutcome | null {
+  if (!askMessageId) return null;
+  try {
+    return settleAsk(askIdForMessage(askMessageId), { agentId, turnNumber: null, at: 'async', deliveryId, actorId: 'async-result' });
+  } catch (err) {
+    logger.warn('async: could not re-ask the settlement of a request (nothing it delivered is affected)', {
+      agentId, askMessageId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return null;
+  }
+}
+
 /**
  * INVOCATION (e) — A BACKGROUND JOB'S RESULT WAS DELIVERED (t152). Scope only; the decision is
  * `settleAsk`'s. `askMessageId` is the request the result is labelled with (`deliveredResult`),
- * `resultMessageId` the bubble the owner was given. Never throws: a result already delivered must not
- * be broken by its bookkeeping.
+ * `resultMessageId` the bubble the owner was given.
  */
 export function settleAskOnAsyncResult(
   p: { agentId: string; askMessageId: string | null | undefined; resultMessageId: string },
 ): AskSettlementOutcome | null {
-  if (!p.askMessageId) return null;
-  try {
-    const delivery = getDb().prepare(
-      `SELECT id FROM deliveries WHERE agent_id = ? AND message_id = ? AND outcome = 'delivered' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-    ).get(p.agentId, p.resultMessageId) as { id: string } | undefined;
-    if (!delivery) return null;
-    return settleAsk(askIdForMessage(p.askMessageId), {
-      agentId: p.agentId, turnNumber: null, at: 'async', deliveryId: delivery.id, actorId: 'async-result',
-    });
-  } catch (err) {
-    logger.warn('async result: could not settle the ask it answers (the result itself was delivered)', {
-      agentId: p.agentId, askMessageId: p.askMessageId, error: err instanceof Error ? err.message : String(err),
-    }, p.agentId);
-    return null;
-  }
+  const delivery = getDb().prepare(
+    `SELECT id FROM deliveries WHERE agent_id = ? AND message_id = ? AND outcome = 'delivered' ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).get(p.agentId, p.resultMessageId) as { id: string } | undefined;
+  return delivery ? reaskAsync(p.agentId, p.askMessageId, delivery.id) : null;
 }
+
+/** A job ended without a bubble (cancelled by a stop or the owner): re-ask the request it belonged to. */
+export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettlementOutcome | null {
+  const db = getDb();
+  for (const table of ['generation_jobs', 'video_jobs']) {
+    const r = db.prepare(`SELECT source_message_id AS m FROM ${table} WHERE id = ?`).get(jobId) as { m: string | null } | undefined;
+    if (r) return reaskAsync(agentId, r.m, null);
+  }
+  return null;
+}
+
+/** A tracker task linked to a request ended: whatever it was holding back may settle now. */
+export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined): void {
+  reaskAsync(agentId, askMessageId, null);
+}
+onTaskEnded(settleAskOnTaskEnded);
 
 /**
  * INVOCATION (d) — THE JOIN RELAY. Scope only; the decision is `settleAsk`'s.
