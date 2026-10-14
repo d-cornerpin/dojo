@@ -8200,6 +8200,20 @@
       "to": 323,
       "by": "t143 round 4 (2026-10-13), orchestrator ruling R3-I1: being woken is not progress",
       "why": "+2: the delivery summary is read before the tie (it was read after), and the served task is dropped from the tie when a tracker notice served it and nothing was delivered. The summary's two lines moved up (net zero); the new lines are one comment and the servedId expression. REFUSED: stamping and filtering the event later (the clock reader would then need to know). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1787,
+      "to": 1788,
+      "by": "t143 round 5 (2026-10-13), orchestrator ruling R4-C1: the job carry has no clock",
+      "why": "+1: one import (launchContinuation, settleJobCarry, endJobCarry from work/task-freshness.ts). The three calls ride existing lines (the queued-wakeup launch, the run's end stamp, the Stop door's wake clear), so they add no lines. They mark a park's continuation as it launches and end the job's carry when the chain ends or the owner stops the agent. REFUSED: a new module owning the marks inside the runtime (the carry's state is one map in task-freshness.ts beside the freshness expression it serves). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 705,
+      "to": 706,
+      "by": "t143 round 5 (2026-10-13), orchestrator ruling R4-C1: the job carry has no clock",
+      "why": "+1: one import (launchContinuation). The call rides the existing try line of the tool-loop park's self-continuation timer, marking that continuation as it starts. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8269,7 +8283,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 400,
-    "packages/server/src/agent/runtime.ts": 1787,
+    "packages/server/src/agent/runtime.ts": 1788,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1466,
     "packages/server/src/agent/stream-patience.ts": 473,
@@ -8297,7 +8311,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 865,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
     "packages/server/src/agent/v2/counterparty.ts": 997,
-    "packages/server/src/agent/v2/loop.ts": 705,
+    "packages/server/src/agent/v2/loop.ts": 706,
     "packages/server/src/agent/v2/outbound-ledger.ts": 462,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 546,
