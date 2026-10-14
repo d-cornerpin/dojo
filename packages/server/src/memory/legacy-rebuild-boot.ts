@@ -17,10 +17,13 @@ export const BOOT_SETTLE_MS = 120_000;
 
 export async function runLegacyRebuildAtBoot(): Promise<LegacyRebuildStats | null> {
   if (rebuildGuard.running) return null;
+  let queued = 0;
   try {
-    if (!getDb().prepare("SELECT 1 FROM summaries WHERE rebuild_state = 'legacy_mixed_rebuild' LIMIT 1").get()) return null;
+    queued = (getDb().prepare("SELECT COUNT(*) AS n FROM summaries WHERE rebuild_state = 'legacy_mixed_rebuild'").get() as { n: number }).n;
+    if (queued === 0) return null;
   } catch { return null; }
   rebuildGuard.running = true;
+  logger.info('Older mixed notes: boot rebuild starting', { queued });
   try {
     return await rebuildLegacyMixedNotes();
   } catch (err) {

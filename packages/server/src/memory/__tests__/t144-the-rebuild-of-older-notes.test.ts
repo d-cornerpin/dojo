@@ -19,6 +19,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
+// t145: the boot pass's own log lines, read back (it used to say nothing until it finished).
+const bootLog = vi.hoisted(() => [] as unknown[][]);
+vi.mock('../../logger.js', async (orig) => {
+  const actual = await orig<typeof import('../../logger.js')>();
+  return {
+    ...actual,
+    createLogger: (name: string) => {
+      const l = actual.createLogger(name);
+      return name === 'legacy-rebuild-boot' ? { ...l, info: (...a: unknown[]) => { bootLog.push(a); } } : l;
+    },
+  };
+});
 vi.mock('../../db/connection.js', () => ({
   getDb: () => {
     if (!mockDb.current) throw new Error('test DB not initialized');
@@ -413,6 +425,15 @@ describe('t144 round 2 — the rebuild also starts once after an update boots, i
     const stats = await runLegacyRebuildAtBoot();
     expect(stats?.notesReplaced).toBe(1);
     expect(live()).toHaveLength(2);
+  });
+
+  it('t145: it says it is starting, with the queued count, before the work (the pass used to log nothing until it finished)', async () => {
+    bootLog.length = 0;
+    queuedNote();
+    rebuildContextItems(AGENT);
+    await runLegacyRebuildAtBoot();
+    expect(bootLog[0]?.[0]).toBe('Older mixed notes: boot rebuild starting');
+    expect(bootLog[0]?.[1]).toEqual({ queued: 1 });
   });
 
   it('with nothing queued it does nothing at all — no scan, no model call', async () => {
