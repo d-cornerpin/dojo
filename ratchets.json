@@ -8186,6 +8186,20 @@
       "to": 241,
       "by": "t143 round 3 (2026-10-13), orchestrator ruling C1: a moving agent is left alone",
       "why": "+2: one import (the real-movement reader, tracker/liveness.ts agentIsMoving) and one comment line. The gate now arms only for an agent that has STOPPED moving: the danglingRows ternary gains the movement test beside the existing human-waiting test, so a working job's tools are never refused and it is never offered complete / blocked / paused. The test itself is line-neutral. REFUSED: reading movement inside the dangler queries (a second copy of the movement definition). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts",
+      "from": 241,
+      "to": 243,
+      "by": "t143 round 4 (2026-10-13), orchestrator ruling R3-C1: moving is no blanket shield",
+      "why": "+2 net (the round-3 import of the movement reader is gone; the job-carry read replaces it). Only the job in flight (the agent's standing carry, work/task-freshness.ts jobCarriedIds) is exempt from the gate now: one const, one comment line, and a .filter on each of the two dangler results (the parentheses around the two queries are line-neutral). REFUSED: filtering inside the SQL (an id list per query) — it would put the carry's ids in two statements. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/task-stamps.ts",
+      "from": 321,
+      "to": 323,
+      "by": "t143 round 4 (2026-10-13), orchestrator ruling R3-I1: being woken is not progress",
+      "why": "+2: the delivery summary is read before the tie (it was read after), and the served task is dropped from the tie when a tracker notice served it and nothing was delivered. The summary's two lines moved up (net zero); the new lines are one comment and the servedId expression. REFUSED: stamping and filtering the event later (the clock reader would then need to know). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8343,7 +8357,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
-    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 241,
+    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 243,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 298,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
@@ -8468,7 +8482,7 @@
     "packages/server/src/tracker/pm-agent.ts": 2995,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
-    "packages/server/src/tracker/task-stamps.ts": 321,
+    "packages/server/src/tracker/task-stamps.ts": 323,
     "packages/server/src/tracker/tools.ts": 5195,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
