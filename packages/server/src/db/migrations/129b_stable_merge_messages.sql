@@ -249,6 +249,13 @@ UPDATE messages
 --   external_message_id / speaker / voice_session_id / sender_id / group_id / retired_at
 --                <- NULL. No source. `retired_at` NULL is correct: it is display suppression,
 --                   and none of these rows was ever suppressed.
+--   source_agent_id <- ia.source_agent_id, EXCEPT a peer row that names no sender. The CHECK
+--                   `lane <> 'a2a' OR role IN ('assistant','tool') OR source_agent_id IS NOT NULL`
+--                   refuses such a row, and the whole chain with it, on every boot. Migration 098
+--                   backfilled this table from `messages` with no sender guard and 126b repaired
+--                   NULL senders in `messages` only, so a box can carry one. Same fallback as §4b
+--                   and 126b: the `unrecorded-peer` token, applied only to the rows the CHECK
+--                   needs it for (lane a2a, role not assistant/tool); every other NULL stays NULL.
 INSERT INTO messages (
   rowid, seq, id, agent_id, conversation_id, lane, origin_intent, role, content, mood,
   display_kind, display_tier, turn_number, group_id, channel, sender_id, authorized,
@@ -273,7 +280,10 @@ SELECT
   END,
   'agent-only',
   ia.turn_number, NULL, NULL, NULL, 1,
-  ia.source_agent_id, ia.a2a_thread_id, ia.a2a_intent, ia.a2a_requires_response,
+  CASE WHEN ia.source_agent_id IS NULL AND ia.origin_kind IS NOT 'engine'
+        AND ia.role NOT IN ('assistant','tool')
+       THEN 'unrecorded-peer' ELSE ia.source_agent_id END,
+  ia.a2a_thread_id, ia.a2a_intent, ia.a2a_requires_response,
   MAX(1, LENGTH(ia.content) / 4),
   NULL, NULL, NULL, NULL, NULL, ia.attachments,
   NULL, NULL, NULL, ia.task_id, ia.run_id, ia.root_kind, ia.root_id,

@@ -246,6 +246,7 @@ describe('divergence adjudication', () => {
     const { KNOWN_DIVERGENCES } = await import('../migration-checksums.js');
     const files = KNOWN_DIVERGENCES.map(d => d.file).sort();
     expect(files).toEqual([
+      '129b_stable_merge_messages.sql',
       '135_work_spine.sql',
       '135b_stable_work_spine.sql',
       '144_task_runs_absorbed.sql',

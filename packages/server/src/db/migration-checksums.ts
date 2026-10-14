@@ -188,6 +188,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-09-26',
     reason: 'Names/PII scrub (owner rule 2026-09-26): one comment line naming a dev-box agent, rewritten by role. Executable SQL BYTE-IDENTICAL with `--` lines stripped (6daf355b40767a03…, both sides); the whole diff is that one comment line. Recorded checksum on the dev box equals the pre-scrub file\'s checksum.',
   },
+  {
+    file: '129b_stable_merge_messages.sql',
+    appliedChecksum: 'be8e01f76d8548214136938e5f41a7c7f24e9db0d232415717b3bfa801b92ef8',
+    fileChecksum: '6028ac7a559dc4454e6d97c94965bd8d401aee689bd4d36b2c921d29f8dd5af6',
+    since: '2026-10-14',
+    reason: 'v3.3.3 cut check: section 4a copied inter_agent_messages.source_agent_id straight through, so one peer row with no sender aborted the chain on every boot (the lane/role/sender CHECK); 4b already fell back to `unrecorded-peer`. Amended so 4a does the same for exactly the rows that CHECK needs it for. ONE blob has shipped in every one of the 30 tags that carry this file (v3.1.17-preflight.23 through v3.3.2), and be8e01f7 is its checksum. The only executable delta is one CASE expression that changes a value only for a NULL-sender, non-engine, non-assistant/tool row, the very row the old file aborted on; a box carrying the old checksum crossed the file and so held none, and every row the amended file writes there is identical.',
+  },
 ];
 
 type Db = ReturnType<typeof getDb>;
