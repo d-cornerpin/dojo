@@ -1201,10 +1201,8 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   const messages: LaneMessage[] = [];
   // t145 round 4: the served owner message(s), verbatim, ahead of the live rows they precede. Emitted
   // only when not otherwise in view, so exactly once.
-  // t158 B: it wears the SAME label as every other row (`renderRowLabel`: instant, conversation,
-  // channel, sender — what `labelRows` would give it in place), then a short pronoun-free phrase
-  // saying what it is for. The old sentence carried the time only, and "from you" in a user-role
-  // block read as if the agent had sent it. Still a pure function of the stored row (G2).
+  // t158 B: it wears the standard row label (`renderRowLabel`, as `labelRows` gives it in place) plus a
+  // pronoun-free phrase; the old sentence had the time only, and "from you" read as the agent's own.
   const served = payload.served ?? [];
   if (served.length > 0) {
     const facts = new LabelFacts(payload.agentId);

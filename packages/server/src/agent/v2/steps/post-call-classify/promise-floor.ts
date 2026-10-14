@@ -233,14 +233,10 @@ export function runPromiseFloor(
           // actually asked for was left behind as the turn's non-answer. Bounding the round to the
           // answer it was granted for is the difference between a check and a detour.
           //
-          // t158 (ritual run 6, S2): the round used to ORDER "say that same answer again with every
-          // line corrected", and a reply whose every line was right reached the owner twice — the
-          // reply was already persisted and shown before this floor runs (`persist-assistant.ts`
-          // files it as the turn's truthful answer first), so a restatement can only be a second
-          // copy. The order is now check-then-correct-only, through the product's own door for
-          // "you already gave the real reply": `[no-reply]` (`prompt/assembler.ts`). A correction,
-          // if one is needed, lands through the ordinary persist seam, which moves the answer key
-          // and demotes the first reply as it always has. The fire condition is unchanged.
+          // t158 (run 6, S2): the round used to ORDER a restatement, so a reply whose every line
+          // matched the board reached the owner twice. The reply is already persisted and shown
+          // (`persist-assistant.ts` keys it as the answer first); the round now checks, then ends
+          // with `[no-reply]` or says only the correction.
           `[System] Your reply told the user what is currently scheduled or owed ('${quoted}'), ` +
           `but nothing this turn read the board, so that came from memory rather than from a row. ` +
           `Check it before you assert it: work_update(action="list") for the live tracker, plus ` +

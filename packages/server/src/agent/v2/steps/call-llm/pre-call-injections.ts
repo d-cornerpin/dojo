@@ -144,22 +144,13 @@ export async function injectAndRecord(
   // prompt-cache prefix. Rebuilt each iteration with the rest of this block, so a
   // single copy lands per model call.
   //
-  // t158 F — RECENT OUTBOUND RIDES EVERY AGENT TURN, WHATEVER THE COUNTERPARTY. It is an engine
-  // fact that survives the conversation scoping, and the turns scoped HARDEST are the ones that
-  // need it most: an engine turn (a PM's idle poke, a wake) and an agent-counterparty turn read a
-  // context of one message or a few. Ritual run 6 (S1): an agent sent its finished audit to its
-  // PM with `send_to_agent` and left the task open; the PM's poke started an engine turn with no
-  // sign of that send, and the agent re-did the whole 600-page job (owner report #7, "reach back
-  // to do already accomplished tasks"). The block was inside the `counterparty.kind === 'user'`
-  // gate below, which it never needed: the receipts are the AGENT's, not the counterparty's. The
-  // deliveries lane (quotes to THIS counterparty) and OPEN WORK stay human-only, exactly as they were.
+  // t158 F: RECENT OUTBOUND rides EVERY agent turn. The receipts are the agent's own, and the turns
+  // scoped hardest (an engine poke, an agent counterparty) need them most: a PM's idle poke started a
+  // one-message turn with no sign of the agent's own send, and it re-did the whole job (run 6, S1;
+  // owner report #7). The per-counterparty deliveries lane and OPEN WORK stay human-only below.
   try {
     // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
-    // Survives scoping (receipts are not conversation rows), so a denial or a
-    // "did you send it" is answerable from fact, not scoped-away memory.
-    // T69b: the RENDER moved to `outbound-ledger.ts` (`renderRecentOutboundBlock`), which
-    // owns the read. It was five lines of `.map()` here with `relativeTimeAgo(...)` inside
-    // — a wall-clock read in the tail, untestable where it sat.
+    // Survives scoping (receipts are not conversation rows). T69b: the render lives in `outbound-ledger.ts`.
     const outBlock = renderRecentOutboundBlock(getRecentOutbound(agentId, 24, 5));
     if (outBlock) {
       pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor

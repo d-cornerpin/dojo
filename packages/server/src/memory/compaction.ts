@@ -227,13 +227,9 @@ export async function estimateAssembledTokens(
   // "should this agent summarise" stops being decided against a number that omitted, on the
   // dev body, an average of 3,981 tokens per 40-row window. The per-row cap is unchanged and
   // still applies to the whole row, exactly as it does to an oversized tool result.
-  //
-  // t158 C — PRICED ON THE ROWS THE ASSEMBLER WILL BUDGET. The assembler's tail render runs
-  // `capLargeToolResultStrings` (every tool result cut to 15K tokens, `tokenCount` cleared) BEFORE
-  // `budgetFreshTail` spends, so a 61K file read costs the trim 15K. Pricing the stored rows read
-  // that one row as 61K, called a 53K prompt on a 128K window "full", and folded 64 old rows with
-  // nothing leaving the view (ritual run 6, S4). Both numbers below now read the capped rows, by
-  // the SAME function, so the trigger and the trim cannot disagree about a row's size.
+  // t158 C: priced on the rows the assembler will budget. It caps every tool result at 15K tokens
+  // (`capLargeToolResultStrings`) before `budgetFreshTail` spends; pricing the stored 61K file read
+  // called a 53K prompt on a 128K window "full" and folded 64 rows for nothing (run 6, S4).
   const budgeted = capLargeToolResultStrings(freshTail);
   const freshTailTokens = budgeted.reduce(
     (sum, m) => sum + Math.min(storedRowCost(m), policy.gateMessageCap),
