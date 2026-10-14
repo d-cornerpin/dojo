@@ -104,7 +104,38 @@ export function runStartAck(
   // human owner's OWN engine acks about her agent's work are unaffected, those go to
   // her dashboard/owner conversation, not to an agent-flagged counterparty.
   const counterpartyIsAgentSender = counterparty.kind === 'user' && !!counterparty.senderIsAgent;
-  const startAckArmed = counterparty.kind === 'user' && !!triggerRow && !counterpartyIsAgentSender;
+  // t158 D — "HAS THE PERSON HEARD ANYTHING" IS JUDGED PER ASK, NOT PER TURN. The ack's purpose
+  // is per ask (this file's own header: an ack on a continuation "reads as a stray 'On it.'"),
+  // but `startAckRepliedNow` below only sees THIS turn's rows and skips every row carrying an
+  // `origin_intent` — the engine-delivered ack itself. A job that hit its round cap and was
+  // re-opened therefore armed a fresh timer on every continuation turn of the SAME ask, and the
+  // owner read "On it" / "Still grinding…" again each time (ritual run 6, S1). So the timer is
+  // not armed at all when ANY visible assistant line, the engine-delivered ack included, landed
+  // on an EARLIER turn since the ask's own row arrived. Read from the rows (the sequence since the
+  // trigger row, in this conversation), never from `turn_number` alone. This turn's own rows are
+  // still `startAckRepliedNow`'s, read live at fire time.
+  const askAlreadyHeardOnAnEarlierTurn = (): boolean => {
+    if (!triggerRow) return false;
+    try {
+      return !!db.prepare(`
+        SELECT 1 FROM messages
+        WHERE agent_id = ? AND role = 'assistant' AND lane = 'owner'
+          AND seq > ? AND turn_number IS NOT NULL AND turn_number < ?
+          AND (conversation_id IS NULL OR ? IS NULL OR conversation_id = ?)
+          AND content NOT LIKE '[{%'
+          AND length(trim(content)) > 0
+        LIMIT 1
+      `).get(agentId, triggerRow.rowid, turnNumber, triggerRow.conversation_id ?? null, triggerRow.conversation_id ?? null);
+    } catch (err) {
+      // A read that cannot run must not silence a fresh ask: fall back to the per-turn behaviour.
+      logger.warn('v2 F10: could not read whether this ask was already heard; arming as before', {
+        agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+      return false;
+    }
+  };
+  const startAckArmed = counterparty.kind === 'user' && !!triggerRow && !counterpartyIsAgentSender
+    && !askAlreadyHeardOnAnEarlierTurn();
   const startAckArmedAtMs = Date.now();
   // The person has heard something the moment EITHER a user-visible
   // assistant text row landed this turn (the DB check) OR the agent
@@ -127,6 +158,7 @@ export function runStartAck(
   `).get(agentId, turnNumber);
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
+      if (!startAckArmed) return;   // t158 D: never owed on a turn that was not armed (an ask already heard)
       if (turnCtx.engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
       // The captured-narration branch (F10, 2026-07-16) that lived here is
       // GONE (owner production report 2026-07-23: "not a single ack"). It
