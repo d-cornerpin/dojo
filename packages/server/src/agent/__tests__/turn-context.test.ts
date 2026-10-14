@@ -51,6 +51,7 @@ const THE_TURN_OWNS = [
   'agentId',
   'kind', 'convKey', 'conversationId', 'imRecipient', 'modelRequestId',
   'turnNumber', 'root', 'servedWork', 'receiptIds', 'recallTokens',
+  'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
 ];
 
 /** POPULATION 2 — mutable DRIVER locals that cross a step boundary, carried here
