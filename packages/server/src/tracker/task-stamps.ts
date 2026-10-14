@@ -20,7 +20,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
-import { turnWorkIds, settleJobWork } from '../work/task-freshness.js';
+import { finalizeWorkIds } from '../work/task-freshness.js';
 // T19 (D7): the declared set of bubbles the platform has already ruled not-an-answer. Read,
 // never retyped — same owner as `work/occurrences.ts` and `agent/v2/answered-edge.ts`.
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
@@ -176,8 +176,7 @@ export function stampTasksAtTurnFinalize(input: {
     const db = getDb();
     // t143 r2: only work THIS turn's trigger names (a continuation inherits its job from the park
     // that queued it) — never by conversation: `input.convKey` kept a same-conversation abandoned task fresh.
-    const carried = turnWorkIds(input.agentId);
-    settleJobWork(input.agentId);
+    const carried = finalizeWorkIds(input.agentId);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
         WHERE ${taskScope('w')}

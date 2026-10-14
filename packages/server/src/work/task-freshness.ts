@@ -39,9 +39,16 @@ export function carryJobWork(agentId: string, parkedTurn: number, ids: string[])
   if (all.length > 0) jobWork.set(agentId, { parkedTurn, ids: all });
 }
 
+/** What a turn finalizing ties: `turnWorkIds`, then the carry settles (below). */
+export function finalizeWorkIds(agentId: string): string[] {
+  const ids = turnWorkIds(agentId);
+  settleJobWork(agentId);
+  return ids;
+}
+
 /** Called when a turn finalizes: a continuation (no trigger of its own) that did not park again
  *  ends the job's carry. A turn with its own trigger leaves it standing for the continuation. */
-export function settleJobWork(agentId: string): void {
+function settleJobWork(agentId: string): void {
   const ctx = turnContext(agentId);
   const carried = jobWork.get(agentId);
   if (!ctx || !carried || ctx.root || ctx.servedWork) return;

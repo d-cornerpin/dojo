@@ -116,10 +116,7 @@ export async function runCloseoutGate(
     // a fresh ask in plain text without first touching the tracker. Abandoned danglers are
     // still enforced off the conversation path: by this same gate on the next non-conversation
     // turn, and by the PM poke chain (where closeout enforcement belongs).
-    // t143 round 3 (C1, owner's rule: a job that is really working is left alone): an agent that
-    // is MOVING (tokens, tools, an open request inside its window) is never judged abandoned, so
-    // the gate neither refuses its tools nor offers it complete / blocked / paused. A task is
-    // judged abandoned only once its agent has stopped moving.
+    // t143 r3 (C1): a MOVING agent is never judged abandoned — no gate, no refusals; only once it stops.
     const danglingRows = triggerRow || agentIsMoving(agentId) ? [] : [...inProgressDanglers, ...strandedRows];
     if (danglingRows.length > 0) {
       turnCtx.state = advance(turnCtx.state!, {
