@@ -189,8 +189,7 @@ export interface Agent {
   modelId: string | null;
   systemPromptPath: string | null;
   status: AgentStatus;
-  /** The diagnostic the platform last wrote (a parked agent's tag and plain words, t148); null when none. */
-  lastError?: string | null;
+  lastError?: string | null; // the platform's last diagnostic; a parked agent's tag and plain words (t148)
   config: Record<string, unknown>;
   createdBy: string;
   parentAgent: string | null;
@@ -222,9 +221,8 @@ export interface AgentDetail extends Agent {
    * blob and is `'{}'` for a third of the agents on a worn-in box.
    */
   effectiveGrants?: AccessGrants;
-  /** When true, the agent's conversations are skipped by the vault archive
-   * layer entirely — Dreamer never sees them. Toggleable on the agent
-   * detail page. Falls through from the group's flag if either is set. */
+  /** When true, the agent's conversations are skipped by the vault archive layer entirely (Dreamer
+   * never sees them). Toggleable on the agent detail page; falls through from the group's flag. */
   dreamerIgnore?: boolean;
   /** A-5b: calls a stop would cut NOW, live off the abort registry. `background` outlives its
    *  turn, so an `idle` row can be stoppable; absent = no claim, not zero. See `stop-affordance.ts`. */
