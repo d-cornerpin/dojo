@@ -134,3 +134,35 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     return null;
   }
 }
+
+/**
+ * A PM re-drive that WAKES an agent and owes nobody a reply (t143 round 3, I2; OR-LONG-JOBS).
+ *
+ * The check-ins, the retask directive and the "your pause was lifted" notice used to travel as an
+ * A2A QUESTION with `requiresResponse`, and in this transport that one bit is both the wake and a
+ * reply owed: the runtime re-triggers dedicated A2A turns until the reply lands, then records a
+ * synthetic ABANDONED one. A check-in must wait for nothing, so it travels as an events-lane
+ * engine event (which NAMES the task when the recipient owns it, so the recipient's next turn
+ * serves it) plus the runtime wake. If the agent answers, fine; if it never does, nothing happens.
+ * Best-effort: never throws.
+ */
+export async function redriveWithoutReply(opts: {
+  toAgentId: string; fromAgentId: string | null; content: string; taskId: string | null;
+}): Promise<boolean> {
+  try {
+    insertEngineEventIfAbsent({
+      id: uuidv4(), agentId: opts.toAgentId, content: opts.content, sourceAgentId: opts.fromAgentId,
+      originIntent: 'tracker',
+      work: opts.taskId ? { taskId: opts.taskId, runId: null, rootKind: 'task', rootId: opts.taskId } : null,
+    });
+    const { getAgentRuntime } = await import('./runtime.js');
+    getAgentRuntime().handleMessage(opts.toAgentId, opts.content).catch((err: unknown) => {
+      logger.warn('re-drive wake failed; the notice row stands for the next drain', {
+        toAgentId: opts.toAgentId, error: err instanceof Error ? err.message : String(err) });
+    });
+    return true;
+  } catch (err) {
+    logger.warn('re-drive could not be delivered', { toAgentId: opts.toAgentId, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}

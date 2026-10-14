@@ -203,8 +203,9 @@ describe('§3 every delivery in pm-agent.ts reads its own result', () => {
       [...src.matchAll(/(?:const|let)\s+\w+\s*=\s*await\s+deliverA2AMessage\(/g)].length +
       [...src.matchAll(/deliverA2AMessage\([\s\S]{0,4000}?\}\)\s*\.then\(/g)].length;
 
-    // t137: two sites since the unattended-budget hand-off was deleted (it was the third).
-    expect(calls, 'precondition: the sites still exist').toBeGreaterThanOrEqual(2);
+    // t137: two sites since the unattended-budget hand-off was deleted (it was the third); t143
+    // round 3: one — the poke loop no longer sends an A2A (it re-drives without a reply owed).
+    expect(calls, 'precondition: the site still exists').toBeGreaterThanOrEqual(1);
     expect(bound, `every one of the ${calls} deliveries must bind its result`).toBe(calls);
     expect(src, 'and the bare discarding form may not come back')
       .not.toMatch(/^\s*await deliverA2AMessage\(/m);

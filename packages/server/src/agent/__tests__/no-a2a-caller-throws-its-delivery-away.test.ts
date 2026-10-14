@@ -176,7 +176,8 @@ describe('no a2a caller throws its delivery away', () => {
     // t137: 8 -> 7. The unattended-budget trip hand-off (`escalateUnattendedBudgetTripToPM` in
     // tracker/pm-agent.ts) was a caller and is DELETED with the total-time cap (OR-LONG-JOBS);
     // the census itself still finds 0 findings over the 7 that remain.
-    expect(sites).toBeGreaterThanOrEqual(7);
+    // t143 r3 (I2): 7 -> 6 — the PM's poke is a re-drive that owes no reply, no longer an A2A.
+    expect(sites).toBeGreaterThanOrEqual(6);
     expect(files).toContain(TRANSPORT);
     expect(files).toContain(DOOR);
   });
@@ -208,7 +209,9 @@ describe('no a2a caller throws its delivery away', () => {
     const tools = stripComments(fs.readFileSync(path.join(SRC, 'tracker/tools.ts'), 'utf8'));
     // t143 r2: 8 -> 7 — the pause-lifted notice is no longer an A2A (it owes the PM no reply; it is an
     // engine event naming the task, plus the wake).
-    expect(tools.match(/\bdeliverA2ANotice\s*\(\{/g)).toHaveLength(7);
+    // t143 r3 (I2): 7 -> 4 — the retask directive and the complete- and block-rejection directives are
+    // re-drives too (`redriveWithoutReply`: a wake that owes the PM no reply).
+    expect(tools.match(/\bdeliverA2ANotice\s*\(\{/g)).toHaveLength(4);
     // every call hands the door a NOTICE NAME — a door called with no words to say says nothing
     for (const f of ['gateway/routes/tracker.ts', 'healer/injury-recovery.ts', 'scheduler/runner.ts', 'techniques/distillation.ts', 'tracker/tools.ts']) {
       const t = stripComments(fs.readFileSync(path.join(SRC, f), 'utf8'));

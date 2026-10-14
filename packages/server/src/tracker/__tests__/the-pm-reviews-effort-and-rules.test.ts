@@ -80,11 +80,21 @@ vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
 
-const deliverA2ASpy = vi.fn(async () => ({ delivered: true }));
+const deliverA2ASpy = vi.fn(async (_envelope?: unknown) => ({ delivered: true }));
 vi.mock('../../agent/a2a-transport.js', () => ({
   deliverA2AMessage: (...args: unknown[]) => deliverA2ASpy(...args),
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
+vi.mock('../../agent/agent-notice.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent/agent-notice.js')>()),
+  // t143 round 3 (I2): a PM poke is a re-drive that owes no reply; this door records it in the
+  // spy's envelope shape (recipient, payload) and the assertions read `requiresResponse: false`.
+  redriveWithoutReply: async (o: { toAgentId: string; fromAgentId: string | null; content: string }) => {
+    await deliverA2ASpy({ toAgent: o.toAgentId, fromAgent: o.fromAgentId, payload: o.content, requiresResponse: false });
+    return true;
+  },
+}));
+
 
 import { queueEffortReviewIfNeeded, runEffortReview, runPokeCheck, findPendingEffortReviewTaskIds } from '../pm-agent.js';
 import { EFFORT_REVIEW_DELTA_CALLS } from '../effort-governor.js';
@@ -412,9 +422,9 @@ describe('§3 the guarded poke path delivers rung 2, eventually, once its own gu
     await flushMicrotasks();
 
     expect(deliverA2ASpy).toHaveBeenCalledTimes(1);
-    const [envelope] = deliverA2ASpy.mock.calls[0] as [{ payload: string; toAgent: string; intent: string }];
+    const [envelope] = deliverA2ASpy.mock.calls[0] as [{ payload: string; toAgent: string; requiresResponse: boolean }];
     expect(envelope.toAgent).toBe('a1');
-    expect(envelope.intent).toBe('QUESTION');
+    expect(envelope.requiresResponse, 'a check-in owes no reply').toBe(false);
     expect(envelope.payload).toContain('same handful of calls, nothing new landing');
 
     expect(pokeCount('circ-guard-1')).toBe(1);

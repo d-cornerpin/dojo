@@ -189,7 +189,7 @@ import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { initState } from '../../agent/v2/state.js';
 import { runCloseoutGate } from '../../agent/v2/steps/preflight/closeout-gate.js';
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
-import { trackerValidatePause } from '../tools.js';
+import { trackerValidatePause, trackerRetask } from '../tools.js';
 
 /** One engine turn of the long job: a turn context like the engine's own, then the two records a
  *  15-minute park leaves (the checkpoint and the turn-finalize stamp), then the turn ends. The
@@ -336,5 +336,30 @@ describe('ROUND 2 (4): "your pause was lifted" wakes the agent and asks for no r
       .get() as { task_id: string; lane: string; content: string } | undefined;
     expect(row?.task_id).toBe('task-paused');
     expect(row?.lane).toBe('events');
+  });
+});
+
+describe('ROUND 3 (I2): a check-in owes no reply — nothing waits, nothing escalates for a missing one', () => {
+  const eventsToHelper = (): Array<{ task_id: string | null; content: string; a2a_requires_response: number | null }> =>
+    db().prepare("SELECT task_id, content, a2a_requires_response FROM messages WHERE agent_id = 'helper' AND lane = 'events'")
+      .all() as never;
+
+  it('a PM check-in on a quiet, idle assignee wakes it through an events-lane notice that names the task; no A2A owes the PM a reply', async () => {
+    claimedTask('task-quiet', 'the price check', Date.now() - 3 * 60 * MIN, 'c-1');
+    await runPokeCheck();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(pokes('task-quiet')).toBeGreaterThan(0);
+    expect(a2a.filter((m) => (m as { requiresResponse?: boolean }).requiresResponse)).toHaveLength(0);
+    const row = eventsToHelper().find((r) => r.content.includes('the price check'));
+    expect(row?.task_id).toBe('task-quiet');
+    expect(row?.a2a_requires_response ?? 0).toBe(0);
+  });
+
+  it('the retask directive is delivered the same way: a notice naming the task, no reply owed', async () => {
+    claimedTask('task-redo', 'the price check', Date.now() - 30 * MIN, 'c-1');
+    const out = await trackerRetask('pm', { task_id: 'task-redo', directive: 'The brief went to chat but the task says email; send it by email with the same content.' });
+    expect(out).not.toMatch(/^Error/);
+    expect(a2a.filter((m) => (m as { requiresResponse?: boolean }).requiresResponse)).toHaveLength(0);
+    expect(eventsToHelper().find((r) => r.content.includes('send it by email'))?.task_id).toBe('task-redo');
   });
 });

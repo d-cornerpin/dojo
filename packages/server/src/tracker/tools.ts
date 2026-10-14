@@ -3762,13 +3762,8 @@ export async function trackerValidatePause(
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
         `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes, PM will reject again. No reply to the PM is needed.`;
-      const { v4: uuidv4 } = await import('uuid');
-      insertEngineEventIfAbsent({ id: uuidv4(), agentId: task.assigned_to, content: directive, sourceAgentId: pmAgentId,
-        originIntent: 'tracker', work: { taskId, runId: null, rootKind: 'task', rootId: taskId } });
-      getAgentRuntime().handleMessage(task.assigned_to, directive).catch((err: unknown) => {
-        logger.warn('Pause-rejection wake failed; the notice row stands for the next drain', {
-          taskId, error: err instanceof Error ? err.message : String(err) }, pmAgentId);
-      });
+      const { redriveWithoutReply } = await import('../agent/agent-notice.js');
+      await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: directive, taskId });
     } catch (err) {
       logger.warn('Failed to send pause-rejection notice to agent', {
         taskId, assignedTo: task.assigned_to,
@@ -3893,21 +3888,14 @@ export async function trackerRetask(
   // user turn (same transport as validate_pause's reject path). Fire-
   // and-forget; PM has already moved the status.
   try {
-    const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
+    const { redriveWithoutReply } = await import('../agent/agent-notice.js');
     const body =
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
       `Do the work the directive describes, then close out (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
-    const { v4: uuidv4 } = await import('uuid');
-    await deliverA2ANotice({
-      intent: 'QUESTION',
-      threadId: uuidv4(),
-      requiresResponse: true,
-      payload: body,
-      toAgent: task.assigned_to,
-      fromAgent: pmAgentId,
-    }, 'Retask directive to the agent', { taskId, assignedTo: task.assigned_to }, pmAgentId);
+    // t143 round 3 (I2): a directive, not a question — it wakes the agent and owes the PM no reply.
+    await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {
     logger.warn('Failed to deliver retask directive to agent', {
       taskId, assignedTo: task.assigned_to,
@@ -4663,20 +4651,13 @@ export async function trackerValidateComplete(
 
   if (task.assigned_to) {
     try {
-      const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
+      const { redriveWithoutReply } = await import('../agent/agent-notice.js');
       const directive =
         `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck, this is a routine PM check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
         `To close this out: address what PM flagged, then call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
-      await deliverA2ANotice({
-        intent: 'QUESTION',
-        threadId: '',
-        requiresResponse: true,
-        payload: directive,
-        toAgent: task.assigned_to,
-        fromAgent: pmAgentId,
-      }, 'Complete-rejection directive to the agent', { taskId, assignedTo: task.assigned_to }, pmAgentId);
+      await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: directive, taskId });
     } catch (err) {
       logger.warn('Reject directive A2A delivery failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -4810,20 +4791,13 @@ export async function trackerValidateBlocked(
 
   if (task.assigned_to) {
     try {
-      const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
+      const { redriveWithoutReply } = await import('../agent/agent-notice.js');
       const directive =
         `Your block on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus}, PM didn't see a real obstacle. Routine check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
         `Address what PM flagged, then either complete with result + evidence, or re-block with a clearer reason naming the specific obstacle. Don't re-block with the same notes, PM will reject again.`;
-      await deliverA2ANotice({
-        intent: 'QUESTION',
-        threadId: '',
-        requiresResponse: true,
-        payload: directive,
-        toAgent: task.assigned_to,
-        fromAgent: pmAgentId,
-      }, 'Block-rejection directive to the agent', { taskId, assignedTo: task.assigned_to }, pmAgentId);
+      await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: directive, taskId });
     } catch (err) {
       logger.warn('Block reject directive A2A delivery failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
