@@ -120,6 +120,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { checkAndCompact } from '../compaction.js';
+import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { buildWorkBoardLane } from '../work-board-lane.js';
 import { assembleContext } from '../assembler.js';
 import { POST_BUDGET_LANES } from '../lanes.js';
@@ -150,7 +151,7 @@ function freshDb(): Database.Database {
 type Wire = { role: string; content: unknown };
 const seen: Wire[][] = [];
 /** The scripted model's answer to a turn that is NOT obeying a pin: each entry answers one call. */
-let script: Array<{ content?: string; tool?: { name: string; arguments: Record<string, unknown> } }> = [];
+let script: Array<{ content?: string; tool?: { name: string; arguments: Record<string, unknown> }; before?: () => Promise<void> }> = [];
 let toolSeq = 0;
 const EFFECTFUL = new Set(['file_write', 'send_email', 'image_create']);
 
@@ -190,6 +191,7 @@ function installModel(): void {
         toolCalls: [{ id: `tc-${toolSeq}`, name: 'file_write', arguments: { path: 'notes/venue-1.md', content: 'resumed the job' } }] };
     }
     const step = script.shift() ?? { content: '[no-reply]' };
+    await step.before?.();
     if (step.tool) {
       toolSeq += 1;
       return { content: '', inputTokens: 1, outputTokens: 1, stopReason: 'tool_use',
@@ -225,6 +227,7 @@ beforeEach(() => {
   db.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification)
               VALUES ('primary', 'Primary', 'm', 'idle', '{}', 'sensei')`).run();
   seen.length = 0; script = []; toolSeq = 0;
+  __resetBrakesForTests();   // a low-yield backoff from an earlier clause must not decide this one
   callModelSpy.mockReset(); executeToolSpy.mockReset();
   installModel();
 });
@@ -346,5 +349,33 @@ describe('t145 B — the pin is deleted, not hidden: no module, no lane, no regi
     expect(registeredIds()).not.toContain('msg.directive');
     expect(Object.keys(MessageSlot)).not.toContain('ActiveDirectiveTail');
     expect(Object.keys(MessageSlot)).not.toContain('ActiveDirective');
+  });
+});
+
+describe('t145 B round 2 — a KNOWN GAP, driven: an ask with NO task whose raw row is folded mid-turn', () => {
+  // The pin used to hold such an ask whole on every call. With it gone, the only carrier is the
+  // summariser's note. Reaching the shape takes a very long turn of tracker-only calls (the engine
+  // floor opens a task at six non-tracker calls, which would put the words on the list), and a
+  // pressure fold in the middle of it. Per the ruling, no new machinery: this test PINS what the
+  // agent sees so the gap is a recorded fact, not a surprise. If it is ever closed (the words kept
+  // whole, or labelled with a history_get pointer), flip the three marked assertions.
+  it('after the fold the agent holds the note and not the ask: no task, no raw row, no pointer to the words', async () => {
+    await submitUserMessage(AGENT, LONG_ASK);
+    const folded: Array<{ leafCreated: number }> = [];
+    const reads = Array.from({ length: 30 }, (_, i) => ({
+      tool: { name: 'work_update', arguments: { action: 'get', task_id: `venue-${i}-abcd` } },
+      ...(i === 29 ? { before: async () => { folded.push(await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true })); } } : {}),
+    }));
+    const calls = await turn(...reads, { content: 'Carrying on with the three notes.' });
+    const after = wireText(calls[calls.length - 1]);
+    expect(folded[0]?.leafCreated, 'the pressure fold really ran mid-turn').toBeGreaterThan(0);
+    expect((mockDb.current!.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task'").get() as { n: number }).n).toBe(0);
+    expect(after).toContain('COMPRESSED HISTORY');
+    // KNOWN GAP (1/3): the owner's words are no longer in the array whole.
+    expect(after).not.toContain(LONG_ASK);
+    // KNOWN GAP (2/3): and nothing on the array names the row that holds them.
+    const row = mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE ? LIMIT 1").get(`%${JOB}%`) as { id: string };
+    // KNOWN GAP (3/3): ... no history_get pointer to it.
+    expect(after).not.toContain(row.id);
   });
 });
