@@ -44,6 +44,7 @@ import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
 import { exceededBudget, WALL_ESTIMATE_USD, type ExceededBudget } from '../../costs/budget.js';
 import { routedCandidateCosts } from '../../router/selector.js';
+import { limitTurnsAway } from './limit-turns-away.js';
 import type { PromptTurnContext } from '../../prompt/assembler.js';
 import { honestStopWords, type HonestStopKind } from './error-format.js';
 import { lockTag, parkedAgents, parkedCauseOf, parkedForFreeDown, BUDGET_STOP_CODE, NO_MODEL_FITS_CODE, FREE_FALLBACK_DOWN_CODE, FREE_DOWN_TAG } from './honest-stop-lock.js';
@@ -174,10 +175,9 @@ async function wake(agentId: string): Promise<void> {
 export async function releaseHonestStops(kind: HonestStopKind, opts: { agentId?: string; onModelsChange?: boolean } = {}): Promise<string[]> {
   const released: string[] = [];
   for (const id of parkedAgents(kind, opts.agentId)) {
-    // t149 r3: a "free fallback did not answer" park is lifted by the limit moving or a model/tier change, never by a free model merely existing.
-    const freeDown = kind === 'budget_stop' && parkedForFreeDown(id);
+    const freeDown = kind === 'budget_stop' && parkedForFreeDown(id);   // t149: lifted by the limit moving (the park's own predicate) or a model/tier change
     if (opts.onModelsChange && !freeDown) continue;
-    const stands = freeDown ? !opts.onModelsChange && exceededBudget(id, WALL_ESTIMATE_USD) !== null
+    const stands = freeDown ? !opts.onModelsChange && limitTurnsAway(id)
       : kind === 'budget_stop' ? budgetStopFor(id) !== null : !(await agentFits(id));
     if (stands || parkedAgents(kind, id).length === 0) continue;
     setAgentStatus(id, 'idle', { clearError: true });

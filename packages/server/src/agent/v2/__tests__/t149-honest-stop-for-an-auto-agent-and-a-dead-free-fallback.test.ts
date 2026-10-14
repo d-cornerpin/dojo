@@ -775,7 +775,7 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
   });
 
-  it.fails('round 4: an auto agent parked in the band where the wall would still let a call through (spend + 0.01 <= limit < spend + the router\'s estimate): several ticks never release it, wake it or re-tell it', async () => {
+  it('round 4: an auto agent parked in the band where the wall would still let a call through (spend + 0.01 <= limit < spend + the router\'s estimate): several ticks never release it, wake it or re-tell it', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     inTheBand = true;
     await spendIs(0.985);   // limit 1.00: the wall's 0.01 passes (0.995), the paid model's 0.021 estimate does not (1.006)

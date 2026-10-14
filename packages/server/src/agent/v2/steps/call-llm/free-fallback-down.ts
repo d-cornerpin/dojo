@@ -10,7 +10,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../../../../db/connection.js';
-import { routedSkipReasons } from '../../../../router/selector.js';
+import { limitTurnsAway } from '../../limit-turns-away.js';
 import { AgentError } from '../../../errors.js';
 import { FREE_FALLBACK_DOWN_CODE } from '../../honest-stop-lock.js';
 
@@ -22,7 +22,7 @@ export function freeFallbackDown(err: unknown, agentId: string, tier: string | n
       `SELECT COUNT(*) AS n FROM models WHERE id IN (${ids.map(() => '?').join(',')}) AND input_cost_per_m = 0 AND output_cost_per_m = 0`,
     ).get(...ids) as { n: number };
     if (free.n !== ids.length) return err;   // a paid model failed: that is its own fault, not the limit's
-    if (!routedSkipReasons(tier, agentId, ids, ['tools']).some((r) => r.skip === 'budget')) return err;
+    if (!limitTurnsAway(agentId, tier, ids)) return err;
     const why = err instanceof Error ? `: ${err.message}` : '';
     return new AgentError(`Today's spending limit is reached and no free model answered${why}`, agentId,
       { code: FREE_FALLBACK_DOWN_CODE, retryable: false, cause: err instanceof Error ? err : undefined });
