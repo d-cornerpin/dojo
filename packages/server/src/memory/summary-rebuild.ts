@@ -308,7 +308,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
   if (agentBusy(flag.agentId)) return 'deferred';
   const budget = checkBudget(flag.agentId, estimateCost(modelId, estimateTokens(input) + targetTokens, targetTokens));
   if (!budget.allowed) {
-    logger.warn('Summary rebuild waits: the spending limit is reached', { summaryId: flag.id, reason: budget.reason }, flag.agentId);
+    logger.warn('Summary rebuild waits: the money guardrail has stopped it for today', { summaryId: flag.id, reason: budget.reason }, flag.agentId);
     return 'deferred';
   }
 
