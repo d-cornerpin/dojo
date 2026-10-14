@@ -8312,6 +8312,13 @@
       "to": 1557,
       "by": "t149 (2026-10-14), F4: the summary writer is chosen by what it can hold",
       "why": "+12 at compaction.ts, offset by -47 at agent/model.ts in this same commit (4002 -> 3955: the money wall's free-model redirect, ~45 lines, moved out to the new agent/budget-redirect.ts and its three now-unused imports dropped), so the campaign's net is -35. The +12 is the leaf loop's own sizing and stop, which cannot live anywhere else: the chunk is capped by the writer's room (3 lines), a writer that failed on the chunk before ends its pass (1), a chunk the writer cannot hold is halved (4), the owner's Stop ends the walk (1), the pass is handed to the writer fallback (3 net across the two call sites), one import (1) less one line folded. The fallback itself (26 lines), the room/hold arithmetic and the stop policy were put in NEW modules (leaf-writer-fallback.ts 33 lines, summary-writer-health.ts) rather than here. REFUSED: raising summarize.ts and tracker-store.ts and shared-state.ts, which were brought back to their ceilings by moving the policy out. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/condense-until-fits.ts",
+      "from": 415,
+      "to": 420,
+      "by": "t149 round 2 (2026-10-14), hand-up 3: condensation batches are cut to the writer's room",
+      "why": "+5: the batch loop becomes a queue (the for-of over subjectBatches is now a while over a mutable list, +2) and a batch the writer cannot hold (the refuse-before-dialling guard's tooBig result) is halved and put back at the front (+3, one comment folded into the line). The room/hold arithmetic lives in summary-writer-health.ts, not here. No size, count or timer is added: the halving stops at a pair. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8523,7 +8530,7 @@
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 298,
     "packages/server/src/memory/compaction.ts": 1557,
-    "packages/server/src/memory/condense-until-fits.ts": 415,
+    "packages/server/src/memory/condense-until-fits.ts": 420,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
