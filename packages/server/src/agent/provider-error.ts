@@ -150,6 +150,17 @@ export function statusIsAnchored(text: string, status: number): boolean {
   ).test(text ?? '');
 }
 
+/** t151 round 2: "quota" names two facts. OUT OF CREDIT (money words) is the owner's to fix; a per-minute or
+ *  per-day limit that happens to say "quota exceeded" is a wait. Only the money words make `quota`. `billing`
+ *  and OpenAI's "exceeded your current quota" count unless the text names a window (`per minute`,
+ *  `RESOURCE_EXHAUSTED`): free tiers say "check your plan and billing details" about a per-minute limit. */
+export function namesMoney(lower: string): boolean {
+  if (lower.includes('insufficient_quota') || lower.includes('insufficient balance') || lower.includes('insufficient_balance')
+    || lower.includes('insufficient funds') || lower.includes('insufficient credit')) return true;
+  return (lower.includes('billing') || lower.includes('exceeded your current quota'))
+    && !/per (second|minute|hour|day)|resource_exhausted/.test(lower);
+}
+
 function statusToClass(status: number, providerType: string | null): ProviderErrorClass {
   const t = (providerType ?? '').toLowerCase();
   if (status === 401) return 'auth';
@@ -158,7 +169,7 @@ function statusToClass(status: number, providerType: string | null): ProviderErr
   if (status === 429) {
     // A 429 is a rate limit unless the provider says the money ran out, which is a different
     // fact with a different remedy: waiting fixes one and never fixes the other.
-    return t.includes('quota') || t.includes('billing') || t.includes('insufficient') ? 'quota' : 'rate_limit';
+    return t.includes('billing') || t.includes('insufficient') ? 'quota' : 'rate_limit';
   }
   if (status === 408) return 'overloaded';
   if (status === 529 || status === 503) return 'overloaded';
@@ -257,11 +268,7 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
   // QUOTA_EXHAUSTED lock. A 402 that is not announced as a status falls through to the arms below
   // and is read on its other evidence, which is how a transient stays transient.
   const anchored402 = statusIsAnchored(lower, 402);
-  if (anchored402
-    || lower.includes('insufficient_quota') || lower.includes('insufficient balance')
-    || lower.includes('insufficient_balance') || lower.includes('insufficient funds')
-    || lower.includes('insufficient credit')
-    || (lower.includes('quota') && (lower.includes('exceed') || lower.includes('exhaust')))) {
+  if (anchored402 || namesMoney(lower)) {
     return decided('quota', anchored402 ? 402 : null);
   }
   if (hasStatusToken(lower, 429) || lower.includes('rate_limit') || lower.includes('rate limit')
@@ -362,7 +369,7 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
         : t.includes('overloaded') ? 'overloaded'
           : t.includes('authentication') ? 'auth'
             : t.includes('permission') ? 'access_denied'
-              : t.includes('quota') || t.includes('insufficient') ? 'quota'
+              : t.includes('insufficient') || t.includes('billing') ? 'quota'
                 : t.includes('invalid_request') ? 'bad_request'
                   : t.includes('api_error') ? 'server'
                     : null;

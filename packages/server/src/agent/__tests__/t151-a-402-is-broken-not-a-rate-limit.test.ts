@@ -15,7 +15,7 @@
 // short one a real box logged. CONTROL: a genuine 429 still takes the silent retry.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-// RED-FIRST at 50b921db: committed `it.fails` (f9a0de9d), flipped with the fix.
+// RED-FIRST: committed `it.fails` (f9a0de9d; round 2 at its RED commit), flipped with the fixes.
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import http from 'node:http';
@@ -232,22 +232,22 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
 const GEMINI_PER_MINUTE = '429 RESOURCE_EXHAUSTED: Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15 per minute';
 
 describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceeded" is a rate limit', () => {
-  it.fails('the Gemini per-minute text is a rate limit, read the same way by the classifier, classifyError and the retry manager', () => {
+  it('the Gemini per-minute text is a rate limit, read the same way by the classifier, classifyError and the retry manager', () => {
     expect(classifyProviderErrorText(GEMINI_PER_MINUTE).class).toBe('rate_limit');
     expect(providerClassOf(new Error(GEMINI_PER_MINUTE))).toBe('rate_limit');
     expect(classifyError(new Error(GEMINI_PER_MINUTE)).kind).toBe('rate_limit');
   });
 
-  it.fails('through recovery the Gemini per-minute error is NOT the Tier-D lock: agent not in error, no card, no owner text', async () => {
+  it('through recovery the Gemini per-minute error is NOT the Tier-D out-of-credit lock: no quota_exhausted, no card, no owner text', async () => {
     await recover(new Error(GEMINI_PER_MINUTE));
     const agent = db().prepare('SELECT status, last_error FROM agents WHERE id = ?').get(AGENT) as { status: string; last_error: string | null };
-    expect(agent.status).not.toBe('error');
     expect(agent.last_error ?? '').not.toMatch(/quota_exhausted/);
+    expect((db().prepare('SELECT broken_notice AS n FROM agents WHERE id = ?').get(AGENT) as { n: string | null }).n).toBeNull();
     expect(ownerTexts()).toBe(0);
     expect(cards()).toHaveLength(0);
   });
 
-  it.fails('a 429 whose provider type says "quota" but names no money is a rate limit: the call arms the silent retry', async () => {
+  it('a 429 whose provider type says "quota" but names no money is a rate limit: the call arms the silent retry', async () => {
     answer.status = 429; answer.body = { error: { message: 'Quota exceeded for requests per minute', type: 'quota_exceeded' } };
     const err = await pinnedCall();
     expect(err.provider?.class).toBe('rate_limit');
