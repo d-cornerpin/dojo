@@ -82,6 +82,7 @@ import { getDb } from '../db/connection.js';
 import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
+import { generateOnAWriterThatHolds } from './leaf-writer-fallback.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
@@ -280,10 +281,11 @@ async function condenseLevel(
       return { created: 0, calls: 0, stage: 'summary_writer_unavailable', detail: modelId };
     }
     try {
-      const summary = await generateSummary({
+      const summary = await generateOnAWriterThatHolds({
         content: condensedSummaryInput([only]), depth: only.depth + 1, targetTokens: target, agentId, modelId, abortSignal,
       });
       calls += 1;
+      if (!summary.ok && summary.stopped) return { created: 0, calls, stage: 'bounded_without_progress', detail: 'stopped by the owner' };
       if (!summary.ok) return { created: 0, calls, stage: 'summariser_refused', detail: summary.reason };
       if (summary.tokenCount >= only.tokenCount) {
         return { created: 0, calls, stage: 'single_summary_did_not_shrink', detail: `${only.tokenCount} → ${summary.tokenCount}` };
@@ -305,10 +307,11 @@ async function condenseLevel(
     if (summaryWriterUnavailable(agentId, modelId)) { stage = 'summary_writer_unavailable'; detail = modelId; break; }
     const shape = parentShape(batch);
     try {
-      const summary = await generateSummary({
-        content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal,
-      });
+      const args = { content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal };
+      // A pair (or more) the writer cannot hold is halved first; a pair that still does not hold goes to a writer that can.
+      const summary = await (batch.length > 2 ? generateSummary(args) : generateOnAWriterThatHolds(args));
       calls += 1;
+      if (!summary.ok && summary.stopped) { stage ??= 'bounded_without_progress'; detail ??= 'stopped by the owner'; break; }   // a Stop is a stop
       if (!summary.ok && summary.tooBig && batch.length > 2) {   // t149: not dialled, more than the writer holds: halve it
         batches.unshift(batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))); continue;
       }

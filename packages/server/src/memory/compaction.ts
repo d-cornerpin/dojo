@@ -24,7 +24,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
-import { leafWithWriterFallback } from './leaf-writer-fallback.js';
+import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -39,7 +39,7 @@ import { generateSummary } from './summarize.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
-import { lastCompactionDividerAt } from '../agent/shared-state.js';
+import { lastCompactionDividerAt, isStopFenced } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
 import { groupBySubject, conversationLabels } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
@@ -823,7 +823,8 @@ async function runCheckAndCompact(
 
     const tokensBefore = totalTokens;
     const leaf = await withCompactionActivity(agentId, () => leafWithWriterFallback(agentId, modelId,
-      (writer) => runLeafCompaction(agentId, writer, contextWindow, { abortSignal: options?.abortSignal }), options?.abortSignal));
+      (writer, left) => runLeafCompaction(agentId, writer, contextWindow, { abortSignal: options?.abortSignal, left }), options?.abortSignal,
+      (left) => coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0)));
     const leafCreated = leaf.leafCreated;
     modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
     // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
@@ -847,7 +848,7 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore });
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore });
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -876,7 +877,7 @@ async function runCheckAndCompact(
       });
     }
 
-    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1) {
+    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId)) {
       // The run happened and bought almost nothing; the threshold will still
       // be crossed next turn. Back off instead of treadmilling.
       noteLowYield(agentId);
@@ -964,7 +965,7 @@ async function condenseOnlyPass(
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
     tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
   };
-  notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId));
+  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId));
   broadcast({ type: 'memory:compaction', agentId, ...result });
   logger.info('Condensation-only compaction complete', {
     ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
@@ -1021,18 +1022,19 @@ export async function leavingViewPass(
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
-  const pass = (writer: string): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,
-    { abortSignal: options?.abortSignal, throughSeq: leaving.throughSeq, floorRows });
+  const pass = (writer: string, left?: LeftBehind): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,
+    { abortSignal: options?.abortSignal, throughSeq: leaving.throughSeq, floorRows, left });
+  const cover = (left: LeftBehind): Promise<void> => coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0);
   // The out-of-view door walks the writers itself; every other leaving-view pass hands on (t149 F4).
   const leafCreated = await withCompactionActivity(agentId, async () => outOfView
-    ? pass(modelId) : (await leafWithWriterFallback(agentId, modelId, pass, options?.abortSignal)).leafCreated);
+    ? pass(modelId) : (await leafWithWriterFallback(agentId, modelId, pass, options?.abortSignal, cover)).leafCreated);
   rebuildContextItems(agentId);
   // T56 leg (b): the prefix has just been rewritten at the summaries lane, so this is the one
   // instant at which retiring reasoning and stubbing old tool results costs no cache reuse.
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
-  if (!outOfView) notePassOutcome(agentId, false, result);
+  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result);   // a Stopped pass is not an outcome (t149 r4)
   broadcast({ type: 'memory:compaction', agentId, ...result });
   if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
     insertCompactionDivider(agentId, {
@@ -1265,6 +1267,8 @@ export async function runLeafCompaction(
      *  of rows the trim already took out of view passes 1 — the floor bounds what PRESSURE may
      *  fold, not what the trim takes, and the newest row is never out of view. */
     floorRows?: number;
+    /** t149 round 4: set when a row was more than this writer holds, so the fallback can offer it to one that can. */
+    left?: LeftBehind;
   },
 ): Promise<number> {
   const cw = contextWindow ?? 200000;
@@ -1373,6 +1377,7 @@ export async function runLeafCompaction(
       if (!summary.ok) {
         if (summary.tooBig) {   // t149 F4: not dialled — more than it can hold: halved, a single row is left for a writer that can
           if (chunk.length > 1) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
+          else if (opts?.left) opts.left.tooBig = true;
           continue;
         }
         logger.warn('SUMMARY_REFUSED leaf chunk left uncompacted', {
@@ -1429,7 +1434,9 @@ export async function runLeafCompaction(
 
   // t144: the boundary stays true — rows a refused conversation's chunk left below a landed one are
   // covered now (placeholder notes, replaced in the background), never left out of view unrepresented. Asked on EVERY fold, even one that landed nothing: rows an earlier fold could not cover are still owed.
-  await coverRowsStrandedBelowBoundary(agentId, uncompacted[0].rowid ?? 0);
+  // Under the writer fallback (`opts.left`) the covering waits for the LAST writer: a row this one could not hold may be taken by the next.
+  if (opts?.left) opts.left.fromSeq ??= uncompacted[0].rowid ?? 0;
+  else await coverRowsStrandedBelowBoundary(agentId, uncompacted[0].rowid ?? 0);
   return summariesCreated;
 }
 

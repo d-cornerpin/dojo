@@ -189,7 +189,7 @@ describe('t149 round 4 — the writer is chosen by the REAL input, row by row', 
   const labelled = (id: string): boolean =>
     !!db().prepare("SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE sm.message_id = ? AND s.kind = 'uncondensed' LIMIT 1").get(id);
 
-  it.fails('a single row the first writer cannot hold goes to a writer that can, in the same pass: the row is covered, the small writer is not dialled with it', async () => {
+  it('a single row the first writer cannot hold goes to a writer that can, in the same pass: the row is covered, the small writer is not dialled with it', async () => {
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(TINY, DEAD);   // SMALL (cheaper, 16K) is first, ROOMY (32K) second
     const id = aBigRowAmongSmallOnes(5);                                                   // ~12K tokens: more than SMALL's room
     const result = await checkAndCompact(AGENT, 'auto', 8_000, { force: true });

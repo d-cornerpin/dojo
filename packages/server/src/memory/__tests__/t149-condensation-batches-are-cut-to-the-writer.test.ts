@@ -89,12 +89,13 @@ describe('t149 round 2 — condensation batches are cut to the writer', () => {
     expect(out.refusedStage).not.toBe('summariser_refused');
   });
 
-  it.fails('round 4: a Stop during condensation is reported as a stop and ends the walk — not as the writer refusing batch after batch', async () => {
+  it('round 4: a Stop during condensation is reported as a stop and ends the walk — not as the writer refusing batch after batch', async () => {
+    db().prepare("UPDATE summaries SET content = 'A short summary of the depot.', token_count = 10 WHERE agent_id = ?").run(AGENT);   // small enough to hold: the writer IS dialled
     dials.empty = true;            // the call the owner's Stop cut comes back empty
     stoppedAgents.add(AGENT);      // and the stop stands
     const out = await condenseUntilFits({
       agentId: AGENT, modelId: SMALL, minFanout: 4, targetTokens: 6000,
-      measure: async () => ({ total: 90_000, summaryTokens: 1_000 }),
+      measure: async () => ({ total: 90_000, summaryTokens: 10 }),
       rebuild: () => rebuildContextItems(AGENT),
     });
     expect(out.refusedStage, 'a stop is not a refusal').not.toBe('summariser_refused');
@@ -102,7 +103,7 @@ describe('t149 round 2 — condensation batches are cut to the writer', () => {
     expect(dials.calls.length, 'the walk ended at the first stopped call').toBe(1);
   });
 
-  it.fails('round 4: a pair the writer cannot hold goes to a writer that can, before the batch is given up', async () => {
+  it('round 4: a pair the writer cannot hold goes to a writer that can, before the batch is given up', async () => {
     db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-roomy', 'p-roomy', 'openai-compatible', 'api_key', 'http://localhost:11431/v1')").run();
     db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
       VALUES ('model-t149-roomy', 'p-roomy', 'roomy', 'Roomy', 32000, 4096, '["text","tools"]', 1, 0.5, 2)`).run();

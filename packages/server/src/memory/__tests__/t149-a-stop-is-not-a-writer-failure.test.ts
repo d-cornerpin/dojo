@@ -198,7 +198,7 @@ describe('t149 round 4 — a pass the owner\'s Stop ended is not an outcome', ()
     await run;
   };
 
-  it.fails('Stop during the pressure pass arms no low-yield brake and no defect; writer health is untouched and the next pass runs at once', async () => {
+  it('Stop during the pressure pass arms no low-yield brake and no defect; writer health is untouched and the next pass runs at once', async () => {
     longConversation();
     await stopDuring(() => checkAndCompact(AGENT, OWN, 8_000, { force: true }));
     expect(compactionIsBraked(AGENT, true), 'no 15-minute wait behind a Stop').toBe(false);
@@ -213,7 +213,7 @@ describe('t149 round 4 — a pass the owner\'s Stop ended is not an outcome', ()
     expect(next.leafCreated, 'the next pass ran').toBeGreaterThan(0);
   });
 
-  it.fails('Stop during a leaving-view pass: the same', async () => {
+  it('Stop during a leaving-view pass: the same', async () => {
     longConversation();
     const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 64;
     await stopDuring(() => checkAndCompact(AGENT, OWN, 128_000, { leaving: { cause: 'ceiling', throughSeq: through, rowsLeaving: 30 } }));
