@@ -17,7 +17,8 @@
 // Conditions: `stuck:<agentId>` (clears on that agent's recovery), `healer-broken` (clears when
 // the Healer recovers, or is seen healthy at the next injury of another agent), and
 // `healer-missing:<agentId>` (one at a time, whichever agent found it missing first; clears
-// when an injury finds the Healer present again).
+// when an injury finds the Healer present again), and (t148 round 3) `nofit:<agentId>` (an agent
+// parked because none of its models can hold it; ends when the agent is released).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -30,6 +31,10 @@ const DISMISSED = 'owner_dismissed';
 export const HEALER_BROKEN_WORDS = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
 export const stuckWords = (name: string): string =>
   `${name} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
+/** t148 round 3: an agent parked because none of its models can hold it is a broken agent the owner
+ *  must act on (OR-V333-SET (3)); the condition is `nofit:<agentId>` and ends when the agent is released. */
+export const noFitWords = (name: string): string =>
+  `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -59,11 +64,12 @@ function recordTold(key: string, family?: string): boolean {
 }
 
 /** The words a condition's card carries, from its key. */
-function wordsOf(key: string): string {
+export function wordsOf(key: string): string {
   const [kind, agentId = ''] = key.split(/:(.*)/s);
   const nameOf = (id: string): string =>
     (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return kind === 'stuck' ? stuckWords(nameOf(agentId))
+    : kind === 'nofit' ? noFitWords(nameOf(agentId))
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
 }
 
@@ -110,6 +116,7 @@ export function ownerConditionsOnHealerSeen(healerStatus: string | null): void {
 export function ownerConditionsOnAgentGone(agentId: string): void {
   ownerConditionCleared(`stuck:${agentId}`);
   ownerConditionCleared(`healer-missing:${agentId}`);
+  ownerConditionCleared(`nofit:${agentId}`);
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed. */
@@ -117,12 +124,13 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   const db = getDb();
   const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
     AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
-  const live = (id: string): boolean =>
-    !!db.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(id);
-  return rows.filter(({ key }) => !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '')).map(({ key }) => {
+  const live = (id: string, parked: boolean): boolean =>
+    !!db.prepare(`SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'
+      AND (? = 0 OR (status = 'paused' AND instr(COALESCE(last_error, ''), '[no_model_fits]') = 1))`).get(id, parked ? 1 : 0);
+  return rows.filter(({ key }) => !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
-      severity: key.startsWith('stuck:') ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') ? 'notice' as const : 'critical' as const,
       dismiss: () => {
         db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
                     ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)

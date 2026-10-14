@@ -54,6 +54,9 @@ const CENSUS: Record<string, Site[]> = {
       muted: 'ruling R-V333-4 (orchestrator, following the owner\'s "true blockers only"): not a blocker, so dashboard only — rate-limit-retry.ts shows the agent as rate-limited; "retries exhausted" stays on the phone at critical',
     },
   ],
+  'agent/v2/honest-stop.ts': [
+    { cls: 'agent-trouble', severity: 'notice', what: 'an agent is parked because none of its models can hold it (once per condition; its card ends when the agent is released, t148)' },
+  ],
   'agent/rate-limit-retry.ts': [
     { cls: 'agent-trouble', severity: 'critical', what: 'rate-limit retries exhausted' },
   ],

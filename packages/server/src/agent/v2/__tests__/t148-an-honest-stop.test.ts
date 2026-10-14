@@ -656,4 +656,43 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(status()).toBe('idle');
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
   });
+
+  // ── round 3 (ruling 3): a no-fit agent is a broken agent the owner must act on — ONE text and a lasting card ──
+
+  it('no_model_fits: ONE text through the owner-notice door and a lasting card with the same words, once per condition; the card ends when the agent is released', async () => {
+    db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
+    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
+    assembleContextMock.mockImplementation(async () => {
+      throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
+    });
+    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
+    await runV2Turn(AGENT);
+    const texts = sendAlertSpy.mock.calls.map((c) => c[0] as string);
+    expect(texts, 'one text').toHaveLength(1);
+    expect(texts[0]).toMatch(/Dock Desk.*none of its models can hold/i);
+    expect(sendAlertSpy.mock.calls[0][1], 'a broken agent: notice').toBe('notice');
+    expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
+
+    // The lock lifted by something that is not the event, and the same stop again: told once.
+    const { writeAgentStatus } = await import('../../agent-status.js');
+    writeAgentStatus(AGENT, 'idle');
+    await runV2Turn(AGENT);
+    expect(sendAlertSpy.mock.calls.length, 'no second text').toBe(1);
+    expect(healerOwnerCards()).toHaveLength(1);
+
+    // The real event releases the agent, and the card ends with it.
+    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
+    await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
+    expect(status()).toBe('idle');
+    expect(healerOwnerCards(), 'the card ends when the agent is released').toEqual([]);
+  });
+
+  it('a budget stop adds no text of its own (the crossing alert is the one), and no owner card of its own', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
+    expect(sendAlertSpy.mock.calls.map((c) => c[0] as string).filter((t) => /none of its models/i.test(t))).toEqual([]);
+    expect(healerOwnerCards()).toEqual([]);
+  });
 });

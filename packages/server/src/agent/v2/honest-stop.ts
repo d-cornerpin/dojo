@@ -28,6 +28,8 @@ import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { markTurnDied } from './turn-record.js';
+import { sendAlert } from '../../services/imessage-bridge.js';
+import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import type { AgentTurnState } from './state.js';
 import { createLogger } from '../../logger.js';
 import { AgentError } from '../errors.js';
@@ -131,6 +133,7 @@ export async function releaseHonestStops(
   for (const id of ids) {
     if (opts.onlyWhereCleared && kind === 'budget_stop' && exceededBudget(id)) continue;
     setAgentStatus(id, 'idle', { clearError: true });
+    if (kind === 'no_model_fits') ownerConditionCleared(`nofit:${id}`);   // the owner's card ends with the lock
     released.push(id);
     await wake(id);
   }
@@ -154,10 +157,10 @@ function noteInChat(agentId: string, content: string): void {
  *
  * The owner is told when the lock goes on. A stop that finds its own lock already on (the message
  * was served again, or he sent another) is silent: the status and the card already say it. It
- * sends NO text of its own: a budget stop is always preceded by the budget's own crossing alert
- * (t138: the wall and the router's budget filter both run `checkBudget`, which texts and raises
- * the dashboard card before it refuses), once per window, so a second text would be a second
- * telling of the same window; and a no-fit is not a class the platform may text (OR-V333-SET (3)).
+ * sends NO text for a budget stop: it is always preceded by the budget's own crossing alert (t138: the
+ * wall and the router's budget filter both run `checkBudget`, which texts and raises the dashboard card
+ * before it refuses), once per window, so a second text would be a second telling of the same window.
+ * A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): it gets one text and a card.
  */
 export async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
   const agentId = state.agentId;
@@ -180,5 +183,8 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
 
   noteInChat(agentId, `[System (platform notice): ${stop.words}]`);
   broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
+  // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
+  // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.
+  if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) sendAlert(wordsOf(`nofit:${agentId}`), 'notice');
   return true;
 }
