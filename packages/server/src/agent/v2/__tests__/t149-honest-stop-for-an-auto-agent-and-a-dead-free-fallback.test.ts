@@ -603,7 +603,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
 describe('t149 F6 — the money wall\'s redirect to a free model', () => {
   beforeEach(() => { noFreeModel(); budget(1.00, 2.00); });
 
-  it.fails('is announced once per message however many walled calls the message makes, and only about the turn\'s own call', async () => {
+  it('is announced once per message however many walled calls the message makes, and only about the turn\'s own call', async () => {
     addFreeModel('m-free-a', 'Free A', answeringUrl);
     await walledCall('agent_turn');
     await walledCall('agent_turn');
@@ -616,7 +616,7 @@ describe('t149 F6 — the money wall\'s redirect to a free model', () => {
     expect(chatNotes(), 'a second message, a second note').toHaveLength(2);
   });
 
-  it.fails('is not announced when the free model does not answer: the turn is an honest budget stop, told once — never the error path', async () => {
+  it('is not announced when the free model does not answer: the turn is an honest budget stop, told once — never the error path', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await runV2Turn(AGENT);
     expect(chatNotes(), 'nothing was announced for a model that never answered').toEqual([]);
@@ -627,7 +627,7 @@ describe('t149 F6 — the money wall\'s redirect to a free model', () => {
     expect(sendAlertSpy.mock.calls.filter((c) => /unexpected error/i.test(String(c[0]))), 'no error texts').toEqual([]);
   });
 
-  it.fails('walks on to the next free model: the first is down, the second answers, and that one is named', async () => {
+  it('walks on to the next free model: the first is down, the second answers, and that one is named', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     addFreeModel('m-free-b', 'Free B', answeringUrl);
     await runV2Turn(AGENT);

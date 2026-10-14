@@ -18,7 +18,6 @@ import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
@@ -30,10 +29,10 @@ import { updateRateLimits } from '../router/rate-limits.js';
 import { routedFirstPicks } from '../router/selector.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
 import { broadcast } from '../gateway/ws.js';
-import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 // T83: the abort registry's two doors. `shared-state.ts` imports nothing but the logger, so
 // this is a leaf edge — no cycle back through the runtime.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
+import { redirectToAFreeModel } from './budget-redirect.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured } from './utility-dial.js';
 
 /**
@@ -3327,51 +3326,9 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     const budgetCheck = checkBudget(agentId, WALL_ESTIMATE_USD);
     if (!budgetCheck.allowed) {
       if (budgetCheck.freeModelFallback) {
-        // Budget exceeded but free model available, redirect to it
-        const fb = budgetCheck.freeModelFallback;
-        logger.warn(`Budget exceeded, falling back to free model: ${fb.modelName}`, {
-          agentId,
-          dailySpend: budgetCheck.dailySpend,
-          dailyLimit: budgetCheck.dailyLimit,
-          freeModel: fb.modelName,
-        }, agentId);
-
-        // Notify the agent's chat
-        const notifyMsg = `[SOURCE: SYSTEM, not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
-        try {
-          const msgId = uuidv4();
-          insertMessageIfAbsent({ id: msgId, agentId, role: 'system', content: notifyMsg });
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: { id: msgId, agentId, role: 'system' as const, content: notifyMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-          });
-
-          // Also notify primary agent if this is a sub-agent
-          const primaryId = getPrimaryAgentId();
-          if (!isPrimaryAgent(agentId)) {
-            const primaryMsgId = uuidv4();
-            const primaryNotify = `[SOURCE: SYSTEM, not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
-            insertMessageIfAbsent({ id: primaryMsgId, agentId: primaryId, role: 'system', content: primaryNotify });
-            broadcast({
-              type: 'chat:message',
-              agentId: primaryId,
-              message: { id: primaryMsgId, agentId: primaryId, role: 'system' as const, content: primaryNotify, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-            });
-          }
-        } catch { /* notification is best-effort */ }
-
-        // Recursively call with the free model. The redirect target may itself be
-        // an ollama transport (exempt above) or a paid $0 model (skipped via the
-        // budget_fallback tier), either way it dispatches without re-walling.
-        // t140 fix round 1 (review I1): re-fit the array to the free model's own window first.
-        const refit = params.refitFor ? await params.refitFor(fb.modelId) : null;
-        return callModel({
-          ...params,
-          ...(refit ?? {}),
-          modelId: fb.modelId,
-          routerTier: 'budget_fallback',
-        });
+        // Budget exceeded but free models exist: the free models are tried until one answers; the
+        // redirect is announced once, after it has (t149 F6, agent/budget-redirect.ts).
+        return redirectToAFreeModel(params, budgetCheck, callModel);
       }
 
       // No free models, block the call with clear message

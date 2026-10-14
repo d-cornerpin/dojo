@@ -156,12 +156,12 @@ export interface BudgetCheckResult {
   budgetExceeded?: boolean;       // true if the budget is exceeded (but free models may be available)
   dailySpend?: number;
   dailyLimit?: number;
-  freeModelFallback?: {           // populated when budget exceeded but free models exist
-    modelId: string;
-    modelName: string;
-    providerId: string;
-  } | null;
+  freeModelFallback?: FreeModel | null;     // populated when budget exceeded but free models exist: the first
+  /** t149 F6: every free model, in the order they are offered — the wall walks them until one answers. */
+  freeModelFallbacks?: FreeModel[];
 }
+
+export interface FreeModel { modelId: string; modelName: string; providerId: string }
 
 /**
  * Find a free model (input AND output cost EXPLICITLY 0) to fall back to when
@@ -171,7 +171,7 @@ export interface BudgetCheckResult {
  * rate simply failed to sync. So require `= 0` (NULL fails the comparison and
  * is excluded), NOT COALESCE(...,0)=0.
  */
-function findFreeModel(): { modelId: string; modelName: string; providerId: string } | null {
+function findFreeModels(): FreeModel[] {
   const db = getDb();
   // p.id != '__system__': the 'auto' sentinel is a router pointer, not a
   // callable model; the lifeline must return a genuinely callable $0 model.
@@ -183,7 +183,7 @@ function findFreeModel(): { modelId: string; modelName: string; providerId: stri
   // genuinely $0 on EVERY pricing axis AND able to hold a chat. NULL per-unit
   // is fine here: that is the normal state for a token-priced chat model,
   // whose real axis is already required to be an explicit 0 (D-H).
-  const row = db.prepare(`
+  const rows = db.prepare(`
     SELECT m.id, m.name, m.provider_id
     FROM models m
     JOIN providers p ON p.id = m.provider_id
@@ -196,10 +196,9 @@ function findFreeModel(): { modelId: string; modelName: string; providerId: stri
       AND (m.cost_per_unit IS NULL OR m.cost_per_unit = 0)
       AND (m.cost_per_megapixel IS NULL OR m.cost_per_megapixel = 0)
     ORDER BY m.name ASC
-    LIMIT 1
-  `).get() as { id: string; name: string; provider_id: string } | undefined;
+  `).all() as Array<{ id: string; name: string; provider_id: string }>;
 
-  return row ? { modelId: row.id, modelName: row.name, providerId: row.provider_id } : null;
+  return rows.map((row) => ({ modelId: row.id, modelName: row.name, providerId: row.provider_id }));
 }
 
 export function checkBudget(agentId: string, estimatedCost: number): BudgetCheckResult {
@@ -216,14 +215,15 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
 
     if (dailySpend + estimatedCost > globalBudget.limit_usd) {
       // Budget exceeded — check for free model fallback
-      const freeModel = findFreeModel();
+      const freeModels = findFreeModels();
       return {
         allowed: false,
         budgetExceeded: true,
         dailySpend,
         dailyLimit: globalBudget.limit_usd,
         reason: `Daily budget limit reached ($${dailySpend.toFixed(2)} spent of $${globalBudget.limit_usd.toFixed(2)} limit).`,
-        freeModelFallback: freeModel,
+        freeModelFallback: freeModels[0] ?? null,
+        freeModelFallbacks: freeModels,
       };
     }
   }
