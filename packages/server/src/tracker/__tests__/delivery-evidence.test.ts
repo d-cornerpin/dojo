@@ -57,9 +57,9 @@ describe('findDeliveryEvidenceForTask (delivered-but-unclosed consult)', () => {
     expect(ev!.artifacts).toEqual([]);
   });
 
-  it('matches by origin conversation key when the ask id differs', () => {
+  it('t143 r3 (I1): an unrelated answer in the SAME conversation is not this task\'s delivery (the tie is the turn\'s trigger naming the task, never the conversation)', () => {
     insertAnsweredTurn(100, { sourceMessageId: 'different-msg', convKey: 'owner' });
-    expect(findDeliveryEvidenceForTask(TASK)).not.toBeNull();
+    expect(findDeliveryEvidenceForTask(TASK)).toBeNull();
   });
 
   it('NO evidence when the assignee ran tools on a LATER turn (mid-work, not delivered)', () => {

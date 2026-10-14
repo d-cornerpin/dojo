@@ -22,8 +22,8 @@
 //     picks wrongly from (it paused a delivered task, creating a new zombie).
 //
 // Evidence definition, deliberately conservative: an ANSWERED turn by the
-// task's assignee whose identity ties to the task's OWN origin (same
-// originating ask row, or the same origin conversation key), started at or
+// task's assignee whose trigger IS the task's originating ask row (t143 round 3: never the
+// same conversation — an unrelated answer there is not this task's delivery), started at or
 // after the task existed. Artifact/delivery rows from that turn strengthen
 // the copy but are not required (a plain answered reply is a delivery too).
 // A conversation merely mentioning the task never matches: the join is on
@@ -50,24 +50,23 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
     const db = getDb();
     const task = db.prepare(
       `SELECT w.agent_id AS assigned_to, w.source_message_id AS source_message_id,
-              w.origin_conv_key AS origin_conv_key, ${msToText('w.opened_at')} AS created_at
+              ${msToText('w.opened_at')} AS created_at
          FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-    ).get(taskId) as { assigned_to: string | null; source_message_id: string | null; origin_conv_key: string | null; created_at: string } | undefined;
+    ).get(taskId) as { assigned_to: string | null; source_message_id: string | null; created_at: string } | undefined;
     if (!task?.assigned_to) return null;
-    if (!task.source_message_id && !task.origin_conv_key) return null;
+    // t143 round 3 (I1): a turn is tied to a task only STRUCTURALLY — the turn's trigger is the ask
+    // that opened the task. Never by conversation: an unrelated answer in the same conversation is
+    // not this task's delivery, and this consult can close a task.
+    if (!task.source_message_id) return null;
 
     const turn = db.prepare(
       `SELECT turn_number, ended_at, answer_message_id FROM turns
         WHERE agent_id = ? AND answered = 1
           AND started_at >= ?
-          AND (
-            (source_message_id IS NOT NULL AND source_message_id = ?)
-            OR (conv_key IS NOT NULL AND conv_key = ?)
-          )
+          AND source_message_id = ?
         ORDER BY turn_number DESC LIMIT 1`,
     ).get(
-      task.assigned_to, task.created_at,
-      task.source_message_id ?? '', task.origin_conv_key ?? '',
+      task.assigned_to, task.created_at, task.source_message_id,
     ) as { turn_number: number; ended_at: string | null; answer_message_id: string | null } | undefined;
     if (!turn) return null;
 
