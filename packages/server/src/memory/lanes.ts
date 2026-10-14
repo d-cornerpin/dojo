@@ -3,7 +3,7 @@
 // PHASE-3 T3. Research 06 requirements B4–B8.
 // ════════════════════════════════════════════════════════════════════════════════════════
 //
-// ── THE DEFECT THIS MODULE DELETES ──────────────────────────────────────────────────────
+// ── THE DEFECT THIS MODULE DELETES (written as of its day; `lane.directive` and several rungs below have since left, see their notes) ──────────────────────────────────────────────────────
 // Research 06 §2, re-derived at `8f36cdb`: the assembler declared its priority order as
 // PROSE THE MODEL READS (the combined ack, `assembler.ts:1118`) —
 //
@@ -22,8 +22,8 @@
 // makes position part of a lane's contract and not an afterthought of build order.
 //
 // PRIORITY IS INDEPENDENT OF POSITION. `lane.briefing` is emitted FIRST (slot 100) and
-// drops FIRST (priority 110); `lane.directive` is emitted LAST of the scaffolding (slot
-// 900) and survives LONGEST (priority 10). That separation is the whole point: physical
+// drops FIRST (priority 110); `lane.directive` (then; deleted at t145) was emitted LAST of the
+// scaffolding (slot 900) and survived LONGEST (priority 10). That separation is the whole point: physical
 // order is what the model reads, priority is what the budget spends.
 //
 // EVERY LANE IMPLEMENTS `truncate()`. A lane that can only be taken whole is a lane that
