@@ -4193,7 +4193,7 @@
       "from": 400,
       "to": 414,
       "by": "UX-REPAIR T67b (W60) — the prefix holds still",
-      "why": "NEW LISTING, not a raise of an existing pin: this file crossed the 400-line new-file cap for the first time at 414. +14 (4 code, 10 comment) — MessageSlot.ActiveDirectiveTail = 1890, RecalledMemory 1870 -> 1880, and the directiveLane context field, each with the reason its number is what it is. This file IS the slot contract; a slot number moved without its argument is the thing every reader of it has to trust. Added in the same gate-side commit as the raises, so the addition is seen and argued with, which is the point of the cap."
+      "why": "NEW LISTING, not a raise of an existing pin: this file crossed the 400-line new-file cap for the first time at 414. +14 (4 code, 10 comment) — MessageSlot.ActiveDirectiveTail = 1890, RecalledMemory 1870 -> 1880, and the directive lane context field (deleted at t145), each with the reason its number is what it is. This file IS the slot contract; a slot number moved without its argument is the thing every reader of it has to trust. Added in the same gate-side commit as the raises, so the addition is seen and argued with, which is the point of the cap."
     },
     {
       "path": "packages/server/src/memory/assembler.ts",
@@ -4627,7 +4627,7 @@
       "from": 414,
       "to": 463,
       "by": "W81 — whatever a tool can mutate renders below the conversation (owner's DS4 FINDING 2)",
-      "why": "FOUR new MessageSlot values (AttemptLedgerTail 1810, ActiveTasksTail 1820, ScratchpadTail 1830, EventsTail 1840), FOUR new AssemblyContext fields, FIVE new VOLATILE_TURN_FIELDS rows — and FOUR RETIREMENT TOMBSTONES replacing AttemptLedger=500, ActiveTasks=600, Scratchpad=800 and Events=1050. The tombstones are why this file grows rather than shrinks, and they are not optional: the slot values are a byte-equivalence contract, so re-pointing a retired number at a different section would silently reorder a future array. Same discipline RelevantMemory=400, TrackerNotif=1500 and ActiveDirective=900 already carry here. One of the five VOLATILE_TURN_FIELDS rows is `directiveLane`, which T67b added as a field and never listed — a real gap closed in passing."
+      "why": "FOUR new MessageSlot values (AttemptLedgerTail 1810, ActiveTasksTail 1820, ScratchpadTail 1830, EventsTail 1840), FOUR new AssemblyContext fields, FIVE new VOLATILE_TURN_FIELDS rows — and FOUR RETIREMENT TOMBSTONES replacing AttemptLedger=500, ActiveTasks=600, Scratchpad=800 and Events=1050. The tombstones are why this file grows rather than shrinks, and they are not optional: the slot values are a byte-equivalence contract, so re-pointing a retired number at a different section would silently reorder a future array. Same discipline RelevantMemory=400, TrackerNotif=1500 and ActiveDirective=900 already carry here. One of the five VOLATILE_TURN_FIELDS rows is the directive lane field (deleted at t145), which T67b added as a field and never listed — a real gap closed in passing."
     },
     {
       "path": "packages/server/src/memory/budget.ts",
@@ -8221,6 +8221,41 @@
       "to": 214,
       "by": "t143 round 6 (2026-10-13), orchestrator ruling R5-C1: the job travels on its own continuation wake",
       "why": "+1: one import (queueJobContinuation, work/job-continuation.ts). The call replaces queueSelfWake line-for-line, and the now-unused queueSelfWake import is dropped from the shared-state import line (line-neutral). The helper registers the wake it queues so that only the run launched from it carries the job. REFUSED: re-exporting it through engine-checkpoint-note.ts to save the import line (that file sits near its growth baseline and the pre-call-gates contract mocks it). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 1007,
+      "to": 1013,
+      "by": "t145 group A (the pin's preconditions)",
+      "why": "+6: the delegate-reply link reads the wake turn's message-sequence high-water recorded at pickup instead of a whole-second clock (M1b); 3 code, 3 comment. Replaces a clock bound with the exact one."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 1350,
+      "to": 1355,
+      "by": "t145 group A (the pin's preconditions)",
+      "why": "+5 comment lines: the task-list reserve re-derived 3,643 -> 3,857 for the later-message framing. Group B of the same task frees the pin's lane and takes this file well below its old pin."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5199,
+      "to": 5203,
+      "by": "t145 group A (the pin's preconditions)",
+      "why": "+4: one import and three one-line calls to the newer-instruction link at the success exits of work_update(status), work_update(edit) and work_note. The logic lives in tracker/later-instruction.ts."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 641,
+      "to": 644,
+      "by": "t145 group A (the pin's preconditions)",
+      "why": "+3: one field on the turn bag, pickupSeq (the message-sequence high-water at turn pickup, M1b), with its doc line."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts",
+      "from": 303,
+      "to": 304,
+      "by": "t145 group A (the pin's preconditions)",
+      "why": "+1: the pickup high-water is read at the top of the trigger claim, before anything awaits."
     }
   ],
   "maxNewFileLines": 400,
@@ -8311,7 +8346,7 @@
     "packages/server/src/agent/tools/surface.ts": 731,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 641,
+    "packages/server/src/agent/turn-context.ts": 644,
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
@@ -8387,7 +8422,7 @@
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
     "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 480,
-    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 303,
+    "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 304,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 583,
@@ -8437,7 +8472,7 @@
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
-    "packages/server/src/memory/lanes.ts": 1350,
+    "packages/server/src/memory/lanes.ts": 1355,
     "packages/server/src/memory/message-store.ts": 1257,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
@@ -8504,7 +8539,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 323,
-    "packages/server/src/tracker/tools.ts": 5195,
+    "packages/server/src/tracker/tools.ts": 5185,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
@@ -8529,7 +8564,7 @@
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 2258,
-    "packages/server/src/work/tracker-store.ts": 1007,
+    "packages/server/src/work/tracker-store.ts": 1013,
     "packages/server/src/work/tracker-view.ts": 700,
     "packages/server/src/work/validation-drive.ts": 1313,
     "packages/server/src/work/work-reaper.ts": 694,
