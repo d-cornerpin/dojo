@@ -72,7 +72,7 @@ const budgetFor = (systemPrompt: string): number =>
   Math.max(0, contextWindowPolicy(16_000, { toolPayloadTokens: 0, maxOutputTokens: 4096 }).assemblyBudgetTokens - estimateTokens(systemPrompt));
 
 describe('t149 round 2 — condensation batches are cut to the writer', () => {
-  it.fails('four 5K-token summaries per call do not hold on a 16K writer: the batch is halved, every dial fits, and parents are written', async () => {
+  it('four 5K-token summaries per call do not hold on a 16K writer: the batch is halved, every dial fits, and parents are written', async () => {
     const out = await condenseUntilFits({
       agentId: AGENT, modelId: SMALL, minFanout: 4, targetTokens: 6000,
       measure: async () => ({ total: 90_000, summaryTokens: 1_000 }),

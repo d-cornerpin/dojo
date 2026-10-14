@@ -295,7 +295,9 @@ async function condenseLevel(
     }
   }
 
-  for (const batch of subjectBatches(rows, minFanout)) {
+  const batches = subjectBatches(rows, minFanout);
+  while (batches.length > 0) {
+    const batch = batches.shift()!;
     if (abortSignal?.aborted) { stage ??= 'bounded_without_progress'; detail ??= 'aborted mid-level'; break; }
     // A trailing single waits for the next level, which reads the whole set again and so merges
     // it with the parents just written — one model call instead of two.
@@ -307,6 +309,9 @@ async function condenseLevel(
         content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal,
       });
       calls += 1;
+      if (!summary.ok && summary.tooBig && batch.length > 2) {   // t149: not dialled, more than the writer holds: halve it
+        batches.unshift(batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))); continue;
+      }
       if (!summary.ok) {
         logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
           depth: shape.depth, parentCount: batch.length, reason: summary.reason,
