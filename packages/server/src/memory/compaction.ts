@@ -1416,8 +1416,7 @@ export async function runLeafCompaction(
   }
 
   // t144: the boundary stays true — rows a refused conversation's chunk left below a landed one are
-  // covered now (placeholder notes, replaced in the background), never left out of view unrepresented.
-  // Asked on EVERY fold, even one that landed nothing: rows an earlier fold could not cover are still owed.
+  // covered now (placeholder notes, replaced in the background), never left out of view unrepresented. Asked on EVERY fold, even one that landed nothing: rows an earlier fold could not cover are still owed.
   await coverRowsStrandedBelowBoundary(agentId, uncompacted[0].rowid ?? 0);
   return summariesCreated;
 }
@@ -1426,10 +1425,9 @@ export async function runLeafCompaction(
 async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number): Promise<void> {
   const { anchor, stranded } = rowsStrandedBelowBoundary(agentId, fromSeq);
   if (stranded === 0) return;
-  const { writeUncondensedPlaceholders } = await import('./uncondensed-placeholder.js');
-  const covered = writeUncondensedPlaceholders(agentId, anchor);
-  if (covered > 0) logger.warn('Rows were left below the summarised boundary; placeholder notes now stand in for them', { stranded, covered, anchor }, agentId);
-  else logger.error('Rows were left below the summarised boundary and could NOT be covered (the vault archive was refused); they stay owed and the next fold retries', { stranded, anchor }, agentId);
+  const covered = (await import('./uncondensed-placeholder.js')).writeUncondensedPlaceholders(agentId, anchor);
+  logger[covered > 0 ? 'warn' : 'error'](covered > 0 ? 'Rows were left below the summarised boundary; placeholder notes now stand in for them'
+    : 'Rows were left below the summarised boundary and could NOT be covered (the vault archive was refused); they stay owed and the next fold retries', { stranded, covered, anchor }, agentId);
 }
 
 // ── Rebuild Context Items ──

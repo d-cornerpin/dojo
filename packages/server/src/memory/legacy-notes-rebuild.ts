@@ -39,9 +39,8 @@ import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { CONDENSE_MIN_TARGET_TOKENS } from './condense-until-fits.js';
 import { rowSubjectKeys } from './summary-subject.js';
-import { checkBudget } from '../costs/budget.js';
+import { agentBusy, waitReason } from './rebuild-signals.js';
 import { CLASSIFY_SQL } from './notes-classify-sql.js';
-import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('legacy-notes-rebuild');
 
@@ -84,13 +83,6 @@ function queuedUnits(): Unit[] {
 
 const chunkKey = (rows: readonly Message[]): string => createHash('sha256').update(rows.map((m) => m.id).join('\n')).digest('hex').slice(0, 32);
 
-/** The agent is mid-turn: its rebuild waits (its notes stay in view, labelled) — never a clock. */
-export function agentBusy(agentId: string): boolean {
-  if (activeRuns.has(agentId)) return true;
-  const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
-  return row?.status === 'working';
-}
-
 /** The rebuilt notes keep the agent's footprint: the older note's size, shared by its conversations. */
 function targetFor(unit: Unit, chunkTokens: number, unitTokens: number): number {
   const share = unitTokens > 0 ? Math.round(unit.tokenCount * (chunkTokens / unitTokens)) : SUMMARY_TARGET_TOKENS.leaf;
@@ -120,8 +112,8 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     if (content.trim().length > 0) {
       const target = targetFor(unit, chunk.reduce((t, m) => t + (m.tokenCount ?? estimateTokens(m.content)), 0), unitTokens);
       const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, undefined, unit.agentId));
-      const budget = checkBudget(unit.agentId, estimateCost(writer, inputTokens, target));
-      if (!budget.allowed) return `the spending limit is reached (${budget.reason ?? 'budget'})`;
+      const wait = waitReason(unit.agentId, writer, inputTokens, target);
+      if (wait) return wait;
       stats.modelCalls++;
       stats.inputTokens += inputTokens;
       const result = await generateSummary({ content, depth: 0, targetTokens: target, agentId: unit.agentId, modelId: writer });
@@ -131,12 +123,6 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     insert.run(unit.id, key, unit.agentId, subject, text, estimateTokens(text), JSON.stringify(chunk.map((m) => m.id)));
   }
   return 'staged';
-}
-
-export function estimateCost(modelId: string, inputTokens: number, outputTokens: number): number {
-  const m = getDb().prepare('SELECT input_cost_per_m, output_cost_per_m FROM models WHERE id = ?').get(modelId) as
-    { input_cost_per_m: number | null; output_cost_per_m: number | null } | undefined;
-  return ((m?.input_cost_per_m ?? 0) * inputTokens + (m?.output_cost_per_m ?? 0) * outputTokens) / 1_000_000;
 }
 
 /** Swap an agent's fully staged notes in, all at once. Re-checks each note is still queued and on top;

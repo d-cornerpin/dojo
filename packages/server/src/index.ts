@@ -1141,21 +1141,11 @@ async function main(): Promise<void> {
 
   // Schedule the nightly dreaming cycle for the vault
   try {
-    const { scheduleDreamingCycle } = await import('./vault/maintenance.js');
-    scheduleDreamingCycle();
+    (await import('./vault/maintenance.js')).scheduleDreamingCycle();
+    (await import('./memory/legacy-rebuild-boot.js')).scheduleLegacyRebuildAtBoot();   // t144: the older-notes rebuild, once, after a settle delay
   } catch (err) {
-    logger.warn('Failed to schedule dreaming cycle', { error: err instanceof Error ? err.message : String(err) });
+    logger.warn('Failed to schedule dreaming cycle or the older-notes rebuild', { error: err instanceof Error ? err.message : String(err) });
   }
-
-  // t144: the rebuild of older mixed notes starts once per boot, a settle delay after providers and
-  // channels are up, instead of waiting for the first nightly window. Safe form only: detached, the
-  // legacy pass alone, a no-op with nothing queued, and a throw is logged inside (`summary-rebuild.ts`),
-  // so a crash cannot loop an update; the nightly job stays the backstop.
-  setTimeout(() => {
-    void import('./memory/summary-rebuild.js')
-      .then((m) => m.runLegacyRebuildAtBoot())
-      .catch((err) => logger.warn('Older mixed notes: boot-time rebuild could not start', { error: err instanceof Error ? err.message : String(err) }));
-  }, 120_000);
 
   // D4: schedule the incremental embedding-backfill drain. Channel inbound
   // (iMessage / SMS / email / Teams) is persisted at ~80 scattered sites and

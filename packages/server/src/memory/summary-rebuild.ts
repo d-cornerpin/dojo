@@ -11,9 +11,8 @@
 //
 // This module regenerates flagged summaries from their DAG descendants
 // through the CURRENT summarization path and filter. It is:
-//   - self-limiting: once the stock is clean the nightly scan finds nothing.
-//     t144 (owner ruling 2026-10-13, no hard limits): no per-night count — a
-//     run works through everything flagged while its writer is answering.
+//   - self-limiting: once the stock is clean the nightly scan finds nothing;
+//     t144 (owner ruling 2026-10-13, no hard limits): no per-night count.
 //   - idempotent + crash-safe: there is no "done" flag anywhere. A summary
 //     is clean purely by virtue of its content no longer matching the
 //     contamination taxonomy; a crash mid-batch just means the next run
@@ -49,16 +48,15 @@ import {
 } from './dag.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
 import { eligibleSummaryWriters } from './summary-writer-health.js';
-import { rebuildLegacyMixedNotes, agentBusy, estimateCost, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
-import { checkBudget } from '../costs/budget.js';
+import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
+import { rebuildGuard, waitReason } from './rebuild-signals.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 
 const logger = createLogger('summary-rebuild');
 
 // STRIP (t144, owner ruling 2026-10-13 "no hard limits"): `NIGHTLY_SUMMARY_REBUILD_LIMIT` (30 per
-// night). A count decided how long the owner waited; the run now stops only when its writer stops
-// answering (`summary-writer-health.ts`, which honours the provider's breaker).
+// night). A count decided how long the owner waited; real signals pace the run (`rebuild-signals.ts`).
 
 // ── Detection taxonomy ──
 //
@@ -303,15 +301,9 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     targetTokens = SUMMARY_TARGET_TOKENS.condensed;
   }
 
-  // t144 (no count, real signals): the agent not mid-turn, and the money guardrail — as the rebuild of
-  // older mixed notes. Either way the note stays flagged and a later night tries again.
-  if (agentBusy(flag.agentId)) return 'deferred';
-  const budget = checkBudget(flag.agentId, estimateCost(modelId, estimateTokens(input) + targetTokens, targetTokens));
-  if (!budget.allowed) {
-    logger.warn('Summary rebuild waits: the money guardrail has stopped it for today', { summaryId: flag.id, reason: budget.reason }, flag.agentId);
-    return 'deferred';
-  }
-
+  // t144: paced by real signals, as the rebuild of older mixed notes is; the note stays flagged for a later night.
+  const wait = waitReason(flag.agentId, modelId, estimateTokens(input) + targetTokens, targetTokens);
+  if (wait) { logger.warn('Summary rebuild waits', { summaryId: flag.id, reason: wait }, flag.agentId); return 'deferred'; }
   const result = await generateSummary({
     content: input,
     depth,
@@ -385,7 +377,6 @@ export interface SummaryRebuildStats {
   legacy?: LegacyRebuildStats;
 }
 
-let rebuildRunning = false;
 
 
 /**
@@ -399,44 +390,21 @@ let rebuildRunning = false;
 export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
   const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0, stockScanned: 0, consecutiveCleanRuns: 0 };
 
-  if (rebuildRunning) {
+  if (rebuildGuard.running) {
     logger.warn('Summary rebuild already running, skipping this invocation');
     return empty;
   }
-  rebuildRunning = true;
+  rebuildGuard.running = true;
   try {
     const stats = await runContaminationPass(empty, opts);
-    // t144: the second selection runs whatever the first found — its notes are another question.
-    try {
+    try {   // t144: the second selection runs whatever the first found — its notes are another question
       stats.legacy = await rebuildLegacyMixedNotes();
     } catch (err) {
       logger.warn('Older mixed notes: rebuild pass failed; the next run resumes it', { error: err instanceof Error ? err.message : String(err) });
     }
     return stats;
   } finally {
-    rebuildRunning = false;
-  }
-}
-
-/**
- * t144: the update's own start of the rebuild of older mixed notes, once per boot instead of waiting for
- * the first nightly window. SAFE FORM ONLY: just the legacy pass (never the contamination scan), only if a
- * queued note exists, never alongside another run, and a run that throws is logged and swallowed — it
- * holds no state, so a crash cannot repeat at the next boot, and the nightly job stays the backstop.
- */
-export async function runLegacyRebuildAtBoot(): Promise<LegacyRebuildStats | null> {
-  if (rebuildRunning) return null;
-  try {
-    if (!getDb().prepare("SELECT 1 FROM summaries WHERE rebuild_state = 'legacy_mixed_rebuild' LIMIT 1").get()) return null;
-  } catch { return null; }
-  rebuildRunning = true;
-  try {
-    return await rebuildLegacyMixedNotes();
-  } catch (err) {
-    logger.warn('Older mixed notes: the boot-time rebuild failed; the nightly job resumes it', { error: err instanceof Error ? err.message : String(err) });
-    return null;
-  } finally {
-    rebuildRunning = false;
+    rebuildGuard.running = false;
   }
 }
 
