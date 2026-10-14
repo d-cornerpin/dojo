@@ -49,7 +49,8 @@ import {
 } from './dag.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
 import { eligibleSummaryWriters } from './summary-writer-health.js';
-import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
+import { rebuildLegacyMixedNotes, agentBusy, estimateCost, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
+import { checkBudget } from '../costs/budget.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 
@@ -300,6 +301,15 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     input = condensedSummaryInput(children);
     depth = flag.depth;
     targetTokens = SUMMARY_TARGET_TOKENS.condensed;
+  }
+
+  // t144 (no count, real signals): the agent not mid-turn, and the money guardrail — as the rebuild of
+  // older mixed notes. Either way the note stays flagged and a later night tries again.
+  if (agentBusy(flag.agentId)) return 'deferred';
+  const budget = checkBudget(flag.agentId, estimateCost(modelId, estimateTokens(input) + targetTokens, targetTokens));
+  if (!budget.allowed) {
+    logger.warn('Summary rebuild waits: the spending limit is reached', { summaryId: flag.id, reason: budget.reason }, flag.agentId);
+    return 'deferred';
   }
 
   const result = await generateSummary({

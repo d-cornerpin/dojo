@@ -85,7 +85,7 @@ function queuedUnits(): Unit[] {
 const chunkKey = (rows: readonly Message[]): string => createHash('sha256').update(rows.map((m) => m.id).join('\n')).digest('hex').slice(0, 32);
 
 /** The agent is mid-turn: its rebuild waits (its notes stay in view, labelled) — never a clock. */
-function agentBusy(agentId: string): boolean {
+export function agentBusy(agentId: string): boolean {
   if (activeRuns.has(agentId)) return true;
   const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
   return row?.status === 'working';
@@ -133,7 +133,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
   return 'staged';
 }
 
-function estimateCost(modelId: string, inputTokens: number, outputTokens: number): number {
+export function estimateCost(modelId: string, inputTokens: number, outputTokens: number): number {
   const m = getDb().prepare('SELECT input_cost_per_m, output_cost_per_m FROM models WHERE id = ?').get(modelId) as
     { input_cost_per_m: number | null; output_cost_per_m: number | null } | undefined;
   return ((m?.input_cost_per_m ?? 0) * inputTokens + (m?.output_cost_per_m ?? 0) * outputTokens) / 1_000_000;

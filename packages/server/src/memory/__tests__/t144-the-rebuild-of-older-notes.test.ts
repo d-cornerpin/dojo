@@ -364,3 +364,41 @@ describe('t144 round 2 — a queued note is only ever replaced by being rebuilt 
     expect(stateOf(createCondensedSummary(AGENT, 'p3', 100, [mk('legacy_mixed_rebuild'), mk('legacy_mixed_rebuild')], 1, at, at).id)).toBe('legacy_mixed_rebuild');
   });
 });
+
+describe('t144 round 2 — the contamination pass is paced like the rebuild: agent idle and the money guardrail (I3)', () => {
+  const PROSE = 'The owner asked the depot crew to recount the sealed crates in the north bay, and the crew agreed to log every seal number against the manifest before the evening shift started. '.repeat(2);
+  function flaggedNote(): string {
+    const a = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', conversationId: DASH, content: PROSE });
+    const b = insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', conversationId: DASH, content: PROSE });
+    const s = createLeafSummary(AGENT, '═══ DREAM CYCLE ═══ the crew recounted crates.', 100, [a.id, b.id], new Date().toISOString(), new Date().toISOString());
+    rebuildContextItems(AGENT);
+    return s.id;
+  }
+  const contentOf = (id: string): string => (db().prepare('SELECT content FROM summaries WHERE id = ?').get(id) as { content: string }).content;
+
+  it('control: a healthy, idle agent with budget has its contaminated note rewritten', async () => {
+    const id = flaggedNote();
+    await runSummaryRebuildBatch();
+    expect(model.calls).toHaveLength(1);
+    expect(contentOf(id)).not.toMatch(/DREAM CYCLE/);
+  });
+
+  it('over today\'s limit: no call is made and the note stays flagged for a later night', async () => {
+    const id = flaggedNote();
+    setGlobalBudget(0);
+    await runSummaryRebuildBatch();
+    expect(model.calls).toHaveLength(0);
+    expect(contentOf(id)).toMatch(/DREAM CYCLE/);
+  });
+
+  it('an agent mid-turn is not dialled for; idle again, it is rewritten', async () => {
+    const id = flaggedNote();
+    activeRuns.add(AGENT);
+    await runSummaryRebuildBatch();
+    expect(model.calls).toHaveLength(0);
+    expect(contentOf(id)).toMatch(/DREAM CYCLE/);
+    activeRuns.delete(AGENT);
+    await runSummaryRebuildBatch();
+    expect(contentOf(id)).not.toMatch(/DREAM CYCLE/);
+  });
+});
