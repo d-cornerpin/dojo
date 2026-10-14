@@ -657,3 +657,132 @@ describe('t149 census — the old redirect announcement is gone from the wall', 
     expect(redirect.indexOf('await dial(')).toBeLessThan(redirect.indexOf('announce(agentId, check, fb.modelName)'));
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// t149 ROUND 3 (R-V333-18, revised) — THE FREE FALLBACK DID NOT ANSWER IS AN HONEST STOP FOR AN AUTO
+// AGENT TOO, AND ITS PARK IS RELEASED ONLY BY REAL EVENTS OR A PERSON.
+//
+// An auto agent under the spending limit has its paid models turned away by the router, which offers
+// the free models directly (no wall, so no redirect): when they all fail, the ladder ends on a
+// transport error and the turn took the error path. The ladder now says what is true (the limit, and
+// no free model answered) with the same stop the pinned agent's redirect raises. The park records WHY
+// in its own tag (`[free_down]`); the 30-second tick cannot release it (a free model "existing" is not
+// the question — a pinned agent's limit check does not either); a limit change, the window turning
+// over, or a model/tier change does, and so does a person's message: the redirect is tried once more.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('t149 round 3 — a park for "the free fallback did not answer"', () => {
+  /** Every call is REAL (the wall, the ollama transport against the stubs), like a user's box. */
+  beforeEach(() => {
+    callModelSpy.mockImplementation((p: unknown) => realModel.callModel!(p));
+    db().prepare(`UPDATE models SET is_enabled = 0 WHERE id = 'm-tiny'`).run();
+    budget(1.00, 2.00);
+  });
+  const lastError = (): string => (db().prepare('SELECT last_error FROM agents WHERE id = ?').get(AGENT) as { last_error: string | null }).last_error ?? '';
+  /** An auto agent is offered a free model only while spend is still under the line (over it, the router
+   *  turns every model away, a free one too, and the stop is the plain one): the paid estimates cross it. */
+  const autoWithFreeInLight = async (...free: string[]): Promise<void> => {
+    db().prepare(`UPDATE cost_records SET cost_usd = 0.999 WHERE id = 'spent-today'`).run();
+    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
+    db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    db().prepare(`DELETE FROM router_tier_models WHERE tier_id = 'light'`).run();
+    free.forEach((id, i) => db().prepare(`INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, ?)`).run(id, i));
+  };
+  const personMessages = async (id: string): Promise<void> => {
+    insertMessage({ id, agentId: AGENT, role: 'user', content: 'Is the south dock open?', turnNumber: 9, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-desk',
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) });
+    (await import('../honest-stop-notes.js')).noteWaitingOfParked(AGENT);   // what runtime.handleMessage does for a paused agent
+    await runV2Turn(AGENT);
+  };
+  const parkNotes = (): number => (db().prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND id LIKE 'park-note:%'`).get(AGENT) as { n: number }).n;
+  const ticks = async (n: number): Promise<void> => {
+    const { releaseClearedBudgetStops } = await import('../honest-stop-lock.js');
+    for (let i = 0; i < n; i++) await releaseClearedBudgetStops();
+  };
+
+  it.fails('an AUTO agent whose every free model is down is parked as an honest stop: told once, no error texts, no Healer; the tick never releases it', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    await autoWithFreeInLight('m-free-a');
+    await runV2Turn(AGENT);
+    expectAnHonestStop(/spending limit/i);
+    expect(status()).toBe('paused');
+    expect(lastError()).toMatch(/^\[budget_stop\] \[free_down\] /);
+    expect(notices().length, 'told once').toBe(1);
+    expect(ask(), 'the message is kept').toBe('open');
+    handleMessageSpy.mockClear();
+    await ticks(4);
+    expect(status(), 'a free model existing is not a reason to release it').toBe('paused');
+    expect(handleMessageSpy).not.toHaveBeenCalled();
+  });
+
+  it.fails('a person\'s message with the free model still down: one note for that message, still parked, nothing told again', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    await autoWithFreeInLight('m-free-a');
+    await runV2Turn(AGENT);
+    expect(notices().length).toBe(1);
+    await personMessages('msg-user-2');
+    expect(status()).toBe('paused');
+    expect(parkNotes(), 'one note, for the new message').toBe(1);
+    expect(notices().length, 'no second toast').toBe(1);
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    await personMessages('msg-user-3');
+    expect(parkNotes(), 'one note per message').toBe(2);
+    expect(status()).toBe('paused');
+  });
+
+  it.fails('a person\'s message after the free model has come back: the park is released, the message is answered', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    await autoWithFreeInLight('m-free-a');
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    db().prepare(`UPDATE providers SET base_url = ? WHERE id = 'p-m-free-a'`).run(answeringUrl);
+    await ticks(3);
+    expect(status(), 'nobody asked: still parked').toBe('paused');
+    await personMessages('msg-user-2');
+    expect(status()).not.toBe('paused');
+    expect(lastAssistant()).toBe(FREE_ANSWER);
+    expect(lastError()).not.toMatch(/free_down/);
+  });
+
+  it.fails('a PINNED agent parked by a dead free model is held the same way, and a raised limit releases it (a real event)', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    await runV2Turn(AGENT);
+    expect(lastError()).toMatch(/^\[budget_stop\] \[free_down\] /);
+    await ticks(3);
+    expect(status()).toBe('paused');
+    handleMessageSpy.mockClear();
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
+    expect(status()).toBe('idle');
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+  });
+
+  it.fails('a model or tier change releases it for a fresh try (the free set changed)', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    await autoWithFreeInLight('m-free-a');
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    addFreeModel('m-free-b', 'Free B', answeringUrl);
+    handleMessageSpy.mockClear();
+    const { noteModelsChanged } = await import('../honest-stop-lock.js');
+    await noteModelsChanged();
+    expect(status()).toBe('idle');
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+  });
+
+  it('CONTROL: an auto agent with one free model UP is not parked, and a plain budget stop (no free model exists) is NOT a free-down park', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    addFreeModel('m-free-b', 'Free B', answeringUrl);
+    await autoWithFreeInLight('m-free-a', 'm-free-b');
+    await runV2Turn(AGENT);
+    expect(status()).not.toBe('paused');
+    expect(lastAssistant()).toBe(FREE_ANSWER);
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    // And with no free model at all the park is the plain budget stop, with no free-down marker.
+    db().prepare(`UPDATE models SET is_enabled = 0 WHERE id IN ('m-free-a', 'm-free-b')`).run();
+    db().prepare(`UPDATE agents SET model_id = 'test-model' WHERE id = ?`).run(AGENT);
+    insertMessage({ id: 'msg-user-4', agentId: AGENT, role: 'user', content: 'Again?', turnNumber: 9, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-desk', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) });
+    await runV2Turn(AGENT);
+    expect(lastError()).toMatch(/^\[budget_stop\] /);
+    expect(lastError()).not.toMatch(/free_down/);
+  });
+});
