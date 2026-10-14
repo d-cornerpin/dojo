@@ -386,6 +386,26 @@ describe('BACKWARDS LIFECYCLE', () => {
     expect(ownerTexts()).toBe(0);
   });
 
+  const toldOn = (id: string): Array<{ via: string }> => (db().prepare(
+    "SELECT json_extract(payload, '$.via') AS via FROM work_events WHERE work_id = ? AND kind = 'person_told'",
+  ).all(id) as Array<{ via: string }>);
+
+  it('round 3 (t146): the SILENT text is about the task it names — the owner is recorded as told, so the ladder does not raise it with him again', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    expect(toldOn('task-wedged')).toEqual([{ via: 'owner_notice' }]);
+  });
+
+  it('round 3 (t146): with no phone, the standing SILENT card is the owner told (the notice is registered in the owner-notices list in its exact words)', async () => {
+    db().prepare("DELETE FROM config WHERE key = 'imessage_approved_senders'").run();
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    const words = JSON.parse(silentNotice()!).words as string;
+    expect(await ownerCardWords()).toContain(words);
+    expect(toldOn('task-wedged')).toEqual([{ via: 'owner_card' }]);
+  });
+
   it('round 3 (M2): the Stop is remembered even if a late row lands after the stopped turn ended', async () => {
     wedgedToolCall(3 * 60 * MIN);
     db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")

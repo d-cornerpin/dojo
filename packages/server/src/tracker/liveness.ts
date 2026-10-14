@@ -157,8 +157,12 @@ function ownerStopped(agentId: string): boolean {
 }
 
 /** The words of a SILENT notice: agent and role, task, last movement, what it was doing. */
+function newestOf(work: OpenWork[]): OpenWork | undefined {
+  return [...work].sort((a, b) => taskLastMovedAt(b.id, b.updated) - taskLastMovedAt(a.id, a.updated))[0];
+}
+
 function silentWords(agentId: string, name: string, quietMs: number, work: OpenWork[], act: Activity): string {
-  const newest = [...work].sort((a, b) => taskLastMovedAt(b.id, b.updated) - taskLastMovedAt(a.id, a.updated))[0];
+  const newest = newestOf(work);
   const others = work.length - 1;
   const task = newest ? ` on "${newest.title}"${others > 0 ? ` (and ${others} other open task${others > 1 ? 's' : ''})` : ''}` : '';
   const doing = act.waitingOn ? ` It was waiting on ${act.waitingOn}, which has not come back.` : '';
@@ -221,7 +225,9 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   const words = silentWords(a.id, a.name, now - since, work, act);
   if (noteNoticeOnce(a.id, 'silent_notice', words, since)) {
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
-    sendAlert(words, 'notice');
+    // t146: the notice names a task, so it is ABOUT that work row (the id is data held here, not read
+    // from the words); its card stands in the owner-notices list in these exact words (`silent_notice`).
+    sendAlert(words, 'notice', { aboutWorkId: newestOf(work)?.id });
   }
 }
 
