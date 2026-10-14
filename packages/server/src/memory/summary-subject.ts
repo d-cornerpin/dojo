@@ -126,17 +126,24 @@ export function conversationLabels(rows: readonly Message[]): { one: boolean; la
   return { one: groups.length === 1, labelOf };
 }
 
+const QUEUED_STATE = 'legacy_mixed_rebuild';
+
 /** Condensation batches (OR-COMPACT-1 unchanged in what it guarantees): a conversation's notes merge
- *  with its own first; notes from before this release merge only with each other. Only when no
- *  conversation has two notes left to merge do batches cross conversations — the climb must still end. */
+ *  with its own first; notes from before this release merge only with others in the SAME state — a note
+ *  queued for rebuild (`legacy_mixed_rebuild`) never joins older mixed notes, because its parent would
+ *  then be "older mixed notes" and the rebuild the owner was promised would never reach it. Only when no
+ *  conversation has two notes left to merge do batches cross conversations (never taking a queued note
+ *  along) — the climb must still end. */
 export function subjectBatches<T extends { subjectKey?: string | null; rebuildState?: string | null }>(rows: readonly T[], size: number): T[][] {
   const groups = new Map<string, T[]>();
   for (const r of rows) {
-    const g = r.rebuildState ? 'legacy' : r.subjectKey ?? 'unknown';
+    const g = r.rebuildState ? `state:${r.rebuildState}` : r.subjectKey ?? 'unknown';
     groups.set(g, [...(groups.get(g) ?? []), r]);
   }
   const within = [...groups.values()].flatMap((g) => chunksOf(g, size)).filter((b) => b.length > 1);
-  return within.length > 0 ? within : chunksOf(rows, size);
+  if (within.length > 0) return within;
+  const free = rows.filter((r) => r.rebuildState !== QUEUED_STATE);
+  return chunksOf(free, size);
 }
 
 function chunksOf<T>(rows: readonly T[], size: number): T[][] {

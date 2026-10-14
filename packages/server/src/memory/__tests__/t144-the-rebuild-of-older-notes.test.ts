@@ -86,6 +86,7 @@ import { createLeafSummary, createCondensedSummary } from '../dag.js';
 import { rebuildContextItems } from '../compaction.js';
 import { assembleContext } from '../assembler.js';
 import { runSummaryRebuildBatch } from '../summary-rebuild.js';
+import { subjectBatches } from '../summary-subject.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { activeRuns } from '../../agent/shared-state.js';
@@ -325,5 +326,41 @@ describe('t144 round 2 — covered rows and rows in view change together (I4)', 
     expect(model.calls.length, 'the staged chunks are not paid for twice').toBe(paid);
     expect(live()).toHaveLength(2);
     for (const id of ids) expect(coverCount(id), id).toBe(1);
+  });
+});
+
+describe('t144 round 2 — a queued note is only ever replaced by being rebuilt (I2)', () => {
+  const note = (id: string, rebuildState: string | null, subjectKey: string | null = null): { id: string; rebuildState: string | null; subjectKey: string | null } => ({ id, rebuildState, subjectKey });
+  const queued = 'legacy_mixed_rebuild';
+
+  it('batches never mix a queued note with older mixed notes — in the groups or in the last-resort fallback', () => {
+    const rows = [note('o1', 'legacy_mixed'), note('o2', 'legacy_mixed'), note('o3', 'legacy_mixed'), note('q1', queued)];
+    for (const batch of subjectBatches(rows, 4)) {
+      expect(batch.some((r) => r.id === 'q1') && batch.length > 1, 'q1 shares a batch with older notes').toBe(false);
+    }
+    // No conversation has two notes (the fallback): the queued one still stays out of older notes' batches.
+    const singles = [note('a', null, 'conv:a'), note('b', null, 'conv:b'), note('q', queued), note('o', 'legacy_mixed')];
+    for (const batch of subjectBatches(singles, 4)) {
+      expect(batch.some((r) => r.id === 'q') && batch.some((r) => r.id !== 'q'), 'q was batched with other notes').toBe(false);
+    }
+  });
+
+  it('queued notes batch among themselves, and a parent of only queued notes stays queued', () => {
+    const batches = subjectBatches([note('q1', queued), note('q2', queued), note('o1', 'legacy_mixed')], 4);
+    expect(batches.filter((b) => b.length > 1).map((b) => b.map((r) => r.id))).toEqual([['q1', 'q2']]);
+  });
+
+  it('a note whose only open question is lost lineage is not "older mixed notes" (M2)', () => {
+    const batches = subjectBatches([note('l1', 'lineage_lost'), note('l2', 'lineage_lost'), note('o1', 'legacy_mixed'), note('o2', 'legacy_mixed')], 4);
+    expect(batches.map((b) => b.map((r) => r.id).sort()).sort()).toEqual([['l1', 'l2'], ['o1', 'o2']]);
+  });
+
+  it('the parent of two lineage_lost notes is lineage_lost; the parent of a lineage_lost and an older mixed note is "older mixed notes" (M2)', () => {
+    const mk = (state: string): string => { const id = olderNote(history(1, 30)); db().prepare('UPDATE summaries SET rebuild_state = ? WHERE id = ?').run(state, id); return id; };
+    const stateOf = (id: string): string => (db().prepare('SELECT rebuild_state AS s FROM summaries WHERE id = ?').get(id) as { s: string }).s;
+    const at = new Date().toISOString();
+    expect(stateOf(createCondensedSummary(AGENT, 'p1', 100, [mk('lineage_lost'), mk('lineage_lost')], 1, at, at).id)).toBe('lineage_lost');
+    expect(stateOf(createCondensedSummary(AGENT, 'p2', 100, [mk('lineage_lost'), mk('legacy_mixed')], 1, at, at).id)).toBe('legacy_mixed');
+    expect(stateOf(createCondensedSummary(AGENT, 'p3', 100, [mk('legacy_mixed_rebuild'), mk('legacy_mixed_rebuild')], 1, at, at).id)).toBe('legacy_mixed_rebuild');
   });
 });

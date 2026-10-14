@@ -163,8 +163,9 @@ export function createCondensedSummary(
   const kids = db.prepare(`SELECT subject_key, rebuild_state FROM summaries WHERE id IN (${parentPlaceholders})`)
     .all(...parentIds) as Array<{ subject_key: string | null; rebuild_state: string | null }>;
   const keys = new Set(kids.map((k) => k.subject_key));
+  const sameState = kids.every((k) => k.rebuild_state === kids[0].rebuild_state) ? kids[0].rebuild_state : null;
   const rebuildState = kids.some((k) => k.rebuild_state)
-    ? (kids.every((k) => k.rebuild_state === 'legacy_mixed_rebuild') ? 'legacy_mixed_rebuild' : 'legacy_mixed') : null;
+    ? (sameState === 'legacy_mixed_rebuild' || sameState === 'lineage_lost' ? sameState : 'legacy_mixed') : null;
   const subjectKey = rebuildState ? null : keys.size === 1 ? [...keys][0] : SEVERAL_SUBJECTS;
   const lineage = lineageOf(subjectKey);
 
