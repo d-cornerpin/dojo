@@ -73,7 +73,7 @@ const ColorPicker = ({ current, onPick, onClose }: {
 // Status pill: green "Ready" by default; override colour inline for the rest.
 const statusPresentation: Record<string, { label: string; color?: string }> = {
   idle: { label: 'Ready' },
-  paused: { label: 'Ready' },
+  paused: { label: 'Paused', color: '#a4762e' },   // t148: never "Ready" for an agent the platform parked
   working: { label: 'Working', color: '#a4762e' },
   error: { label: 'Error', color: '#9c4434' },
   // Reachable from PHASE-0 T12 on (migration 126 + the un-swallowed alert).
@@ -116,6 +116,8 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   // One hue for both the avatar box and the orb. Primary is always champagne.
   const hue = isThisPrimary ? CHAMPAGNE_HUE : (localHue ?? resolveAgentHue(agent, false));
   const status = statusPresentation[agent.status] ?? statusPresentation.idle;
+  // t148: a parked agent's true cause (the owner's words after the lock's tag) rides the pill as its tooltip.
+  const parkedCause = agent.status === 'paused' ? agent.lastError?.match(/^\[(?:budget_stop|no_model_fits)\]\s*(.+)$/s)?.[1] : undefined;
 
   const pickColor = async (h: number) => {
     setLocalHue(h);
@@ -208,7 +210,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
           </div>
           {senseiRole && <div className="agent-card__role">{senseiRole}</div>}
         </div>
-        <span className="status" style={status.color ? { color: status.color } : undefined}>
+        <span className="status" title={parkedCause} style={status.color ? { color: status.color } : undefined}>
           <i style={status.color ? { background: status.color, boxShadow: 'none' } : undefined} />
           {status.label}
         </span>

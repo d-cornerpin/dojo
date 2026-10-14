@@ -974,7 +974,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     name: row.name as string,
     modelId: modelId,
     systemPromptPath: row.system_prompt_path as string | null,
-    status: row.status as AgentDetail['status'],
+    status: row.status as AgentDetail['status'], lastError: (row.last_error as string | null) ?? null,
     config: JSON.parse((row.config as string) || '{}'),
     createdBy: row.created_by as string,
     createdAt: row.created_at as string,
