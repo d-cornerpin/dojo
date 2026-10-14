@@ -409,7 +409,6 @@ export async function runSummaryRebuildBatch(opts?: { modelId?: string }): Promi
 }
 
 async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId?: string }): Promise<SummaryRebuildStats> {
-  {
     const flagged = findContaminatedSummaries();
     const stockScanned = countSummaryStock();
     if (flagged.length === 0) {
@@ -462,5 +461,4 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
       );
     }
     return stats;
-  }
 }

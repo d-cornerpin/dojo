@@ -528,15 +528,10 @@ export function rowsLeavingView(
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t144 — THE BOUNDARY STAYS TRUE WHEN NOTES ARE WRITTEN PER CONVERSATION. The live view starts after
-// the newest summarised row (`readBoundary`'s single MAX(seq) anchor), which is only right while every
-// session row at or below it is covered. A fold's chunks are now one conversation each, so one
-// conversation's chunk can be refused while another's, holding newer rows, lands — and the refused
-// rows would sit below the anchor, out of view, with nothing standing for them (this was already
-// possible with sequential chunks; per-conversation chunks make it common). Membership stays the one
-// anchor — the per-turn read is unchanged — and the fold re-establishes the invariant: this reader
-// names the rows left below it, and `compaction.ts` covers them with placeholder notes at once.
-// Bounded by the fold's own span (`fromSeq`), so it never scans the agent's history.
+// t144 — THE BOUNDARY STAYS TRUE. Membership stays the one MAX(seq) anchor (the per-turn read is
+// unchanged); it is right only while every session row at or below it is covered. Per-conversation
+// chunks let one conversation's refused chunk sit below another's landed one, so the fold asks this
+// reader for the rows stranded below it — bounded by the fold's own span — and covers them at once.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /** The anchor, and how many session rows in `[fromSeq, anchor]` no summary covers. Never throws. */

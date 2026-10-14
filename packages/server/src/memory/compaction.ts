@@ -40,7 +40,7 @@ import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterM
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
-import { groupBySubject, summaryConversationLabel, LabelFacts } from './summary-subject.js';
+import { groupBySubject, conversationLabels } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import { isPlatformNoise } from './platform-noise.js';
@@ -1161,18 +1161,9 @@ export function stubOldToolResultsAtBoundary(agentId: string): number {
  */
 export function buildLeafSummaryInput(messages: Message[]): string {
   const answered = answeredAskTurns(messages);
-  // t144: the input says WHICH conversation (one, normally: chunks are built per conversation) and
-  // WHEN each message was written — the summariser's only source of dates. A mixed input (an older
-  // placeholder's rows) names each row's conversation in its own tag instead.
-  const agentId = messages[0]?.agentId;
-  const groups = agentId ? groupBySubject(agentId, messages) : [];
-  const facts = new LabelFacts(agentId ?? '');
-  const labelOf = new Map<string, string>();
-  for (const g of groups) {
-    const label = summaryConversationLabel({ subjectKey: g.key, earliestAt: g.rows[0].createdAt, latestAt: g.rows[g.rows.length - 1].createdAt }, facts);
-    for (const m of g.rows) labelOf.set(m.id, label);
-  }
-  const one = groups.length === 1;
+  // t144: WHICH conversation (one, normally — a mixed input names each row's in its tag) and WHEN each
+  // message was written, the summariser's only source of dates.
+  const { one, labelOf } = conversationLabels(messages);
   const body = messages
     .filter(m => !isNonConversationForSummary(m.content))
     .map(m => {
@@ -1434,7 +1425,7 @@ export async function runLeafCompaction(
 async function coverRowsStrandedBelowBoundary(agentId: string, fromSeq: number): Promise<void> {
   const { anchor, stranded } = rowsStrandedBelowBoundary(agentId, fromSeq);
   if (stranded === 0) return;
-  logger.warn('A conversation\'s rows were left below the summarised boundary; placeholder notes stand in for them', { stranded, anchor }, agentId);
+  logger.warn('Rows were left below the summarised boundary; placeholder notes stand in for them', { stranded, anchor }, agentId);
   const { writeUncondensedPlaceholders } = await import('./uncondensed-placeholder.js');
   writeUncondensedPlaceholders(agentId, anchor);
 }

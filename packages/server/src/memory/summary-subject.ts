@@ -113,6 +113,19 @@ export function summaryConversationLabel(
   return labelText(label ?? `conversation unknown, ${range}`, 200);
 }
 
+/** Each row's conversation label for a summariser input, and whether the rows are all one conversation. */
+export function conversationLabels(rows: readonly Message[]): { one: boolean; labelOf: Map<string, string> } {
+  const agentId = rows[0]?.agentId;
+  const groups = agentId ? groupBySubject(agentId, rows) : [];
+  const facts = new LabelFacts(agentId ?? '');
+  const labelOf = new Map<string, string>();
+  for (const g of groups) {
+    const label = summaryConversationLabel({ subjectKey: g.key, earliestAt: g.rows[0].createdAt, latestAt: g.rows[g.rows.length - 1].createdAt }, facts);
+    for (const m of g.rows) labelOf.set(m.id, label);
+  }
+  return { one: groups.length === 1, labelOf };
+}
+
 /** Condensation batches (OR-COMPACT-1 unchanged in what it guarantees): a conversation's notes merge
  *  with its own first; notes from before this release merge only with each other. Only when no
  *  conversation has two notes left to merge do batches cross conversations — the climb must still end. */
