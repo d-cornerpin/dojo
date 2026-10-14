@@ -402,6 +402,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     // dedup then compared the unchanged set equal and skipped it. Measured cost, BATTERY9:
     // zero Key-2 verdicts in 84 minutes.
     ringValidationDoorbell({ workId, shape: 'close-request' });
+    if (row.kind === 'task') notifyTaskEnded(row.agent_id, row.source_message_id);   // t152: a filed close is the holder's "I owe nothing more"
     return {
       kind: 'refused', workId, reason: 'requires-validation',
       detail: `close request recorded (event ${eventId}); a ${row.kind} is closed by an authority or by the engine's own delivery receipt, not by the worker that did it`,

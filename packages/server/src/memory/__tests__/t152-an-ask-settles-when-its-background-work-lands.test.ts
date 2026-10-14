@@ -136,7 +136,8 @@ import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { mediaHandlers } from '../../agent/tools/cat/media.js';
 import { untrackedWorkAcrossTurns } from '../../agent/turn-state.js';
 import { createTask } from '../../tracker/schema.js';
-import { transition } from '../../work/store.js';
+import { transition, rejectClaim } from '../../work/store.js';
+import { recordDelivery } from '../../agent/v2/deliveries.js';
 import { carryJobWork, registerDrainWake, endJobCarry } from '../../work/task-freshness.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
@@ -452,5 +453,96 @@ describe('t152 round 2 — a request whose last job was cancelled', () => {
     await until(() => imageBubbles() === 1);
     await cancelAndRelease();
     expect(askRow().state).toBe('done');
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 2b (coordinator decision): a task whose close its holder has FILED is no longer owed. With the
+// project manager off nobody validates that close, and the ask must not wait for ever on it.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('t152 round 2b — a filed close is the holder\'s "I owe nothing more"', () => {
+  const linkedTask = (askRoot: string): string => {
+    createTask({ title: 'Make the images', createdBy: AGENT, assignedTo: AGENT, origin: { kind: 'ask', sourceMessageId: askRoot, turn: null, convKey: null } });
+    return (mockDb.current!.prepare(`SELECT id FROM work WHERE kind = 'task' AND source_message_id = ?`).get(askRoot) as { id: string }).id;
+  };
+  /** The agent's `work_update(status=complete)`: Key 1 only. No project manager exists in this world to turn Key 2. */
+  const fileClose = (taskId: string): void => {
+    const receipt = (recordDelivery({ agentId: AGENT, tool: 'dashboard', channel: 'dashboard', recipientId: 'owner', outcome: 'delivered' }) as { value: { deliveryId: string } }).value.deliveryId;
+    expect(transition(taskId, { to: 'done', by: 'agent', resultDeliveryId: receipt, reason: 'all the images were requested' }).kind).toBe('refused');
+  };
+  const taskState = (id: string): string => (mockDb.current!.prepare(`SELECT state FROM work WHERE id = ?`).get(id) as { state: string }).state;
+
+  it('PM off: the agent filed its complete BEFORE the images land: the last image settles the ask (the task stays unvalidated)', async () => {
+    await submitUserMessage(AGENT, 'Make two small images.');
+    const taskId = linkedTask(askRow().root_id);
+    fileClose(taskId);
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(2), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    expect(askRow().state, 'one of two').not.toBe('done');
+    await release(2, imageSuccess);
+    await until(() => askRow().state === 'done');
+    expect(askRow().state).toBe('done');
+    expect(taskState(taskId), 'nobody validated the task: it is still the record of that close').not.toBe('done');
+  });
+
+  it('control: the task is still IN PROGRESS (no close filed): the images land and the ask stays held', async () => {
+    await submitUserMessage(AGENT, 'Make one small image, then write a post.');
+    linkedTask(askRow().root_id);
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state).toBe('blocked');
+  });
+
+  it('the images land first, THEN the agent files its close: filing it settles the ask', async () => {
+    await submitUserMessage(AGENT, 'Make one small image, then write a post.');
+    const taskId = linkedTask(askRow().root_id);
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state).toBe('blocked');
+    fileClose(taskId);
+    expect(askRow().state, 'the holder said it owes nothing more').toBe('done');
+  });
+
+  it('the PM throws the close back BEFORE the images land: the task is owed again and holds the ask; filing again releases it', async () => {
+    await submitUserMessage(AGENT, 'Make one small image, then write a post.');
+    const taskId = linkedTask(askRow().root_id);
+    fileClose(taskId);
+    expect(rejectClaim(taskId, { claimState: 'done', by: 'pm', note: 'not finished' }).kind).toBe('applied');
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => imageBubbles() === 1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(askRow().state, 'a rejected close is owed work again').toBe('blocked');
+    fileClose(taskId);
+    expect(askRow().state).toBe('done');
+  });
+
+  it('the PM re-opens the task AFTER the ask is done: the ask stays done, and nothing throws', async () => {
+    await submitUserMessage(AGENT, 'Make one small image.');
+    const taskId = linkedTask(askRow().root_id);
+    fileClose(taskId);
+    wireImageCalls();
+    imageGate.waiting.length = 0;
+    await turn(imageCalls(1), { content: '[no-reply]' });
+    await release(1, imageSuccess);
+    await until(() => askRow().state === 'done');
+    const before = askRow();
+    expect(transition(taskId, { to: 'open', by: 'pm', claim: 'authoritative', reason: 'the close was wrong: re-opened' }).kind).toBe('applied');
+    expect(askRow(), 'the ask is the settled record; the task carries the remaining work').toEqual(before);
+    expect(taskState(taskId)).toBe('open');
   });
 });
