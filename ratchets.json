@@ -8466,6 +8466,13 @@
       "to": 1569,
       "by": "t158 C (2026-10-14), the full check prices the rows the assembler budgets",
       "why": "+5: one capLargeToolResultStrings call and its 3-line reason, two reduces now read the capped rows; the false \"overstates, folds earlier\" sentence was rewritten in place. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 644,
+      "to": 646,
+      "by": "t159 G2 (2026-10-14), one park signal: parkJob records it on the running turn",
+      "why": "+2: one bag field (`jobParked`, a one-line comment beside it) and its initialiser. `parkJob` (work/job-continuation.ts) is the one door every park goes through (tool-loop cap, turn budget, both context-gate arms, the two error-recovery compactions); it sets the field when it queues the continuation, and `turnParkedTheJob` reads it and the stop fence. It replaces three stand-ins the predicate read before (the C3 stash, the cap latch, the budget cut), which missed the context-gate parks on a turn nobody is waiting on. ALTERNATIVES REFUSED. (a) Reuse `toolLoopCapReached`: that latch means the CAP ended the turn and teardown records `iteration_cap` from it; widening it to every park would change the recorded exit reason. (b) A module-level Set in job-continuation.ts: it outlives the turn and needs its own clearing, which is the lifetime bug the bag exists to avoid. (c) A field on the turn state: parkJob has no state, only the agent id. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8556,7 +8563,7 @@
     "packages/server/src/agent/tools/surface.ts": 731,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 644,
+    "packages/server/src/agent/turn-context.ts": 646,
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
