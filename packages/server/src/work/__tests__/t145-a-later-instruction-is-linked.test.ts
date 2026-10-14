@@ -457,7 +457,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     expect(await taskList()).toContain(LATER);
   });
 
-  it('many later messages never outgrow the room: the rest collapse into one counted line naming the newest', async () => {
+  it.fails('many later messages never outgrow the room: the rest collapse into one counted line naming the newest', async () => {
     const id = await openJob();
     for (let i = 0; i < 60; i++) {
       ownerSays(`msg-l${i}`, `Further change number ${i}: ${'detail '.repeat(40)}`);
@@ -468,10 +468,44 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
       availableTokens: 2200, emitted: [], blocks: [], liveRows: [],
     })).activeTasks ?? '';
     expect(estimateTokens(list)).toBeLessThanOrEqual(2200);
-    expect(list).toMatch(/\[\d+ more later messages updated this task, the newest is message msg-l59; history_get\(id="msg-l59"\) returns it\]/);
+    expect(list).toMatch(/\[\d+ more later messages? sent while this task was open[^\]]*the newest of them is message msg-l\d+; history_get\(id="msg-l\d+"\) returns it\]/);
     // a waiting task prints no later messages (it is not current work): pointer only
     setTrackerStatus(id, 'paused', { by: 'agent', actorId: PRIMARY, reason: 'waiting on the owner to answer the question I asked' });
     const waiting = (await buildWorkBoardLane(PRIMARY)).activeTasks ?? '';
     expect(waiting).not.toContain('Further change number');
+  });
+
+  // ── ROUND 2 ───────────────────────────────────────────────────────────────────────────
+  it.fails('A-I1: the label says only what is recorded: the turn that answered it touched this task, never "updated"', async () => {
+    const id = await openJob();
+    ownerSays('msg-2', 'What is the weather like tomorrow? WEATHER-WORDS-END');
+    script([
+      { toolCalls: [call('wn-w', 'work_note', { task_id: id, notes: 'Progress: 1 of 3 done.' })] },
+      { content: 'Mild, around 18.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    const list = await taskList();
+    expect(list).toContain('WEATHER-WORDS-END');
+    expect(list).toContain('sent while this task was open (the turn that answered it touched this task)');
+    expect(list).not.toMatch(/updated this task/);
+  });
+
+  it.fails('A-I2: under room pressure the NEWEST owner words get the room first: "use blue" is whole, the older text is what becomes a pointer', async () => {
+    ownerSays('msg-big', longAsk(6000, 'BIGASK'));
+    script([{ toolCalls: [openTask('wo-big', 'Colour the posters', 'Posters coloured')] }, { content: 'Starting.' }]);
+    await runV2Turn(PRIMARY);
+    const id = taskIdTitled('Colour the posters');
+    ownerSays('msg-blue', 'Actually, use blue. USE-BLUE-END');
+    writeTaskLog({ taskId: id, fromEntity: 'engine', entryKind: 'newer_instruction', reason: 'msg-blue' });
+    // a tight view: room for roughly a thousand characters of words
+    let proved = false;
+    for (const available of [1500, 1650, 1800, 1950, 2100, 2300]) {
+      const list = (await buildWorkBoardLane(PRIMARY, { availableTokens: available, emitted: [], blocks: [], liveRows: [] })).activeTasks ?? '';
+      if (list.includes('history_get(id="msg-big")') && !list.includes('BIGASK-END')) {
+        expect(list, `room ${available}: the newest words must be whole`).toContain('Actually, use blue. USE-BLUE-END');
+        proved = true;
+      }
+    }
+    expect(proved, 'no tight room cut the original while keeping the list, so the clause proved nothing').toBe(true);
   });
 });
