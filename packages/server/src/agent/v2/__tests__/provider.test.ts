@@ -179,8 +179,10 @@ describe('classifyPlatformError (Tier D)', () => {
   });
 
   it('classifies quota_exhausted (distinct from rate limit)', () => {
-    expect(classifyPlatformError('quota exceeded for the day')!.kind).toBe('quota_exhausted');
+    // t151 round 2: money words are out of credit; a bare "quota exceeded" (per day, per minute) is a wait.
     expect(classifyPlatformError('insufficient_quota')!.kind).toBe('quota_exhausted');
+    expect(classifyPlatformError('Insufficient Balance')!.kind).toBe('quota_exhausted');
+    expect(classifyPlatformError('quota exceeded for the day')).toBeNull();
   });
 
   it('classifies dns_failure for ENOTFOUND', () => {
