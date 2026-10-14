@@ -31,3 +31,7 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
       });
   }, delayMs);
 }
+
+export function parkJob(agentId: string, reason: string, _how: 'drain' | 'timer' = 'drain'): boolean {
+  return queueJobContinuation(agentId, reason);
+}
