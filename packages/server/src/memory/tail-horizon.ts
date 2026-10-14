@@ -68,7 +68,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
-import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import type { ContextWindowPolicy } from './budget.js';
 
@@ -198,37 +197,6 @@ export interface TailHorizon {
 }
 
 interface BoundaryRow { anchor: number; rows_since: number }
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t145 round 3 — THE OWNER MESSAGE A RUNNING TURN IS SERVING IS NEVER FOLDED OUT OF VIEW.
-// The "still in force" pin used to hold the newest long ask whole on every call; deleting it is
-// only safe if no shape loses the owner's words. One did: a long tool-heavy turn on an ask with no
-// task, where a pressure fold mid-turn summarised the ask's raw row away. So while a turn is running
-// for this agent, the ask it SERVES (the claimed ask's own message) is a FLOOR, and everything from
-// it on is treated like the newest group: no fold input reaches it (`store.ts`
-// `getMessagesOutsideFreshTail`), the condense trigger ends below it (`rowsLeavingView`), the row
-// ceiling's front cut stops at it (`freshTailHorizon`) and the token trim never drops it
-// (`groupsToDropForBudget`). Later owner messages merged into the turn sit after it, so they are
-// covered by the same floor. OLDER rows go first. If keeping it overflows the window, nothing
-// silently drops it: the trim stops at it and the provider boundary's honest refusal answers.
-// Two facts, both recorded: a turn is running for this agent (its bag exists — which covers a
-// continuation carrying the same ask), and the ask row is `claimed` (it stays claimed until its
-// answer is delivered). With no running turn the floor is 0 and nothing changes.
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/** `messages.seq` of the owner message the running turn serves, or 0 when none is protected. Never throws. */
-export function servedAskFloorSeq(agentId: string): number {
-  try {
-    if (!turnContext(agentId)) return 0;
-    const row = getDb().prepare(
-      `SELECT MIN(m.seq) AS seq FROM work w JOIN messages m ON m.id = w.root_id
-        WHERE w.kind = 'ask' AND w.agent_id = ? AND w.state = 'claimed'`,
-    ).get(agentId) as { seq: number | null } | undefined;
-    return row?.seq ?? 0;
-  } catch {
-    return 0;
-  }
-}
 
 /**
  * ONE READ, both numbers. The session-boundary comparison is the house idiom
@@ -363,27 +331,9 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
   }
   if (keepFromSeq <= 0) return { ...floorAnswer, anchorSeq: boundary.anchor };
 
-  // t145 round 3: the cut stops at the served ask. Rows before it are the ones that may go.
-  const served = servedAskFloorSeq(agentId);
-  let skipped = skip;
-  if (served > 0 && keepFromSeq > served) {
-    keepFromSeq = served;
-    try {
-      skipped = (getDb().prepare(
-        `SELECT COUNT(*) AS n FROM messages m LEFT JOIN agents a ON a.id = m.agent_id
-          WHERE m.agent_id = @agentId AND m.seq > @anchor AND m.seq < @served
-            AND (a.session_started_at IS NULL OR m.created_at >= unixepoch(a.session_started_at) * 1000)`,
-      ).get({ agentId, anchor: boundary.anchor, served }) as { n: number }).n;
-    } catch { skipped = 0; }
-    if (skipped <= 0) {
-      return { anchorSeq: boundary.anchor, rowsSinceBoundary: boundary.rows_since, keepFromSeq: boundary.anchor + 1,
-        requestRows: boundary.rows_since, skippedRows: 0, ceilingBound: false };
-    }
-  }
-
   logger.warn('fresh-tail horizon: the row ceiling trimmed the live conversation', {
     freshTailCount: cap, ceilingRows: ceiling, stepRows: step,
-    rowsSinceBoundary: boundary.rows_since, rowsSkipped: skipped,
+    rowsSinceBoundary: boundary.rows_since, rowsSkipped: skip,
     why: 'compaction has not reclaimed this agent for a long time; this trim is large by design',
   }, agentId);
 
@@ -391,8 +341,8 @@ export function freshTailHorizon(agentId: string, policy: ContextWindowPolicy): 
     anchorSeq: boundary.anchor,
     rowsSinceBoundary: boundary.rows_since,
     keepFromSeq,
-    requestRows: boundary.rows_since - skipped,
-    skippedRows: skipped,
+    requestRows: boundary.rows_since - skip,
+    skippedRows: skip,
     ceilingBound: true,
   };
 }
@@ -431,14 +381,9 @@ export function groupsToDropForBudget(
   groupTokens: readonly number[],
   availableTokens: number,
   blockGroups: number,
-  /** t145 round 3: at most this many groups, counted from the front, may go — the group holding the
-   *  owner message a running turn serves (and everything after it) is never dropped. Older groups
-   *  go first; if the budget still is not met the caller's honest over-budget path answers. */
-  protectedFromGroup: number = Infinity,
 ): number {
   const n = groupTokens.length;
   if (n === 0) return 0;
-  const reach = Math.max(0, Math.min(n - 1, Math.floor(protectedFromGroup)));
 
   const suffix = new Array<number>(n + 1).fill(0);
   for (let i = n - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + groupTokens[i];
@@ -452,7 +397,7 @@ export function groupsToDropForBudget(
   // the loud minimum-fit path on exactly the healthy body it was meant to serve. It is a
   // function of the group count, but a coarsely quantised one (it only changes when the count
   // crosses a multiple of 2 × block), so it does not reintroduce a scrolling front.
-  const maxDrop = Math.min(maxTrimUnits(n, block), Math.floor(reach / block) * block);
+  const maxDrop = maxTrimUnits(n, block);
   // CUT THE WHOLE BOUND — not the smallest multiple that fits, and not that plus one block of
   // margin (review I2: "a safe doubling inside your own proof"). The cadence is set by how much
   // a cut FREES. `maxDrop` frees half the tail, and `maxDrop` itself only changes when the
@@ -481,7 +426,7 @@ export function groupsToDropForBudget(
   // naming the number. That is the honest shape: this is not a cadence to optimise, it is a
   // window too small to hold one block of conversation, and the warn is how it gets fixed.
   let drop = maxDrop;
-  while (drop < reach && suffix[drop] > availableTokens) drop++;
+  while (drop < n - 1 && suffix[drop] > availableTokens) drop++;
   return drop;
 }
 
@@ -576,18 +521,6 @@ export function rowsLeavingView(
     // reader of this tail. One row further keeps it whole; the floor clamp above leaves room.
     const pairedResult = leaving < room ? seqOfPairedToolResult(agentId, throughSeq) : null;
     if (pairedResult !== null) { throughSeq = pairedResult; leaving += 1; }
-    // t145 round 3: a fold ends below the owner message the running turn serves.
-    const served = servedAskFloorSeq(agentId);
-    if (served > 0 && throughSeq >= served) {
-      const below = getDb().prepare(
-        `SELECT MAX(m.seq) AS seq, COUNT(*) AS n FROM messages m LEFT JOIN agents a ON a.id = m.agent_id
-          WHERE m.agent_id = @agentId AND m.seq > @anchor AND m.seq < @served
-            AND (a.session_started_at IS NULL OR m.created_at >= unixepoch(a.session_started_at) * 1000)`,
-      ).get({ agentId, anchor: boundary.anchor, served }) as { seq: number | null; n: number };
-      if (!below.seq || below.n <= 0) return null;
-      throughSeq = below.seq;
-      leaving = below.n;
-    }
   } catch {
     return null;
   }

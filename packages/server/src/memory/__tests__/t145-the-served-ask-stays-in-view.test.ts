@@ -78,6 +78,12 @@ beforeEach(() => {
 afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
 /** 10 older rows, the owner's long ask (claimed by a running turn), then `after` rows of the turn. */
+/** The turn that picked the ask up: its bag, with the trigger root the preflight publishes. */
+function runningTurnOn(askId: string): void {
+  const bag = openTurnContext(AGENT);
+  bag.root = { kind: 'ask', id: askId, sourceMessageId: askId };
+}
+
 function servedAsk(after: number): { askSeq: number; lastSeq: number } {
   for (let i = 0; i < 5; i++) { say('user', `older question ${i}`); say('assistant', `older answer ${i}`); }
   const askSeq = say('user', 'THE-LONG-ASK '.repeat(30), 'ask-row');
@@ -97,15 +103,29 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     servedAsk(0);
     say('user', 'a later owner message merged into the same turn', 'later-row');
     expect(servedOwnerMessageIds(AGENT), 'no turn is running: nothing is served').toEqual([]);
-    openTurnContext(AGENT);
+    runningTurnOn('ask-row');
     expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row', 'later-row']);
     endTurnContext(AGENT);
     expect(servedOwnerMessageIds(AGENT)).toEqual([]);
   });
 
+  it('a continuation carrying the ask (no trigger of its own) serves the ask still claimed in its conversation', () => {
+    servedAsk(0);
+    const bag = openTurnContext(AGENT);
+    bag.conversationId = 'conv-dash';
+    expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row']);
+  });
+
+  it('CONTROL (#7): a new ask while an older one is still claimed re-shows only the new one, never the held job', () => {
+    servedAsk(0);                                   // the held job: claimed, never answered here
+    say('user', 'You there?', 'ping-row');          // opens its own ask
+    runningTurnOn('ping-row');
+    expect(servedOwnerMessageIds(AGENT)).toEqual(['ping-row']);
+  });
+
   it('NOTHING after the ask is frozen: the fold input and the condense trigger reach past it, as before', () => {
     const { askSeq } = servedAsk(70);
-    openTurnContext(AGENT);
+    runningTurnOn('ask-row');
     expect(getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number)).toContain(askSeq);
     const leaving = rowsLeavingView(AGENT, policy, { viewFull: true });
     expect(leaving!.throughSeq).toBeGreaterThanOrEqual(askSeq);
@@ -113,7 +133,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
 
   it('in view: the ask is in the live conversation and nothing extra is emitted', async () => {
     servedAsk(6);
-    openTurnContext(AGENT);
+    runningTurnOn('ask-row');
     const text = await wire();
     expect(occurrences(text, 'THE-LONG-ASK')).toBeGreaterThan(0);
     expect(text).not.toContain(LABEL);
@@ -126,7 +146,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     createLeafSummary(AGENT, 'Earlier: the owner asked for a big job.', 20, ids, new Date().toISOString(), new Date().toISOString());
     const ask = 'THE-LONG-ASK '.repeat(30);
     expect(occurrences(await wire(), 'THE-LONG-ASK'), 'control: no turn running, the ask is only in the note').toBe(0);
-    openTurnContext(AGENT);
+    runningTurnOn('ask-row');
     const ctx = await assembleContext(AGENT, 'm');
     const text = JSON.stringify(ctx.messages);
     expect(text).toContain(LABEL);
@@ -151,7 +171,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     for (let i = 0; i < 40; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i} ${'pad '.repeat(300)}`);
     const control = await wire();
     expect(control, 'control: no turn running, the trim drops the ask with the front').not.toContain('THE-LONG-ASK');
-    openTurnContext(AGENT);
+    runningTurnOn('ask-row');
     const text = await wire();
     expect(text).toContain(LABEL);
     expect(occurrences(text, 'THE-LONG-ASK '.repeat(8).trim())).toBe(1);

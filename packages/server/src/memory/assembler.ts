@@ -16,7 +16,7 @@ import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
-import { freshTailHorizon, groupsToDropForBudget, servedAskFloorSeq, tailTrimBlockGroups } from './tail-horizon.js';
+import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
@@ -278,7 +278,8 @@ type LoopMsg = {
 // stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
 // clock and re-bills every token behind it once an hour, a block that states the recorded
 // instant is a pure function of its rows.
-import { renderMessageTimeStamp, renderInstant } from './message-stamp.js';
+import { renderMessageTimeStamp, renderInstant, recordedInstant } from './message-stamp.js';
+import { servedRowsOutOfView } from './served-ask.js';
 export { renderMessageTimeStamp };
 
 /** Put a row's label in front of what the model reads: before a text body, or as a leading text
@@ -935,6 +936,9 @@ const MIN_LANE_FLOOR_TOKENS = 64;
 
 type TailPayload = {
   rows: Message[]; agentId: string; dropped: number;
+  /** t145 round 4: the owner message(s) a running turn serves that are NOT among `rows` (folded behind
+   *  the boundary or trimmed off the front): emitted verbatim, labelled, at the front of the tail. */
+  served?: Message[];
   /** t140 round 2: the newest seq the token trim has taken off this tail's front (0: none). */
   droppedThroughSeq?: number;
 };
@@ -1189,19 +1193,27 @@ function buildContentLanes(
       maxTokens: Infinity,
       truncate: (render, maxTokens) => {
         const p = render.payload as TailPayload;
-        const kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount), servedAskFloorSeq(p.agentId));
+        let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
+        // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
+        // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
+        let served = servedRowsOutOfView(p.agentId, kept);
+        if (served.length > 0) {
+          kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));
+          served = servedRowsOutOfView(p.agentId, kept);
+        }
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
         // at the row just before it.
         const droppedThroughSeq = Math.max(p.droppedThroughSeq ?? 0, dropped > 0 ? (p.rows[dropped - 1].rowid ?? 0) : 0);
-        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq });
+        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served });
       },
       render: (ctx) => {
         const { freshTail } = ctx.tail();
         if (freshTail.length === 0) return null;
         // Pre-cap oversized tool_result content BEFORE budgeting: without it a single
         // 5.9MB tool_result consumes the whole budget and evicts the user's question.
-        return tailRender({ rows: capLargeToolResultStrings(freshTail), agentId: ctx.agentId, dropped: 0 });
+        const rows = capLargeToolResultStrings(freshTail);
+        return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: servedRowsOutOfView(ctx.agentId, rows) });
       },
     },
   ];
@@ -1218,6 +1230,12 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   rows = stubOldToolResults(rows, payload.agentId);
   const labels = labelRows(payload.agentId, rows);
   const messages: LaneMessage[] = [];
+  // t145 round 4: the served owner message(s), verbatim and plainly labelled with their time, ahead of
+  // the live rows they precede. Emitted only when not otherwise in view, so exactly once.
+  for (const msg of payload.served ?? []) {
+    const label = `The message from you this work is answering (sent ${recordedInstant(msg.createdAt)}):`;
+    messages.push({ role: 'user', content: labelContent(parseMessageContent(msg), label) });
+  }
   for (const msg of rows) {
     const parsed = parseMessageContent(msg);
     if (msg.role === 'tool') {
@@ -1237,7 +1255,7 @@ function tailRender(payload: TailPayload): LaneRender<TailPayload> {
   }
   // t141: labels ride the uncounted stamp slack, as the instant did; counting them here alone
   // (not in the horizon) MEASURED 8 prefix rewrites in 200 turns, not 2 (t94 §2). Kept small instead.
-  return { messages, tokens: rowTokens(payload.rows), payload };
+  return { messages, tokens: rowTokens(payload.rows) + rowTokens(payload.served ?? []), payload };
 }
 
 async function assembleMessageContext(
@@ -2496,8 +2514,6 @@ function pruneOldImageBlocksInPlace(
 
 function budgetFreshTail(
   messages: Message[], availableTokens: number, blockGroups: number,
-  /** t145 round 3: `messages.seq` of the owner message a running turn serves; 0 = none. */
-  protectedFromSeq = 0,
 ): Message[] {
   // Group messages into atomic units: tool_use + tool_result pairs must stay together.
   // A "group" is either a standalone message or an [assistant(tool_use), tool(tool_result)] pair.
@@ -2545,12 +2561,7 @@ function budgetFreshTail(
   // from the front of this array. The front of this array is the compaction boundary (the
   // horizon above), which is what makes an index into it a stable address rather than a
   // scrolling one. `memory/tail-horizon.ts` carries the derivation of the block.
-  // The group holding the served owner message, and everything after it, is never dropped (older go first).
-  const protectedAt = protectedFromSeq > 0
-    ? groups.findIndex((g) => g.messages.some((m) => (m.rowid ?? 0) >= protectedFromSeq))
-    : -1;
-  const dropped = groupsToDropForBudget(
-    groups.map((g) => g.tokens), availableTokens, blockGroups, protectedAt >= 0 ? protectedAt : Infinity);
+  const dropped = groupsToDropForBudget(groups.map((g) => g.tokens), availableTokens, blockGroups);
   const includedGroups = groups.slice(Math.min(dropped, Math.max(0, groups.length - 1)));
 
   // Safety, unchanged in effect: an over-budget context is better than no context at all, so
