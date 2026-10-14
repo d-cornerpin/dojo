@@ -8417,6 +8417,20 @@
       "to": 2263,
       "by": "t152 round 2 (2026-10-14), coordinator gap on the async arm",
       "why": "+5: the writer of work state tells `work/task-ended.ts` (a new 10-line leaf the settlement authority registers with) when a tracker task reaches a terminal state, with the request it was linked to. A static import of the authority here is a cycle that broke 21 tests on a TDZ, which is why the call goes through a leaf. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1521,
+      "to": 1522,
+      "by": "t152 round 2b (2026-10-14), a filed close is no longer owed",
+      "why": "+1: the `stillOwed` task query also asks `closeRequestFiledExpr` (the existing Key-1 expression), so a task whose holder has filed its close is not owed work. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2263,
+      "to": 2264,
+      "by": "t152 round 2b (2026-10-14), a filed close is no longer owed",
+      "why": "+1: filing a task's close (Key 1) tells the task-ended leaf, so the request it was linked to is re-asked. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8717,14 +8731,14 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1521,
+    "packages/server/src/work/ask-settlement.ts": 1522,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2263,
+    "packages/server/src/work/store.ts": 2264,
     "packages/server/src/work/tracker-store.ts": 1013,
     "packages/server/src/work/tracker-view.ts": 700,
     "packages/server/src/work/validation-drive.ts": 1313,
