@@ -11,7 +11,7 @@ import { getContextWindow, getModelOutputCap, getProviderCeilingTokens } from '.
 // copy is deleted; see the call site and `__tests__/one-pairing-repair.test.ts`.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
-import { getRecentMessages } from './store.js';
+import { getRecentMessages, getMessagesByIds } from './store.js';
 import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
@@ -1611,6 +1611,7 @@ async function assembleMessageContext(
   // directly from DB so the agent at least sees what it's supposed to respond to.
   // CRITICAL: respect session_started_at — recovering a pre-reset message makes the model
   // re-process "reset your session" and call reset_session again → loop.
+  let fallbackLabel: { msg: LoopMsg; label: string | null } | null = null;
   if (merged.length === 0) {
     postBudget.push('lane.empty-context-fallback');
     try {
@@ -1631,14 +1632,20 @@ async function assembleMessageContext(
         baseConditions.push('created_at >= (unixepoch(?) * 1000)');
         params.push(sessionBoundary);
       }
-      const sql = `SELECT content FROM messages WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT 1`;
-      const lastUserMsg = db.prepare(sql).get(...params) as { content: string } | undefined;
+      const sql = `SELECT id, content FROM messages WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT 1`;
+      const lastUserMsg = db.prepare(sql).get(...params) as { id: string; content: string } | undefined;
 
       if (lastUserMsg) {
         logger.error('Context assembly produced 0 messages after filtering, recovering last user message', {
           agentId,
         }, agentId);
-        merged.push(tagMessageLane({ role: 'user', content: lastUserMsg.content }, 'lane.empty-context-fallback'));
+        // t159 I: the last resort wears the standard row label like every other row (`renderRowLabel`, as the
+        // served message does), so the model is never handed an unlabelled message with no time or subject.
+        // Applied after the A2A salience pass below, which reads the marker at the START of a message.
+        const [row] = withSubjectKinds(agentId, getMessagesByIds([lastUserMsg.id]));
+        const msg = tagMessageLane({ role: 'user' as const, content: lastUserMsg.content }, 'lane.empty-context-fallback');
+        fallbackLabel = { msg, label: row ? `${renderRowLabel(row, new LabelFacts(agentId))} (recovered: the last message sent to you)` : null };
+        merged.push(msg);
       } else if (sessionBoundary) {
         logger.info('Context assembly: post-reset with no user message after boundary, returning empty for clean idle', {
           sessionBoundary, agentId,
@@ -1794,6 +1801,8 @@ async function assembleMessageContext(
       }
     }
   }
+
+  if (fallbackLabel && merged.includes(fallbackLabel.msg)) fallbackLabel.msg.content = labelContent(fallbackLabel.msg.content, fallbackLabel.label);
 
   // ── THE RECALL LANE (SWEEP CORE-2 item 4) ────────────────────────────────────────────────
   // Computed here, emitted by the loop past `volatileFrom`. `includeVault` is false on

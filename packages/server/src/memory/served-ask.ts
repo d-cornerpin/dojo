@@ -17,11 +17,20 @@
 //     carried on t143's job record (`work/task-freshness.ts`) and still claimed.
 // With no running turn, or any other kind of turn (engine, A2A, occurrence), the answer is empty, so
 // a finished ask is never re-shown (the #7 defect). Oldest first. Never throws.
+//
+// t159 I — AN A2A TURN SERVES ITS ASSIGNED MESSAGE TOO (`servedAssignMessageIds`, a separate answer on
+// purpose: `servedOwnerMessageIds` is the owner's words and is what a PARK carries on the job record;
+// the assignment is re-shown to the view and carried by nothing). The reply-needed message an A2A turn
+// was woken to answer (an ASSIGN from a manager, a QUESTION, a BLOCK) is the only user-role row of its
+// thread. Once a fold or the token trim takes it behind the boundary, the tail is all tool rows, the
+// integrity pass's leading-role shift empties it, and the zero-messages guard pulled the raw row with no
+// label (run 7, S1 variant B: 8 calls in a row, 7 messages in view where there had been 409).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
+import { findUnrepliedAssignForAgent } from '../agent/a2a-replies.js';
 import { getMessagesByIds } from './store.js';
 import type { Message } from '@dojo/shared';
 
@@ -54,9 +63,21 @@ export function servedOwnerMessageIds(agentId: string): string[] {
   }
 }
 
+/** The reply-needed message a running A2A turn is answering, until it is answered; `[]` otherwise. The same
+ *  finder preflight used to make the turn an A2A turn, so the two cannot disagree about which message it is. */
+export function servedAssignMessageIds(agentId: string): string[] {
+  try {
+    if (turnContext(agentId)?.kind !== 'a2a') return [];
+    const assign = findUnrepliedAssignForAgent(agentId);
+    return assign ? [assign.messageId] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** The served rows that are NOT among `inView` (compared by id), as stored rows, oldest first. */
 export function servedRowsOutOfView(agentId: string, inView: readonly { id: string }[]): Message[] {
-  const ids = servedOwnerMessageIds(agentId);
+  const ids = [...servedOwnerMessageIds(agentId), ...servedAssignMessageIds(agentId)];
   if (ids.length === 0) return [];
   const seen = new Set(inView.map((m) => m.id));
   const missing = ids.filter((id) => !seen.has(id));
