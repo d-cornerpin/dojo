@@ -46,7 +46,7 @@ import { exceededBudget, WALL_ESTIMATE_USD, type ExceededBudget } from '../../co
 import { routedCandidateCosts } from '../../router/selector.js';
 import type { PromptTurnContext } from '../../prompt/assembler.js';
 import { honestStopWords, type HonestStopKind } from './error-format.js';
-import { lockTag, parkedAgents, parkedCauseOf, BUDGET_STOP_CODE, NO_MODEL_FITS_CODE } from './honest-stop-lock.js';
+import { lockTag, parkedAgents, parkedCauseOf, parkedForFreeDown, BUDGET_STOP_CODE, NO_MODEL_FITS_CODE, FREE_FALLBACK_DOWN_CODE, FREE_DOWN_TAG } from './honest-stop-lock.js';
 
 const logger = createLogger('honest-stop');
 
@@ -56,6 +56,8 @@ export interface HonestStop {
   words: string;
   /** The limit that stopped it, for `budget_stop` when one still stands. */
   budget: ExceededBudget | null;
+  /** t149 round 3: the limit is reached and no free model answered; the park records it. */
+  freeDown?: boolean;
 }
 
 function causeChain(error: unknown): unknown[] {
@@ -87,13 +89,15 @@ async function agentFits(agentId: string): Promise<boolean> {
   return anOwnModelHolds(agentId, await measureAgentToolPayloadTokens(agentId), undefined as unknown as PromptTurnContext);
 }
 
-function budgetStop(agentId: string): HonestStop {
-  const budget = budgetStopFor(agentId);
+function budgetStop(agentId: string, freeDown = false): HonestStop {
+  // A routed agent offered free models has no `budgetStopFor` (a free model is under the line): the wall's own reading names the limit.
+  const budget = budgetStopFor(agentId) ?? (freeDown ? exceededBudget(agentId, WALL_ESTIMATE_USD) : null);
   return {
     kind: 'budget_stop',
     budget,
-    words: honestStopWords('budget_stop', budget
-      ? { scope: budget.scope, period: budget.period, spendUsd: budget.spend, limitUsd: budget.limitUsd } : {}),
+    freeDown,
+    words: honestStopWords('budget_stop', { ...(budget
+      ? { scope: budget.scope, period: budget.period, spendUsd: budget.spend, limitUsd: budget.limitUsd } : {}), freeDown }),
   };
 }
 
@@ -111,6 +115,7 @@ async function pinnedWindowRefused(agentId: string, refusalWindow: number): Prom
 export async function classifyHonestStop(agentId: string, error: unknown): Promise<HonestStop | null> {
   const links = causeChain(error);
   const codes = links.map((e) => (e instanceof AgentError ? e.code : undefined));
+  if (codes.includes(FREE_FALLBACK_DOWN_CODE)) return budgetStop(agentId, true);
   if (codes.includes(BUDGET_STOP_CODE) || codes.includes('BUDGET_EXCEEDED')) return budgetStop(agentId);
   if (codes.includes(NO_MODEL_FITS_CODE)) return noFit();
   // The auto-router found no model at all, and the money limit is what filtered them out.
@@ -141,7 +146,7 @@ export function stopAlreadyTold(agentId: string, kind: HonestStopKind): boolean 
 
 /** Put the lock on: status `paused`, the owner's words as the diagnostic (one statement). */
 export function parkAgent(agentId: string, stop: HonestStop): void {
-  const lastError = `${lockTag(stop.kind)} ${stop.words}`.slice(0, 400);
+  const lastError = `${lockTag(stop.kind)} ${stop.freeDown ? `${FREE_DOWN_TAG} ` : ''}${stop.words}`.slice(0, 400);
   setAgentStatus(agentId, 'paused', { lastError });
   // The live frame carries the true cause, so an open dashboard's pill tooltip needs no reload.
   broadcast({ type: 'agent:status', agentId, status: 'paused', parkedCause: parkedCauseOf('paused', lastError) ?? undefined });
@@ -167,10 +172,16 @@ async function wake(agentId: string): Promise<void> {
  * landed meanwhile is never written over (only a row still `paused` with its own tag is released).
  * Returns the agents released.
  */
-export async function releaseHonestStops(kind: HonestStopKind, opts: { agentId?: string } = {}): Promise<string[]> {
+export async function releaseHonestStops(kind: HonestStopKind, opts: { agentId?: string; onModelsChange?: boolean } = {}): Promise<string[]> {
   const released: string[] = [];
   for (const id of parkedAgents(kind, opts.agentId)) {
-    const stands = kind === 'budget_stop' ? budgetStopFor(id) !== null : !(await agentFits(id));
+    // A "free fallback did not answer" park (t149 round 3) is not lifted by a free model merely existing (the
+    // 30-second tick would flip it): a limit change or the window turning over lifts it, a model/tier change
+    // lifts it for a fresh try, and a person's message tries the redirect again (runtime -> the turn).
+    const freeDown = kind === 'budget_stop' && parkedForFreeDown(id);
+    if (opts.onModelsChange && !freeDown) continue;
+    const stands = freeDown ? !opts.onModelsChange && exceededBudget(id, WALL_ESTIMATE_USD) !== null
+      : kind === 'budget_stop' ? budgetStopFor(id) !== null : !(await agentFits(id));
     if (stands || parkedAgents(kind, id).length === 0) continue;
     setAgentStatus(id, 'idle', { clearError: true });
     if (kind === 'no_model_fits') ownerConditionCleared(`nofit:${id}`);   // the owner's card ends with the lock

@@ -27,6 +27,7 @@ import { getPrimaryAgentId, isPrimaryAgent } from '../config/platform.js';
 import { SystemPromptTooLargeError } from '../memory/budget.js';
 import { isStopFenced } from './shared-state.js';
 import { AgentError } from './errors.js';
+import { FREE_FALLBACK_DOWN_CODE } from './v2/honest-stop-lock.js';
 import type { BudgetCheckResult } from '../costs/budget.js';
 import type { ModelCallParams, ModelCallResult } from './model.js';
 
@@ -103,6 +104,6 @@ export async function redirectToAFreeModel(
   throw new AgentError(
     `${check.reason ?? 'Daily budget limit reached.'} No free model answered${why}`,
     agentId,
-    { code: 'BUDGET_EXCEEDED', retryable: false, cause: failure instanceof Error ? failure : undefined },
+    { code: failure === null ? 'BUDGET_EXCEEDED' : FREE_FALLBACK_DOWN_CODE, retryable: false, cause: failure instanceof Error ? failure : undefined },
   );
 }

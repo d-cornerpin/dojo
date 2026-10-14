@@ -37,6 +37,7 @@ import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
 import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
+import { freeFallbackDown } from './free-fallback-down.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -348,7 +349,7 @@ export async function callWithRetryAndFallback(
       // moves all of that into agent/v2/recovery.ts.)
       if (attempt >= maxAttempts - 1) {
         revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
-        throw err;
+        throw freeFallbackDown(err, agentId, routerTier ?? state.lockedTier ?? 'standard', [...excludedModels, modelId]);
       }
 
       // Auto-routed: try the next model in the fallback chain.
@@ -470,7 +471,7 @@ export async function callWithRetryAndFallback(
             ? new AgentError(named, agentId, { code: err.code, retryable: err.retryable, provider: err.provider, preDialRefusal: err.preDialRefusal, cause: err })
             : new Error(named, { cause: err });
         }
-        throw err;
+        throw freeFallbackDown(err, agentId, fallbackTier, [...excludedModels, modelId]);
       }
       logger.warn(`v2 auto-router: ${modelId} failed → falling back to ${fallback.modelId}`, {
         failedModel: modelId,

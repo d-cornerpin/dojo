@@ -693,13 +693,13 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     (await import('../honest-stop-notes.js')).noteWaitingOfParked(AGENT);   // what runtime.handleMessage does for a paused agent
     await runV2Turn(AGENT);
   };
-  const parkNotes = (): number => (db().prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND id LIKE 'park-note:%'`).get(AGENT) as { n: number }).n;
+  const noteFor = (message: string): number => (db().prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND id = ?`).get(AGENT, `park-note:${message}`) as { n: number }).n;
   const ticks = async (n: number): Promise<void> => {
     const { releaseClearedBudgetStops } = await import('../honest-stop-lock.js');
     for (let i = 0; i < n; i++) await releaseClearedBudgetStops();
   };
 
-  it.fails('an AUTO agent whose every free model is down is parked as an honest stop: told once, no error texts, no Healer; the tick never releases it', async () => {
+  it('an AUTO agent whose every free model is down is parked as an honest stop: told once, no error texts, no Healer; the tick never releases it', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await autoWithFreeInLight('m-free-a');
     await runV2Turn(AGENT);
@@ -714,22 +714,23 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(handleMessageSpy).not.toHaveBeenCalled();
   });
 
-  it.fails('a person\'s message with the free model still down: one note for that message, still parked, nothing told again', async () => {
+  it('a person\'s message with the free model still down: one note for that message, still parked, nothing told again', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await autoWithFreeInLight('m-free-a');
     await runV2Turn(AGENT);
     expect(notices().length).toBe(1);
     await personMessages('msg-user-2');
     expect(status()).toBe('paused');
-    expect(parkNotes(), 'one note, for the new message').toBe(1);
+    expect(noteFor('msg-user-2'), 'one note, for the new message').toBe(1);
     expect(notices().length, 'no second toast').toBe(1);
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     await personMessages('msg-user-3');
-    expect(parkNotes(), 'one note per message').toBe(2);
+    expect(noteFor('msg-user-3'), 'one note per message').toBe(1);
+    expect(noteFor('msg-user-2'), 'and the first is not repeated').toBe(1);
     expect(status()).toBe('paused');
   });
 
-  it.fails('a person\'s message after the free model has come back: the park is released, the message is answered', async () => {
+  it('a person\'s message after the free model has come back: the park is released, the message is answered', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await autoWithFreeInLight('m-free-a');
     await runV2Turn(AGENT);
@@ -743,7 +744,7 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(lastError()).not.toMatch(/free_down/);
   });
 
-  it.fails('a PINNED agent parked by a dead free model is held the same way, and a raised limit releases it (a real event)', async () => {
+  it('a PINNED agent parked by a dead free model is held the same way, and a raised limit releases it (a real event)', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await runV2Turn(AGENT);
     expect(lastError()).toMatch(/^\[budget_stop\] \[free_down\] /);
@@ -756,7 +757,7 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
   });
 
-  it.fails('a model or tier change releases it for a fresh try (the free set changed)', async () => {
+  it('a model or tier change releases it for a fresh try (the free set changed)', async () => {
     addFreeModel('m-free-a', 'Free A', downUrl);
     await autoWithFreeInLight('m-free-a');
     await runV2Turn(AGENT);
