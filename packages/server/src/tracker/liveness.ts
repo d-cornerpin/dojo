@@ -27,7 +27,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
-import { countAbortable, isStopFenced } from '../agent/shared-state.js';
+import { countAbortable, isStopFenced, activeRuns } from '../agent/shared-state.js';
 import { isPrimaryAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../config/platform.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { noteNoticeOnce, endNotice, readNotice } from '../agent/agent-owner-cards.js';
@@ -106,13 +106,12 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Has the agent moved inside its own window? (The PM's ladder never escalates on a timer
- *  against an agent that is visibly working.) */
-export function agentIsMoving(agentId: string, now = Date.now()): boolean {
-  try {
-    const { lastAt } = agentActivity(agentId, now);
-    return lastAt !== null && now - lastAt <= silentWindowMs(agentId);
-  } catch { return false; /* unreadable: no claim of movement, so the ladder behaves as before */ }
+/** Is a turn live, or a model request open on a live connection, RIGHT NOW? The live-run registry
+ *  and the abort registry — never a row (a crash leaves rows behind; nothing live is left behind).
+ *  The PM's ladder leaves an agent alone for exactly this instant; the 2-hour any-row window is for
+ *  the SILENT notice only (t143 round 4). */
+export function agentIsLive(agentId: string): boolean {
+  return activeRuns.has(agentId) || countAbortable(agentId) > 0;
 }
 
 /** The task's own last movement, epoch ms — the PM ladder's idle clock (t137 review M3). Since
@@ -201,9 +200,10 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   const silent = readNotice(a.id, 'silent_notice');
   const work = openWorkOf(a.id, now);
   // t143 round 3 (I5): SILENT is a WEDGE — something it owes is meant to be in progress: a working
-  // status, an open turn, or a tool it started that never returned. An idle agent between turns
-  // (waiting on the owner's answer, or on a delegate) owes nothing in progress and is never SILENT.
-  const owes = a.status === 'working' || openTurnStartedAt(a.id) > 0 || act.waitingOn !== null;
+  // status or a live run (round 4: the live-run registry, never a `turns` row — a crash leaves an
+  // open row behind). An idle agent between turns (waiting on the owner's answer, or on a
+  // delegate) owes nothing in progress and is never SILENT.
+  const owes = a.status === 'working' || activeRuns.has(a.id);
   // A louder status owns this agent, or there is nothing it was meant to be doing: not SILENT.
   if (['paused', 'error', 'rate_limited'].includes(a.status) || (work.length === 0 && a.status !== 'working') || !owes) {
     if (silent) endNotice(a.id, 'silent_notice');

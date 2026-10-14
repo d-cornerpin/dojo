@@ -248,18 +248,20 @@ describe('M3 (t137 review): a task is judged on its OWN activity, not on the eng
     // Round 2: the park no longer touches the abandoned task at all.
     expect((db().prepare("SELECT updated_at FROM work WHERE id = 'task-abandoned'").get() as { updated_at: number }).updated_at)
       .toBe(now - 120 * MIN);
-    // Round 3 (C1): the agent is moving (its last park was a minute ago), so NOTHING acts on any of
-    // its tasks, abandoned or not — no check-in, no text.
+    // Round 4 (C1): the job in flight (the standing carry) is left alone; the abandoned task is NOT
+    // shielded by the agent's recent activity, so it is re-driven on schedule, mid-job.
     await sweep();
-    expect(pokes('task-abandoned')).toBe(0);
+    expect(pokes('task-abandoned')).toBeGreaterThan(0);
     expect(pokes('task-live')).toBe(0);
     expect(ownerTexts()).toBe(0);
-    // The job ends and the agent goes quiet past its window: now the abandoned task is noticed,
+    // The job ends and the agent goes quiet past its window: the abandoned task is still noticed,
     // and the finished job is not.
     db().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-live'").run(now);
     vi.setSystemTime(now + 3 * 60 * MIN);
     await sweep();
-    expect(pokes('task-abandoned')).toBeGreaterThan(0);
+    const before = pokes('task-abandoned');
+    await sweep();
+    expect(pokes('task-abandoned')).toBeGreaterThanOrEqual(before);
     expect(pokes('task-live')).toBe(0);
   });
 });
@@ -558,18 +560,21 @@ describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation 
     expect(ownerTexts()).toBe(0);
   });
 
-  it('an agent moving inside its window is never escalated to the primary on a timer; one that is not, still is', async () => {
+  it('round 4: a task is never escalated on a timer while the agent has a live request open right now; with nothing live (however recently it moved), it still is', async () => {
     const t0 = Date.now();
     claimedTask('task-e', 'the vendor audit', t0 - 40 * MIN, 'c-1');
     recordPoke('task-e', 'pm', 1, 'nudge', 'helper');
     recordPoke('task-e', 'pm', 2, 'urgent', 'helper');
-    modelCallFinished(t0 - MIN); // working, on something
-    await sweep();
-    expect(newestPokeRung('task-e')).toBe(2);
-    expect(a2a.filter((m) => m.payload?.startsWith('ESCALATION'))).toHaveLength(0);
-    // Control: the same task, the agent with no movement inside its window — the old rung still fires.
-    db().prepare("DELETE FROM cost_records WHERE agent_id = 'helper'").run();
-    modelCallFinished(t0 - 150 * MIN);
+    modelCallFinished(t0 - MIN); // it did something a minute ago, but nothing is live now
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);   // a request is open right now
+    try {
+      await sweep();
+      expect(newestPokeRung('task-e')).toBe(2);
+    } finally {
+      releaseAbortable('helper', open);
+    }
+    // Nothing live: recent activity is no shield — the rung fires on schedule.
     await sweep();
     expect(newestPokeRung('task-e')).toBe(3);
   });

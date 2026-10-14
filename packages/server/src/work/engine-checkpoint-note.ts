@@ -56,7 +56,6 @@ import { pendingCirclingVerdict, EFFORT_REVIEW_DELTA_CALLS } from '../tracker/ef
 import { recordPoke } from './poke-ladder.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
-import { turnContext } from '../agent/turn-context.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
@@ -91,8 +90,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   const db = getDb();
   const now = Date.now();
   const tied = turnWorkIds(agentId);
-  const turn = turnContext(agentId)?.turnNumber;
-  if (turn !== undefined) carryJobWork(agentId, turn, tied);
+  carryJobWork(agentId, tied);
   if (tied.length === 0) return 0;
   const ids = tied.map(() => '?').join(', ');
 

@@ -184,6 +184,21 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
     expect(park('turn-budget', 12, null)).toBe(1); // and again, turns later
   });
 
+  it('t143 r4 (M1): a trigger-less turn that is not the continuation (a scheduler wake) does not consume the carry', async () => {
+    const now = Date.now();
+    const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
+    seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
+    expect(park('turn-budget', 7)).toBe(1);
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
+    const { stampTasksAtTurnFinalize } = await import('../../tracker/task-stamps.js');
+    const tc = openTurnContext(AGENT);   // an unrelated wake: no root, no served work, and it does not park
+    tc.turnNumber = 8;
+    stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: null });
+    endTurnContext(AGENT);
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
+    expect(park('turn-budget', 9, null)).toBe(1); // the real continuation still carries the job
+  });
+
   it('returns 0 and writes nothing when the agent has no in-flight work', () => {
     expect(park('turn-budget')).toBe(0);
   });

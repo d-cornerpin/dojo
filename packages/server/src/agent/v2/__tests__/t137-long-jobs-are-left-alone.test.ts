@@ -878,11 +878,6 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     ownerWithdrawsTheAsk();   // round 3 (R-V333-8): see the helper
     expect(continuationContext.has('primary')).toBe(true);
     pendingWakeups.clear();
-    // t143 round 3 (C1): a task is judged abandoned only once its agent has stopped moving. Its
-    // last movement is moved back three hours (the window is two), as if it had gone quiet before
-    // this wake. (While the agent is moving, the gate stays silent: the t143 tests.)
-    mockDb.current!.prepare("UPDATE messages SET created_at = created_at - ? WHERE agent_id = 'primary' AND role IN ('assistant', 'tool')").run(3 * 60 * 60_000);
-    mockDb.current!.prepare("UPDATE cost_records SET created_at = datetime(created_at, '-3 hours') WHERE agent_id = 'primary'").run();
     // Planted AFTER the park, so the checkpoint's tracker touch could not have reached it.
     const stale = Date.now() - 40 * 60_000;
     mockDb.current!.prepare(

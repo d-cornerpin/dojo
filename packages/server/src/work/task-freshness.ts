@@ -26,42 +26,52 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
 
 /** The job's work, handed from a park to the continuation it queues. In memory on purpose: a
  *  restart ends the job's turn, and nothing should inherit it after that.
- *  The marker is "this agent has a job parked and its continuation has not run yet" — it is NOT a
- *  turn number: any number of other turns (an owner's message, an A2A) may run first, and only a
- *  turn with no trigger of its own (the self-wake) picks it up (t143 round 3, C1). */
-const jobWork = new Map<string, { parkedTurn: number; ids: string[] }>();
+ *  The marker is "this agent has a job parked": it is NOT a turn number, so any number of other
+ *  turns (an owner's message, an A2A) may run first. It is never consumed by a turn that merely
+ *  has no trigger (t143 round 4: a scheduler wake is not the continuation); it ends when the job's
+ *  tasks are no longer open, or when no park has refreshed it for `CARRY_TTL_MS` (a continuation
+ *  follows its park within seconds; the next park refreshes it). */
+const jobWork = new Map<string, { at: number; ids: string[] }>();
+const CARRY_TTL_MS = 20 * 60_000;
 
 /** A park hands its job to the continuation it queues. Never replaces a standing job with less:
  *  a park that tied nothing leaves the carry as it was, and a park that tied work adds to it. */
-export function carryJobWork(agentId: string, parkedTurn: number, ids: string[]): void {
-  const standing = jobWork.get(agentId)?.ids ?? [];
-  const all = [...new Set([...standing, ...ids])];
-  if (all.length > 0) jobWork.set(agentId, { parkedTurn, ids: all });
+export function carryJobWork(agentId: string, ids: string[], now = Date.now()): void {
+  const all = [...new Set([...jobCarriedIds(agentId, now), ...ids])];
+  if (all.length > 0) jobWork.set(agentId, { at: now, ids: all });
 }
 
-/** What a turn finalizing ties: `turnWorkIds`, then the carry settles (below). */
-export function finalizeWorkIds(agentId: string): string[] {
-  const ids = turnWorkIds(agentId);
-  settleJobWork(agentId);
-  return ids;
-}
-
-/** Called when a turn finalizes: a continuation (no trigger of its own) that did not park again
- *  ends the job's carry. A turn with its own trigger leaves it standing for the continuation. */
-function settleJobWork(agentId: string): void {
-  const ctx = turnContext(agentId);
+/** The tasks this agent's job is carrying right now: still open, and parked within the TTL. The
+ *  one answer to "is this task the job in flight?" (the PM ladder and the close-out gate leave
+ *  exactly these alone while the agent works them). */
+export function jobCarriedIds(agentId: string, now = Date.now()): string[] {
   const carried = jobWork.get(agentId);
-  if (!ctx || !carried || ctx.root || ctx.servedWork) return;
-  if (carried.parkedTurn !== ctx.turnNumber) jobWork.delete(agentId);
+  if (!carried) return [];
+  const open = carried.ids.length === 0 || now - carried.at > CARRY_TTL_MS ? [] : (getDb().prepare(
+    `SELECT w.id AS id FROM work w WHERE w.id IN (${carried.ids.map(() => '?').join(', ')})
+       AND w.state IN ('claimed', 'on_deck', 'blocked')`).all(...carried.ids) as Array<{ id: string }>).map((r) => r.id);
+  if (open.length === 0) jobWork.delete(agentId);
+  else if (open.length !== carried.ids.length) jobWork.set(agentId, { at: carried.at, ids: open });
+  return open;
+}
+
+/** Was this task served to this turn by a tracker NOTICE (a PM re-drive, a retask, an assignment)?
+ *  Being woken by one is not progress on the task (t143 round 4): only what the agent then does on
+ *  it (its tool calls, notes, status changes, a delivery about it) moves it. */
+export function servedByNotice(agentId: string, turnNumber: number, taskId: string | null | undefined): boolean {
+  try {
+    return !!taskId && !!getDb().prepare(`SELECT 1 FROM messages WHERE agent_id = ? AND served_by_turn = ?
+      AND lane = 'events' AND origin_intent = 'tracker' AND task_id = ? LIMIT 1`).get(agentId, turnNumber, taskId);
+  } catch { return false; /* unreadable: the served task is tied as before */ }
 }
 
 /** The tasks the CURRENT turn of this agent structurally serves (see the header above). */
 export function turnWorkIds(agentId: string): string[] {
   const ctx = turnContext(agentId);
   if (!ctx || ctx.turnNumber === undefined) return [];
-  const carried = jobWork.get(agentId);
-  const inherited = !ctx.root && !ctx.servedWork && carried ? carried.ids : [];
-  const named = [...inherited, ...(ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [])];
+  const inherited = !ctx.root && !ctx.servedWork ? jobCarriedIds(agentId) : [];
+  const served = ctx.servedWork?.taskId && !servedByNotice(agentId, ctx.turnNumber, ctx.servedWork.taskId) ? [ctx.servedWork.taskId] : [];
+  const named = [...inherited, ...served];
   const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
   const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
   const list = named.length > 0 ? named.map(() => '?').join(', ') : 'NULL';

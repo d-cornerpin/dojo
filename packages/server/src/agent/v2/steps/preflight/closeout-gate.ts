@@ -24,8 +24,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, stampColumns } from '../../../../work/tracker-view.js';
-import { taskMovedAtSql } from '../../../../work/task-freshness.js';
-import { agentIsMoving } from '../../../../tracker/liveness.js';
+import { taskMovedAtSql, jobCarriedIds } from '../../../../work/task-freshness.js';
 import { advance } from '../../state.js';
 import type { WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -63,7 +62,9 @@ export async function runCloseoutGate(
     // (`work/task-freshness.ts`): a status, step or edit, a note naming it,
     // a turn whose trigger names it. Never another task's park (t143 r2).
     const CLOSE_OUT_IDLE_MINUTES = 10;
-    const inProgressDanglers = db.prepare(`
+    // t143 r4 (C1): only the job in flight (the standing carry) is exempt, however busy the agent has been.
+    const jobWork = jobCarriedIds(agentId);
+    const inProgressDanglers = (db.prepare(`
       SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ?
         AND w.state = 'claimed'
@@ -71,7 +72,8 @@ export async function runCloseoutGate(
         AND ${taskMovedAtSql('w')} < ?
       ORDER BY ${taskMovedAtSql('w')} ASC
       LIMIT 10
-    `).all(agentId, Date.now() - CLOSE_OUT_IDLE_MINUTES * 60_000) as Array<{ id: string; title: string; kind: string }>;
+    `).all(agentId, Date.now() - CLOSE_OUT_IDLE_MINUTES * 60_000) as Array<{ id: string; title: string; kind: string }>)
+      .filter((r) => !jobWork.includes(r.id));
 
     // (2) Stranded on_deck tasks. Catches the Presenton-shaped failure:
     // agent created a project, did some of it, then abandoned it (often
@@ -85,7 +87,7 @@ export async function runCloseoutGate(
     // task hasn't been touched in 30+ minutes. The 30-minute floor
     // prevents this from firing inside the same conversation as the
     // creation, only catches genuinely abandoned work between sessions.
-    const strandedRows = db.prepare(`
+    const strandedRows = (db.prepare(`
       SELECT t.id AS id, t.title AS title, 'stranded' AS kind FROM work t
       INNER JOIN work p ON p.id = t.parent_id
       WHERE ${taskScope('t')} AND t.agent_id = ?
@@ -102,7 +104,8 @@ export async function runCloseoutGate(
         )
       ORDER BY ${taskMovedAtSql('t')} ASC
       LIMIT 10
-    `).all(agentId, Date.now(), agentId, Date.now() - 30 * 60_000) as Array<{ id: string; title: string; kind: string }>;
+    `).all(agentId, Date.now(), agentId, Date.now() - 30 * 60_000) as Array<{ id: string; title: string; kind: string }>)
+      .filter((r) => !jobWork.includes(r.id));
 
     // BUG-2 (comms-audit convergence pass): NEVER arm the close-out gate on a turn a
     // human is waiting on (`triggerRow` set ⇒ this turn serves a waiting human, by the
@@ -116,8 +119,7 @@ export async function runCloseoutGate(
     // a fresh ask in plain text without first touching the tracker. Abandoned danglers are
     // still enforced off the conversation path: by this same gate on the next non-conversation
     // turn, and by the PM poke chain (where closeout enforcement belongs).
-    // t143 r3 (C1): a MOVING agent is never judged abandoned — no gate, no refusals; only once it stops.
-    const danglingRows = triggerRow || agentIsMoving(agentId) ? [] : [...inProgressDanglers, ...strandedRows];
+    const danglingRows = triggerRow ? [] : [...inProgressDanglers, ...strandedRows];
     if (danglingRows.length > 0) {
       turnCtx.state = advance(turnCtx.state!, {
         danglingTaskIds: danglingRows.map((r) => r.id),

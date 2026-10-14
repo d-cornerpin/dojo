@@ -100,10 +100,10 @@ import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import { runPokeCheck, queueEffortReviewIfNeeded, runEffortReview } from '../pm-agent.js';
 import { pendingCirclingVerdict } from '../effort-governor.js';
-import { registerAbortable, releaseAbortable } from '../../agent/shared-state.js';
+import { registerAbortable, releaseAbortable, activeRuns } from '../../agent/shared-state.js';
 import { configRouter } from '../../gateway/routes/config.js';
 import { trackerAddNotes } from '../tools.js';
-import { recordPoke } from '../../work/poke-ladder.js';
+import { recordPoke, currentRung } from '../../work/poke-ladder.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
@@ -270,11 +270,15 @@ function jobEndsAndAgentGoesQuiet(now: number): void {
 }
 
 describe('ROUND 2 (2+3) + ROUND 3 (C1): freshness is refreshed only by activity that names the task; a moving agent is left alone', () => {
-  it('while the job is moving (long job, an unrelated owner message, two more parks): zero gate refusals, zero pokes, the task stays open', async () => {
+  it('while the job runs (long job, an unrelated owner message, two more parks): the job is never refused or poked and stays open; the abandoned others are still named and re-driven', async () => {
     await longJobWithTwoAbandoned(Date.now());
-    expect(await gateNames()).toEqual([]);
+    const named = await gateNames();
+    expect(named).toEqual(expect.arrayContaining(['task-other-conv', 'task-same-conv']));
+    expect(named).not.toContain('task-live');
     await runPokeCheck();
-    for (const id of ['task-live', 'task-other-conv', 'task-same-conv']) expect(pokes(id)).toBe(0);
+    expect(pokes('task-live')).toBe(0);
+    expect(pokes('task-other-conv')).toBeGreaterThan(0);
+    expect(pokes('task-same-conv')).toBeGreaterThan(0);
     expect((db().prepare("SELECT state FROM work WHERE id = 'task-live'").get() as { state: string }).state).toBe('claimed');
     expect(ownerTexts()).toBe(0);
   });
@@ -361,5 +365,111 @@ describe('ROUND 3 (I2): a check-in owes no reply — nothing waits, nothing esca
     expect(out).not.toMatch(/^Error/);
     expect(a2a.filter((m) => (m as { requiresResponse?: boolean }).requiresResponse)).toHaveLength(0);
     expect(eventsToHelper().find((r) => r.content.includes('send it by email'))?.task_id).toBe('task-redo');
+  });
+});
+
+describe('ROUND 4 (C1): "moving" is no blanket shield — only the job in flight, or an agent live right now, is left alone', () => {
+  /** The agent said "on it" a minute ago and left the task claimed; nothing is live. */
+  function saidOnItAndLeft(): void {
+    const now = Date.now();
+    claimedTask('task-onit', 'the price check', now - 30 * MIN, 'c-1');
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES ('asst-onit', 'helper', 'assistant', 'On it - I will have the prices shortly.', 9, ?)`).run(now - MIN);
+    modelCallFinished(now - MIN);
+  }
+
+  it('the "on it" + claimed-and-left task is named by the close-out gate and nudged by the PM on schedule, however recently the agent spoke', async () => {
+    saidOnItAndLeft();
+    await runPokeCheck();
+    expect(pokes('task-onit')).toBeGreaterThan(0);
+    expect(await gateNames()).toContain('task-onit');
+  });
+
+  it('an agent with a turn live RIGHT NOW (the live-run registry) is not poked; the same agent the moment it is not live, is', async () => {
+    saidOnItAndLeft();
+    activeRuns.add('helper');
+    try {
+      await runPokeCheck();
+      expect(pokes('task-onit')).toBe(0);
+    } finally {
+      activeRuns.delete('helper');
+    }
+    await runPokeCheck();
+    expect(pokes('task-onit')).toBeGreaterThan(0);
+  });
+
+  it('a model request open on a live connection right now is not poked either', async () => {
+    saidOnItAndLeft();
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);
+    try {
+      await runPokeCheck();
+      expect(pokes('task-onit')).toBe(0);
+    } finally {
+      releaseAbortable('helper', open);
+    }
+  });
+});
+
+describe('ROUND 4 (I1): a turn woken by a PM re-drive is not, by being woken, progress on the task', () => {
+  it('a woken turn that does nothing leaves the ladder to advance to rung 3', async () => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    claimedTask('task-lazy', 'the price check', now - 20 * MIN, 'c-1');
+    await runPokeCheck();                       // idle 20 min: the urgent rung (2)
+    await new Promise((r) => setTimeout(r, 20));
+    expect(currentRung('task-lazy')).toBe(2);
+    // The woken turn: the engine serves the re-drive's event row (naming the task), the agent
+    // writes a line and ends its turn. It touched nothing on the task.
+    vi.setSystemTime(now + MIN);
+    db().prepare("UPDATE messages SET served_by_turn = 50 WHERE agent_id = 'helper' AND lane = 'events' AND task_id = 'task-lazy'").run();
+    const tc = openTurnContext('helper');
+    tc.turnNumber = 50;
+    tc.root = { kind: 'engine', id: 'redrive', sourceMessageId: null };
+    tc.servedWork = { taskId: 'task-lazy', runId: null, taskKind: 'task', originConvKey: null };
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                  VALUES ('helper', 50, ?, ?, 'answered', 1)`).run(sqlTime(now), sqlTime(now + MIN));
+    stampTasksAtTurnFinalize({
+      agentId: 'helper', turnNumber: 50, outcome: 'answered', answerMessageId: null,
+      rootSourceMessageId: null, convKey: null, servedTaskId: 'task-lazy',
+    });
+    endTurnContext('helper');
+    vi.setSystemTime(now + 11 * MIN);           // 31 minutes idle in all
+    await runPokeCheck();
+    expect(currentRung('task-lazy')).toBe(3);
+  });
+});
+
+describe('ROUND 4 (minors): a failed re-drive is not dropped; a crash-left turn row is not a live agent', () => {
+  const blockEvents = (): void => {
+    db().exec("CREATE TRIGGER block_events BEFORE INSERT ON messages WHEN NEW.lane = 'events' BEGIN SELECT RAISE(ABORT, 'disk said no'); END");
+  };
+
+  it('a poke whose re-drive could not be written is not recorded: the next sweep tries it again', async () => {
+    claimedTask('task-retry', 'the price check', Date.now() - 30 * MIN, 'c-1');
+    blockEvents();
+    await runPokeCheck();
+    expect(pokes('task-retry')).toBe(0);
+    db().exec('DROP TRIGGER block_events');
+    await runPokeCheck();
+    expect(pokes('task-retry')).toBeGreaterThan(0);
+  });
+
+  it('a retask whose directive could not be delivered says so, instead of "Directive delivered"', async () => {
+    claimedTask('task-redo2', 'the price check', Date.now() - 30 * MIN, 'c-1');
+    blockEvents();
+    const out = await trackerRetask('pm', { task_id: 'task-redo2', directive: 'The brief went to chat but the task says email; send it by email with the same content.' });
+    expect(out).not.toContain('Directive delivered');
+    expect(out).toMatch(/not delivered|could not be delivered/);
+  });
+
+  it('SILENT: an idle agent waiting on the owner, with a turn row a crash left open, is not silent', async () => {
+    const now = Date.now();
+    claimedTask('task-asked2', 'the venue shortlist', now - 5 * 60 * MIN, 'c-1');
+    turnOpen(3, now - 200 * MIN);                // the crash-left row: ended_at never written
+    modelCallFinished(now - 199 * MIN);
+    const { sweepSilentAgents } = await import('../liveness.js');
+    sweepSilentAgents();
+    expect(ownerTexts()).toBe(0);
   });
 });

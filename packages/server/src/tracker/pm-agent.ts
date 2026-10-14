@@ -46,7 +46,8 @@ import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
 import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
-import { taskLastMovedAt, agentIsMoving } from './liveness.js';
+import { taskLastMovedAt, agentIsLive } from './liveness.js';
+import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
 
 const logger = createLogger('pm-agent');
@@ -2608,13 +2609,13 @@ export async function runPokeCheck(): Promise<void> {
     const assigneeStatus = (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
       .get(task.assignedTo) as { status: string } | undefined)?.status;
     if (assigneeStatus === 'working') continue;
-    // t143 round 3 (C1, owner's rule: a job that is really working is left alone): an agent that
-    // is MOVING (tokens, tools or an open request inside its window) is never nudged, urgent-poked,
-    // re-driven, struck or closed on a TIMER, whatever the task's own clock says — its status
-    // flips to idle between continuations, so `working` above is not enough. Abandonment is judged
-    // once the agent has stopped. (A PM-recorded circling verdict is evidence of what it is doing,
-    // not an idle clock, and still goes through the fill-in below.)
-    const agentMoving = agentIsMoving(task.assignedTo, now);
+    // t143 round 4 (C1, owner's rule: a job that is really working is left alone): the idle-clock
+    // rungs and the strike-2 close skip a task ONLY if it is the job in flight (the agent's standing
+    // carry) or the agent has a live turn / open request right now. Never "the agent did something
+    // recently": an agent that said "on it" and left a task claimed, or a busy agent with a second
+    // task it dropped, is still nudged on schedule. (A PM-recorded circling verdict is evidence of
+    // what the agent is doing, not an idle clock, and still goes through the fill-in below.)
+    const leftAlone = jobCarriedIds(task.assignedTo, now).includes(task.id) || agentIsLive(task.assignedTo);
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
@@ -2639,8 +2640,8 @@ export async function runPokeCheck(): Promise<void> {
     // Rungs are monotonic inside a cycle, so once rung 4 has fired `lastPoke` IS that rung-4
     // poke: one `autoReset` interval off its RECORDED instant is the re-drive's own clock.
     const redriveDueAgain = !!lastPoke && now - lastPoke.sentAtMs >= thresholds.autoReset * 1000;
-    if (agentMoving) {
-      // no idle-clock rung against a moving agent (see above)
+    if (leftAlone) {
+      // no idle-clock rung against the job in flight or a live agent (see above)
     } else if (idleSeconds >= thresholds.autoReset && (lastPokeNumber < 4 || redriveDueAgain)) {
       pokeType = 'redrive';
       pokeNumber = 4;
@@ -2729,7 +2730,7 @@ export async function runPokeCheck(): Promise<void> {
     // task itself, complete, with the receipt basis recorded, and the normal
     // validation flow takes it from there. Engine-enforced, not nudged: the
     // neutral nudge was tried live and the floor model paused the task.
-    const deliveryEvidence = task.status === 'in_progress' && !agentMoving ? findDeliveryEvidenceForTask(task.id) : null;
+    const deliveryEvidence = task.status === 'in_progress' && !leftAlone ? findDeliveryEvidenceForTask(task.id) : null;
     // Strike 2 requires a TANGIBLE handover on record (artifact or channel
     // delivery), not just an answered reply: the engine only ever closes a
     // task on evidence it can point at. Text-only deliveries keep getting
@@ -2790,7 +2791,7 @@ export async function runPokeCheck(): Promise<void> {
     const pokeMessage = effortReviewReason
       ? `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${effortReviewReason}\n\n${basePokeMessage}`
       : basePokeMessage;
-    const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
+    const recipient = pokeType === 'escalate_primary' ? (primaryId && pokeDb.prepare('SELECT 1 FROM agents WHERE id = ?').get(primaryId) ? primaryId : task.assignedTo) : task.assignedTo; // no primary on this box: the assignee is re-driven instead
 
     // Busy deferral (owner request 2026-07-23): a poke landing while the
     // assignee is mid-run queues up and then collides with that work, and to
@@ -2816,7 +2817,11 @@ export async function runPokeCheck(): Promise<void> {
       ? await redriveWithoutReply({ toAgentId: recipient, fromAgentId: pmId, content: pokeMessage,
           taskId: recipient === task.assignedTo ? task.id : null })
       : false;
-    if (!delivered) logger.warn('PM poke: the re-drive could not be delivered; the poke record stands', { taskId: task.id, recipient, pokeType, pokeNumber });
+    if (!delivered) {
+      // Nothing was written, so nothing is recorded: the next sweep tries this poke again.
+      logger.warn('PM poke: the re-drive could not be delivered; it is retried on the next sweep', { taskId: task.id, recipient, pokeType, pokeNumber });
+      continue;
+    }
 
     // Record the poke on the work's own event log, then tell the dashboard. The broadcast
     // used to ride inside `logPoke`; it stays a UI concern at the call site because `work/`
