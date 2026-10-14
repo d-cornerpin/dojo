@@ -397,6 +397,36 @@ describe('BACKWARDS LIFECYCLE', () => {
     expect(silentNotice()).toBeNull();
   });
 
+  it('round 3 (I3): a request that opens and dies without a single row neither ends the incident nor earns a second text', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    const open = new AbortController();
+    expect(registerAbortable('helper', open)).toBe(true);
+    await sweep();
+    expect(silentNotice()).not.toBeNull();   // an open request is not progress: the card stands
+    releaseAbortable('helper', open);        // it dies: no tokens, no tool finish
+    await sweep();
+    await sweep();
+    expect(ownerTexts()).toBe(1);
+    expect(silentNotice()).not.toBeNull();
+    modelCallFinished(Date.now());           // real progress (tokens) ends it
+    await sweep();
+    expect(silentNotice()).toBeNull();
+  });
+
+  it('round 3 (I5): an idle agent that finished its turn by asking the owner something, holding its task, is waiting — never SILENT', async () => {
+    const now = Date.now();
+    claimedTask('task-asked', 'the venue shortlist', now - 5 * 60 * MIN, 'c-1');
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                  VALUES ('helper', 4, ?, ?, 'answered', 1)`).run(sqlTime(now - 200 * MIN), sqlTime(now - 199 * MIN));
+    modelCallFinished(now - 199 * MIN);
+    await sweep();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+    expect(silentNotice()).toBeNull();
+  });
+
   it('the project manager agent offline (in error, no model to run): the platform notice still fires from the sweep', async () => {
     db().prepare("UPDATE agents SET status = 'error', model_id = NULL WHERE id = 'pm'").run();
     wedgedToolCall(3 * 60 * MIN);
@@ -432,6 +462,46 @@ describe('SPINNING: the PM tells the owner, in its own voice, what repeats — o
     expect(queueEffortReviewIfNeeded('task-circle')).toBe(true);
     await runEffortReview('task-circle');
     expect(reports()).toHaveLength(1);
+  });
+});
+
+describe('SPINNING (round 3, I4): the step named is one that REPEATS, not the busiest tool', () => {
+  const reports = (): Array<{ content: string }> => db().prepare(
+    "SELECT content FROM messages WHERE agent_id = 'pm' AND role = 'assistant'",
+  ).all() as Array<{ content: string }>;
+  const call = (atMs: number, tool: string, input: Record<string, unknown>): void => {
+    db().prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES (?, 'helper', 'assistant', ?, 4, ?)`)
+      .run(`asst-${tool}-${atMs}`, JSON.stringify([{ type: 'tool_use', id: `tu-${atMs}`, name: tool, input }]), atMs);
+  };
+  const circle = async (): Promise<void> => {
+    db().prepare("UPDATE work SET effort_calls = 200, effort_reviewed_calls = 0 WHERE id = 'task-busy'").run();
+    verdict.reply = JSON.stringify({ advancing: false, reason: 'Nothing new has landed for a long while.', task_id: 'task-busy' });
+    expect(queueEffortReviewIfNeeded('task-busy')).toBe(true);
+    await runEffortReview('task-busy');
+  };
+
+  it('an ordinary busy agent (twenty DIFFERENT shell commands) is not told it is "repeating" its most-used tool', async () => {
+    claimedTask('task-busy', 'the build', Date.now() - 90 * MIN, 'c-1');
+    for (let i = 0; i < 20; i++) call(Date.now() - (60 - i) * MIN, 'exec', { command: `step-${i}` });
+    await circle();
+    expect(reports()).toHaveLength(1);
+    expect(reports()[0].content).toContain('going in circles');
+    expect(reports()[0].content).not.toMatch(/keeps repeating/);
+    expect(reports()[0].content).not.toContain('exec');
+  });
+
+  it('calls from before the task\'s last transition (another piece of work) are not read, and an identical call repeated is named', async () => {
+    claimedTask('task-busy', 'the build', Date.now() - 90 * MIN, 'c-1');
+    for (let i = 0; i < 12; i++) call(Date.now() - (80 - i) * MIN, 'web_fetch', { url: 'https://old.example.test' }); // before the transition
+    db().prepare(`INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES ('task-busy', 'transition', 'helper', '{}', ?)`)
+      .run(Date.now() - 50 * MIN);
+    for (let i = 0; i < 7; i++) call(Date.now() - (40 - i) * MIN, 'gmail_search', { query: 'invoice' });
+    await circle();
+    const text = reports()[0].content;
+    expect(text).toContain('gmail_search');
+    expect(text).toMatch(/same gmail_search call/);
+    expect(text).not.toContain('web_fetch');
   });
 });
 

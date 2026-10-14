@@ -52,6 +52,9 @@ export function silentWindowMs(agentId: string): number {
 export interface Activity {
   /** The newest movement, epoch ms; `null` when the agent has never moved. */
   lastAt: number | null;
+  /** The newest movement that left a ROW (tokens, a tool start or finish) — an open request is not
+   *  one. This, never `lastAt`, is what ends a SILENT incident (t143 round 3, I3). */
+  lastRowAt: number | null;
   /** That movement, in plain words. */
   lastWhat: string;
   /** The newest finished model call, epoch ms (BROKEN's "healthy work" signal). */
@@ -91,10 +94,12 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
       what: own.role === 'tool' ? 'a tool returned its result' : waitingOn ? `it started ${waitingOn}` : 'it wrote a message',
     });
   }
+  const lastRowAt = seen.length > 0 ? Math.max(...seen.map((x) => x.at)) : null;
   if (countAbortable(agentId) > 0) seen.push({ at: now, what: 'a request is open on a live connection' });
   const newest = seen.sort((a, b) => b.at - a.at)[0];
   return {
     lastAt: newest?.at ?? null,
+    lastRowAt,
     lastWhat: newest?.what ?? 'nothing since it was given this work',
     lastModelCallAt: call?.at ?? null,
     waitingOn,
@@ -189,14 +194,21 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
 
   const silent = readNotice(a.id, 'silent_notice');
   const work = openWorkOf(a.id, now);
+  // t143 round 3 (I5): SILENT is a WEDGE — something it owes is meant to be in progress: a working
+  // status, an open turn, or a tool it started that never returned. An idle agent between turns
+  // (waiting on the owner's answer, or on a delegate) owes nothing in progress and is never SILENT.
+  const owes = a.status === 'working' || openTurnStartedAt(a.id) > 0 || act.waitingOn !== null;
   // A louder status owns this agent, or there is nothing it was meant to be doing: not SILENT.
-  if (['paused', 'error', 'rate_limited'].includes(a.status) || (work.length === 0 && a.status !== 'working')) {
+  if (['paused', 'error', 'rate_limited'].includes(a.status) || (work.length === 0 && a.status !== 'working') || !owes) {
     if (silent) endNotice(a.id, 'silent_notice');
     return;
   }
   if (silent) {
     const since = silent.since ?? silent.at;
-    if ((act.lastAt !== null && act.lastAt > since) || ownerStopped(a.id, silent.at)) endNotice(a.id, 'silent_notice');
+    // t143 round 3 (I3): only a ROW ends the incident. A request that opens and dies without tokens
+    // is a retry loop inside the same wedge, not progress: it neither ends the card nor earns a
+    // second text (an open request only ever suppresses RAISING a notice, below).
+    if ((act.lastRowAt !== null && act.lastRowAt > since) || ownerStopped(a.id, silent.at)) endNotice(a.id, 'silent_notice');
     return;
   }
   // The quiet runs from the newest movement, or from when the agent was handed what it holds.
