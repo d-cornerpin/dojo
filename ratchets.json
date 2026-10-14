@@ -8214,6 +8214,13 @@
       "to": 706,
       "by": "t143 round 5 (2026-10-13), orchestrator ruling R4-C1: the job carry has no clock",
       "why": "+1: one import (launchContinuation). The call rides the existing try line of the tool-loop park's self-continuation timer, marking that continuation as it starts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
+      "from": 213,
+      "to": 214,
+      "by": "t143 round 6 (2026-10-13), orchestrator ruling R5-C1: the job travels on its own continuation wake",
+      "why": "+1: one import (queueJobContinuation, work/job-continuation.ts). The call replaces queueSelfWake line-for-line, and the now-unused queueSelfWake import is dropped from the shared-state import line (line-neutral). The helper registers the wake it queues so that only the run launched from it carries the job. REFUSED: re-exporting it through engine-checkpoint-note.ts to save the import line (that file sits near its growth baseline and the pre-call-gates contract mocks it). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8370,7 +8377,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 262,
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
-    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
+    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 214,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 243,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 298,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
