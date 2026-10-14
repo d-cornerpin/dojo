@@ -701,15 +701,14 @@ function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
 
 class AgentRuntime {
   async handleMessage(agentId: string, _content: string): Promise<void> {
-    // C20: never run a terminated agent (defense-in-depth for every entry path, the
-    // terminated guard previously existed only on the queued-wakeup path, so the boot
-    // re-drain / an A2A kick could still run a dead agent, flip it to 'working', and emit
-    // a zombie reply). Mirrors the check at the wakeup-processing path below.
+    // C20: never run a terminated agent (defense-in-depth for every entry path: the boot re-drain /
+    // an A2A kick could otherwise run a dead agent and emit a zombie reply). Mirrors the wakeup path below.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
       logger.info('Skipping run, agent is terminated', { agentId }, agentId);
       return;
     }
+    if (st?.status === 'paused') (await import('./v2/honest-stop-notes.js')).noteWaitingOfParked(agentId);   // t148: a message to a parked agent is answered on arrival
     // If agent is already running, queue a wakeup so we re-run after current loop finishes.
     //
     // UX-REPAIR T37 — THE ONE DIRECT ADD IN THE TREE, and the census in

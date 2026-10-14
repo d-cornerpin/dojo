@@ -813,4 +813,32 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(status()).toBe('paused');
     expect(ask(), 'the message is still open, not handed back').toBe('open');
   });
+
+  // Round 5 — a message that arrives while parked is met, kept, and answered once on release with the others.
+  it('a second message while parked gets its own line, no second notice or text, and both are answered once after the limit is raised', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    const said = notices().length;
+    const texts = sendAlertSpy.mock.calls.length;
+    insertMessage({
+      id: 'msg-user-2', agentId: AGENT, role: 'user', content: 'And the south dock?', turnNumber: 2, channel: 'dashboard', senderId: 'owner',
+      conversationId: 'conv-desk', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    });
+    await runV2Turn(AGENT);   // the turn its arrival woke: the same stop
+    const lines = db().prepare(`SELECT id, conversation_id FROM messages WHERE agent_id = ? AND id LIKE 'park-note:%' ORDER BY id`).all(AGENT) as Array<{ id: string; conversation_id: string }>;
+    // The park's own notice answered the first message at the time; every message still waiting gets its
+    // line once (the first on this re-serve), each in its own conversation.
+    expect(lines.map((l) => l.id)).toEqual(['park-note:msg-user-1', 'park-note:msg-user-2']);
+    expect(lines.every((l) => l.conversation_id === 'conv-desk')).toBe(true);
+    expect(notices().length, 'no new notice').toBe(said);
+    expect(sendAlertSpy.mock.calls.length, 'no new text').toBe(texts);
+    expect(status()).toBe('paused');
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
+    await runV2Turn(AGENT);
+    const ask2 = (db().prepare(`SELECT state FROM work WHERE kind = 'ask' AND root_id = 'msg-user-2'`).get() as { state: string }).state;
+    expect([ask(), ask2], 'both answered').toEqual(['done', 'done']);
+    expect(db().prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND id LIKE 'park-note:%'`).get(AGENT), 'once each, however often it was woken').toEqual({ n: 2 });
+  });
 });

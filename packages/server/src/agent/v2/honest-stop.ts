@@ -38,6 +38,7 @@ import { sendAlert } from '../../services/imessage-bridge.js';
 import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import type { AgentTurnState } from './state.js';
 import { createLogger } from '../../logger.js';
+import { noteWaitingOfParked } from './honest-stop-notes.js';
 import { AgentError } from '../errors.js';
 import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
@@ -214,6 +215,7 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   // that cannot fit keeps the quarantine word, because nothing here observed a better one.
   markTurnDied(agentId, state.turnNumber, stop.kind === 'budget_stop' ? 'budget' : (state.engineCutExit ?? 'unknown'));
   parkAgent(agentId, stop);
+  noteWaitingOfParked(agentId, alreadyTold ? null : state.lastUserMessageId);   // a message that arrived mid-turn is not left in silence
   if (alreadyTold) return true;
 
   noteInChat(agentId, `[System (platform notice): ${stop.words}]`);
