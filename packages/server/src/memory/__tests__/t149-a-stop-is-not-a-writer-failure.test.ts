@@ -136,7 +136,7 @@ const untilInFlight = async (): Promise<void> => {
 };
 
 describe('t149 F3 — Stop during a background summary', () => {
-  it.fails('cuts the call, marks no writer failed, walks no further and files no defect; the replacement resumes on its own later path', async () => {
+  it('cuts the call, marks no writer failed, walks no further and files no defect; the replacement resumes on its own later path', async () => {
     const { stopAgent } = await import('../../agent/runtime.js');
     const run = replaceUncondensedPlaceholders(AGENT);
     await untilInFlight();

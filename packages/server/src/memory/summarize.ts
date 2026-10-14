@@ -5,6 +5,7 @@ import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { noteSummaryWriterOutcome } from './summary-writer-health.js';
+import { userStopMark, userStoppedSince } from '../agent/shared-state.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import type { Summary } from './dag.js';
@@ -201,7 +202,9 @@ export function truncateDeterministic(text: string, targetTokens: number): strin
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
-  | { ok: false; reason: string };
+  // `stopped`: the owner's Stop cut or refused this call (t149 F3). It says nothing about the
+  // writer, and a caller walking a list of writers ends the walk.
+  | { ok: false; reason: string; stopped?: true };
 
 /**
  * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.
@@ -234,7 +237,12 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
  *  writer that timed out, answered empty or errored is passed over for a few minutes
  *  (`summary-writer-health.ts`). One wrapper rather than a line at each return below. */
 export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
+  const mark = userStopMark(params.agentId);
   const result = await writeSummary(params);
+  // t149 F3: the owner's Stop reaches this call through the registry, not through the caller's
+  // signal, so the abort tests below cannot see it. A call it cut or refused is not a writer's
+  // failure: nothing is marked, and the result says so for the caller to stop walking writers.
+  if (!result.ok && userStoppedSince(params.agentId, mark)) return { ...result, stopped: true };
   noteSummaryWriterOutcome(params.modelId, result.ok, params.abortSignal);
   return result;
 }

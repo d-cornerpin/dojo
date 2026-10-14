@@ -108,6 +108,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   const preferred = configuredModel(agentId);
   let replaced = 0;
   let failedWriter: string | null = null;
+  let stoppedByOwner = false;
   for (const { id } of ids) {
     if (opts.abortSignal?.aborted) break;
     const all = getSummarySourceMessages(id);
@@ -125,13 +126,17 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     for (const writer of eligibleSummaryWriters(preferred, agentId)) {
       if (done || opts.abortSignal?.aborted) break;
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
-      if (!summary.ok) { if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer; continue; }
+      if (!summary.ok) {
+        if (summary.stopped) { stoppedByOwner = true; break; }   // the owner's Stop: not the writer's failure, and no next writer
+        if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
+        continue;
+      }
       const text = annotateSummaryObligations(summary.text, agentId);
       updateSummaryContent(id, text, text === summary.text ? summary.tokenCount : estimateTokens(text));   // now a leaf
       refreshEmbedding('summary', id, agentId, text);   // the real text is knowledge; the note never was
       done = true;
     }
-    if (!done) break;
+    if (!done || stoppedByOwner) break;
     replaced++;
   }
   if (replaced > 0) rebuildContextItems(agentId);

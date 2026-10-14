@@ -1367,6 +1367,7 @@ export async function runLeafCompaction(
         logger.warn('SUMMARY_REFUSED leaf chunk left uncompacted', {
           messageCount: chunk.length, reason: summary.reason,
         }, agentId);
+        if (summary.stopped) break;   // t149 F3: the owner stopped this agent; the next chunk would be refused too
         continue;
       }
 
