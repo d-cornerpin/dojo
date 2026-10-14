@@ -512,7 +512,6 @@
     "packages/server/src/memory/conversations.ts": 154,
     "packages/server/src/memory/dag.ts": 400,
     "packages/server/src/memory/deliveries-lane.ts": 257,
-    "packages/server/src/memory/directive.ts": 201,
     "packages/server/src/memory/embedding-sources.ts": 179,
     "packages/server/src/memory/embeddings.ts": 319,
     "packages/server/src/memory/fts-health.ts": 536,
