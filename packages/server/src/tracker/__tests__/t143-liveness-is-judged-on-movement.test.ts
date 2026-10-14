@@ -96,6 +96,7 @@ import { configRouter } from '../../gateway/routes/config.js';
 import { trackerAddNotes } from '../tools.js';
 import { recordPoke } from '../../work/poke-ladder.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
+import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../../work/task-freshness.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
@@ -108,6 +109,7 @@ const db = (): Database.Database => mockDb.current!;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 beforeEach(() => {
+  endJobCarry('helper');   // the job carry is process memory: no test inherits another's
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
   const d = new Database(':memory:');
@@ -193,13 +195,16 @@ function park(turnNumber: number, at: number, first: boolean): void {
   const tc = openTurnContext('helper');
   tc.turnNumber = turnNumber;
   tc.root = first ? { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' } : null;
+  if (!first) beginJobRun('helper', 'timer');   // the previous park's own wake fires: this run carries the job
   modelCallFinished(at);
   noteEngineCheckpoint('helper', 'turn-budget');
+  registerTimerWake('helper');
   stampTasksAtTurnFinalize({
     agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
     rootSourceMessageId: first ? 'msg-ask' : null, convKey: 'c-job', servedTaskId: null,
   });
   endTurnContext('helper');
+  endJobRun('helper');
 }
 
 /** The sweeps a quiet minute brings: the PM's ladder, and the platform clock's liveness check. */

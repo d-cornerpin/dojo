@@ -95,8 +95,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
-import { launchContinuation } from '../../work/task-freshness.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict, armToolLoopContinuation } from '../../work/engine-checkpoint-note.js';
 
 const logger = createLogger('v2-loop');
 
@@ -664,19 +663,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // sees its full history including the work it just did and continues
       // naturally. 1s delay lets DB writes settle.
       stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-      setTimeout(() => {
-        try { launchContinuation(agentId); // t143 r5: the park's continuation starts now
-          getAgentRuntime().handleMessage(agentId, '').catch((err) => {
-            logger.error('v2 auto-continuation after tool limit failed', {
-              agentId, error: err instanceof Error ? err.message : String(err),
-            }, agentId);
-          });
-        } catch (err) {
-          logger.error('v2 auto-continuation failed to schedule', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }, 1000);
+      armToolLoopContinuation(agentId); // t143 r6: the job travels on this wake; only the run it starts carries it
     }
 
     // The engine-composed silent-close "Done:" line that briefly lived here is

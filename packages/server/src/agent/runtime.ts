@@ -2,7 +2,7 @@
 // 2055-line runAgentLoop they fed. What stays serves the v2 dispatch shell,
 // the helpers re-exported via getAgentRuntime (notifyPrimaryOfInjury,
 // stopAgent, preempt, etc.), and shared module-level state.
-import { launchContinuation, settleJobCarry, endJobCarry } from '../work/task-freshness.js';
+import { beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -701,7 +701,7 @@ function turnJustEndedOnDeclaredPatience(agentId: string): boolean {
 }
 
 class AgentRuntime {
-  async handleMessage(agentId: string, _content: string): Promise<void> {
+  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<void> {   // t143 r6: opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
     // C20: never run a terminated agent (defense-in-depth for every entry path: the boot re-drain /
     // an A2A kick could otherwise run a dead agent and emit a zombie reply). Mirrors the wakeup path below.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
@@ -721,12 +721,12 @@ class AgentRuntime {
     // ITSELF goes through `queueSelfWake` instead.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
-      pendingWakeups.add(agentId);
+      pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
       return;
     }
 
     activeRuns.add(agentId);
-    agentStartTimes.set(agentId, Date.now());
+    agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
 
     try {
       // v2 is the only runtime. The v1 dispatch + 2055-line runAgentLoop
@@ -794,7 +794,7 @@ class AgentRuntime {
       // reads no `activeRuns` entry, no `working` status and no live work, and the stop door
       // used to answer it with "nothing is happening". The stamp is what makes the tail
       // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
-      lastRunEndedAt.set(agentId, Date.now()); settleJobCarry(agentId); // t143 r5: a continuation that queued no further one ends the chain
+      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId); // t143 r6: the carrying run ends; a further park re-handed the job to its own wake
       // Safety net for any path that broke out of runAgentLoop without
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent, no-op if the heartbeat was already stopped.
@@ -1133,13 +1133,13 @@ class AgentRuntime {
           // served on the next real inbound or an explicit resume.
           if (isSelfResumeBlockedStatus(status)) {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
-            return;
+            dropDrainJobWake(agentId); return; // the park's continuation will never run: its job is over
           }
-          logger.info('Processing queued wakeup', { agentId }, agentId); launchContinuation(agentId); // t143 r5: a park's continuation starts now
+          logger.info('Processing queued wakeup', { agentId }, agentId);
           // Don't pass empty content, the wakeup will pick up all new
           // messages from the DB via context assembly. The content param
           // is unused by runAgentLoop (it reads from DB).
-          this.handleMessage(agentId, '').catch(err => {
+          this.handleMessage(agentId, '', { drained: true }).catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
               error: err instanceof Error ? err.message : String(err),

@@ -976,7 +976,7 @@ describe('t137 CENSUS: the park writes nothing, the cap and its setting are gone
     const code = stripComments(tb!.text);
     expect(code.match(/insertMessage(IfAbsent)?\(|insertEngineEvent\w*\(|broadcast\(/g) ?? []).toEqual([]);
     // The other direction: deleting the WHOLE step would pass the half above.
-    expect((code.match(/queueSelfWake\(agentId, 'turn-budget-continuation'\)/g) ?? []).length).toBe(1);
+    expect((code.match(/queueJobContinuation\(agentId, 'turn-budget-continuation'\)/g) ?? []).length).toBe(1);
     expect((code.match(/noteEngineCheckpoint\(agentId, 'turn-budget'\)/g) ?? []).length).toBe(1);
     expect((code.match(/checkAndCompact\(/g) ?? []).length).toBe(1);
     expect((code.match(/latchEngineCut\(state, 'budget'\)/g) ?? []).length).toBe(1);

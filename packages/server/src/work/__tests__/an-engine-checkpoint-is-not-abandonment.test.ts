@@ -34,6 +34,7 @@ import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../engine-c
 import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../task-freshness.js';
 
 /** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
  *  Here the trigger is the owner's ask `msg-job`, which opened the job's task (or project). */
@@ -41,7 +42,8 @@ function park(reason: 'turn-budget' | 'tool-loop', turnNumber = 5, ask: string |
   const tc = openTurnContext(AGENT);
   tc.turnNumber = turnNumber;
   tc.root = ask ? { kind: 'ask', id: ask, sourceMessageId: ask } : null;
-  try { return noteEngineCheckpoint(AGENT, reason); } finally { endTurnContext(AGENT); }
+  if (!ask) beginJobRun(AGENT, 'timer');   // a trigger-less park here is the continuation the previous park's own wake started
+  try { const n = noteEngineCheckpoint(AGENT, reason); registerTimerWake(AGENT); return n; } finally { endTurnContext(AGENT); endJobRun(AGENT); }
 }
 
 const AGENT = 'zargo';
@@ -105,6 +107,7 @@ function gateStrandedDanglers(agentId: string, now: number): Array<{ id: string 
 }
 
 beforeEach(() => {
+  endJobCarry(AGENT);   // the job carry is process memory: no test inherits another's
   const db = new Database(':memory:');
   mockDb.current = db;
   runMigrations();

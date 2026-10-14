@@ -32,7 +32,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { WsEvent } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
-import { stoppedAgents, preemptedAgents, pendingWakeups, turnContinuationCounts, backgroundDrains } from '../../../../shared-state.js';
+import { stoppedAgents, preemptedAgents, pendingWakeups, turnContinuationCounts, backgroundDrains, queueSelfWake } from '../../../../shared-state.js';
 import { steerFired } from '../../../steer-queue.js';
 import {
   runPreCallGates,
@@ -96,6 +96,8 @@ const deliverPendingCirclingVerdictSpy = vi.fn(() => null as string | null);
 vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
   noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
   deliverPendingCirclingVerdict: (...a: unknown[]) => deliverPendingCirclingVerdictSpy(...(a as [string])),
+  // t143 r6: the park's continuation is queued through this helper (the real self-wake underneath).
+  queueJobContinuation: (agentId: string, reason: string) => queueSelfWake(agentId, reason),
 }));
 
 const AGENT = 'primary';

@@ -922,7 +922,7 @@ describe('runV2Turn integration', () => {
     expect(sysMsgs.filter((r) => /tool calls.*Starting a fresh turn/.test(r.content))).toEqual([]);
 
     // handleMessage('') was called to continue.
-    expect(handleMessageSpy).toHaveBeenCalledWith('primary', '');
+    expect(handleMessageSpy).toHaveBeenCalledWith('primary', '', { job: true });   // t143 r6: the park's own wake
   });
 
   it('PRESERVATION #37: pre-call compaction gate surrenders turn at ≥99%', async () => {

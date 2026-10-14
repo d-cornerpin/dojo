@@ -105,7 +105,7 @@ import { configRouter } from '../../gateway/routes/config.js';
 import { trackerAddNotes } from '../tools.js';
 import { recordPoke, currentRung } from '../../work/poke-ladder.js';
 import { noteEngineCheckpoint } from '../../work/engine-checkpoint-note.js';
-import { launchContinuation, settleJobCarry } from '../../work/task-freshness.js';
+import { endJobCarry, registerTimerWake, beginJobRun, endJobRun } from '../../work/task-freshness.js';
 import { injectTaskAssignmentNotification } from '../notify.js';
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
@@ -117,6 +117,7 @@ const db = (): Database.Database => mockDb.current!;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
 beforeEach(() => {
+  endJobCarry('helper');   // the job carry is process memory: no test inherits another's
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(path.join(HOME, '.dojo', 'logs'), { recursive: true });
   const d = new Database(':memory:');
@@ -198,7 +199,7 @@ import { trackerValidatePause, trackerRetask } from '../tools.js';
  *  first turn's trigger is the owner's ask; a continuation's trigger is the engine's self-wake. */
 function parkedTurn(turnNumber: number, at: number, askMessageId: string | null): void {
   vi.setSystemTime(at);
-  if (askMessageId === null) launchContinuation('helper'); // the runtime launches the park's continuation
+  if (askMessageId === null) beginJobRun('helper', 'timer'); // the park's own wake fires: this run carries the job
   const tc = openTurnContext('helper');
   tc.turnNumber = turnNumber;
   tc.root = askMessageId ? { kind: 'ask', id: askMessageId, sourceMessageId: askMessageId } : null;
@@ -206,12 +207,13 @@ function parkedTurn(turnNumber: number, at: number, askMessageId: string | null)
                 VALUES ('helper', ?, ?, ?, 'budget', 0)`).run(turnNumber, sqlTime(at - 15 * MIN), sqlTime(at));
   modelCallFinished(at);
   noteEngineCheckpoint('helper', 'turn-budget');
+  registerTimerWake('helper');   // the park's continuation, armed on its own timer
   stampTasksAtTurnFinalize({
     agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
     rootSourceMessageId: askMessageId, convKey: 'c-job', servedTaskId: null,
   });
   endTurnContext('helper');
-  settleJobCarry('helper'); // the runtime's run-end: a continuation that queued no further one ends the chain
+  endJobRun('helper'); // the carrying run ends; a further park registered its own wake
 }
 
 /** The close-out gate as a continuation turn of this agent meets it (no human waiting). */
@@ -509,11 +511,11 @@ describe('ROUND 5 (R4-C1): the job carry has no clock — only its tasks closing
     parkedTurn(41, now - 60 * MIN, 'msg-ask');
     // the continuation finishes its work without parking again, leaving the task claimed
     vi.setSystemTime(now - 50 * MIN);
-    launchContinuation('helper');
+    beginJobRun('helper', 'timer');
     const tc = openTurnContext('helper');
     tc.turnNumber = 42;
     endTurnContext('helper');
-    settleJobCarry('helper');
+    endJobRun('helper');
     vi.setSystemTime(now);
     expect(await gateNames()).toContain('task-live');
   });
@@ -530,7 +532,6 @@ describe('ROUND 5 (R4-C1): the job carry has no clock — only its tasks closing
     const tc = openTurnContext('helper');        // an unrelated wake: nobody launched a continuation for it
     tc.turnNumber = 42;
     endTurnContext('helper');
-    settleJobCarry('helper');
     parkedTurn(43, now - 5 * MIN, null);         // the real continuation still carries the job
     expect((db().prepare("SELECT updated_at AS u FROM work WHERE id = 'task-live'").get() as { u: number }).u).toBe(now - 5 * MIN);
   });
@@ -557,9 +558,9 @@ describe('ROUND 5 (R4-C2): a job that starts from a tracker notice is carried', 
                   VALUES ('helper', 60, ?, ?, 'budget', 0)`).run(sqlTime(now - 75 * MIN), sqlTime(now - 60 * MIN));
     modelCallFinished(now - 60 * MIN);
     noteEngineCheckpoint('helper', 'turn-budget');
+    registerTimerWake('helper');
     stampTasksAtTurnFinalize({ agentId: 'helper', turnNumber: 60, outcome: 'budget', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: 'task-assigned' });
     endTurnContext('helper');
-    settleJobCarry('helper');
     expect(db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-assigned' AND kind = 'activity'").get())
       .toEqual({ n: 0 });                          // being woken by the notice is not progress ...
     parkedTurn(61, now - 40 * MIN, null);          // ... but its job runs on through the continuations
@@ -595,15 +596,5 @@ describe('ROUND 5 (minor): the no-primary rung-3 re-drive is addressed to the as
     expect(currentRung('task-r3b')).toBe(3);
     expect(textsToHelper().join('\n')).not.toContain('ESCALATION');
     expect((db().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'primary'").get() as { n: number }).n).toBe(0);
-  });
-});
-
-describe('ROUND 5: the carry\'s marks sit at the real doors (a source pin; the doors themselves need a live runtime)', () => {
-  const src = (f: string): string => fs.readFileSync(path.join(__dirname, '..', '..', f), 'utf8');
-  it('the runtime marks the park\'s continuation, settles it at the run end, and Stop ends it (the tool-loop timer is the other launch point)', () => {
-    const runtime = src('agent/runtime.ts');
-    expect(runtime).toMatch(/Processing queued wakeup[^\n]*launchContinuation\(agentId\);/);
-    expect(runtime).toMatch(/lastRunEndedAt\.set\(agentId, Date\.now\(\)\); settleJobCarry\(agentId\);/);
-    expect(runtime).toMatch(/pendingWakeups\.delete\(agentId\); endJobCarry\(agentId\);/);
   });
 });

@@ -24,6 +24,7 @@
 // (`services/owner-card-frames.ts`, the frame path the all-clears use).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { endJobCarry } from '../work/task-freshness.js';
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
 import { ownerConditionsOnAgentGone } from '../healer/owner-notices.js';
@@ -120,6 +121,7 @@ export function brokenWords(agentId: string, injury: string): string | null {
 /** The one status writer moved this agent: an incident whose status it left is over, and a
  *  terminated agent is the subject of nothing any more (t138 r6, review I3; t143 BROKEN/SILENT). */
 export function agentStatusMoved(agentId: string, status: string): void {
+  if (['error', 'paused', 'rate_limited', 'terminated'].includes(status)) endJobCarry(agentId); // t143 r6: its job's chain is over
   if (status !== 'paused') closePausedCards(agentId);
   if (status !== 'rate_limited') endNotice(agentId, 'rate_limit_notice');
   if (status === 'terminated') {

@@ -33,11 +33,11 @@
 import { createLogger } from '../../../../logger.js';
 import { getContextWindow } from '../../../model.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
-import { turnContinuationCounts, queueSelfWake, isStopFenced } from '../../../shared-state.js';
+import { turnContinuationCounts, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict, queueJobContinuation } from '../../../../work/engine-checkpoint-note.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -200,7 +200,7 @@ export async function runTurnTimeBudget(
     }
     // Queue wakeup so handleMessage's finally fires the loop again
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    queueSelfWake(agentId, 'turn-budget-continuation');
+    queueJobContinuation(agentId, 'turn-budget-continuation');   // t143 r6: the job travels on this wake
     // t93: `budget` HERE TOO, and the reason is the `iteration_cap` reason exactly. This arm is an
     // ENGINE CUT with a continuation queued behind it — the turn is stopped mid-work at the
     // 15-minute checkpoint and told to resume on a fresh one — and it recorded
