@@ -2608,6 +2608,13 @@ export async function runPokeCheck(): Promise<void> {
     const assigneeStatus = (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
       .get(task.assignedTo) as { status: string } | undefined)?.status;
     if (assigneeStatus === 'working') continue;
+    // t143 round 3 (C1, owner's rule: a job that is really working is left alone): an agent that
+    // is MOVING (tokens, tools or an open request inside its window) is never nudged, urgent-poked,
+    // re-driven, struck or closed on a TIMER, whatever the task's own clock says — its status
+    // flips to idle between continuations, so `working` above is not enough. Abandonment is judged
+    // once the agent has stopped. (A PM-recorded circling verdict is evidence of what it is doing,
+    // not an idle clock, and still goes through the fill-in below.)
+    const agentMoving = agentIsMoving(task.assignedTo, now);
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
@@ -2632,11 +2639,12 @@ export async function runPokeCheck(): Promise<void> {
     // Rungs are monotonic inside a cycle, so once rung 4 has fired `lastPoke` IS that rung-4
     // poke: one `autoReset` interval off its RECORDED instant is the re-drive's own clock.
     const redriveDueAgain = !!lastPoke && now - lastPoke.sentAtMs >= thresholds.autoReset * 1000;
-    if (idleSeconds >= thresholds.autoReset && (lastPokeNumber < 4 || redriveDueAgain)) {
+    if (agentMoving) {
+      // no idle-clock rung against a moving agent (see above)
+    } else if (idleSeconds >= thresholds.autoReset && (lastPokeNumber < 4 || redriveDueAgain)) {
       pokeType = 'redrive';
       pokeNumber = 4;
-    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3 && !agentIsMoving(task.assignedTo, now)) {
-      // t143: never a time-based escalation against an agent that is visibly working.
+    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
       pokeType = 'escalate_primary';
       pokeNumber = 3;
     } else if (idleSeconds >= thresholds.second && lastPokeNumber < 2) {
@@ -2721,7 +2729,7 @@ export async function runPokeCheck(): Promise<void> {
     // task itself, complete, with the receipt basis recorded, and the normal
     // validation flow takes it from there. Engine-enforced, not nudged: the
     // neutral nudge was tried live and the floor model paused the task.
-    const deliveryEvidence = task.status === 'in_progress' ? findDeliveryEvidenceForTask(task.id) : null;
+    const deliveryEvidence = task.status === 'in_progress' && !agentMoving ? findDeliveryEvidenceForTask(task.id) : null;
     // Strike 2 requires a TANGIBLE handover on record (artifact or channel
     // delivery), not just an answered reply: the engine only ever closes a
     // task on evidence it can point at. Text-only deliveries keep getting

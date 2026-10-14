@@ -92,7 +92,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   const now = Date.now();
   const tied = turnWorkIds(agentId);
   const turn = turnContext(agentId)?.turnNumber;
-  if (turn !== undefined) carryJobWork(agentId, turn + 1, tied);
+  if (turn !== undefined) carryJobWork(agentId, turn, tied);
   if (tied.length === 0) return 0;
   const ids = tied.map(() => '?').join(', ');
 

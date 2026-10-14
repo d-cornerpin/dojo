@@ -248,11 +248,19 @@ describe('M3 (t137 review): a task is judged on its OWN activity, not on the eng
     // Round 2: the park no longer touches the abandoned task at all.
     expect((db().prepare("SELECT updated_at FROM work WHERE id = 'task-abandoned'").get() as { updated_at: number }).updated_at)
       .toBe(now - 120 * MIN);
+    // Round 3 (C1): the agent is moving (its last park was a minute ago), so NOTHING acts on any of
+    // its tasks, abandoned or not — no check-in, no text.
+    await sweep();
+    expect(pokes('task-abandoned')).toBe(0);
+    expect(pokes('task-live')).toBe(0);
+    expect(ownerTexts()).toBe(0);
+    // The job ends and the agent goes quiet past its window: now the abandoned task is noticed,
+    // and the finished job is not.
+    db().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-live'").run(now);
+    vi.setSystemTime(now + 3 * 60 * MIN);
     await sweep();
     expect(pokes('task-abandoned')).toBeGreaterThan(0);
     expect(pokes('task-live')).toBe(0);
-    // The agent is moving (its last park was a minute ago): the owner hears nothing.
-    expect(ownerTexts()).toBe(0);
   });
 });
 

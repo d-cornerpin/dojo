@@ -226,42 +226,80 @@ async function gateNames(): Promise<string[]> {
   }
 }
 
+/** An unrelated owner message takes a turn mid-job: its own trigger, no park, then it ends. */
+function ownerTurn(turnNumber: number, at: number, askMessageId: string): void {
+  vi.setSystemTime(at);
+  const tc = openTurnContext('helper');
+  tc.turnNumber = turnNumber;
+  tc.root = { kind: 'ask', id: askMessageId, sourceMessageId: askMessageId };
+  db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+                VALUES ('helper', ?, ?, ?, 'answered', 1)`).run(turnNumber, sqlTime(at - MIN), sqlTime(at));
+  modelCallFinished(at);
+  stampTasksAtTurnFinalize({
+    agentId: 'helper', turnNumber, outcome: 'answered', answerMessageId: null,
+    rootSourceMessageId: askMessageId, convKey: 'c-job', servedTaskId: null,
+  });
+  endTurnContext('helper');
+}
+
 /** The long job on the helper, with two abandoned tasks planted BEFORE it: one from another
- *  conversation, one from the SAME conversation as the job. Three real parks over 30 minutes. */
+ *  conversation, one from the SAME conversation as the job. The job parks, the owner sends an
+ *  UNRELATED message mid-job (it takes the next turn), then the job's continuations park twice
+ *  more (the review's exact shape, C1). */
 async function longJobWithTwoAbandoned(now: number): Promise<void> {
   vi.useFakeTimers({ toFake: ['Date'] });
   claimedTask('task-other-conv', 'the forgotten report', now - 120 * MIN, 'c-old');
   claimedTask('task-same-conv', 'the half-done spreadsheet', now - 100 * MIN, 'c-job');
   seedTrackerTask(db(), {
     id: 'task-live', agentId: 'helper', status: 'in_progress', title: 'the long research job',
-    opened_at: now - 40 * MIN, updated_at: now - 40 * MIN, origin_conv_key: 'c-job',
+    opened_at: now - 60 * MIN, updated_at: now - 60 * MIN, origin_conv_key: 'c-job',
     source_message_id: 'msg-ask', priority: 'normal',
   } as never);
-  parkedTurn(41, now - 30 * MIN, 'msg-ask'); // the owner's ask: the turn whose trigger names the job
-  parkedTurn(42, now - 15 * MIN, null);     // continuations: the engine's self-wake
-  parkedTurn(43, now - MIN, null);
+  parkedTurn(41, now - 45 * MIN, 'msg-ask'); // the owner's ask: the turn whose trigger names the job
+  ownerTurn(42, now - 35 * MIN, 'msg-unrelated'); // an unrelated owner message takes the next turn
+  parkedTurn(43, now - 25 * MIN, null);     // continuations: the engine's self-wake
+  parkedTurn(44, now - 12 * MIN, null);
+  parkedTurn(45, now - MIN, null);
   vi.setSystemTime(now);
 }
 
-describe('ROUND 2 (2+3): freshness is refreshed only by activity that names the task', () => {
-  it('the close-out gate names BOTH abandoned tasks (another conversation, the same conversation) and never the job in flight', async () => {
+/** The job is over (its task closed) and the agent goes quiet past its window. */
+function jobEndsAndAgentGoesQuiet(now: number): void {
+  db().prepare("UPDATE work SET state = 'abandoned', closed_at = 1791936612000 WHERE id = 'task-live'").run();
+  vi.setSystemTime(now + 3 * 60 * MIN);
+}
+
+describe('ROUND 2 (2+3) + ROUND 3 (C1): freshness is refreshed only by activity that names the task; a moving agent is left alone', () => {
+  it('while the job is moving (long job, an unrelated owner message, two more parks): zero gate refusals, zero pokes, the task stays open', async () => {
     await longJobWithTwoAbandoned(Date.now());
+    expect(await gateNames()).toEqual([]);
+    await runPokeCheck();
+    for (const id of ['task-live', 'task-other-conv', 'task-same-conv']) expect(pokes(id)).toBe(0);
+    expect((db().prepare("SELECT state FROM work WHERE id = 'task-live'").get() as { state: string }).state).toBe('claimed');
+    expect(ownerTexts()).toBe(0);
+  });
+
+  it('AFTER the job stops, the close-out gate names BOTH abandoned tasks (another conversation, the same conversation)', async () => {
+    const now = Date.now();
+    await longJobWithTwoAbandoned(now);
+    jobEndsAndAgentGoesQuiet(now);
     const named = await gateNames();
     expect(named).toContain('task-other-conv');
     expect(named).toContain('task-same-conv');
     expect(named).not.toContain('task-live');
   });
 
-  it('the PM re-drives an abandoned task from the SAME conversation as the long job; the job in flight gets no check-in', async () => {
-    await longJobWithTwoAbandoned(Date.now());
+  it('AFTER the job stops, the PM re-drives an abandoned task from the SAME conversation as the long job', async () => {
+    const now = Date.now();
+    await longJobWithTwoAbandoned(now);
+    jobEndsAndAgentGoesQuiet(now);
     await runPokeCheck();
     expect(pokes('task-same-conv')).toBeGreaterThan(0);
     expect(pokes('task-other-conv')).toBeGreaterThan(0);
     expect(pokes('task-live')).toBe(0);
-    expect(ownerTexts()).toBe(0);
   });
 
-  it('the timestamp itself: a park moves the job\'s own row and no other', async () => {
+  it('the timestamp itself: the job survives an unrelated message mid-job (every park moves the job\'s own row) and no other row', async () => {
     const now = Date.now();
     await longJobWithTwoAbandoned(now);
     const at = (id: string): number => (db().prepare('SELECT updated_at AS u FROM work WHERE id = ?').get(id) as { u: number }).u;

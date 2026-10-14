@@ -172,16 +172,16 @@ describe('an engine checkpoint squares the tracker it interrupts', () => {
     expect(gateInProgressDanglers(AGENT, now).map((r) => r.id).sort()).toEqual(['w-abandoned-other-conv', 'w-abandoned-same-conv']);
   });
 
-  it('t143 r2: the continuation the park queues inherits the job; a later turn with its own trigger does not', () => {
+  it('t143 r3 (C1): the continuation the park queues inherits the job however many other turns ran first; a turn with its own trigger never does', () => {
     const now = Date.now();
     const stale = now - (CLOSE_OUT_IDLE_MINUTES + 5) * 60_000;
     seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
     expect(park('turn-budget', 7)).toBe(1);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
-    expect(park('turn-budget', 8, null)).toBe(1); // the continuation (empty trigger) carries the job
+    expect(park('turn-budget', 8, 'msg-other')).toBe(0); // an unrelated ask takes the next turn: it names other work
+    expect(park('turn-budget', 9, null)).toBe(1); // the continuation (empty trigger) still carries the job
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
-    expect(park('turn-budget', 9, 'msg-other')).toBe(0); // an unrelated ask's turn names other work
-    expect(park('turn-budget', 11, null)).toBe(0); // not the next turn: no inheritance
+    expect(park('turn-budget', 12, null)).toBe(1); // and again, turns later
   });
 
   it('returns 0 and writes nothing when the agent has no in-flight work', () => {

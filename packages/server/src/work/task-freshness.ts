@@ -25,12 +25,27 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
   OR e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id))), 0))`;
 
 /** The job's work, handed from a park to the continuation it queues. In memory on purpose: a
- *  restart ends the job's turn, and nothing should inherit it after that. */
-const jobWork = new Map<string, { forTurn: number; ids: string[] }>();
+ *  restart ends the job's turn, and nothing should inherit it after that.
+ *  The marker is "this agent has a job parked and its continuation has not run yet" — it is NOT a
+ *  turn number: any number of other turns (an owner's message, an A2A) may run first, and only a
+ *  turn with no trigger of its own (the self-wake) picks it up (t143 round 3, C1). */
+const jobWork = new Map<string, { parkedTurn: number; ids: string[] }>();
 
-/** A park hands its job to the continuation it queues (the agent's next turn). */
-export function carryJobWork(agentId: string, forTurn: number, ids: string[]): void {
-  jobWork.set(agentId, { forTurn, ids });
+/** A park hands its job to the continuation it queues. Never replaces a standing job with less:
+ *  a park that tied nothing leaves the carry as it was, and a park that tied work adds to it. */
+export function carryJobWork(agentId: string, parkedTurn: number, ids: string[]): void {
+  const standing = jobWork.get(agentId)?.ids ?? [];
+  const all = [...new Set([...standing, ...ids])];
+  if (all.length > 0) jobWork.set(agentId, { parkedTurn, ids: all });
+}
+
+/** Called when a turn finalizes: a continuation (no trigger of its own) that did not park again
+ *  ends the job's carry. A turn with its own trigger leaves it standing for the continuation. */
+export function settleJobWork(agentId: string): void {
+  const ctx = turnContext(agentId);
+  const carried = jobWork.get(agentId);
+  if (!ctx || !carried || ctx.root || ctx.servedWork) return;
+  if (carried.parkedTurn !== ctx.turnNumber) jobWork.delete(agentId);
 }
 
 /** The tasks the CURRENT turn of this agent structurally serves (see the header above). */
@@ -38,7 +53,7 @@ export function turnWorkIds(agentId: string): string[] {
   const ctx = turnContext(agentId);
   if (!ctx || ctx.turnNumber === undefined) return [];
   const carried = jobWork.get(agentId);
-  const inherited = !ctx.root && !ctx.servedWork && carried?.forTurn === ctx.turnNumber ? carried.ids : [];
+  const inherited = !ctx.root && !ctx.servedWork && carried ? carried.ids : [];
   const named = [...inherited, ...(ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [])];
   const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
   const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
