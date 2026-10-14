@@ -2035,6 +2035,7 @@ configRouter.patch('/models/:id/num-ctx', async (c) => {
   logger.info('Model num_ctx override updated', {
     modelId: id, override, recommended, exceedsRecommended,
   });
+  await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged();   // t148: a window changed; no-fit locks get another look
   return c.json({ ok: true, data: rowToModel(row), notice });
 });
 
@@ -2094,6 +2095,7 @@ configRouter.patch('/models/:id/limits', async (c) => {
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Model limits updated', { modelId: id, ...Object.fromEntries(updates) });
+  await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged();   // t148: a window changed; no-fit locks get another look
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
@@ -2208,6 +2210,7 @@ configRouter.post('/models/enable', async (c) => {
 
   enableMany(modelIds);
   logger.info('Models enabled', { count: modelIds.length });
+  await (await import('../../agent/v2/honest-stop.js')).noteModelsChanged();   // t148: a model is available; no-fit locks get another look
 
   // If the platform now has exactly one enabled vision-capable model
   // and no fallback is configured yet, opportunistically set it. Keeps

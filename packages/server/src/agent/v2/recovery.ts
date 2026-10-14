@@ -681,6 +681,9 @@ async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Pro
 
   const alreadyTold = stopAlreadyTold(agentId, stop.kind);
   logger.warn('v2: honest stop — parking the agent until the condition clears', { agentId, kind: stop.kind, alreadyTold }, agentId);
+  // The turn's record says what stopped it: the money guardrail has its word (`budget`); a model
+  // that cannot fit keeps the quarantine word, because nothing here observed a better one.
+  try { markTurnDied(agentId, state.turnNumber, stop.kind === 'budget_stop' ? 'budget' : (state.engineCutExit ?? 'unknown')); } catch { /* best effort */ }
   parkAgent(agentId, stop);
   if (alreadyTold) return true;
 

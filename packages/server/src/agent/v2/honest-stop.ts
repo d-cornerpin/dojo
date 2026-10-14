@@ -145,3 +145,11 @@ export const releaseClearedBudgetStops = (): Promise<string[]> => releaseHonestS
 
 /** A model, tier or tool list changed: every no-fit lock gets another look (it re-parks if it still does not fit). */
 export const releaseNoModelFits = (agentId?: string): Promise<string[]> => releaseHonestStops('no_model_fits', { agentId });
+
+/** The route-side call: a model, tier or tool-list change gives the no-fit locks another look. The
+ *  change is already saved, so a failure here is logged and never fails the route. */
+export async function noteModelsChanged(agentId?: string): Promise<void> {
+  try { await releaseNoModelFits(agentId); } catch (err) {
+    logger.warn('honest stop: could not re-check no-fit locks after a change', { error: err instanceof Error ? err.message : String(err) });
+  }
+}

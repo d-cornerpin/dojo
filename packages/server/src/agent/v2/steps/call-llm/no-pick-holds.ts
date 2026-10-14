@@ -11,6 +11,14 @@
 // call step asks the driver to end the turn (`requestExit`). The agent is left idle, not errored.
 // The "cannot hold a conversation" card shows too, only when it is true: no model of the agent's own
 // (its configured model, or a pick the router opens a tier on) can hold it.
+//
+// t148 (an honest stop): that exit finalized a "chose not to reply" turn that handed the message back,
+// so the notice repeated up to four times and the message was then set aside. The two causes that
+// are an honest stop (the spending limit alone, or no model that fits) now THROW to the platform's
+// existing lock instead (`agent/v2/honest-stop.ts`): the owner is told once there, the agent is
+// parked, and the parked message is answered when the limit or the models change. This file only
+// names the cause; it says nothing to the owner for those two. A transient cause (a rate limit, a
+// provider that is down, a model that failed earlier in the turn) keeps the notice-and-exit below.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -21,6 +29,7 @@ import { measureAgentToolPayloadTokens } from '../../../../tools/tool-docs.js';
 import { anOwnModelHolds, modelHoldsAgent } from './reassemble-for-fit.js';
 import { reportStarvedWindow } from '../../../../memory/window-starvation-card.js';
 import type { SystemPromptTooLargeError } from '../../../../memory/budget.js';
+import { honestStopWords, type HonestStopKind } from '../../error-format.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 
 const LEAD = 'This agent\'s turn was not run';
@@ -33,12 +42,15 @@ const CAUSE: Record<RoutedSkip, string> = {
 };
 const NONE_HOLDS = 'none of the models the auto-router uses can hold its instructions and tools. Add a model with a larger context window to the router, or give it fewer tools';
 
-/** Name why no routed pick holds the agent, tell the owner once, and return what was said. */
+/**
+ * Name why no routed pick holds the agent. A transient cause is told to the owner here and returned
+ * as `said`; an honest stop (`stop` set) is NOT told here, the caller throws it to the lock.
+ */
 export async function tellOwnerNoPickHolds(args: {
   agentId: string; turnNumber: number; tier: string | null | undefined; excluded: string[]; turnContext: PromptTurnContext;
   /** The last pick's refusal: its numbers are the card's. */
   refusal: SystemPromptTooLargeError;
-}): Promise<string> {
+}): Promise<{ said: string; stop: HonestStopKind | null }> {
   const { agentId, turnNumber, tier, excluded, turnContext, refusal } = args;
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
   if (!(await anOwnModelHolds(agentId, toolPayloadTokens, turnContext))) reportStarvedWindow(agentId, refusal.systemPromptTokens, refusal.policy);
@@ -46,6 +58,9 @@ export async function tellOwnerNoPickHolds(args: {
   for (const { modelId, skip } of routedSkipReasons(tier, agentId, excluded, ['tools'])) {
     if (skip && !causes.has(skip) && await modelHoldsAgent(agentId, modelId, toolPayloadTokens, turnContext)) causes.add(skip);
   }
+  const onlyTheLimit = causes.size === 1 && causes.has('budget');
+  const stop: HonestStopKind | null = causes.size === 0 ? 'no_model_fits' : onlyTheLimit ? 'budget_stop' : null;
+  if (stop) return { said: honestStopWords(stop), stop };
   const said = `${LEAD}: ${causes.size === 0 ? NONE_HOLDS : [...causes].map((c) => CAUSE[c]).join('; and ')}.`;
   const stopOnly = causes.size > 0;   // something will change on its own, or by a Settings choice
   try {
@@ -57,5 +72,5 @@ export async function tellOwnerNoPickHolds(args: {
     });
   } catch { /* the notice below still reaches the owner */ }
   broadcast({ type: 'chat:error', agentId, error: said, code: 'NO_MODEL', severity: stopOnly ? 'warning' : 'error', retryable: stopOnly });
-  return said;
+  return { said, stop: null };
 }

@@ -47,6 +47,7 @@ const enforceModelCapabilitiesSpy = vi.fn(() => ({ useTools: true }));
 const recordCostSpy = vi.fn();
 const queueEmbeddingSpy = vi.fn();
 const sendResponseViaIMessageSpy = vi.fn();
+const sendAlertSpy = vi.fn();
 const checkAndCompactSpy = vi.fn(() => Promise.resolve({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
 const estimateAssembledTokensMock = vi.fn(() => ({
   total: 1000,
@@ -112,7 +113,7 @@ vi.mock('../../tools/index.js', async () => {
 vi.mock('../../runtime.js', () => ({
   injectAttachmentBlocks: (...args: unknown[]) => injectAttachmentBlocksSpy(...args),
   enforceModelCapabilities: (...args: unknown[]) => enforceModelCapabilitiesSpy(...args),
-  getAgentRuntime: () => ({ handleMessage: (...args: unknown[]) => handleMessageSpy(...args) }),
+  getAgentRuntime: () => ({ handleMessage: (...args: unknown[]) => handleMessageSpy(...args), getAgentUptime: () => 0 }),
   // PHASE-3 T3 / S3: the turn clears the one-shot markers the assembly reported consuming.
   // The loop imports this statically, so a mock that omits it makes every turn throw.
   clearConsumedOneShotFlags: (...args: unknown[]) => clearConsumedOneShotFlagsSpy(...args),
@@ -152,7 +153,7 @@ vi.mock('../../../services/imessage-bridge.js', () => ({
   sendIMessageWithAttachment: vi.fn(),
   addressesMatch: (a: string, b: string) => a === b,
   getInboundSenderFor: () => null,
-  sendAlert: vi.fn(),
+  sendAlert: (...args: unknown[]) => sendAlertSpy(...args),
 }));
 
 vi.mock('../../../memory/compaction.js', async () => {
@@ -455,7 +456,7 @@ beforeEach(async () => {
   (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
   (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
-    loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock]) s.mockClear();
+    loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
   assembleContextMock.mockImplementation(async () => ({
     systemPrompt: '<system prompt>',
@@ -569,5 +570,90 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(answered.map((r) => r.content)).toContain(ANSWER);
     expect(ask()).toBe('done');
     expect(notices().length, 'the stop was told once, and not again on the way out').toBe(1);
+  });
+
+  // ── t140's own no-pick exit, the budget stop and the rollover: the same lock, the same release ──
+
+  it('t140\'s no-pick exit (light tier on a free 8K model too small for the agent, the roomy model over the limit) tells the owner ONCE, hands nothing back, and the message is answered after the limit is raised', async () => {
+    db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools; the 200K one can
+    budget(1.00, 0.999);   // under the line, so the free model is still offered; the priced one's call would cross it
+    await runV2Turn(AGENT);
+    expectAnHonestStop(/spending limit/i);
+    expect(callModelSpy, 'the stop came from the router\'s no-pick exit: no model was dialed').not.toHaveBeenCalled();
+    expect(status()).toBe('paused');
+    expect(ask(), 'the message is still the owner\'s open ask, not handed back through a settlement rung').toBe('open');
+    // The drain stands down for the lock, so nothing re-serves it and nothing is said again.
+    const { getWaitingHumanConversations } = await import('../counterparty.js');
+    expect(['error', 'paused', 'terminated']).toContain(status());
+    expect(getWaitingHumanConversations(AGENT).length).toBeGreaterThan(0);
+    expect(notices().length, 'told once').toBe(1);
+    const turnExit = db().prepare(`SELECT exit_reason FROM turns WHERE agent_id = ? ORDER BY turn_number DESC LIMIT 1`).get(AGENT) as { exit_reason: string | null };
+    expect(turnExit.exit_reason, 'the turn does not claim the model chose silence').not.toBe('no_reply_intended');
+
+    handleMessageSpy.mockClear();
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+    await runV2Turn(AGENT);
+    const answered = db().prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant'`).all(AGENT) as Array<{ content: string }>;
+    expect(answered.map((r) => r.content)).toContain(ANSWER);
+    expect(ask()).toBe('done');
+    expect(notices().length, 'not told again on the way out').toBe(1);
+  });
+
+  it('the window turning over releases the stop and wakes the agent (the scheduler tick), and a limit that STILL stops it releases nothing', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    const { kickMemoryRecheck, backgroundChecksSettled } = await import('../../../scheduler/background-checks.js');
+    const tracker = await import('../../../costs/tracker.js');
+    handleMessageSpy.mockClear();
+    kickMemoryRecheck(); await backgroundChecksSettled();
+    expect(handleMessageSpy, 'the window has not turned over: still parked').not.toHaveBeenCalled();
+    expect(status()).toBe('paused');
+    db().prepare(`UPDATE cost_records SET created_at = datetime('now', '-2 days')`).run();
+    tracker.invalidateDailySpendCache();
+    kickMemoryRecheck(); await backgroundChecksSettled();
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+    expect(status()).toBe('idle');
+    await runV2Turn(AGENT);
+    const answered = db().prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant'`).all(AGENT) as Array<{ content: string }>;
+    expect(answered.map((r) => r.content)).toContain(ANSWER);
+    expect(ask()).toBe('done');
+  });
+
+  it('a second stop in the same window sends no second text and no second notice (the crossing alert is the one text)', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    expect(sendAlertSpy.mock.calls.length, 'the budget\'s own crossing alert, once').toBe(1);
+    // The lock lifted by something that is not the event (a long-errored sweep), then the same stop again.
+    const { writeAgentStatus } = await import('../../agent-status.js');
+    writeAgentStatus(AGENT, 'idle');   // the sweep keeps the diagnostic, as the lock's own record
+    await runV2Turn(AGENT);
+    expect(sendAlertSpy.mock.calls.length, 'no second text').toBe(1);
+    expect(notices().length, 'no second notice').toBe(1);
+    expect(status()).toBe('paused');
+  });
+
+  it('no_model_fits: changing the agent\'s model releases the lock and wakes it; the Healer is never called', async () => {
+    db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
+    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
+    assembleContextMock.mockImplementation(async () => {
+      throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
+    });
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    handleMessageSpy.mockClear();
+    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
+    const res = await agentsRouter.request(`/${AGENT}/model`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }),
+    });
+    expect(res.status).toBe(200);
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+    expect(status()).toBe('idle');
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
   });
 });
