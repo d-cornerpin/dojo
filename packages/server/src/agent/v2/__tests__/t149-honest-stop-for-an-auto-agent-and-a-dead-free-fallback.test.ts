@@ -674,15 +674,20 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
   /** Every call is REAL (the wall, the ollama transport against the stubs), like a user's box. */
   beforeEach(() => {
     callModelSpy.mockImplementation((p: unknown) => realModel.callModel!(p));
+    inTheBand = false;
     db().prepare(`UPDATE models SET is_enabled = 0 WHERE id = 'm-tiny'`).run();
     budget(1.00, 2.00);
   });
+  let inTheBand = false;   // a clause that chose its own spend
   const lastError = (): string => (db().prepare('SELECT last_error FROM agents WHERE id = ?').get(AGENT) as { last_error: string | null }).last_error ?? '';
   /** An auto agent is offered a free model only while spend is still under the line (over it, the router
    *  turns every model away, a free one too, and the stop is the plain one): the paid estimates cross it. */
-  const autoWithFreeInLight = async (...free: string[]): Promise<void> => {
-    db().prepare(`UPDATE cost_records SET cost_usd = 0.999 WHERE id = 'spent-today'`).run();
+  const spendIs = async (usd: number): Promise<void> => {
+    db().prepare(`UPDATE cost_records SET cost_usd = ? WHERE id = 'spent-today'`).run(usd);
     (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
+  };
+  const autoWithFreeInLight = async (...free: string[]): Promise<void> => {
+    if (!inTheBand) await spendIs(0.999);
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
     db().prepare(`DELETE FROM router_tier_models WHERE tier_id = 'light'`).run();
     free.forEach((id, i) => db().prepare(`INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, ?)`).run(id, i));
@@ -768,6 +773,27 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     await noteModelsChanged();
     expect(status()).toBe('idle');
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+  });
+
+  it.fails('round 4: an auto agent parked in the band where the wall would still let a call through (spend + 0.01 <= limit < spend + the router\'s estimate): several ticks never release it, wake it or re-tell it', async () => {
+    addFreeModel('m-free-a', 'Free A', downUrl);
+    inTheBand = true;
+    await spendIs(0.985);   // limit 1.00: the wall's 0.01 passes (0.995), the paid model's 0.021 estimate does not (1.006)
+    await autoWithFreeInLight('m-free-a');
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    expect(lastError()).toMatch(/^\[budget_stop\] \[free_down\] /);
+    const told = notices().length;
+    handleMessageSpy.mockClear();
+    await ticks(5);
+    expect(status(), 'the park was made on the router\'s number and is lifted on the same one').toBe('paused');
+    expect(lastError()).toMatch(/free_down/);
+    expect(handleMessageSpy, 'nothing woke it').not.toHaveBeenCalled();
+    expect(notices().length, 'nothing was told again').toBe(told);
+    // The limit really moving still lifts it.
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
+    expect(status()).toBe('idle');
   });
 
   it('CONTROL: an auto agent with one free model UP is not parked, and a plain budget stop (no free model exists) is NOT a free-down park', async () => {
