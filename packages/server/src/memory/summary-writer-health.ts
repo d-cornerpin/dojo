@@ -23,6 +23,8 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writerBreaker } from './compaction-defect.js';
+import { contextWindowPolicy, estimateTokens } from './budget.js';
+import { getContextWindow, getModelOutputCap } from '../agent/model.js';
 
 const logger = createLogger('summary-writer-health');
 
@@ -61,6 +63,27 @@ function providerKey(modelId: string): string {
   } catch {
     return `model:${modelId}`;
   }
+}
+
+/**
+ * t149 F4 — WHAT A WRITER CAN HOLD. The messages a tool-less summary call to `modelId` may carry,
+ * beside a system prompt of `systemPromptTokens`: the provider boundary's own budget
+ * (`assembly-validation.ts`, `validateAtProviderBoundary`) for that model's window and output cap.
+ * A call over it is repaired or refused at the boundary, so the writer is not dialled with it.
+ * A model the engine cannot size is not refused here.
+ */
+export function summaryRoom(modelId: string, systemPromptTokens = 0): number {
+  try {
+    const policy = contextWindowPolicy(getContextWindow(modelId), { toolPayloadTokens: 0, maxOutputTokens: getModelOutputCap(modelId) });
+    return Math.max(0, policy.assemblyBudgetTokens - systemPromptTokens);
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/** Can `modelId` hold THIS call — its system prompt and this content? */
+export function writerHolds(modelId: string, systemPrompt: string, content: string): boolean {
+  return estimateTokens(content) <= summaryRoom(modelId, estimateTokens(systemPrompt));
 }
 
 /** Does this abort say anything about the writer? (No for Stop or the turn's patience.) */
@@ -115,11 +138,12 @@ export function noteProviderAnswered(modelId: string): void {
 export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const db = getDb();
   const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%'";
-  const usable = db.prepare(
+  const usable = (db.prepare(
     `SELECT m.id AS id, m.provider_id AS provider FROM models m JOIN providers p ON p.id = m.provider_id
       WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}
       ORDER BY COALESCE(m.input_cost_per_m, 0) ASC, m.id ASC`,
-  ).all() as Array<{ id: string; provider: string }>;
+  ).all() as Array<{ id: string; provider: string }>)
+    .filter((u) => summaryRoom(u.id) > 0);   // t149 F4: a window with no budget left (4K, "against a budget of 0") holds no call
   const isUsable = (id: string | undefined): id is string => !!id && usable.some((u) => u.id === id);
   const explicitId = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
   const explicit = isUsable(explicitId) ? explicitId : undefined;
@@ -137,7 +161,12 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
 
 /** The writers anything may dial now for `agentId`, turn or background: no open breaker, answering. */
 export function eligibleSummaryWriters(preferredModelId?: string, agentId?: string): string[] {
-  return summaryWriterCandidates(preferredModelId).filter((id) => !writerBreaker(id) && !notAnswering(id, agentId));
+  return summaryWriterCandidates(preferredModelId).filter((id) => !writerPassedOver(id, agentId));
+}
+
+/** Was this writer passed over — its provider's breaker open, or it has not answered since it failed? */
+export function writerPassedOver(modelId: string, agentId?: string): boolean {
+  return !!writerBreaker(modelId) || notAnswering(modelId, agentId);
 }
 
 /** A person's fresh message started this agent's turn: its failed writers get one more try, for it. */

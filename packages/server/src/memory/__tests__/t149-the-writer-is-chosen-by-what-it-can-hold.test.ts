@@ -124,7 +124,7 @@ const door = (window: number): Promise<unknown> =>
   assembleWithNothingOutOfViewUnsummarised(AGENT, window, () => assembleContext(AGENT, ROOMY));
 
 describe('t149 F4 — a writer that cannot hold the input is never dialled', () => {
-  it.fails('no Settings writer, the cheapest text model has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
+  it('no Settings writer, the cheapest text model has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (cheapest) and ROOMY
     seedALongCut();
     await door(32_000);
@@ -133,7 +133,7 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
     expect(placeholders(), 'no note was left behind').toBe(0);
   });
 
-  it.fails('a 16K Settings writer is handed only what it can hold: every dial fits its own budget, and every row is still summarised', async () => {
+  it('a 16K Settings writer is handed only what it can hold: every dial fits its own budget, and every row is still summarised', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(SMALL);
     seedALongCut();
     await door(16_000);
@@ -148,7 +148,7 @@ describe('t149 F4 — a writer that cannot hold the input is never dialled', () 
 });
 
 describe('t149 F4 — a writer that fails is passed over on its first failure, and the next one writes at once', () => {
-  it.fails('the gate\'s pressure pass: the cheapest writer is unreachable; the next writes in the SAME pass, and no brake stalls the next one', async () => {
+  it('the gate\'s pressure pass: the cheapest writer is unreachable; the next writes in the SAME pass, and no brake stalls the next one', async () => {
     writers.mode = { [DEAD]: 'unreachable' };
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(TINY, SMALL);   // the writers are DEAD (cheapest) and ROOMY
     seedALongCut();
@@ -160,12 +160,12 @@ describe('t149 F4 — a writer that fails is passed over on its first failure, a
     expect(failingCards(), 'no "compaction is failing" card').toBe(0);
   });
 
-  it.fails('the leaving-view pass: the same, and the dead writer is dialled once, not once per chunk', async () => {
+  it('the leaving-view pass: the same, and the dead writer is dialled once, not once per chunk', async () => {
     writers.mode = { [DEAD]: 'unreachable' };
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(TINY, SMALL);
-    seedALongCut();
-    const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 6;
-    const result = await checkAndCompact(AGENT, 'auto', 32_000, { leaving: { cause: 'ceiling', throughSeq: through, rowsLeaving: 30 } });
+    for (let t = 1; t <= 40; t++) appendTurn();   // 80 rows: the 128K window's newest 64 stay, the older 16 leave
+    const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 64;
+    const result = await checkAndCompact(AGENT, 'auto', 128_000, { leaving: { cause: 'ceiling', throughSeq: through, rowsLeaving: 30 } });
     expect(writers.calls.filter((c) => c.modelId === DEAD).length, 'passed over on its first failure').toBe(1);
     expect(result.leafCreated).toBeGreaterThan(0);
     expect(compactionIsBraked(AGENT, false)).toBe(false);

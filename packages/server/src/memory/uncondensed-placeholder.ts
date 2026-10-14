@@ -128,6 +128,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
       if (!summary.ok) {
         if (summary.stopped) { stoppedByOwner = true; break; }   // the owner's Stop: not the writer's failure, and no next writer
+        if (summary.tooBig) continue;                            // t149 F4: not dialled; the next writer may hold it
         if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
         continue;
       }
