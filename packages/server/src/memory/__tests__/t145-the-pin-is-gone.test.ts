@@ -355,13 +355,15 @@ describe('t145 B — the pin is deleted, not hidden: no module, no lane, no regi
   });
 });
 
-describe('t145 B round 3 — an ask with NO task, folded mid-turn: the owner\'s words stay verbatim', () => {
-  // The shape that made this a known gap in round 2: a long, tool-heavy turn on an ask with no task
+describe('t145 B round 4 — a long turn on an ask with NO task: its own tool rows fold, and the owner\'s words stay verbatim', () => {
+  // The shape that was a known gap in round 2: a long, tool-heavy turn on an ask with no task
   // (tracker-only calls, so the engine floor opens none) and a pressure fold in the middle of it.
-  // The root fix (`tail-horizon.ts` `servedAskFloorSeq`): while a turn is running, the owner message
-  // it serves is a floor no fold, cut or trim passes. Older rows go first.
-  it('after a mid-turn fold the agent still has the ask verbatim on the very next call; older traffic is what was folded', async () => {
-    await newerTraffic();   // older rows, so the fold has somewhere to go
+  // Round 3 froze every row from the ask on, which turned a long job into a refusal. The protection
+  // is narrow now: only the owner message the turn serves. The turn's own tool rows fold like any
+  // other, and when the ask lands behind the boundary the assembler re-emits it, verbatim and
+  // labelled, once, at the front of the live tail (`memory/served-ask.ts`).
+  it('after a mid-turn fold: the turn\'s old tool rows are folded, no refusal, and the next call holds the ask verbatim and labelled once', async () => {
+    await newerTraffic();
     await submitUserMessage(AGENT, LONG_ASK);
     const folded: Array<{ leafCreated: number }> = [];
     const reads = Array.from({ length: 30 }, (_, i) => ({
@@ -371,10 +373,31 @@ describe('t145 B round 3 — an ask with NO task, folded mid-turn: the owner\'s 
     const calls = await turn(...reads, { content: 'Carrying on with the three notes.' });
     const after = wireText(calls[calls.length - 1]);
     expect(folded[0]?.leafCreated, 'the pressure fold really ran mid-turn and folded something').toBeGreaterThan(0);
+    // THE TURN'S OWN TOOL ROWS FOLDED: nothing froze them (round 3 did)
+    const foldedToolRows = mockDb.current!.prepare(
+      `SELECT COUNT(*) AS n FROM summary_messages sm JOIN messages m ON m.id = sm.message_id WHERE m.role = 'tool'`,
+    ).get() as { n: number };
+    expect(foldedToolRows.n, 'the turn\'s old tool results were folded').toBeGreaterThan(0);
+    // NO REFUSAL: the turn finished and the owner got the reply
+    const reply = mockDb.current!.prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1").get() as { content: string };
+    expect(reply.content).toContain('Carrying on with the three notes.');
     expect((mockDb.current!.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task'").get() as { n: number }).n).toBe(0);
-    expect(after).toContain('COMPRESSED HISTORY');               // the older traffic is what became a note
-    expect(after).toContain(LONG_ASK);                            // the owner's words, verbatim
-    expect(after).not.toContain('Quick question number 0:');     // and the older rows are the ones that went
+    // THE WORDS: verbatim, labelled with their time, exactly once
+    expect(after).toContain('COMPRESSED HISTORY');
+    expect(after).toContain('The message from you this work is answering (sent ');
+    expect(after.split('The message from you this work is answering').length - 1).toBe(1);
+    expect(after.split(LONG_ASK).length - 1).toBe(1);
+    expect(after).not.toContain('Quick question number 0:');
+  });
+
+  it('the label is for the running turn only: the next turn ("You there?") re-emits nothing', async () => {
+    await newerTraffic();
+    await submitUserMessage(AGENT, LONG_ASK);
+    await turn({ tool: { name: 'work_update', arguments: { action: 'get', task_id: 'venue-0-abcd' } } }, { content: 'Done.' });
+    await checkAndCompact(AGENT, 'm', SMALL_WINDOW, { force: true });
+    await submitUserMessage(AGENT, 'You there?');
+    const calls = await turn({ content: 'Yes, I am here.' });
+    expect(calls.map(wireText).join('\n')).not.toContain('The message from you this work is answering (sent ');
   });
 });
 
