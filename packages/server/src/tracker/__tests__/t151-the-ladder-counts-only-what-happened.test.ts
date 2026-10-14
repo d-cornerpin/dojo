@@ -265,6 +265,17 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
     expect(all).not.toMatch(/after \d+ pokes/);
     expect(all).toMatch(/no earlier check-in has been sent/);
   });
+
+  it('t154: rung 2 reached as the first check-in (restart, circling verdict) is not labelled "Second"', async () => {
+    const now = Date.now();
+    claimedTask('task-mid', 'the price check', now - 20 * MIN, 'c-1');
+    await runPokeCheck();
+    await new Promise((r) => setTimeout(r, 15));
+    const all = (db().prepare("SELECT content FROM messages WHERE lane = 'events' AND content LIKE '%the price check%'").all() as Array<{ content: string }>).map((r) => r.content).join('\n');
+    expect(rungsSent('task-mid')).toEqual([2]);
+    expect(all).toMatch(/^Check-in: task "the price check"/m);
+    expect(all).not.toMatch(/Second check-in/);
+  });
 });
 
 describe('B — a reply to a check-in is an answer, not progress; real work re-arms (walk item 17)', () => {

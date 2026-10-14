@@ -157,9 +157,12 @@ export function formatErrorForHuman(kind: ErrorKind, ctx: ErrorContext = {}): st
         : `Your account doesn't have access to that model. Pick a different model in Settings.`;
 
     case 'quota_exhausted':
+      // t154: this kind is filed only on money words or an out-of-credit 402 (t151 round 2 — a daily
+      // or per-minute "quota exceeded" is a wait, not this), so the words say exactly that: no
+      // "for the day", no "reset" that may never come.
       return provider
-        ? `${provider} has hit its quota for the day. Switch providers in Settings or wait until reset.`
-        : `Your AI provider has hit its quota for the day. Switch providers in Settings or wait until reset.`;
+        ? `${agent} is stopped: ${provider} says the account is out of credit or quota. Add credit with ${provider} or switch providers in Settings.`
+        : `${agent} is stopped: its AI provider says the account is out of credit or quota. Add credit or switch providers in Settings.`;
 
     case 'no_models_available':
       return `I couldn't find any working model for ${agent}'s task. Check provider status in Settings → Providers.`;

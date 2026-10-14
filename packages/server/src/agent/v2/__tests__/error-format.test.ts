@@ -36,6 +36,14 @@ describe('formatErrorForHuman (Tier D — user-facing)', () => {
     expect(out).toMatch(/Switch|wait|Settings/i);
   });
 
+  it('t154: quota_exhausted names the agent and the provider, and promises no daily reset (an out-of-credit 402 has none)', () => {
+    const out = formatErrorForHuman('quota_exhausted', { agentName: 'helper', providerName: 'DeepSeek' });
+    expect(out).toContain('helper');
+    expect(out).toContain('DeepSeek');
+    expect(out).toMatch(/credit/i);
+    expect(out).not.toMatch(/for the day|until reset/i);
+  });
+
   it('all_providers_down reassures user that retries continue', () => {
     const out = formatErrorForHuman('all_providers_down');
     expect(out).toMatch(/retry|trying|every \d+/i);

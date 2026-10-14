@@ -2858,13 +2858,13 @@ function buildPokeMessage(
   pokeType: string,
   pokeNumber: number,
   idleSeconds: number,
-  /** t151: the check-ins this task's record shows were really sent in the current cycle. The words below
-   *  state that number and no other — a rung can be reached without the ones beneath it. */
+  /** t151/t154: the check-ins this task's record shows were really sent in the current cycle. The words AND
+   *  the label ("Second check-in") state that number only — a rung can be reached without the ones beneath it. */
   pokesSent: number,
 ): string {
   if (!task) return '';
   const earlier = pokesSent === 1 ? '1 earlier check-in' : `${pokesSent} earlier check-ins`;
-
+  const ordinal = ['Check-in', 'Second check-in', 'Third check-in'][pokesSent] ?? `Check-in ${pokesSent + 1}`;
   const idleMinutes = Math.floor(idleSeconds / 60);
   // Ticket stamps (2026-07-22): every poke carries the engine's observed
   // state + live step facts, so a drive can never read as "start over."
@@ -2898,7 +2898,7 @@ function buildPokeMessage(
       return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call work_update(action="status") with task_id="${task.id}" and status="complete" with notes on what you did.\nIf you are still working on it, say so with work_note(task_id="${task.id}") and carry on; that answers this check-in.\nIf blocked, call work_update(action="status") with status="blocked" and explain why.`;
 
     case 'urgent':
-      return `Second check-in: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}\n\nAny one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}\n\nAny one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck`;
 
     case 'escalate_primary':
       // t90 D1 (report #6): this rung NOTIFIES. It used to say "Reassign or unblock the task — or
@@ -2911,7 +2911,7 @@ function buildPokeMessage(
 
     case 'escalate_assignee':
       // Rung 3 with nobody else to tell: the same facts, addressed to the assignee itself.
-      return `Third check-in: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
 
     case 'redrive':
       // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a
