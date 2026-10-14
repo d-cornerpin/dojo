@@ -37,6 +37,7 @@ let m: {
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js'); gate: typeof import('../v2/steps/preflight/closeout-gate.js');
   status: typeof import('../agent-status.js'); shared: typeof import('../shared-state.js');
+  rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
 };
 
 beforeEach(async () => {
@@ -52,6 +53,7 @@ beforeEach(async () => {
     note: await import('../../work/engine-checkpoint-note.js'), cont: await import('../../work/job-continuation.js'), ctx: await import('../turn-context.js'),
     state: await import('../v2/state.js'), gate: await import('../v2/steps/preflight/closeout-gate.js'),
     status: await import('../agent-status.js'), shared: await import('../shared-state.js'),
+    rl: await import('../rate-limit-retry.js'), routes: await import('../../gateway/routes/agents.js'),
   };
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));
@@ -191,5 +193,120 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
       setAgentStatus(AGENT, status);
       expect(jobCarriedIds(AGENT), `${status}: after`).toEqual([]);
     }
+  });
+});
+
+/** Run the job's first turn (it parks at the tool-loop cap), let its own timer start the carrying
+ *  continuation, and return after that continuation has run. */
+async function runToCarryingContinuation(carryingBody: () => Promise<void> | void, nextBodies: Array<() => Promise<void> | void> = []): Promise<void> {
+  const steps: Array<() => Promise<void>> = [
+    () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => { await toolLoopPark(); }),
+    () => engineTurn(2, null, carryingBody),
+    ...nextBodies.map((b, i) => () => engineTurn(3 + i, null, b)),
+  ];
+  script.run = async () => { await steps.shift()?.(); };
+  await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+  await vi.advanceTimersByTimeAsync(1100);      // the park's own timer starts the carrying continuation
+}
+
+describe('ROUND 7 (R6-I1): a carrying run that ends with a wake of its own hands the job to it', () => {
+  it('a 429 silent retry of the carrying continuation restarts it AS the job: carry intact in the gap, no refusal on the retry', async () => {
+    const seen: Array<{ turn: string; carried: string[]; gate?: string[] }> = [];
+    await runToCarryingContinuation(
+      () => {
+        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT) });
+        vi.setSystemTime(Date.now() + 15 * MIN);                            // 15 quiet minutes inside the call
+        m.rl.scheduleRateLimitRetry(AGENT, null, 'hello');                  // the provider said 429; ends without parking
+      },
+      [async () => { seen.push({ turn: 'retry', carried: m.fresh.jobCarriedIds(AGENT), gate: await gateNames() }); }],
+    );
+    expect(seen.map((x) => x.turn)).toEqual(['continuation']);
+    expect(m.fresh.jobCarriedIds(AGENT), 'in the 10 s gap the retry carries the job').toEqual(['task-job']);
+    await vi.advanceTimersByTimeAsync(11_000);                              // the silent retry fires
+    expect(seen.map((x) => x.turn)).toEqual(['continuation', 'retry']);
+    expect(seen[1].carried).toEqual(['task-job']);
+    expect(seen[1].gate, 'the stale job is not named at the retry').toEqual([]);
+    expect(m.fresh.jobCarriedIds(AGENT), 'the retry ended without a further wake: the chain is over').toEqual([]);
+  });
+
+  it('a recovery re-queue (queueSelfWake) of the carrying continuation is served by a run that carries the job', async () => {
+    const seen: Array<{ turn: string; carried: string[]; gate?: string[] }> = [];
+    await runToCarryingContinuation(
+      () => {
+        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT) });
+        vi.setSystemTime(Date.now() + 15 * MIN);
+        m.shared.queueSelfWake(AGENT, 'recovery-requeue');                  // what the recovery cascade does
+      },
+      [async () => { seen.push({ turn: 'requeued', carried: m.fresh.jobCarriedIds(AGENT), gate: await gateNames() }); }],
+    );
+    await vi.advanceTimersByTimeAsync(700);                                 // the drain
+    expect(seen.map((x) => x.turn)).toEqual(['continuation', 'requeued']);
+    expect(seen[1].carried).toEqual(['task-job']);
+    expect(seen[1].gate).toEqual([]);
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
+  });
+
+  it('the turn-budget park with the owner\'s message merged on the same wake: the one drained run serves both and carries the job; its continuation too', async () => {
+    const seen: Array<{ turn: string; carried: string[]; carries: boolean; gate?: string[] }> = [];
+    const rt = m.runtime.getAgentRuntime();
+    const steps: Array<() => Promise<void>> = [
+      () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
+        await rt.handleMessage(AGENT, 'an unrelated owner message');       // queued on the shared set
+        m.note.noteEngineCheckpoint(AGENT, 'turn-budget');
+        m.cont.queueJobContinuation(AGENT, 'turn-budget-continuation');     // merges with the owner's wake
+      }),
+      () => engineTurn(2, { kind: 'ask', id: 'msg-owner', sourceMessageId: 'msg-owner' }, async () => {
+        seen.push({ turn: 'merged', carried: m.fresh.jobCarriedIds(AGENT), carries: m.fresh.runCarriesJob(AGENT) });
+        vi.setSystemTime(Date.now() + 15 * MIN);
+        m.note.noteEngineCheckpoint(AGENT, 'turn-budget');                  // the merged run parks again
+        m.cont.queueJobContinuation(AGENT, 'turn-budget-continuation');
+      }),
+      () => engineTurn(3, null, async () => {
+        seen.push({ turn: 'continuation', carried: m.fresh.jobCarriedIds(AGENT), carries: m.fresh.runCarriesJob(AGENT), gate: await gateNames() });
+      }),
+    ];
+    script.run = async () => { await steps.shift()?.(); };
+    await rt.handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(700);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(seen.map((x) => x.turn)).toEqual(['merged', 'continuation']);
+    expect(seen[0]).toMatchObject({ carried: ['task-job'], carries: true });
+    expect(seen[1]).toMatchObject({ carried: ['task-job'], carries: true, gate: [] });
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
+  });
+});
+
+describe('ROUND 7 (R6-I1): every other place that clears the shared wake set ends the carry', () => {
+  /** The job parked on a turn-budget wake and the wake is still queued. */
+  async function parkedWithWakeQueued(): Promise<void> {
+    script.run = () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, () => {
+      m.note.noteEngineCheckpoint(AGENT, 'turn-budget');
+      m.cont.queueJobContinuation(AGENT, 'turn-budget-continuation');
+    });
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual(['task-job']);
+  }
+
+  it('the stuck-agent reaper (a wedged run reaped to idle) ends the carry', async () => {
+    await parkedWithWakeQueued();
+    mockDb.current!.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now', '-3 hours') WHERE id = ?").run(AGENT);
+    m.runtime.runStartupRecoverySweep();
+    expect(m.shared.pendingWakeups.has(AGENT)).toBe(false);
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
+  });
+
+  it('the stuck-stopped-run reaper ends the carry', async () => {
+    await parkedWithWakeQueued();
+    m.shared.stopFencedRuns.set(AGENT, Date.now() - 3 * 60 * MIN);
+    m.runtime.runStartupRecoverySweep();
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
+  });
+
+  it('the reset-session route ends the carry', async () => {
+    await parkedWithWakeQueued();
+    const res = await m.routes.agentsRouter.request(`/${AGENT}/reset-session`, { method: 'POST' });
+    expect(res.status).toBeLessThan(500);
+    expect(m.shared.pendingWakeups.has(AGENT)).toBe(false);
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
   });
 });

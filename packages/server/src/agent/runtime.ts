@@ -794,7 +794,7 @@ class AgentRuntime {
       // reads no `activeRuns` entry, no `working` status and no live work, and the stop door
       // used to answer it with "nothing is happening". The stamp is what makes the tail
       // visible to that door; `isRunUnwinding` in `shared-state.ts` carries the argument.
-      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId); // t143 r6: the carrying run ends; a further park re-handed the job to its own wake
+      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // t143 r7: the carrying run ends; a wake of its own queued becomes the job's continuation
       // Safety net for any path that broke out of runAgentLoop without
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent, no-op if the heartbeat was already stopped.
@@ -1604,7 +1604,7 @@ function recoverStuckAgents(): void {
       }
       writeAgentStatus(agent.id, 'idle');
       activeRuns.delete(agent.id);
-      pendingWakeups.delete(agent.id);
+      pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead (t143 r7)
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
       // t93 — AND THE TURN THIS BLOCK'S VERDICT ABANDONED IS CLOSED, AS `terminated`. The
       // `agents` row was repaired here from this reaper's first version; the `turns` row never
@@ -1656,7 +1656,7 @@ function recoverStuckAgents(): void {
       stopFencedRuns.delete(agentId);
       stoppedAgents.delete(agentId);
       activeRuns.delete(agentId);
-      pendingWakeups.delete(agentId);
+      pendingWakeups.delete(agentId); endJobCarry(agentId);
       const status = (db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
       if (status === 'working') {
         writeAgentStatus(agentId, 'idle');

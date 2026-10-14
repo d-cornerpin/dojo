@@ -660,7 +660,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       const { stoppedAgents, preemptedAgents, pendingWakeups } = await import('../../agent/shared-state.js');
       stoppedAgents.delete(id);
       preemptedAgents.delete(id);
-      pendingWakeups.delete(id);
+      pendingWakeups.delete(id); (await import('../../work/task-freshness.js')).endJobCarry(id); // a reset session has no job to continue (t143 r7)
     } catch { /* best-effort */ }
 
     // 2. Set session boundary + clear scratchpad. (t140: the continuity brief is gone; migration 187 removed its keys.)

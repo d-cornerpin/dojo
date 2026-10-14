@@ -22,6 +22,7 @@ import { notifyRateLimitHit } from './errors.js';
 import { providerClassOf } from './provider-error.js';
 import { setAgentStatus, writeAgentStatus } from './agent-status.js';
 import { noteRateLimitExhausted } from './agent-owner-cards.js';
+import { registerRetryWake, registerTimerWake } from '../work/task-freshness.js';
 
 const logger = createLogger('rate-limit-retry');
 
@@ -77,7 +78,7 @@ export function scheduleRateLimitRetry(
   const agentName = getAgentName(agentId);
   logger.info(`Rate limit hit for ${agentName}, silent retry in ${waitSeconds}s (strike 1)`, { agentId });
 
-  scheduleNextAttempt(agentId, agentName, strike, startedAt, waitSeconds, lastMessageContent, false);
+  scheduleNextAttempt(agentId, agentName, strike, startedAt, waitSeconds, lastMessageContent, false, registerRetryWake(agentId));
 }
 
 function scheduleNextAttempt(
@@ -88,7 +89,9 @@ function scheduleNextAttempt(
   waitSeconds: number,
   lastMessageContent: string | null,
   alerted: boolean,
+  carried: boolean,   // t143 r7: the retry is a carrying run's own wake; it restarts the run as the job's continuation
 ): void {
+  if (carried && strike > 0) registerTimerWake(agentId);
   const timer = setTimeout(async () => {
     logger.info(`Rate limit retry firing for ${agentName} (strike ${strike + 1})`, { agentId, strike });
 
@@ -97,7 +100,7 @@ function scheduleNextAttempt(
       if (lastMessageContent) {
         const { getAgentRuntime } = await import('./runtime.js');
         const runtime = getAgentRuntime();
-        await runtime.handleMessage(agentId, lastMessageContent);
+        await runtime.handleMessage(agentId, lastMessageContent, carried ? { job: true } : undefined);
       }
 
       // Success — clean up and notify agent
@@ -151,7 +154,7 @@ function scheduleNextAttempt(
         const nextWait = SILENT_RETRIES[nextStrike];
         logger.info(`Still rate-limited, silent retry ${nextStrike + 1} in ${nextWait}s`, { agentId });
         cleanupRetry(agentId);
-        scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, false);
+        scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, false, carried);
         return;
       }
 
@@ -216,7 +219,7 @@ function scheduleNextAttempt(
       const nextWait = DECAY_SCHEDULE_SECONDS[decayIndex];
       logger.warn(`Rate limit confirmed for ${agentName}, next retry in ${formatDuration(nextWait)}`, { agentId, decayIndex, strike: nextStrike });
       cleanupRetry(agentId);
-      scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, nowAlerted);
+      scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, nowAlerted, carried);
     }
   }, waitSeconds * 1000);
 

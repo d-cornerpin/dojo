@@ -85,10 +85,23 @@ export function deferTimerWake(agentId: string): void {
 }
 
 /** The run that carried the job has ended. A further park inside it registered a new wake, so the
- *  job lives on exactly when a continuation is still queued. */
-export function endJobRun(agentId: string): void {
+ *  job lives on exactly when a continuation is still queued. `wakeQueued`: the run ended with a wake of
+ *  its own on the shared set (a recovery re-queue, a self-wake, an arrival merged with it) and none
+ *  registered: that wake becomes the job's continuation, with the same ids (t143 round 7). */
+export function endJobRun(agentId: string, wakeQueued = false): void {
   const c = jobWork.get(agentId);
-  if (c?.running) c.running = false;
+  if (!c?.running) return;
+  c.running = false;
+  if (wakeQueued && !c.drainWake && c.timerWakes === 0) c.drainWake = true;
+}
+
+/** A carrying run is scheduling a retry of itself on a timer (the 429 silent retry): the retry is the
+ *  job's continuation. Returns whether it was registered (the caller then starts it `{ job: true }`). */
+export function registerRetryWake(agentId: string): boolean {
+  const c = jobWork.get(agentId);
+  if (!c?.running) return false;
+  c.timerWakes += 1;
+  return true;
 }
 
 /** The queued continuation was skipped or dropped (a stop state, a stop fence, a terminated agent). */
