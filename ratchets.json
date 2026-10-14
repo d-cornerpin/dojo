@@ -8403,6 +8403,20 @@
       "to": 511,
       "by": "t152 (2026-10-14), walks round 2 image shape",
       "why": "+3: one import and the two calls (video result and failure notice) that hand a delivered result to the settlement authority. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1453,
+      "to": 1521,
+      "by": "t152 round 2 (2026-10-14), coordinator gap on the async arm",
+      "why": "+68 (about 45 code, 23 comment): round 2 of the async arm. A landed result must not settle a request the agent still owes work on, so `stillOwed` reads three records that already exist (an open task whose `source_message_id` is the request, the turn bag's root, `jobCarriedAsks`); the settlement is re-asked at each moment that can end the debt (finalize of the serving turn, a linked task's close, a job's end). A request whose jobs are out is held at finalize instead of reopened (no re-serve rung spent: the re-serve is what can start the same work twice). A request whose jobs were all cancelled and delivered nothing is abandoned, by the owner, because the owner's Stop or cancel is the record. REFUSED: a second function outside this file, and a new table or flag (every fact is read from rows that already exist). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 2258,
+      "to": 2263,
+      "by": "t152 round 2 (2026-10-14), coordinator gap on the async arm",
+      "why": "+5: the writer of work state tells `work/task-ended.ts` (a new 10-line leaf the settlement authority registers with) when a tracker task reaches a terminal state, with the request it was linked to. A static import of the authority here is a cycle that broke 21 tests on a TDZ, which is why the call goes through a leaf. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8703,14 +8717,14 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1453,
+    "packages/server/src/work/ask-settlement.ts": 1521,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/store.ts": 2258,
+    "packages/server/src/work/store.ts": 2263,
     "packages/server/src/work/tracker-store.ts": 1013,
     "packages/server/src/work/tracker-view.ts": 700,
     "packages/server/src/work/validation-drive.ts": 1313,
