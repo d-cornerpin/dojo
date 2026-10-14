@@ -563,7 +563,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     });
   }
 
-  it.fails('the agent is parked with the true cause and the card, once: not errored, no Healer', async () => {
+  it('the agent is parked with the true cause and the card, once: not errored, no Healer', async () => {
     await everyTierTooSmall();
     const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
@@ -576,13 +576,13 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     expect(ask(), 'the message is kept, still the owner\'s open ask').toBe('open');
   });
 
-  it.fails('a model that holds it is added to a tier: the agent is released and answers; the card ends', async () => {
+  it('a model that holds it takes a tier: the agent is released and answers; the card ends', async () => {
     await everyTierTooSmall();
     const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
-    // A roomy model joins the light tier — what the router route does, then asks the lock to look again.
-    db().prepare(`INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', 'test-model', 0)`).run();
+    // The heavy tier is pointed at a roomy model — what the router route does, then asks the lock to look again.
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'heavy'`).run();
     handleMessageSpy.mockClear();
     const { noteModelsChanged } = await import('../honest-stop-lock.js');
     await noteModelsChanged();
@@ -593,7 +593,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
 
   it('CONTROL: the same refusal for an auto agent that DOES have a model that holds it is not parked (it stays on the error path)', async () => {
     await everyTierTooSmall();
-    db().prepare(`INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', 'test-model', 1)`).run();
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'heavy'`).run();
     await runV2Turn(AGENT);
     expect(status()).not.toBe('paused');
     expect(onAgentInjuredSpy).toHaveBeenCalled();

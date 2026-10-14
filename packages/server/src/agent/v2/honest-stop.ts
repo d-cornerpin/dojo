@@ -119,7 +119,11 @@ export async function classifyHonestStop(agentId: string, error: unknown): Promi
   const refusal = links.find((e): e is SystemPromptTooLargeError => e instanceof SystemPromptTooLargeError);
   if (refusal) {
     const row = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
-    if (!row?.model_id || row.model_id === 'auto') return null;   // a routed turn has its own exit (call-llm)
+    if (!row?.model_id) return null;
+    // A routed turn's per-pick refusals have their own exit (call-llm). The bare refusal that reaches
+    // here is the FIRST assembly's, sized for the largest window the router opens a tier on (t149 F5):
+    // when no model of the agent's own holds it, no pick can — the same stop as a pinned agent.
+    if (row.model_id === 'auto') return (await agentFits(agentId)) ? null : noFit();
     // The pinned model holds the agent, and the limit sent the call to a free stand-in that cannot.
     if (budgetStopFor(agentId) && !(await pinnedWindowRefused(agentId, refusal.policy.contextWindow))) return budgetStop(agentId);
     return noFit();
