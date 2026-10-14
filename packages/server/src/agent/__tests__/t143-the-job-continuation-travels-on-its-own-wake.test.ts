@@ -34,7 +34,7 @@ const MIN = 60_000;
 /** Every module the scripts use, loaded BEFORE the fake clock starts (a first import waits on real IO). */
 let m: {
   runtime: typeof import('../runtime.js'); fresh: typeof import('../../work/task-freshness.js');
-  note: typeof import('../../work/engine-checkpoint-note.js'); ctx: typeof import('../turn-context.js');
+  note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js'); gate: typeof import('../v2/steps/preflight/closeout-gate.js');
   status: typeof import('../agent-status.js'); shared: typeof import('../shared-state.js');
 };
@@ -49,7 +49,7 @@ beforeEach(async () => {
   const { seedTrackerTask } = await import('../../work/__tests__/work-fixture.js');
   m = {
     runtime: await import('../runtime.js'), fresh: await import('../../work/task-freshness.js'),
-    note: await import('../../work/engine-checkpoint-note.js'), ctx: await import('../turn-context.js'),
+    note: await import('../../work/engine-checkpoint-note.js'), cont: await import('../../work/job-continuation.js'), ctx: await import('../turn-context.js'),
     state: await import('../v2/state.js'), gate: await import('../v2/steps/preflight/closeout-gate.js'),
     status: await import('../agent-status.js'), shared: await import('../shared-state.js'),
   };
@@ -103,7 +103,7 @@ const touchedAt = (): number => (mockDb.current!.prepare("SELECT updated_at AS u
  *  arms the park's own continuation. */
 async function toolLoopPark(): Promise<void> {
   m.note.noteEngineCheckpoint(AGENT, 'tool-loop');
-  m.note.armToolLoopContinuation(AGENT);
+  m.cont.armToolLoopContinuation(AGENT);
 }
 
 describe('ROUND 6: the job travels on its own continuation wake', () => {
@@ -162,7 +162,7 @@ describe('ROUND 6: the job travels on its own continuation wake', () => {
 describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', () => {
   it('a skipped continuation (the drain\'s stop-state branch) ends the carry: the task is judgeable as abandoned again', async () => {
     const { jobCarriedIds } = m.fresh;
-    const { noteEngineCheckpoint, queueJobContinuation } = m.note;
+    const { noteEngineCheckpoint } = m.note; const { queueJobContinuation } = m.cont;
     script.run = () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, () => {
       noteEngineCheckpoint(AGENT, 'turn-budget');
       queueJobContinuation(AGENT, 'turn-budget-continuation');
@@ -179,7 +179,7 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
   it('an agent that leaves the running states through the one status writer (terminated, error, paused, rate-limited) ends the carry', async () => {
     const { jobCarriedIds } = m.fresh;
     const { setAgentStatus } = m.status;
-    const { noteEngineCheckpoint, queueJobContinuation } = m.note;
+    const { noteEngineCheckpoint } = m.note; const { queueJobContinuation } = m.cont;
     for (const status of ['terminated', 'error', 'paused', 'rate_limited'] as const) {
       script.run = () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, () => {
         noteEngineCheckpoint(AGENT, 'turn-budget');

@@ -37,7 +37,8 @@ import { turnContinuationCounts, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict, queueJobContinuation } from '../../../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../../../work/engine-checkpoint-note.js';
+import { queueJobContinuation } from '../../../../work/job-continuation.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
 
 const logger = createLogger('v2-loop');

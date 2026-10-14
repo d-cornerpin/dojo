@@ -95,7 +95,8 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 // the turn decides before the main `try` opens lives there, including the three closures
 // that build the finalize / teardown / preCallGates contexts.
 import { runPreflight } from './steps/preflight/index.js';
-import { noteEngineCheckpoint, deliverPendingCirclingVerdict, armToolLoopContinuation } from '../../work/engine-checkpoint-note.js';
+import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
+import { armToolLoopContinuation } from '../../work/job-continuation.js';
 
 const logger = createLogger('v2-loop');
 
