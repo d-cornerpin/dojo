@@ -1,18 +1,22 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t145 group A, round 3 — THE OWNER MESSAGE A RUNNING TURN IS SERVING IS NEVER FOLDED OUT OF VIEW.
+// t145 group A, round 4 — THE OWNER MESSAGE A RUNNING TURN SERVES IS NEVER OUT OF VIEW.
 //
 // The "still in force" pin carried the newest long ask into every call. Deleting it is only safe
 // if no shape loses the owner's words, and one did: a long, tool-heavy turn on an ask with no
-// task, where a pressure fold in the middle of the turn summarised the ask's raw row away. The
-// root fix: while a turn is running for an agent, the owner message it SERVES (the claimed ask's
-// own row) and everything after it is treated like the newest group — no fold takes it, the
-// ceiling cut and the token trim do not pass it. Older rows go first. If honouring it overflows,
-// nothing silently drops it: the trim stops at it and the provider boundary's honest refusal
-// (assembly-validation) is what answers.
+// task, where a pressure fold in the middle of the turn summarised the ask's raw row away.
 //
-// Every reader of "which rows may leave the view" is asserted here at the DB level; the turn-level
-// proof (a real turn, a real forced fold, the words verbatim on the next call) is in
-// `t145-the-pin-is-gone.test.ts`.
+// ROUND 3 froze every row from the ask onward; the owner's long jobs make that unacceptable (a long
+// job's own tool rows must fold like any other). So the protection is NARROW: only the owner
+// message(s) the running turn serves (the claimed ask's own message, and the unanswered owner
+// messages merged into it in the same conversation). Folds, the condense trigger, the ceiling cut
+// and the token trim proceed exactly as before. When the served message ends up behind the fold
+// boundary (or off the front of the trimmed tail), the assembler re-emits that one row verbatim at
+// the front of the live tail, labelled plainly with its time, once, for as long as the turn (and its
+// carried continuations) runs. If the row is still in view, nothing extra is emitted (t139's rule).
+// Structural: the turn's own claimed ask rows; no content is read.
+//
+// The turn-level proof (a real turn, a real forced fold, the words verbatim on the next call, the
+// turn's own tool rows folded, no refusal) is in `t145-the-pin-is-gone.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -31,10 +35,9 @@ import { insertMessage } from '../message-store.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { getMessagesOutsideFreshTail } from '../store.js';
-import {
-  servedAskFloorSeq, rowsLeavingView, freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups,
-} from '../tail-horizon.js';
-import { contextWindowPolicy } from '../budget.js';
+import { rowsLeavingView } from '../tail-horizon.js';
+import { servedOwnerMessageIds } from '../served-ask.js';
+import { createLeafSummary } from '../dag.js';
 import { assembleContext } from '../assembler.js';
 
 const AGENT = 'primary';
@@ -85,83 +88,74 @@ function servedAsk(after: number): { askSeq: number; lastSeq: number } {
 }
 
 const policy = { freshTailCount: 24 };
+const LABEL = 'The message from you this work is answering';
+const occurrences = (hay: string, needle: string): number => hay.split(needle).length - 1;
+const wire = async (): Promise<string> => JSON.stringify((await assembleContext(AGENT, 'm')).messages);
 
-describe('t145 R3 — the served owner message is a floor no fold and no cut passes', () => {
-  it('the floor is the claimed ask\'s own row, and only while a turn is running', () => {
-    const { askSeq } = servedAsk(10);
-    expect(servedAskFloorSeq(AGENT), 'no turn is running: nothing is protected').toBe(0);
+describe('t145 R4 — only the served owner message is protected, and it is re-emitted when it is out of view', () => {
+  it('the served ids are the claimed ask\'s own message and the unanswered owner messages merged into it, only while a turn runs', () => {
+    servedAsk(0);
+    say('user', 'a later owner message merged into the same turn', 'later-row');
+    expect(servedOwnerMessageIds(AGENT), 'no turn is running: nothing is served').toEqual([]);
     openTurnContext(AGENT);
-    expect(servedAskFloorSeq(AGENT)).toBe(askSeq);
+    expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row', 'later-row']);
     endTurnContext(AGENT);
-    expect(servedAskFloorSeq(AGENT)).toBe(0);
+    expect(servedOwnerMessageIds(AGENT)).toEqual([]);
   });
 
-  it('the fold input never reaches the ask: older rows only', () => {
+  it('NOTHING after the ask is frozen: the fold input and the condense trigger reach past it, as before', () => {
     const { askSeq } = servedAsk(70);
-    const before = getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number);
-    expect(before).toContain(askSeq);           // control: unprotected, the ask is foldable
     openTurnContext(AGENT);
-    const protectedRows = getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number);
-    expect(protectedRows.length).toBeGreaterThan(0);
-    expect(Math.max(...protectedRows)).toBeLessThan(askSeq);
+    expect(getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number)).toContain(askSeq);
+    const leaving = rowsLeavingView(AGENT, policy, { viewFull: true });
+    expect(leaving!.throughSeq).toBeGreaterThanOrEqual(askSeq);
   });
 
-  it('the condense trigger ("full") ends its fold below the ask', () => {
-    const { askSeq } = servedAsk(70);
-    const free = rowsLeavingView(AGENT, policy, { viewFull: true });
-    expect(free && free.throughSeq, 'control: unprotected, the trigger reaches past the ask').toBeGreaterThanOrEqual(askSeq);
+  it('in view: the ask is in the live conversation and nothing extra is emitted', async () => {
+    servedAsk(6);
     openTurnContext(AGENT);
-    const guarded = rowsLeavingView(AGENT, policy, { viewFull: true });
-    expect(guarded).not.toBeNull();
-    expect(guarded!.throughSeq).toBeLessThan(askSeq);
-    expect(guarded!.rowsLeaving).toBe(10);       // exactly the ten older rows
+    const text = await wire();
+    expect(occurrences(text, 'THE-LONG-ASK')).toBeGreaterThan(0);
+    expect(text).not.toContain(LABEL);
   });
 
-  it('with nothing older than the ask, nothing leaves', () => {
-    for (let i = 0; i < 0; i++) say('user', 'x');
-    const askSeq = say('user', 'THE-LONG-ASK '.repeat(30), 'ask-row');
-    claimAsk('ask:ask-row', AGENT);
-    for (let i = 0; i < 80; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i}`);
+  it('behind the fold boundary: the ask is re-emitted verbatim at the front of the live tail, labelled, exactly once', async () => {
+    const { askSeq } = servedAsk(30);
+    // A summary covers everything up to and including the ask: the live view starts after it.
+    const ids = (mockDb.current!.prepare('SELECT id FROM messages WHERE seq <= ? ORDER BY seq').all(askSeq) as Array<{ id: string }>).map((r) => r.id);
+    createLeafSummary(AGENT, 'Earlier: the owner asked for a big job.', 20, ids, new Date().toISOString(), new Date().toISOString());
+    const ask = 'THE-LONG-ASK '.repeat(30);
+    expect(occurrences(await wire(), 'THE-LONG-ASK'), 'control: no turn running, the ask is only in the note').toBe(0);
     openTurnContext(AGENT);
-    expect(servedAskFloorSeq(AGENT)).toBe(askSeq);
-    expect(rowsLeavingView(AGENT, policy, { viewFull: true })).toBeNull();
+    const ctx = await assembleContext(AGENT, 'm');
+    const text = JSON.stringify(ctx.messages);
+    expect(text).toContain(LABEL);
+    expect(occurrences(text, LABEL), 'exactly once').toBe(1);
+    expect(text).toContain(ask.trim());
+    expect(occurrences(text, ask.trim()), 'the words appear once').toBe(1);
+    // it leads the live tail: it is the first message that is not the summary scaffolding
+    const firstLabelled = ctx.messages.findIndex((m) => JSON.stringify(m).includes(LABEL));
+    const firstTurnRow = ctx.messages.findIndex((m) => JSON.stringify(m).includes('turn row 0'));
+    expect(firstLabelled).toBeGreaterThanOrEqual(0);
+    expect(firstLabelled).toBeLessThan(firstTurnRow);
+    // and once the turn ends it is gone
+    endTurnContext(AGENT);
+    expect(await wire()).not.toContain(LABEL);
   });
 
-  it('the row ceiling\'s front cut stops at the ask', () => {
-    const { askSeq } = servedAsk(260);          // well over 8 x 24 rows since the boundary
-    const free = freshTailHorizon(AGENT, contextWindowPolicy(16000, { toolPayloadTokens: 0 }));
-    expect(free.ceilingBound).toBe(true);
-    expect(free.keepFromSeq, 'control: unprotected, the ceiling cut passes the ask').toBeGreaterThan(askSeq);
-    openTurnContext(AGENT);
-    const guarded = freshTailHorizon(AGENT, contextWindowPolicy(16000, { toolPayloadTokens: 0 }));
-    expect(guarded.keepFromSeq).toBeLessThanOrEqual(askSeq);
-  });
-
-  it('the token trim never drops the protected group; older groups go first', () => {
-    const tokens = Array.from({ length: 60 }, () => 100);
-    const block = tailTrimBlockGroups(24);
-    expect(groupsToDropForBudget(tokens, 3000, block)).toBeGreaterThanOrEqual(30);       // control
-    // the ask is group 8: at most 8 groups may go, even though the budget wants more
-    const d = groupsToDropForBudget(tokens, 3000, block, 8);
-    expect(d).toBeLessThanOrEqual(8);
-    // nothing older to drop at all
-    expect(groupsToDropForBudget(tokens, 3000, block, 0)).toBe(0);
-    // everything fits: unchanged
-    expect(groupsToDropForBudget(tokens, 100_000, block, 8)).toBe(0);
-  });
-
-  it('the assembled array still carries the ask when the token trim wants the front, and older rows go instead', async () => {
+  it('trimmed off the front by the token budget: the ask is re-emitted, older rows are what went, the budget holds', async () => {
     mockDb.current!.prepare("UPDATE models SET context_window = 40000 WHERE id = 'm'").run();
     for (let i = 0; i < 10; i++) { say('user', `older question ${i} ${'pad '.repeat(300)}`); say('assistant', `older answer ${i} ${'pad '.repeat(300)}`); }
     say('user', 'THE-LONG-ASK '.repeat(8), 'ask-row');
     claimAsk('ask:ask-row', AGENT);
     for (let i = 0; i < 40; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i} ${'pad '.repeat(300)}`);
-    const text = (c: Awaited<ReturnType<typeof assembleContext>>): string => JSON.stringify(c.messages);
-    const free = await assembleContext(AGENT, 'm');
-    expect(text(free), 'control: unprotected, the trim drops the ask with the front').not.toContain('THE-LONG-ASK');
+    const control = await wire();
+    expect(control, 'control: no turn running, the trim drops the ask with the front').not.toContain('THE-LONG-ASK');
     openTurnContext(AGENT);
-    const guarded = await assembleContext(AGENT, 'm');
-    expect(text(guarded)).toContain('THE-LONG-ASK');
-    expect(text(guarded)).not.toContain('older question 0');   // older rows are what went
+    const text = await wire();
+    expect(text).toContain(LABEL);
+    expect(occurrences(text, 'THE-LONG-ASK '.repeat(8).trim())).toBe(1);
+    expect(text).not.toContain('older question 0');
+    expect(text).toContain('turn row 39');   // the newest rows are untouched
   });
 });
