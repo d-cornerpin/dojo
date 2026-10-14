@@ -52,13 +52,14 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 ${identity}
 
 INPUT FORMAT: The input opens with a CONVERSATION line naming the ONE conversation every message below belongs to (a dashboard conversation, an email thread, an agent thread, engine events…). Each message is then [ROLE · PARTY · RECORDED TIME] followed by its content, separated by --- dividers.
-[USER · <name> · <time>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · <a contact> (imessage) · <time>], [USER · <an address> (email) · <time>], [USER · a PM agent (agent) · <time>])
-[ASSISTANT · <party> · <time>] / [TOOL · <party> · <time>] = the AI assistant's own reply / a tool result
+[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · <a contact> (imessage)], [USER · <an address> (email)], [USER · a PM agent (agent)])
+[ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result
+Every tag then ends with that message's RECORDED TIME: [USER · <name> · Oct 1, 2026, 09:00 AM UTC-07:00].
 The RECORDED TIME is when that message was written: it is your only source of dates. If there is no CONVERSATION line, each tag names its own conversation ("in <conversation>"): keep those conversations apart, never merge them.
 [USER · <name> · ANSWERED in turn <N>] = the engine's own record that this ask WAS ALREADY ANSWERED, on turn N. Carry that state into the summary — write "asked X; answered on turn N" — and NEVER list such an ask as outstanding, pending, or awaiting a reply. An ask with no ANSWERED tag is simply an ask; say what was asked, not that it is still owed.
 
 CONVERSATION ATTRIBUTION — CRITICAL:
-- Every fact, request, reminder or decision MUST say who made it (its PARTY tag). Write "the owner asked to move their dentist to 3pm" — NEVER an unattributed "dentist moved to 3pm".
+- Every fact, request, reminder or decision MUST state which party/conversation it belongs to (its PARTY tag). Write "the owner asked to move their dentist to 3pm" and "<that contact> (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm".
 - Do not merge a request from one person with an action for another.
 
 TEMPORAL ANCHORING — CRITICAL:

@@ -229,7 +229,8 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
 
   // ── written by setup / a Settings route before any read depends on them ──
   owner_name: 'WRITTEN — the OOBE profile step; `ownerNameIsSet()` asks the ROW and the prompt says "not recorded yet" until then',
-  user_name: 'WRITTEN — the OOBE profile step; read only to seed USER.md',
+  // `user_name`: t144 deleted its last server reader (the summariser's "[USER] = the human operator"
+  // identity line). The dashboard's profile step still writes and shows it through the generic settings route.
   imessage_recipient: 'PER-BOX — the owner\'s own handle; iMessage stays off until it is set',
   imessage_enabled: 'OPTIONAL — an absent row reads as off, which is the correct state for a box that never configured iMessage',
   imessage_approved_senders: 'OPTIONAL — absent reads as an empty allowlist, which is deny-by-default',
