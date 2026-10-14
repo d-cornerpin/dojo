@@ -386,6 +386,16 @@ describe('BACKWARDS LIFECYCLE', () => {
     expect(ownerTexts()).toBe(0);
   });
 
+  it('round 3 (M2): the Stop is remembered even if a late row lands after the stopped turn ended', async () => {
+    wedgedToolCall(3 * 60 * MIN);
+    db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'stop' WHERE agent_id = 'helper' AND turn_number = 7")
+      .run(sqlTime(Date.now() - 150 * MIN));
+    toolStarted(Date.now() - 140 * MIN, 'exec', 7);   // a straggling row after the stop (it is 140 minutes quiet)
+    db().prepare("UPDATE agents SET status = 'idle' WHERE id = 'helper'").run();
+    await sweep();
+    expect(ownerTexts()).toBe(0);
+  });
+
   it('an agent that recovers after the notice is not told about twice for the same incident', async () => {
     wedgedToolCall(3 * 60 * MIN);
     await sweep();

@@ -52,11 +52,12 @@ export function kickMemoryRecheck(): void {
 }
 
 // t143 r2: the liveness sweep — an agent silent past its window is told to the owner once. On the
-// platform's clock, not the PM's: the owner's notice must never depend on the PM being enabled.
+// platform's clock, not the PM's: the owner's notice must never depend on the PM being enabled
+// (nor on the balance module's import: a rejected import there must not silence it — t143 r3, M4).
 let lastLivenessKick: Promise<void> = Promise.resolve();
 
 export function kickLivenessSweep(): void {
-  lastLivenessKick = balanceModuleLoaded.then(() => import('../tracker/liveness.js')).then((m) => { m.sweepSilentAgents(); })
+  lastLivenessKick = Promise.resolve().then(() => import('../tracker/liveness.js')).then((m) => { m.sweepSilentAgents(); })
     .catch((err) => {
       logger.warn('Liveness sweep could not run', { error: err instanceof Error ? err.message : String(err) });
     });

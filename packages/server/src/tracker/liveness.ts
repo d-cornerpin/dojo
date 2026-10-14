@@ -147,11 +147,13 @@ function openWorkOf(agentId: string, now: number): OpenWork[] {
     .all(agentId, now) as OpenWork[];
 }
 
-/** The owner stopped this agent after `sinceMs` (his Stop is standing, or a turn ended on it). */
-function ownerStopped(agentId: string, sinceMs: number): boolean {
+/** The owner stopped this agent and it has not started a turn since (his Stop is standing, or the
+ *  last turn ended on it). Not measured against the agent's last row: a straggling row landing
+ *  after the stopped turn ended does not make the Stop forgotten (t143 round 3, M2). */
+function ownerStopped(agentId: string): boolean {
   if (isStopFenced(agentId)) return true;
-  return !!getDb().prepare(`SELECT 1 FROM turns WHERE agent_id = ? AND exit_reason = 'stop'
-      AND ${textMs('ended_at')} >= ? LIMIT 1`).get(agentId, sinceMs);
+  return !!getDb().prepare(`SELECT 1 FROM turns s WHERE s.agent_id = ? AND s.exit_reason = 'stop' AND NOT EXISTS (
+      SELECT 1 FROM turns t WHERE t.agent_id = s.agent_id AND t.started_at > s.ended_at) LIMIT 1`).get(agentId);
 }
 
 /** The words of a SILENT notice: agent and role, task, last movement, what it was doing. */
@@ -208,14 +210,14 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
     // t143 round 3 (I3): only a ROW ends the incident. A request that opens and dies without tokens
     // is a retry loop inside the same wedge, not progress: it neither ends the card nor earns a
     // second text (an open request only ever suppresses RAISING a notice, below).
-    if ((act.lastRowAt !== null && act.lastRowAt > since) || ownerStopped(a.id, silent.at)) endNotice(a.id, 'silent_notice');
+    if ((act.lastRowAt !== null && act.lastRowAt > since) || ownerStopped(a.id)) endNotice(a.id, 'silent_notice');
     return;
   }
   // The quiet runs from the newest movement, or from when the agent was handed what it holds.
   const handed = Math.max(0, ...work.map((w) => w.opened), openTurnStartedAt(a.id));
   const since = Math.max(act.lastAt ?? 0, handed);
   // No movement ever, nothing handed, no open turn: there is no instant to measure quiet from.
-  if (since === 0 || now - since <= silentWindowMs(a.id) || ownerStopped(a.id, since)) return;
+  if (since === 0 || now - since <= silentWindowMs(a.id) || ownerStopped(a.id)) return;
   const words = silentWords(a.id, a.name, now - since, work, act);
   if (noteNoticeOnce(a.id, 'silent_notice', words, since)) {
     logger.warn('liveness: an agent is SILENT past its window; the owner is told once', { agentId: a.id, quietMs: now - since });
