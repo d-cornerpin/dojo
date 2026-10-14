@@ -8431,6 +8431,48 @@
       "to": 2264,
       "by": "t152 round 2b (2026-10-14), a filed close is no longer owed",
       "why": "+1: filing a task's close (Key 1) tells the task-ended leaf, so the request it was linked to is re-asked. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/start-ack.ts",
+      "from": 176,
+      "to": 191,
+      "by": "t158 D (2026-10-14), the start-ack is judged per ask",
+      "why": "+15: 9 code (one probe: \"did a visible assistant line land on an earlier turn since the ask's own row\", plus its guard) and 6 comment. The defect: an ask that hit its round cap and was re-opened re-armed the 30 s timer on every continuation turn, so the owner read \"On it\" again (run 6, S1). ALTERNATIVES REFUSED. (a) Widen startAckRepliedNow: it has 26 live readers that mean \"this turn\", and a per-ask meaning would silence answer-to-a-live-ask. (b) Put the probe in memory/message-store.ts: it is one SELECT used in one place. The comment is the record that the per-turn check is deliberately kept. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts",
+      "from": 286,
+      "to": 293,
+      "by": "t158 A (2026-10-14), the board-check steer is check-then-correct-only",
+      "why": "+7: the steer sentence grew by 4 lines (it now says the user already has the reply, end with [no-reply] if every line matches, tell only a correction otherwise, where it used to order a restatement) and the comment recording why by 4, minus one. The old order made a reply whose every line was right reach the owner twice (run 6, S2). The fire condition is untouched. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2794,
+      "to": 2800,
+      "by": "t158 B+C (2026-10-14), the served message wears the standard label; one export",
+      "why": "+6: the served-message block now builds a LabelFacts and calls renderRowLabel (5 code, 2 comment, minus the 2 old lines) and capLargeToolResultStrings gains `export` so the compaction dry run prices the same capped rows instead of a copy. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts",
+      "from": 395,
+      "to": 400,
+      "by": "t158 F (2026-10-14), RECENT OUTBOUND rides every agent turn",
+      "why": "+5: the block moved out of the user-only branch into its own try (the catch is the 4 lines; an engine turn must not lose the other lanes to this block failing, nor the reverse) with a 4-line reason, minus 3 comment lines tightened. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1564,
+      "to": 1569,
+      "by": "t158 C (2026-10-14), the full check prices the rows the assembler budgets",
+      "why": "+5: one capLargeToolResultStrings call and its 3-line reason, two reduces now read the capped rows; the false \"overstates, folds earlier\" sentence was rewritten in place. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1788,
+      "to": 1791,
+      "by": "t158 E (2026-10-14), one park queues exactly one continuation",
+      "why": "+3: the busy path consumes the park's timer wake when the running turn is that park's own continuation (the check itself lives in work/task-freshness.ts). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8500,7 +8542,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 407,
-    "packages/server/src/agent/runtime.ts": 1788,
+    "packages/server/src/agent/runtime.ts": 1791,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1466,
     "packages/server/src/agent/stream-patience.ts": 473,
@@ -8545,7 +8587,7 @@
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 274,
     "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 547,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
-    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 395,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 400,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 266,
     "packages/server/src/agent/v2/steps/execute/index.ts": 309,
@@ -8577,7 +8619,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 275,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 404,
-    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 286,
+    "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 293,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 433,
@@ -8593,7 +8635,7 @@
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
-    "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 176,
+    "packages/server/src/agent/v2/steps/preflight/start-ack.ts": 191,
     "packages/server/src/agent/v2/steps/preflight/step-contexts.ts": 138,
     "packages/server/src/agent/v2/steps/preflight/turn-classification.ts": 381,
     "packages/server/src/agent/v2/steps/preflight/turn-closures.ts": 480,
@@ -8636,12 +8678,12 @@
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2794,
+    "packages/server/src/memory/assembler.ts": 2800,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 298,
-    "packages/server/src/memory/compaction.ts": 1564,
+    "packages/server/src/memory/compaction.ts": 1569,
     "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
