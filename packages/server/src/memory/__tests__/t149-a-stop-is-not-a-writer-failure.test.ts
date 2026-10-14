@@ -41,6 +41,7 @@ vi.mock('../../vault/archive.js', () => ({
   getArchiveHighWaterMark: vi.fn(() => null),
 }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
+vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
 // The REAL callModel, only watched: which writers were actually asked.
 const dialed = vi.hoisted(() => ({ models: [] as string[] }));
 vi.mock('../../agent/model.js', async () => {
@@ -52,6 +53,8 @@ vi.mock('../../agent/model.js', async () => {
 });
 
 import { replaceUncondensedPlaceholders, writeUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import { checkAndCompact, leavingViewPass } from '../compaction.js';
+import { compactionIsBraked } from '../compaction-brakes.js';
 import { eligibleSummaryWriters, summaryWriterCandidates, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -176,5 +179,46 @@ describe('t149 F3 — Stop during a background summary', () => {
     } finally { await new Promise<void>((r) => failing.close(() => r())); }
     expect(eligibleSummaryWriters(OWN, AGENT)).not.toContain(OWN);
     expect(placeholders(), 'the next writer replaced the note').toBe(0);
+  });
+});
+
+describe('t149 round 4 — a pass the owner\'s Stop ended is not an outcome', () => {
+  /** A conversation long enough that a window of 8,000 has rows outside its newest 24. */
+  function longConversation(): void {
+    for (let t = 9; t <= 40; t++) {
+      insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[u${t}] Which bay is the next crate for?`, turnNumber: t });
+      insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[a${t}] Bay four, beside the ramp.`, turnNumber: t });
+    }
+  }
+  const stopDuring = async (pass: () => Promise<unknown>): Promise<void> => {
+    const { stopAgent } = await import('../../agent/runtime.js');
+    const run = pass();
+    await untilInFlight();
+    stopAgent(AGENT);
+    await run;
+  };
+
+  it.fails('Stop during the pressure pass arms no low-yield brake and no defect; writer health is untouched and the next pass runs at once', async () => {
+    longConversation();
+    await stopDuring(() => checkAndCompact(AGENT, OWN, 8_000, { force: true }));
+    expect(compactionIsBraked(AGENT, true), 'no 15-minute wait behind a Stop').toBe(false);
+    expect(compactionIsBraked(AGENT, false)).toBe(false);
+    expect(owner.cards.filter((c) => c.code === 'COMPACTION_FAILING')).toEqual([]);
+    const all = summaryWriterCandidates(OWN);
+    expect(eligibleSummaryWriters(OWN, AGENT), 'no writer marked').toEqual(all);
+    // The person speaks again (the stop is lifted) and the very next pass writes.
+    stoppedAgents.delete(AGENT); stopFencedRuns.delete(AGENT);
+    ownMode = 'answer';
+    const next = await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(next.leafCreated, 'the next pass ran').toBeGreaterThan(0);
+  });
+
+  it.fails('Stop during a leaving-view pass: the same', async () => {
+    longConversation();
+    const through = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s - 64;
+    await stopDuring(() => checkAndCompact(AGENT, OWN, 128_000, { leaving: { cause: 'ceiling', throughSeq: through, rowsLeaving: 30 } }));
+    expect(compactionIsBraked(AGENT, false), 'no routine brake behind a Stop').toBe(false);
+    expect(owner.cards.filter((c) => c.code === 'COMPACTION_FAILING')).toEqual([]);
+    expect(eligibleSummaryWriters(OWN, AGENT)).toEqual(summaryWriterCandidates(OWN));
   });
 });

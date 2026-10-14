@@ -172,3 +172,45 @@ describe('t149 F4 — a writer that fails is passed over on its first failure, a
     expect(failingCards()).toBe(0);
   });
 });
+
+describe('t149 round 4 — the writer is chosen by the REAL input, row by row', () => {
+  /** Thirty small turns, then one row far bigger than a 16K writer can hold in a call (but a 32K one can). */
+  function aBigRowAmongSmallOnes(repeat: number): string {
+    for (let t = 1; t <= 30; t++) appendTurn(0.01);
+    turnNo++;
+    const id = `big-${repeat}`;
+    insertMessage({ id, agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: turnNo, content: `[big] ${ROW.repeat(repeat)}` });
+    for (let t = 1; t <= 30; t++) appendTurn(0.01);   // so the big row sits outside the newest rows
+    return id;
+  }
+  /** Covered by a REAL summary (a "[Not yet condensed]" note is the platform's honest label, not a summary). */
+  const covered = (id: string): boolean =>
+    !!db().prepare("SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE sm.message_id = ? AND s.kind != 'uncondensed' LIMIT 1").get(id);
+  const labelled = (id: string): boolean =>
+    !!db().prepare("SELECT 1 FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE sm.message_id = ? AND s.kind = 'uncondensed' LIMIT 1").get(id);
+
+  it.fails('a single row the first writer cannot hold goes to a writer that can, in the same pass: the row is covered, the small writer is not dialled with it', async () => {
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(TINY, DEAD);   // SMALL (cheaper, 16K) is first, ROOMY (32K) second
+    const id = aBigRowAmongSmallOnes(5);                                                   // ~12K tokens: more than SMALL's room
+    const result = await checkAndCompact(AGENT, 'auto', 8_000, { force: true });
+    expect(covered(id), 'the big row was summarised by a real summary, not left or dropped').toBe(true);
+    expect(result.leafCreated).toBeGreaterThan(0);
+    const bigCalls = writers.calls.filter((c) => c.content.includes('[big]'));
+    expect(bigCalls.length).toBeGreaterThan(0);
+    expect(bigCalls.every((c) => c.modelId === ROOMY), 'only the writer that holds it was asked').toBe(true);
+    expect(compactionIsBraked(AGENT, true), 'no stall behind it').toBe(false);
+  });
+
+  it('a row NO writer can hold is never dropped: it stays uncondensed (CONTROL: it holds today too)', async () => {
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(TINY, DEAD);
+    const id = aBigRowAmongSmallOnes(14);                                                  // ~34K tokens: more than ROOMY's window holds
+    await checkAndCompact(AGENT, 'auto', 8_000, { force: true });
+    expect(covered(id), 'the row was NOT summarised away').toBe(false);
+    expect(labelled(id), 'the platform\'s own honest label stands for it').toBe(true);
+    expect(writers.calls.some((c) => c.content.includes('[big]')), 'no writer was dialled with what it cannot hold').toBe(false);
+    expect(
+      (db().prepare('SELECT 1 FROM messages WHERE id = ?').get(id)),
+      'and the row itself is still there',
+    ).toBeTruthy();
+  });
+});

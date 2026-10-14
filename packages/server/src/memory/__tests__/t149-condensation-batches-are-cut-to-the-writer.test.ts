@@ -23,10 +23,11 @@ vi.mock('../embeddings.js', () => ({
   refreshEmbedding: () => { /* not exercised */ },
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
-const dials = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; systemPrompt: string; content: string }> }));
+const dials = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; systemPrompt: string; content: string }>, empty: false }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; systemPrompt: string; messages: Array<{ content: string }> }) => {
     dials.calls.push({ modelId: p.modelId, systemPrompt: p.systemPrompt, content: p.messages[0].content });
+    if (dials.empty) return { content: '', toolCalls: [], usage: {} };
     return { content: 'The crew counted the depot and filed the manifests, bay by bay, with every seal number recorded.', toolCalls: [], usage: {} };
   },
   getContextWindow: () => 32_000,
@@ -41,6 +42,7 @@ import { insertMessage } from '../message-store.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { runMigrations } from '../../db/migrations.js';
+import { stoppedAgents } from '../../agent/shared-state.js';
 
 const AGENT = 'agent-t149-condense';
 const SMALL = 'model-t149-16k';
@@ -48,7 +50,7 @@ const db = (): Database.Database => mockDb.current!;
 const BODY = 'Manifest line: crate, bay, weight, seal number, inspector initials, remarks. '.repeat(260);   // ~5K tokens
 
 beforeEach(() => {
-  dials.calls = [];
+  dials.calls = []; dials.empty = false;
   __resetSummaryWriterHealthForTests();
   mockDb.current = new Database(':memory:');
   runMigrations();
@@ -66,7 +68,7 @@ beforeEach(() => {
     createLeafSummary(AGENT, `[leaf ${i}] ${BODY}`, estimateTokens(BODY), ids, `2026-10-0${i + 1} 09:00:00`, `2026-10-0${i + 1} 10:00:00`);
   }
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { stoppedAgents.delete(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
 const budgetFor = (systemPrompt: string): number =>
   Math.max(0, contextWindowPolicy(16_000, { toolPayloadTokens: 0, maxOutputTokens: 4096 }).assemblyBudgetTokens - estimateTokens(systemPrompt));
@@ -85,5 +87,39 @@ describe('t149 round 2 — condensation batches are cut to the writer', () => {
     }
     expect(out.condensedCreated, 'parents were written, not refused').toBeGreaterThan(0);
     expect(out.refusedStage).not.toBe('summariser_refused');
+  });
+
+  it.fails('round 4: a Stop during condensation is reported as a stop and ends the walk — not as the writer refusing batch after batch', async () => {
+    dials.empty = true;            // the call the owner's Stop cut comes back empty
+    stoppedAgents.add(AGENT);      // and the stop stands
+    const out = await condenseUntilFits({
+      agentId: AGENT, modelId: SMALL, minFanout: 4, targetTokens: 6000,
+      measure: async () => ({ total: 90_000, summaryTokens: 1_000 }),
+      rebuild: () => rebuildContextItems(AGENT),
+    });
+    expect(out.refusedStage, 'a stop is not a refusal').not.toBe('summariser_refused');
+    expect(out.refusedStage).toBe('bounded_without_progress');
+    expect(dials.calls.length, 'the walk ended at the first stopped call').toBe(1);
+  });
+
+  it.fails('round 4: a pair the writer cannot hold goes to a writer that can, before the batch is given up', async () => {
+    db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-roomy', 'p-roomy', 'openai-compatible', 'api_key', 'http://localhost:11431/v1')").run();
+    db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
+      VALUES ('model-t149-roomy', 'p-roomy', 'roomy', 'Roomy', 32000, 4096, '["text","tools"]', 1, 0.5, 2)`).run();
+    const drop = "SELECT id FROM summaries WHERE agent_id = ? AND id NOT IN (SELECT id FROM summaries WHERE agent_id = ? ORDER BY earliest_at LIMIT 2)";
+    for (const t of ['summary_messages', 'context_items']) {
+      try { db().prepare(`DELETE FROM ${t} WHERE ${t === 'summary_messages' ? 'summary_id' : 'item_id'} IN (${drop})`).run(AGENT, AGENT); } catch { /* table shape: nothing to clear */ }
+    }
+    db().prepare('DELETE FROM summaries WHERE agent_id = ? AND id NOT IN (SELECT id FROM summaries WHERE agent_id = ? ORDER BY earliest_at LIMIT 2)').run(AGENT, AGENT);
+    // Two ~5K summaries become ~7K each: a pair of 14K, more than the 16K writer's room, within the 32K one's.
+    db().prepare('UPDATE summaries SET content = ?, token_count = ? WHERE agent_id = ?').run(`${BODY}${BODY.slice(0, 15000)}`, estimateTokens(BODY) + estimateTokens(BODY.slice(0, 15000)), AGENT);
+    const out = await condenseUntilFits({
+      agentId: AGENT, modelId: SMALL, minFanout: 4, targetTokens: 6000,
+      measure: async () => ({ total: 90_000, summaryTokens: 1_000 }),
+      rebuild: () => rebuildContextItems(AGENT),
+    });
+    expect(out.condensedCreated, 'the pair was condensed').toBeGreaterThan(0);
+    expect(out.refusedStage).not.toBe('summariser_refused');
+    expect(dials.calls.every((c) => c.modelId === 'model-t149-roomy'), 'by the writer that holds it; the small one was never dialled with it').toBe(true);
   });
 });
