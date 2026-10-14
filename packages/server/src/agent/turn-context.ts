@@ -307,6 +307,8 @@ export interface TurnContext {
    *      (`integration.test.ts`, "fires ONCE PER TURN, not once per iteration") landed
    *      GREEN on the unmoved tree before this field existed. */
   lastAssembledAtIso: string | null;
+  /** t145: `MAX(messages.seq)` for the agent at turn pickup; a row above it arrived after the turn began. */
+  pickupSeq: number | null;
   assemblerOverheadTokens: number;
   freshTailDropWarned: boolean;
 
@@ -523,6 +525,7 @@ export function openTurnContext(agentId: string): TurnContext {
     deferredUserReplyWithTools: null,
     turnInjectedTechniqueId: null,
     lastAssembledAtIso: null,
+    pickupSeq: null,
     assemblerOverheadTokens: 0,
     freshTailDropWarned: false,
     startAckSteerRequested: false,

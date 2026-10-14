@@ -28,6 +28,7 @@ import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
+import { turnContext } from '../agent/turn-context.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
@@ -299,11 +300,16 @@ function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
   ).get(agentId, turn) as { subject_kind: string | null; root_kind: string | null; started_ms: number | null } | undefined;
   if (!t || t.subject_kind !== 'none' || t.root_kind !== null || t.started_ms === null) return null;
   // The row the turn woke on: the newest inbound row (not an engine events-lane row) at its start.
+  // t145 (M1b): "at its start" is the message-sequence high-water recorded at pickup, because every
+  // clock here is whole-second and a notice landing in the turn's first second is not separable by
+  // time. A turn this process did not pick up (no bag for it) keeps the whole-second bound.
+  const bag = turnContext(agentId);
+  const pickup = bag && bag.turnNumber === turn ? bag.pickupSeq : null;
   const woke = db.prepare(
     `SELECT a2a_thread_id FROM messages
-      WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND created_at <= ?
+      WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND ${pickup === null ? 'created_at' : 'seq'} <= ?
       ORDER BY created_at DESC, seq DESC LIMIT 1`,
-  ).get(agentId, t.started_ms) as { a2a_thread_id: string | null } | undefined;
+  ).get(agentId, pickup ?? t.started_ms) as { a2a_thread_id: string | null } | undefined;
   if (!woke?.a2a_thread_id) return null;
   const ask = db.prepare(
     `SELECT a.root_id AS root_id FROM work p JOIN work a ON a.id = p.parent_id

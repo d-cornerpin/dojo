@@ -1139,7 +1139,7 @@ describe('t139 — the delegate-reply link has recorded facts behind it, or it i
   // a SEQUENCE high-water recorded when the turn starts (`messages.seq` at pickup) — a turn-record
   // field written in preflight, outside this lane's fence. Until then a row landing in the wake
   // turn's first second can take the link (the task is then opened unlinked, labelled as such).
-  it.fails('a notice arriving INSIDE the wake turn\'s first second is not "the row it woke on" (review M1)', async () => {
+  it('a notice arriving INSIDE the wake turn\'s first second is not "the row it woke on" (review M1)', async () => {
     await fanOutAndLand('msg-owed-sec', 'Combine the two quote sets and pick one.', 'JOBH');
     // Pin the clock (Date only) for the wake turn: 100 ms into a second safely after the replies.
     const wakeAt = (Math.floor(Date.now() / 1000) + 5) * 1000 + 100;

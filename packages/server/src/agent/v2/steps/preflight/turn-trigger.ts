@@ -61,6 +61,7 @@ export function runTurnTrigger(
 ): PreflightOutcome<TurnTriggerOutputs> {
   const { agentId, setAgentStatus, startStatusHeartbeat } = ctx;
   const db = getDb();
+  turnCtx.pickupSeq = (db.prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(agentId) as { s: number | null }).s;   // t145: M1b
 
   const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(agentId) as
     | Record<string, unknown>
