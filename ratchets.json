@@ -8358,7 +8358,7 @@
     {
       "path": "packages/server/src/tracker/pm-agent.ts",
       "from": 2995,
-      "to": 3002,
+      "to": 3003,
       "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
       "why": "+8: the ladder's clock stops while the sweep may not poke (+5 net: hold/resume call, the subtraction and the clock module's import line, with the idle computation moved below the working guard), and the check-in words state the number of check-ins on the record instead of a fixed 'two pokes' / 'three pokes' (+3). From here this file may only shrink."
     },
