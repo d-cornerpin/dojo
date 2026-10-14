@@ -547,8 +547,11 @@ const newestPokeRung = (taskId: string): number | null => {
   return r ? (JSON.parse(r.payload) as { rung: number }).rung : null;
 };
 
-describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation against a working agent', () => {
-  it('a work_note after a check-in closes it: the ladder re-arms, and the next check-in is a first one again', async () => {
+describe('THE CHECK-IN: a "still working" answer is recorded (it is not progress); no timed escalation against a working agent', () => {
+  // t151 (R-V333-20, replaces "a work_note re-arms the ladder"): a reply to a check-in is an answer, not
+  // progress. The note is recorded and answers the check-in, but only real work moves the task, so the
+  // ladder climbs on the task's own idle clock (it does not start over at a first rung).
+  it('a work_note after a check-in answers it but does not re-arm: no remediation, and the next check-in is the second rung', async () => {
     const t0 = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
@@ -560,8 +563,11 @@ describe('THE CHECK-IN: a "still working" answer closes it; no timed escalation 
     vi.setSystemTime(t0 + 7 * MIN);
     await sweep();
     const closed = db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-q' AND kind = 'poke_remediation'").get() as { n: number };
-    expect(closed.n).toBe(1);
-    expect(newestPokeRung('task-q')).toBe(1); // a fresh first check-in, not a second rung
+    expect(closed.n).toBe(0);
+    expect(newestPokeRung('task-q')).toBe(1); // 14 idle minutes: not yet the second rung's own clock
+    vi.setSystemTime(t0 + 10 * MIN);
+    await sweep();
+    expect(newestPokeRung('task-q')).toBe(2); // the climb continues; it did not start over
     expect(ownerTexts()).toBe(0);
   });
 

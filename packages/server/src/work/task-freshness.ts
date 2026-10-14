@@ -8,7 +8,9 @@
 // `engine-checkpoint-note.ts`). What it never saw is a "still working" note: `work_note` appends
 // an event and touches no column. So the task's movement is the newer of its row's clock and its
 // own events: its transitions, its opening and claim, the turn-finalize `activity` stamp (written
-// only for turns whose trigger names the task, round 2), and anything its assignee wrote on it.
+// only for turns whose trigger names the task, round 2), and what its assignee wrote on it, EXCEPT its
+// plain notes (t151: a "still working" note is a record, an answer to a check-in, not the task moving;
+// real work shows as a status, an edit, a delivery or the turn's `activity` stamp).
 // A PM poke, the PM's own notes and engine bookkeeping are not the task moving.
 //
 // And WHICH work a turn names (`turnWorkIds`), which the engine checkpoint and the turn-finalize
@@ -22,7 +24,8 @@ import { turnContext } from '../agent/turn-context.js';
 /** Epoch ms the task aliased `a` last moved. */
 export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALESCE((SELECT MAX(e.created_at)
   FROM work_events e WHERE e.work_id = ${a}.id AND (e.kind IN ('transition', 'activity', 'opened', 'claim_turn')
-  OR e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id))), 0))`;
+  OR (e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id)
+      AND NOT (e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'observation')))), 0))`;
 
 /** THE JOB IN FLIGHT. Its task ids travel ON the park's own continuation wake (t143 round 6), so
  *  it can be neither stolen nor orphaned:

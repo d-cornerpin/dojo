@@ -158,6 +158,15 @@ export function composeTurnDeliverySummary(agentId: string, turnNumber: number):
   }
 }
 
+/** Did this turn DO something (an effectful tool call, counted on the turn's own row)? */
+function turnMadeEffectfulCall(db: ReturnType<typeof getDb>, agentId: string, turnNumber: number): boolean {
+  try {
+    const r = db.prepare('SELECT effectful_calls AS n FROM turns WHERE agent_id = ? AND turn_number = ?')
+      .get(agentId, turnNumber) as { n: number | null } | undefined;
+    return (r?.n ?? 0) > 0;
+  } catch { return false; /* no record of an effect: a turn that only talked, as before */ }
+}
+
 /**
  * The single stamping point, called from the loop's turn-finalize block.
  * Stamps every ticket of THIS agent whose origin ties to the ending turn.
@@ -179,7 +188,11 @@ export function stampTasksAtTurnFinalize(input: {
     const deliverySummary = composeTurnDeliverySummary(input.agentId, input.turnNumber);
     const hasDelivery = deliverySummary.length > 0;
     // t143 r4: being woken by a re-drive or assignment notice is not progress (a delivery is); the carry decides "the job".
-    const woken = !hasDelivery && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
+    // t151 (B): and the turn's reply to the notice is an ANSWER, not progress — a chat line the person read
+    // ('via dashboard') is the answer itself. Only real work re-arms the ladder: a tangible deliverable, or an
+    // effectful call the turn's own record counts (`turns.effectful_calls`, made durable at the effect).
+    const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber);
+    const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
     const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w

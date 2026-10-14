@@ -20,7 +20,7 @@
 // transport and the engine runtime are replaced. Nothing here measures wall-clock time.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-// RED-FIRST at 50b921db: clauses marked `it.fails` are the witness; the fix commit flips them.
+// RED-FIRST at 50b921db: committed `it.fails` (RED commit), flipped with the fixes.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -211,7 +211,7 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
     setStatus('idle');
   };
 
-  it.fails('while the job runs nobody is chased; when it ends the first sweep sends nothing and the ladder climbs from rung 1 (not a jump to the top)', async () => {
+  it('while the job runs nobody is chased; when it ends the first sweep sends nothing and the ladder climbs from rung 1 (not a jump to the top)', async () => {
     const t0 = Date.now();
     const end = await fiftyMinuteJob(t0);
     expect(pokes('x-other') + pokes('x-same'), 'during the job').toBe(0);   // kept: no PM chase while the agent is working
@@ -227,18 +227,19 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
     expect(rungsSent('x-other')).toEqual([1, 2, 3]);
   });
 
-  it.fails('the escalation to the primary says only what happened: after rungs 1 and 2 it says two earlier check-ins', async () => {
+  it('the escalation to the primary says only what happened: after rungs 1 and 2 it says two earlier check-ins', async () => {
     const t0 = Date.now();
     const end = await fiftyMinuteJob(t0);
     endJob(end);
+    await sweepAt(end + 20_000);   // the first sweep after the job (the PM sweeps every minute)
     for (const m of [6, 16, 31]) await sweepAt(end + m * MIN);
-    const escalation = (db().prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND lane = 'events' AND task_id IS NULL OR content LIKE 'ESCALATION%' ORDER BY rowid").all() as Array<{ content: string }>)
+    const escalation = (db().prepare("SELECT content FROM messages WHERE lane = 'events' AND content LIKE 'ESCALATION%' ORDER BY rowid").all() as Array<{ content: string }>)
       .map((r) => r.content).find((c) => c.includes('the forgotten report')) ?? '';
     expect(escalation).toContain('ESCALATION');
     expect(escalation).toMatch(/after 2 earlier check-ins/);
   });
 
-  it.fails('a first sweep that finds a task far overdue (no pokes on record) does not claim any: the text states the true count', async () => {
+  it('a first sweep that finds a task far overdue (no pokes on record) does not claim any: the text states the true count', async () => {
     const now = Date.now();
     claimedTask('task-late', 'the price check', now - 31 * MIN, 'c-1');
     await runPokeCheck();
@@ -283,7 +284,7 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     return { now };
   }
 
-  it.fails('a one-line reply (no effectful call, no deliverable) does not re-arm: no remediation, the next rung is 2, never rung 1 again', async () => {
+  it('a one-line reply (no effectful call, no deliverable) does not re-arm: no remediation, the next rung is 2, never rung 1 again', async () => {
     const { now } = await wokenTurn({ reply: true, effectful: 0 });
     await sweepAt(now + 2 * MIN);
     expect(remediations('task-c')).toBe(0);
@@ -303,7 +304,7 @@ describe('B — a reply to a check-in is an answer, not progress; real work re-a
     expect(remediations('task-c')).toBe(1);
   });
 
-  it.fails('a bare note is a record, not progress: it does not re-arm either', async () => {
+  it('a bare note is a record, not progress: it does not re-arm either', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     claimedTask('task-n', 'the price check', now - 6 * MIN, 'c-1');
@@ -335,7 +336,7 @@ describe('D — a note on a task already at that status is recorded (walk "other
   const notes = (taskId: string): string[] => readAuditTrail(taskId, { limit: 20 })
     .filter((r) => r.entry_kind === 'observation').map((r) => String(r.note));
 
-  it.fails('work_update status=in_progress notes=... on an in_progress task records the note and says so', () => {
+  it('work_update status=in_progress notes=... on an in_progress task records the note and says so', () => {
     claimedTask('task-d', 'the price check', Date.now() - 6 * MIN, 'c-1');
     const out = trackerUpdateStatus('helper', { taskId: 'task-d', status: 'in_progress', notes: 'supplier answered, prices coming' });
     expect(out).toContain('no change made');

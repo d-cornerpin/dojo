@@ -34,6 +34,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import type { WorkEventKind } from './event-kinds.js';
 import { appendWorkEvent } from './store.js';
+import { AUDIT_KIND } from './audit-trail.js';
 
 const logger = createLogger('poke-ladder');
 
@@ -130,4 +131,68 @@ export function recordPoke(
 export function recordRemediation(workId: string, actorId: string, reason: string): void {
   appendWorkEvent(workId, REMEDIATION_EVENT, actorId, { reason });
   logger.info('poke ladder re-armed (remediation, new escalation cycle)', { workId, reason });
+}
+
+// ── t151: THE LADDER'S CLOCK DOES NOT RUN WHILE THE PM IS NOT ALLOWED TO POKE ──────────────────────
+//
+// The sweep leaves a task alone while its assignee is working (a long job keeps it `working` from
+// the first call to the last park). The idle clock is the task's age, so the first sweep after the
+// job found the whole job's length as idleness and sent the TOP rung — an escalation "after 2 pokes"
+// with none on the record (t143 live walk, items 3 and 10). Time spent behind the agent's own work
+// is not time the task sat ignored. Two rows on the task's own record, written by the sweep that
+// observed it: HELD when the sweep first leaves the task alone, RESUMED on the first sweep that
+// may poke again. The ladder's idle is its age minus the time it was held; nothing is counted,
+// nothing is a dial, a restart changes nothing (the rows are the memory).
+// They ride `kind='audit'` (no new event kind, no migration), like every other engine marker.
+
+export const LADDER_HELD_ENTRY = 'ladder_held';
+export const LADDER_RESUMED_ENTRY = 'ladder_resumed';
+
+function latestHold(workId: string): { entry: string; at: number; heldSince: number | null } | null {
+  const r = getDb().prepare(
+    `SELECT json_extract(payload, '$.entry_kind') AS entry, created_at AS at,
+            json_extract(payload, '$.held_since') AS held_since
+       FROM work_events
+      WHERE work_id = ? AND kind = ? AND json_extract(payload, '$.entry_kind') IN (?, ?)
+      ORDER BY id DESC LIMIT 1`,
+  ).get(workId, AUDIT_KIND, LADDER_HELD_ENTRY, LADDER_RESUMED_ENTRY) as
+    { entry: string; at: number; held_since: number | null } | undefined;
+  return r ? { entry: r.entry, at: r.at, heldSince: r.held_since } : null;
+}
+
+const holdRow = (entry: string, reason: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  entry_kind: entry, from_status: null, to_status: null, reason, action_taken: null, note: null, evidence_json: null, ...extra,
+});
+
+/** The sweep is leaving this task alone because its assignee is busy. Written once per stretch. */
+export function holdLadder(workId: string, actorId: string): void {
+  if (latestHold(workId)?.entry === LADDER_HELD_ENTRY) return;
+  appendWorkEvent(workId, AUDIT_KIND, actorId, holdRow(LADDER_HELD_ENTRY, 'the check-ins wait while the assignee is working'));
+}
+
+/** The sweep may poke this task again. Written only when a hold is open. */
+export function resumeLadder(workId: string, actorId: string): void {
+  const h = latestHold(workId);
+  if (h?.entry !== LADDER_HELD_ENTRY) return;
+  appendWorkEvent(workId, AUDIT_KIND, actorId, holdRow(LADDER_RESUMED_ENTRY,
+    'the assignee is free again; the idle clock did not run while it was working', { held_since: h.at }));
+}
+
+/** Milliseconds of `[sinceMs, now]` the ladder spent held (closed stretches only: an open one is
+ *  the sweep that is skipping the task, and never reaches the clock). */
+export function heldMsSince(workId: string, sinceMs: number): number {
+  const rows = getDb().prepare(
+    `SELECT created_at AS at, json_extract(payload, '$.held_since') AS held_since
+       FROM work_events
+      WHERE work_id = ? AND kind = ? AND json_extract(payload, '$.entry_kind') = ? AND created_at > ?`,
+  ).all(workId, AUDIT_KIND, LADDER_RESUMED_ENTRY, sinceMs) as Array<{ at: number; held_since: number | null }>;
+  return rows.reduce((sum, r) => sum + (r.at - Math.max(r.held_since ?? r.at, sinceMs)), 0);
+}
+
+/** How many check-ins this cycle has actually sent (the record, never a counter). */
+export function pokesSentThisCycle(workId: string): number {
+  const r = getDb().prepare(
+    'SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = ? AND id > ?',
+  ).get(workId, POKE_EVENT, cycleStartEventId(workId)) as { n: number };
+  return r.n;
 }

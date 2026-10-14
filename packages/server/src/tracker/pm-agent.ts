@@ -31,7 +31,7 @@ import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
-import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
+import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation, holdLadder, resumeLadder, heldMsSince, pokesSentThisCycle } from '../work/poke-ladder.js';
 import { patienceFloorFor, flooredThresholds, type PokeThresholds } from './assignee-patience.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog, writeTaskLog } from './task-log.js';
@@ -2587,7 +2587,6 @@ export async function runPokeCheck(): Promise<void> {
     // row's clock, not the agent's chatter.
     // t143 (M3): the task's OWN movement, never the engine checkpoint's touch of every claim.
     const movedAt = taskLastMovedAt(task.id, taskUpdated);
-    const idleSeconds = Math.max(0, Math.floor((now - movedAt) / 1000));
 
     // SLOW-INFERENCE T79d: queue an effort review REGARDLESS of the `assigneeStatus ===
     // 'working'` guard three lines down. That guard exists to protect POKES — a live turn is
@@ -2608,7 +2607,6 @@ export async function runPokeCheck(): Promise<void> {
     // tick after the turn ends if the task still hasn't moved.
     const assigneeStatus = (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
       .get(task.assignedTo) as { status: string } | undefined)?.status;
-    if (assigneeStatus === 'working') continue;
     // t143 round 4 (C1, owner's rule: a job that is really working is left alone): the idle-clock
     // rungs and the strike-2 close skip a task ONLY if it is the job in flight (the agent's standing
     // carry) or the agent has a live turn / open request right now. Never "the agent did something
@@ -2616,11 +2614,20 @@ export async function runPokeCheck(): Promise<void> {
     // task it dropped, is still nudged on schedule. (A PM-recorded circling verdict is evidence of
     // what the agent is doing, not an idle clock, and still goes through the fill-in below.)
     const leftAlone = jobCarriedIds(task.assignedTo).includes(task.id) || agentIsLive(task.assignedTo);
+    // t151 (R-V333-19): while the sweep may not poke, the ladder's clock does not run. A task waiting
+    // behind its agent's own running job is not abandoned, and when the job ends its ladder starts at
+    // its FIRST rung: the time spent behind the job never counts toward a later one (the walk's items
+    // 3 and 10 found the whole job's length as idleness and sent the top rung at once).
+    if (assigneeStatus === 'working' || leftAlone) holdLadder(task.id, getPMAgentId());
+    else resumeLadder(task.id, getPMAgentId());
+    if (assigneeStatus === 'working') continue;
+    const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
     // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
     // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
-    // t143: any answer on the task since the last check-in (a "still working" work_note) closes it.
+    // t143/t151: real work on the task since the last check-in (a status, an edit, a deliverable, a turn that
+    // did something) closes it. A reply or a plain note is an ANSWER, recorded, not progress: it re-arms nothing.
     const answered = lastPokeOf(task.id);
     if (answered && movedAt > answered.sentAtMs) recordRemediation(task.id, getPMAgentId(), 'the assignee answered the check-in');
     const lastPoke = lastPokeOf(task.id);
@@ -2789,7 +2796,7 @@ export async function runPokeCheck(): Promise<void> {
         `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
         `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
         `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
-      : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds);
+      : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds, pokesSentThisCycle(task.id));
     // FIX ROUND, Finding 1: the PM's own reason, when this send is the guarded delivery of a
     // recorded circling verdict rather than an ordinary idle-based rung.
     const pokeMessage = effortReviewReason
@@ -2815,7 +2822,7 @@ export async function runPokeCheck(): Promise<void> {
     // `requiresResponse`, which in this transport is the wake AND a reply owed: the runtime re-ran
     // dedicated A2A turns until one came, then recorded a synthetic ABANDONED. A check-in waits for
     // nothing: an events-lane notice (naming the task when the recipient owns it) plus the wake.
-    // A "still working" work_note is the only answer the ladder reads, and it is read from the task.
+    // Only real work on the task re-arms the ladder (t151), and it is read from the task's own record.
     const { redriveWithoutReply } = await import('../agent/agent-notice.js');
     const delivered = recipient
       ? await redriveWithoutReply({ toAgentId: recipient, fromAgentId: pmId, content: pokeMessage,
@@ -2850,8 +2857,12 @@ function buildPokeMessage(
   pokeType: string,
   pokeNumber: number,
   idleSeconds: number,
+  /** t151: the check-ins this task's record shows were really sent in the current cycle. The words below
+   *  state that number and no other — a rung can be reached without the ones beneath it. */
+  pokesSent: number,
 ): string {
   if (!task) return '';
+  const earlier = pokesSent === 1 ? '1 earlier check-in' : `${pokesSent} earlier check-ins`;
 
   const idleMinutes = Math.floor(idleSeconds / 60);
   // Ticket stamps (2026-07-22): every poke carries the engine's observed
@@ -2895,18 +2906,18 @@ function buildPokeMessage(
       // not the PM. No silent handoffs." The close-out line stays — telling a status row the truth
       // about work that was already delivered is a repair, not a transfer — and the one thing the
       // primary is now told about reassignment is that it is not its call.
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes${pokesSent === 0 ? ' and no earlier check-in has been sent to it' : ` with no response after ${earlier}`}.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
 
     case 'escalate_assignee':
       // Rung 3 with nobody else to tell: the same facts, addressed to the assignee itself.
-      return `Third check-in: task "${task.title}" has had no update for ${idleMinutes} minutes through two earlier check-ins.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
+      return `Third check-in: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
 
     case 'redrive':
       // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a
       // different kind of act: no reassignment is offered, threatened or asked about, because
       // (owner ruling 2026-10-02) keeping the agent working is the whole job.
-      return `STILL OPEN: task "${task.title}" has been idle for ${idleMinutes} minutes through `
-        + `three pokes.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from `
+      return `STILL OPEN: task "${task.title}" has been idle for ${idleMinutes} minutes`
+        + `${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from `
         + `you. Pick it up where you left off and do the next concrete step now, or — if you `
         + `genuinely cannot proceed — call work_update(action="status", task_id="${task.id}", `
         + `status="blocked", notes="...") naming exactly what you are waiting on. If you are still `

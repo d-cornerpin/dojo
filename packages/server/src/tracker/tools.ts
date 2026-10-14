@@ -1636,8 +1636,22 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       // path handle it so the scheduler advances.
       !(status === 'complete' && isScheduledRecurring)
     ) {
+      // t151 (D): the call may still carry a note. The status is unchanged, the words are not nothing:
+      // record them exactly as `work_note` does (an observation by this agent) and say so. A note is a
+      // record on the task, not progress on it (the PM's ladder does not read it as movement).
+      const sameStatusNote = typeof args.notes === 'string' ? args.notes.trim() : '';
+      if (sameStatusNote.length > 0) {
+        writeTaskLog({
+          taskId,
+          fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`,
+          entryKind: 'observation',
+          note: sameStatusNote,
+          actionTaken: `notes attached (status already ${status})`,
+        });
+      }
       return (
-        `[NO-OP] task_id=${taskId} | status=${status}, already at this status, no change made.\n\n` +
+        `[NO-OP] task_id=${taskId} | status=${status}, already at this status, no change made` +
+        `${sameStatusNote.length > 0 ? '; your note was recorded on the task' : ''}.\n\n` +
         `Task: ${taskRow?.title ?? '(unknown title)'}`
       );
     }
