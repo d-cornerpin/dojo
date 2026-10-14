@@ -232,13 +232,24 @@ export function runPromiseFloor(
           // just surfaced — the check happened, the correction never did, and the recap the person
           // actually asked for was left behind as the turn's non-answer. Bounding the round to the
           // answer it was granted for is the difference between a check and a detour.
+          //
+          // t158 (ritual run 6, S2): the round used to ORDER "say that same answer again with every
+          // line corrected", and a reply whose every line was right reached the owner twice — the
+          // reply was already persisted and shown before this floor runs (`persist-assistant.ts`
+          // files it as the turn's truthful answer first), so a restatement can only be a second
+          // copy. The order is now check-then-correct-only, through the product's own door for
+          // "you already gave the real reply": `[no-reply]` (`prompt/assembler.ts`). A correction,
+          // if one is needed, lands through the ordinary persist seam, which moves the answer key
+          // and demotes the first reply as it always has. The fire condition is unchanged.
           `[System] Your reply told the user what is currently scheduled or owed ('${quoted}'), ` +
           `but nothing this turn read the board, so that came from memory rather than from a row. ` +
           `Check it before you assert it: work_update(action="list") for the live tracker, plus ` +
-          `calendar_agenda if you named a calendar event. Then say that same answer again with ` +
-          `every line corrected against what the board actually holds — a row that is abandoned, ` +
-          `closed, or was never created is not "on deck" and will not fire. This round is for ` +
-          `correcting THAT answer: do not pick up new work you were not asked for.`
+          `calendar_agenda if you named a calendar event. The user already has your reply, so do ` +
+          `not say it again: if every line matches what the board actually holds, end the turn ` +
+          `with [no-reply]; if a line is wrong, tell the user only that correction, in a line or ` +
+          `two, without repeating the lines that were right — a row that is abandoned, closed, or ` +
+          `was never created is not "on deck" and will not fire. This round is for checking THAT ` +
+          `answer: do not pick up new work you were not asked for.`
         ) : standingPromise ? (
           // T33: the same floor, a different order — there is no work to "do now" for a promise
           // about future occasions, and the engine speaks to the MODEL, never to the user (OR2).
