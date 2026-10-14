@@ -36,7 +36,7 @@ let m: {
   runtime: typeof import('../runtime.js'); fresh: typeof import('../../work/task-freshness.js');
   note: typeof import('../../work/engine-checkpoint-note.js'); cont: typeof import('../../work/job-continuation.js'); ctx: typeof import('../turn-context.js');
   state: typeof import('../v2/state.js'); gate: typeof import('../v2/steps/preflight/closeout-gate.js');
-  status: typeof import('../agent-status.js'); shared: typeof import('../shared-state.js');
+  status: typeof import('../agent-status.js'); park: typeof import('../v2/honest-stop.js'); shared: typeof import('../shared-state.js');
   rl: typeof import('../rate-limit-retry.js'); routes: typeof import('../../gateway/routes/agents.js');
 };
 
@@ -52,7 +52,7 @@ beforeEach(async () => {
     runtime: await import('../runtime.js'), fresh: await import('../../work/task-freshness.js'),
     note: await import('../../work/engine-checkpoint-note.js'), cont: await import('../../work/job-continuation.js'), ctx: await import('../turn-context.js'),
     state: await import('../v2/state.js'), gate: await import('../v2/steps/preflight/closeout-gate.js'),
-    status: await import('../agent-status.js'), shared: await import('../shared-state.js'),
+    status: await import('../agent-status.js'), park: await import('../v2/honest-stop.js'), shared: await import('../shared-state.js'),
     rl: await import('../rate-limit-retry.js'), routes: await import('../../gateway/routes/agents.js'),
   };
   vi.useFakeTimers();
@@ -193,6 +193,37 @@ describe('ROUND 6 (R5-I1): a carry whose chain truly ends does not outlive it', 
       setAgentStatus(AGENT, status);
       expect(jobCarriedIds(AGENT), `${status}: after`).toEqual([]);
     }
+  });
+});
+
+describe('MERGE (t143 + t148): the one status writer does both jobs', () => {
+  const carry = async (): Promise<void> => {
+    script.run = () => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, () => {
+      m.note.noteEngineCheckpoint(AGENT, 'turn-budget');
+      m.cont.queueJobContinuation(AGENT, 'turn-budget-continuation');
+    });
+    mockDb.current!.prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(AGENT);
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual(['task-job']);
+  };
+  const lastError = (): string | null => (mockDb.current!.prepare('SELECT last_error AS e FROM agents WHERE id = ?').get(AGENT) as { e: string | null }).e;
+
+  it('a carrying agent that is PARKED (paused + tag) is not shielded: its carry ends and the task is judged again', async () => {
+    await carry();
+    m.park.parkAgent(AGENT, { kind: 'budget_stop', words: 'the daily limit was reached', budget: null });
+    expect(lastError()).toMatch(/^\[budget_stop\]/);
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
+    vi.setSystemTime(Date.now() + 15 * MIN);
+    await engineTurn(9, null, async () => { expect(await gateNames()).toContain('task-job'); });
+  });
+
+  it('a plain paused write over a park clears the park tag AND ends the carry (one statement path, both effects)', async () => {
+    m.park.parkAgent(AGENT, { kind: 'no_model_fits', words: 'no model fits', budget: null });
+    expect(lastError()).toMatch(/^\[no_model_fits\]/);
+    await carry();
+    m.status.setAgentStatus(AGENT, 'paused');
+    expect(lastError()).toBeNull();
+    expect(m.fresh.jobCarriedIds(AGENT)).toEqual([]);
   });
 });
 
