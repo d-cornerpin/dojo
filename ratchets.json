@@ -8360,7 +8360,7 @@
       "from": 2995,
       "to": 3002,
       "by": "t151 (2026-10-14), live-walk fixes A, B, C, D",
-      "why": "+7: the ladder's clock stops while the sweep may not poke (+4 net: hold/resume call and the subtraction, with the idle computation moved below the working guard), and the check-in words state the number of check-ins on the record instead of a fixed 'two pokes' / 'three pokes' (+3). From here this file may only shrink."
+      "why": "+8: the ladder's clock stops while the sweep may not poke (+5 net: hold/resume call, the subtraction and the clock module's import line, with the idle computation moved below the working guard), and the check-in words state the number of check-ins on the record instead of a fixed 'two pokes' / 'three pokes' (+3). From here this file may only shrink."
     },
     {
       "path": "packages/server/src/agent/model.ts",
@@ -8647,7 +8647,7 @@
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 3002,
+    "packages/server/src/tracker/pm-agent.ts": 3003,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
