@@ -8676,6 +8676,13 @@
       "to": 385,
       "by": "t173 (2026-10-15), a job's continuation turn carries the job's subject",
       "why": "+4: the import of `a2aJobOrigin`, the original `isA2ATurn` renamed `a2aWakeTurn` in place (no new lines), the one-line `jobA2A` read plus the root it sets, and the new `isA2ATurn = a2aWakeTurn || jobA2A !== null` line; `a2aCounterpartyIdentity` takes the job as its last fallback by replacing its `: null` in place. What the job's origin is, how it is read from the job's task, and why the continuation is not a reply-needed turn live in the NEW `work/job-origin.ts`, so this file carries no comment for it. REFUSED: putting the read in `counterparty-and-record.ts` (the classifier is where `isA2ATurn` is decided, and the turn's counterparty, scope and served request all read it). A later reader should know the earlier note in this file refused re-rooting a turn here for a different reason (a task read); this change roots only a trigger-less continuation, which has no root of its own to disturb. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 369,
+      "to": 376,
+      "by": "t155 A (2026-10-14) - one KNOWN_DIVERGENCES entry for the 129b sender-less peer row amendment",
+      "why": "369 -> 376 (+7: seven lines of ledger ROW, no logic). The v3.3.3 cut checks found that `129b_stable_merge_messages.sql` section 4a aborts the whole update chain, on every boot, for a box holding one peer message with no sender (fixed in the commit before this one). 129b is a released, applied migration, so amending it means every box that already ran the old bytes reports MIGRATION DIVERGENCE at ERROR for ever unless `KNOWN_DIVERGENCES` holds the (file, appliedChecksum, fileChecksum) triple, and `check-migration-freeze.mjs` fails the build without that entry in the same commit. The same collision the 2026-09-26 raise above argued: a decrease-only pin on an append-only adjudication ledger forbids the act another blocking gate demands. The entry is five fields, its fileChecksum is machine-checked against the tree by migration-checksums.test.ts, and its appliedChecksum is checked by t155-migration-129b-null-sender-peer-row.test.ts, which rebuilds the pre-amend bytes by reversing the edit. REFUSED: trimming existing warrant prose to fit (it would delete the argument for the other entries), and a second module for the row (one consumer reads one array). From 376 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8857,7 +8864,7 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 369,
+    "packages/server/src/db/migration-checksums.ts": 376,
     "packages/server/src/gateway/routes/agents.ts": 1030,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
