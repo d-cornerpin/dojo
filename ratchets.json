@@ -8179,6 +8179,13 @@
       "to": 239,
       "by": "t143 round 2 (2026-10-13), orchestrator ruling 2+3: a task is fresh only by activity that names it",
       "why": "+1: one import of the shared freshness expression (work/task-freshness.ts). The gate's two dangler families now read the task's own movement (its row's clock or its own events, a work_note included) instead of the bare updated_at the engine checkpoint used to refresh for every claim; the swaps themselves are line-neutral. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts",
+      "from": 239,
+      "to": 241,
+      "by": "t143 round 3 (2026-10-13), orchestrator ruling C1: a moving agent is left alone",
+      "why": "+2: one import (the real-movement reader, tracker/liveness.ts agentIsMoving) and one comment line. The gate now arms only for an agent that has STOPPED moving: the danglingRows ternary gains the movement test beside the existing human-waiting test, so a working job's tools are never refused and it is never offered complete / blocked / paused. The test itself is line-neutral. REFUSED: reading movement inside the dangler queries (a second copy of the movement definition). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8336,7 +8343,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 185,
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 213,
-    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 239,
+    "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 241,
     "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 298,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
