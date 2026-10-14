@@ -8466,13 +8466,6 @@
       "to": 1569,
       "by": "t158 C (2026-10-14), the full check prices the rows the assembler budgets",
       "why": "+5: one capLargeToolResultStrings call and its 3-line reason, two reduces now read the capped rows; the false \"overstates, folds earlier\" sentence was rewritten in place. From here this file may only shrink."
-    },
-    {
-      "path": "packages/server/src/agent/runtime.ts",
-      "from": 1788,
-      "to": 1791,
-      "by": "t158 E (2026-10-14), one park queues exactly one continuation",
-      "why": "+3: the busy path consumes the park's timer wake when the running turn is that park's own continuation (the check itself lives in work/task-freshness.ts). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8542,7 +8535,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 407,
-    "packages/server/src/agent/runtime.ts": 1791,
+    "packages/server/src/agent/runtime.ts": 1788,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1466,
     "packages/server/src/agent/stream-patience.ts": 473,
