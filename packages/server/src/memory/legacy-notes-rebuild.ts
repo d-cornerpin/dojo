@@ -167,8 +167,11 @@ function swapAgent(agentId: string, units: readonly Unit[], stats: LegacyRebuild
       db.prepare('DELETE FROM summary_rebuild_staged WHERE unit_id = ?').run(unit.id);
       replaced++;
     }
+    // ONE STEP: rows covered and rows in view change together. The view is rebuilt inside the swap, so
+    // a crash anywhere rolls the swap back (the older note, in view, covering the same rows) and never
+    // leaves rows covered by new notes that no view shows.
+    if (replaced > 0) rebuildContextItems(agentId);
   })();
-  if (replaced > 0) rebuildContextItems(agentId);
   return replaced;
 }
 
@@ -176,6 +179,25 @@ function deleteSubtree(id: string): void {
   const kids = getDb().prepare('SELECT parent_id FROM summary_parents WHERE summary_id = ?').all(id) as Array<{ parent_id: string }>;
   deleteSummary(id);
   for (const k of kids) deleteSubtree(k.parent_id);
+}
+
+async function rebuildAgent(agentId: string, units: readonly Unit[], stats: LegacyRebuildStats): Promise<void> {
+  const db = getDb();
+  if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; return; }
+  const own = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
+  const ready: Unit[] = [];
+  for (const unit of units) {
+    const writer = resolveSummaryWriterModel(agentId, own, { background: true });
+    if (!writer) { stats.waiting[agentId] = 'no summary writer is answering'; return; }
+    const outcome = await stageUnit(unit, writer, stats);
+    if (outcome === 'staged') ready.push(unit);
+    else if (outcome !== 'lost') { stats.waiting[agentId] = outcome; return; }
+  }
+  if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; return; }
+  const swapped = await withLock(`compact:${agentId}`, async () => swapAgent(agentId, ready, stats), { ifBusy: 'skip' });
+  if (swapped === undefined) { stats.waiting[agentId] = 'another compaction holds the lock'; return; }
+  stats.notesReplaced += swapped;
+  if (swapped > 0) stats.agentsSwapped++;
 }
 
 /** One pass over every queued note, agent by agent. Returns what it did and why anything waits. */
@@ -186,23 +208,14 @@ export async function rebuildLegacyMixedNotes(): Promise<LegacyRebuildStats> {
   const byAgent = new Map<string, Unit[]>();
   for (const u of queuedUnits()) byAgent.set(u.agentId, [...(byAgent.get(u.agentId) ?? []), u]);
   for (const [agentId, units] of byAgent) {
-    if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; continue; }
-    const own = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
-    const ready: Unit[] = [];
-    let waiting: string | null = null;
-    for (const unit of units) {
-      const writer = resolveSummaryWriterModel(agentId, own, { background: true });
-      if (!writer) { waiting = 'no summary writer is answering'; break; }
-      const outcome = await stageUnit(unit, writer, stats);
-      if (outcome === 'staged') ready.push(unit);
-      else if (outcome !== 'lost') { waiting = outcome; break; }
+    // One agent's failure is logged against it and skipped: it never starves the agents after it.
+    try {
+      await rebuildAgent(agentId, units, stats);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      stats.waiting[agentId] = `the rebuild failed (${why}); the older notes stay, labelled, and the next run resumes`;
+      logger.warn('Older mixed notes: one agent\'s rebuild failed; continuing with the others', { error: why }, agentId);
     }
-    if (waiting) { stats.waiting[agentId] = waiting; continue; }
-    if (agentBusy(agentId)) { stats.waiting[agentId] = 'the agent is mid-turn'; continue; }
-    const swapped = await withLock(`compact:${agentId}`, async () => swapAgent(agentId, ready, stats), { ifBusy: 'skip' });
-    if (swapped === undefined) { stats.waiting[agentId] = 'another compaction holds the lock'; continue; }
-    stats.notesReplaced += swapped;
-    if (swapped > 0) stats.agentsSwapped++;
   }
   logger.info('Older mixed notes: rebuild pass done', { ...stats });
   return stats;

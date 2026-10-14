@@ -58,6 +58,28 @@ vi.mock('../../agent/model.js', () => ({
   getProviderCeilingTokens: () => null,
 }));
 
+const fault = vi.hoisted(() => ({ leafFor: null as string | null, contextItemsOnce: false }));
+vi.mock('../dag.js', async (orig) => {
+  const real = await orig<typeof import('../dag.js')>();
+  return {
+    ...real,
+    createLeafSummary: (...a: Parameters<typeof real.createLeafSummary>) => {
+      if (fault.leafFor && a[0] === fault.leafFor) throw new Error('simulated defect row');
+      return real.createLeafSummary(...a);
+    },
+  };
+});
+vi.mock('../compaction.js', async (orig) => {
+  const real = await orig<typeof import('../compaction.js')>();
+  return {
+    ...real,
+    rebuildContextItems: (agentId: string) => {
+      if (fault.contextItemsOnce) { fault.contextItemsOnce = false; throw new Error('simulated crash before the view was rebuilt'); }
+      return real.rebuildContextItems(agentId);
+    },
+  };
+});
+
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary, createCondensedSummary } from '../dag.js';
@@ -88,14 +110,14 @@ function seed(): void {
 
 let n = 0;
 /** `pairs` exchanges alternating between the two conversations, `daysAgo` before now. */
-function history(pairs: number, daysAgo: number): string[] {
+function history(pairs: number, daysAgo: number, agent = AGENT, convs: [string, string] = [DASH, MAIL]): string[] {
   const ids: string[] = [];
   for (let i = 0; i < pairs * 2; i++) {
-    const conv = i % 2 === 0 ? DASH : MAIL;
+    const conv = i % 2 === 0 ? convs[0] : convs[1];
     n++;
     const at = Date.now() - daysAgo * DAY + n * 60_000;
-    const a = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', conversationId: conv, content: `[m${n}] Check crate ${n}.` });
-    const b = insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', conversationId: conv, content: `[m${n}r] Crate ${n} logged.` });
+    const a = insertMessage({ agentId: agent, role: 'user', lane: 'owner', conversationId: conv, content: `[m${n}] Check crate ${n}.` });
+    const b = insertMessage({ agentId: agent, role: 'assistant', lane: 'owner', conversationId: conv, content: `[m${n}r] Crate ${n} logged.` });
     db().prepare('UPDATE messages SET created_at = ? WHERE seq = ?').run(at, a.seq);
     db().prepare("UPDATE messages SET created_at = ?, subject_kind = 'conv' WHERE seq = ?").run(at + 1000, b.seq);
     ids.push(a.id, b.id);
@@ -104,8 +126,8 @@ function history(pairs: number, daysAgo: number): string[] {
 }
 
 /** A note as a version before this release wrote it: agent-wide, both conversations, unlabelled. */
-function olderNote(ids: string[], text = 'Mixed: the owner asked about crates; dispatch emailed about bays.'): string {
-  const s = createLeafSummary(AGENT, text, 400, ids, new Date().toISOString(), new Date().toISOString());
+function olderNote(ids: string[], text = 'Mixed: the owner asked about crates; dispatch emailed about bays.', agent = AGENT): string {
+  const s = createLeafSummary(agent, text, 400, ids, new Date().toISOString(), new Date().toISOString());
   db().prepare('UPDATE summaries SET subject_key = NULL, rebuild_state = NULL WHERE id = ?').run(s.id);
   return s.id;
 }
@@ -121,6 +143,7 @@ beforeEach(() => {
   n = 0;
   model.calls = [];
   model.refuseCall = 0;
+  fault.leafFor = null; fault.contextItemsOnce = false;
   activeRuns.clear();
   __resetSummaryWriterHealthForTests();
   __resetBreakersForTests();
@@ -258,5 +281,49 @@ describe('t144 — the rebuild fails well (lifecycle shapes)', () => {
     const row = db().prepare('SELECT rebuild_state, content FROM summaries WHERE agent_id = ?').get(AGENT) as { rebuild_state: string; content: string };
     expect(row).toEqual({ rebuild_state: 'lineage_lost', content: 'Note whose rows were all deleted.' });
     expect(await viewOf()).toMatch(/conversation=\\"conversation unknown, /);
+  });
+});
+
+const OTHER = 'agent-t144-zzz';   // sorts after AGENT: the pass reaches it second
+const OTHER_CONVS: [string, string] = ['conv-t144-z-dash', 'conv-t144-z-mail'];
+function seedOther(): string {
+  db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Second Reader', 'idle', ?, '{}')").run(OTHER, WRITER);
+  const conv = db().prepare('INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, counterparty_name) VALUES (?, ?, ?, ?, ?, ?)');
+  conv.run(OTHER_CONVS[0], OTHER, 'dashboard', null, 'owner', null);
+  conv.run(OTHER_CONVS[1], OTHER, 'email', 'gmail', 'second@depot.example', 'Second Dispatch');
+  return olderNote(history(2, 2, OTHER, OTHER_CONVS), 'Second agent mixed note.', OTHER);
+}
+const liveFor = (agent: string): number =>
+  (db().prepare("SELECT COUNT(*) AS k FROM summaries s JOIN context_items ci ON ci.item_id = s.id WHERE ci.agent_id = ? AND ci.item_type = 'summary' AND s.subject_key LIKE 'conv:%'").get(agent) as { k: number }).k;
+
+describe('t144 round 2 — one agent\'s failure never starves the others (I1)', () => {
+  it('a throw while swapping the first agent is logged against it; the second agent is still rebuilt', async () => {
+    olderNote(history(2, 2));
+    seedOther();
+    rebuildContextItems(AGENT); rebuildContextItems(OTHER);
+    fault.leafFor = AGENT;
+    const stats = await runSummaryRebuildBatch();
+    expect(stats.legacy?.waiting[AGENT]).toMatch(/simulated defect row/);
+    expect(liveFor(OTHER)).toBe(2);
+    expect(stats.legacy?.agentsSwapped).toBe(1);
+    expect(live().map((r) => r.rebuild_state)).toEqual(['legacy_mixed_rebuild']);   // the failed agent keeps its labelled note
+  });
+});
+
+describe('t144 round 2 — covered rows and rows in view change together (I4)', () => {
+  it('a crash right after the swap leaves the older note in view and every row covered once; the next run finishes without paying again', async () => {
+    const ids = history(2, 2);
+    olderNote(ids);
+    rebuildContextItems(AGENT);
+    fault.contextItemsOnce = true;
+    const first = await runSummaryRebuildBatch();
+    expect(first.legacy?.waiting[AGENT]).toMatch(/simulated crash/);
+    for (const id of ids) expect(coverCount(id), `${id} is covered AND in view`).toBe(1);
+    expect(live().map((r) => r.rebuild_state)).toEqual(['legacy_mixed_rebuild']);
+    const paid = model.calls.length;
+    await runSummaryRebuildBatch();
+    expect(model.calls.length, 'the staged chunks are not paid for twice').toBe(paid);
+    expect(live()).toHaveLength(2);
+    for (const id of ids) expect(coverCount(id), id).toBe(1);
   });
 });
