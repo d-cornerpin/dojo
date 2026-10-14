@@ -24,10 +24,7 @@
 //     unknown, <dates>"), keeping its content. A refusal leaves the older note in place, labelled.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
@@ -46,7 +43,6 @@ import { checkBudget } from '../costs/budget.js';
 import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('legacy-notes-rebuild');
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export interface LegacyRebuildStats {
   /** Notes written by a version that did not label them, classified this run. */
@@ -63,19 +59,73 @@ export interface LegacyRebuildStats {
 }
 
 /**
- * The classification rule, ONE implementation: migration 192's own statements, read from the shipped
- * file, re-run over notes nobody labelled — those a downgraded version wrote. Idempotent by predicate.
+ * The classification rule: migration 192's own statements (its comments stripped), re-run over notes
+ * nobody labelled — those a downgraded version wrote. Idempotent by predicate. ONE rule: a test holds
+ * this text byte-equal to the migration file's (`t144-migration-192-labels-older-notes.test.ts`).
  */
+export const CLASSIFY_SQL = `CREATE TEMP TABLE t192_desc AS
+WITH RECURSIVE d(root, id) AS (
+  SELECT id, id FROM summaries WHERE subject_key IS NULL AND rebuild_state IS NULL
+  UNION
+  SELECT d.root, sp.parent_id FROM d JOIN summary_parents sp ON sp.summary_id = d.id
+)
+SELECT root, id FROM d;
+CREATE INDEX t192_desc_id ON t192_desc(id);
+
+CREATE TEMP TABLE t192_root AS
+SELECT d.root AS root,
+       COUNT(DISTINCT k.key) AS keys,
+       MIN(k.key) AS one_key,
+       MIN(k.created_at) AS first_at
+  FROM t192_desc d
+  JOIN summary_messages sm ON sm.summary_id = d.id
+  JOIN (SELECT m.id AS id, m.created_at AS created_at,
+               CASE
+                 WHEN m.role = 'system' THEN NULL
+                 WHEN m.role = 'user' AND (m.lane = 'a2a' OR m.source_agent_id IS NOT NULL) THEN 'a2a:' || COALESCE(m.a2a_thread_id, '')
+                 WHEN m.role = 'user' AND m.lane = 'events' THEN 'engine'
+                 WHEN m.role = 'user' THEN COALESCE('conv:' || m.conversation_id, 'unknown')
+                 WHEN m.subject_kind IN ('conv', 'legacy', 'delivered') THEN COALESCE('conv:' || m.conversation_id, 'unknown')
+                 WHEN m.subject_kind = 'a2a_thread' THEN 'a2a:' || COALESCE(m.a2a_thread_id, '')
+                 WHEN m.subject_kind = 'engine_event' THEN 'engine'
+                 WHEN m.subject_kind = 'background' THEN 'background'
+                 WHEN m.subject_kind = 'unknown' THEN 'unknown'
+                 ELSE COALESCE('conv:' || m.conversation_id, 'a2a:' || m.a2a_thread_id, 'unknown')
+               END AS key
+          FROM messages m) k ON k.id = sm.message_id
+ GROUP BY d.root;
+CREATE UNIQUE INDEX t192_root_key ON t192_root(root);
+
+UPDATE summaries SET subject_key = (SELECT r.one_key FROM t192_root r WHERE r.root = summaries.id)
+ WHERE subject_key IS NULL AND rebuild_state IS NULL
+   AND id IN (SELECT root FROM t192_root WHERE keys = 1);
+
+UPDATE summaries SET subject_key = 'unknown'
+ WHERE subject_key IS NULL AND rebuild_state IS NULL
+   AND id IN (SELECT root FROM t192_root WHERE keys = 0);
+
+UPDATE summaries SET rebuild_state = 'legacy_mixed_rebuild'
+ WHERE subject_key IS NULL AND rebuild_state IS NULL
+   AND id IN (SELECT root FROM t192_root
+               WHERE keys > 1 AND first_at >= (CAST(strftime('%s', 'now') AS INTEGER) - 14 * 86400) * 1000);
+
+UPDATE summaries SET rebuild_state = 'legacy_mixed'
+ WHERE subject_key IS NULL AND rebuild_state IS NULL
+   AND id IN (SELECT root FROM t192_root WHERE keys > 1);
+
+UPDATE summaries SET rebuild_state = 'lineage_lost'
+ WHERE subject_key IS NULL AND rebuild_state IS NULL;
+
+DROP TABLE t192_root;
+DROP TABLE t192_desc;`;
+
 export function classifyUnlabelledNotes(): number {
   const db = getDb();
   if (!db.prepare('SELECT 1 FROM summaries WHERE subject_key IS NULL AND rebuild_state IS NULL LIMIT 1').get()) return 0;
-  const file = fs.readFileSync(path.join(HERE, '..', 'db', 'migrations', '192_summaries_rebuild_state.sql'), 'utf8');
-  const sql = file.split('\n').filter((l) => !l.trimStart().startsWith('--')).join('\n');
-  const body = sql.slice(sql.indexOf('CREATE TEMP TABLE t192_desc'));
   let changed = 0;
   db.transaction(() => {
     db.exec('DROP TABLE IF EXISTS temp.t192_root; DROP TABLE IF EXISTS temp.t192_desc;');
-    for (const st of body.split(';').map((x) => x.trim()).filter(Boolean)) changed += st.startsWith('UPDATE') ? db.prepare(st).run().changes : (db.exec(st), 0);
+    for (const st of CLASSIFY_SQL.split(';').map((x) => x.trim()).filter(Boolean)) changed += st.startsWith('UPDATE') ? db.prepare(st).run().changes : (db.exec(st), 0);
   })();
   if (changed > 0) logger.info('Labelled notes a version without conversation labels wrote', { changed });
   return changed;

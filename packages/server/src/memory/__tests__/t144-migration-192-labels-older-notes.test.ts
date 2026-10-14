@@ -157,6 +157,11 @@ describe('migration 192 — the notes already on a box', () => {
     expect(db.prepare('SELECT COUNT(*) AS m, (SELECT COUNT(*) FROM summary_messages) AS l, (SELECT group_concat(content) FROM messages) AS c FROM messages').get()).toEqual(before);
   });
 
+  it('ONE RULE: the nightly job re-runs exactly these statements for notes a downgraded version wrote', async () => {
+    const { CLASSIFY_SQL } = await import('../legacy-notes-rebuild.js');
+    expect(CLASSIFY_SQL.split(';').map((x) => x.trim()).filter(Boolean)).toEqual(body());
+  });
+
   it('on a VACUUM INTO file copy, as the release rehearsal runs it', () => {
     const dir = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 't144-192-'));
     const file = path.join(dir, 'copy.db');
