@@ -38,7 +38,7 @@ import { sendAlert } from '../../services/imessage-bridge.js';
 import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import type { AgentTurnState } from './state.js';
 import { createLogger } from '../../logger.js';
-import { noteWaitingOfParked } from './honest-stop-notes.js';
+import { noteWaitingOfParked, noticeIdentityFor } from './honest-stop-notes.js';
 import { AgentError } from '../errors.js';
 import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
@@ -190,10 +190,10 @@ export async function releaseHonestStops(kind: HonestStopKind, opts: { agentId?:
 }
 
 /** The agent's own chat gets the platform's notice (its next session reads it). */
-function noteInChat(agentId: string, content: string): void {
+function noteInChat(agentId: string, content: string, answers?: { id?: string; conversationId?: string | null }): void {
   try {
-    const id = uuidv4();
-    insertMessageIfAbsent({ id, agentId, role: 'system', content });
+    const id = answers?.id ?? uuidv4();
+    insertMessageIfAbsent({ id, agentId, role: 'system', content, conversationId: answers?.conversationId });
     broadcast({ type: 'chat:message', agentId, message: { id, agentId, role: 'system', content, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
   } catch { /* the chat:error below still reaches the owner */ }
 }
@@ -230,7 +230,7 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   noteWaitingOfParked(agentId, alreadyTold ? null : state.lastUserMessageId);   // a message that arrived mid-turn is not left in silence
   if (alreadyTold) return true;
 
-  noteInChat(agentId, `[System (platform notice): ${stop.words}]`);
+  noteInChat(agentId, `[System (platform notice): ${stop.words}]`, noticeIdentityFor(agentId, state.lastUserMessageId));   // the notice IS that message's line (its id), so a later message does not re-tell it
   broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
   // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
   // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.

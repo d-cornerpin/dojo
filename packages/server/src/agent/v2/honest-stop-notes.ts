@@ -13,6 +13,25 @@ import { parkedCauseOf } from './honest-stop-lock.js';
 const logger = createLogger('honest-stop');
 
 /**
+ * The row identity the park's OWN notice takes when it answers a message (t152 step 17): the same
+ * `park-note:<message>` id and the message's own conversation, so "this message was answered" is one
+ * fact in one place and a later message does not write the first one a second line. Empty (the notice
+ * keeps a fresh id) when there is no waiting message to answer, or a line already stands under that id
+ * (a fresh park for a message that was already told an earlier park: the new notice must still be written).
+ */
+export function noticeIdentityFor(agentId: string, rootId: string | null | undefined): { id?: string; conversationId?: string | null } {
+  if (!rootId) return {};
+  try {
+    const db = getDb();
+    const ask = db.prepare(`SELECT conversation_id AS conversationId FROM work WHERE kind = 'ask' AND agent_id = ? AND root_id = ? AND state = 'open'`).get(agentId, rootId) as { conversationId: string | null } | undefined;
+    if (!ask) return {};
+    const id = `park-note:${rootId}`;
+    if (db.prepare('SELECT 1 FROM messages WHERE id = ?').get(id)) return {};
+    return { id, conversationId: ask.conversationId };
+  } catch { return {}; }
+}
+
+/**
  * A person who messages a parked agent is not met with silence (t148 round 5). Every owner ask still
  * waiting on a parked agent gets, ONCE, the platform's existing owner-visible system line in ITS OWN
  * conversation: the true cause in plain words, and that the message is kept and answered when it clears.
