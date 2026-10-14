@@ -568,18 +568,20 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // request's conversation; a waiting (paused/blocked) line prints a status, whom it waits on,
     // "not current" and a POINTER instead of words. The generator renders every split of the
     // five rows between the two line shapes and keeps the largest. The words pool itself is the
-    // pin's 8,000 characters, so once t145 deletes the pin (-2,081) the net is +264 tokens.
+    // pin's 8,000 characters (the pin's reserve, -2,081, left with t145).
     // Round 5: 3,584 -> 3,618 (+34), the closing "N more unfinished tasks not shown" line at a
     // 10-digit count — a row the room cannot hold is now COUNTED, never dropped silently. And the
     // reserve is now the list's GUARANTEE, not its ceiling: at run time it is laid out in this
     // reserve PLUS the content fit's unspent budget (`activeTasksRoomTokens`), so on a roomy view
-    // every request is whole. Net once the pin goes: +323 (t141 merge, +25: a fixed 10-char zone on each of its 10 instants).
-    // t145 group A: 3,643 -> 3,857 (+214). A current line now carries the owner's LATER messages that
-    // updated the task (`memory/task-list-words.ts`): at worst a labelled head, one cut message with its
-    // `history_get` pointer, and the one collapse line that names how many more remain and the newest.
-    // The words themselves are still the one room-driven pool; this is only the framing's worst case.
-    // Group B frees the pin's 2,081 tokens, so the pair nets out below where t139 left the budget.
-    reserveTokens: 3857,
+    // every request is whole. (t141 merge, +25: a fixed 10-char zone on each of its 10 instants.)
+    // t145 group A: 3,643 -> 3,857 (+214), round 2 -> 3,980 (+123 more). A current line now carries the
+    // owner's LATER messages whose serving turn touched the task (`memory/task-list-words.ts`), newest
+    // paid first. The generator builds, for every split of the rows, the pool-draining case (one cut
+    // message and the one collapse line) AND the PARTIAL-REMAINDER case: the first row's newest message
+    // is swept across every length that leaves a sliver of pool, so the older one prints a head, a few
+    // characters and a cut line — longer than a collapse line. The words are still the one room-driven
+    // pool; this is only the framing's worst case. Group B frees the pin's 2,081 reserved tokens.
+    reserveTokens: 3980,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
@@ -594,7 +596,10 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + '(chars.originLabel) and the widest recorded-instant stamp, a 200-char last note '
       + '(chars.lastNote), the widest waiting-status line (t139: every unfinished task is listed), '
       + 'an edited-description head and its pointer-only cut line and a 10-digit newer-messages count on every '
-      + 'current task, the waiting line (status, whom, not-current, pointer) for every split of the rows, a full 36-char id and '
+      + 'current task, the owner\'s LATER messages (t145: a labelled head, a message cut to its `history_get` pointer, '
+      + 'and one collapse line naming a 10-digit count of older messages and the newest; the generator sweeps the first '
+      + 'row\'s newest message across every length that leaves a partial remainder of the pool, because that case '
+      + 'prints more than a collapse line), the waiting line (status, whom, not-current, pointer) for every split of the rows, a full 36-char id and '
       + 'the widest `renderTaskStamps({relative:false})` / `renderStepFacts` terms, both '
       + 'measured by CALLING those two renderers rather than counted beside them. '
       + 'WHY IT IS A RESERVE AT ALL: this lane was a `fitLanes` candidate at '
@@ -605,8 +610,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       + 'six PURE READS: that is why `plaud_*` and `outlook_*` appear in the owner\'s list of '
       + 'six occurrences alongside the two `work_update`s. '
       + 'WHAT IT COSTS: the block is uncached now, and its title is capped where it was not. '
-      + 't139 adds 2,379 tokens off the top of every assembly for the requester\'s words; the '
-      + 'pin\'s own 2,081 for the same 8,000 characters is freed by t145, a net +298. '
+      + 't139 adds 2,379 tokens off the top of every assembly for the requester\'s words, and t145 adds the '
+      + 'later-message framing; the pin\'s own 2,081 for the same 8,000 characters is freed by t145. '
       + 'ROUND 5: this reserve is the list\'s GUARANTEE, not its ceiling — the block is laid out '
       + 'in this reserve plus whatever the content fit left unspent (`activeTasksRoomTokens`), so '
       + 'a roomy view carries every request whole and a full one still carries this much.',

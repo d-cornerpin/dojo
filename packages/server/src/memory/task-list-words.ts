@@ -79,38 +79,44 @@ export function readLaterMessages(taskId: string): ListedMessage[] {
 }
 
 /**
- * The later-message section of a current task's line. Each message spends the pool for its
- * whole rendering (framing included), so the section is bounded by the room, never by a count.
- * When the pool is gone the rest collapse into ONE line that says how many remain and names the
- * newest — a label, never a silent cut.
+ * The later-message section of a current task's line. WHAT THE LABEL CLAIMS is only what the link
+ * records (`tracker/later-instruction.ts`): the message was sent while the task was open, and the
+ * turn that answered it touched the task. It never says the message "updated" anything.
+ *
+ * UNDER ROOM PRESSURE THE NEWEST WORDS GET THE ROOM FIRST: messages are paid newest to oldest
+ * (and `renderTaskLines` runs this pass BEFORE the original request's), then printed in the order
+ * they were sent. Each message spends the pool for its whole rendering (framing included), so the
+ * section is bounded by the room, never by a count. When the pool is gone the OLDER messages left
+ * collapse into ONE line, printed first, that says how many and names the newest of them (label,
+ * never a silent cut).
  */
-export function laterSection(
-  laters: readonly ListedMessage[], pool: WordsPool, caps: TermCaps,
-): string {
-  let out = '';
-  for (let i = 0; i < laters.length; i++) {
+export function laterSection(laters: readonly ListedMessage[], pool: WordsPool, caps: TermCaps): string {
+  const printed: string[] = new Array(laters.length).fill('');
+  let collapsed = 0;
+  for (let i = laters.length - 1; i >= 0; i--) {
     const m = laters[i];
-    if (pool.remaining <= 0) {
-      const id = laters[laters.length - 1].messageId;
-      return out + `\n  [${laters.length - i} more later message${laters.length - i === 1 ? '' : 's'} updated this task, `
-        + `the newest is message ${id}; history_get(id="${id}") returns it]`;
-    }
+    if (pool.remaining <= 0) { collapsed = i + 1; break; }
     if (m.words === null) {
-      const line = `\n  [later message ${m.messageId}, which updated this task, is no longer stored]`;
-      out += line; pool.remaining -= line.length;
+      printed[i] = `\n  [later message ${m.messageId}, which the owner sent while this task was open, is no longer stored]`;
+      pool.remaining -= printed[i].length;
       continue;
     }
     const from = `from ${capLabel(m.label, 'a conversation with no recorded label', caps)}, ${recordedInstant(m.createdAt)}`;
+    const when = 'sent while this task was open (the turn that answered it touched this task)';
     if (m.inView) {
-      const line = `\n  Later message that updated this task (${from}): it is in the conversation above, `
+      printed[i] = `\n  Later message ${from}, ${when}: it is in the conversation above, `
         + `message ${m.messageId}; read it there, it is not repeated here.`;
-      out += line; pool.remaining -= line.length;
+      pool.remaining -= printed[i].length;
       continue;
     }
-    const head = `\n  Later message that updated this task (${from}), word for word:\n`;
+    const head = `\n  Later message ${from}, ${when}, word for word:\n`;
     pool.remaining -= head.length;
-    out += head + spend(m.words, pool, '  [end of later message]',
+    printed[i] = head + spend(m.words, pool, '  [end of later message]',
       (more) => `  [later message continues: ${more} more characters; history_get(id="${m.messageId}") returns it in full]`);
   }
-  return out;
+  if (collapsed === 0) return printed.join('');
+  const id = laters[collapsed - 1].messageId;
+  return `\n  [${collapsed} older later message${collapsed === 1 ? '' : 's'} sent while this task was open, `
+    + `answered by turns that touched it; the newest of them is message ${id}; history_get(id="${id}") returns it]`
+    + printed.join('');
 }

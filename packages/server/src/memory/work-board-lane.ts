@@ -198,6 +198,9 @@ function renderTaskLines(views: TaskView[], poolChars: number, caps: TermCaps): 
   const requestOf = new Map<number, string>();
   const editedOf = new Map<number, string>();
   const laterOf = new Map<number, string>();
+  // The owner's NEWEST words are paid first (t145 round 2): the later messages, newest to oldest, then
+  // the original requests with what is left. They PRINT after the original, in the order sent.
+  views.forEach((v, i) => { if (!v.waiting && v.laters.length > 0) laterOf.set(i, laterSection(v.laters, pool, caps)); });
   views.forEach((v, i) => { if (!v.waiting) requestOf.set(i, requestSection(v, pool, caps)); });
   views.forEach((v, i) => {
     if (!v.waiting && v.edited && v.t.description && v.origin.messageId && v.origin.words !== null) {
@@ -206,8 +209,6 @@ function renderTaskLines(views: TaskView[], poolChars: number, caps: TermCaps): 
         (more) => `  [description continues: ${more} more characters, not shown]`));
     }
   });
-  // The last pass: the owner's later messages, after every request and edited description.
-  views.forEach((v, i) => { if (!v.waiting && v.laters.length > 0) laterOf.set(i, laterSection(v.laters, pool, caps)); });
   return views.map((v, i) => taskLine(v, (requestOf.get(i) ?? '') + (laterOf.get(i) ?? ''), editedOf.get(i) ?? '', caps));
 }
 
@@ -713,7 +714,7 @@ export function activeTasksWorstCaseTokens(): number {
     .map((by) => ({ by, len: waitingOn({ origin: { party }, waiting: { since: null, by } } as TaskView, caps).length }))
     .sort((a, b) => b.len - a.len)[0].by;
   const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
-  const view = (shape: 'current' | 'waiting' | 'inView'): TaskView => ({
+  const view = (shape: 'current' | 'waiting' | 'inView', newestLen = wordsCap + 1): TaskView => ({
     t: {
       id: 'w'.repeat(36),
       title: 't'.repeat(titleCap + 10),        // over the cap, so the `...` suffix is counted
@@ -730,9 +731,11 @@ export function activeTasksWorstCaseTokens(): number {
     waiting: shape === 'waiting' ? { since: widestInstant, by: widestWaitingBy } : null,
     edited: true,
     newer: { count: longest, newestAt: widestInstant },
-    // Two long later messages: the pool is spent on the first, the rest collapse into one line.
-    laters: shape === 'waiting' ? [] : [0, 1].map(() => ({
-      messageId: 'l'.repeat(36), words: 'w'.repeat(wordsCap + 1), createdAt: widestInstant, label: party,
+    // Two later messages, the NEWEST paid first. A long one takes the whole pool and the older collapses
+    // to one line; a newest of `newestLen` leaves a PARTIAL REMAINDER that the older message then spends
+    // as a head, a few characters and a cut line (the shape that is longer than the collapse line).
+    laters: shape === 'waiting' ? [] : [wordsCap + 1, newestLen].map((len) => ({
+      messageId: 'l'.repeat(36), words: 'w'.repeat(len), createdAt: widestInstant, label: party,
       inView: shape === 'inView',
     })),
     inView: shape === 'inView',
@@ -740,12 +743,25 @@ export function activeTasksWorstCaseTokens(): number {
   let worst = 0;
   // Round 6: three line shapes — current, waiting, and in view (a pointer to the conversation).
   for (let waitingRows = 0; waitingRows <= rows; waitingRows++) for (let inViewRows = 0; inViewRows <= rows - waitingRows; inViewRows++) {
-    const views = Array.from({ length: rows }, (_, i) =>
-      view(i >= rows - waitingRows ? 'waiting' : i >= rows - waitingRows - inViewRows ? 'inView' : 'current'));
-    const lines = renderTaskLines(views, wordsCap, caps)
-      .map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`));
-    // The closing "N more not shown" line at a count no real board reaches.
-    worst = Math.max(worst, estimateTokens(renderActiveTasksBlock(lines, longest) ?? ''));
+    // The first row's newest later message is swept across every length that leaves a remainder in the
+    // pool (step 25 is finer than the 100-character head a remainder has to straddle), so the PARTIAL
+    // case is constructed rather than assumed; every other row carries a pool-draining one.
+    const lengths = [wordsCap + 1];
+    for (let len = wordsCap - 800; len <= wordsCap; len += 25) lengths.push(len);
+    for (const newestLen of lengths) {
+      let firstCurrent = true;
+      const views = Array.from({ length: rows }, (_, i) => {
+        const shape = i >= rows - waitingRows ? 'waiting' : i >= rows - waitingRows - inViewRows ? 'inView' : 'current';
+        const v = view(shape, firstCurrent ? newestLen : wordsCap + 1);
+        if (shape !== 'waiting') firstCurrent = false;
+        return v;
+      });
+      const lines = renderTaskLines(views, wordsCap, caps)
+        .map((l) => l.replace(/continues: \d+ more/g, `continues: ${longest} more`)
+          .replace(/\[\d+ older later message/g, `[${longest} older later message`));
+      // The closing "N more not shown" line at a count no real board reaches.
+      worst = Math.max(worst, estimateTokens(renderActiveTasksBlock(lines, longest) ?? ''));
+    }
   }
   activeTasksWorstCase = worst;
   return activeTasksWorstCase;
