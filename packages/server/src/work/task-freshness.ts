@@ -41,11 +41,11 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
  *      when the owner stops the agent, or when the agent leaves the running states (`endJobCarry`,
  *      called by the one status writer).
  *  In memory on purpose: a restart ends the job's turn. There is no clock: a call may run for hours. */
-const jobWork = new Map<string, { ids: string[]; asks: string[]; drainWake: boolean; timerWakes: number; running: boolean; parkTurn: number | null }>();
+const jobWork = new Map<string, { ids: string[]; asks: string[]; drainWake: boolean; timerWakes: number; running: boolean }>();
 
 const carryOf = (agentId: string) => {
   let c = jobWork.get(agentId);
-  if (!c) { c = { ids: [], asks: [], drainWake: false, timerWakes: 0, running: false, parkTurn: null }; jobWork.set(agentId, c); }
+  if (!c) { c = { ids: [], asks: [], drainWake: false, timerWakes: 0, running: false }; jobWork.set(agentId, c); }
   return c;
 };
 
@@ -68,24 +68,43 @@ export function registerDrainWake(agentId: string): void {
 /** The park armed its continuation on the tool-loop timer. */
 export function registerTimerWake(agentId: string): void {
   const c = jobWork.get(agentId);
-  if (c) { c.timerWakes += 1; c.parkTurn = turnContext(agentId)?.turnNumber ?? null; }
+  if (c) c.timerWakes += 1;
 }
 
-/** t158 E — A PARK QUEUES EXACTLY ONE CONTINUATION. The park's own timer fired while the agent is
- *  busy. If the turn running NOW is a LATER turn than the one that parked and it serves one of the
- *  job's own asks, it IS the continuation (the ask's settlement re-opened it and the drain started
- *  it a moment after the park), so the timer's wake is consumed: queueing it on the shared set made
- *  it run one more turn after the job's final answer, with nothing owed (ritual run 6, S1). Returns
- *  whether the wake was consumed. Any other busy turn (an owner message, a peer, the parking turn
- *  itself still winding down) leaves the wake to be deferred as before. */
-export function absorbTimerWake(agentId: string): boolean {
+/** t158 E — A PARK QUEUES EXACTLY ONE CONTINUATION, KEPT BY BOOKKEEPING AND NOT BY TIMING. The tool-loop
+ *  park's timer wake carries a token. When the ask-settlement re-open lets the drain start the real
+ *  continuation first (it serves one of the job's own asks), THAT run is the continuation: its start
+ *  spends the token, and the timer, whenever it fires and whatever the agent is doing, finds its token
+ *  spent and does nothing. A park with no ask (no drain) is never spent, so its timer is the only wake. */
+export interface TimerWake { spent: boolean }
+const armedTimerWakes = new Map<string, TimerWake[]>();
+
+/** The park armed its continuation on the tool-loop timer: count it, and hand the timer its token. */
+export function armTimerWake(agentId: string): TimerWake {
+  registerTimerWake(agentId);
+  const wake: TimerWake = { spent: false };
+  armedTimerWakes.set(agentId, [...(armedTimerWakes.get(agentId) ?? []), wake]);
+  return wake;
+}
+
+/** The timer fired: forget its token; true when the token was already spent (nothing to run). */
+export function timerWakeIsSpent(agentId: string, wake: TimerWake): boolean {
+  const rest = (armedTimerWakes.get(agentId) ?? []).filter((w) => w !== wake);
+  if (rest.length > 0) armedTimerWakes.set(agentId, rest); else armedTimerWakes.delete(agentId);
+  return wake.spent;
+}
+
+/** A queued-wakeup run is STARTING, before any turn context exists. If it will serve one of the parked
+ *  job's own asks (`servedIds`, read lazily, only while a park's timer wake is owed), it IS the park's
+ *  continuation: spend one timer token and carry the job as a timer-started run does. */
+export function beginContinuationRun(agentId: string, servedIds: () => string[]): boolean {
   const c = jobWork.get(agentId);
-  if (!c || c.timerWakes <= 0) return false;
-  const bag = turnContext(agentId);
-  const served = bag?.root?.kind === 'ask' ? bag.root.sourceMessageId : null;
-  if (!served || !c.asks.includes(served)) return false;
-  if (bag?.turnNumber == null || bag.turnNumber === c.parkTurn) return false;
-  c.timerWakes -= 1;
+  const wake = (armedTimerWakes.get(agentId) ?? []).find((w) => !w.spent);
+  if (!c || !wake || c.asks.length === 0) return false;
+  try { if (!servedIds().some((id) => c.asks.includes(id))) return false; } catch { return false; }   // an unreadable probe spends nothing
+  wake.spent = true;
+  if (c.timerWakes > 0) c.timerWakes -= 1;
+  c.running = true;
   return true;
 }
 

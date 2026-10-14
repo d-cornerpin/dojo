@@ -7,7 +7,7 @@
 
 import { createLogger } from '../logger.js';
 import { queueSelfWake } from '../agent/shared-state.js';
-import { registerDrainWake, registerTimerWake, carryJobWork, turnWorkIds } from './task-freshness.js';
+import { registerDrainWake, armTimerWake, timerWakeIsSpent, carryJobWork, turnWorkIds } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
 
 const logger = createLogger('job-continuation');
@@ -23,8 +23,12 @@ export function queueJobContinuation(agentId: string, reason: string): boolean {
 /** The tool-loop park's continuation: its own timer (a second lets the park's DB writes settle),
  *  which starts a run FROM that wake. */
 export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
-  registerTimerWake(agentId);
+  const wake = armTimerWake(agentId);
   setTimeout(() => {
+    if (timerWakeIsSpent(agentId, wake)) {   // t158 E: the drain already started this park's continuation
+      logger.info('park timer wake not run: its continuation already started', { agentId }, agentId);
+      return;
+    }
     void import('../agent/runtime.js')
       .then((m) => m.getAgentRuntime().handleMessage(agentId, '', { job: true }))
       .catch((err: unknown) => {

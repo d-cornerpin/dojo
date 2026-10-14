@@ -10,10 +10,11 @@
 // re-ran it and sent the owner a second full result.
 //
 // The real runtime runs here (`handleMessage`, the busy path, the queued-wakeup drain, the run's
-// `finally`); only the turn itself is scripted. When the park's timer fires while a turn that
-// serves the job's own ask — a LATER turn than the one that parked — is already running, that
-// turn is the continuation and the timer's wake is consumed. A real arrival (an owner message, a
-// peer) is not a park wake and still gets its turn.
+// `finally`); only the turn itself is scripted. The rule is kept by BOOKKEEPING, not timing: the
+// park's timer wake carries a token; the drain run that starts to serve the job's own ask IS the
+// continuation and spends it at run START (before any turn context exists); the timer finds its
+// token spent and does nothing, busy or idle. A park with no ask is never spent, and a real arrival
+// (a call without `job:true`) is untouched.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -112,6 +113,7 @@ async function toolLoopPark(): Promise<void> {
 }
 
 
+
 async function seedAsk(): Promise<void> {
   const { insertMessage } = await import('../../memory/message-store.js');
   const { claimAsk, askIdForMessage } = await import('../../work/store.js');
@@ -122,93 +124,124 @@ async function seedAsk(): Promise<void> {
   } as never);
   claimAsk(askIdForMessage('msg-ask'), AGENT);
 }
+const askState = (state: string): void => {
+  mockDb.current!.prepare("UPDATE work SET state = ?, closed_at = ? WHERE kind = 'ask' AND root_id = 'msg-ask'")
+    .run(state, state === 'abandoned' ? Date.now() : null);
+};
+const ASK_ROOT: Root = { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' };
+
+/** Turn 1 hits the cap: the REAL park (timer); settlement re-opens the ask and the drain queues the wake. */
+function capTurn(ran: number[]): () => Promise<void> {
+  return () => engineTurn(1, ASK_ROOT, async () => {
+    ran.push(1);
+    m.cont.parkJob(AGENT, 'tool-loop', 'timer');
+    askState('open');
+    m.shared.queueSelfWake(AGENT, 'human-conversation-drain');
+  });
+}
+/** The drain's turn: picks the ask up again and ends by answering it (the ask is closed). */
+function drainTurn(ran: number[], hold?: Promise<void>): () => Promise<void> {
+  return () => engineTurn(2, ASK_ROOT, async () => {
+    ran.push(2);
+    askState('claimed');
+    if (hold) await hold;
+    askState('abandoned');
+  });
+}
+const idleTurn = (n: number, ran: number[]) => () => engineTurn(n, null, () => { ran.push(n); });
 
 describe('t158 E — a park yields exactly one continuation turn', () => {
-  it('cap -> ask re-opened -> drain wake runs the continuation -> the park\'s timer fires while it runs: after the job\'s answer NO further turn starts', async () => {
+  it('(a) the Run 6 order: cap, drain run at +500 ms, timer at +1000 ms while it is busy: one continuation, nothing after the answer', async () => {
     await seedAsk();
-    const rt = m.runtime.getAgentRuntime();
-    const ran: Array<{ turn: number; root: string | null }> = [];
-    let releaseTurn2: () => void = () => undefined;
-    const turn2Held = new Promise<void>((r) => { releaseTurn2 = r; });
-    const steps: Array<() => Promise<void>> = [];
-    const record = (n: number) => ran.push({ turn: n, root: m.ctx.turnContext(AGENT)?.root?.kind ?? null });
-
-    // Turn 1 hits the cap: the REAL park (timer), and the ask's settlement + the drain queue the real continuation.
-    steps.push(() => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
-      record(1);
-      m.cont.parkJob(AGENT, 'tool-loop', 'timer');
-      m.shared.queueSelfWake(AGENT, 'human-conversation-drain');
-    }));
-    // Turn 2: the drain's turn, picked up with the SAME ask; the park's timer fires while it runs.
-    steps.push(() => engineTurn(2, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
-      record(2);
-      await turn2Held;
-    }));
-    // Any further turn is the defect: no trigger, no root, nothing owed.
-    steps.push(() => engineTurn(3, null, () => { record(3); }));
-    steps.push(() => engineTurn(4, null, () => { record(4); }));
-    script.run = async () => { await steps.shift()?.(); };
-
-    await rt.handleMessage(AGENT, 'the job');
-    await vi.advanceTimersByTimeAsync(600);        // the drain: turn 2 starts
-    await vi.advanceTimersByTimeAsync(600);        // the park's 1 s timer fires mid-turn-2
-    releaseTurn2();                                // the job's final answer; turn 2 ends
-    await vi.advanceTimersByTimeAsync(5000);       // long enough for any leftover wake to run
-    expect(ran.map((r) => r.turn), 'exactly one continuation ran, and nothing after the answer').toEqual([1, 2]);
-  });
-
-  it('a real message arriving while the continuation runs still gets its own turn', async () => {
-    await seedAsk();
-    const rt = m.runtime.getAgentRuntime();
     const ran: number[] = [];
-    let releaseTurn2: () => void = () => undefined;
-    const turn2Held = new Promise<void>((r) => { releaseTurn2 = r; });
-    const steps: Array<() => Promise<void>> = [];
-    steps.push(() => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
-      ran.push(1);
-      m.cont.parkJob(AGENT, 'tool-loop', 'timer');
-      m.shared.queueSelfWake(AGENT, 'human-conversation-drain');
-    }));
-    steps.push(() => engineTurn(2, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
-      ran.push(2);
-      await turn2Held;
-    }));
-    steps.push(() => engineTurn(3, { kind: 'ask', id: 'msg-new', sourceMessageId: 'msg-new' }, () => { ran.push(3); }));
-    steps.push(() => engineTurn(4, null, () => { ran.push(4); }));
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => { release = r; });
+    const steps = [capTurn(ran), drainTurn(ran, held), idleTurn(3, ran), idleTurn(4, ran)];
     script.run = async () => { await steps.shift()?.(); };
-
-    await rt.handleMessage(AGENT, 'the job');
-    await vi.advanceTimersByTimeAsync(600);
-    await vi.advanceTimersByTimeAsync(600);        // the park's timer fires mid-turn-2
-    await rt.handleMessage(AGENT, 'a brand new owner message');   // a real arrival, busy: queued
-    releaseTurn2();
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(600);        // the drain run starts
+    await vi.advanceTimersByTimeAsync(600);        // the park's timer fires mid-run
+    release();                                     // the job's final answer
     await vi.advanceTimersByTimeAsync(5000);
-    expect(ran, 'the arrival got its turn; the park\'s leftover did not add another').toEqual([1, 2, 3]);
+    expect(ran).toEqual([1, 2]);
   });
 
-  it('CONTROL: a park whose continuation turn is NOT serving its ask (an owner message ran first) still defers its wake and runs it', async () => {
+  it('(b) SLOW PREFLIGHT: the drain run is started (activeRuns) but has no turn context when the timer fires: same result', async () => {
     await seedAsk();
-    const rt = m.runtime.getAgentRuntime();
     const ran: number[] = [];
-    let releaseOwner: () => void = () => undefined;
-    const ownerHeld = new Promise<void>((r) => { releaseOwner = r; });
-    const steps: Array<() => Promise<void>> = [];
-    steps.push(() => engineTurn(1, { kind: 'ask', id: 'msg-ask', sourceMessageId: 'msg-ask' }, async () => {
-      ran.push(1);
-      await rt.handleMessage(AGENT, 'an unrelated owner message');   // queued on the shared set
-      m.cont.parkJob(AGENT, 'tool-loop', 'timer');
-    }));
-    steps.push(() => engineTurn(2, { kind: 'ask', id: 'msg-owner', sourceMessageId: 'msg-owner' }, async () => {
-      ran.push(2);
-      await ownerHeld;
-    }));
-    steps.push(() => engineTurn(3, null, () => { ran.push(3); }));
+    let release: () => void = () => undefined;
+    const slowPreflight = new Promise<void>((r) => { release = r; });
+    const steps = [capTurn(ran), async () => { await slowPreflight; await drainTurn(ran)(); }, idleTurn(3, ran), idleTurn(4, ran)];
     script.run = async () => { await steps.shift()?.(); };
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(600);        // the drain run has started, preflight still running
+    expect(m.ctx.turnContext(AGENT), 'no turn context yet').toBeFalsy();
+    await vi.advanceTimersByTimeAsync(600);        // the timer fires into that window
+    release();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ran).toEqual([1, 2]);
+  });
 
+  it('(c) IDLE: the continuation finished inside the second; the timer then fires on an idle agent and starts no run', async () => {
+    await seedAsk();
+    const ran: number[] = [];
+    const steps = [capTurn(ran), drainTurn(ran), idleTurn(3, ran), idleTurn(4, ran)];
+    script.run = async () => { await steps.shift()?.(); };
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(700);        // the drain run starts and finishes
+    expect(ran).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(5000);       // the timer fires on an idle agent
+    expect(ran).toEqual([1, 2]);
+  });
+
+  it('(d) a tool-loop park with NO ask (no drain): the timer is the only continuation, and it runs', async () => {
+    const ran: number[] = [];
+    const steps = [
+      () => engineTurn(1, null, () => { ran.push(1); m.cont.parkJob(AGENT, 'tool-loop', 'timer'); }),
+      idleTurn(2, ran), idleTurn(3, ran),
+    ];
+    script.run = async () => { await steps.shift()?.(); };
+    await m.runtime.getAgentRuntime().handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ran).toEqual([1, 2]);
+  });
+
+  it('(e) a real message arriving while the continuation is busy still gets its own turn', async () => {
+    await seedAsk();
+    const ran: number[] = [];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => { release = r; });
+    const steps = [capTurn(ran), drainTurn(ran, held), idleTurn(3, ran), idleTurn(4, ran)];
+    script.run = async () => { await steps.shift()?.(); };
+    const rt = m.runtime.getAgentRuntime();
     await rt.handleMessage(AGENT, 'the job');
     await vi.advanceTimersByTimeAsync(600);
     await vi.advanceTimersByTimeAsync(600);
-    releaseOwner();
+    await rt.handleMessage(AGENT, 'a brand new owner message');   // a real arrival, busy: queued
+    release();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ran, 'the arrival got its turn; the park\'s timer added none').toEqual([1, 2, 3]);
+  });
+
+  it('CONTROL: an owner turn that runs before the continuation does not spend the park\'s wake; the continuation still runs', async () => {
+    await seedAsk();
+    const ran: number[] = [];
+    let release: () => void = () => undefined;
+    const ownerHeld = new Promise<void>((r) => { release = r; });
+    const rt = m.runtime.getAgentRuntime();
+    const steps = [
+      () => engineTurn(1, ASK_ROOT, async () => {
+        ran.push(1);
+        await rt.handleMessage(AGENT, 'an unrelated owner message');   // queued on the shared set
+        m.cont.parkJob(AGENT, 'tool-loop', 'timer');
+      }),
+      () => engineTurn(2, { kind: 'ask', id: 'msg-owner', sourceMessageId: 'msg-owner' }, async () => { ran.push(2); await ownerHeld; }),
+      idleTurn(3, ran),
+    ];
+    script.run = async () => { await steps.shift()?.(); };
+    await rt.handleMessage(AGENT, 'the job');
+    await vi.advanceTimersByTimeAsync(1200);
+    release();
     await vi.advanceTimersByTimeAsync(5000);
     expect(ran, 'the job\'s continuation still runs after the unrelated owner turn').toEqual([1, 2, 3]);
   });

@@ -2,7 +2,7 @@
 // 2055-line runAgentLoop they fed. What stays serves the v2 dispatch shell,
 // the helpers re-exported via getAgentRuntime (notifyPrimaryOfInjury,
 // stopAgent, preempt, etc.), and shared module-level state.
-import { absorbTimerWake, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
+import { beginContinuationRun, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -720,10 +720,6 @@ class AgentRuntime {
     // silently eat somebody else's inbound. Every wake the RUN queues for
     // ITSELF goes through `queueSelfWake` instead.
     if (activeRuns.has(agentId)) {
-      if (opts?.job && absorbTimerWake(agentId)) {   // t158 E: the turn running now IS this park's continuation
-        logger.info('Agent busy: the park\'s timer wake is consumed, the running turn is the job\'s continuation', { agentId }, agentId);
-        return;
-      }
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
       return;
@@ -731,6 +727,7 @@ class AgentRuntime {
 
     activeRuns.add(agentId);
     agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
+    if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // t158 E
 
     try {
       // v2 is the only runtime. The v1 dispatch + 2055-line runAgentLoop
