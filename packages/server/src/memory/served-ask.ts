@@ -13,14 +13,15 @@
 //     unanswered (`open`) ask rows in the SAME conversation that come AFTER it — the later owner
 //     messages merged into this turn. An older ask still `claimed` in that conversation (a job held
 //     behind a delegation, say) is NOT this turn's and is never re-shown by it;
-//   * a continuation carrying the same ask (no trigger of its own, `root` null, a conversation
-//     restored from the stash): the ask(s) still `claimed` in that conversation — the one being carried.
+//   * a continuation carrying a job (no trigger of its own): exactly the ask(s) the parking turn served,
+//     carried on t143's job record (`work/task-freshness.ts`) and still claimed.
 // With no running turn, or any other kind of turn (engine, A2A, occurrence), the answer is empty, so
 // a finished ask is never re-shown (the #7 defect). Oldest first. Never throws.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
+import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
 import { getMessagesByIds } from './store.js';
 import type { Message } from '@dojo/shared';
 
@@ -43,15 +44,10 @@ export function servedOwnerMessageIds(agentId: string): string[] {
       ).all({ agentId, trigger }) as Array<{ id: string }>;
       return rows.map((r) => r.id);
     }
-    if (!bag.root && typeof bag.conversationId === 'string') {
-      const rows = db.prepare(
-        `SELECT m.id AS id FROM work w JOIN messages m ON m.id = w.root_id
-          WHERE w.kind = 'ask' AND w.agent_id = @agentId AND w.state = 'claimed'
-            AND m.role = 'user' AND m.conversation_id = @conv
-          ORDER BY m.seq ASC`,
-      ).all({ agentId, conv: bag.conversationId }) as Array<{ id: string }>;
-      return rows.map((r) => r.id);
-    }
+    // A continuation carrying a job: the ask(s) the PARK recorded on the job's own record (t143's
+    // carry, `work/task-freshness.ts`), and only a run launched from that park's wake carries it. Any
+    // other trigger-less run (an A2A, the scheduler, an engine event) serves nothing it did not pick up.
+    if (!bag.root && runCarriesJob(agentId)) return jobCarriedAsks(agentId);
     return [];
   } catch {
     return [];

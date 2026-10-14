@@ -38,19 +38,22 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
  *      when the owner stops the agent, or when the agent leaves the running states (`endJobCarry`,
  *      called by the one status writer).
  *  In memory on purpose: a restart ends the job's turn. There is no clock: a call may run for hours. */
-const jobWork = new Map<string, { ids: string[]; drainWake: boolean; timerWakes: number; running: boolean }>();
+const jobWork = new Map<string, { ids: string[]; asks: string[]; drainWake: boolean; timerWakes: number; running: boolean }>();
 
 const carryOf = (agentId: string) => {
   let c = jobWork.get(agentId);
-  if (!c) { c = { ids: [], drainWake: false, timerWakes: 0, running: false }; jobWork.set(agentId, c); }
+  if (!c) { c = { ids: [], asks: [], drainWake: false, timerWakes: 0, running: false }; jobWork.set(agentId, c); }
   return c;
 };
 
-/** A park names the job it is handing on: never replaces a standing job with less. */
-export function carryJobWork(agentId: string, ids: string[]): void {
-  if (ids.length === 0 && !jobWork.has(agentId)) return;
+/** A park names the job it is handing on: never replaces a standing job with less. `asks` (t145) are the
+ *  owner messages the parking turn SERVED — the same record carries them, so a job with no task still
+ *  has its words re-shown to its continuation (`memory/served-ask.ts`), and ONLY to that continuation. */
+export function carryJobWork(agentId: string, ids: string[], asks: string[] = []): void {
+  if (ids.length === 0 && asks.length === 0 && !jobWork.has(agentId)) return;
   const c = carryOf(agentId);
   c.ids = [...new Set([...c.ids, ...ids])];
+  c.asks = [...new Set([...c.asks, ...asks])];
 }
 
 /** The park queued its continuation on the shared wake set (the runtime's drain serves it). */
@@ -118,15 +121,30 @@ export function endJobCarry(agentId: string): void {
 /** The tasks this agent's job is carrying right now: those still open, while a run carries the job
  *  or a continuation wake is queued for it. The one answer to "is this task the job in flight?". */
 export function jobCarriedIds(agentId: string): string[] {
+  return settleJob(agentId).tasks;
+}
+
+/** The owner messages (t145) this agent's job is carrying: those whose ask is still claimed, under the same
+ *  rule as the tasks (a run carries the job or a continuation wake is queued). A finished ask drops out. */
+export function jobCarriedAsks(agentId: string): string[] {
+  return settleJob(agentId).asks;
+}
+
+/** One settle for both: what is still open of the job's tasks and of its asks; the job is over when neither is. */
+function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   const c = jobWork.get(agentId);
-  if (!c) return [];
+  if (!c) return { tasks: [], asks: [] };
   const inFlight = c.running || c.drainWake || c.timerWakes > 0;
-  const open = !inFlight ? [] : (getDb().prepare(
+  const db = getDb();
+  const tasks = !inFlight ? [] : (db.prepare(
     `SELECT w.id AS id FROM work w WHERE w.id IN (${c.ids.map(() => '?').join(', ')})
        AND w.state IN ('claimed', 'on_deck', 'blocked')`).all(...c.ids) as Array<{ id: string }>).map((r) => r.id);
-  if (open.length === 0) jobWork.delete(agentId);
-  else c.ids = open;
-  return open;
+  const asks = !inFlight || c.asks.length === 0 ? [] : (db.prepare(
+    `SELECT w.root_id AS id FROM work w WHERE w.kind = 'ask' AND w.state = 'claimed'
+       AND w.root_id IN (${c.asks.map(() => '?').join(', ')})`).all(...c.asks) as Array<{ id: string }>).map((r) => r.id);
+  if (tasks.length === 0 && asks.length === 0) jobWork.delete(agentId);
+  else { c.ids = tasks; c.asks = asks; }
+  return { tasks, asks };
 }
 
 /** Is the CURRENT run the one carrying the job (launched from the park's continuation wake)? */

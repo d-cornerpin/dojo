@@ -57,6 +57,7 @@ import { recordPoke } from './poke-ladder.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from './tracker-view.js';
 import { turnWorkIds, carryJobWork } from './task-freshness.js';
+import { servedOwnerMessageIds } from '../memory/served-ask.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
  *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
@@ -90,7 +91,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   const db = getDb();
   const now = Date.now();
   const tied = turnWorkIds(agentId);
-  carryJobWork(agentId, tied);
+  carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));   // t145: the job's own ask rides the same record
   if (tied.length === 0) return 0;
   const ids = tied.map(() => '?').join(', ');
 

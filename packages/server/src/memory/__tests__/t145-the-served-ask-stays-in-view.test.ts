@@ -154,10 +154,10 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     expect(servedOwnerMessageIds(AGENT), 'the job\'s own continuation still carries its ask').toEqual(['ask-row']);
   });
 
-  it('an old FINISHED request is never re-shown: a carried ask that has since been answered drops out', async () => {
+  it('an old FINISHED request is never re-shown: a carried ask that has since closed drops out', async () => {
     heldAndCurrent();
     parkTurnServing('ask-row');
-    mockDb.current!.prepare("UPDATE work SET state = 'done', closed_at = ? WHERE id = 'ask:ask-row'").run(Date.now());   // the answer was delivered
+    mockDb.current!.prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:ask-row'").run(Date.now());   // the ask is closed
     continuationRun();
     expect(servedOwnerMessageIds(AGENT)).toEqual([]);
   });
