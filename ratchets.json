@@ -8326,6 +8326,20 @@
       "to": 547,
       "by": "t149 round 3 (2026-10-14), R-V333-18 revised: an auto agent whose free picks all failed under the limit is the honest budget stop",
       "why": "+1: one import (freeFallbackDown). Both give-up sites of the auto ladder keep their line and their `throw`; each now throws what free-fallback-down.ts returns (the same error, or the limit's own error when every model this turn tried was free and the remaining candidates are turned away by the limit). The logic is in the new call-llm/free-fallback-down.ts (30 lines). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1557,
+      "to": 1564,
+      "by": "t149 round 4 (2026-10-14), review Important 2 and 3: a Stopped pass is not an outcome; the writer is chosen by the real input",
+      "why": "+7: four guards `!isStopFenced(agentId)` on the places a pass reports its outcome to the brake (the pressure pass's notePassOutcome and noteLowYield, the condense-only pass's, the leaving-view pass's: +0 lines, each on its existing line, one import name added on an existing line), and the writer fallback's wiring: the pass takes the fallback's `left` object and the stranded-row covering moves from the end of runLeafCompaction to after the LAST writer (a row the first writer cannot hold may be taken by the next): +5 lines of call-site wiring and +2 for the `left` option and its two uses. The fallback itself, its tooBig walk and the condensation walk live in leaf-writer-fallback.ts (a NEW module, 70 lines). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/condense-until-fits.ts",
+      "from": 420,
+      "to": 423,
+      "by": "t149 round 4 (2026-10-14), review Important 2 and 3",
+      "why": "+3: the lone-summary arm and the batch arm each report a Stop as a stop ('bounded_without_progress', ending the walk) instead of as the writer refusing (+1 and +1), and the batch arm hands a pair to generateOnAWriterThatHolds (leaf-writer-fallback.ts) before giving up (+1 net, one import line changed). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8536,8 +8550,8 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 298,
-    "packages/server/src/memory/compaction.ts": 1557,
-    "packages/server/src/memory/condense-until-fits.ts": 420,
+    "packages/server/src/memory/compaction.ts": 1564,
+    "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
     "packages/server/src/memory/fts-health.ts": 536,
