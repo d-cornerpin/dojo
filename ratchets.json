@@ -8319,6 +8319,13 @@
       "to": 420,
       "by": "t149 round 2 (2026-10-14), hand-up 3: condensation batches are cut to the writer's room",
       "why": "+5: the batch loop becomes a queue (the for-of over subjectBatches is now a while over a mutable list, +2) and a batch the writer cannot hold (the refuse-before-dialling guard's tooBig result) is halved and put back at the front (+3, one comment folded into the line). The room/hold arithmetic lives in summary-writer-health.ts, not here. No size, count or timer is added: the halving stops at a pair. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 546,
+      "to": 547,
+      "by": "t149 round 3 (2026-10-14), R-V333-18 revised: an auto agent whose free picks all failed under the limit is the honest budget stop",
+      "why": "+1: one import (freeFallbackDown). Both give-up sites of the auto ladder keep their line and their `throw`; each now throws what free-fallback-down.ts returns (the same error, or the limit's own error when every model this turn tried was free and the remaining candidates are turned away by the limit). The logic is in the new call-llm/free-fallback-down.ts (30 lines). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8431,7 +8438,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 274,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 546,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 547,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 407,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
