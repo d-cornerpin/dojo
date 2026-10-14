@@ -1,0 +1,21 @@
+-- 194: summary_parents GETS THE INDEX ITS parent_id LOOKUPS HAVE ALWAYS NEEDED.
+--
+-- `summary_parents` (002) is keyed (summary_id, parent_id) and nothing else, so every question
+-- asked by the SECOND column -- "is this summary a parent of anything", "what condensed this
+-- one", "drop every link that names this id" -- scans the whole table. The asks are:
+--   memory/legacy-notes-rebuild.ts   queuedUnits (a correlated NOT EXISTS, once per queued
+--                                    note) and swapAgent (once per note)
+--   gateway/routes/memory.ts         the children of a summary; the `summary_id = ? OR
+--                                    parent_id = ?` link delete
+--   memory/dag.ts, memory/uncondensed-head.ts, agent/purge.ts    the same OR-delete shape
+-- Measured in the v3.3.3 cut checks on a grown body (277k links): 1,000 queued notes cost
+-- 12.7 s of synchronous scanning, which blocks the event loop; with this index the same query
+-- takes 25 ms. Every `... OR parent_id = ?` delete plans as a MULTI-INDEX OR (the primary key
+-- for the first leg, this index for the second) and no longer scans.
+--
+-- Indexes only. No data is read, changed or deleted; a body of any age applies this in
+-- O(table size) once. CREATE INDEX IF NOT EXISTS cannot fail on a body where the DDL is valid
+-- (a box that already carries a hand-made twin under this name makes it a no-op), and
+-- re-running is a no-op by the guard, not by the _migrations marker.
+
+CREATE INDEX IF NOT EXISTS idx_summary_parents_parent_id ON summary_parents(parent_id);
