@@ -8074,6 +8074,27 @@
       "to": 1313,
       "by": "t146 round 2 (2026-10-13) — rulings 1 and 4",
       "why": "+7 (1306 -> 1313), still -10 below base's 1323. Round 2: the `owner_card` evidence form (+3 doc lines, the union member), the door check for it (+2: owner_card only from a platform dashboard row), and a 3-line note at the steer composer that its last sentence names the send tools' task_id. From 1313 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/safe-senders.ts",
+      "from": 256,
+      "to": 291,
+      "by": "t146 round 3 (2026-10-13) — review fixes",
+      "why": "+35 (256 -> 291): the owner module answers two questions apart. ownerIMessageRecords() (every record flagged as the owner, plus the record the parser promotes when nobody is flagged, plus the legacy key only when no records are saved) is the new reader behind isOwnerIMessageRecipient; ownerIMessageRecord (which address to send to) is unchanged. About 28 lines of code, 7 of comment. From 291 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2160,
+      "to": 2162,
+      "by": "t146 round 3 (2026-10-13) — review fixes",
+      "why": "+2 (2160 -> 2162), still -160 below base's 2322: the card tell also asks ownerCardStands(scrubbed) (the card must be one the owner-notices list re-derives), and the comment says why (+2 lines net). From 2162 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 710,
+      "to": 711,
+      "by": "t146 round 3 (2026-10-13) — review fixes",
+      "why": "+1 (710 -> 711): the send_tool record is also gated by agentMayNameTask(agentId, task.id) (the caller holds, was assigned or opened the task, or is the primary), plus a two-line comment, net +1 after tightening the existing comment. The rule itself lives in agent/tools/told-about-task.ts. From 711 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8160,7 +8181,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 710,
+    "packages/server/src/agent/tools/index.ts": 711,
     "packages/server/src/agent/tools/surface.ts": 731,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -8332,11 +8353,11 @@
     "packages/server/src/services/generation-jobs.ts": 461,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
-    "packages/server/src/services/imessage-bridge.ts": 2160,
+    "packages/server/src/services/imessage-bridge.ts": 2162,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 460,
     "packages/server/src/services/outlook-watcher.ts": 520,
-    "packages/server/src/services/safe-senders.ts": 256,
+    "packages/server/src/services/safe-senders.ts": 291,
     "packages/server/src/services/teams-watcher.ts": 464,
     "packages/server/src/services/transcription.ts": 447,
     "packages/server/src/services/tunnel.ts": 730,
