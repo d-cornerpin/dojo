@@ -24,7 +24,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writerBreaker } from './compaction-defect.js';
 import { contextWindowPolicy, estimateTokens } from './budget.js';
-import { getContextWindow, getModelOutputCap } from '../agent/model.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import type { SummaryResult } from './summarize.js';
 
@@ -72,11 +71,17 @@ function providerKey(modelId: string): string {
  * beside a system prompt of `systemPromptTokens`: the provider boundary's own budget
  * (`assembly-validation.ts`, `validateAtProviderBoundary`) for that model's window and output cap.
  * A call over it is repaired or refused at the boundary, so the writer is not dialled with it.
- * A model the engine cannot size is not refused here.
+ * A model with no declared window is not refused here.
  */
 export function summaryRoom(modelId: string, systemPromptTokens = 0): number {
   try {
-    const policy = contextWindowPolicy(getContextWindow(modelId), { toolPayloadTokens: 0, maxOutputTokens: getModelOutputCap(modelId) });
+    // The model's DECLARED window and output cap, exactly as the boundary reads them (read straight
+    // off the row: this module must not import the model layer, which imports the compactor).
+    const row = getDb().prepare('SELECT context_window, max_output_tokens FROM models WHERE id = ?').get(modelId) as
+      { context_window: number | null; max_output_tokens: number | null } | undefined;
+    if (!row?.context_window || row.context_window <= 0) return Number.MAX_SAFE_INTEGER;
+    const maxOutputTokens = row.max_output_tokens && row.max_output_tokens > 0 ? row.max_output_tokens : undefined;
+    const policy = contextWindowPolicy(row.context_window, { toolPayloadTokens: 0, maxOutputTokens });
     return Math.max(0, policy.assemblyBudgetTokens - systemPromptTokens);
   } catch {
     return Number.MAX_SAFE_INTEGER;

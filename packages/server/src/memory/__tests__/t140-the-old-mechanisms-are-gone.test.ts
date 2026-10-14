@@ -169,8 +169,9 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     expect(call).toMatch(/refitFor: async \(pick\) =>/);
     const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
     expect(selector).toMatch(/if \(windowOf && inputEstimate > Math\.floor\(CONTEXT_THRESHOLD \* windowOf\(modelId\)\)\) return false;/);
-    const model = FILES.find((f) => f.rel === 'agent/model.ts')!.code;
-    expect(model).toMatch(/const refit = params\.refitFor \? await params\.refitFor\(fb\.modelId\) : null;/);
+    // t149 F6: the wall's redirect moved out of model.ts to its own module, unchanged in this respect.
+    const redirect = FILES.find((f) => f.rel === 'agent/budget-redirect.ts')!.code;
+    expect(redirect).toMatch(/refit = params\.refitFor \? await params\.refitFor\(fb\.modelId\) : null;/);
   });
 });
 
