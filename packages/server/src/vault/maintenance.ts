@@ -1671,9 +1671,9 @@ export function markDreamerArchivesProcessed(
 
 // ── Context Overflow Recovery ──
 
-// The predicate lives with the other provider-answer vocabulary (a leaf the summary writer can import
-// without this module's graph); re-exported so the recovery cascade reads it from here as before.
-export { isContextOverflowError } from '../agent/provider-error.js';
+// The predicate lives in a leaf the summary writer can import without this module's graph (t152);
+// re-exported so the recovery cascade reads it from here as before.
+export { isContextOverflowError } from '../agent/context-overflow.js';
 
 /**
  * Recover the Dreamer when its current batch produced a context-overflow error

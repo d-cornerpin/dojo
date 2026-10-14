@@ -154,10 +154,7 @@ export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
  *  event, so nothing the delegating turn said about STARTING the work can ever be read as the
  *  answer to it.
  *
- *  `async` (t152) is the fifth, and the second whose evidence is not "this turn's delivery": a
- *  background job (an image, a song, a video) the ask's turn started delivers its result AFTER the
- *  turn, with no turn of its own. It settles the ask when the result reaches the owner and no job for
- *  that request is still out. */
+ *  `async` (t152): a background job's result, delivered after the turn that started it (no turn). */
 export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join' | 'async';
 
 export type AskSettlementVerdict = 'closed' | 'held' | 'reopened' | 'unchanged';
@@ -1115,21 +1112,11 @@ function settleOnJoin(
   return out('closed', reason, evidence.id);
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// THE ASYNC ARM — t152 (walks round 2, the image shape)
-//
-// An ask whose work is a background job (`image_create`, music, speech, video) is not answered by the
-// turn that started the job: the turn ends, and the result is posted later by the job's own worker, with
-// no turn and so no turn-bound delivery. Before this arm nothing closed an ask on such a result: a
-// request for seven images stayed `blocked` for ever after all seven had reached the owner, and an
-// unsettled ask is what a later "You there?" relaunches the work on.
-//
-// The rule is the join arm's, with the one fact that differs: the ask settles when a result has
-// actually been DELIVERED to the owner for it (the delivery row is the receipt; the same checks the
-// join arm's evidence makes: delivered, this agent's, not a chip, postdating the ask) AND no job for
-// that request is still out, AND no delegated work is (`joinOutstanding`). The first of seven images is
-// not the answer; the seventh is. A job that FAILED has told the owner too, so a failure notice counts.
-// ════════════════════════════════════════════════════════════════════════════════
+// THE ASYNC ARM (t152). The result of a background job (image, music, speech, video) is posted by the
+// job's worker after the turn that started it, with no turn, so no turn-bound delivery ever closed the
+// ask: seven images reached the owner and the ask stayed `blocked`. The ask settles when a result has
+// been DELIVERED for it (the join arm's evidence checks) AND no job for the request is still out AND no
+// delegated work is. The first of seven images is not the answer; a failure notice has told the owner too.
 
 /** Background media jobs started for this request (its message id is their lineage) that are not finished. */
 function mediaJobsOutstanding(askRootId: string): number {
