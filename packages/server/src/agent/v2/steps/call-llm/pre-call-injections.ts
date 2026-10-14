@@ -141,25 +141,39 @@ export async function injectAndRecord(
   // ── RC-12 / RC-1: engine-verified outbound facts (volatile lane) ──
   // Injected HERE, in the same volatile region as turn-context / current-time
   // (after the fresh tail, past the cached prefix), so they never break the
-  // prompt-cache prefix. Human turns only: an engine fact that survives the
-  // conversation scoping the model context is subject to, so the model can
-  // answer truthfully about what it did send and bind a bare answer to the
-  // question it asked. Rebuilt each iteration with the rest of this block, so a
+  // prompt-cache prefix. Rebuilt each iteration with the rest of this block, so a
   // single copy lands per model call.
+  //
+  // t158 F — RECENT OUTBOUND RIDES EVERY AGENT TURN, WHATEVER THE COUNTERPARTY. It is an engine
+  // fact that survives the conversation scoping, and the turns scoped HARDEST are the ones that
+  // need it most: an engine turn (a PM's idle poke, a wake) and an agent-counterparty turn read a
+  // context of one message or a few. Ritual run 6 (S1): an agent sent its finished audit to its
+  // PM with `send_to_agent` and left the task open; the PM's poke started an engine turn with no
+  // sign of that send, and the agent re-did the whole 600-page job (owner report #7, "reach back
+  // to do already accomplished tasks"). The block was inside the `counterparty.kind === 'user'`
+  // gate below, which it never needed: the receipts are the AGENT's, not the counterparty's. The
+  // deliveries lane (quotes to THIS counterparty) and OPEN WORK stay human-only, exactly as they were.
+  try {
+    // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
+    // Survives scoping (receipts are not conversation rows), so a denial or a
+    // "did you send it" is answerable from fact, not scoped-away memory.
+    // T69b: the RENDER moved to `outbound-ledger.ts` (`renderRecentOutboundBlock`), which
+    // owns the read. It was five lines of `.map()` here with `relativeTimeAgo(...)` inside
+    // — a wall-clock read in the tail, untestable where it sat.
+    const outBlock = renderRecentOutboundBlock(getRecentOutbound(agentId, 24, 5));
+    if (outBlock) {
+      pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
+    }
+  } catch (err) {
+    logger.debug('RC-12 recent-outbound injection failed (non-fatal)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
+  // Human turns only from here: the per-counterparty lanes.
   if (counterparty.kind === 'user') {
     const pendConvId = turnCtx.root?.conversationId ?? null;
     try {
-      // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
-      // Survives scoping (receipts are not conversation rows), so a denial or a
-      // "did you send it" is answerable from fact, not scoped-away memory.
-      // T69b: the RENDER moved to `outbound-ledger.ts` (`renderRecentOutboundBlock`), which
-      // owns the read. It was five lines of `.map()` here with `relativeTimeAgo(...)` inside
-      // — a wall-clock read in the tail, untestable where it sat.
-      const outBlock = renderRecentOutboundBlock(getRecentOutbound(agentId, 24, 5));
-      if (outBlock) {
-        pushEngineMessage(messages, outBlock, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
-      }
-
       // ── THE DELIVERIES LANE (PHASE-3 T7 Step 1, research 18 §open-1) ──
       // Quote the agent's own recent messages TO THIS counterparty (never another
       // conversation's content) so a bare answer ("5550001234") is bindable even by
