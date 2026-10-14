@@ -358,7 +358,7 @@ export function classifyError(error: Error, facts?: ProviderErrorFacts): Classif
     return { kind: 'output_truncated' };
   if (msg.includes('usage limit')) return { kind: 'rate_limit' };
   const cls = (facts ?? classifyProviderErrorText(msg)).class;
-  if (cls === 'rate_limit' || cls === 'quota') return { kind: 'rate_limit' };
+  if (cls === 'rate_limit') return { kind: 'rate_limit' };   // t151: not `quota` — out of credit is the owner's to fix, not a wait
   if (cls === 'overloaded') return { kind: 'overloaded' };
   if (cls === 'network' || msg.includes('socket')) return { kind: 'network' };
   return { kind: 'unknown' };

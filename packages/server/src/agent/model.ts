@@ -2821,7 +2821,9 @@ async function callOpenAIModel(
     // PHASE-4 T5 (provider-error.ts): the provider's STATUS, never this message's digits —
     // `message.includes('503')` was true of "prompt is too long: 250316 tokens".
     const facts = classifyProviderError(err);
-    const isRateLimited = facts.class === 'rate_limit' || facts.class === 'quota';
+    // t151: out-of-credit (402, a quota 429) is NOT a rate limit — waiting never fixes it, and the silent
+    // retry below hid it from the owner for ever. It propagates as the `quota` it is (recovery's Tier D).
+    const isRateLimited = facts.class === 'rate_limit';
     const isOverloaded = facts.class === 'overloaded';
 
     // FA-R2: record the rate limit in the proactive tracker regardless of routing
@@ -3752,7 +3754,9 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     // Determine if retryable — PHASE-4 T5, from `err.status` (which the line above already
     // read into errorDetail) and the structured body, never the message's digits.
     const facts = classifyProviderError(err);
-    const isRateLimited = facts.class === 'rate_limit' || facts.class === 'quota';
+    // t151: out-of-credit (402, a quota 429) is NOT a rate limit — waiting never fixes it, and the silent
+    // retry below hid it from the owner for ever. It propagates as the `quota` it is (recovery's Tier D).
+    const isRateLimited = facts.class === 'rate_limit';
     const isOverloaded = facts.class === 'overloaded';
 
     // Record the rate limit in the proactive tracker regardless of routing mode.

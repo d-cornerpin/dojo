@@ -15,7 +15,7 @@
 // short one a real box logged. CONTROL: a genuine 429 still takes the silent retry.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-// RED-FIRST at 50b921db: clauses marked `it.fails` are the witness; the fix commit flips them.
+// RED-FIRST at 50b921db: committed `it.fails` (f9a0de9d), flipped with the fix.
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import http from 'node:http';
@@ -180,14 +180,14 @@ const BODIES: Array<[string, unknown]> = [
 
 describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, never the silent retry', () => {
   for (const [label, body] of BODIES) {
-    it.fails(`${label}: the call fails as out-of-credit and arms no rate-limit retry`, async () => {
+    it(`${label}: the call fails as out-of-credit and arms no rate-limit retry`, async () => {
       answer.status = 402; answer.body = body;
       const err = await pinnedCall();
       expect(err.provider?.class).toBe('quota');
       expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
     });
 
-    it.fails(`${label}: through the recovery door it is ONE text, the card, the agent in error; no "rate limit" line, no retry`, async () => {
+    it(`${label}: through the recovery door it is ONE text, the card, the agent in error; no "rate limit" line, no retry`, async () => {
       answer.status = 402; answer.body = body;
       const err = await pinnedCall();
       await recover(err);
@@ -202,7 +202,7 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
     });
   }
 
-  it.fails('the card leaves when it is fixed: the next healthy call ends the incident', async () => {
+  it('the card leaves when it is fixed: the next healthy call ends the incident', async () => {
     answer.status = 402; answer.body = BODIES[1][1];
     await recover(await pinnedCall());
     const words = JSON.parse((db().prepare('SELECT broken_notice AS n FROM agents WHERE id = ?').get(AGENT) as { n: string }).n).words as string;
@@ -214,7 +214,7 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
     expect(await shown()).not.toContain(words);
   });
 
-  it.fails('classifyError (the SDK transport\'s reader) does not file out-of-credit as a rate limit either', () => {
+  it('classifyError (the SDK transport\'s reader) does not file out-of-credit as a rate limit either', () => {
     expect(classifyError(new Error('API error 402: {"message":"Insufficient Balance"}')).kind).not.toBe('rate_limit');
   });
 

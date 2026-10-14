@@ -135,7 +135,7 @@ function scheduleNextAttempt(
       const msg = err instanceof Error ? err.message : String(err);
       // PHASE-4 T5: the retry manager asks the provider's status, not the message's digits.
       const cls = providerClassOf(err);
-      const isStillLimited = cls === 'rate_limit' || cls === 'overloaded' || cls === 'quota';
+      const isStillLimited = cls === 'rate_limit' || cls === 'overloaded';   // t151: out of credit is not a wait
 
       if (!isStillLimited) {
         // Different error — not a rate limit anymore, let normal error handling take over
