@@ -505,6 +505,8 @@ function expectAnHonestStop(cause: RegExp): void {
 }
 
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll } from 'vitest';
 
@@ -636,5 +638,22 @@ describe('t149 F6 — the money wall\'s redirect to a free model', () => {
     expect(chatNotes()).toHaveLength(1);
     expect(chatNotes()[0]).toMatch(/Using Free B \(free\) instead\./);
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('t149 census — the old redirect announcement is gone from the wall', () => {
+  const SRC = path.join(__dirname, '..', '..', '..');
+  const code = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  it('the wall hands the redirect to budget-redirect.ts and posts no note itself; the note has ONE writer', () => {
+    const model = code('agent/model.ts');
+    expect(model).toMatch(/return redirectToAFreeModel\(params, budgetCheck, callModel\)/);
+    expect(model, 'no inline "Using <model> (free) instead" note').not.toMatch(/\(free\) instead/);
+    const writers = ['agent/model.ts', 'agent/budget-redirect.ts', 'costs/budget.ts'].filter((f) => /\(free\) instead/.test(code(f)));
+    expect(writers).toEqual(['agent/budget-redirect.ts']);
+    // The announcement runs only after the dial returned, never before it.
+    const redirect = code('agent/budget-redirect.ts');
+    expect(redirect.indexOf('await dial(')).toBeGreaterThan(-1);
+    expect(redirect.indexOf('await dial(')).toBeLessThan(redirect.indexOf('announce(agentId, check, fb.modelName)'));
   });
 });

@@ -24,6 +24,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
+import { leafWithWriterFallback } from './leaf-writer-fallback.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -821,9 +822,8 @@ async function runCheckAndCompact(
     }
 
     const tokensBefore = totalTokens;
-    const leaf = await withCompactionActivity(agentId, () => leafWithWriterFallback(agentId, modelId, contextWindow, {
-      abortSignal: options?.abortSignal,
-    }));
+    const leaf = await withCompactionActivity(agentId, () => leafWithWriterFallback(agentId, modelId,
+      (writer) => runLeafCompaction(agentId, writer, contextWindow, { abortSignal: options?.abortSignal }), options?.abortSignal));
     const leafCreated = leaf.leafCreated;
     modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
     // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
@@ -1021,11 +1021,11 @@ export async function leavingViewPass(
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;
 
-  const leafOpts = { abortSignal: options?.abortSignal, throughSeq: leaving.throughSeq, floorRows };
-  // The out-of-view door walks the writers itself (one pass per writer); every other leaving-view pass hands on here.
+  const pass = (writer: string): Promise<number> => runLeafCompaction(agentId, writer, contextWindow,
+    { abortSignal: options?.abortSignal, throughSeq: leaving.throughSeq, floorRows });
+  // The out-of-view door walks the writers itself; every other leaving-view pass hands on (t149 F4).
   const leafCreated = await withCompactionActivity(agentId, async () => outOfView
-    ? runLeafCompaction(agentId, modelId, contextWindow, leafOpts)
-    : (await leafWithWriterFallback(agentId, modelId, contextWindow, leafOpts)).leafCreated);
+    ? pass(modelId) : (await leafWithWriterFallback(agentId, modelId, pass, options?.abortSignal)).leafCreated);
   rebuildContextItems(agentId);
   // T56 leg (b): the prefix has just been rewritten at the summaries lane, so this is the one
   // instant at which retiring reasoning and stubbing old tool results costs no cache reuse.
@@ -1252,31 +1252,6 @@ function spanHoldsConversation(agentId: string, messageIds: string[]): boolean {
   return false;
 }
 
-/**
- * t149 F4 — A WRITER THAT FAILS IS PASSED OVER ON ITS FIRST FAILURE, AND THE NEXT ONE TRIES AT ONCE.
- * A pass that wrote nothing because its writer failed (`summary-writer-health.ts` has already passed
- * it over) hands the same span to the next eligible writer in the same pass. Before this the pass
- * ended with nothing written and armed the 15-minute low-yield brake, so compaction sat stalled
- * behind a dead writer while another one was answering. A pass whose writer did not fail (nothing to
- * fold, a stop) ends as it did.
- */
-async function leafWithWriterFallback(
-  agentId: string, firstWriter: string, contextWindow: number, opts: NonNullable<Parameters<typeof runLeafCompaction>[3]>,
-): Promise<{ leafCreated: number; writer: string }> {
-  const tried = new Set<string>();
-  let writer = firstWriter;
-  for (;;) {
-    tried.add(writer);
-    const leafCreated = await runLeafCompaction(agentId, writer, contextWindow, opts);
-    if (leafCreated > 0 || opts.abortSignal?.aborted || !writerPassedOver(writer, agentId)) return { leafCreated, writer };
-    const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
-    const next = eligibleSummaryWriters(configured, agentId).find((w) => !tried.has(w));
-    if (!next) return { leafCreated, writer };
-    logger.info('The summary writer failed; the next eligible writer takes the same span at once', { failed: writer, next }, agentId);
-    writer = next;
-  }
-}
-
 export async function runLeafCompaction(
   agentId: string,
   modelId: string,
@@ -1307,13 +1282,9 @@ export async function runLeafCompaction(
     return 0;
   }
 
-  // Group into chunks of ~leafChunkTokens, oldest first — and never a chunk this writer cannot hold
-  // (t149 F4): the writer's own room caps the chunk, and a writer with no room is not dialled.
+  // Group into chunks of ~leafChunkTokens, oldest first — capped by what this writer can hold (t149 F4).
   const room = summaryRoom(modelId);
-  if (room <= 0) {
-    logger.warn('The summary writer has no room for any input; not dialled', { modelId }, agentId);
-    return 0;
-  }
+  if (room <= 0) return 0;
   const chunks = chunkMessages(uncompacted, Math.min(getLeafChunkTokens(), room));
   const writerWasAnswering = !writerPassedOver(modelId, agentId);
 
@@ -1328,7 +1299,7 @@ export async function runLeafCompaction(
     const chunk = chunks.shift()!;
     if (chunk.length === 0) continue;
     if (summaryWriterUnavailable(agentId, modelId)) break;   // v3.2.3 L2c/L3: do not build what cannot be sent
-    if (writerWasAnswering && writerPassedOver(modelId, agentId)) break;   // t149 F4: it failed on the chunk before; the next writer takes the rest
+    if (writerWasAnswering && writerPassedOver(modelId, agentId)) break;   // t149 F4: it failed on the chunk before
 
     // Build content from chunk messages. scrubTechniqueContentForSummary
     // strips technique tool-result bodies so they don't leak into the
@@ -1399,18 +1370,15 @@ export async function runLeafCompaction(
       // survive to be summarised on the next drain. Writing NO_CONVERSATION_PLACEHOLDER here
       // instead would be a lie about a span the summariser never read — and an irreversible
       // one, because the rows would then be marked done.
-      // t149 F4: the writer was not dialled — the chunk, as it reads with its labels and the prompt,
-      // is more than it can hold. Halved, down to a single row, which is left for a writer that can.
-      if (!summary.ok && summary.tooBig) {
-        if (chunk.length > 1) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
-        else logger.warn('A single row is more than the summary writer can hold; left for a writer that can', { modelId }, agentId);
-        continue;
-      }
       if (!summary.ok) {
+        if (summary.tooBig) {   // t149 F4: not dialled — more than it can hold: halved, a single row is left for a writer that can
+          if (chunk.length > 1) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
+          continue;
+        }
         logger.warn('SUMMARY_REFUSED leaf chunk left uncompacted', {
           messageCount: chunk.length, reason: summary.reason,
         }, agentId);
-        if (summary.stopped) break;   // t149 F3: the owner stopped this agent; the next chunk would be refused too
+        if (summary.stopped) break;   // t149 F3: the owner stopped this agent
         continue;
       }
 

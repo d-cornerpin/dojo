@@ -4,8 +4,7 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
-import { noteSummaryWriterOutcome, writerHolds } from './summary-writer-health.js';
-import { userStopMark, userStoppedSince } from '../agent/shared-state.js';
+import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import type { Summary } from './dag.js';
@@ -202,10 +201,7 @@ export function truncateDeterministic(text: string, targetTokens: number): strin
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
-  // `stopped`: the owner's Stop cut or refused this call (t149 F3). It says nothing about the
-  // writer, and a caller walking a list of writers ends the walk.
-  // `tooBig` (t149 F4): the writer cannot hold this input, so it was not dialled — nothing about it failed.
-  | { ok: false; reason: string; stopped?: true; tooBig?: true };
+  | { ok: false; reason: string; stopped?: true; tooBig?: true };   // see summary-writer-health.ts
 
 /**
  * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.
@@ -238,15 +234,7 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
  *  writer that timed out, answered empty or errored is passed over for a few minutes
  *  (`summary-writer-health.ts`). One wrapper rather than a line at each return below. */
 export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
-  const mark = userStopMark(params.agentId);
-  const result = await writeSummary(params);
-  // t149 F3: the owner's Stop reaches this call through the registry, not through the caller's
-  // signal, so the abort tests below cannot see it. A call it cut or refused is not a writer's
-  // failure: nothing is marked, and the result says so for the caller to stop walking writers.
-  if (!result.ok && userStoppedSince(params.agentId, mark)) return { ...result, stopped: true };
-  if (!result.ok && result.tooBig) return result;   // never dialled: no outcome to record
-  noteSummaryWriterOutcome(params.modelId, result.ok, params.abortSignal);
-  return result;
+  return settleSummaryCall(await writeSummary(params), params.agentId, params.modelId, params.abortSignal);
 }
 
 async function writeSummary(params: {
@@ -275,16 +263,8 @@ async function writeSummary(params: {
 
   // Level 1: Normal summarization
   const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId);
-
-  // t149 F4: a writer is dialled only with what it can hold. The provider boundary would repair or
-  // refuse the call ("11184 against 9853", "against a budget of 0"); the writer is not asked, and
-  // nothing is recorded against it — it simply was not the writer for this input.
-  if (!writerHolds(modelId, systemPrompt, content)) {
-    logger.warn('SUMMARY_REFUSED the writer cannot hold this input; it was not dialled', {
-      depth, modelId, inputTokens: estimateTokens(content),
-    }, agentId);
-    return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
-  }
+  const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId);
+  if (tooBig) return tooBig;
 
   try {
     logger.info('Generating summary (level 1: normal)', {

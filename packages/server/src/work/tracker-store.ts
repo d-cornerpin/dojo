@@ -277,16 +277,13 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
  * never the owner's words (driven in `work/__tests__/t139-every-request-lands-on-the-task-list.test.ts`).
  *
  * The tie is RECORDED facts, never a guess by text:
- *   * the creating turn's own record names the thread of a delegate's reply: either the reply
- *     woke it (`turns.subject_kind = 'a2a_thread'`, `subject_id` = the thread — the live order
- *     for the first reply, t149 F1) or the engine woke it to compile with no subject at all
- *     (`subject_kind = 'none'`, no root; the thread is then the newest inbound row's). An ask
- *     turn is linked by its root above, and an engine, occurrence or continuation turn has a
- *     subject of its own, so none of them is ever re-pointed here;
- *   * that thread is a PIECE of one of this agent's asks (`work.root_kind = 'a2a_thread'`,
- *     `root_id` = the thread, `parent_id` = the ask) — so a turn woken by anything else (a
- *     mailbox notice, a contact, a peer's own thread) is never tied to the owner's ask, which
- *     would present someone else's message as the owner's request (#12).
+ *   * the creating turn's own record names the reply's thread: the reply woke it (`turns.subject_kind
+ *     = 'a2a_thread'`, `subject_id` = the thread — the live order for the first reply, t149 F1), or
+ *     it serves NOTHING (`'none'`, no root) and the newest inbound row it started on is that reply.
+ *     An ask, engine, occurrence or continuation turn has a subject of its own: never re-pointed;
+ *   * that thread is a PIECE of one of its asks (`work.root_kind = 'a2a_thread'`, `root_id` = the
+ *     thread, `parent_id` = the ask) — so a turn woken by anything else (a mailbox notice, a contact,
+ *     a peer's own thread) is never tied to the owner's ask, as if it were his request (#12).
  * The ask's own state is deliberately NOT a condition: whether the engine already relayed a
  * single piece (the ask is done) or is waiting for the agent to combine several (blocked,
  * compile pending), a task opened on the turn that reply woke continues THAT request.

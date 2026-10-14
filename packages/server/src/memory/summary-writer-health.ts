@@ -25,6 +25,8 @@ import { createLogger } from '../logger.js';
 import { writerBreaker } from './compaction-defect.js';
 import { contextWindowPolicy, estimateTokens } from './budget.js';
 import { getContextWindow, getModelOutputCap } from '../agent/model.js';
+import { isStopFenced } from '../agent/shared-state.js';
+import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
 
@@ -81,9 +83,32 @@ export function summaryRoom(modelId: string, systemPromptTokens = 0): number {
   }
 }
 
-/** Can `modelId` hold THIS call — its system prompt and this content? */
-export function writerHolds(modelId: string, systemPrompt: string, content: string): boolean {
-  return estimateTokens(content) <= summaryRoom(modelId, estimateTokens(systemPrompt));
+/**
+ * A writer is dialled only with what it can hold. The provider boundary would repair or refuse the
+ * call ("11184 against 9853", "against a budget of 0"); the writer is not asked and nothing is
+ * recorded against it — `tooBig`: it simply was not the writer for this input. Null when it holds.
+ */
+export function refuseWhatTheWriterCannotHold(
+  modelId: string, systemPrompt: string, content: string, agentId: string,
+): SummaryResult | null {
+  const inputTokens = estimateTokens(content);
+  if (inputTokens <= summaryRoom(modelId, estimateTokens(systemPrompt))) return null;
+  logger.warn('SUMMARY_REFUSED the writer cannot hold this input; it was not dialled', { modelId, inputTokens, agentId });
+  return { ok: false, reason: 'the summary writer cannot hold this input', tooBig: true };
+}
+
+/**
+ * What a settled summary call says about its writer. `stopped`: the owner's Stop cut or refused it
+ * (t149 F3) — it reaches the call through the registry (`shared-state.ts`), never through the
+ * caller's own abort signal, so nothing is recorded against the writer and the caller, told so,
+ * stops walking writers. `tooBig` calls were never dialled; no outcome either.
+ */
+export function settleSummaryCall(
+  result: SummaryResult, agentId: string, modelId: string | undefined, abortSignal?: AbortSignal,
+): SummaryResult {
+  if (!result.ok && isStopFenced(agentId)) return { ...result, stopped: true };
+  if (result.ok || !result.tooBig) noteSummaryWriterOutcome(modelId, result.ok, abortSignal);
+  return result;
 }
 
 /** Does this abort say anything about the writer? (No for Stop or the turn's patience.) */

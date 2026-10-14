@@ -193,22 +193,6 @@ const abortableMeta = new WeakMap<AbortController, { scope: AbortScope; cutBy: s
 const USER_STOP_REASONS = new Set(['user-stop', 'stuck-stopped-run-reap']);
 
 /**
- * t149 F3 — HOW MANY TIMES THE OWNER'S STOP HAS LANDED ON THIS AGENT, as an ordinal (no clock).
- *
- * A caller that dials a provider through `callModel` only holds its OWN abort signal; the owner's
- * Stop reaches the call through the registry above, so the caller cannot see it in that signal. It
- * asks this instead: sample the mark before the call, and "the owner stopped this agent while I
- * was dialling" is `userStoppedSince(agentId, mark)` — true for a call cut in flight (the mark
- * moved) and for one refused at the door (the fence stands), and it stays true after the run's
- * exit lowers the fence. Bumped in `abortInFlight`, the one place a user-stop cut is stamped.
- */
-const userStopCounts = new Map<string, number>();
-export function userStopMark(agentId: string): number { return userStopCounts.get(agentId) ?? 0; }
-export function userStoppedSince(agentId: string, mark: number): boolean {
-  return isStopFenced(agentId) || userStopMark(agentId) !== mark;
-}
-
-/**
  * Register one in-flight call as abortable by this agent's stop.
  *
  * THE RACE THIS CLOSES: `stopAgent` can only abort what is registered at the instant it runs,
@@ -301,7 +285,6 @@ export function abortInFlight(
   agentId: string, reason: string, opts: { scope?: 'all' | AbortScope } = {},
 ): number {
   const want = opts.scope ?? 'turn';
-  if (USER_STOP_REASONS.has(reason)) userStopCounts.set(agentId, userStopMark(agentId) + 1);
   const set = activeAbortControllers.get(agentId);
   if (!set || set.size === 0) return 0;
   const targets = want === 'all'
