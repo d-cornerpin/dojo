@@ -50,8 +50,6 @@ import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
 import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
 import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
-import { AgentError } from '../../../errors.js';
-import { BUDGET_STOP_CODE, NO_MODEL_FITS_CODE } from '../../honest-stop.js';
 import { noteProviderAnswered } from '../../../../memory/summary-writer-health.js';
 import { createLogger } from '../../../../logger.js';
 
@@ -157,14 +155,8 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
       const next = nextRoutedPick(routerTier, agentId, [...excludedModels, ...passedOver], ['tools']);
       if (!next) {
         const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
-        const told = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext, refusal: err });
-        if (told.stop) {
-          // t148: the limit alone, or no model that fits, is an honest stop: the ask is re-armed
-          // (no rung spent) and the platform's lock parks the agent and tells the owner once.
-          revertTriggerStampOnAbort();
-          throw new AgentError(told.said, agentId, { code: told.stop === 'budget_stop' ? BUDGET_STOP_CODE : NO_MODEL_FITS_CODE });
-        }
-        return requestExit(state, told.said) as CallLLMOutcome;
+        const said = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext, refusal: err, revertTrigger: revertTriggerStampOnAbort });
+        return requestExit(state, said) as CallLLMOutcome;
       }
       logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', { passedOver: pick, next: next.modelId, tier: routerTier }, agentId);
       pick = next.modelId;

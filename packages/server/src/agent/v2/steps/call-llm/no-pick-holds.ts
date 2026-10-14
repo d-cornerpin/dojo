@@ -30,6 +30,8 @@ import { anOwnModelHolds, modelHoldsAgent } from './reassemble-for-fit.js';
 import { reportStarvedWindow } from '../../../../memory/window-starvation-card.js';
 import type { SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import { honestStopWords, type HonestStopKind } from '../../error-format.js';
+import { AgentError } from '../../../errors.js';
+import { BUDGET_STOP_CODE, NO_MODEL_FITS_CODE } from '../../honest-stop-lock.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 
 const LEAD = 'This agent\'s turn was not run';
@@ -44,14 +46,16 @@ const NONE_HOLDS = 'none of the models the auto-router uses can hold its instruc
 
 /**
  * Name why no routed pick holds the agent. A transient cause is told to the owner here and returned
- * as `said`; an honest stop (`stop` set) is NOT told here, the caller throws it to the lock.
+ * as what was said; an honest stop is NOT told here: it is thrown to the lock (see above).
  */
 export async function tellOwnerNoPickHolds(args: {
   agentId: string; turnNumber: number; tier: string | null | undefined; excluded: string[]; turnContext: PromptTurnContext;
   /** The last pick's refusal: its numbers are the card's. */
   refusal: SystemPromptTooLargeError;
-}): Promise<{ said: string; stop: HonestStopKind | null }> {
-  const { agentId, turnNumber, tier, excluded, turnContext, refusal } = args;
+  /** Re-arms the ask (no settlement rung spent) before an honest stop is thrown. */
+  revertTrigger: () => void;
+}): Promise<string> {
+  const { agentId, turnNumber, tier, excluded, turnContext, refusal, revertTrigger } = args;
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
   if (!(await anOwnModelHolds(agentId, toolPayloadTokens, turnContext))) reportStarvedWindow(agentId, refusal.systemPromptTokens, refusal.policy);
   const causes = new Set<RoutedSkip>();
@@ -60,7 +64,12 @@ export async function tellOwnerNoPickHolds(args: {
   }
   const onlyTheLimit = causes.size === 1 && causes.has('budget');
   const stop: HonestStopKind | null = causes.size === 0 ? 'no_model_fits' : onlyTheLimit ? 'budget_stop' : null;
-  if (stop) return { said: honestStopWords(stop), stop };
+  if (stop) {
+    // t148: the limit alone, or no model that fits, is an honest stop: the platform's lock parks the
+    // agent and tells the owner once (recovery.ts -> honest-stop.ts). Nothing is said here.
+    revertTrigger();
+    throw new AgentError(honestStopWords(stop), agentId, { code: stop === 'budget_stop' ? BUDGET_STOP_CODE : NO_MODEL_FITS_CODE });
+  }
   const said = `${LEAD}: ${causes.size === 0 ? NONE_HOLDS : [...causes].map((c) => CAUSE[c]).join('; and ')}.`;
   const stopOnly = causes.size > 0;   // something will change on its own, or by a Settings choice
   try {
@@ -72,5 +81,5 @@ export async function tellOwnerNoPickHolds(args: {
     });
   } catch { /* the notice below still reaches the owner */ }
   broadcast({ type: 'chat:error', agentId, error: said, code: 'NO_MODEL', severity: stopOnly ? 'warning' : 'error', retryable: stopOnly });
-  return { said, stop: null };
+  return said;
 }

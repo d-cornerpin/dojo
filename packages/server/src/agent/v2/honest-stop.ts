@@ -23,20 +23,22 @@
 // own `last_error` is the record that he was told.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
+import { broadcast } from '../../gateway/ws.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { markTurnDied } from './turn-record.js';
+import type { AgentTurnState } from './state.js';
 import { createLogger } from '../../logger.js';
 import { AgentError } from '../errors.js';
 import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
 import { exceededBudget, type ExceededBudget } from '../../costs/budget.js';
 import { honestStopWords, type HonestStopKind } from './error-format.js';
-import { lockTag, parkedAgents } from './honest-stop-lock.js';
+import { lockTag, parkedAgents, BUDGET_STOP_CODE, NO_MODEL_FITS_CODE } from './honest-stop-lock.js';
 
 const logger = createLogger('honest-stop');
 
-/** Thrown by the t140 no-pick exit, which has already named the cause. */
-export const BUDGET_STOP_CODE = 'BUDGET_STOP';
-export const NO_MODEL_FITS_CODE = 'NO_MODEL_FITS';
 
 export interface HonestStop {
   kind: HonestStopKind;
@@ -134,4 +136,49 @@ export async function releaseHonestStops(
   }
   if (released.length > 0) logger.info('honest stop released on the real event', { kind, agentIds: released });
   return released;
+}
+
+/** The agent's own chat gets the platform's notice (its next session reads it). */
+function noteInChat(agentId: string, content: string): void {
+  try {
+    const id = uuidv4();
+    insertMessageIfAbsent({ id, agentId, role: 'system', content });
+    broadcast({ type: 'chat:message', agentId, message: { id, agentId, role: 'system', content, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+  } catch { /* the chat:error below still reaches the owner */ }
+}
+
+/**
+ * The recovery cascade's step for an honest stop (`recovery.ts`, ahead of the Tier D check). Parks
+ * the agent on the lock, tells the owner the true cause ONCE per condition, and never calls the
+ * Healer. Returns true when it handled the error.
+ *
+ * The owner is told when the lock goes on. A stop that finds its own lock already on (the message
+ * was served again, or he sent another) is silent: the status and the card already say it. It
+ * sends NO text of its own: a budget stop is always preceded by the budget's own crossing alert
+ * (t138: the wall and the router's budget filter both run `checkBudget`, which texts and raises
+ * the dashboard card before it refuses), once per window, so a second text would be a second
+ * telling of the same window; and a no-fit is not a class the platform may text (OR-V333-SET (3)).
+ */
+export async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
+  const agentId = state.agentId;
+  let stop: HonestStop | null;
+  try {
+    stop = await classifyHonestStop(agentId, error);
+  } catch (err) {
+    logger.warn('honest stop: classifier threw', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+    return false;
+  }
+  if (!stop) return false;
+
+  const alreadyTold = stopAlreadyTold(agentId, stop.kind);
+  logger.warn('honest stop: parking the agent until the condition clears', { agentId, kind: stop.kind, alreadyTold }, agentId);
+  // The turn's record says what stopped it: the money guardrail has its word (`budget`); a model
+  // that cannot fit keeps the quarantine word, because nothing here observed a better one.
+  markTurnDied(agentId, state.turnNumber, stop.kind === 'budget_stop' ? 'budget' : (state.engineCutExit ?? 'unknown'));
+  parkAgent(agentId, stop);
+  if (alreadyTold) return true;
+
+  noteInChat(agentId, `[System (platform notice): ${stop.words}]`);
+  broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
+  return true;
 }

@@ -9,8 +9,7 @@
 //
 // Phase 6 (2026-05-04) — replaced the surrender stub with full cascade:
 //   1. Context overflow recovery (Dreamer batch-resize, non-Dreamer compact)
-//   2. Recoverable provider 4xx with per-agent streak cap
-//   3. Generic injury (recordError + last_error + healer notify + chat:error)
+//   2. Recoverable provider 4xx with per-agent streak cap, 3. Generic injury (recordError + healer)
 //
 // All side effects happen in this file. recoverFromError returns void —
 // the caller (v2/loop.ts catch) just awaits it and exits cleanly.
@@ -36,7 +35,7 @@ import {
   declaredPatienceHonestFailTurn,
 } from '../shared-state.js';
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
-import { classifyHonestStop, stopAlreadyTold, parkAgent } from './honest-stop.js';
+import { tryHonestStopRecovery } from './honest-stop.js';
 import type { AgentTurnState } from './state.js';
 import {
   formatErrorForHuman,
@@ -276,14 +275,6 @@ export async function recoverFromError(
     // `false` iff it never got the chance to (I2's bail cases).
   }
 
-  // 0.9. t148 — AN HONEST STOP. The money guardrail stopped the turn, or no model the agent may
-  //      use can hold it. Not an injury: the Healer cannot change either, so it is neither
-  //      called nor counted. The agent is parked on the platform's existing lock (below) and
-  //      released by the real event (agent/v2/honest-stop.ts).
-  if (await tryHonestStopRecovery(state, error)) {
-    return;
-  }
-
   // 1. Context overflow — provider rejected because prompt too big.
   //    Dreamer gets batch-resize; everyone else gets force-compact + wakeup.
   if (await tryContextOverflowRecovery(agentId, fullErrText, message, code, cause)) {
@@ -300,8 +291,8 @@ export async function recoverFromError(
   //    user needs to act. Persist a human-language system note for the
   //    agent (so when it eventually wakes, it has context) AND set
   //    status='error' AND surface a plain-English banner + iMessage.
-  //    error-handling-spec Phase 1 / Phase 2.
-  if (await tryPlatformErrorRecovery(state, fullErrText, message, facts)) {
+  //    error-handling-spec Phase 1 / Phase 2. t148: the money guardrail and "no model fits" ride this lock too.
+  if (await tryHonestStopRecovery(state, error) || await tryPlatformErrorRecovery(state, fullErrText, message, facts)) {
     return;
   }
 
@@ -653,42 +644,6 @@ async function tryProviderRecovery(
   // Tier B: NO status change. Queue a wakeup so the agent retries with
   // the system note in context.
   queueSelfWake(agentId, 'recovery-tier-b-retry');
-  return true;
-}
-
-/**
- * t148 — an honest stop: the owner's spending limit, or no model that fits. Parks the agent on
- * the Tier D lock (see `honest-stop.ts` for the status it uses and how it is released), tells
- * the owner the true cause ONCE per condition, and never calls the Healer.
- *
- * The owner is told when the lock goes on. A stop that finds its own lock already on (the
- * message was served again, or he sent another) is silent: the card and the status already say it.
- * It sends NO text of its own. A budget stop is always preceded by the budget's own crossing alert
- * (t138: the wall and the router's budget filter both run `checkBudget`, which texts and raises
- * the dashboard card before it refuses), sent once per window. A second text would be a second
- * telling of the same window, and a no-fit is not a class the platform may text (OR-V333-SET (3)).
- */
-async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
-  const agentId = state.agentId;
-  let stop;
-  try {
-    stop = await classifyHonestStop(agentId, error);
-  } catch (err) {
-    logger.warn('v2: honest-stop classifier threw', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-    return false;
-  }
-  if (!stop) return false;
-
-  const alreadyTold = stopAlreadyTold(agentId, stop.kind);
-  logger.warn('v2: honest stop — parking the agent until the condition clears', { agentId, kind: stop.kind, alreadyTold }, agentId);
-  // The turn's record says what stopped it: the money guardrail has its word (`budget`); a model
-  // that cannot fit keeps the quarantine word, because nothing here observed a better one.
-  try { markTurnDied(agentId, state.turnNumber, stop.kind === 'budget_stop' ? 'budget' : (state.engineCutExit ?? 'unknown')); } catch { /* best effort */ }
-  parkAgent(agentId, stop);
-  if (alreadyTold) return true;
-
-  persistAndBroadcastSystemNote(agentId, `[System (platform notice): ${stop.words}]`);
-  broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
   return true;
 }
 

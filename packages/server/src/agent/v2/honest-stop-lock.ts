@@ -14,6 +14,10 @@ import type { HonestStopKind } from './error-format.js';
 
 const logger = createLogger('honest-stop');
 
+/** Thrown by the t140 no-pick exit, which has already named the cause. */
+export const BUDGET_STOP_CODE = 'BUDGET_STOP';
+export const NO_MODEL_FITS_CODE = 'NO_MODEL_FITS';
+
 export const lockTag = (kind: HonestStopKind): string => `[${kind}]`;
 
 /** The agents the lock holds for `kind` (optionally just one). */
