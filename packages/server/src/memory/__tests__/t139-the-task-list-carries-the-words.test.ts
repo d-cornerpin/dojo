@@ -423,7 +423,7 @@ describe('t139 §4 — the reserve is the renderer\'s own worst case', () => {
   it('a maximal real board (five tasks, every request far over the cap) fits the reserve', async () => {
     for (let i = 0; i < 6; i++) {
       const id = `msg-flood-${i}`;
-      ownerSays(id, longAsk(12000, `FLOOD${i}`), DAY_ONE - (10 - i) * 60_000);
+      ownerSays(id, longAsk(24000, `FLOOD${i}`), DAY_ONE - (10 - i) * 60_000);
       vi.setSystemTime(DAY_ONE - (10 - i) * 60_000 + 1000);
       task('t'.repeat(300), 'd'.repeat(5000), id);
     }

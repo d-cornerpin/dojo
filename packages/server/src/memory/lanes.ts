@@ -574,7 +574,12 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // reserve is now the list's GUARANTEE, not its ceiling: at run time it is laid out in this
     // reserve PLUS the content fit's unspent budget (`activeTasksRoomTokens`), so on a roomy view
     // every request is whole. Net once the pin goes: +323 (t141 merge, +25: a fixed 10-char zone on each of its 10 instants).
-    reserveTokens: 3643,
+    // t145 group A: 3,643 -> 3,857 (+214). A current line now carries the owner's LATER messages that
+    // updated the task (`memory/task-list-words.ts`): at worst a labelled head, one cut message with its
+    // `history_get` pointer, and the one collapse line that names how many more remain and the newest.
+    // The words themselves are still the one room-driven pool; this is only the framing's worst case.
+    // Group B frees the pin's 2,081 tokens, so the pair nets out below where t139 left the budget.
+    reserveTokens: 3857,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '

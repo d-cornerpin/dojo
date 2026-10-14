@@ -54,6 +54,7 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
+import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
 // SWEEP CORE-1 CT2: the deliverable declaration and the steer-to-deliver ladder.
 import {
@@ -2245,6 +2246,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
     }
 
+    linkLaterInstruction(agentId, taskId);
     return parts.join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2364,6 +2366,7 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
       note: notes,
     });
 
+    linkLaterInstruction(agentId, taskId);
     return `[OK] task_id=${taskId}\n\nObservation appended to the task's audit trail.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2742,6 +2745,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         editParts.push(line);
       }
     }
+    linkLaterInstruction(agentId, taskId);
     return editParts.join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

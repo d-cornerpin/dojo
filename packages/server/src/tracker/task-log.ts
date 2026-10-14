@@ -44,6 +44,8 @@ export type TaskLogEntryKind =
   | 'user_verdict_request'
   | 'user_verdict_applied'
   | 'legacy_note'
+  // t145: a later owner message, served while this task was updated (`tracker/later-instruction.ts`).
+  | 'newer_instruction'
   // SLOW-INFERENCE T79d: the durable dedupe marker for an out-of-band effort review. Lives
   // in the `entry_kind` field of an `audit` `work_events` row (this whole trail's existing
   // shape, see the module header) — NOT a new `work_events.kind`, so no CHECK-constraint

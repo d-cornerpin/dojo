@@ -54,6 +54,10 @@ import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budg
 import { laneLimit, truncateWrappedText, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { conversationLabel } from './party-label.js';
+import {
+  capLabel, originLabel, spend, laterSection, readLaterMessages,
+  type WordsPool, type TermCaps, type ListedMessage,
+} from './task-list-words.js';
 
 /** The two ids keep their names: the move is a POSITION change, not a new section. */
 export const ATTEMPT_LEDGER_LANE_ID = 'lane.attempt-ledger';
@@ -129,6 +133,9 @@ interface TaskView {
   edited: boolean;
   /** Newer messages in the request's conversation (item 6's factual line). */
   newer: { count: number; newestAt: number | string | null };
+  /** t145: the owner's later messages a turn used to update this task (recorded links, oldest
+   *  first), printed after the original words. Empty for a waiting task. */
+  laters: ListedMessage[];
   /** R-V333-14: the request message is in the live conversation this assembly emitted, so the
    *  line points to it instead of printing it a second time. */
   inView?: boolean;
@@ -136,15 +143,8 @@ interface TaskView {
 
 type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other';
 
-/** The characters of original words this rendering may spend, shared across its tasks in pass
- *  order. Round 5: no longer a fixed number — `fitTaskList` sets it from the room the assembly
- *  left the list. Mutable: each line spends it. */
-interface WordsPool { remaining: number }
-
-/** The widths of the three short terms the block does not author. `WHOLE` when the view holds
- *  everything; the declared `LANE_LIMITS` widths (what the reserve was derived at) when it
- *  cannot. */
-interface TermCaps { title: number; label: number; note: number }
+/** `WHOLE` when the view holds everything; the declared `LANE_LIMITS` widths (what the reserve
+ *  was derived at) when it cannot. */
 const WHOLE: TermCaps = { title: Infinity, label: Infinity, note: Infinity };
 function declaredCaps(): TermCaps {
   return {
@@ -197,6 +197,7 @@ function renderTaskLines(views: TaskView[], poolChars: number, caps: TermCaps): 
   const pool: WordsPool = { remaining: poolChars };
   const requestOf = new Map<number, string>();
   const editedOf = new Map<number, string>();
+  const laterOf = new Map<number, string>();
   views.forEach((v, i) => { if (!v.waiting) requestOf.set(i, requestSection(v, pool, caps)); });
   views.forEach((v, i) => {
     if (!v.waiting && v.edited && v.t.description && v.origin.messageId && v.origin.words !== null) {
@@ -205,7 +206,9 @@ function renderTaskLines(views: TaskView[], poolChars: number, caps: TermCaps): 
         (more) => `  [description continues: ${more} more characters, not shown]`));
     }
   });
-  return views.map((v, i) => taskLine(v, requestOf.get(i) ?? '', editedOf.get(i) ?? '', caps));
+  // The last pass: the owner's later messages, after every request and edited description.
+  views.forEach((v, i) => { if (!v.waiting && v.laters.length > 0) laterOf.set(i, laterSection(v.laters, pool, caps)); });
+  return views.map((v, i) => taskLine(v, (requestOf.get(i) ?? '') + (laterOf.get(i) ?? ''), editedOf.get(i) ?? '', caps));
 }
 
 function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): string {
@@ -235,11 +238,6 @@ function waitingOn(v: TaskView, caps: TermCaps): string {
     case 'owner': return 'paused by the owner';
     default: return 'paused by whoever paused it';
   }
-}
-
-function capLabel(raw: string | null | undefined, fallback: string, caps: TermCaps): string {
-  const label = raw ?? fallback;
-  return label.length > caps.label ? `${label.slice(0, caps.label)}...` : label;
 }
 
 /** A current task's request: the linked words, or the labelled description when unlinked. */
@@ -279,15 +277,6 @@ function newerLine(v: TaskView): string {
   if (v.newer.count <= 0) return '';
   return `\n  Newer messages in this conversation since this request: ${v.newer.count}, `
     + `the newest ${recordedInstant(v.newer.newestAt)}; history_get shows them.`;
-}
-
-/** Print `text` verbatim up to what the pool has left, then the end marker or the cut line. */
-function spend(text: string, pool: WordsPool, endMarker: string, cutLine: (more: number) => string): string {
-  const shown = text.slice(0, Math.max(0, pool.remaining));
-  pool.remaining -= shown.length;
-  return shown.length === text.length
-    ? `${shown}\n${endMarker}`
-    : `${shown}${shown.length > 0 ? '\n' : ''}${cutLine(text.length - shown.length)}`;
 }
 
 /** The line that says tasks were left off the list, and where they are. Never silent. */
@@ -602,7 +591,8 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
         const r = newerStmt.get(conversationId, seq) as { n: number; newest: number | null } | undefined;
         if (r) newer = { count: r.n, newestAt: r.newest };
       }
-      return { t, stamp, steps, origin, waiting, edited, newer, inView: !isWaiting && inView(origin) };
+      const laters = isWaiting ? [] : readLaterMessages(t.id).map((m) => ({ ...m, inView: inView(m) }));
+      return { t, stamp, steps, origin, waiting, edited, newer, laters, inView: !isWaiting && inView(origin) };
     };
     const seen: TaskView[] = [];
     const viewAt = (i: number): TaskView => (seen[i] ??= read(tasks[i]));
@@ -634,13 +624,6 @@ function readOrigin(
   } catch {
     return { origin: none, conversationId: null, seq: null };
   }
-}
-
-/** "<party> on <channel>", without saying the channel twice when the party label already
- *  carries it (`conversationLabel` renders a contact as "Name (channel)"). */
-function originLabel(party: string | null, channel: string | null): string | null {
-  if (party && channel && !party.includes(`(${channel})`)) return `${party} on ${channel}`;
-  return party ?? (channel ? `the ${channel} channel` : null);
 }
 
 async function attemptLedgerFrom(tasks: BoardTask[]): Promise<string | null> {
@@ -747,6 +730,11 @@ export function activeTasksWorstCaseTokens(): number {
     waiting: shape === 'waiting' ? { since: widestInstant, by: widestWaitingBy } : null,
     edited: true,
     newer: { count: longest, newestAt: widestInstant },
+    // Two long later messages: the pool is spent on the first, the rest collapse into one line.
+    laters: shape === 'waiting' ? [] : [0, 1].map(() => ({
+      messageId: 'l'.repeat(36), words: 'w'.repeat(wordsCap + 1), createdAt: widestInstant, label: party,
+      inView: shape === 'inView',
+    })),
     inView: shape === 'inView',
   });
   let worst = 0;

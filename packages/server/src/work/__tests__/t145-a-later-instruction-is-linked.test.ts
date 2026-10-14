@@ -194,6 +194,8 @@ vi.mock('../../logger.js', () => ({
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
+import { writeTaskLog } from '../../tracker/task-log.js';
+import { estimateTokens } from '../../memory/budget.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
 import { renderMessageTimeStamp } from '../../memory/message-stamp.js';
@@ -332,7 +334,7 @@ async function openJob(): Promise<string> {
 }
 
 describe('t145 A1 — a later owner message that updates an open task is linked to it', () => {
-  it.fails('the task list prints the later message after the original words, word for word', async () => {
+  it('the task list prints the later message after the original words, word for word', async () => {
     const id = await openJob();
     ownerSays('msg-2', LATER);
     script([
@@ -347,7 +349,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     expect(list.indexOf(LATER)).toBeGreaterThan(list.indexOf(ASK));
   });
 
-  it.fails('every write door records it: a note, a status change', async () => {
+  it('every write door records it: a note, a status change', async () => {
     const id = await openJob();
     ownerSays('msg-2', LATER);
     script([
@@ -359,7 +361,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
 
     ownerSays('msg-3', 'And please put the file in the shared folder. THIRD-WORDS-END');
     script([
-      { toolCalls: [call('wu-1', 'work_update', { action: 'status', task_id: id, status: 'in_progress', notes: 'Folder noted.' })] },
+      { toolCalls: [call('wu-1', 'work_update', { action: 'status', task_id: id, status: 'in_progress', priority: 'high', notes: 'Folder noted.' })] },
       { content: 'Done.' },
     ]);
     await runV2Turn(PRIMARY);
@@ -419,7 +421,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     expect(wrote.n).toBe(1);
   });
 
-  it.fails('already in view: the list points to the later message instead of repeating its words', async () => {
+  it('already in view: the list points to the later message instead of repeating its words', async () => {
     const id = await openJob();
     ownerSays('msg-2', LATER);
     script([
@@ -439,7 +441,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     expect(list).toContain(ASK);
   });
 
-  it.fails('survives a reboot: the record is the database\'s, the list is rebuilt from it alone', async () => {
+  it('survives a reboot: the record is the database\'s, the list is rebuilt from it alone', async () => {
     const id = await openJob();
     ownerSays('msg-2', LATER);
     script([
@@ -453,5 +455,23 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
     mockDb.current!.close();
     mockDb.current = reopened;
     expect(await taskList()).toContain(LATER);
+  });
+
+  it('many later messages never outgrow the room: the rest collapse into one counted line naming the newest', async () => {
+    const id = await openJob();
+    for (let i = 0; i < 60; i++) {
+      ownerSays(`msg-l${i}`, `Further change number ${i}: ${'detail '.repeat(40)}`);
+      writeTaskLog({ taskId: id, fromEntity: 'engine', entryKind: 'newer_instruction', reason: `msg-l${i}` });
+    }
+    // a small window: the list gets what the loop's own later appends leave of 2,200 tokens
+    const list = (await buildWorkBoardLane(PRIMARY, {
+      availableTokens: 2200, emitted: [], blocks: [], liveRows: [],
+    })).activeTasks ?? '';
+    expect(estimateTokens(list)).toBeLessThanOrEqual(2200);
+    expect(list).toMatch(/\[\d+ more later messages updated this task, the newest is message msg-l59; history_get\(id="msg-l59"\) returns it\]/);
+    // a waiting task prints no later messages (it is not current work): pointer only
+    setTrackerStatus(id, 'paused', { by: 'agent', actorId: PRIMARY, reason: 'waiting on the owner to answer the question I asked' });
+    const waiting = (await buildWorkBoardLane(PRIMARY)).activeTasks ?? '';
+    expect(waiting).not.toContain('Further change number');
   });
 });
