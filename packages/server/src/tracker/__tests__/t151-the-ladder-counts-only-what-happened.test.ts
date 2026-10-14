@@ -225,6 +225,22 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
     expect(rungsSent('x-other')).toEqual([1, 2]);
     await sweepAt(end + 31 * MIN);
     expect(rungsSent('x-other')).toEqual([1, 2, 3]);
+    // the long stretch is on the task's own record, once; the job's own task (never idle) has none
+    const resumed = (id: string): number => (db().prepare(
+      "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'ladder_resumed'",
+    ).get(id) as { n: number }).n;
+    expect(resumed('x-other')).toBe(1);
+  });
+
+  it('a short busy stretch (shorter than the first rung) writes nothing: it is ordinary idleness', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    claimedTask('x-short', 'the price check', now, 'c-1');
+    setStatus('working');
+    await sweepAt(now + MIN);
+    setStatus('idle');
+    await sweepAt(now + 2 * MIN);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'x-short' AND kind = 'audit'").get() as { n: number }).n).toBe(0);
   });
 
   it('the escalation to the primary says only what happened: after rungs 1 and 2 it says two earlier check-ins', async () => {

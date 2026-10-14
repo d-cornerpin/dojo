@@ -139,43 +139,33 @@ export function recordRemediation(workId: string, actorId: string, reason: strin
 // the first call to the last park). The idle clock is the task's age, so the first sweep after the
 // job found the whole job's length as idleness and sent the TOP rung — an escalation "after 2 pokes"
 // with none on the record (t143 live walk, items 3 and 10). Time spent behind the agent's own work
-// is not time the task sat ignored. Two rows on the task's own record, written by the sweep that
-// observed it: HELD when the sweep first leaves the task alone, RESUMED on the first sweep that
-// may poke again. The ladder's idle is its age minus the time it was held; nothing is counted,
-// nothing is a dial, a restart changes nothing (the rows are the memory).
-// They ride `kind='audit'` (no new event kind, no migration), like every other engine marker.
+// is not time the task sat ignored. The sweep that first leaves a task alone notes the instant
+// (process memory: a stretch is as long as the process that observed it); the first sweep that may
+// poke again closes the stretch, and a stretch that was long enough to have mattered (as long as the
+// ladder's own first rung) is written to the task's record as ONE `resumed` row. The ladder's idle is
+// its age minus the closed stretches. Nothing is counted, nothing is a dial; shorter stretches are
+// simply ordinary idleness, as before. Rows ride `kind='audit'` (no new event kind, no migration).
 
-export const LADDER_HELD_ENTRY = 'ladder_held';
 export const LADDER_RESUMED_ENTRY = 'ladder_resumed';
 
-function latestHold(workId: string): { entry: string; at: number; heldSince: number | null } | null {
-  const r = getDb().prepare(
-    `SELECT json_extract(payload, '$.entry_kind') AS entry, created_at AS at,
-            json_extract(payload, '$.held_since') AS held_since
-       FROM work_events
-      WHERE work_id = ? AND kind = ? AND json_extract(payload, '$.entry_kind') IN (?, ?)
-      ORDER BY id DESC LIMIT 1`,
-  ).get(workId, AUDIT_KIND, LADDER_HELD_ENTRY, LADDER_RESUMED_ENTRY) as
-    { entry: string; at: number; held_since: number | null } | undefined;
-  return r ? { entry: r.entry, at: r.at, heldSince: r.held_since } : null;
+const heldSince = new Map<string, number>();
+
+/** The sweep is leaving this task alone because its assignee is busy. Remembered from the first sweep. */
+export function holdLadder(workId: string): void {
+  if (!heldSince.has(workId)) heldSince.set(workId, Date.now());
 }
 
-const holdRow = (entry: string, reason: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
-  entry_kind: entry, from_status: null, to_status: null, reason, action_taken: null, note: null, evidence_json: null, ...extra,
-});
-
-/** The sweep is leaving this task alone because its assignee is busy. Written once per stretch. */
-export function holdLadder(workId: string, actorId: string): void {
-  if (latestHold(workId)?.entry === LADDER_HELD_ENTRY) return;
-  appendWorkEvent(workId, AUDIT_KIND, actorId, holdRow(LADDER_HELD_ENTRY, 'the check-ins wait while the assignee is working'));
-}
-
-/** The sweep may poke this task again. Written only when a hold is open. */
-export function resumeLadder(workId: string, actorId: string): void {
-  const h = latestHold(workId);
-  if (h?.entry !== LADDER_HELD_ENTRY) return;
-  appendWorkEvent(workId, AUDIT_KIND, actorId, holdRow(LADDER_RESUMED_ENTRY,
-    'the assignee is free again; the idle clock did not run while it was working', { held_since: h.at }));
+/** The sweep may poke this task again. Closes an open stretch; writes it down when it was a long one. */
+export function resumeLadder(workId: string, actorId: string, longEnoughMs: number): void {
+  const since = heldSince.get(workId);
+  if (since === undefined) return;
+  heldSince.delete(workId);
+  if (Date.now() - since < longEnoughMs) return;
+  appendWorkEvent(workId, AUDIT_KIND, actorId, {
+    entry_kind: LADDER_RESUMED_ENTRY, from_status: null, to_status: null,
+    reason: 'the assignee is free again; the idle clock did not run while it was working',
+    action_taken: null, note: null, evidence_json: null, held_since: since,
+  });
 }
 
 /** Milliseconds of `[sinceMs, now]` the ladder spent held (closed stretches only: an open one is

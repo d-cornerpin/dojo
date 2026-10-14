@@ -2618,8 +2618,8 @@ export async function runPokeCheck(): Promise<void> {
     // behind its agent's own running job is not abandoned, and when the job ends its ladder starts at
     // its FIRST rung: the time spent behind the job never counts toward a later one (the walk's items
     // 3 and 10 found the whole job's length as idleness and sent the top rung at once).
-    if (assigneeStatus === 'working' || leftAlone) holdLadder(task.id, getPMAgentId());
-    else resumeLadder(task.id, getPMAgentId());
+    if (assigneeStatus === 'working' || leftAlone) holdLadder(task.id);
+    else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
     if (assigneeStatus === 'working') continue;
     const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
 
