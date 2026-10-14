@@ -1201,7 +1201,7 @@ export function rehydrateInjuredAgents(): void {
     // real box is already carrying, and for the pause arm that still writes twice.)
     const injured = db.prepare(`
       SELECT id, last_error, recovery_attempts FROM agents
-      WHERE status IN ('error', 'paused')
+      WHERE status IN ('error', 'paused') AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a parked agent is not an injury
     `).all() as Array<{ id: string; last_error: string | null; recovery_attempts: number | null }>;
 
     if (injured.length > 0) {

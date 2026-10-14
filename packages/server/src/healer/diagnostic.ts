@@ -143,7 +143,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   const troubled = db.prepare(`
     SELECT id, name, status, updated_at FROM agents
     WHERE status IN ('error', 'paused', 'rate_limited')
-      AND status != 'terminated'
+      AND status != 'terminated' AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a parked agent is not an injury
   `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
   // PHASE-6 T10: from the ONE stuck-threshold table (7 days, unchanged).

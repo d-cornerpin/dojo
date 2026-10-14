@@ -130,7 +130,7 @@ export function runFrequentAutoFixes(): void {
     // Long-paused agents (status='paused' for >30 min).
     const longPaused = db.prepare(`
       SELECT id, name, status, updated_at FROM agents
-      WHERE status = 'paused'
+      WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a clock is not evidence a parked agent's condition cleared
         AND updated_at < datetime('now', '-${PAUSED_COOLDOWN_MS / 1000} seconds')
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
