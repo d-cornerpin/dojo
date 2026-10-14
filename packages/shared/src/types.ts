@@ -189,7 +189,7 @@ export interface Agent {
   modelId: string | null;
   systemPromptPath: string | null;
   status: AgentStatus;
-  lastError?: string | null; // the platform's last diagnostic; a parked agent's tag and plain words (t148)
+  parkedCause?: string | null; // t148: why the platform parked this agent (plain words), else null
   config: Record<string, unknown>;
   createdBy: string;
   parentAgent: string | null;

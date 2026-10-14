@@ -389,7 +389,7 @@ export const Agents = () => {
       const e = event as AgentStatusEvent;
       setAgents((prev) =>
         prev.map((a) =>
-          a.id === e.agentId ? { ...a, status: e.status as AgentDetail['status'] } : a,
+          a.id === e.agentId ? { ...a, status: e.status as AgentDetail['status'], parkedCause: e.parkedCause ?? null } : a,
         ),
       );
     });

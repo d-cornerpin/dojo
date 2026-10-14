@@ -91,8 +91,8 @@ export function writeAgentStatus(
     `).run(status, agentId);
   } else {
     db.prepare(`
-      UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(status, agentId);
+      UPDATE agents SET status = ?, last_error = CASE WHEN ? = 'paused' AND (instr(COALESCE(last_error, ''), '[budget_stop]') = 1 OR instr(COALESCE(last_error, ''), '[no_model_fits]') = 1) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?
+    `).run(status, status, agentId);   // t148: another pause over a park wins: the park's tag goes with it
   }
   agentStatusMoved(agentId, status); // t138 r4: an owner card whose status this left is over
 }

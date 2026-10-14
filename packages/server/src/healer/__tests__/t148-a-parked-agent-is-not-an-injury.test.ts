@@ -31,6 +31,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { rehydrateInjuredAgents } from '../injury-recovery.js';
 import { runFrequentAutoFixes } from '../auto-fix.js';
 import { compileDiagnosticReport } from '../diagnostic.js';
+import { runHealerSelfWatchdog } from '../healer-agent.js';
 import { lockTag } from '../../agent/v2/honest-stop-lock.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,5 +90,18 @@ describe('t148 r3 — the three Healer sweeps leave a parked agent alone', () =>
         expect(src, `${f} excludes ${kind}`).toContain(`instr(COALESCE(last_error, ''), '${lockTag(kind)}') != 1`);
       }
     }
+  });
+
+  it('the Healer\'s own watchdog does not reset a PARKED Healer on a clock (control: an error-loop-paused Healer is reset)', () => {
+    const db = mockDb.current!;
+    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('setup_completed', 'true')").run();
+    for (const parked of ['[budget_stop] Today\'s spending limit is reached.', '[no_model_fits] None of this agent\'s models can hold it.']) {
+      db.prepare("UPDATE agents SET status = 'paused', last_error = ?, updated_at = datetime('now', '-2 hours') WHERE id = ?").run(parked, HEALER);
+      runHealerSelfWatchdog();
+      expect(statusOf(HEALER), parked).toBe('paused');
+    }
+    db.prepare("UPDATE agents SET status = 'paused', last_error = 'repeated errors', updated_at = datetime('now', '-2 hours') WHERE id = ?").run(HEALER);
+    runHealerSelfWatchdog();
+    expect(statusOf(HEALER), 'control').toBe('idle');
   });
 });

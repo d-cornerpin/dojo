@@ -116,8 +116,8 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   // One hue for both the avatar box and the orb. Primary is always champagne.
   const hue = isThisPrimary ? CHAMPAGNE_HUE : (localHue ?? resolveAgentHue(agent, false));
   const status = statusPresentation[agent.status] ?? statusPresentation.idle;
-  // t148: a parked agent's true cause (the owner's words after the lock's tag) rides the pill as its tooltip.
-  const parkedCause = agent.status === 'paused' ? agent.lastError?.match(/^\[(?:budget_stop|no_model_fits)\]\s*(.+)$/s)?.[1] : undefined;
+  // t148: a parked agent's true cause (the server's owner-facing words) rides the pill as its tooltip.
+  const parkedCause = agent.status === 'paused' ? agent.parkedCause ?? undefined : undefined;
 
   const pickColor = async (h: number) => {
     setLocalHue(h);

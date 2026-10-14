@@ -326,14 +326,14 @@ const HEALER_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
 // engine reaper's 75 minutes it deliberately disagrees with.
 let healerWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 
-function runHealerSelfWatchdog(): void {
+export function runHealerSelfWatchdog(): void {
   try {
     if (!isSetupCompleted()) return;
     const db = getDb();
     const healerId = getHealerAgentId();
     const row = db
-      .prepare('SELECT id, name, status, updated_at FROM agents WHERE id = ?')
-      .get(healerId) as { id: string; name: string; status: string; updated_at: string } | undefined;
+      .prepare('SELECT id, name, status, updated_at, last_error FROM agents WHERE id = ?')
+      .get(healerId) as { id: string; name: string; status: string; updated_at: string; last_error: string | null } | undefined;
     ownerConditionsOnHealerSeen(row?.status ?? null); // t138 r4: back, or healthy, ends the owner's card
     if (!row) return; // Healer doesn't exist yet; ensureHealerAgentRunning will create it
 
@@ -343,7 +343,7 @@ function runHealerSelfWatchdog(): void {
     if (row.status === 'error') {
       shouldReset = true;
       reason = 'in error status';
-    } else if (row.status === 'paused') {
+    } else if (row.status === 'paused' && !/^\[(?:budget_stop|no_model_fits)\]/.test(row.last_error ?? '')) {   // t148: a parked Healer is not reset by a clock
       shouldReset = true;
       reason = 'in paused status';
     } else if (row.status === 'working') {

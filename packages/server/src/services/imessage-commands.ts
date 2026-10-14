@@ -6,6 +6,7 @@ import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { terminateAgent } from '../agent/spawner.js';
+import { writeAgentStatus } from '../agent/agent-status.js';
 import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
 
 const logger = createLogger('imessage-commands');
@@ -240,9 +241,9 @@ function killNamedAgent(name: string): string {
 
 function pausePrimaryAgent(): string {
   try {
-    const db = getDb();
     const primaryId = getPrimaryAgentId();
-    db.prepare("UPDATE agents SET status = 'paused', updated_at = datetime('now') WHERE id = ?").run(primaryId);
+    // t148: through the one status writer, which also drops a park's tag: the owner's pause wins over a park.
+    writeAgentStatus(primaryId, 'paused');
     logger.info('Primary agent paused via iMessage', { primaryId });
     return 'Agent paused. Send "resume" to continue.';
   } catch (err) {

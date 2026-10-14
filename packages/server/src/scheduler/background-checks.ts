@@ -38,14 +38,11 @@ let lastMemoryKick: Promise<void> = Promise.resolve();
 
 export function kickMemoryRecheck(): void {
   lastMemoryKick = balanceModuleLoaded.then(() => import('../services/memory-low-notice.js')).then(async (m) => {
+    // t148: an agent parked on a budget's limit is released when the window turned over. First, and in
+    // its own guarded step, so a failure ending the cards below never skips it (the lock module catches).
+    await (await import('../agent/v2/honest-stop-lock.js')).releaseClearedBudgetStops();
     // r6: a budget whose window turned over has no live incident; its card leaves now.
     (await import('../costs/budget-cards.js')).endTurnedOverBudgetCards();
-    // t148: and an agent parked on that budget's limit is released when the window turned over.
-    try {
-      await (await import('../agent/v2/honest-stop-lock.js')).releaseClearedBudgetStops();
-    } catch (err) {
-      logger.warn('Could not release budget stops on the window turnover', { error: err instanceof Error ? err.message : String(err) });
-    }
     if (!m.memoryLowStanding()) return;
     const { getResourceInfo } = await import('../services/resource-monitor.js');
     m.noteCriticalMemory(getResourceInfo().memory.free);

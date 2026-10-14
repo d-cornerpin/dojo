@@ -264,7 +264,11 @@ export interface ExceededBudget {
   limitUsd: number;
 }
 
-export function exceededBudget(agentId: string, estimatedCost = 0.01): ExceededBudget | null {
+/** The pre-call estimate the pinned-model wall (agent/model.ts) charges: one call's worth, flat. A routed
+ *  model is judged by the router's own per-model estimate instead (router/selector.ts, `routedCandidateCosts`). */
+export const WALL_ESTIMATE_USD = 0.01;
+
+export function exceededBudget(agentId: string, estimatedCost: number): ExceededBudget | null {
   const db = getDb();
   const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
   if (globalBudget) {

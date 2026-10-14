@@ -69,15 +69,18 @@ export function getSystemModel(): string | null {
 }
 
 function estimateRequestCost(model: TierModelRow): number {
-  // Rough estimate: 2k input, 1k output per request.
-  // D-H: an unknown (NULL) price estimates as $0, matching how the biller
-  // records it, so near the budget wall an unpriced model is not over-gated as
-  // if it were the Sonnet premium. The "price unknown" state stays visible via
-  // the per-model dashboard flag and the biller's once-per-model warn; this is
-  // only the pre-call estimate side. Explicit prices are used as-is.
+  // Rough estimate: 2k input, 1k output per request. D-H: an unknown (NULL) price estimates as $0,
+  // matching how the biller records it, so near the budget wall an unpriced model is not over-gated
+  // as if it were the Sonnet premium (the "price unknown" state stays visible via the dashboard flag
+  // and the biller's once-per-model warn). Explicit prices are used as-is.
   const inputCost = ((model.input_cost_per_m ?? 0) / 1_000_000) * 2000;
   const outputCost = ((model.output_cost_per_m ?? 0) / 1_000_000) * 1000;
   return inputCost + outputCost;
+}
+
+/** t148: the estimate `selectModel` skips each reachable model on, so a budget stop is judged by the same number. */
+export function routedCandidateCosts(): number[] {
+  return [...new Map(Object.values(TIER_FALLBACK).flat().flatMap(getTierModels).map((m) => [m.model_id, estimateRequestCost(m)] as const)).values()];
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -91,18 +94,16 @@ function estimateRequestCost(model: TierModelRow): number {
 // (no ceiling) with a declared-local row (600s/180tps) can hand back the local row for the
 // SAME oversized array, unchecked. This is that same gap, reachable from a second door.
 //
-// `inputEstimate` is OPTIONAL and every existing call site omits it — that is the R6
-// byte-preservation control (every caller before this task, unchanged) AND, separately, the
-// `selector-latency.test.ts` sub-2ms guard: the fit check below never runs, never queries
-// the two ceiling columns, when the caller doesn't supply an estimate.
+// `inputEstimate` is OPTIONAL and every existing call site omits it: the R6 byte-preservation
+// control AND the `selector-latency.test.ts` sub-2ms guard (the fit check never runs, never queries
+// the two ceiling columns, without an estimate).
 //
 // WHY A LOCAL, MIRRORED QUERY AND NOT `agent/model.js`'s `getProviderCeilingTokens`:
 // `agent/model.ts` carries the Anthropic/OpenAI SDKs and undici, and this selector has never
-// needed any of that for the sake of two already-declared columns. (The turn-budget reader
-// that once set the same precedent was deleted with the total-time cap, t137.) It also keeps `selectModel` SYNCHRONOUS:
-// `getProviderCeilingTokens` only ever does a synchronous indexed read, so mirroring it here
-// costs nothing async and every one of this function's three existing callers, none of which
-// await it today, keeps working unchanged.
+// needed any of that for the sake of two already-declared columns (the turn-budget reader that once
+// set the same precedent was deleted with the total-time cap, t137). It also keeps `selectModel`
+// SYNCHRONOUS: `getProviderCeilingTokens` only does a synchronous indexed read, so mirroring it
+// costs nothing async and the three existing callers, none of which await it, keep working.
 function providerCeilingTokensFor(modelId: string): number | null {
   try {
     const db = getDb();

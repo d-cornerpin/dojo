@@ -9,6 +9,8 @@ export interface AgentStatusEvent {
   type: 'agent:status';
   agentId: string;
   status: AgentStatus;
+  /** t148: on a `paused` frame for a parked agent, why (plain words); the pill's tooltip. */
+  parkedCause?: string;
   /**
    * When status === 'working', whether this turn is a normal user turn or an
    * agent-to-agent (A2A) turn. Lets the composer stay quiet (no thinking dots,

@@ -25,7 +25,7 @@ import { repairToolPairing } from './tool-pairing.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
 import { recordCost } from '../costs/tracker.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
-import { checkBudget } from '../costs/budget.js';
+import { checkBudget, WALL_ESTIMATE_USD } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
 import { routedFirstPicks } from '../router/selector.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
@@ -3324,7 +3324,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   // budget decision and the redirect target is a $0 model, so re-running the
   // wall here would loop (and would needlessly re-notify).
   if (!FREE_LOCAL_PROVIDER_TYPES.has(modelInfo.providerType) && routerTier !== 'budget_fallback') {
-    const budgetCheck = checkBudget(agentId, 0.01);
+    const budgetCheck = checkBudget(agentId, WALL_ESTIMATE_USD);
     if (!budgetCheck.allowed) {
       if (budgetCheck.freeModelFallback) {
         // Budget exceeded but free model available, redirect to it

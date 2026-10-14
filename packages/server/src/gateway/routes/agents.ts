@@ -33,6 +33,7 @@ import { DASHBOARD_CREATE_DEFAULT_GRANTS } from '../../agent/access/create-defau
 import { getAccessGrants } from '../../agent/access/read.js';
 import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
+import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -974,7 +975,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     name: row.name as string,
     modelId: modelId,
     systemPromptPath: row.system_prompt_path as string | null,
-    status: row.status as AgentDetail['status'], lastError: (row.last_error as string | null) ?? null,
+    status: row.status as AgentDetail['status'], parkedCause: parkedCauseOf(row.status, row.last_error),
     config: JSON.parse((row.config as string) || '{}'),
     createdBy: row.created_by as string,
     createdAt: row.created_at as string,

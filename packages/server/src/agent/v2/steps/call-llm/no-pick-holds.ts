@@ -62,8 +62,8 @@ export async function tellOwnerNoPickHolds(args: {
   for (const { modelId, skip } of routedSkipReasons(tier, agentId, excluded, ['tools'])) {
     if (skip && !causes.has(skip) && await modelHoldsAgent(agentId, modelId, toolPayloadTokens, turnContext)) causes.add(skip);
   }
-  const onlyTheLimit = causes.size === 1 && causes.has('budget');
-  const stop: HonestStopKind | null = causes.size === 0 ? 'no_model_fits' : onlyTheLimit ? 'budget_stop' : null;
+  // The limit is the real stop even beside a transient cause (a rate limit clears by itself; the limit does not).
+  const stop: HonestStopKind | null = causes.has('budget') ? 'budget_stop' : causes.size === 0 ? 'no_model_fits' : null;
   if (stop) {
     // t148: the limit alone, or no model that fits, is an honest stop: the platform's lock parks the
     // agent and tells the owner once (recovery.ts -> honest-stop.ts). Nothing is said here.

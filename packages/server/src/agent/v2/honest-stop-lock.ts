@@ -20,6 +20,14 @@ export const NO_MODEL_FITS_CODE = 'NO_MODEL_FITS';
 
 export const lockTag = (kind: HonestStopKind): string => `[${kind}]`;
 
+/** The owner-facing cause of a park, for the dashboard: the words after the tag, neutralised (control
+ *  characters and angle brackets out, one line, capped). null for anything that is not a park. */
+export function parkedCauseOf(status: unknown, lastError: unknown): string | null {
+  if (status !== 'paused' || typeof lastError !== 'string') return null;
+  const m = /^\[(?:budget_stop|no_model_fits)\]\s*(.+)$/s.exec(lastError);
+  return m ? m[1].replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400) : null;
+}
+
 /** The agents the lock holds for `kind` (optionally just one). */
 export function parkedAgents(kind: HonestStopKind, agentId?: string): string[] {
   const tag = lockTag(kind);
@@ -30,7 +38,7 @@ export function parkedAgents(kind: HonestStopKind, agentId?: string): string[] {
   } catch { return []; }
 }
 
-async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; onlyWhereCleared?: boolean }): Promise<string[]> {
+async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string }): Promise<string[]> {
   if (parkedAgents(kind, opts.agentId).length === 0) return [];
   try {
     return await (await import('./honest-stop.js')).releaseHonestStops(kind, opts);
@@ -42,7 +50,7 @@ async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; o
 }
 
 /** A limit was raised or a window turned over: release the agents it no longer stops. */
-export const releaseClearedBudgetStops = (): Promise<string[]> => releaseIfParked('budget_stop', { onlyWhereCleared: true });
+export const releaseClearedBudgetStops = (): Promise<string[]> => releaseIfParked('budget_stop', {});
 
 /** A model, tier, window or tool list changed: every no-fit lock (or one agent's) gets another look. */
 export const noteModelsChanged = async (agentId?: string): Promise<void> => { await releaseIfParked('no_model_fits', { agentId }); };

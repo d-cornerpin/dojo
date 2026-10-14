@@ -154,6 +154,8 @@ vi.mock('../../../services/imessage-bridge.js', () => ({
   addressesMatch: (a: string, b: string) => a === b,
   getInboundSenderFor: () => null,
   sendAlert: (...args: unknown[]) => sendAlertSpy(...args),
+  getSafeSenders: () => [],
+  findSafeSenderByAddress: () => ({ is_primary: 1 }),
 }));
 
 vi.mock('../../../memory/compaction.js', async () => {
@@ -694,5 +696,121 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     expect(sendAlertSpy.mock.calls.map((c) => c[0] as string).filter((t) => /none of its models/i.test(t))).toEqual([]);
     expect(healerOwnerCards()).toEqual([]);
+  });
+
+  // ══ ROUND 4 (review t148-review.md) ══
+
+  // I1 — a park is identified by its own record; the owner's pause, or any other pause, wins.
+  it('I1: the owner\'s texted pause on a parked agent wins: the limit being raised does NOT run it', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    expect(status()).toBe('paused');
+    const { handleIMCommand } = await import('../../../services/imessage-commands.js');
+    expect(await handleIMCommand('pause', 'owner')).toMatch(/paused/i);
+    handleMessageSpy.mockClear();
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
+    expect(status(), 'the owner said pause; it stays paused').toBe('paused');
+    expect(handleMessageSpy, 'and it is not woken').not.toHaveBeenCalled();
+  });
+
+  it('I1: any other pause (the error loop\'s writer) over a retry turn\'s kept tag is not released by the park\'s paths either', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    const { writeAgentStatus } = await import('../../agent-status.js');
+    writeAgentStatus(AGENT, 'working');   // a retry turn keeps the tag across `working`
+    writeAgentStatus(AGENT, 'paused');    // then something else pauses it
+    handleMessageSpy.mockClear();
+    const { releaseClearedBudgetStops } = await import('../honest-stop-lock.js');
+    db().prepare(`UPDATE budgets SET limit_usd = 10`).run();
+    await releaseClearedBudgetStops();
+    expect(status()).toBe('paused');
+    expect(handleMessageSpy).not.toHaveBeenCalled();
+  });
+
+  // I2 — one budget truth: the router's own per-model estimate.
+  it('I2: spend just under the limit on an AUTO agent whose every model\'s estimate crosses it is an honest park, not the Healer path; a raise that still lets the router pick nothing stays parked and silent', async () => {
+    noFreeModel();
+    db().prepare(`UPDATE models SET input_cost_per_m = 100, output_cost_per_m = 300 WHERE id = 'test-model'`).run();   // ~$0.50 a request
+    db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    budget(1.00, 0.90);   // 0.90 + 0.01 is under the limit; 0.90 + 0.50 is not
+    await runV2Turn(AGENT);
+    expectAnHonestStop(/spending limit/i);
+    expect(status()).toBe('paused');
+    const told = notices().length;
+    handleMessageSpy.mockClear();
+    const { costsRouter } = await import('../../../gateway/routes/costs.js');
+    const put = (limitUsd: number) => costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd }) });
+    await put(1.20);   // 0.90 + 0.01 fits, 0.90 + 0.50 does not: the router still picks nothing
+    expect(status(), 'still parked').toBe('paused');
+    expect(handleMessageSpy).not.toHaveBeenCalled();
+    expect(notices().length, 'and silent').toBe(told);
+    await put(5);
+    expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
+    expect(status()).toBe('idle');
+  });
+
+  // I3 — every release re-checks its own condition first.
+  it('I3: an unrelated model edit that does not make a no-fit agent fit leaves it parked, silent, with its told-record intact', async () => {
+    db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
+    toolPayload.tokens = 7_000;   // the tiny model cannot hold the agent's tools
+    await runV2Turn(AGENT);       // the real assembler refuses (no scripted throw)
+    expect(status()).toBe('paused');
+    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
+    const texts = sendAlertSpy.mock.calls.length;
+    const said = notices().length;
+    handleMessageSpy.mockClear();
+    const { configRouter } = await import('../../../gateway/routes/config.js');
+    db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
+      VALUES ('m-other', 'test-provider', 'Other', 'other', '["text","tools"]', 4096, 1024, 0, 0, 0)`).run();
+    const res = await configRouter.request('/models/enable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelIds: ['m-other'] }) });
+    expect(res.status).toBe(200);
+    expect(status(), 'nothing changed for this agent: still parked').toBe('paused');
+    expect(handleMessageSpy).not.toHaveBeenCalled();
+    expect(sendAlertSpy.mock.calls.length, 'no new text').toBe(texts);
+    expect(notices().length, 'no new notice').toBe(said);
+    expect(healerOwnerCards(), 'its card stands').toHaveLength(1);
+    // The agent is pointed at a model that holds it: that IS the event.
+    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
+    await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
+    expect(status()).toBe('idle');
+    expect(healerOwnerCards()).toEqual([]);
+  });
+
+  // Minor 5 — the live frame and the serializer carry only the owner-facing cause.
+  it('the park\'s live status frame carries the true cause, and the serializer exposes only that (never raw last_error)', async () => {
+    noFreeModel();
+    budget(1.00, 2.00);
+    await runV2Turn(AGENT);
+    const frame = broadcastSpy.mock.calls.map((c) => c[0] as { type?: string; status?: string; parkedCause?: string })
+      .filter((e) => e.type === 'agent:status' && e.status === 'paused').pop();
+    expect(frame?.parkedCause).toMatch(/^Today's spending limit is reached/);
+    expect(frame?.parkedCause).not.toMatch(/budget_stop/);
+    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
+    const parked = await (await agentsRouter.request(`/${AGENT}`)).json() as { data: Record<string, unknown> };
+    expect(parked.data.parkedCause).toBe(frame?.parkedCause);
+    expect('lastError' in parked.data, 'raw last_error is not served').toBe(false);
+    db().prepare(`UPDATE agents SET status = 'error', last_error = 'provider said: secret-ish detail' WHERE id = ?`).run(AGENT);
+    const broken = await (await agentsRouter.request(`/${AGENT}`)).json() as { data: Record<string, unknown> };
+    expect(broken.data.parkedCause ?? null).toBeNull();
+    expect(JSON.stringify(broken.data)).not.toMatch(/secret-ish/);
+  });
+
+  // Minor 1 — the limit is the real stop even beside a transient cause.
+  it('a no-pick exit whose causes are the limit AND a rate limit is an honest park (the limit does not clear itself), not a repeat-then-quarantine', async () => {
+    db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools
+    db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
+      VALUES ('m-b', 'test-provider', 'B', 'b', '["text","tools"]', 200000, 4096, 1, 3, 15)`).run();
+    db().prepare(`UPDATE router_tier_models SET model_id = 'm-b' WHERE tier_id = 'heavy'`).run();   // standard: test-model, heavy: m-b
+    const { updateRateLimits } = await import('../../../router/rate-limits.js');
+    updateRateLimits('test-model', { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
+    budget(1.00, 0.999);
+    await runV2Turn(AGENT);
+    expectAnHonestStop(/spending limit/i);
+    expect(status()).toBe('paused');
+    expect(ask(), 'the message is still open, not handed back').toBe('open');
   });
 });

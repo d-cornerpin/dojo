@@ -307,7 +307,7 @@ function maybeRecordProviderPattern(agentId: string): string | null {
       JOIN providers p ON p.id = m.provider_id
       WHERE p.name = ?
         AND a.id != ?
-        AND a.status IN ('error', 'paused')
+        AND a.status IN ('error', 'paused') AND instr(COALESCE(a.last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(a.last_error, ''), '[no_model_fits]') != 1
         AND a.last_error IS NOT NULL
         AND a.last_error_at > datetime('now', '-${lookbackSec} seconds')
         AND ${TRANSIENT_PROVIDER_ERROR_SQL}
