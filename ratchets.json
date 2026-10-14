@@ -8284,6 +8284,20 @@
       "to": 2846,
       "by": "t145 round 3 (group A)",
       "why": "+7: budgetFreshTail passes the served-ask floor to the shared trim so it never drops the group holding the owner message a running turn serves."
+    },
+    {
+      "path": "packages/server/src/memory/tail-horizon.ts",
+      "from": 619,
+      "to": 552,
+      "by": "t145 round 4 (group A)",
+      "why": "A LOWERED pin (-67): round 3's served-ask floor is removed from this file (the protection is now narrow and lives in memory/served-ask.ts), so it returns to its pre-round-3 size."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2846,
+      "to": 2857,
+      "by": "t145 round 4 (group A)",
+      "why": "+11 over the group A pin of 2,846 (which was itself +7 for the removed round 3 trim parameter; net +18 against 2,839): the live-tail lane re-trims once with the served row's cost reserved, and tailRender emits the served owner message(s) labelled at the front of the tail."
     }
   ],
   "maxNewFileLines": 400,
@@ -8489,7 +8503,7 @@
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1325,
-    "packages/server/src/memory/assembler.ts": 2846,
+    "packages/server/src/memory/assembler.ts": 2857,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
@@ -8512,7 +8526,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 464,
-    "packages/server/src/memory/tail-horizon.ts": 619,
+    "packages/server/src/memory/tail-horizon.ts": 552,
     "packages/server/src/memory/work-board-lane.ts": 783,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
