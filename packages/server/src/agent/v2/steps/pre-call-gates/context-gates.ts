@@ -32,7 +32,8 @@ import { rowsLeavingView, type LeavingView } from '../../../../memory/tail-horiz
 import { getFreshTailCount } from '../../../../memory/budget.js';
 import { getContextWindow } from '../../../model.js';
 import { backgroundDrains } from '../../../shared-state.js';
-import { parkJob } from '../../../../work/job-continuation.js';
+import { compactionBrakeMsLeft } from '../../../../memory/compaction-brakes.js';
+import { parkAfterForcedPass, endFullContextWait } from './full-context-wait.js';
 import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
@@ -93,6 +94,7 @@ export async function runContextGates(
   // D3: remember this iteration's utilization so the anti-hoarding advisory
   // can nudge on real context pressure instead of raw load-count.
   state = advance(state, { lastContextRatio: gateResult.ratio });
+  if (gateResult.decision === 'noop' || gateResult.decision === 'warn') endFullContextWait(agentId);   // t168: it fits again, so a wait for the brake is over
   if (gateResult.decision === 'warn') {
     // The chat:warning toast comes from compaction.ts internal WARN block
     // when checkAndCompact runs, but in WARN-only mode we don't call
@@ -117,6 +119,7 @@ export async function runContextGates(
     logger.error(gateResult.reason ?? 'emergency compaction', {
       agentId, ratio: gateResult.ratio,
     }, agentId);
+    const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
     try {
       await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });
     } catch (compErr) {
@@ -124,9 +127,10 @@ export async function runContextGates(
         agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
       }, agentId);
     }
-    // Queue wakeup so the next iteration assembles fresh post-compaction context
+    // Queue wakeup so the next iteration assembles fresh post-compaction context, unless the brake
+    // holds: then the wake waits for its expiry (t168, `full-context-wait.ts`).
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    parkJob(agentId, 'context-gate-rebuild');
+    parkAfterForcedPass(agentId, 'context-gate-rebuild', brakedBefore);
     return requestExit(state, 'context-emergency-compact' satisfies PreCallGatesExitReason);
   } else if (gateResult.decision === 'block') {
     logger.error(gateResult.reason ?? 'context impossibly full', {
@@ -137,11 +141,12 @@ export async function runContextGates(
     // as the 75-call and 15-minute parks). The agent needs no notice: it never read a role='system' row, and
     // the continuation assembles fresh from the compacted memory.
     // Force compaction then wakeup so we recover next turn
+    const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
     try {
       await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });
     } catch { /* best effort */ }
     stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
-    parkJob(agentId, 'context-gate-rebuild');
+    parkAfterForcedPass(agentId, 'context-gate-rebuild', brakedBefore);
     return requestExit(state, 'context-full' satisfies PreCallGatesExitReason);
   }
 

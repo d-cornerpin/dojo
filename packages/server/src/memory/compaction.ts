@@ -853,7 +853,7 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore });
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore }, options?.abortSignal);
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -882,7 +882,7 @@ async function runCheckAndCompact(
       });
     }
 
-    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId)) {
+    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId) && !options?.abortSignal?.aborted) {   // t168: a cancelled pass bought nothing because it was cut
       // The run happened and bought almost nothing; the threshold will still
       // be crossed next turn. Back off instead of treadmilling.
       noteLowYield(agentId);
@@ -970,7 +970,7 @@ async function condenseOnlyPass(
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
     tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
   };
-  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId));
+  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId), options?.abortSignal);
   broadcast({ type: 'memory:compaction', agentId, ...result });
   logger.info('Condensation-only compaction complete', {
     ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
@@ -1039,7 +1039,7 @@ export async function leavingViewPass(
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
-  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result);   // a Stopped pass is not an outcome (t149 r4)
+  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result, undefined, options?.abortSignal);   // a Stopped pass is not an outcome (t149 r4)
   broadcast({ type: 'memory:compaction', agentId, ...result });
   if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
     insertCompactionDivider(agentId, {

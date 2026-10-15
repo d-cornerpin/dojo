@@ -155,20 +155,44 @@ function releaseBrake(agentId: string, why: string): false {
  * OR-COMPACT-1, enforced here rather than promised in a comment.
  */
 export function compactionIsBraked(agentId: string, force: boolean): boolean {
-  const b = backoffs.get(agentId);
+  const b = liveBrake(agentId);
   if (!b) return false;
-  if (b.until <= Date.now()) return releaseBrake(agentId, 'backoff_expired');
-  // D4's "no manual step": the brake's own stated cause has gone away, so it is answering a
-  // question nobody is asking any more.
-  if (b.writerModelId && !writerBreaker(b.writerModelId)) return releaseBrake(agentId, 'summary_writer_is_back');
-  const gained = roomGained(agentId, b);
-  if (gained) return releaseBrake(agentId, gained);
   if (force && !b.bindsUnderForce) return false;
   logger.info('Compaction skipped: backing off after a pass that reclaimed nothing', {
     force, bindsUnderForce: b.bindsUnderForce, msLeft: b.until - Date.now(),
     failingStage: compactionFailureReason(agentId),
   }, agentId);
   return true;
+}
+
+/**
+ * THE BRAKE THAT IS STILL ON, after every way it lets go has been asked (the clock, the summary
+ * writer coming back, the three facts moving). Releases it, with its log line, when one has.
+ * Silent otherwise: the two askers below add their own words, or none.
+ */
+function liveBrake(agentId: string): Backoff | null {
+  const b = backoffs.get(agentId);
+  if (!b) return null;
+  if (b.until <= Date.now()) { releaseBrake(agentId, 'backoff_expired'); return null; }
+  // D4's "no manual step": the brake's own stated cause has gone away, so it is answering a
+  // question nobody is asking any more.
+  if (b.writerModelId && !writerBreaker(b.writerModelId)) { releaseBrake(agentId, 'summary_writer_is_back'); return null; }
+  const gained = roomGained(agentId, b);
+  if (gained) { releaseBrake(agentId, gained); return null; }
+  return b;
+}
+
+/**
+ * t168 — HOW LONG UNTIL ANYTHING CAN CHANGE FOR A FORCED PASS? The milliseconds left on the brake
+ * that binds even an emergency, or `null` when none does (no brake, or only the routine one, which
+ * yields to an emergency). It is the one number the wake of a surrendered turn waits for: while it
+ * is non-null, waking the agent runs the same gate against the same brake and surrenders again
+ * (1,216 times in twelve minutes on a user's box). Asked without a log line, because the gate asks
+ * it on every surrender and the skip line is the entry point's.
+ */
+export function compactionBrakeMsLeft(agentId: string): number | null {
+  const b = liveBrake(agentId);
+  return b && b.bindsUnderForce ? Math.max(1, b.until - Date.now()) : null;
 }
 
 function armBackoff(agentId: string, bindsUnderForce: boolean, writerModelId: string | null): void {
@@ -205,10 +229,17 @@ export function notePassOutcome(
   force: boolean,
   result: { leafCreated: number; condensedCreated: number; tokensReclaimed: number },
   facts?: CompactionPassFacts,
+  abortSignal?: AbortSignal,
 ): CompactionFailure | null {
   const created = result.leafCreated + result.condensedCreated;
   const wonNothing = created === 0 && result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS;
-  const stage = facts?.stage ?? null;
+  // t168: A PASS ITS CALLER CANCELLED IS NOT A PASS THAT FAILED. The turn's patience, the owner's Stop
+  // or a teardown aborted `abortSignal`; whatever the summariser answered after that (empty, cut
+  // short) is the cancellation, not the writer's refusal, so it names no stage and arms no brake.
+  // Read off the signal itself, never off the words of a reason. A pass that DID win something
+  // before it was cut still counts as the win it was (the progress arm below).
+  const cancelled = abortSignal?.aborted === true;
+  const stage = cancelled ? null : facts?.stage ?? null;
   // ⚠ A PASS THAT WROTE PARENTS AND RECLAIMED NOTHING STILL GAINED NOTHING, and a clause
   // caught it: a summariser that compresses nothing writes one parent per level, so `created`
   // is not zero while the tokens go UP. Arming the force-binding brake on `wonNothing` alone
@@ -225,6 +256,10 @@ export function notePassOutcome(
     // Progress resets everything: a pass that won means the next pressure is real.
     backoffs.delete(agentId);
     noteCompactionRecovered(agentId, result.tokensReclaimed);
+    return null;
+  }
+  if (cancelled) {
+    logger.info('Compaction pass was cancelled before it won anything: that is no evidence against the summary writer, so no backoff', { force }, agentId);
     return null;
   }
 

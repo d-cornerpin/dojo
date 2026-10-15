@@ -25,7 +25,9 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import { stoppedAgents, preemptedAgents, pendingWakeups, turnContinuationCounts, backgroundDrains } from '../../../../shared-state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
-import { compactionIsBraked, notePassOutcome, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
+import { compactionIsBraked, notePassOutcome, noteLowYield, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
+import { endJobCarry } from '../../../../../work/task-freshness.js';
+import { __resetFullContextWaitForTests } from '../full-context-wait.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../../../db/connection.js', async () => {
@@ -44,12 +46,17 @@ vi.mock('../../../../../db/connection.js', async () => {
 const NONE = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 const WON = { leafCreated: 2, condensedCreated: 1, tokensReclaimed: 5_000 };
 /** What the next forced pass that actually runs achieves. */
-let nextPass: 'reclaims' | 'nothing' = 'nothing';
+let nextPass: 'reclaims' | 'nothing' | 'cancelled' = 'nothing';
 let passesRun = 0;
 let braked = 0;
 const checkAndCompactSpy = vi.fn(async (agentId: string) => {
   if (compactionIsBraked(agentId, true)) { braked += 1; return NONE; }   // the entry point's own first question
   passesRun += 1;
+  if (nextPass === 'cancelled') {   // the turn cut the pass: it reports to the brake with the signal it was cut by
+    const cut = new AbortController(); cut.abort();
+    notePassOutcome(agentId, true, NONE, { stage: 'summariser_refused', detail: 'aborted' }, cut.signal);
+    return NONE;
+  }
   if (nextPass === 'reclaims') { notePassOutcome(agentId, true, WON); return WON; }
   notePassOutcome(agentId, true, NONE, { stage: 'nothing_left_to_condense', detail: 'scripted' });
   return NONE;
@@ -125,6 +132,7 @@ beforeEach(() => {
   db.prepare("INSERT INTO agents (id, name, model_id, session_started_at, status) VALUES (?, 'Box Under Test', 'deepseek-v4-flash', '1970-01-01', 'idle')").run(AGENT);
   stoppedAgents.clear(); preemptedAgents.clear(); pendingWakeups.clear(); turnContinuationCounts.clear(); backgroundDrains.clear();
   __resetBrakesForTests();
+  __resetFullContextWaitForTests();
   checkAndCompactSpy.mockClear();
   sendAlertSpy.mockClear();
   timerWakes.length = 0;
@@ -174,6 +182,35 @@ describe('t168 (ii) the measured loop: brake on, context over budget', () => {
     expect(await drain(), 'and does not wake into it half a second later').toBe(0);
     await vi.advanceTimersByTimeAsync(LOW_YIELD_BACKOFF_MS - MIN);
     expect(timerWakes.length).toBe(0);
+    expect(sendAlertSpy, 'the first failed pass is not yet a stop: the brake\'s expiry is the next chance').not.toHaveBeenCalled();
+  });
+
+  it('a routine low-yield brake does not hold an emergency: the pass runs and the wake is queued as before', async () => {
+    noteLowYield(AGENT);
+    expect(compactionIsBraked(AGENT, true), 'non-vacuity: the routine brake yields to a forced pass').toBe(false);
+    nextPass = 'cancelled';   // the pass runs and leaves the routine brake exactly as it was
+    await surrender();
+    expect(passesRun).toBe(1);
+    expect(compactionIsBraked(AGENT, false), 'non-vacuity: the routine brake is still on after the pass').toBe(true);
+    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(timerWakes).toEqual([]);
+  });
+
+  it('the owner\'s Stop (or a reset) during the wait ends it: the timer does not wake a stopped agent', async () => {
+    armTheBrake();
+    await surrender();
+    endJobCarry(AGENT);   // what `stopAgent` does: a stopped agent's job has no continuation coming
+    await vi.advanceTimersByTimeAsync(LOW_YIELD_BACKOFF_MS + 5);
+    expect(timerWakes).toEqual([]);
+  });
+
+  it('a pass the turn cancelled leaves no wall: the wake is queued as before (it is not evidence of anything)', async () => {
+    nextPass = 'cancelled';
+    expect(await surrender()).toBe('context-full');
+    expect(passesRun).toBe(1);
+    expect(compactionIsBraked(AGENT, true)).toBe(false);
+    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(timerWakes).toEqual([]);
   });
 
   it('the 96-99% emergency arm waits the same way', async () => {
@@ -228,6 +265,29 @@ describe('t168 (iii) at the brake\'s expiry', () => {
     // and it is the door's own record: a standing card, re-derived from the told-record
     const told = mockDb.current!.prepare("SELECT key FROM healer_state WHERE scope = 'owner_told'").all() as Array<{ key: string }>;
     expect(told.map((t) => t.key)).toEqual([`stuck:${AGENT}`]);
+  });
+
+  it('the owner writing mid-wait gets one more silent surrender: no text, no hot wake, no second pass', async () => {
+    armTheBrake();
+    await surrender();
+    await vi.advanceTimersByTimeAsync(LOW_YIELD_BACKOFF_MS + 5);
+    await surrender();                                   // the expiry's pass fails: told, once
+    expect(sendAlertSpy).toHaveBeenCalledTimes(1);
+    const passesBefore = passesRun;
+    await vi.advanceTimersByTimeAsync(5 * MIN);
+    await surrender();                                   // a message from the owner, mid-wait: the brake is back on
+    expect(passesRun, 'the brake held: no second pass').toBe(passesBefore);
+    expect(await drain(), 'and no hot wake').toBe(0);
+    expect(sendAlertSpy, 'and not told twice').toHaveBeenCalledTimes(1);
+  });
+
+  it('a message mid-wait, BEFORE any failed expiry pass, tells the owner nothing', async () => {
+    armTheBrake();
+    await surrender();
+    await vi.advanceTimersByTimeAsync(5 * MIN);
+    await surrender();
+    expect(sendAlertSpy).not.toHaveBeenCalled();
+    expect(await drain()).toBe(0);
   });
 
   it('and when a later pass reclaims, the condition ends: a new incident would be told afresh', async () => {

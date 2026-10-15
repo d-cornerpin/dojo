@@ -153,9 +153,13 @@ export function dropDrainJobWake(agentId: string): void {
   if (c) c.drainWake = false;
 }
 
-/** The job's chain is over: the owner stopped the agent, or it left the running states. */
+/** The job's chain is over: the owner stopped the agent, or it left the running states. Its parked
+ *  timer wakes are over with it (t168): a wake that waits minutes for a named event (a full context's
+ *  compaction brake) must not fire into a Stop the owner pressed meanwhile; the timer finds its token
+ *  spent and does nothing, exactly as when the drain started the continuation first. */
 export function endJobCarry(agentId: string): void {
   jobWork.delete(agentId);
+  for (const wake of armedTimerWakes.get(agentId) ?? []) wake.spent = true;
 }
 
 /** The tasks this agent's job is carrying right now: those still open, while a run carries the job

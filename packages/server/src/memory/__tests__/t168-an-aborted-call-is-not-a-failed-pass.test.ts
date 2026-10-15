@@ -179,6 +179,28 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
     expect(rawContextSummaryTokens(AGENT), 'and condensed').toBeLessThan(before);
   });
 
+  it('a FULL reactive pass (raw rows to fold, not only summaries) cancelled mid-call arms neither brake', async () => {
+    const db = mockDb.current!;
+    const insertMsg = db.prepare(
+      `INSERT INTO messages (id, agent_id, role, lane, content, display_kind, display_tier,
+                             turn_number, provenance, authorized, token_count, created_at)
+       VALUES (?, ?, 'assistant', 'owner', ?, 'agent-text', 'agent-only', 1, 'live', 1, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 20; i += 1) insertMsg.run(`old-${i}`, AGENT, 's'.repeat(TAIL_TOKENS_EACH * 4), TAIL_TOKENS_EACH, Date.now() - (TAIL_ROWS + 30 - i) * 1000);
+    })();
+    const ctl = new AbortController();
+    script = () => { ctl.abort(); return { content: '' }; };
+
+    await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: ctl.signal });
+
+    expect(modelCalls, 'non-vacuity: the raw-row leaf pass dialled the writer and was cut').toBeGreaterThan(0);
+    expect(logLines.some((l) => l.message.startsWith('Running full reactive compaction')), 'non-vacuity: this really is the full reactive path').toBe(true);
+    expect(compactionIsBraked(AGENT, true), 'no emergency-binding brake').toBe(false);
+    expect(compactionIsBraked(AGENT, false), 'and no routine low-yield brake either').toBe(false);
+    expect(defectLines()).toEqual([]);
+  });
+
   it('an owner Stop reaching the pass the same way is also no brake', async () => {
     const ctl = new AbortController();
     script = () => { ctl.abort('fold-stopped-by-owner'); return { content: '' }; };

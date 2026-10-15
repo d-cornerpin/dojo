@@ -46,10 +46,12 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
  * (`'timer'`). Every site that parks a job calls this and nothing else: the turn-budget park, the tool-loop
  * park, the emergency compaction and context-full block (`context-gates.ts`) and the two forced compactions
  * of error recovery (`recovery.ts`). On a turn that is not a job it carries nothing and is a plain wake.
+ * `delayMs` (timer parks only, t168): when the park's wake must wait for a named event rather than for the
+ * park's own DB writes to settle, such as the compaction brake's expiry for a context that is full.
  */
-export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain'): boolean {
+export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain', delayMs?: number): boolean {
   carryJobWork(agentId, turnWorkIds(agentId), servedOwnerMessageIds(agentId));
-  const queued = how === 'timer' ? (armToolLoopContinuation(agentId), true) : queueJobContinuation(agentId, reason);
+  const queued = how === 'timer' ? (armToolLoopContinuation(agentId, delayMs), true) : queueJobContinuation(agentId, reason);
   const bag = turnContext(agentId);
   if (queued && bag) bag.jobParked = true;   // t159 G2: the running turn parked the job; the end-of-turn nets read this (`turnParkedTheJob`)
   return queued;
