@@ -8557,6 +8557,34 @@
       "to": 317,
       "by": "t168 — an aborted pass arms no brake, and the clock a surrendered turn waits for",
       "why": "298 -> 317 (+19: +9 code, +10 comment). THE CODE: (1) `liveBrake`, the three release arms of `compactionIsBraked` (clock, writer back, the facts moved) lifted into one silent function so `compactionBrakeMsLeft` asks exactly the same question without a second copy of the arms; `compactionIsBraked` keeps its log line and its force rule and shrinks by the same lines. (2) `compactionBrakeMsLeft`, the ONE number the full-context gate's wake waits for (the brake's own `until`; no number of ours): without it the surrender waked the agent into the same braked gate 1,216 times in twelve minutes. (3) `notePassOutcome` reads the pass's own abort signal: a pass the turn, the owner's Stop or a teardown cancelled names no stage and arms no brake (the incident: an abort made the summariser return nothing, which was recorded as a refusal and braked a forced pass for fifteen minutes). ALTERNATIVES MEASURED: (a) a copy of the release arms inside the gate: REFUSED, two spellings of when a brake lets go is the disease OR-COMPACT-1 closed. (b) thread `aborted` through `CompactionPassFacts` and decide in the callers: REFUSED, three callers would each remember to; the brake is the one place that records a failing stage. (c) trim the module header to pay for it: REFUSED, it records the loop this file exists to prevent. From 317 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5199,
+      "to": 5200,
+      "by": "t169 (2026-10-15), a job's own notes read back and a summary keeps what the agent wrote",
+      "why": "+1: the import of `taskReadWithNotes`. The one-line call replaces the `return parts.join('\\n')` line in place. The notes reader (what counts as a note, the page sizing to the model's view, the continue footer) lives in the NEW `tracker/task-notes-view.ts` so this file does not carry it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 783,
+      "to": 786,
+      "by": "t169 (2026-10-15), a job's own notes read back and a summary keeps what the agent wrote",
+      "why": "+3: the dynamic import of `moreNotesLine` and the two-line guarded call that puts its pointer under the task's heading in the attempt ledger. What the line says and how it counts the unseen notes live in the NEW `tracker/task-notes-view.ts`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 996,
+      "to": 997,
+      "by": "t169 (2026-10-15), a job's own notes read back and a summary keeps what the agent wrote",
+      "why": "+1: the import of `coerceNumberArg`. The `work_update:get` forward of `offset` replaces the existing `trackerGetStatus` call line in place (the page of notes it asks for is read in `tracker/task-notes-view.ts`). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1569,
+      "to": 1571,
+      "by": "t169 (2026-10-15), a job's own notes read back and a summary keeps what the agent wrote",
+      "why": "+2 net (+8/-6): the import of `authoredInputLines`/`fitInputToBudget`, the summariser-input budget line in `runLeafCompaction`, and the builder's body wrapped in the fit call; the four-line stale comment about the one-liner became two. The authored-text rules and the budget fit live in the NEW `memory/summary-authored-text.ts`. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8638,7 +8666,7 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
-    "packages/server/src/agent/tools/cat/tracker.ts": 996,
+    "packages/server/src/agent/tools/cat/tracker.ts": 997,
     "packages/server/src/agent/tools/definitions.ts": 2912,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
@@ -8767,7 +8795,7 @@
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
     "packages/server/src/memory/compaction-brakes.ts": 317,
-    "packages/server/src/memory/compaction.ts": 1569,
+    "packages/server/src/memory/compaction.ts": 1571,
     "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
     "packages/server/src/memory/embeddings.ts": 332,
@@ -8786,7 +8814,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 464,
     "packages/server/src/memory/tail-horizon.ts": 552,
-    "packages/server/src/memory/work-board-lane.ts": 783,
+    "packages/server/src/memory/work-board-lane.ts": 786,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
@@ -8840,7 +8868,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
-    "packages/server/src/tracker/tools.ts": 5199,
+    "packages/server/src/tracker/tools.ts": 5200,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
