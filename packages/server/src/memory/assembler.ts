@@ -706,6 +706,16 @@ export function scopeToA2AThread(tail: Message[], threadId: string | null): Mess
       // t141: "stamped for a HUMAN conversation" is the insert-time LABEL; it differs from
       // "carries an id" only on a 188-reconstructed `legacy` row, unstamped (kept) before.
       const humanStamped = subjectOf(m) === 'conv';
+      // t161: AN OWN ROW BELONGS TO ONE A2A THREAD, AND ONLY THAT THREAD'S TURN CARRIES IT. The inbound
+      // rows above are scoped to this thread; the agent's own tool work was not, so a turn woken on
+      // thread B was handed thread A's tool calls and results (a mailbox search, a send) with the
+      // question that explains them already scoped out: another conversation's output, orphaned
+      // (ritual run 7, S3). `origin.threadId` of a self row IS its `a2a_thread_id` stamp
+      // (`deriveOrigin`), compared by the same `sameThread` as the inbound rows, so the short and
+      // full id forms both match. A row with NO thread stamp (older rows, a turn whose thread was
+      // never recorded) is judged as it always was, and so is every turn with no thread id at all
+      // (a terminal wake): nothing can be said to belong elsewhere.
+      if (o.threadId && threadId && !sameThread(o.threadId)) return false;
       return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
     // UX-REPAIR ROUND 2 T10 — THE ONE NARROW EXEMPTION, and why it is not a class.
