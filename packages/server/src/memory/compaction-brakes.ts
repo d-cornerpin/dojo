@@ -70,6 +70,7 @@ export const MIN_COMPACTABLE_ROWS = 6;
  * about, and the same floor `condense-until-fits.ts` calls progress.
  */
 export const FORCED_YIELD_FLOOR_TOKENS = 1_000;
+const FLOOR_STAGES: ReadonlySet<string> = new Set(['single_summary_at_floor', 'nothing_left_to_condense']);
 
 
 /**
@@ -248,9 +249,9 @@ export function notePassOutcome(
   if (cancelled) return null;   // won nothing before it was cut: no evidence against the writer, so no backoff
 
   armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
-  // A merely low-yield pass that is no longer over budget has nothing to report: the brake
-  // is the whole answer, exactly as it was before this ruling.
-  if (!stage && !overBudget) return null;
+  // A low-yield pass no longer over budget has nothing to report (the brake is the whole answer),
+  // nor has one that stopped at its FLOOR under budget (t171: nothing refused, nothing to repair).
+  if ((!stage || FLOOR_STAGES.has(stage)) && !overBudget) return null;
   return reportCompactionDefect(agentId, stage ?? 'no_yield', facts, result);
 }
 
