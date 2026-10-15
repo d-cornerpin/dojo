@@ -377,7 +377,7 @@ describe('§3 a dropped message is said out loud', () => {
       .toBeGreaterThanOrEqual(5);
     const loud = [...reasons].filter((r) => !quiet.includes(r));
     expect(loud.sort()).toEqual(
-      ['AGENT_NOT_FOUND', 'HOP_LIMIT_EXCEEDED', 'MALFORMED_ENVELOPE', 'PERSIST_SKIPPED'],
+      ['AGENT_NOT_FOUND', 'HOP_LIMIT_EXCEEDED', 'MALFORMED_ENVELOPE', 'PERSIST_SKIPPED', 'SENDER_TERMINATED'],   // t166: a sender ended mid-run is refused LOUD
     );
   });
 });

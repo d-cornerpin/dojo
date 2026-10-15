@@ -2,7 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getAgentRuntime } from './runtime.js';
+import { getAgentRuntime, stopAgent } from './runtime.js';
+import { runIsLive } from './ended-mid-run.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
 import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
@@ -524,6 +525,9 @@ export function terminateAgent(agentId: string, reason?: string): void {
     logger.warn('Cannot terminate sensei agent', { agentId, name: agent.name });
     return;
   }
+
+  // t166: ending an agent stops its run in flight, through the owner's own Stop; BEFORE the status write below.
+  if (runIsLive(agentId)) stopAgent(agentId);
 
   // Archive conversation for the Dreamer before terminating.
   // force=true: this agent is being torn down, so its final tail (usually the

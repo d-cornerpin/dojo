@@ -24,6 +24,7 @@
 // ════════════════════════════════════════
 
 import type { ToolCall } from '@dojo/shared';
+import { refusalForTerminated } from '../../../ended-mid-run.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { classifyToolResult } from '../../../tool-outcome.js';
@@ -63,6 +64,10 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     sc.recentSigs = recentSigs;
     return r;
   };
+
+  // t166: a terminated agent runs nothing (see `refusalForTerminated`).
+  const ended = refusalForTerminated(tc, agentId, sc.calledCompleteTask);
+  if (ended) return done(ended);
 
   // ── Technique-acknowledgement gate (v2.7.6) ──
   // D6: the technique-acknowledgement HARD GATE is removed. It used to

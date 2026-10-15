@@ -17,6 +17,7 @@ import { getDb } from '../db/connection.js';
 // t114 (census U3): the liveness fact every other reaper in the tree guards on, and the
 // patience ladder that scales a grant by the assignee's own declared model speed.
 import { activeRuns } from './shared-state.js';
+import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
 import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
@@ -375,7 +376,7 @@ export function payloadLooksDeliverable(payload: string): boolean {
 // tool renders the refusal text. The tools.ts default drop branch already
 // surfaces any unrecognised reason, so the latch works before a dedicated render
 // lands.
-type A2ADropReasonLocal = A2ADropReason | 'AWAITING_REPLY';
+type A2ADropReasonLocal = A2ADropReason | 'AWAITING_REPLY' | 'SENDER_TERMINATED';
 
 /**
  * THE TWO DROPS THAT ARE A SERVICE AND NOT A LOSS — t109 A's "loud everywhere" half.
@@ -545,6 +546,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     logDrop(envelope, 'MALFORMED_ENVELOPE');
     return { delivered: false, reason: 'MALFORMED_ENVELOPE', threadId: envelope.threadId };
   }
+
+  // t166: a sender ended mid-run delivers nothing, so nothing is relayed to anyone's owner.
+  if (endedMidRun(envelope.fromAgent)) { logDrop(envelope, 'SENDER_TERMINATED'); return { delivered: false, reason: 'SENDER_TERMINATED', threadId: envelope.threadId }; }
 
   // ── 2. Resolve target agent ──
   let target = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(envelope.toAgent) as
@@ -740,6 +744,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       return { delivered: false, reason: 'SEMANTIC_DUPLICATE', threadId };
     }
   }
+
+  // t166: and again, for a sender ended while the dedup above was awaiting.
+  if (endedMidRun(envelope.fromAgent)) { logDrop(envelope, 'SENDER_TERMINATED'); return { delivered: false, reason: 'SENDER_TERMINATED', threadId }; }
 
   // ── 7. Record delivery in thread state ──
   recordThreadDelivery(threadId, effectiveIntent, envelope.fromAgent, lastDeliveryMs);
