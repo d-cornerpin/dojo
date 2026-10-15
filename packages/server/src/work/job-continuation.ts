@@ -52,7 +52,8 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
  */
 export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain', delayMs?: number): boolean {
   const named = turnWorkIds(agentId);
-  carryJobWork(agentId, named, servedOwnerMessageIds(agentId), parkOrigin(agentId, named));   // t173b: and where the job started, so even a park that carries no task has a job to continue
+  const served = servedOwnerMessageIds(agentId);
+  carryJobWork(agentId, named, served, parkOrigin(agentId, named, served));   // t173b: and where the job started, so even a park that carries no task has a job to continue
   const queued = how === 'timer' ? (armToolLoopContinuation(agentId, delayMs), true) : queueJobContinuation(agentId, reason);
   const bag = turnContext(agentId);
   if (queued && bag) bag.jobParked = true;   // t159 G2: the running turn parked the job; the end-of-turn nets read this (`turnParkedTheJob`)

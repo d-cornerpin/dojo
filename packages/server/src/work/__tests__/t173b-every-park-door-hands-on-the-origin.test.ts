@@ -197,6 +197,7 @@ import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { recordA2AReply } from '../../agent/a2a-replies.js';
 import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
+import { jobOrigin } from '../job-origin.js';
 import { notePassOutcome, __resetBrakesForTests } from '../../memory/compaction-brakes.js';
 import { AgentError } from '../../agent/errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../agent/stream-patience.js';
@@ -303,21 +304,23 @@ const firstView = (from: number): { text: string; messages: Array<{ role: string
 };
 
 // ── THE JOB, as run 11 had it: the PM's ASSIGN (the engine opens no task for it), the worker opens its own ──
-async function pmJob(): Promise<{ taskId: string }> {
+async function pmJob(thread = THREAD, text = ASSIGN_TEXT, title = 'Supplier ledger audit'): Promise<{ taskId: string }> {
   const r = await deliverA2AMessage({
-    intent: 'ASSIGN', threadId: THREAD, requiresResponse: true, payload: ASSIGN_TEXT, toAgent: WORKER, fromAgent: PM,
+    intent: 'ASSIGN', threadId: thread, requiresResponse: true, payload: text, toAgent: WORKER, fromAgent: PM,
   });
   expect(r.delivered).toBe(true);
   const db = mockDb.current!;
-  expect(db.prepare('SELECT COUNT(*) AS n FROM work WHERE agent_id = ?').get(WORKER), 'premise: the PM\'s ASSIGN opens no task').toEqual({ n: 0 });
-  script({ reads: 0, first: openTaskStep });
-  await runV2Turn(WORKER);   // the ASSIGN's own turn: the worker opens its task here
-  const task = db.prepare("SELECT id, state, a2a_thread_id, source_message_id FROM work WHERE kind = 'task' AND agent_id = ?").get(WORKER) as
-    { id: string; state: string; a2a_thread_id: string | null; source_message_id: string | null };
+  const before = (db.prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND agent_id = ?").get(WORKER) as { n: number }).n;
+  script({ reads: 0, first: { toolCalls: [{ ...openTaskStep.toolCalls![0], arguments: { ...openTaskStep.toolCalls![0].arguments, title } }] } });
+  await runV2Turn(WORKER);   // the ASSIGN's own turn: the worker opens its task here (the PM's ASSIGN opened none)
+  const tasks = db.prepare("SELECT id, state, a2a_thread_id, source_message_id FROM work WHERE kind = 'task' AND agent_id = ? ORDER BY opened_at DESC, rowid DESC").all(WORKER) as
+    Array<{ id: string; state: string; a2a_thread_id: string | null; source_message_id: string | null }>;
+  expect(tasks.length, 'premise: the PM\'s ASSIGN opened no task; the worker opened exactly one').toBe(before + 1);
+  const task = tasks[0];
   expect(task.a2a_thread_id, 'premise: a task the model opens is tied to no thread by its columns').toBeNull();
   expect(task.state).toBe('claimed');
-  const assignId = (db.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN'").get(WORKER) as { id: string }).id;
-  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: THREAD, replyIntent: 'ANSWER' });   // the first reply went out
+  const assignId = (db.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN' AND a2a_thread_id = ?").get(WORKER, thread) as { id: string }).id;
+  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: thread, replyIntent: 'ANSWER' });   // the first reply went out
   return { taskId: task.id };
 }
 
@@ -449,5 +452,66 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     });
     await runV2Turn(WORKER);
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'recovery-doomed-prefill-compaction', how: 'drain' });
+  });
+});
+
+describe('t173b amendment: the origin a park borrows is never a guess', () => {
+  it('an OWNER-ask turn parks while a peer\'s job is claimed: the continuation keeps the owner\'s ask, not the peer\'s thread', async () => {
+    await pmJob();   // the agent also holds a claimed job from a peer's ASSIGN
+    insertMessage({
+      id: 'owner-ask', agentId: WORKER, role: 'user', content: OWNER_ASK, turnNumber: 1,
+      channel: 'dashboard', senderId: 'owner', conversationId: 'conv-dash',
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    });
+    script({ reads: 80 });
+    await runV2Turn(WORKER);
+    const parked = lastTurnNumber();
+    expect(turnRow(parked).exit_reason).toBe('iteration_cap');
+    expect(parks).toEqual([{ reason: 'tool-loop', how: 'timer' }]);
+
+    expect(beginJobRun(WORKER, 'timer'), 'the park carried the job').toBe(true);
+    expect(jobOrigin(WORKER), 'the origin is the owner\'s ask').toEqual({ kind: 'ask', messageId: 'owner-ask' });
+    const firstCall = callModelSpy.mock.calls.length;
+    script({ reads: 0 });
+    try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }
+    const rec = turnRow(lastTurnNumber());
+    expect(rec.subject_kind, 'not the peer\'s thread').not.toBe('a2a_thread');
+    expect(rec.root_kind).not.toBe('a2a');
+    expect(occurrences(firstView(firstCall).text, OWNER_ASK), 'the owner\'s question is in view').toBeGreaterThanOrEqual(1);
+  });
+
+  it('TWO claimed tasks from two different requests: a park that serves no person borrows nothing', async () => {
+    await pmJob();
+    await pmJob(OTHER_THREAD, 'Please also reconcile the second supplier ledger and list its closing code.', 'Second ledger reconciliation');
+    anUnrelatedNotice('notice-two');
+    script({ reads: 80 });
+    await runV2Turn(WORKER);
+    expect(turnRow(lastTurnNumber()).exit_reason).toBe('iteration_cap');
+    expect(parks).toEqual([{ reason: 'tool-loop', how: 'timer' }]);
+
+    // Nothing was named and nothing was guessed, so no job was registered: the existing behaviour stands.
+    expect(beginJobRun(WORKER, 'timer'), 'no job: nothing to continue but a plain wake').toBe(false);
+    expect(jobOrigin(WORKER)).toBeNull();
+    script({ reads: 0 });
+    await runV2Turn(WORKER);
+    const rec = turnRow(lastTurnNumber());
+    expect(rec.subject_kind).not.toBe('a2a_thread');
+    expect(rec.root_kind).toBeNull();
+  });
+
+  it('TWO claimed tasks that point at the SAME request are not a guess: the origin is borrowed', async () => {
+    await pmJob();
+    // A second task the worker opened on the same ASSIGN thread (a later turn on it).
+    const db = mockDb.current!;
+    const first = db.prepare("SELECT * FROM work WHERE kind = 'task' AND agent_id = ?").get(WORKER) as Record<string, unknown>;
+    const cols = Object.keys(first);
+    const copy = { ...first, id: 'task-twin', opened_at: (first.opened_at as number) + 1 };
+    db.prepare(`INSERT INTO work (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => copy[c]));
+    anUnrelatedNotice('notice-same');
+    script({ reads: 80 });
+    await runV2Turn(WORKER);
+    expect(beginJobRun(WORKER, 'timer')).toBe(true);
+    expect(jobOrigin(WORKER)).toMatchObject({ kind: 'a2a', threadId: THREAD });
+    endJobRun(WORKER);
   });
 });

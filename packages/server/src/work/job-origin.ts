@@ -9,9 +9,10 @@
 // THE ORIGIN IS READ AT THE PARK, from the job's task, and rides the job record (`task-freshness.ts`)
 // with the ids and asks, so it holds across a chain of parks and across a parking turn that was not the
 // job's own (an engine notice, a retry on another thread). `parkJob` is the one door every park goes
-// through, so it is the one place that reads it (`parkOrigin`). The tasks tried, in order:
+// through, so it is the one place that reads it (`parkOrigin`). In order:
+//   0. a turn that serves a PERSON hands on that person's ask, whatever else the agent holds;
 //   1. the work the parking turn NAMES (`turnWorkIds`), in the order it names them;
-//   2. else the task the agent is MOST RECENTLY working: its newest-moving claimed task. Run 11's
+//   2. else, for a turn that serves no person, the agent's claimed task when they all agree. Run 11's
 //      parking turn named none (the task was opened on an earlier turn, on another turn's thread), so
 //      nothing was carried and no job existed at all. This is read for the ORIGIN only: it is never
 //      carried as the job's work, because a park that shields every task the agent holds hides an
@@ -27,7 +28,8 @@
 
 import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { runCarriesJob, jobCarriedOrigin, taskMovedAtSql } from './task-freshness.js';
+import { runCarriesJob, jobCarriedOrigin } from './task-freshness.js';
+import { turnContext } from '../agent/turn-context.js';
 import { taskScope } from './tracker-view.js';
 
 /** The request a job started from. */
@@ -89,16 +91,34 @@ function originOfTasks(agentId: string, ids: string[]): JobOrigin | null {
   }
 }
 
-/** THE PARK'S READ (`parkJob`): where the job being parked started. `named`: the work the parking turn names. */
-export function parkOrigin(agentId: string, named: string[]): JobOrigin | null {
+/** The same origin, whichever task it came from: two tasks that agree do not make a guess. */
+const sameOrigin = (a: JobOrigin, b: JobOrigin): boolean =>
+  a.kind === b.kind && (a.kind === 'a2a' ? a.threadId === (b as typeof a).threadId : a.messageId === (b as typeof a).messageId);
+
+/**
+ * THE PARK'S READ (`parkJob`): where the job being parked started. `named`: the work the parking turn names;
+ * `served`: the person's message(s) it serves (`servedOwnerMessageIds`). In order:
+ *   1. A turn that serves a PERSON (an ask is its root, or it holds a person's conversation) hands on THAT
+ *      ask, whatever else the agent holds: its continuation must keep the person's question, not become
+ *      the turn of a peer's job. With no ask to name, it names none.
+ *   2. Otherwise the work the turn names.
+ *   3. Otherwise, a turn with no person subject (an A2A retry, an engine turn, none; run 11 turn 4) borrows the
+ *      origin of the agent's claimed tasks, but only when they all agree: two claimed tasks that point at
+ *      different requests are not guessed between; nothing is borrowed (the served-ask behaviour stands).
+ */
+export function parkOrigin(agentId: string, named: string[], served: string[]): JobOrigin | null {
   try {
+    const bag = turnContext(agentId);
+    if (bag?.root?.kind === 'ask' || bag?.conversationId || bag?.convKey) {
+      return served.length > 0 ? { kind: 'ask', messageId: served[0] } : null;
+    }
     const fromNamed = originOfTasks(agentId, named);
     if (fromNamed) return fromNamed;
     const held = getDb().prepare(
-      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
-        ORDER BY ${taskMovedAtSql('w')} DESC LIMIT 1`,
-    ).get(agentId) as { id: string } | undefined;
-    return held ? originOfTasks(agentId, [held.id]) : null;
+      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'`,
+    ).all(agentId) as Array<{ id: string }>;
+    const origins = held.map((h) => originOfTasks(agentId, [h.id])).filter((o): o is JobOrigin => o !== null);
+    return origins.length > 0 && origins.every((o) => sameOrigin(o, origins[0])) ? origins[0] : null;
   } catch {
     return null;
   }
