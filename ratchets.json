@@ -2,6 +2,20 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/memory/row-label.ts",
+      "from": 252,
+      "to": 264,
+      "by": "t174 (2026-10-15), work another agent asked for is not reported to the owner as his",
+      "why": "+12 (6 code, 4 comment, 2 blank): the thread's header says whose work it is (LabelFacts.threadOwnership, one clause) and renderRowLabel picks it for a thread block. It cannot live elsewhere: it is the label's single renderer (t141, one label writer) and reads the peer name thread() already resolved (a map beside the existing caches, no second query). The grouping key stays rowSubject, so the request and the agent's own rows of a thread still share ONE header. From 264 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5200,
+      "to": 5203,
+      "by": "t174 (2026-10-15), work another agent asked for is not reported to the owner as his",
+      "why": "+3: one import, one line that asks work/peer-origin.ts for the activity report's scope, and one line that prints the note. The origin predicate, the note's words and the 'is this turn serving a person' read all live in the NEW module work/peer-origin.ts; the six report queries gain an inline scope term (0 lines). From 5203 this file may only shrink."
+    },
+    {
       "path": "packages/server/src/tracker/pm-agent.ts",
       "from": 3003,
       "to": 3006,
@@ -8843,7 +8857,7 @@
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 512,
     "packages/server/src/memory/retrieval.ts": 1184,
-    "packages/server/src/memory/row-label.ts": 252,
+    "packages/server/src/memory/row-label.ts": 264,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
@@ -8903,7 +8917,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
-    "packages/server/src/tracker/tools.ts": 5200,
+    "packages/server/src/tracker/tools.ts": 5203,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
