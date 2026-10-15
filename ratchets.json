@@ -8550,6 +8550,13 @@
       "to": 945,
       "by": "t163 B (2026-10-14), drive_list teaches a query Drive accepts",
       "why": "+1: the import of `driveSearchQuery`. The description edit and the one-line call change replace lines in place. The logic (what counts as a Drive operator, the escaping of a bare term) lives in the new `google/drive-query.ts` so this file does not carry it. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/compaction-brakes.ts",
+      "from": 298,
+      "to": 317,
+      "by": "t168 — an aborted pass arms no brake, and the clock a surrendered turn waits for",
+      "why": "298 -> 317 (+19: +9 code, +10 comment). THE CODE: (1) `liveBrake`, the three release arms of `compactionIsBraked` (clock, writer back, the facts moved) lifted into one silent function so `compactionBrakeMsLeft` asks exactly the same question without a second copy of the arms; `compactionIsBraked` keeps its log line and its force rule and shrinks by the same lines. (2) `compactionBrakeMsLeft`, the ONE number the full-context gate's wake waits for (the brake's own `until`; no number of ours): without it the surrender waked the agent into the same braked gate 1,216 times in twelve minutes. (3) `notePassOutcome` reads the pass's own abort signal: a pass the turn, the owner's Stop or a teardown cancelled names no stage and arms no brake (the incident: an abort made the summariser return nothing, which was recorded as a refusal and braked a forced pass for fifteen minutes). ALTERNATIVES MEASURED: (a) a copy of the release arms inside the gate: REFUSED, two spellings of when a brake lets go is the disease OR-COMPACT-1 closed. (b) thread `aborted` through `CompactionPassFacts` and decide in the callers: REFUSED, three callers would each remember to; the brake is the one place that records a failing stage. (c) trim the module header to pay for it: REFUSED, it records the loop this file exists to prevent. From 317 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8759,7 +8766,7 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
     "packages/server/src/memory/budget.ts": 699,
-    "packages/server/src/memory/compaction-brakes.ts": 298,
+    "packages/server/src/memory/compaction-brakes.ts": 317,
     "packages/server/src/memory/compaction.ts": 1569,
     "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
