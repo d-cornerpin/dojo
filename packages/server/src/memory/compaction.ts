@@ -551,6 +551,7 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 export interface CheckAndCompactOptions {
   force?: boolean;
+  waitIfBusy?: boolean;   // t178: the OWNER's compact-now queues behind a running pass
   // STRIP (t140 round 6, H3): `maxChunksPerRun`, v2.5.12's per-call cap on leaf chunks. Its last
   // two callers (the routine condense, round 5; the forced pass, round 6) are bounded by what is
   // leaving and by the turn's patience instead, so the option had no reader left.
@@ -615,7 +616,7 @@ export async function checkAndCompact(
   const result = await withLock(
     `compact:${agentId}`,
     () => runCheckAndCompact(agentId, modelId, contextWindow, options),
-    { ifBusy: 'skip' },
+    { ifBusy: options?.waitIfBusy ? 'wait' : 'skip' },
   );
   if (result === undefined) {
     logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);
