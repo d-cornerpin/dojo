@@ -31,6 +31,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
+import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 
 const logger = createLogger('memory-recall');
 
@@ -384,6 +385,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     lines.push(`[Recent thread, ${headerParts.join(', ')}. Raw from messages table.]`);
     lines.push('');
 
+    const elsewhere = requestForAnotherTurn(agentId);   // t165: a peer's request awaiting ITS OWN turn says so
     let truncatedResultCount = 0;
     let oldestIncludedId: string | null = null;
     let messagesShown = 0;
@@ -406,7 +408,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         if (trimmed.length <= 200) lines.push(`[${role} ${t}] ${trimmed}`);
       } else if (msg.role === 'user') {
         const userClip = clip(msg.content.trim(), messageChars);
-        lines.push(`[${role} ${t}] ${userClip.text || '(no text)'}`);
+        lines.push(`[${role} ${t}] ${clauseFor(elsewhere, msg.id)}${userClip.text || '(no text)'}`);
         if (userClip.truncated > 0) {
           lines.push(
             `  [truncated, ${userClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,

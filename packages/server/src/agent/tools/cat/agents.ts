@@ -52,6 +52,7 @@ import { activeRuns } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../destructive-gate.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
+import { requestOnThreadForAnotherTurn } from '../../a2a-own-turn.js';
 // t116 E3: the ONE delivery-ledger writer every send door goes through. `send_to_agent` is
 // one of PINNED §8's unrecorded paths and this import is that closure — see the call site.
 import { recordAtDoor } from '../../v2/outbound.js';
@@ -591,6 +592,14 @@ export const agentsHandlers: ToolHandlerMap = {
               return { content, isError };
             }
             const threadId = args.thread_id as string | undefined;
+            // t165 (owner, 2026-10-14: "Keep it separate"): a send ON a thread whose inbound request awaits
+            // its OWN turn belongs to that turn; from any other turn it is refused before anything is
+            // delivered (a delivered send would also mark it replied and cancel the turn queued for it).
+            const keepSeparate = requestOnThreadForAnotherTurn(agentId, threadId);
+            if (keepSeparate) {
+              auditLog(agentId, 'tool_call', 'send_to_agent', 'denied', `thread:${keepSeparate.threadShort} request awaits its own turn`);
+              return { content: keepSeparate.refusal, isError: true, errorCode: 'PERMISSION_DENIED' as const };
+            }
             // ROUND-11 T43 leg (c): the assignee's DECLARED hand-off. Read here and forwarded
             // verbatim; the transport owns what it means, and the spine owns whether the
             // sender is entitled to it. Declared on the tool, so a model that passes it is

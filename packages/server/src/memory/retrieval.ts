@@ -12,6 +12,7 @@ import { callModel } from '../agent/model.js';
 import { estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
 import { getLargeFile } from './large-files.js';
+import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
 
 const logger = createLogger('memory-retrieval');
 
@@ -375,6 +376,7 @@ async function searchMessagesInner(
       // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
       // exceed 300 chars on long-token text; we trim defensively.
       const SNIPPET_CHARS = 300;
+      const elsewhere = requestForAnotherTurn(agentId);   // t165: a peer's request awaiting its own turn says so
       for (const row of rows) {
         const isTruncated = row.snippet.length > SNIPPET_CHARS || row.content.length > row.snippet.length;
         const snippet = row.snippet.length > SNIPPET_CHARS
@@ -389,7 +391,7 @@ async function searchMessagesInner(
         const expandHint = isTruncated
           ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
           : '';
-        results.push(`[id=${idShort} ${row.created_at}] (${row.role}) ${snippet}${expandHint}`);
+        results.push(`[id=${idShort} ${row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${snippet}${expandHint}`);
       }
     } catch (err) {
       // FTS5 MATCH can fail with invalid syntax
@@ -514,6 +516,7 @@ async function searchMessagesLike(
   }
   const rows = scan.rows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
+  const elsewhere = requestForAnotherTurn(agentId);   // t165
   return rows.map(row => {
     const isTruncated = row.content.length > 200;
     const preview = isTruncated ? row.content.slice(0, 200) + '...' : row.content;
@@ -521,7 +524,7 @@ async function searchMessagesLike(
     const expandHint = isTruncated
       ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
       : '';
-    return `[id=${idShort} ${row.created_at}] (${row.role}) ${preview}${expandHint}`;
+    return `[id=${idShort} ${row.created_at}] (${row.role}) ${clauseFor(elsewhere, row.id)}${preview}${expandHint}`;
   });
 }
 
@@ -807,7 +810,8 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
         `Length: ${row.content.length} chars`,
       ];
       if (row.attachments) parts.push(`Attachments: ${row.attachments}`);
-      parts.push('', 'Content:', row.content);
+      const waiting = clauseFor(requestForAnotherTurn(agentId), row.id).trim();   // t165
+      parts.push(...(waiting ? [waiting] : []), '', 'Content:', row.content);
       return parts.join('\n');
     }
   } catch { /* fall through to unknown-ID error */ }
