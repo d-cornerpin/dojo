@@ -53,6 +53,7 @@
 // structural signal, not a bigger regex.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { namesOpenWork } from './open-work-names.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 
@@ -94,7 +95,8 @@ const CANCELS_THE_CLAIM =
 export type UncommittedPromiseStandDown =
   | 'no-claim-in-text'    // the narrowing found no past-tense recorded-commitment claim
   | 'work-open-ran'       // a `work_open` succeeded this turn; the kind is not our business
-  | 'ledger-holds-work';  // ← THE AUTHORITY: the spine has a row from this turn
+  | 'ledger-holds-work'   // ← THE AUTHORITY: the spine has a row from this turn
+  | 'claim-names-open-work'; // t179: a STATUS of work already open on the board, named by its own title
 
 export interface UncommittedPromiseFires {
   fires: true;
@@ -149,6 +151,8 @@ export interface UncommittedPromiseInput {
    *  discipline `claimed-delivery.ts` uses for its receipt suppressor. Returns the ids of
    *  the board rows this agent opened during this turn. */
   openedWorkThisTurn: () => readonly string[];
+  /** t179: titles of the agent's board work still open from EARLIER turns. Absent: not consulted. */
+  openBoardTitles?: () => readonly string[];
 }
 
 /** The floor's whole decision. A stand-down carries its REASON so a red says which arm answered. */
@@ -165,6 +169,7 @@ export function decideUncommittedPromise(input: UncommittedPromiseInput): Uncomm
 
   const rows = input.openedWorkThisTurn();
   if (rows.length > 0) return { fires: false, reason: 'ledger-holds-work' };
+  if (namesOpenWork(claim.sentence, input.openBoardTitles?.() ?? [])) return { fires: false, reason: 'claim-names-open-work' };
 
   return { fires: true, claim: claim.sentence, wentToMemory: succeeded('vault_remember') };
 }

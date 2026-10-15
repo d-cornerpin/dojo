@@ -20,6 +20,7 @@
 // loop head decide whether to run another.
 // ════════════════════════════════════════
 
+import { openBoardTitlesBefore } from '../../open-work-names.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -243,6 +244,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
         // activity across every iteration. `result.toolCalls` is empty by the shared gate.
         toolResultsThisTurn: state.toolResults,
         openedWorkThisTurn: () => openedBoardWorkSince(agentId, turnStartedAtMs),
+        openBoardTitles: () => openBoardTitlesBefore(agentId, turnStartedAtMs),
       });
       if (!promise.fires) {
         logger.info('v2 uncommitted-promise floor stood down; the ledger answered', {
