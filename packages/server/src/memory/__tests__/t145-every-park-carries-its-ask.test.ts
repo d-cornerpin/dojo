@@ -163,9 +163,14 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
       expect(f, `no engine file contains ${needle}`).not.toBeNull();
       return strip(f!.text);
     };
-    const gates = engineCode("parkJob(agentId, 'context-gate-rebuild')");
+    // t168: both gate arms park through `parkAfterForcedPass`, which holds the two parks (now, or at the brake's expiry).
+    const gates = engineCode("parkAfterForcedPass(agentId, 'context-gate-rebuild'");
     expect(gates).not.toMatch(/queueSelfWake\(agentId, 'context-gate-rebuild'\)/);
-    expect(gates.match(/parkJob\(agentId, 'context-gate-rebuild'\)/g)?.length).toBe(2);
+    expect(gates.match(/parkAfterForcedPass\(agentId, 'context-gate-rebuild', brakedBefore\)/g)?.length).toBe(2);
+    const wait = engineCode('export function parkAfterForcedPass');
+    expect(wait).not.toMatch(/queueSelfWake\(/);
+    expect(wait.match(/\bparkJob\(agentId, reason\)/g)?.length).toBe(1);
+    expect(wait.match(/\bparkJob\(agentId, reason, 'timer', msLeft\)/g)?.length).toBe(1);
     const recovery = strip(fs.readFileSync(path.join(SRC, 'agent/v2/recovery.ts'), 'utf8'));
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-forced-compaction'\)/);
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-doomed-prefill-compaction'\)/);
