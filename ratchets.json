@@ -8494,6 +8494,27 @@
       "to": 512,
       "by": "t165 (2026-10-14), another agent's request is worked in its own conversation: the history tools label it, send_to_agent refuses to answer it from another turn",
       "why": "+2: the import and one `requestForAnotherTurn` read before the row loop; the user-row line gains a `clauseFor(...)` token in place. All other logic is in `memory/awaiting-own-turn.ts`."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1466,
+      "to": 1470,
+      "by": "t166 (2026-10-14), terminating an agent stops its run in flight and nothing it started reaches anyone",
+      "why": "+4 (3 code, 1 comment): the import of `stopAgent` rides the existing runtime import line (0), one new import line for `runIsLive`, one comment line and the one call `if (runIsLive(agentId)) stopAgent(agentId);` at the top of `terminateAgent`, before the status write. THE DEFECT: `terminateAgent` archived, wrote `terminated`, auto-paused the work and cleared the timer, and never stopped the run in flight, so a terminated helper's turn kept calling tools and its A2A answer was relayed to the owner (dev-box log, 2026-10-14). The fix IS the owner's own Stop, called from the one place that ends an agent; the predicate and its argument live in the NEW module `agent/ended-mid-run.ts` (a new file, under the cap), so this file carries only the call. REFUSED: a second stop mechanism in this file, and a status-only check. From 1470 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2835,
+      "to": 2842,
+      "by": "t166 (2026-10-14), terminating an agent stops its run in flight and nothing it started reaches anyone",
+      "why": "+7 (5 code, 2 comment): one import and the sender-ended refusal at the two points a delivery can be ended under: the top of `deliverA2AMessage` and again after the dedup's embedding await, the one long await before the message is recorded. The drop reason `SENDER_TERMINATED` widens the transport-local `A2ADropReasonLocal` in place (0 lines), so `@dojo/shared` is untouched and `send_to_agent`'s default arm already renders it. The test is `endedMidRun` (terminated AND the stop fence standing), kept in the new module `agent/ended-mid-run.ts`: status alone would silence the engine's close-out hand-back for an agent that FINISHED its own task, which is also `terminated` and is spoken for 20 s later with no run in flight (`tracker/tools.ts`). Each site is one statement on one line so the growth is the minimum the two sites need. From 2842 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/run-one.ts",
+      "from": 280,
+      "to": 285,
+      "by": "t166 (2026-10-14), terminating an agent stops its run in flight and nothing it started reaches anyone",
+      "why": "+5 (3 code, 1 comment, 1 import): the executor choke point refuses a tool call whose agent row reads `terminated`. The refusal text, the log line and the one legitimate exemption (an agent that ended itself with `complete_task` earlier in the same response finishes the batch it called alongside) live in `refusalForTerminated` in the NEW module `agent/ended-mid-run.ts`; this file holds the call and the early return through its own `done`. The backstop exists for the calls a stopped run can still dispatch past the fence checks (a parallel batch already launched). From 285 it may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8540,7 +8561,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2835,
+    "packages/server/src/agent/a2a-transport.ts": 2842,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -8565,7 +8586,7 @@
     "packages/server/src/agent/provider-error.ts": 407,
     "packages/server/src/agent/runtime.ts": 1788,
     "packages/server/src/agent/shared-state.ts": 458,
-    "packages/server/src/agent/spawner.ts": 1466,
+    "packages/server/src/agent/spawner.ts": 1470,
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
@@ -8615,7 +8636,7 @@
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 389,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 147,
-    "packages/server/src/agent/v2/steps/execute/run-one.ts": 280,
+    "packages/server/src/agent/v2/steps/execute/run-one.ts": 285,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 97,
     "packages/server/src/agent/v2/steps/execute/tracker-counting.ts": 203,
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 349,
