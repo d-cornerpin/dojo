@@ -164,7 +164,7 @@ describe('the upgrade door: a box arrives with muted latches set', () => {
     call();
     const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
     expect(sent()).toHaveLength(1);
-    expect(sent()[0]).toContain('90%');
+    expect(sent()[0]).toContain('95%');   // t167: the true share (the crossing was the 90% line)
     call();
     call();
     expect(sent(), 'told once; the new latch holds').toHaveLength(1);

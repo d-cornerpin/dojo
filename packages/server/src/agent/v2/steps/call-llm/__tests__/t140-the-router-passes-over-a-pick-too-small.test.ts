@@ -141,8 +141,13 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
     await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), thrown, { isUserFacingTurn: true });
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('paused');
     const notices = owner.cards.filter((c) => c.type === 'chat:error');
-    expect(notices.length, 'one notice to the owner').toBe(1);
-    expect(notices[0].code).toBe('NO_MODEL');
+    // t167: the stop is also told to the owner ONCE through the owner-notice door (the budget's window had
+    // only a warning, if anything): that is the second chat:error, the platform's own card; the agent's
+    // line is still the one.
+    const agentNotices = notices.filter((c) => c.code === 'NO_MODEL');
+    expect(agentNotices.length, 'one notice to the owner about the agent\'s turn').toBe(1);
+    expect(notices.filter((c) => c.code !== 'NO_MODEL').map((c) => (c as { error?: string }).error), 'and the limit-reached card, once')
+      .toEqual([expect.stringMatching(/spending limit is reached/i)]);
     expect(dialed, 'nothing that cannot hold the agent was dialled').toEqual([]);
     expect(starvedCards(), 'the card would be false: the agent holds a conversation on its own roomy model once the budget allows').toBe(0);
   });
