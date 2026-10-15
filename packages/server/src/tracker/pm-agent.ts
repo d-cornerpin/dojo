@@ -46,7 +46,7 @@ import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
-import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
+import { effortDelta, advanceBaseline, effortNoveltyFacts, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
 import { taskLastMovedAt, agentIsLive } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
@@ -1075,9 +1075,10 @@ function pruneOldPMMessages(pmId: string): void {
 // ════════════════════════════════════════════════════════════════════════════════════════
 // SLOW-INFERENCE T79d — THE PM REVIEWS EFFORT OUT OF BAND: extend or intervene.
 //
-// `tracker/effort-governor.ts` (T79c) counts effort WITHOUT judging it — a task that has
-// burned `EFFORT_REVIEW_DELTA_CALLS` (150) calls since it last genuinely advanced is not
-// necessarily stuck; it might be a long, honest sweep. This is the judge: a task that trips
+// `tracker/effort-governor.ts` (T79c) counts effort WITHOUT judging it — a task that has made
+// `EFFORT_REVIEW_DELTA_CALLS` (150) REPEATED calls (same tool, same arguments, t172: a new call
+// is progress and is not counted) since it last genuinely advanced is not necessarily stuck.
+// This is the judge: a task that trips
 // the meter gets ONE out-of-band look from the PM's own model, and the agent working it is
 // NEVER interrupted while that look happens — no steer, no message, nothing added to its
 // prompt assembly. Only the verdict acts, and only on the CIRCLING branch does anything ever
@@ -1089,17 +1090,21 @@ function pruneOldPMMessages(pmId: string): void {
 // PM restart (the owner's dev box rebuilds this process constantly). So the marker is not a
 // module-level flag — it is a `task_log` `effort_review_requested` entry (rides the SAME
 // audit-entry seam T79a's engine observations use, `writeTaskLog`), carrying the task's
-// `effort_reviewed_calls` baseline AT THE MOMENT it was filed. A request is PENDING for as
-// long as the live baseline still reads that exact number; the instant `advanceBaseline`
-// moves it (on EITHER verdict, see `runEffortReview` below), the request is resolved and a
-// fresh threshold trip is free to queue a new one. One comparison, no separate "in-flight"
+// lifetime `effort_calls` total AT THE MOMENT it was filed (t172: it was the baseline, but new
+// calls now move the baseline too, so the total is the stable thing to compare). A request is
+// PENDING for as long as the live baseline is still below that total; the instant
+// `advanceBaseline` moves it up to the then-current total (on EITHER verdict, see
+// `runEffortReview` below), the request is resolved and a fresh threshold trip is free to queue
+// a new one. One comparison, no separate "in-flight"
 // state, and it is read straight off the database every time — a restart mid-review simply
 // means the request looks pending until the retry loop (below) tries it again.
 function isEffortReviewPending(taskId: string, baselineNow: number): boolean {
   const last = listTaskLog(taskId, { limit: 1, kinds: ['effort_review_requested'] })[0];
   if (!last) return false;
-  const snapshot = Number(last.actionTaken);
-  return Number.isFinite(snapshot) && snapshot === baselineNow;
+  // t172: the snapshot is the lifetime TOTAL at filing. Pending while the baseline is still below
+  // it; an advance moves the baseline up to the then-current total, which is never less.
+  const snapshotTotal = Number(last.actionTaken);
+  return Number.isFinite(snapshotTotal) && baselineNow < snapshotTotal;
 }
 
 /**
@@ -1121,11 +1126,11 @@ export function queueEffortReviewIfNeeded(taskId: string): boolean {
     taskId,
     fromEntity: 'engine',
     entryKind: 'effort_review_requested',
-    actionTaken: String(row.effort_reviewed_calls),
+    actionTaken: String(row.effort_calls),
     reason:
-      `effort delta ${effortDelta(row)} reached the ${EFFORT_REVIEW_DELTA_CALLS}-call review `
-      + `threshold without the task advancing; queued for the PM's out-of-band look (the agent `
-      + `is not interrupted by this)`,
+      `${effortDelta(row)} repeated calls (the same tool with the same arguments) reached the `
+      + `${EFFORT_REVIEW_DELTA_CALLS}-call review threshold without the task advancing; queued for `
+      + `the PM's out-of-band look (the agent is not interrupted by this)`,
   });
   return true;
 }
@@ -1164,13 +1169,13 @@ export function findPendingEffortReviewTaskIds(): string[] {
                 FROM work_events e
                WHERE e.work_id = w.id AND e.kind = 'audit'
                  AND json_extract(e.payload, '$.entry_kind') = 'effort_review_requested'
-               ORDER BY e.id DESC LIMIT 1) AS requested_baseline
+               ORDER BY e.id DESC LIMIT 1) AS requested_total
         FROM work w
        WHERE w.effort_calls - w.effort_reviewed_calls >= ?
          AND w.state NOT IN ('done', 'failed', 'abandoned')
-    `).all(EFFORT_REVIEW_DELTA_CALLS) as Array<{ id: string; baseline: number; requested_baseline: string | null }>;
+    `).all(EFFORT_REVIEW_DELTA_CALLS) as Array<{ id: string; baseline: number; requested_total: string | null }>;
     return rows
-      .filter((r) => r.requested_baseline !== null && Number(r.requested_baseline) === r.baseline)
+      .filter((r) => r.requested_total !== null && r.baseline < Number(r.requested_total))
       .map((r) => r.id);
   } catch (err) {
     logger.warn('findPendingEffortReviewTaskIds failed (non-fatal, retried next tick)', {
@@ -1226,6 +1231,28 @@ function recentAssigneeActivityLines(assignedTo: string | null, limit = 10): str
   }).join('\n');
 }
 
+/** t172 — the novelty facts the verdict is judged on, from the charge site's own ledger: how many of
+ *  the calls since the task last advanced were new and how many repeated, and each repeated call with
+ *  its count. The ledger is in memory (see `chargeEffortCalls`); after a restart there is none, and
+ *  the line says so rather than guessing. */
+function effortNoveltyLines(taskId: string): string {
+  const facts = effortNoveltyFacts(taskId);
+  if (!facts) {
+    return 'Per-call detail is not held for this task (the server restarted since it last advanced); the repeat count above is exact.';
+  }
+  const lines = [
+    `Since the task last advanced: ${facts.novelCalls} new (distinct) calls, ${facts.repeatedCalls} repeated calls.`,
+  ];
+  if (facts.repeatedSignatures.length === 0) {
+    lines.push('Repeated calls: none.');
+  } else {
+    lines.push('Repeated calls, most repeated first (count: call):');
+    for (const r of facts.repeatedSignatures.slice(0, 15)) lines.push(`  ${r.count}x ${r.label}`);
+    if (facts.repeatedSignatures.length > 15) lines.push(`  (+${facts.repeatedSignatures.length - 15} more repeated calls)`);
+  }
+  return lines.join('\n');
+}
+
 function buildEffortReviewPrompt(
   taskId: string,
   row: { title: string; goal: string | null; status: string; effort_calls: number; effort_reviewed_calls: number },
@@ -1233,9 +1260,12 @@ function buildEffortReviewPrompt(
 ): string {
   const delta = effortDelta(row);
   return [
-    `[ENGINE — EFFORT REVIEW, OUT OF BAND] Task "${row.title}" (${taskId}) has burned ${delta} `
-      + `tool calls since it last genuinely advanced (lifetime ${row.effort_calls}, baseline `
-      + `${row.effort_reviewed_calls}) — past the ${EFFORT_REVIEW_DELTA_CALLS}-call review threshold.`,
+    `[ENGINE — EFFORT REVIEW, OUT OF BAND] Task "${row.title}" (${taskId}) has made ${delta} `
+      + `REPEATED tool calls since it last genuinely advanced (a repeat is the same tool with the same `
+      + `arguments as an earlier call on this task; a call that is new is progress and is not counted) `
+      + `— past the ${EFFORT_REVIEW_DELTA_CALLS}-repeat review threshold. Lifetime calls on the task: `
+      + `${row.effort_calls}.`,
+    effortNoveltyLines(taskId),
     `Status: ${row.status}. Goal: ${row.goal ?? '(no goal recorded)'}.`,
     '',
     'The assignee is NOT interrupted by this review and does not know it is happening. Judge from the record alone.',
@@ -2801,7 +2831,7 @@ export async function runPokeCheck(): Promise<void> {
     // FIX ROUND, Finding 1: the PM's own reason, when this send is the guarded delivery of a
     // recorded circling verdict rather than an ordinary idle-based rung.
     const pokeMessage = effortReviewReason
-      ? `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing] ${effortReviewReason}\n\n${basePokeMessage}`
+      ? `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ repeated calls without advancing] ${effortReviewReason}\n\n${basePokeMessage}`
       : basePokeMessage;
     const recipient = pokeType === 'escalate_primary' && !escalateToAssignee ? primaryId : task.assignedTo;
 

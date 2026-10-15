@@ -15,12 +15,16 @@
 
 import { getDb } from '../db/connection.js';
 
-/** Add `calls` to a task's monotonic effort total. The caller (`chargeEffort`) has already
- *  refused non-positive values, so this file trusts its one caller and does not re-check. */
-export function writeEffortCharge(taskId: string, calls: number): void {
+/** Add `calls` to a task's monotonic effort total, and move the baseline forward by the `novel`
+ *  of them (t172: a call that is not a repeat is progress, so it is accounted for at once and the
+ *  meter `effort_calls - effort_reviewed_calls` rises only by the REPEATS). `novel` is 0 for the
+ *  legacy whole-number charge. The caller (`chargeEffort`/`chargeEffortCalls`) has already refused
+ *  non-positive values and guarantees `novel <= calls`, so this file trusts its callers and does not
+ *  re-check; the one statement keeps `effort_reviewed_calls <= effort_calls` by construction. */
+export function writeEffortCharge(taskId: string, calls: number, novel = 0): void {
   getDb()
-    .prepare('UPDATE work SET effort_calls = effort_calls + ? WHERE id = ?')
-    .run(calls, taskId);
+    .prepare('UPDATE work SET effort_calls = effort_calls + ?, effort_reviewed_calls = effort_reviewed_calls + ? WHERE id = ?')
+    .run(calls, novel, taskId);
 }
 
 /** Move the baseline to the task's CURRENT monotonic total — the meter reads 0 again, and

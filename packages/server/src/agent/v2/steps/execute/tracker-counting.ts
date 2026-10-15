@@ -22,7 +22,7 @@ import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { chargeEffort } from '../../../../tracker/effort-governor.js';
+import { chargeEffortCalls } from '../../../../tracker/effort-governor.js';
 
 /**
  * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
@@ -110,7 +110,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   // TRIVIAL_TOOLS included, is chargeable effort.
   const chargeableCallsInThisIter = result.toolCalls.filter(
     (tc) => !isTrackerFamilyCall(tc.name, tc.arguments),
-  ).length;
+  );
   // The status-mutation OPERATIONS are the signal "agent advanced or closed a
   // task this turn", distinct from broad tracker engagement (which includes
   // work_open:project and the two read ops).
@@ -174,10 +174,14 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   // above: a trivial-only iteration (FINDING 1's mailbox-sweep scenario) trips neither of
   // those two, so nesting the charge inside that gate — as it stood before this fix — silently
   // skipped it even after `chargeableCallsInThisIter` was widened to see it.
-  if (chargeableCallsInThisIter > 0) {
+  //
+  // t172: the charge carries the CALLS, not a count — a call this task has already made (same tool,
+  // same arguments, since it last advanced) is a repeat and is what the review meter measures; a
+  // new one (the next page of a long chain) is progress and is not. See `chargeEffortCalls`.
+  if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
     if (claimedTaskId) {
-      chargeEffort(claimedTaskId, chargeableCallsInThisIter);
+      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter);
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

@@ -51,12 +51,17 @@ export type TaskLogEntryKind =
   // shape, see the module header) — NOT a new `work_events.kind`, so no CHECK-constraint
   // migration is needed (`work/__tests__/work-event-kinds-conformance.test.ts` only walks
   // `appendEvent`/`appendWorkEvent` call sites' literal `kind` argument, never this JSON
-  // payload field). `action_taken` carries the task's `effort_reviewed_calls` baseline AT
-  // the moment the request was filed, as a string; a request is still PENDING for as long as
-  // the task's live baseline still equals that snapshot, and RESOLVED the instant
-  // `advanceBaseline` moves it (on either verdict — see `tracker/pm-agent.ts`'s
-  // `isEffortReviewPending`). That single comparison is the whole dedupe: durable because it
-  // is read straight off the database, so it survives a PM restart with no extra bookkeeping.
+  // payload field). `action_taken` carries the task's lifetime `effort_calls` total AT the
+  // moment the request was filed, as a string; a request is still PENDING for as long as the
+  // task's live baseline (`effort_reviewed_calls`) is still BELOW that total, and RESOLVED the
+  // instant `advanceBaseline` moves the baseline up to the then-current total, which is never
+  // less (on either verdict — see `tracker/pm-agent.ts`'s `isEffortReviewPending`). t172: a
+  // NEW call also nudges the baseline as it is charged, so the baseline alone can no longer
+  // say "advanced"; comparing it to the TOTAL does: an advance lands exactly on the total, and a
+  // run of new calls would have to out-run the whole filed total to look like one — and if it
+  // ever did, the repeat backlog is still >= the threshold, so a fresh request is simply filed
+  // against the new total. Nothing is lost either way. That single comparison is the whole dedupe: durable because
+  // it is read straight off the database, so it survives a PM restart with no extra bookkeeping.
   | 'effort_review_requested'
   // FIX ROUND (code review Finding 1, CRITICAL): the PM's CIRCLING verdict, recorded durably
   // by `runEffortReview` — and that is now ALL `runEffortReview` does on that branch. Its

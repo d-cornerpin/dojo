@@ -43,15 +43,22 @@
 // trail.ts` imports only `db/connection.js`, `work/store.js` and `work/tracker-view.ts` — none
 // of them the gateway — so reading it directly keeps this module the minimal leaf its header
 // above already promises.
+import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { readAuditTrail } from '../work/audit-trail.js';
 import { writeEffortCharge, writeEffortBaseline } from '../work/effort-meter.js';
 
 /**
- * The delta threshold T79d (not this module) reads to decide a task has burned enough
- * effort since its last real advancement to warrant intervention. Declared HERE, with
- * one owner, because a second copy of this number anywhere else is the exact drift this
- * plan's other migrations (163, 164) already refused to create for their own constants.
+ * The delta threshold T79d (not this module) reads to decide a task has made enough REPEATED
+ * calls since its last real advancement to warrant a look. Declared HERE, with one owner,
+ * because a second copy of this number anywhere else is the exact drift this plan's other
+ * migrations (163, 164) already refused to create for their own constants.
+ *
+ * WHAT IT COUNTS (t172): calls that REPEAT within the task since it last advanced — the same
+ * tool with the same arguments as an earlier call. A call that is new (another page of a long
+ * chain, another file, another search) is progress and does not move the meter, so a sweep of
+ * N distinct pages is never reviewed for being long. The number itself is unchanged; only what
+ * is counted toward it is. See `chargeEffortCalls` below for how.
  */
 export const EFFORT_REVIEW_DELTA_CALLS = 150;
 
@@ -69,9 +76,111 @@ export function chargeEffort(taskId: string, calls: number): void {
   writeEffortCharge(taskId, calls);
 }
 
+/** A tool call as the charge site sees it. */
+export interface ChargeableCall { name: string; arguments?: unknown }
+
+/** The arguments in a form that does not depend on key order: objects with sorted keys, arrays in
+ *  order, `undefined` dropped. Two calls that differ only in how the model ordered its argument
+ *  object are the same call. */
+function canonicalArguments(v: unknown): string {
+  const norm = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(norm);
+    if (x && typeof x === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(x as Record<string, unknown>).sort()) {
+        const val = (x as Record<string, unknown>)[k];
+        if (val !== undefined) out[k] = norm(val);
+      }
+      return out;
+    }
+    return x;
+  };
+  try { return JSON.stringify(norm(v ?? {})) ?? '{}'; } catch { return String(v); }
+}
+
+/** What a call IS, for the purpose of "has this task already done exactly this": the tool and its
+ *  canonically ordered arguments. A re-read of the same file at the same offset is the same call;
+ *  the next page, or the same file at another offset, is not. */
+export function callSignature(call: ChargeableCall): string {
+  return createHash('sha1').update(`${call.name}\u0000${canonicalArguments(call.arguments)}`).digest('hex');
+}
+
+function callLabel(call: ChargeableCall): string {
+  const args = canonicalArguments(call.arguments);
+  return `${call.name}(${args.length > 140 ? `${args.slice(0, 140)}…` : args})`;
+}
+
+/** What this process has seen a task do since it last advanced. In memory ON PURPOSE (see
+ *  `chargeEffortCalls`): the DURABLE half of the meter is the two columns. */
+interface TaskCallLedger {
+  seen: Set<string>;
+  repeats: Map<string, { label: string; n: number }>;
+  novel: number;
+  repeated: number;
+}
+const ledgers = new Map<string, TaskCallLedger>();
+
 /**
- * The meter itself: how much effort has landed on this task SINCE it last genuinely
- * advanced. A plain subtraction, not a query — callers that already have the two
+ * Charge one iteration's chargeable calls to a task (t172) — the call the charge site makes.
+ *
+ * Every call raises the lifetime total `effort_calls`, exactly as before. A call that is NOT a
+ * repeat (its signature has not been seen on this task since it last advanced) also moves the
+ * baseline `effort_reviewed_calls` by one, in the same statement, so the meter
+ * `effortDelta = effort_calls - effort_reviewed_calls` rises only by REPEATS. A sweep of
+ * distinct pages leaves it at 0; a loop re-issuing the same call raises it by one per call.
+ * Every reader of the two columns (the queue, the pending check, the PM's review, the tests that
+ * write them directly) is unchanged, because the meter is still that subtraction.
+ *
+ * WHERE THE SEEN-SET LIVES: in this process, per task, cleared the instant the task advances
+ * (`advanceBaseline`). The columns are the durable record of how much has repeated; the set only
+ * decides whether the NEXT call is a repeat. A server restart empties it, which can only make a
+ * call read as new that was a repeat — so a restart can delay a review, never invent one. Putting
+ * it in storage would be a migration for a fact that is cheap to relearn within a few calls.
+ */
+export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall[]): void {
+  if (calls.length === 0) return;
+  const ledger = ledgers.get(taskId) ?? { seen: new Set<string>(), repeats: new Map(), novel: 0, repeated: 0 };
+  const newlySeen = new Set<string>();
+  const repeatHits: Array<{ sig: string; label: string }> = [];
+  for (const call of calls) {
+    const sig = callSignature(call);
+    if (ledger.seen.has(sig) || newlySeen.has(sig)) repeatHits.push({ sig, label: callLabel(call) });
+    else newlySeen.add(sig);
+  }
+  writeEffortCharge(taskId, calls.length, newlySeen.size);
+  // The write landed; only now does the in-memory picture move with it.
+  for (const sig of newlySeen) ledger.seen.add(sig);
+  ledger.novel += newlySeen.size;
+  ledger.repeated += repeatHits.length;
+  for (const { sig, label } of repeatHits) {
+    const prev = ledger.repeats.get(sig);
+    if (prev) prev.n += 1; else ledger.repeats.set(sig, { label, n: 1 });
+  }
+  ledgers.set(taskId, ledger);
+}
+
+/** The novelty facts the PM's review is judged on: what this task has done since it last advanced,
+ *  split into new calls and repeats, with each repeated call and how many times. `null` when this
+ *  process has charged nothing to the task since it last advanced (a restart, or no calls). */
+export interface EffortNoveltyFacts {
+  novelCalls: number;
+  repeatedCalls: number;
+  repeatedSignatures: Array<{ label: string; count: number }>;
+}
+export function effortNoveltyFacts(taskId: string): EffortNoveltyFacts | null {
+  const l = ledgers.get(taskId);
+  if (!l) return null;
+  return {
+    novelCalls: l.novel,
+    repeatedCalls: l.repeated,
+    repeatedSignatures: [...l.repeats.values()].sort((a, b) => b.n - a.n).map((r) => ({ label: r.label, count: r.n })),
+  };
+}
+
+/**
+ * The meter itself: how much REPEATED effort has landed on this task SINCE it last genuinely
+ * advanced (t172: novel calls move the baseline as they are charged, so what is left is the
+ * repeats — see `chargeEffortCalls`). A plain subtraction, not a query — callers that already have the two
  * columns (a `listTasks`/`getTask` row extended with them, or a hand-picked SELECT)
  * pass them straight in, so this survives anything that wiped IN-MEMORY state (the
  * compaction this whole plan exists to route around) as long as the two columns
@@ -107,6 +216,8 @@ export function effortDelta(row: { effort_calls: number; effort_reviewed_calls: 
  */
 export function advanceBaseline(taskId: string): void {
   writeEffortBaseline(taskId);
+  // t172: the task has moved, so what it has "already done" starts over with it.
+  ledgers.delete(taskId);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════

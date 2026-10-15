@@ -196,7 +196,7 @@ function handOverOneVerdict(agentId: string): string | null {
     const circling = pendingCirclingVerdict(task.id);
     if (!circling) continue;
     const title = task.title ?? '(untitled task)';
-    const brief = `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ calls without advancing on "${title}" (${task.id})] ${circling.reason}`;
+    const brief = `[PM EFFORT REVIEW — ${EFFORT_REVIEW_DELTA_CALLS}+ repeated calls without advancing on "${title}" (${task.id})] ${circling.reason}`;
     // t137 round 3 (review M4): the ROW is the delivery — it is what the next turn reads. A row
     // already written for THIS verdict (a post whose broadcast threw after the insert answers
     // null) counts as delivered, so the verdict is latched once and never handed over twice.
