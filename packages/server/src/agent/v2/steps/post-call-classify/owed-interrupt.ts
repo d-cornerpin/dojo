@@ -234,6 +234,8 @@ export async function runOwedInterrupt(
         state = advance(state, { owedInterruptSubjectsRecorded: true });
       }
       if (!maySteer) return proceed(state);
+      // t163: when the model is pointed at these asks goes on their own ledger (`work/delegated-relay-evidence.ts`).
+      try { (await import('../../../../work/delegated-relay-evidence.js')).recordOwedAskShown(agentId, owed.map((m) => m.id), turnNumber); } catch { /* best effort: the rule falls back to the ask's arrival */ }
       // ── T53 (ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
       // The deleted write's own paragraph called the events row the model-visible half and
       // the queue entry the one reaching "the model on the very next iteration". Only the

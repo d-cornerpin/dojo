@@ -801,6 +801,11 @@ class AgentRuntime {
       // Idempotent, no-op if the heartbeat was already stopped.
       stopStatusHeartbeat(agentId);
 
+      // t163: a delegated answer that arrived while this turn ran goes to the owner NOW, after the turn's own reply (every exit lands here).
+      try { await (await import('./a2a-transport.js')).releaseDeferredJoinRelays(agentId); } catch (err) {
+        logger.warn('deferred join relay not released; the join reaper and boot re-drain still find it', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+      }
+
       // ── A2A re-trigger (v3.1.10) ──
       // If a wake-intent A2A is still unreplied after this turn, give it its
       // OWN dedicated turn rather than letting it bleed into the next user

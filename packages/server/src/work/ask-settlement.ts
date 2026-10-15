@@ -58,6 +58,7 @@ import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
 import { closeRequestFiledExpr } from './tracker-view.js';
 import { jobCarriedAsks } from './task-freshness.js';
+import { delegatedRelayEvidence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // FROM THE LEAF (t117). `NOT_A_START_ACK` below reads this constant at MODULE SCOPE, and
 // `message-store` reaches this file again through its own dependency graph — so while the
@@ -820,7 +821,9 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   }
 
   // ── CLOSE. Something was DELIVERED for it — never because a model said so. ──
-  const evidence = qualifyingDelivery(ask, ctx.turnNumber);
+  // t163: …or, at finalize, the engine's relay of a delegated answer when the serving turn deliberately added nothing.
+  const evidence = qualifyingDelivery(ask, ctx.turnNumber)
+    ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS], joinDeliveryDetail) : null);
   if (evidence) {
     const r = transition(workId, {
       to: 'done', by: 'agent', actorId, resultDeliveryId: evidence.id,

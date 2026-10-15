@@ -48,6 +48,7 @@ import {
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';   // t90 D2
+import { deferJoinRelay, takeDeferredJoinRelays } from './deferred-join-relay.js';   // t163
 // SWEEP-A TB2: the join's close is the settlement authority's, not this module's — the same
 // rule the delivery arm and the finalize adjudicator use, invoked from the relay.
 import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../work/ask-settlement.js';
@@ -2027,14 +2028,35 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     return;
   }
   if (join.total === 1) {
-    const piece = joinPieces(join.id)[0];
-    const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
-    const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
-    const deliveryId = await deliverJoinResultToOwner(join, `Heard back from ${name}: ${answer}`);
-    if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'the engine relayed the delegated answer' }), 'a2a: join settled on relay', join.id);
+    // t163: never while the delegating agent is still speaking — `releaseDeferredJoinRelays` sends it when that turn ends.
+    if (activeRuns.has(join.agentId)) {
+      deferJoinRelay(join.agentId, join.id, senderNameHint);
+      logger.info('join relay: held until the delegating turn ends', { agentId: join.agentId, work: join.id });
+      return;
+    }
+    await relayOnePieceJoin(join, senderNameHint);
     return;
   }
   steerModelToCompile(join);
+}
+
+async function relayOnePieceJoin(join: JoinState, senderNameHint?: string): Promise<void> {
+  const piece = joinPieces(join.id)[0];
+  const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
+  const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+  const deliveryId = await deliverJoinResultToOwner(join, `Heard back from ${name}: ${answer}`);
+  if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'the engine relayed the delegated answer' }), 'a2a: join settled on relay', join.id);
+}
+
+/** t163: the delegating turn is over — tell the owner what came back while it ran (once: a join already relayed is only settled). */
+export async function releaseDeferredJoinRelays(agentId: string): Promise<void> {
+  for (const { joinId, senderNameHint } of takeDeferredJoinRelays(agentId)) {
+    const join = joinState(joinId);
+    if (!join?.complete || join.total !== 1) continue;
+    const already = priorEngineJoinRelay(join.id);
+    if (already) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId, deliveryId: already.id, reason: 'the engine had already relayed the delegated answer' }), 'a2a: join settled on the relay already sent', join.id);
+    else await relayOnePieceJoin(join, senderNameHint);
+  }
 }
 
 /**
