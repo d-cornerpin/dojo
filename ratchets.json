@@ -8543,6 +8543,13 @@
       "to": 277,
       "by": "t163 A (2026-10-14), a delegated answer reaches the owner once, after the turn that delegated it",
       "why": "+2: the owed-interrupt steer now records, on the owed ask's own ledger, the moment the model was pointed at it (`recordOwedAskShown`), so a delegation made before the model had seen the ask is never credited to it. It can only be written here: this is the step that knows which asks the steer shows. One comment line and one best-effort statement. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/google/tools-read.ts",
+      "from": 944,
+      "to": 945,
+      "by": "t163 B (2026-10-14), drive_list teaches a query Drive accepts",
+      "why": "+1: the import of `driveSearchQuery`. The description edit and the one-line call change replace lines in place. The logic (what counts as a Drive operator, the escaping of a bare term) lives in the new `google/drive-query.ts` so this file does not carry it. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8739,7 +8746,7 @@
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 776,
     "packages/server/src/google/tools-forms.ts": 821,
-    "packages/server/src/google/tools-read.ts": 944,
+    "packages/server/src/google/tools-read.ts": 945,
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2024,
     "packages/server/src/healer/approval-routing.ts": 513,
