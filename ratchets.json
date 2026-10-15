@@ -4,9 +4,9 @@
     {
       "path": "packages/server/src/memory/row-label.ts",
       "from": 252,
-      "to": 265,
+      "to": 292,
       "by": "t174 (2026-10-15), work another agent asked for is not reported to the owner as his",
-      "why": "+13 (7 code, 4 comment, 2 blank): the thread's header says whose work it is (LabelFacts.threadOwnership, one clause) and renderRowLabel picks it for a thread block. It cannot live elsewhere: it is the label's single renderer (t141, one label writer) and reads the peer name thread() already resolved (a map beside the existing caches, no second query). The grouping key stays rowSubject, so the request and the agent's own rows of a thread still share ONE header. From 265 this file may only shrink."
+      "why": "+40 (22 code, 14 comment, 4 blank): the thread's header says whose work it is (LabelFacts.threadOwnership, one clause) and renderRowLabel picks it for a thread block. It cannot live elsewhere: it is the label's single renderer (t141, one label writer) and reads the peer name thread() already resolved (a map beside the existing caches, no second query). The grouping key stays rowSubject, so the request and the agent's own rows of a thread still share ONE header. The clause is left off the thread the turn in flight IS the conversation with (an agent turn on that thread: the peer is the party spoken to), which needs the turn's served thread (root, record, else newest inbound agent row), read once per assembly beside the other lookups. From 292 this file may only shrink."
     },
     {
       "path": "packages/server/src/tracker/tools.ts",
@@ -6349,7 +6349,7 @@
       "from": 251,
       "to": 264,
       "by": "t89 THE WIRE — two pool truths the concurrency clauses forced",
-      "why": "+13 (9 comment, 4 code). (1) ':memory:' has NO pool, honestly: the worker reads by PATH on its own connection, so a memory db would answer every query from a different, empty universe — every db-mocking test and any future ephemeral mode now gets the sync path by design, which closed three test reds that were real product lies. (2) terminateReaderPool LATCHES closed until warmReaderPool: a whole-pool terminate is a shutdown, and the next search must not quietly respawn the thread the shutdown killed; the deadline kill inside readerQuery deliberately still self-heals. From 265 this file may only shrink."
+      "why": "+13 (9 comment, 4 code). (1) ':memory:' has NO pool, honestly: the worker reads by PATH on its own connection, so a memory db would answer every query from a different, empty universe — every db-mocking test and any future ephemeral mode now gets the sync path by design, which closed three test reds that were real product lies. (2) terminateReaderPool LATCHES closed until warmReaderPool: a whole-pool terminate is a shutdown, and the next search must not quietly respawn the thread the shutdown killed; the deadline kill inside readerQuery deliberately still self-heals. From 292 this file may only shrink."
     },
     {
       "path": "packages/server/src/memory/search-bounds.ts",
@@ -8857,7 +8857,7 @@
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 512,
     "packages/server/src/memory/retrieval.ts": 1184,
-    "packages/server/src/memory/row-label.ts": 265,
+    "packages/server/src/memory/row-label.ts": 292,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
