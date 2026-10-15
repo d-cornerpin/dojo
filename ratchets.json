@@ -8473,6 +8473,27 @@
       "to": 646,
       "by": "t159 G2 (2026-10-14), one park signal: parkJob records it on the running turn",
       "why": "+2: one bag field (`jobParked`, a one-line comment beside it) and its initialiser. `parkJob` (work/job-continuation.ts) is the one door every park goes through (tool-loop cap, turn budget, both context-gate arms, the two error-recovery compactions); it sets the field when it queues the continuation, and `turnParkedTheJob` reads it and the stop fence. It replaces three stand-ins the predicate read before (the C3 stash, the cap latch, the budget cut), which missed the context-gate parks on a turn nobody is waiting on. ALTERNATIVES REFUSED. (a) Reuse `toolLoopCapReached`: that latch means the CAP ended the turn and teardown records `iteration_cap` from it; widening it to every park would change the recorded exit reason. (b) A module-level Set in job-continuation.ts: it outlives the turn and needs its own clearing, which is the lifetime bug the bag exists to avoid. (c) A field on the turn state: parkJob has no state, only the agent id. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1664,
+      "to": 1673,
+      "by": "t165 (2026-10-14), another agent's request is worked in its own conversation: the history tools label it, send_to_agent refuses to answer it from another turn",
+      "why": "+9: the `send_to_agent` guard call site (3 comment, 5 code, 1 import). The logic, the plain-language refusal text and the thread/turn matching live in `agent/a2a-own-turn.ts` (a new module, so `a2a-replies.ts` does not grow); this site only asks it, audits the refusal, and returns it as a guard refusal (`PERMISSION_DENIED`, which the door classifies `refused/blocked`, not `crashed`). It must be at the handler: a delivered send would also mark the awaiting request replied and cancel the turn queued for it, so the refusal has to come before `deliverA2AMessage`. REFUSED: a separate door module for one call (the handler's other early refusals live inline beside it); REFUSED: deleting unrelated lines to hold the count."
+    },
+    {
+      "path": "packages/server/src/memory/retrieval.ts",
+      "from": 1180,
+      "to": 1184,
+      "by": "t165 (2026-10-14), another agent's request is worked in its own conversation: the history tools label it, send_to_agent refuses to answer it from another turn",
+      "why": "+4: the import, one `requestForAnotherTurn` read in each of the two search arms that render message rows, and the `history_get` message branch (one local, one spread). Every other line of the change is a one-token edit to a row line already there (`clauseFor(...)` in front of the text). The label itself, and the question 'is this request awaiting its own turn', live in `memory/awaiting-own-turn.ts`. The three renderers are the three places the history tools print a message row; there is no shared row renderer to put it in."
+    },
+    {
+      "path": "packages/server/src/memory/recall.ts",
+      "from": 510,
+      "to": 512,
+      "by": "t165 (2026-10-14), another agent's request is worked in its own conversation: the history tools label it, send_to_agent refuses to answer it from another turn",
+      "why": "+2: the import and one `requestForAnotherTurn` read before the row loop; the user-row line gains a `clauseFor(...)` token in place. All other logic is in `memory/awaiting-own-turn.ts`."
     }
   ],
   "maxNewFileLines": 400,
@@ -8548,7 +8569,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1664,
+    "packages/server/src/agent/tools/cat/agents.ts": 1673,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -8694,8 +8715,8 @@
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
-    "packages/server/src/memory/recall.ts": 510,
-    "packages/server/src/memory/retrieval.ts": 1180,
+    "packages/server/src/memory/recall.ts": 512,
+    "packages/server/src/memory/retrieval.ts": 1184,
     "packages/server/src/memory/row-label.ts": 252,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
