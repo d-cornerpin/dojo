@@ -58,6 +58,7 @@ export class LabelFacts {
   private readonly convs = new Map<string, string | null>();
   private readonly threads = new Map<string, string>();
   private readonly wakes = new Map<number, string | null>();
+  private readonly peers = new Map<string, string>();
   constructor(private readonly agentId: string) {}
 
   /** "dashboard conversation with <owner>", "email thread with x@y, subject "…"" — or null. */
@@ -96,9 +97,18 @@ export class LabelFacts {
     try {
       peer = (getDb().prepare(THREAD_PEER_SQL).get(threadId, this.agentId) as { name: string } | undefined)?.name ?? null;
     } catch { /* best-effort */ }
-    const label = `agent thread ${labelText(threadId.slice(0, 8), 8)} with ${labelText(peer ?? 'another agent', 64)}`;
+    const peerName = labelText(peer ?? 'another agent', 64);
+    this.peers.set(threadId, peerName);
+    const label = `agent thread ${labelText(threadId.slice(0, 8), 8)} with ${peerName}`;
     this.threads.set(threadId, label);
     return label;
+  }
+
+  /** t174: an agent thread's header also says whose work the thread holds: that agent's, in its own conversation,
+   *  not the person's the agent is talking with (owner, 2026-10-15: "Leave it out of my answers"). Shown, never hidden. */
+  threadOwnership(threadId: string): string {
+    const base = this.thread(threadId);
+    return `${base} — work for ${this.peers.get(threadId) ?? 'another agent'} in its own conversation, not for the person you are talking with; do not report it to them as theirs`;
   }
 
   /** The notice a wake turn was woken by (its turn record's trigger, written at turn start), as
@@ -169,7 +179,9 @@ export function rowSubject(m: LabelledMessage, facts: LabelFacts): string {
 /** `[<instant> · <subject>]` — the one stamp every labelled row carries. */
 export function renderRowLabel(m: LabelledMessage, facts: LabelFacts): string {
   const at = renderMessageTimeStamp(m.createdAt);
-  const subject = rowSubject(m, facts);
+  // t174: a thread's block header says whose work it is; the block GROUPING key stays `rowSubject` (one header per thread).
+  const thread = m.role === 'user' ? (m.origin?.kind === 'agent' ? (m.a2aThreadId ?? m.origin.threadId) : null) : (subjectOf(m) === 'a2a_thread' ? m.a2aThreadId : null);
+  const subject = thread ? facts.threadOwnership(thread) : rowSubject(m, facts);
   return at ? `${at.slice(0, -1)} · ${subject}]` : `[${subject}]`;
 }
 

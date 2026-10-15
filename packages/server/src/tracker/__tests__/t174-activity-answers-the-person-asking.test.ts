@@ -28,7 +28,7 @@ import { insertMessage } from '../../memory/message-store.js';
 import { startTurn } from '../../agent/v2/turn-record.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { PEER_WORK_NOTE } from '../tools.js';
+import { PEER_WORK_NOTE } from '../../work/peer-origin.js';
 
 const AGENT = 'agent-t174';
 const PEER = 'peer-t174';

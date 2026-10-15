@@ -28,6 +28,7 @@ import {
 } from '../work/tracker-store.js';
 // SWEEP CORE-2 item 3 — the schedule's fire time has ONE writing module.
 import { setNextRun } from '../work/next-run.js';
+import { activityScope, PEER_WORK_NOTE } from '../work/peer-origin.js';
 import { commitmentPositionLine } from '../work/obligation-memory.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, isTangibleDeliverySummary, type TaskStampFields } from './task-stamps.js';
@@ -3297,6 +3298,7 @@ export function trackerActivity(
   try {
     const db = getDb();
     const nowMs = Date.now();
+    const { forPerson, own } = activityScope(agentId, turnContext(agentId)?.turnNumber);   // t174: see work/peer-origin.ts
     const since = sinceMs ?? localMidnightMs(nowMs);
     const verbose = args.verbose === true;
     const rowCap = verbose ? ACTIVITY_ROW_CAP * 3 : ACTIVITY_ROW_CAP;
@@ -3308,7 +3310,7 @@ export function trackerActivity(
     // ── OPENED, by kind ──
     const openedRows = db.prepare(
       `SELECT kind, COUNT(*) AS n FROM work
-        WHERE agent_id = ? AND opened_at >= ? AND opened_at <= ?
+        WHERE agent_id = ? AND opened_at >= ? AND opened_at <= ?${own('work')}
         GROUP BY kind ORDER BY n DESC, kind ASC`,
     ).all(agentId, since, nowMs) as Array<{ kind: string; n: number }>;
     const openedTotal = openedRows.reduce((a, r) => a + r.n, 0);
@@ -3317,7 +3319,7 @@ export function trackerActivity(
     //    state one fact, so this cannot count a row that did not actually finish. ──
     const closedRows = db.prepare(
       `SELECT state, COUNT(*) AS n FROM work
-        WHERE agent_id = ? AND closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?
+        WHERE agent_id = ? AND closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?${own('work')}
         GROUP BY state ORDER BY n DESC, state ASC`,
     ).all(agentId, since, nowMs) as Array<{ state: string; n: number }>;
     const closedTotal = closedRows.reduce((a, r) => a + r.n, 0);
@@ -3327,13 +3329,13 @@ export function trackerActivity(
     const fired = (db.prepare(
       `SELECT COUNT(*) AS n FROM work_events e JOIN work w ON w.id = e.work_id
         WHERE w.agent_id = ? AND e.kind IN ('occurrence_fired','occurrence_released')
-          AND e.created_at >= ? AND e.created_at <= ?`,
+          AND e.created_at >= ? AND e.created_at <= ?${own('w')}`,
     ).get(agentId, since, nowMs) as { n: number }).n;
 
     // ── PM RULINGS in the window, from the adjudication rows themselves. ──
     const rulings = db.prepare(
       `SELECT a.verdict AS verdict, COUNT(*) AS n FROM adjudications a JOIN work w ON w.id = a.work_id
-        WHERE w.agent_id = ? AND a.created_at >= ? AND a.created_at <= ?
+        WHERE w.agent_id = ? AND a.created_at >= ? AND a.created_at <= ?${own('w')}
         GROUP BY a.verdict ORDER BY a.verdict ASC`,
     ).all(agentId, since, nowMs) as Array<{ verdict: string; n: number }>;
 
@@ -3356,6 +3358,7 @@ export function trackerActivity(
 
     const parts: string[] = [];
     parts.push(`Activity ${windowLabel} — the work ledger's own record, every kind of row on your board (asks, tasks, projects, commitments, scheduled occurrences).`);
+    if (forPerson) parts.push(PEER_WORK_NOTE);
     parts.push('');
 
     if (openedTotal === 0 && closedTotal === 0 && fired === 0 && deliveredTotal === 0) {
@@ -3386,14 +3389,14 @@ export function trackerActivity(
     const rows = db.prepare(
       `SELECT id, kind, title, state, opened_at, closed_at FROM work
         WHERE agent_id = ?
-          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))
+          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))${own('work')}
         ORDER BY COALESCE(closed_at, opened_at) DESC, id ASC
         LIMIT ?`,
     ).all(agentId, since, nowMs, since, nowMs, rowCap) as ActivityRow[];
     const touched = (db.prepare(
       `SELECT COUNT(*) AS n FROM work
         WHERE agent_id = ?
-          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))`,
+          AND ((opened_at >= ? AND opened_at <= ?) OR (closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?))${own('work')}`,
     ).get(agentId, since, nowMs, since, nowMs, ) as { n: number }).n;
 
     if (rows.length > 0) {
