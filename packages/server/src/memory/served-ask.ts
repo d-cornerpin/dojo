@@ -30,6 +30,7 @@
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
 import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
+import { jobOrigin } from '../work/job-origin.js';
 import { findUnrepliedAssignForAgent } from '../agent/a2a-replies.js';
 import { getMessagesByIds } from './store.js';
 import type { Message } from '@dojo/shared';
@@ -56,7 +57,12 @@ export function servedOwnerMessageIds(agentId: string): string[] {
     // A continuation carrying a job: the ask(s) the PARK recorded on the job's own record (t143's
     // carry, `work/task-freshness.ts`), and only a run launched from that park's wake carries it. Any
     // other trigger-less run (an A2A, the scheduler, an engine event) serves nothing it did not pick up.
-    if (!bag.root && runCarriesJob(agentId)) return jobCarriedAsks(agentId);
+    if (!bag.root && runCarriesJob(agentId)) {
+      // t173: and the ask the job's own task came from, for a continuation whose parking turn served no ask
+      // (an engine notice about the task parked it): the same message, shown the same way.
+      const origin = jobOrigin(agentId);
+      return [...new Set([...jobCarriedAsks(agentId), ...(origin?.kind === 'ask' ? [origin.messageId] : [])])];
+    }
     return [];
   } catch {
     return [];
@@ -67,7 +73,14 @@ export function servedOwnerMessageIds(agentId: string): string[] {
  *  finder preflight used to make the turn an A2A turn, so the two cannot disagree about which message it is. */
 export function servedAssignMessageIds(agentId: string): string[] {
   try {
-    if (turnContext(agentId)?.kind !== 'a2a') return [];
+    const bag = turnContext(agentId);
+    if (bag?.kind !== 'a2a') return [];
+    // t173: a job's continuation serves the request its job started from, replied to or not (the job is
+    // still running): its root is that thread, and it is found from the job's task (`work/job-origin.ts`).
+    if (bag.root?.kind === 'a2a') {
+      const origin = jobOrigin(agentId);
+      if (origin?.kind === 'a2a' && origin.threadId === bag.root.id && origin.messageId) return [origin.messageId];
+    }
     const assign = findUnrepliedAssignForAgent(agentId);
     return assign ? [assign.messageId] : [];
   } catch {

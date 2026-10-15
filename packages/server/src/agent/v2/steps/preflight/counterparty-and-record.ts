@@ -184,7 +184,7 @@ export async function runCounterpartyAndRecord(
       : 'none' as const;
     const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
       : terminalWakeA2A ? terminalWakeA2A.threadId
-      : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
+      : isA2ATurn ? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null)   // t173: a job's continuation names its thread; a reply-needed turn has no root, as before
       : chosenConvKey;
     turnCtx.modelRequestId = `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
     return startTurn({

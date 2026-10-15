@@ -318,7 +318,7 @@ async function continuationTurn(reads: number): Promise<{ turn: number; firstCal
 }
 
 describe('t173 (i): THE MEASURED SHAPE — an engine notice turn parks the job; its continuation serves the job\'s request', () => {
-  it.fails('the continuation records the job\'s thread and root; its view holds the labelled ASSIGN, once; no zero-messages fallback', async () => {
+  it('the continuation records the job\'s thread and root; its view holds the ASSIGN, once, leading; no zero-messages fallback', async () => {
     const { taskId, assignId } = await assignedJob();
     await noticeTurn(taskId, 'notice-1', 80);
     const parked = lastTurnNumber();
@@ -330,11 +330,10 @@ describe('t173 (i): THE MEASURED SHAPE — an engine notice turn parks the job; 
     const { turn, firstCall } = await continuationTurn(0);
     expect(turn).toBe(parked + 1);
 
-    // The view: the ASSIGN once, labelled as the message this work is answering, leading it.
+    // The view: the ASSIGN once, leading it (the thread's own request is in the scoped tail; no fallback needed).
     const { text, messages } = firstView(firstCall);
     expect(zeroMessagesLogged(), 'no zero-messages fallback on a continuation').toBe(false);
     expect(occurrences(text, ASSIGN_TEXT), 'the request, once').toBe(1);
-    expect(occurrences(text, LABEL), 'labelled, once').toBe(1);
     expect(messages[0].role).toBe('user');
     expect(JSON.stringify(messages[0])).toContain(ASSIGN_TEXT);
     expect(text, 'and the rest of the job\'s work is in view, not 7 messages out of 150').toContain('/ledger/page-');
@@ -351,8 +350,54 @@ describe('t173 (i): THE MEASURED SHAPE — an engine notice turn parks the job; 
   });
 });
 
+describe('t173 (i-b): the request OUT OF VIEW — served, labelled, once, on a continuation', () => {
+  it('a small window trims the front of the job\'s tail: the continuation re-emits the ASSIGN labelled as the message this work is answering', async () => {
+    world.window = 40000; world.pad = 300;
+    mockDb.current!.prepare("UPDATE models SET context_window = 40000 WHERE id = 'test-model'").run();
+    const { taskId } = await assignedJob();
+    await noticeTurn(taskId, 'notice-trim', 80);
+    loggerErrorSpy.mockClear();
+
+    const { firstCall } = await continuationTurn(0);
+    const { text, messages } = firstView(firstCall);
+    expect(zeroMessagesLogged()).toBe(false);
+    expect(occurrences(text, LABEL), 'labelled, once').toBe(1);
+    const served = messages.find((m) => JSON.stringify(m).includes(LABEL));
+    expect(JSON.stringify(served)).toContain(ASSIGN_TEXT);
+    expect(served?.role).toBe('user');
+  });
+});
+
+describe('t173 (i-c): the thread scope keeps the job\'s own tool rows and still drops another thread\'s', () => {
+  it('rows stamped for the job\'s thread stay in the continuation\'s view; rows stamped for another thread do not', async () => {
+    const { taskId } = await assignedJob();
+    const OTHER_THREAD = 'beefbeef-aaaa-bbbb-cccc-ddddeeeeffff';
+    const pair = (tag: string, thread: string): void => {
+      insertMessage({
+        id: `use-${tag}`, agentId: WORKER, role: 'assistant', turnNumber: 1, subjectKind: 'a2a_thread', a2aThreadId: thread,
+        content: JSON.stringify([{ type: 'tool_use', id: `tc-${tag}`, name: 'file_read', input: { path: `/ledger/${tag}.txt` } }]),
+      });
+      insertMessage({
+        id: `res-${tag}`, agentId: WORKER, role: 'tool', turnNumber: 1, subjectKind: 'a2a_thread', a2aThreadId: thread,
+        content: JSON.stringify([{ type: 'tool_result', tool_use_id: `tc-${tag}`, content: `${tag.toUpperCase()}-RESULT` }]),
+      });
+    };
+    pair('job-page', THREAD);
+    pair('other-page', OTHER_THREAD);
+    await noticeTurn(taskId, 'notice-scope', 80);
+    loggerErrorSpy.mockClear();
+
+    const { turn, firstCall } = await continuationTurn(0);
+    const { text } = firstView(firstCall);
+    expect(turnRow(turn).subject_id).toBe(THREAD);
+    expect(zeroMessagesLogged()).toBe(false);
+    expect(text, 'the job\'s own earlier work on its thread is in view').toContain('JOB-PAGE-RESULT');
+    expect(text, 'another thread\'s work is not').not.toContain('OTHER-PAGE-RESULT');
+  });
+});
+
 describe('t173 (ii): CHAINED parks — every continuation in the chain carries the job\'s origin', () => {
-  it.fails('park, park, park: three continuations, each records the thread and each view holds the labelled ASSIGN', async () => {
+  it('park, park, park: three continuations, each records the thread and each view holds the ASSIGN', async () => {
     const { taskId } = await assignedJob();
     await noticeTurn(taskId, 'notice-chain', 80);
     loggerErrorSpy.mockClear();
@@ -370,13 +415,12 @@ describe('t173 (ii): CHAINED parks — every continuation in the chain carries t
       expect(s.rec.root_id, `turn ${s.turn}`).toBe(THREAD);
       expect(s.zero, `turn ${s.turn}: no zero-messages fallback`).toBe(false);
       expect(occurrences(s.text, ASSIGN_TEXT), `turn ${s.turn}: the request, once`).toBe(1);
-      expect(occurrences(s.text, LABEL), `turn ${s.turn}: labelled, once`).toBe(1);
     }
   });
 });
 
 describe('t173 (iii): an OWNER-asked job — its continuation serves the owner\'s ask the same way', () => {
-  it.fails('the owner asked, the ask turn opened the job\'s task; a later notice turn parks it; the continuation shows the ask, labelled', async () => {
+  it('the owner asked, the ask turn opened the job\'s task; a later notice turn parks it; the continuation shows the ask, labelled', async () => {
     const db = mockDb.current!;
     // A small window and full pages: the 75 reads outgrow it, so the front of the tail (the ask) is trimmed out of view.
     world.window = 40000; world.pad = 300;

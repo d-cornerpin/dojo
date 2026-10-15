@@ -23,6 +23,7 @@ import type { UnrepliedAssign } from '../../../a2a-replies.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
 import { getPendingEngineEvent, type WaitingConversation } from '../../counterparty.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
+import { a2aJobOrigin } from '../../../../work/job-origin.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
 
@@ -194,15 +195,15 @@ export async function runTurnClassification(
   // ANSWER/COMPLETE/FAIL that woke us). Both need the live tail scoped to the A2A
   // thread (scopeToA2AThread) so the agent SEES the message instead of having it
   // stripped. The waiting-human guard is shared: a real user always wins the turn.
-  const isA2ATurn =
+  const a2aWakeTurn =
     !hasUnansweredUser &&
     ((unrepliedAssign !== null && (mostRecentIsA2A || forcedA2ATurn)) || terminalWakeA2A !== null);
-  if (isA2ATurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
+  if (a2aWakeTurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
   // The terminal wake DRIVES this turn only when there is no competing reply-needed
   // obligation (an unreplied QUESTION/ASSIGN/BLOCK wins the counterparty + enforcer,
   // and its own thread is scoped instead). Only then is the terminal message the one
   // this turn scopes to and should claim.
-  const terminalWakeDrivesTurn = isA2ATurn && terminalWakeA2A !== null && unrepliedAssign === null;
+  const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null && unrepliedAssign === null;
   // PHASE-2 T4: the terminal-wake claim is the SERVE edge, not a fake conversation.
   //
   // It used to stamp `conv_key='a2a'` — a sentinel that is not a conversation, on the column
@@ -236,8 +237,11 @@ export async function runTurnClassification(
   // be most-recent and would be silently starved (task stuck in_progress). The
   // pending-event check + the runtime drain (which re-triggers while one is pending)
   // give it its own turn after the human is served.
-  const pendingEngineEvent = (!isA2ATurn && !hasUnansweredUser) ? getPendingEngineEvent(agentId) : null;
-  const isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null;
+  const pendingEngineEvent = (!a2aWakeTurn && !hasUnansweredUser) ? getPendingEngineEvent(agentId) : null;
+  const isEngineTurn = !a2aWakeTurn && !hasUnansweredUser && pendingEngineEvent != null;
+  const jobA2A = !a2aWakeTurn && !hasUnansweredUser && !isEngineTurn && !chosenConvKey ? a2aJobOrigin(agentId) : null;   // t173
+  if (jobA2A) turnCtx.root = { kind: 'a2a', id: jobA2A.threadId, sourceMessageId: null };
+  const isA2ATurn = a2aWakeTurn || jobA2A !== null;
   // Settled-context wake (owner report 2026-07-09 9:39 PM, third re-chase
   // specimen): when NO human is waiting at turn start, every user conversation
   // this turn can see is, by definition, already answered (a fresh human ask
@@ -356,12 +360,12 @@ export async function runTurnClassification(
   // handed back a deliverable and closed the thread), so a2aReplyContext stays null
   // and the missed-reply enforcer is not armed, exactly right: there is nothing to
   // reply to, only a deliverable to act on.
-  const a2aReplyContext = isA2ATurn
+  const a2aReplyContext = a2aWakeTurn
     ? (unrepliedAssign
         ? { intent: unrepliedAssign.intent, threadShort: unrepliedAssign.threadShort, fromName: unrepliedAssign.fromName }
         : parseA2ATrigger(lastUserMessageContent))
     : null;
-  const a2aReplyAssignMessageId = isA2ATurn ? (unrepliedAssign?.messageId ?? null) : null;
+  const a2aReplyAssignMessageId = a2aWakeTurn ? (unrepliedAssign?.messageId ?? null) : null;
   // The A2A thread IDENTITY used to render the counterparty header and scope the
   // live tail (scopeToA2AThread). For a terminal wake there is no reply context, so
   // fall back to the terminal message's own thread/sender, without that, the
@@ -371,7 +375,7 @@ export async function runTurnClassification(
   const a2aCounterpartyIdentity = a2aReplyContext
     ?? (terminalWakeA2A
         ? { intent: terminalWakeA2A.intent, threadShort: terminalWakeA2A.threadShort, fromName: terminalWakeA2A.fromName }
-        : null);
+        : jobA2A);
 
   return preflightProceed({
     mostRecentInbound, mostRecentIsA2A, terminalWakeA2A, hasUnansweredUser, isA2ATurn,
