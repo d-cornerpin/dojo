@@ -54,6 +54,7 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
+import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
 // SWEEP CORE-1 CT2: the deliverable declaration and the steer-to-deliver ladder.
@@ -2935,7 +2936,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           }
         }
 
-        return parts.join('\n');
+        return taskReadWithNotes(task.id, agentId, parts.join('\n'), args.offset);   // t169: the task's own notes close the page
       }
       // Task resolution failed, if we also have a projectId (usually the
       // same string), try the project branch below before reporting.

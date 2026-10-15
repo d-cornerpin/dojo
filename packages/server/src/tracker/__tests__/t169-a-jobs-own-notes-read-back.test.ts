@@ -120,7 +120,7 @@ const nextOffset = (s: string): number | null => {
 };
 
 describe('1 — the notes the agent wrote come back, in order, with their times', () => {
-  it.fails('work_note x N then work_update get: every note is present, oldest first, each with a time and its writer', async () => {
+  it('work_note x N then work_update get: every note is present, oldest first, each with a time and its writer', async () => {
     const texts = Array.from({ length: 6 }, (_, i) => `NOTE-${String(i).padStart(2, '0')} wrong lines on pages ${i * 8 + 1}-${i * 8 + 8}: 3, 17, 22`);
     for (const t of texts) expect(await note('helper', t)).toContain('[OK]');
     expect(await note('pm', 'NOTE-06 the PM saw the first six notes and they read as steady progress')).toContain('[OK]');
@@ -135,7 +135,7 @@ describe('1 — the notes the agent wrote come back, in order, with their times'
     expect(noteLines[0]).not.toMatch(/PM/i);
   });
 
-  it.fails('the notes FIELD, when it has content, is still shown beside them', async () => {
+  it('the notes FIELD, when it has content, is still shown beside them', async () => {
     db().prepare("UPDATE work SET notes = 'FIELD-TEXT carried from an older version' WHERE id = ?").run(TASK);
     await note('helper', 'NOTE-00 a note in the trail');
     const out = await get('helper');
@@ -151,7 +151,7 @@ describe('1 — the notes the agent wrote come back, in order, with their times'
 });
 
 describe('2 — more notes than one view holds come in pages that can be followed to the end', () => {
-  it.fails('pages end in a continue footer that survives the engine cap, and following it reads every note once, in order', async () => {
+  it('pages end in a continue footer that survives the engine cap, and following it reads every note once, in order', async () => {
     const N = 40;
     const filler = 'x'.repeat(5000);
     for (let i = 0; i < N; i++) await note('helper', `NOTE-${String(i).padStart(2, '0')} ${filler}`);
@@ -170,7 +170,7 @@ describe('2 — more notes than one view holds come in pages that can be followe
     expect(offset).toBeNull();
   });
 
-  it.fails('a page past the end says so instead of answering with an empty list', async () => {
+  it('a page past the end says so instead of answering with an empty list', async () => {
     await note('helper', 'NOTE-00 only note');
     const out = await get('helper', { offset: 5 });
     expect(out).toMatch(/1 note/);
@@ -179,7 +179,7 @@ describe('2 — more notes than one view holds come in pages that can be followe
 });
 
 describe('3 — the attempt ledger says there are more notes and how to read them', () => {
-  it.fails('with more notes than the ledger shows, its section names work_update get on that task', async () => {
+  it('with more notes than the ledger shows, its section names work_update get on that task', async () => {
     for (let i = 0; i < 9; i++) await note('helper', `NOTE-${String(i).padStart(2, '0')} found something on page ${i}`);
     const lane = await buildWorkBoardLane('helper');
     const ledger = lane.attemptLedger ?? '';
@@ -187,7 +187,7 @@ describe('3 — the attempt ledger says there are more notes and how to read the
     expect(ledger).not.toContain('NOTE-00');
     expect(ledger).toMatch(/work_update/);
     expect(ledger).toContain(`id="${TASK}"`);
-    expect(ledger).toMatch(/\b5 (earlier )?notes?\b/);
+    expect(ledger).toMatch(/\b5 more notes\b/);
   });
 
   it('with every note already shown, the ledger adds no pointer', async () => {
@@ -202,14 +202,14 @@ describe('4 — the tool descriptions tell the truth about where notes are read 
   const def = (name: string): { description: string; input_schema: { properties: Record<string, { description?: string }> } } =>
     toolDefinitions.find((t) => t.name === name) as never;
 
-  it.fails("work_note names the door that reads the notes back, and no longer promises a field it does not fill", () => {
+  it("work_note names the door that reads the notes back, and no longer promises a field it does not fill", () => {
     const d = def('work_note').description;
     expect(d).toMatch(/work_update/);
     expect(d).toMatch(/get/);
     expect(d).not.toMatch(/Preserves all prior notes/);
   });
 
-  it.fails('work_update declares the offset its own continue footer teaches', () => {
+  it('work_update declares the offset its own continue footer teaches', () => {
     expect(def('work_update').input_schema.properties.offset).toBeDefined();
   });
 });

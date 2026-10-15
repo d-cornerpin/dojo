@@ -1198,14 +1198,15 @@ export const toolDefinitions: ToolDefinition[] = [
         // list door's own result — so the golden delta is exactly this property and nothing
         // else. Static text: the prefix stays byte-stable after the re-bless.
         hours: { type: 'number', description: 'action="activity": how many hours back the window covers — e.g. 36 for "since yesterday morning", 168 for the past week. Omit for today so far (since local midnight). The result always states the window it actually measured, so check that line rather than assuming.' },
+        offset: { type: 'number', description: 'action="get" on a task: the first note to show (0-based) when its notes run past one result; a page\'s closing line gives the offset to continue at.' },
       },
       required: [],
     },
-    maxResultTokens: 3000,
+    maxResultTokens: V2_MAX_TOOL_RESULT_TOKENS,   // t169: `get` pages the task's notes to the model's view (memory/tool-result-view.ts), so its footer survives this cap
   },
   {
     name: 'work_note',
-    description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call work_update({action:"edit", task_id, notes}).\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after a note leaves the user staring at idle progress with no idea what is happening.',
+    description: 'APPEND a note to a task\'s record, stamped with the time. Every call adds one and none replaces another, so it suits progress logs, findings and issue trails. **Read them back with work_update({action:"get", id: task_id})**: it lists every note on the task, oldest first, each with its time, and a long record comes in pages that end with the call to continue. (The task\'s separate notes FIELD is a different thing: work_update({action:"edit", task_id, notes}) replaces it.)\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after a note leaves the user staring at idle progress with no idea what is happening.',
     effects: [],
     input_schema: {
       type: 'object',

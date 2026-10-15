@@ -35,6 +35,7 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
+import { authoredInputLines, fitInputToBudget } from './summary-authored-text.js';
 // T20: the summariser's own cited work id, resolved against the spine before the row is stored.
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
@@ -1168,24 +1169,26 @@ export function stubOldToolResultsAtBoundary(agentId: string): number {
  *   • the SCRUBS — a technique body or a credential value must never reach a persisted
  *     summary (`scrubStubFor`), because a summary is re-injected across sessions.
  */
-export function buildLeafSummaryInput(messages: Message[]): string {
+export function buildLeafSummaryInput(messages: Message[], budgetTokens: number = getLeafChunkTokens()): string {
   const answered = answeredAskTurns(messages);
   // t144: WHICH conversation (one, normally — a mixed input names each row's in its tag) and WHEN each
   // message was written, the summariser's only source of dates.
   const { one, labelOf } = conversationLabels(messages);
-  const body = messages
-    .filter(m => !isNonConversationForSummary(m.content))
-    .map(m => {
-      const party = summaryPartyTag(m);
-      const at = renderInstant(m.createdAt);
-      const parts = [m.role.toUpperCase(), party, at, one ? null : `in ${labelOf.get(m.id) ?? 'conversation unknown'}`];
-      const base = parts.filter((p): p is string => !!p).join(' · ');
-      const servedBy = answered.get(m.id);
-      const tag = servedBy == null ? base : `${base} · ${ANSWERED_TAG} in turn ${servedBy}`;
-      return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
-    })
-    .join('\n\n---\n\n');
-  return body && one ? `CONVERSATION: ${labelOf.get(messages[0].id)}\n\n${body}` : body;
+  return fitInputToBudget((keep) => {
+    const body = messages
+      .filter(m => !isNonConversationForSummary(m.content))
+      .map(m => {
+        const party = summaryPartyTag(m);
+        const at = renderInstant(m.createdAt);
+        const parts = [m.role.toUpperCase(), party, at, one ? null : `in ${labelOf.get(m.id) ?? 'conversation unknown'}`];
+        const base = parts.filter((p): p is string => !!p).join(' · ');
+        const servedBy = answered.get(m.id);
+        const tag = servedBy == null ? base : `${base} · ${ANSWERED_TAG} in turn ${servedBy}`;
+        return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content), keep)}`;
+      })
+      .join('\n\n---\n\n');
+    return body && one ? `CONVERSATION: ${labelOf.get(messages[0].id)}\n\n${body}` : body;
+  }, budgetTokens);
 }
 
 /** The literal the input builder writes and the summariser's own instruction names. One
@@ -1295,6 +1298,7 @@ export async function runLeafCompaction(
   const room = summaryRoom(modelId);
   if (room <= 0) return 0;
   const chunks = chunkMessages(uncompacted, Math.min(getLeafChunkTokens(), room));
+  const inputBudget = Math.max(0, Math.min(getLeafChunkTokens(), room) - getLeafTargetTokens());
   const writerWasAnswering = !writerPassedOver(modelId, agentId);
 
   logger.info('Leaf compaction: processing chunks', {
@@ -1314,11 +1318,9 @@ export async function runLeafCompaction(
     // strips technique tool-result bodies so they don't leak into the
     // summary the model writes next (and which the agent would later
     // read as authoritative, bypassing freshness enforcement).
-    // condenseToolJsonForSummary then flattens remaining tool_use/tool_result
-    // JSON to one-liners: fed verbatim, the summarizer quotes raw JSON into
-    // summaries (observed live), wasting tokens on wire format while keeping
-    // none of the meaning beyond tool name + outcome, which the one-liner keeps.
-    const content = buildLeafSummaryInput(chunk);
+    // condenseToolJsonForSummary flattens tool_use/tool_result JSON to one-liners (fed verbatim, the
+    // summarizer quoted raw JSON into summaries); a call keeps the text the agent wrote in it (t169).
+    const content = buildLeafSummaryInput(chunk, inputBudget);
 
     const messageIds = chunk.map(m => m.id);
     const earliestAt = chunk[0].createdAt;
@@ -1511,7 +1513,7 @@ export function rebuildContextItems(agentId: string): void {
 // For the summarizer they are flattened to one-liners that keep WHAT happened
 // (tool name, ok/error, a short result head) and drop the wire format. Pure
 // text content passes through untouched.
-export function condenseToolJsonForSummary(content: string): string {
+export function condenseToolJsonForSummary(content: string, keep: number = 1): string {
   const trimmed = content.trim();
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
   try {
@@ -1520,9 +1522,9 @@ export function condenseToolJsonForSummary(content: string): string {
     const lines: string[] = [];
     for (const b of arr) {
       if (!b || typeof b !== 'object') continue;
-      const block = b as { type?: string; name?: string; text?: string; content?: unknown; is_error?: boolean };
+      const block = b as { type?: string; name?: string; text?: string; content?: unknown; is_error?: boolean; input?: unknown };
       if (block.type === 'tool_use') {
-        lines.push(`(called tool ${block.name ?? 'unknown'})`);
+        lines.push(`(called tool ${block.name ?? 'unknown'})`, ...authoredInputLines(block.name ?? 'unknown', block.input, keep));
       } else if (block.type === 'tool_result') {
         const body = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
         lines.push(`(tool result${block.is_error ? ' ERROR' : ''}: ${body.slice(0, 200)})`);

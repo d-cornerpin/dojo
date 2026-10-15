@@ -53,6 +53,7 @@ import {
   trackerRetask, trackerRequestOverride, trackerOverride, trackerRequestUserVerdict,
   trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
 } from '../../../tracker/tools.js';
+import { coerceNumberArg } from '../pagination.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 // v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
@@ -508,7 +509,7 @@ export const trackerHandlers: ToolHandlerMap = {
     if (getErr) { content = getErr; isError = true; return { content, isError }; }
     // The tool takes a single 'id' param, try as task first, then project
     const lookupId = args.id as string;
-    content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId });
+    content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId, offset: coerceNumberArg(args.offset) });   // t169: pages the task's notes
     isError = content.startsWith('Error');
     return { content, isError };
   },

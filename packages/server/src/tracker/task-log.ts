@@ -188,6 +188,16 @@ export function getRecentObservations(taskId: string, limit = 5): TaskLogEntry[]
 }
 
 /**
+ * EVERY note written on a task (`work_note`, the PM's observations), oldest first. This is what
+ * `work_update get` reads back: the trail holds them and the notes FIELD never did, so an agent that
+ * kept its findings in `work_note` had no call that returned them (t169). No limit: the reader pages
+ * what it shows by the size of the model's view, never by how many exist.
+ */
+export function listTaskNotes(taskId: string): TaskLogEntry[] {
+  return listTaskLog(taskId, { limit: Number.MAX_SAFE_INTEGER, kinds: ['observation'] }).reverse();
+}
+
+/**
  * Get the most recent status-changing entries (transitions, overrides, user verdict
  * applications). Useful for "what's the recent history of this row" panels and PM context.
  *

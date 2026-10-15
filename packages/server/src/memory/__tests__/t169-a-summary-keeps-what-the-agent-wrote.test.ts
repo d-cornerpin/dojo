@@ -95,13 +95,13 @@ function row(content: string, role: Message['role'] = 'assistant'): Message {
 const NOTE = 'Pages 1-8, wrong lines: p2 line 4 (qty 3 x 4.00 = 13.00), p5 line 9 (total 70.00 should be 7.00)';
 
 describe('1 — what the agent wrote with work_note reaches the summariser', () => {
-  it.fails('the input built from a work_note row carries the note text, next to the tool name', () => {
+  it('the input built from a work_note row carries the note text, next to the tool name', () => {
     const input = buildLeafSummaryInput([row(use('work_note', { task_id: 'task-1', notes: NOTE }))]);
     expect(input).toContain('work_note');
     expect(input).toContain(NOTE);
   });
 
-  it.fails('through the real compaction door: the model that writes the summary is handed the note text', async () => {
+  it('through the real compaction door: the model that writes the summary is handed the note text', async () => {
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: use('work_note', { task_id: 'task-1', notes: NOTE }) });
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', content: result('[OK] task_id=task-1 Observation appended to the task\'s audit trail.') });
     for (let i = 0; i < 24; i++) insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `tail filler ${i}` });
@@ -120,18 +120,18 @@ describe('2 — the text the agent authored is kept, whichever tool it was writt
     ['an opened task with a description', { title: 'audit', description: 'DESCRIPTION-BODY check every line total' }, 'DESCRIPTION-BODY check every line total'],
   ];
   for (const [what, input, text] of authored) {
-    it.fails(`${what}: the text comes through`, () => {
+    it(`${what}: the text comes through`, () => {
       expect(buildLeafSummaryInput([row(use('some_tool', input))])).toContain(text);
     });
   }
 
-  it.fails('a multi-line text is kept whole, in order', () => {
+  it('a multi-line text is kept whole, in order', () => {
     const body = 'first line\nsecond line\nthird line';
     const out = condenseToolJsonForSummary(use('work_note', { task_id: 't', notes: body }));
     expect(out).toContain(body);
   });
 
-  it.fails('an assistant turn with prose and a call keeps both, in order', () => {
+  it('an assistant turn with prose and a call keeps both, in order', () => {
     const content = JSON.stringify([
       { type: 'text', text: 'Recording the first block now.' },
       { type: 'tool_use', id: 'toolu_1', name: 'work_note', input: { task_id: 't', notes: NOTE } },
@@ -174,14 +174,14 @@ describe('4 — results stay as they were', () => {
 describe("5 — the size is the summariser's own input budget", () => {
   const big = (tag: string, chars: number): string => `${tag} ` + 'w'.repeat(chars);
 
-  it.fails('everything the agent wrote is kept while the chunk fits its budget', () => {
+  it('everything the agent wrote is kept while the chunk fits its budget', () => {
     const rows = [row(use('work_note', { task_id: 't', notes: big('ONE', 6000) }, 'a')), row(use('work_note', { task_id: 't', notes: big('TWO', 6000) }, 'b'))];
     const input = buildLeafSummaryInput(rows, 30_000);
     expect(input).toContain(big('ONE', 6000));
     expect(input).toContain(big('TWO', 6000));
   });
 
-  it.fails('over the budget, the input stays within it and every text keeps its head, with an honest cut', () => {
+  it('over the budget, the input stays within it and every text keeps its head, with an honest cut', () => {
     const rows = [
       row(use('work_note', { task_id: 't', notes: big('ONE', 40_000) }, 'a')),
       row(use('file_write', { path: '/x', content: big('TWO', 40_000) }, 'b')),
@@ -194,7 +194,7 @@ describe("5 — the size is the summariser's own input budget", () => {
     expect(input).toMatch(/not shown/i);
   });
 
-  it.fails('a single row bigger than the whole budget still yields an input within it', () => {
+  it('a single row bigger than the whole budget still yields an input within it', () => {
     const input = buildLeafSummaryInput([row(use('file_write', { path: '/x', content: big('HUGE', 400_000) }))], 8000);
     expect(estimateTokens(input)).toBeLessThanOrEqual(8000);
     expect(input).toContain('HUGE ww');

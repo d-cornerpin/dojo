@@ -631,6 +631,7 @@ async function attemptLedgerFrom(tasks: BoardTask[]): Promise<string | null> {
   try {
     const { getRecentObservations, getRecentTransitions, formatEntryLine } =
       await import('../tracker/task-log.js');
+    const { moreNotesLine } = await import('../tracker/task-notes-view.js');
     const forLedger = tasks.slice(0, laneLimit(ATTEMPT_LEDGER_LANE_ID, 'rows', 'tasks'));
     const sections: string[] = [];
     for (const task of forLedger) {
@@ -646,7 +647,9 @@ async function attemptLedgerFrom(tasks: BoardTask[]): Promise<string | null> {
           .get(task.id) as { revert_count: number | null } | undefined;
         if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
       } catch { /* column may not exist on old DBs */ }
-      sections.push(`Task "${task.title}"${revertNote}:\n${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
+      let moreNotes = '';
+      try { moreNotes = moreNotesLine(task.id, entries.filter((e) => e.entryKind === 'observation').length); } catch { /* a convenience */ }
+      sections.push(`Task "${task.title}"${revertNote}:\n${moreNotes}${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
     }
     return renderAttemptLedgerBlock(sections);
   } catch { return null; /* tracker may be empty or absent */ }

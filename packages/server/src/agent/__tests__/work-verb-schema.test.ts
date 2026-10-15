@@ -153,13 +153,38 @@ const BASELINE_CHARS = { work_open: 6327, work_update: 7918 };
 // +51 chars across four such examples, of which this is one).
 const T107_BASELINE_CHARS = { work_open: 6338, work_update: 7918 };
 
+// ── t169 — `work_update get` PAGES A TASK'S NOTES, AND THE PAGE NEEDS AN OFFSET: +193 ──
+// Measured, not estimated:
+//   work_open   6,338 → 6,338  (+0)
+//   work_update 7,918 → 8,111  (+193 — ONE declared property, `offset`)
+// WHAT THE 193 BUY: `work_note` writes the task's audit trail and `get` used to render a different
+// thing (the notes FIELD), so an agent that kept its findings in notes could not read them back and
+// re-walked 154 pages (run 9, S1). `get` now returns the notes and, past one result, pages them the
+// way `file_read` pages lines, so the call needs the offset its closing line teaches. The guard below
+// is the same shape as T65's: this edit adds EXACTLY ONE property and touches no enum. (The
+// `work_note` description also changed, outside this schema measure: see the t169 report.)
+const T169_BASELINE_CHARS = { work_open: 6338, work_update: 8111 };
+
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
   const upd = schemaOf('work_update');
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(open).length).toBe(T107_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(upd).length).toBe(T107_BASELINE_CHARS.work_update);
+    expect(JSON.stringify(open).length).toBe(T169_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(upd).length).toBe(T169_BASELINE_CHARS.work_update);
+  });
+
+  it('t169 — the +193 is ONE declared property (offset), and no enum moved', () => {
+    expect(T169_BASELINE_CHARS.work_open - T107_BASELINE_CHARS.work_open).toBe(0);
+    expect(T169_BASELINE_CHARS.work_update - T107_BASELINE_CHARS.work_update).toBe(193);
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(pu)).toHaveLength(34);
+    const offset = pu.offset as { type: string; description: string };
+    expect(offset.type).toBe('number');
+    expect(offset.description).toMatch(/first note to show/);
+    expect((pu.action as { enum: string[] }).enum).toEqual(
+      ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
+    );
   });
 
   it('t107 — the +11 is ONE example name becoming a role, and NOTHING else moved', () => {
@@ -171,7 +196,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     const pu = (upd as { properties: Record<string, unknown> }).properties;
     // No capability rode in on the 11: both rosters are exactly T18's and T65's counts.
     expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(33);
+    expect(Object.keys(pu)).toHaveLength(34);   // t169 added `offset` after this moment; the t107 delta itself is unchanged
     // And the bytes landed where they were declared to land — the role, and no invented person.
     const description = String((po.description as { description?: string }).description ?? '');
     expect(description).toContain('email <that contact> the roof quote after the site visit');
@@ -217,7 +242,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(BASELINE_CHARS.work_open - T18_BASELINE_CHARS.work_open).toBe(0);
     expect(BASELINE_CHARS.work_update - T18_BASELINE_CHARS.work_update).toBe(312);
     const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(pu)).toHaveLength(33);
+    expect(Object.keys(pu)).toHaveLength(34);   // 33 at T65; t169 added `offset` after
     expect(Object.keys(pu)).toContain('hours');
     const hours = pu.hours as { type: string; description: string };
     expect(hours.type).toBe('number');
@@ -248,7 +273,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // No capability rode in on T18's bytes: `work_open` is still exactly T0C-W's roster, and
     // `work_update`'s is T0C-W's plus T65's one declared window property, counted below.
     expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(33);
+    expect(Object.keys(pu)).toHaveLength(34);   // 33 at T65; t169 added `offset` after
     // Nor did the ENUM move: `cancelled` was always advertised. What changed is that it now
     // MEANS something the tool honours.
     const status = pu.status as { enum: string[]; description: string };
