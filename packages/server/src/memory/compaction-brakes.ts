@@ -165,11 +165,7 @@ export function compactionIsBraked(agentId: string, force: boolean): boolean {
   return true;
 }
 
-/**
- * THE BRAKE THAT IS STILL ON, after every way it lets go has been asked (the clock, the summary
- * writer coming back, the three facts moving). Releases it, with its log line, when one has.
- * Silent otherwise: the two askers below add their own words, or none.
- */
+/** THE BRAKE STILL ON, after every way it lets go has been asked (clock, writer back, the facts). */
 function liveBrake(agentId: string): Backoff | null {
   const b = backoffs.get(agentId);
   if (!b) return null;
@@ -182,14 +178,8 @@ function liveBrake(agentId: string): Backoff | null {
   return b;
 }
 
-/**
- * t168 — HOW LONG UNTIL ANYTHING CAN CHANGE FOR A FORCED PASS? The milliseconds left on the brake
- * that binds even an emergency, or `null` when none does (no brake, or only the routine one, which
- * yields to an emergency). It is the one number the wake of a surrendered turn waits for: while it
- * is non-null, waking the agent runs the same gate against the same brake and surrenders again
- * (1,216 times in twelve minutes on a user's box). Asked without a log line, because the gate asks
- * it on every surrender and the skip line is the entry point's.
- */
+/** t168: ms until a FORCED pass can run again (the brake that binds an emergency), else null. The clock
+ *  a surrendered turn's wake waits for (`full-context-wait.ts`); asked without the skip log line. */
 export function compactionBrakeMsLeft(agentId: string): number | null {
   const b = liveBrake(agentId);
   return b && b.bindsUnderForce ? Math.max(1, b.until - Date.now()) : null;
@@ -233,11 +223,8 @@ export function notePassOutcome(
 ): CompactionFailure | null {
   const created = result.leafCreated + result.condensedCreated;
   const wonNothing = created === 0 && result.tokensReclaimed < FORCED_YIELD_FLOOR_TOKENS;
-  // t168: A PASS ITS CALLER CANCELLED IS NOT A PASS THAT FAILED. The turn's patience, the owner's Stop
-  // or a teardown aborted `abortSignal`; whatever the summariser answered after that (empty, cut
-  // short) is the cancellation, not the writer's refusal, so it names no stage and arms no brake.
-  // Read off the signal itself, never off the words of a reason. A pass that DID win something
-  // before it was cut still counts as the win it was (the progress arm below).
+  // t168: A PASS ITS CALLER CANCELLED (turn patience, Stop, teardown) DID NOT FAIL: what the summariser
+  // returned after the abort is the cancellation, not a refusal. Read off the signal, never a reason's words.
   const cancelled = abortSignal?.aborted === true;
   const stage = cancelled ? null : facts?.stage ?? null;
   // ⚠ A PASS THAT WROTE PARENTS AND RECLAIMED NOTHING STILL GAINED NOTHING, and a clause
@@ -258,10 +245,7 @@ export function notePassOutcome(
     noteCompactionRecovered(agentId, result.tokensReclaimed);
     return null;
   }
-  if (cancelled) {
-    logger.info('Compaction pass was cancelled before it won anything: that is no evidence against the summary writer, so no backoff', { force }, agentId);
-    return null;
-  }
+  if (cancelled) return null;   // won nothing before it was cut: no evidence against the writer, so no backoff
 
   armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
   // A merely low-yield pass that is no longer over budget has nothing to report: the brake
