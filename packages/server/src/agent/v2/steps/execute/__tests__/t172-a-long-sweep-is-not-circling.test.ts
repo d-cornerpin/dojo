@@ -206,7 +206,7 @@ describe('(ii) a loop of repeats is circling, and the PM is told what repeated',
     const prompt = (callModelSpy.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content;
     // what the number counts, in words
     expect(prompt).toContain('REPEATED');
-    expect(prompt).toContain('a call that is new is progress');
+    expect(prompt).toContain('a new call is progress and is not counted');
     // distinct vs repeated: 40 pages + loop.txt first read + other.txt first read = 42 new; 150 + 19 repeats
     expect(prompt).toContain('42 new (distinct) calls');
     expect(prompt).toContain('169 repeated calls');

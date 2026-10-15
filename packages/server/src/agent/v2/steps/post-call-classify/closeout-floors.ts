@@ -17,7 +17,7 @@ import { WORKING_NOTE_PREFIX } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { isRowLabelOnly } from '../../../../memory/row-label.js';
+import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
@@ -46,8 +46,7 @@ const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
 function demoteToWorkingNote(
   p: { agentId: string; messageId: string; turnNumber: number; text: string },
 ): void {
-  // t172: words that are only the turn's own label text say nothing — no note is made of them.
-  if (isRowLabelOnly(p.text)) return;
+  if (isRowLabelOnly(p.text)) return; // t172: only the turn's label text — nothing to note
   try {
     const noteId = uuidv4();
     insertMessageIfAbsent({

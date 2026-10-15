@@ -166,17 +166,6 @@ export function rowSubject(m: LabelledMessage, facts: LabelFacts): string {
   }
 }
 
-/** t172 — is this text NOTHING BUT a row label (`[<instant> · <subject>]`, or the bare `[<instant>]`
- *  a continued block carries)? A model that copies the costume it sees on every historical row can
- *  echo the whole label back as its "words". It says nothing, so no note is made of it. The shape is
- *  the one `renderRowLabel` / `labelRows` write: a bracketed recorded instant in `renderInstant`'s
- *  format, then optionally ` · ` and a subject that `labelText` has already stripped of brackets. */
-const LABEL_ONLY_RE =
-  /^\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4}, \d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)[^\[\]·]*(?: · [^\[\]]*)?\]$/;
-export function isRowLabelOnly(text: string | null | undefined): boolean {
-  return typeof text === 'string' && LABEL_ONLY_RE.test(text.trim());
-}
-
 /** `[<instant> · <subject>]` — the one stamp every labelled row carries. */
 export function renderRowLabel(m: LabelledMessage, facts: LabelFacts): string {
   const at = renderMessageTimeStamp(m.createdAt);

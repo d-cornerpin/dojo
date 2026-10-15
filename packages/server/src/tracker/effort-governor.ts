@@ -177,6 +177,24 @@ export function effortNoveltyFacts(taskId: string): EffortNoveltyFacts | null {
   };
 }
 
+/** The novelty facts as the PM's review prompt states them. After a restart there is no ledger, and
+ *  the line says so rather than guessing. */
+export function effortNoveltyLines(taskId: string): string {
+  const facts = effortNoveltyFacts(taskId);
+  if (!facts) {
+    return 'Per-call detail is not held for this task (the server restarted since it last advanced); the repeat count above is exact.';
+  }
+  const lines = [`Since the task last advanced: ${facts.novelCalls} new (distinct) calls, ${facts.repeatedCalls} repeated calls.`];
+  if (facts.repeatedSignatures.length === 0) {
+    lines.push('Repeated calls: none.');
+  } else {
+    lines.push('Repeated calls, most repeated first (count: call):');
+    for (const r of facts.repeatedSignatures.slice(0, 15)) lines.push(`  ${r.count}x ${r.label}`);
+    if (facts.repeatedSignatures.length > 15) lines.push(`  (+${facts.repeatedSignatures.length - 15} more repeated calls)`);
+  }
+  return lines.join('\n');
+}
+
 /**
  * The meter itself: how much REPEATED effort has landed on this task SINCE it last genuinely
  * advanced (t172: novel calls move the baseline as they are charged, so what is left is the

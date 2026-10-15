@@ -174,14 +174,10 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   // above: a trivial-only iteration (FINDING 1's mailbox-sweep scenario) trips neither of
   // those two, so nesting the charge inside that gate — as it stood before this fix — silently
   // skipped it even after `chargeableCallsInThisIter` was widened to see it.
-  //
-  // t172: the charge carries the CALLS, not a count — a call this task has already made (same tool,
-  // same arguments, since it last advanced) is a repeat and is what the review meter measures; a
-  // new one (the next page of a long chain) is progress and is not. See `chargeEffortCalls`.
   if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
     if (claimedTaskId) {
-      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter);
+      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter); // t172: the calls, so a repeat can be told from a new one
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

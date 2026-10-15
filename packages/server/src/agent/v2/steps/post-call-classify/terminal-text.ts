@@ -27,7 +27,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
-import { isRowLabelOnly } from '../../../../memory/row-label.js';
+import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { isRoutedHumanCounterparty } from '../../counterparty.js';
 // T52: the owed compile's own "is it STILL owed?" question, asked at the second reader
@@ -390,23 +390,10 @@ export async function runTerminalText(
     // T52: a promoted compile leaves nothing to demote for the same reason a promoted start
     // line does — the text went out WHOLE, so a note beside it would be the second copy this
     // task exists to remove.
-    //
-    // t172 — A NOTE IS THE OWNER'S TO READ ONLY WHEN THE TURN THAT WROTE IT IS SERVING A LIVE
-    // PERSON, and "serving" is read off the turn's own structured facts (a waiting chat row, a
-    // scheduler run that owes a person a message — the two openers above), never off what the
-    // note says. The engine's own continuation of a long job, a park resume and a background wake
-    // have no one waiting: their narration ("located the final page … continuing the walk") is the
-    // agent's working record, so it is written agent-only (`[working-note:internal]`, the same
-    // marker RC-9 gives a routed channel) and the dashboard hides it by default. Nothing is
-    // discarded — wordy mode still shows it. A long job's owner chat holds the acknowledgement and
-    // the result only.
-    //
-    // AND A NOTE THAT IS ONLY THE TURN'S LABEL TEXT ("[<instant> · background wake — not part of
-    // any conversation]", the costume the model sees on every row, echoed back as its words) says
-    // nothing, so no row is made of it — on any turn.
-    const personWaitingOnThisTurn = hasUnansweredUser || userDeliverableRunTurn;
-    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer && !deliveredAsAnswerToLiveAsk
-        && !isRowLabelOnly(persistedContent)) {
+    // t172: a note is the owner's to read only when the turn is serving a person (a waiting chat row, or a
+    // run that owes one a message) — structured facts, never the note's words. A continuation, park resume
+    // or background wake has no one waiting: agent-only (RC-9's marker). A label-only note is not written.
+    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer && !deliveredAsAnswerToLiveAsk && !isRowLabelOnly(persistedContent)) {
       try {
         const noteId = uuidv4();
         // RC-9: channel-aware demotion. On a ROUTED-channel human turn (iMessage /
@@ -421,7 +408,7 @@ export async function runTerminalText(
         // T41: the rule itself moved to `v2/counterparty.ts` — unchanged in every clause —
         // because the assemble side now asks the same question and two copies drift.
         const routedHumanChannel = isRoutedHumanCounterparty(counterparty);
-        const agentOnly = routedHumanChannel || !personWaitingOnThisTurn;
+        const agentOnly = routedHumanChannel || !(hasUnansweredUser || userDeliverableRunTurn);
         const notePrefix = agentOnly ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
         // Chat-native system note: prefix-marked, NO origin stamp, same
         // convention as routing markers and dividers. An origin_kind of
