@@ -48,7 +48,7 @@ export function recoverDeferredReply(state: AgentTurnState, ctx: FinalizeContext
   // continuation. The held-back line stays the working-note it already is.
   // requirement preserved: a turn that genuinely ENDS with only text that rode a tool call still
   // delivers that text, so a waiting human is never answered by silence (G-SUP-2).
-  const continuing = turnParkedTheJob(agentId, { toolLoopCapReached: turnCtx.toolLoopCapReached, engineCutExit: state.engineCutExit });
+  const continuing = turnParkedTheJob(agentId);
   if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM && continuing) {
     logger.info('v2 G-SUP-2 recovery skipped: the engine is continuing this work; the held-back line stays a working note', {
       agentId, turnNumber,

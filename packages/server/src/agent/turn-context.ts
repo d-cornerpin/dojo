@@ -248,6 +248,7 @@ export interface TurnContext {
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
   toolLoopCapReached: boolean;
+  jobParked: boolean;   // t159 G2: `parkJob`, the one door every park goes through, queued this turn's continuation (`turnParkedTheJob`)
 
 
   ownerAffinityConversationId: string | null;
@@ -519,6 +520,7 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
     toolLoopCapReached: false,
+    jobParked: false,
     spinBrakeGraceCalls: 2,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,

@@ -14,12 +14,11 @@ import { createLogger } from '../../../../logger.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { turnParkedTheJob } from '../../engine-exit.js';
-import type { AgentTurnState } from '../../state.js';
 import type { TeardownContext } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-export async function flushStrandedAttachments(ctx: TeardownContext, state: AgentTurnState): Promise<void> {
+export async function flushStrandedAttachments(ctx: TeardownContext): Promise<void> {
   const { agentId, turnNumber, chosenConversationId, counterparty } = ctx;
 
   // FA-TS4: pending-attachments teardown net. The three normal drain sites
@@ -44,7 +43,7 @@ export async function flushStrandedAttachments(ctx: TeardownContext, state: Agen
   // non-idempotent side effect we won't risk here. The v2.9.20 requirement
   // (queued files are never silently lost) is met via the dashboard surface
   // plus a loud warning.
-  if (turnParkedTheJob(agentId, { toolLoopCapReached: ctx.toolLoopCapReached, engineCutExit: state.engineCutExit })) return;
+  if (turnParkedTheJob(agentId)) return;
   try {
     const { drainPendingAttachmentsWithCaptions } = await import('../../../pending-attachments.js');
     const leftover = drainPendingAttachmentsWithCaptions(agentId);

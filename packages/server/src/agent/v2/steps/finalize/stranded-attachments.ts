@@ -27,8 +27,8 @@ export async function surfaceStrandedAttachments(
   state: AgentTurnState,
   ctx: FinalizeContext,
 ): Promise<AgentTurnState> {
-  const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer, turnCtx } = ctx;
-  if (turnParkedTheJob(agentId, { toolLoopCapReached: turnCtx.toolLoopCapReached, engineCutExit: state.engineCutExit })) return state;   // t159 G: a park is not the job's end; its queued files ride the reply that is
+  const { agentId, turnNumber, counterparty, broadcast, noteTerminalAnswer } = ctx;
+  if (turnParkedTheJob(agentId)) return state;   // t159 G: a park is not the job's end; its queued files ride the reply that is
 
   // v2.9.20, show_to_user end-of-turn safety net.
   //

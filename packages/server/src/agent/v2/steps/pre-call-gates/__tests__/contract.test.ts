@@ -250,13 +250,13 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 
-  it('the compaction gate\'s impossible arm exits, tells the person, and still queues the wakeup', async () => {
+  it('the compaction gate\'s impossible arm exits, tells the person NOTHING (a park is housekeeping), and still queues the wakeup', async () => {
     atUtilisation(0.995);
     const ctx = makeCtx();
     const out = await runPreCallGates(stateInStep(), ctx);
 
     expect(out).toMatchObject({ directive: 'exit', reason: 'context-full' satisfies PreCallGatesExitReason });
-    expect(insertMessageIfAbsentSpy).toHaveBeenCalled();
+    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();   // t159 G2: no owner-visible row from a park
     expect(pendingWakeups.has(AGENT)).toBe(true);
   });
 

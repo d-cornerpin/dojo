@@ -310,7 +310,7 @@ export async function runTurnTeardown(
       error: err instanceof Error ? err.message : String(err),
     }, ctx.agentId);
   }
-  await flushStrandedAttachments(ctx, state);
+  await flushStrandedAttachments(ctx);
 
   return proceed(advance(state, { phase: TEARDOWN_PHASE }));
 }

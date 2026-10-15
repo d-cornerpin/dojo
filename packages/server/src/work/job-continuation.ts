@@ -9,6 +9,7 @@ import { createLogger } from '../logger.js';
 import { queueSelfWake } from '../agent/shared-state.js';
 import { registerDrainWake, armTimerWake, timerWakeIsSpent, carryJobWork, turnWorkIds } from './task-freshness.js';
 import { servedOwnerMessageIds } from '../memory/served-ask.js';
+import { turnContext } from '../agent/turn-context.js';
 
 const logger = createLogger('job-continuation');
 
@@ -48,6 +49,8 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
  */
 export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain'): boolean {
   carryJobWork(agentId, turnWorkIds(agentId), servedOwnerMessageIds(agentId));
-  if (how === 'timer') { armToolLoopContinuation(agentId); return true; }
-  return queueJobContinuation(agentId, reason);
+  const queued = how === 'timer' ? (armToolLoopContinuation(agentId), true) : queueJobContinuation(agentId, reason);
+  const bag = turnContext(agentId);
+  if (queued && bag) bag.jobParked = true;   // t159 G2: the running turn parked the job; the end-of-turn nets read this (`turnParkedTheJob`)
+  return queued;
 }

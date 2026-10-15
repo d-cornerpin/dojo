@@ -24,7 +24,6 @@
 // `call-llm/reassemble-for-fit.ts`), never against the building window (round 5).
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import {
   checkAndCompact, estimateAssembledTokens, forcedCompactionOptions, liveViewIsFull,
@@ -32,7 +31,6 @@ import {
 import { rowsLeavingView, type LeavingView } from '../../../../memory/tail-horizon.js';
 import { getFreshTailCount } from '../../../../memory/budget.js';
 import { getContextWindow } from '../../../model.js';
-import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { backgroundDrains } from '../../../shared-state.js';
 import { parkJob } from '../../../../work/job-continuation.js';
 import { compactionGate } from '../../classifiers/compaction.js';
@@ -68,7 +66,7 @@ export async function runContextGates(
   ctx: PreCallGatesContext,
 ): Promise<StepOutcome> {
   const {
-    agentId, turnNumber, contextWindow: turnWindow, contextModelId, configuredModelId, isAutoRouted,
+    agentId, contextWindow: turnWindow, contextModelId, configuredModelId, isAutoRouted,
     assemblerOverheadTokens, broadcast, stashContinuationIfHuman,
   } = ctx;
   // Fix round 1 (review I3): every condense below is MEASURED for the dialed model but WRITTEN
@@ -134,22 +132,10 @@ export async function runContextGates(
     logger.error(gateResult.reason ?? 'context impossibly full', {
       agentId, ratio: gateResult.ratio,
     }, agentId);
-    const blockMsg = (
-      `[System: Memory is too full to continue this turn (${(gateResult.ratio * 100).toFixed(0)}%). ` +
-      `Pausing, the DOJO will compact memory and resume automatically.]`
-    );
-    const blockMsgId = uuidv4();
-    insertMessageIfAbsent({ id: blockMsgId, agentId, role: 'system', content: blockMsg, turnNumber });
-    broadcast({
-      type: 'chat:message',
-      agentId,
-      message: {
-        id: blockMsgId, agentId, role: 'system' as const,
-        content: blockMsg,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
+    // t159 G2: NO ROW AND NO BROADCAST. This used to write "[System: Memory is too full to continue this
+    // turn (N%). Pausing, ...]" into the agent's chat; a park is invisible housekeeping (t137 R2, OR-LONG-JOBS,
+    // as the 75-call and 15-minute parks). The agent needs no notice: it never read a role='system' row, and
+    // the continuation assembles fresh from the compacted memory.
     // Force compaction then wakeup so we recover next turn
     try {
       await checkAndCompact(agentId, configuredModelId, contextWindow, { ...forcedCompactionOptions(turnPatienceMs(agentId, dialModelId)), dialedModelId: dialModelId });

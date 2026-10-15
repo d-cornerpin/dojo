@@ -926,9 +926,8 @@ describe('runV2Turn integration', () => {
   });
 
   it('PRESERVATION #37: pre-call compaction gate surrenders turn at ≥99%', async () => {
-    // The 99% surrender path: persist a [System: …] note explaining the
-    // surrender, force checkAndCompact, queue a wakeup, do NOT call the
-    // model. The recovery cascade re-runs with compacted context next turn.
+    // The 99% surrender path: force checkAndCompact, queue a wakeup, do NOT call the
+    // model (and, since t159 G2, write nothing to the chat). The recovery cascade re-runs with compacted context next turn.
     estimateAssembledTokensMock.mockImplementation(() => ({
       total: 199500, // 99.75% of 200000
       summaryTokens: 0,
@@ -959,12 +958,13 @@ describe('runV2Turn integration', () => {
     // Model was NOT called this turn, we surrendered.
     expect(callModelSpy).not.toHaveBeenCalled();
 
-    // A [System: ...] note was persisted explaining the surrender.
+    // t159 G2: the surrender is a park, and a park is invisible housekeeping (t137 R2): NO [System: ...] note
+    // is persisted or broadcast to the chat. The wake it queued is the continuation.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sysMsgs).toHaveLength(1);
-    expect(sysMsgs[0].content).toMatch(/memory is too full|impossibly full|pausing|surrender/i);
+    expect(sysMsgs).toEqual([]);
+    expect(pendingWakeups.has('primary')).toBe(true);
   });
 
   it('PRESERVATION #7: drainPendingAttachments IS called when persisting assistant message', async () => {

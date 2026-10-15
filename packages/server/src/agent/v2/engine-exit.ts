@@ -41,7 +41,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { isStopFenced } from '../shared-state.js';
-import { continuationContext } from '../turn-state.js';
+import { turnContext } from '../turn-context.js';
 import { providerClassOf } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE } from '../stream-patience.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_ERROR, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
@@ -60,23 +60,20 @@ export function latchEngineCut(state: AgentTurnState, reason: EngineCutReason): 
 }
 
 /**
- * t159 G — DID THIS TURN END BY PARKING THE JOB? Asked of the signals every park already sets,
- * not of a flag of its own: the C3 stash a human-conversation park writes for the next preflight
- * (`continuationContext`), the tool-loop park's latch (`toolLoopCapReached`), and the turn-budget
- * park's cut (`engineCutExit === 'budget'`, latched at no other site). A stop refuses the wake
- * (`queueSelfWake`), so a stopped agent has parked nothing.
+ * t159 G — DID THIS TURN END BY PARKING THE JOB? Asked of the one door every park goes through:
+ * `parkJob` (`work/job-continuation.ts`) records `jobParked` on the running turn when it queues the
+ * continuation, for the tool-loop cap, the turn budget, both context-gate arms and the recovery
+ * compactions alike. (An earlier draft read three stand-ins — the C3 stash, the cap latch and the
+ * budget cut — which missed the context-gate parks on a turn nobody is waiting on.) A stop refuses the
+ * wake, so a stopped agent has parked nothing.
  *
  * Why the end-of-turn nets ask it: a park is invisible housekeeping (OR-LONG-JOBS) and the job is
  * CONTINUING, not ending, so nothing owner-visible may come out of it and nothing may be recorded as
  * the answer. The files a parked turn queued stay queued (the drain is durable, `delivered_at`) and
  * ride the reply of the turn that really ends the job.
  */
-export function turnParkedTheJob(
-  agentId: string,
-  turn: { readonly toolLoopCapReached: boolean; readonly engineCutExit: AgentTurnState['engineCutExit'] },
-): boolean {
-  if (isStopFenced(agentId)) return false;
-  return continuationContext.has(agentId) || turn.toolLoopCapReached || turn.engineCutExit === 'budget';
+export function turnParkedTheJob(agentId: string): boolean {
+  return !isStopFenced(agentId) && turnContext(agentId)?.jobParked === true;
 }
 
 /**

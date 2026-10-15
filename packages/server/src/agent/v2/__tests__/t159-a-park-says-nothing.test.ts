@@ -460,7 +460,8 @@ beforeEach(() => {
 
 import { queueCanvasDoc } from '../../pending-attachments.js';
 import { turnParkedTheJob } from '../engine-exit.js';
-import { isStopFenced } from '../../shared-state.js';
+import { parkJob } from '../../../work/job-continuation.js';
+import { openTurnContext, endTurnContext } from '../../turn-context.js';
 
 const TURN_BUDGET_MS = 15 * 60 * 1000;
 const FILE = '/uploads/primary/ledger-audit-notes.txt';
@@ -616,69 +617,110 @@ describe('t159 G (iii): a turn that ends (no park) with queued files and no repl
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// THE ONE QUESTION "IS THIS TURN A PARK?", asked of the signals the parks already set
+// G2 — ONE PARK SIGNAL. `parkJob` is the one door every park goes through; it records on the running
+// turn that it parked, and `turnParkedTheJob` reads that and the stop fence and nothing else.
 // ════════════════════════════════════════════════════════════════════════════════
-describe('t159 G: turnParkedTheJob — the park\'s own recorded signals, both directions', () => {
-  it('true for each door\'s signal (stash, cap latch, budget cut) and false for a stop or an ordinary end', () => {
+describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the stop fence', () => {
+  it('false until parkJob runs on the turn; true after, by either wake; false for a stop; false on the next turn', () => {
     continuationContext.clear();
-    const none = { toolLoopCapReached: false, engineCutExit: null };
-    expect(turnParkedTheJob('primary', none)).toBe(false);
-    expect(turnParkedTheJob('primary', { ...none, toolLoopCapReached: true })).toBe(true);
-    expect(turnParkedTheJob('primary', { ...none, engineCutExit: 'budget' })).toBe(true);
-    expect(turnParkedTheJob('primary', { ...none, engineCutExit: 'provider_error' })).toBe(false);
-    continuationContext.set('primary', { convKey: 'k', conversationId: null, counterparty: { kind: 'user' } as never });
-    expect(turnParkedTheJob('primary', none)).toBe(true);
+    openTurnContext('primary');
+    expect(turnParkedTheJob('primary')).toBe(false);
+    expect(parkJob('primary', 'door-a')).toBe(true);
+    expect(turnParkedTheJob('primary')).toBe(true);
     stoppedAgents.add('primary');
-    expect(isStopFenced('primary')).toBe(true);
-    expect(turnParkedTheJob('primary', { toolLoopCapReached: true, engineCutExit: 'budget' })).toBe(false);   // a stop refuses the wake
+    expect(turnParkedTheJob('primary'), 'a stop refuses the wake').toBe(false);
     stoppedAgents.clear();
+    endTurnContext('primary');
+    expect(turnParkedTheJob('primary'), 'no turn, no park').toBe(false);
+    openTurnContext('primary');
+    expect(turnParkedTheJob('primary'), 'a new turn parked nothing').toBe(false);
+    expect(parkJob('primary', 'door-b', 'timer')).toBe(true);   // the tool-loop park's own timer wake
+    expect(turnParkedTheJob('primary')).toBe(true);
+    endTurnContext('primary');
+  });
+
+  it('the stand-ins are gone: the predicate\'s code names no stash, no cap latch and no cut', () => {
+    const code = fs.readFileSync(path.resolve(__dirname, '..', 'engine-exit.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    const body = code.slice(code.indexOf('export function turnParkedTheJob'), code.indexOf('function cutByStreamWatchdog'));
+    expect(body).toMatch(/turnContext\(agentId\)\?\.jobParked/);
+    expect(body).not.toMatch(/continuationContext|toolLoopCapReached|engineCutExit/);
+  });
+
+  it('every park door sets it: the callers of parkJob are exactly the six known doors', () => {
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (!['__tests__', 'node_modules', 'dist'].includes(e.name)) walk(full, out); }
+        else if (/\.ts$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(full);
+      }
+      return out;
+    };
+    const root = path.resolve(__dirname, '..', '..', '..');
+    const sites = walk(root).flatMap((f) => {
+      const code = fs.readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+      return (code.match(/\bparkJob\(/g) ?? []).map(() => path.relative(root, f));
+    }).filter((f) => f !== 'work/job-continuation.ts').sort();
+    expect(sites).toEqual([
+      'agent/v2/loop.ts',
+      'agent/v2/recovery.ts', 'agent/v2/recovery.ts',
+      'agent/v2/steps/pre-call-gates/context-gates.ts', 'agent/v2/steps/pre-call-gates/context-gates.ts',
+      'agent/v2/steps/pre-call-gates/turn-budget.ts',
+    ]);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// THE ARMS WITH NO STASH: a park on a turn nobody is waiting on (the C3 stash is written only for
-// a human conversation) is told by the latch / the budget cut alone. Both finalize nets read it.
+// EVERY DOOR, SAME ANSWER — on a turn NOBODY IS WAITING ON (no C3 stash: the stash is written for a
+// human conversation only), so the only thing that can tell finalize the job parked is parkJob's record.
 // ════════════════════════════════════════════════════════════════════════════════
-describe('t159 G: finalize on a parked turn with no human stash is silent too', () => {
-  async function finalizeAs(turn: { toolLoopCapReached: boolean; budgetCut: boolean }): Promise<void> {
-    const { runFinalize } = await import('../steps/finalize/index.js');
-    const { initState, advance } = await import('../state.js');
-    const { latchEngineCut } = await import('../engine-exit.js');
-    const { openTurnContext, endTurnContext } = await import('../../turn-context.js');
-    endTurnContext('primary');
-    const turnCtx = openTurnContext('primary');
-    turnCtx.turnNumber = 9;
-    turnCtx.toolLoopCapReached = turn.toolLoopCapReached;
-    turnCtx.deferredUserReplyWithTools = 'Page 3 found one wrong line. Onward.';
-    queueCanvasDoc('primary', workingFile());
-    let state = advance(initState({
-      agentId: 'primary', contextWindow: 200000, isAutoRouted: false, configuredModelId: 'm', turnNumber: 9,
-      triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: null,
-      lastUserMessageId: null, inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
-    }), { phase: 'finalize' });
-    if (turn.budgetCut) state = latchEngineCut(state, 'budget');
-    const noted: string[] = [];
-    await runFinalize(state, {
-      agentId: 'primary', turnCtx, turnNumber: 9, db: mockDb.current!,
-      counterparty: { kind: 'user', relation: 'owner', name: 'Owner', channel: 'dashboard', senderId: null } as never,
-      counterpartyIsAgentSender: false, chosenConvKey: null, turnStartedAt: new Date().toISOString(),
-      settledContextWakeTurn: false, isA2ATurn: false, isEngineTurn: false,
-      broadcast: broadcastSpy as never, noteTerminalAnswer: (id: string) => { noted.push(id); },
-      persistRoutingMarker: () => {}, stopStatusHeartbeat: () => {},
-    } as never);
-    expect(noted).toEqual([]);
+describe('t159 G2: each park door, on a non-human turn, says nothing and holds the queued file', () => {
+  /** A background wake: the owner's ask is withdrawn, so no human conversation is served and nothing is stashed. */
+  function withdrawTheAsk(): void {
+    const ask = mockDb.current!.prepare(`SELECT id FROM work WHERE kind = 'ask'`).get() as { id: string };
+    expect(transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'open', reason: 'withdrawn' }).kind).toBe('applied');
+  }
+  const gateRatio = (ratio: number) => {
+    let call = 0;
+    estimateAssembledTokensMock.mockImplementation(() => {
+      call++;
+      return { total: call < 4 ? 1000 : Math.floor(200000 * ratio), summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0 };
+    });
+  };
+  const contextSystemRows = () => messageRows().filter((m) => m.role === 'system');
+
+  async function parkedByAGate(ratio: number): Promise<void> {
+    withdrawTheAsk();
+    gateRatio(ratio);
+    scriptTheJob({ rounds: 5, after: { content: '' } });
+    await runV2Turn('primary');
+    // Positive controls: nobody was waiting (no stash), the file was queued, and the gate really parked the turn.
+    expect(continuationContext.has('primary')).toBe(false);
+    expect(artifactRows()).toEqual([expect.objectContaining({ kind: 'canvas', path: FILE })]);
+    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(checkAndCompactSpy).toHaveBeenCalled();
+    // The defect, on records.
     expectTheOwnerHeardNothing();
+    expect(contextSystemRows(), 'no owner-visible row from the gate').toEqual([]);
+    expect(broadcastSpy.mock.calls.map((c) => c[0] as { type?: string; message?: { role?: string } })
+      .filter((e) => e.type === 'chat:message' && e.message?.role === 'system')).toEqual([]);
     expect(artifactRows().map((a) => a.delivered_at)).toEqual([null]);
-    endTurnContext('primary');
+    expect(turnRows()[0].answered).toBe(0);
   }
 
-  it('the tool-loop latch alone (no stash): no recovered narration, no surfaced file, no answer noted', async () => {
-    continuationContext.clear();
-    await finalizeAs({ toolLoopCapReached: true, budgetCut: false });
+  it('emergency compaction (96-99%): context-emergency-compact', async () => { await parkedByAGate(0.975); });
+  it('context full (>= 99%): context-full writes no "Memory is too full" row and broadcasts nothing', async () => {
+    await parkedByAGate(0.995);
+    expect(messageRows().filter((m) => m.content.includes('too full'))).toEqual([]);
   });
 
-  it('the budget cut alone (no stash): the same', async () => {
-    continuationContext.clear();
-    await finalizeAs({ toolLoopCapReached: false, budgetCut: true });
+  it('the same two arms on a turn that IS human (stashed): still no system row, and the file waits for the real reply', async () => {
+    gateRatio(0.995);
+    scriptTheJob({ rounds: 5, after: { content: '' } });
+    await runV2Turn('primary');
+    expect(continuationContext.has('primary')).toBe(true);
+    expect(contextSystemRows()).toEqual([]);
+    expectTheOwnerHeardNothing();
+    expect(artifactRows().map((a) => a.delivered_at)).toEqual([null]);
   });
 });
