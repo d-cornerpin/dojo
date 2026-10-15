@@ -18,7 +18,11 @@
 // the Healer recovers, or is seen healthy at the next injury of another agent), and
 // `healer-missing:<agentId>` (one at a time, whichever agent found it missing first; clears
 // when an injury finds the Healer present again), and (t148 round 3) `nofit:<agentId>` (an agent
-// parked because none of its models can hold it; ends when the agent is released).
+// parked because none of its models can hold it; ends when the agent is released), and (t167)
+// `budgetstop:<budgetId>` ("the limit is reached" for one budget WINDOW: agents parked by it are
+// waiting). Unlike the others it belongs to the window, not to an agent: ten agents stopping in
+// one window are one telling, and a record older than its window is over (told again). Both doors
+// that can say it (the budget's own crossing alert, and the stop that parks an agent) share it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -35,6 +39,15 @@ export const stuckWords = (name: string): string =>
  *  must act on (OR-V333-SET (3)); the condition is `nofit:<agentId>` and ends when the agent is released. */
 export const noFitWords = (name: string): string =>
   `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
+/** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
+ *  the words never name an agent (the card is re-derived from the key alone). */
+export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
+export const budgetStopWords = (budgetId: string): string => budgetId.startsWith('agent_')
+  ? `An agent's own spending limit is reached, so that agent is waiting. Raise its limit on the Ledger page to let it go on now, `
+    + `or it goes on by itself when the window turns over. Its messages are kept and answered then.`
+  : `Your daily spending limit is reached and no free model answered, so agents that need a paid model are waiting. `
+    + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over. `
+    + `Their messages are kept and answered then.`;
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -49,6 +62,46 @@ export function tellOwnerOnce(key: string, family?: string): boolean {
   } catch {
     return true; // the record could not be read or written: tell him rather than stay silent
   }
+}
+
+/** A condition that belongs to a WINDOW: a record older than `windowMs` is over (its card ends, he is
+ *  told afresh). Else exactly `tellOwnerOnce`. */
+export function tellOwnerOncePerWindow(key: string, windowMs: number): boolean {
+  ageOut(key, windowMs);
+  return tellOwnerOnce(key);
+}
+
+/** The window's telling was done by another text that already carries its own card (the budget's
+ *  crossing alert): record it as told AND dismissed, so the second door stays silent and no second
+ *  card stands beside the first. */
+export function tellLimitReachedWithoutCard(key: string, windowMs: number): void {
+  try {
+    ageOut(key, windowMs);
+    if (recordTold(key)) dismiss(key);
+  } catch { /* best-effort: the worst case is one more true telling */ }
+}
+
+/** The last agent parked by the limit was released: the window's "limit reached" card leaves every open
+ *  dashboard now. The told-record stays (it is the window's, so the same window is not told twice). */
+export function budgetStopCardsLifted(): void {
+  try {
+    const rows = getDb().prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ? AND t.key LIKE 'budgetstop:%'
+      AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
+    for (const { key } of rows) ownerCardEnded(wordsOf(key));
+  } catch { /* best-effort */ }
+}
+
+function ageOut(key: string, windowMs: number): void {
+  try {
+    const row = getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?').get(TOLD, key) as { at_ms: number } | undefined;
+    if (row && Date.now() - row.at_ms >= windowMs) ownerConditionCleared(key);
+  } catch { /* the record could not be read: leave it */ }
+}
+
+function dismiss(key: string): void {
+  getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
+                   ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)
+    .run(DISMISSED, key, Date.now());
 }
 
 function recordTold(key: string, family?: string): boolean {
@@ -70,6 +123,7 @@ export function wordsOf(key: string): string {
     (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return kind === 'stuck' ? stuckWords(nameOf(agentId))
     : kind === 'nofit' ? noFitWords(nameOf(agentId))
+    : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
 }
 
@@ -127,15 +181,14 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
   const live = (id: string, parked: boolean): boolean =>
     !!db.prepare(`SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'
       AND (? = 0 OR (status = 'paused' AND instr(COALESCE(last_error, ''), '[no_model_fits]') = 1))`).get(id, parked ? 1 : 0);
-  return rows.filter(({ key }) => !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
+  // A window's "limit reached" card stands while an agent is still parked for the limit (t167).
+  const budgetParked = (): boolean => !!db.prepare(`SELECT 1 FROM agents WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') = 1`).get();
+  return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
+    : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') ? 'notice' as const : 'critical' as const,
-      dismiss: () => {
-        db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
-                    ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`)
-          .run(DISMISSED, key, Date.now());
-      },
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') ? 'notice' as const : 'critical' as const,
+      dismiss: () => { dismiss(key); },
     };
   });
 }

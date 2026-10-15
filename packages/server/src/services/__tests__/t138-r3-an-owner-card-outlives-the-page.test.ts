@@ -221,7 +221,7 @@ describe('a budget card outlives the page', () => {
     expect(texts()).toHaveLength(2);
     const shown = await m.cards();
     expect(shown).toHaveLength(1);
-    expect(shown[0].words).toContain('75%');
+    expect(shown[0].words).toContain('76%');
   });
 
   it('once the budget window turns over, the incident is over: no card', async () => {

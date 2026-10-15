@@ -56,6 +56,7 @@ const CENSUS: Record<string, Site[]> = {
   ],
   'agent/v2/honest-stop.ts': [
     { cls: 'agent-trouble', severity: 'notice', what: 'an agent is parked because none of its models can hold it (once per condition; its card ends when the agent is released, t148)' },
+    { cls: 'budget', severity: 'notice', what: 'a budget stop parked an agent: the limit is reached (once per budget window, shared with the crossing alert; its card ends with the last release, t167)' },
   ],
   'agent/rate-limit-retry.ts': [
     { cls: 'agent-trouble', severity: 'critical', what: 'rate-limit retries exhausted' },

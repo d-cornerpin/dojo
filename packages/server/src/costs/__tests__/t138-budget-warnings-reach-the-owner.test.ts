@@ -179,7 +179,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     expect(rows[0]).toMatchObject({ recipient_id: OWNER, outcome: 'delivered', channel: 'imessage' });
     const sent = sentTexts();
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain('90%');
+    expect(sent[0]).toContain('92%');
     expect(logs.some((l) => /Alert suppressed/.test(l.message))).toBe(false);
   });
 
@@ -188,30 +188,30 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     budget.setGlobalBudget(10);
     spend(recordCost, 5.1);
     expect(ownerTexts()).toHaveLength(1);
-    expect(sentTexts()[0]).toContain('50%');
+    expect(sentTexts()[0]).toContain('51%');
     spend(recordCost, 0.2); // 53%: no new crossing
     expect(ownerTexts()).toHaveLength(1);
     spend(recordCost, 2.5); // 78%
     expect(ownerTexts()).toHaveLength(2);
-    expect(sentTexts()[1]).toContain('75%');
+    expect(sentTexts()[1]).toContain('78%');
     spend(recordCost, 1.5); // 93%
     expect(ownerTexts()).toHaveLength(3);
-    expect(sentTexts()[2]).toContain('90%');
+    expect(sentTexts()[2]).toContain('93%');
     spend(recordCost, 0.3); // still over: no repeat
     expect(ownerTexts()).toHaveLength(3);
   });
 
-  it('one call that jumps past several thresholds at once is ONE text, naming the highest', async () => {
+  it('one call that jumps past several thresholds at once is ONE text, naming the true share (95%, not the highest line passed)', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.5);
     expect(ownerTexts()).toHaveLength(1);
-    expect(sentTexts()[0]).toContain('90%');
+    expect(sentTexts()[0]).toContain('95%');
     expect(sentTexts()[0]).not.toContain('50%');
     // and all three are latched: nothing more for 50/75 on the next call
     spend(recordCost, 0.1);
     expect(ownerTexts()).toHaveLength(1);
-    expect(budgetCards().map((a) => a.percentage)).toEqual([90]);
+    expect(budgetCards().map((a) => a.percentage)).toEqual([95]);
   });
 
   it('an agent budget crossing names the agent and its period', async () => {
@@ -221,7 +221,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     spend(recordCost, 3.7);
     expect(ownerTexts()).toHaveLength(1);
     expect(sentTexts()[0]).toContain('Helper');
-    expect(sentTexts()[0]).toContain('90%');
+    expect(sentTexts()[0]).toContain('92%');
     expect(sentTexts()[0]).toMatch(/daily/);
   });
 });
@@ -259,7 +259,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     db().prepare(`UPDATE budgets SET alert_90_sent = alert_90_sent - 2 * 86400 WHERE alert_90_sent > 0`).run();
     spend(recordCost, 9.1);
     expect(ownerTexts()).toHaveLength(2);
-    expect(sentTexts()[1]).toContain('90%');
+    expect(sentTexts()[1]).toContain('91%');
   });
 
   it('a weekly agent budget is measured over ONE window by both checks — no alert/re-arm flapping', async () => {
@@ -356,7 +356,7 @@ describe('backwards lifecycle', () => {
     budget.checkBudget('ag', 0.01);
     budget.checkBudget('ag', 0.01);
     expect(ownerTexts()).toHaveLength(1);
-    expect(sentTexts()[0]).toContain('50%');
+    expect(sentTexts()[0]).toContain('60%');
   });
 });
 
@@ -369,11 +369,11 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
 
     expect(sentTexts()).toHaveLength(0);
     expect(ownerTexts()).toHaveLength(0);
-    expect(budgetCards().map((a) => a.percentage)).toEqual([90]);
+    expect(budgetCards().map((a) => a.percentage)).toEqual([92]);
     const notice = logs.filter((l) => l.component === 'owner-notice');
     expect(notice, 'one dashboard-visible owner notice').toHaveLength(1);
     expect(notice[0].level).toBe('warn');
-    expect(notice[0].message).toContain('90%');
+    expect(notice[0].message).toContain('92%');
   });
 
   it('the phone send fails → the same dashboard notice, so the owner is not left with nothing', async () => {
@@ -386,7 +386,7 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
     expect(rows[0].outcome).toBe('failed');
     const notice = logs.filter((l) => l.component === 'owner-notice');
     expect(notice).toHaveLength(1);
-    expect(notice[0].message).toContain('90%');
+    expect(notice[0].message).toContain('92%');
   });
 });
 

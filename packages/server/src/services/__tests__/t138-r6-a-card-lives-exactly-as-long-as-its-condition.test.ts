@@ -229,7 +229,7 @@ describe('C1: a budget card is the CURRENT window\'s incident', () => {
     (await import('../../costs/tracker.js')).invalidateDailySpendCache();
     spend(m.recordCost, 5.1); // day 3: 50%
     const card = (await m.cards())[0]?.words;
-    expect(card).toContain('50%');
+    expect(card).toContain('51%');
     spend(m.recordCost, 0.1); // the next agent call
     expect(ended(), 'nothing ended: the condition is live').not.toContain(card);
     expect((await m.cards()).map((c) => c.words)).toEqual([card]);

@@ -8,7 +8,9 @@ import { createLogger } from '../logger.js';
 import { getDailySpend } from './tracker.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { windowOf, latestToldAt, endBudgetCard, endBudgetCardOnChange } from './budget-cards.js';
-export { budgetOwnerCards, endTurnedOverBudgetCards } from './budget-cards.js';
+import { ownerWords } from './budget-words.js';
+import { budgetStopKey, tellLimitReachedWithoutCard } from '../healer/owner-notices.js';
+export { budgetOwnerCards, endTurnedOverBudgetCards, budgetStopToTell } from './budget-cards.js';
 
 const logger = createLogger('budget');
 
@@ -58,15 +60,6 @@ const THRESHOLDS: ReadonlyArray<{ pct: number; field: 'alert_50_sent' | 'alert_7
   { pct: 0.50, field: 'alert_50_sent' },
 ];
 
-/** The words the owner reads. Budget alerts are one of the two classes the platform may send
- *  him directly (OR-V333-SET (3)), so they say what crossed, by how much, over what window. */
-function ownerWords(b: BudgetScope, pctLabel: number, currentSpend: number, limitUsd: number): string {
-  const money = `$${currentSpend.toFixed(2)} of $${limitUsd.toFixed(2)} in ${windowOf(b.period).words}`;
-  if (b.scope === 'global') return `Budget alert: ${pctLabel}% of your daily budget is used (${money}).`;
-  const agent = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(b.scope) as { name: string } | undefined;
-  return `Budget alert: ${agent?.name ?? b.scope} has used ${pctLabel}% of its ${b.period} budget (${money}).`;
-}
-
 function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: number): void {
   const db = getDb();
   const row = db.prepare(`
@@ -110,8 +103,12 @@ function checkAndSendAlerts(b: BudgetScope, currentSpend: number, limitUsd: numb
   // The text and its dashboard card are one thing (the door makes both; the old `cost:alert`
   // toast is gone, t138 round 2). The words are kept on the row so the card outlives the page,
   // and a NEW crossing clears an earlier dismissal (round 3).
-  const words = ownerWords(b, pctLabel, currentSpend, limitUsd);
+  const words = ownerWords(b, currentSpend, limitUsd);
   db.prepare('UPDATE budgets SET alert_words = ?, alert_dismissed_at = NULL WHERE id = ?').run(words, b.budgetId);
+  // "The limit is reached" is ONE fact, told once per budget window, whichever door gets there first
+  // (t167): when THIS text said it, the honest stop that parks an agent in the same window has
+  // nothing to add (agent/v2/honest-stop.ts shares the record; this card is already the card).
+  if (currentSpend >= limitUsd) tellLimitReachedWithoutCard(budgetStopKey(b.budgetId), windowOf(b.period).seconds * 1000);
   sendAlert(words, 'notice');
 }
 

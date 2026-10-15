@@ -11,6 +11,7 @@
 
 import { getDb } from '../db/connection.js';
 import { ownerCardEnded } from '../services/owner-card-frames.js';
+import { budgetStopKey, ownerConditionCleared, tellOwnerOncePerWindow, wordsOf } from '../healer/owner-notices.js';
 
 export type BudgetWindow = { sqlite: string; words: string; seconds: number };
 const DAY_S = 86_400;
@@ -24,6 +25,14 @@ export const windowOf = (period: string): BudgetWindow => PERIOD_WINDOW[period] 
 
 type Latches = { alert_50_sent: number | null; alert_75_sent: number | null; alert_90_sent: number | null };
 export const latestToldAt = (r: Latches): number => Math.max(r.alert_50_sent ?? 0, r.alert_75_sent ?? 0, r.alert_90_sent ?? 0);
+
+/** t167: a budget stop parked an agent. If its budget WINDOW has not been told yet (neither by the crossing alert
+ *  nor by an earlier stop), record that it is now and hand the words to `tell`; else stay silent. A budget that
+ *  no longer stands (`null`) is the global daily line. */
+export function budgetStopToTell(budget: { budgetId: string; period: string } | null, tell: (words: string) => void): void {
+  const key = budgetStopKey(budget?.budgetId ?? 'global_daily');
+  if (tellOwnerOncePerWindow(key, windowOf(budget?.period ?? 'daily').seconds * 1000)) tell(wordsOf(key));
+}
 
 /** The scheduler's tick (scheduler/background-checks.ts): every budget whose window has turned
  *  over since its latest crossing — that incident is over, so its card leaves, live. */
@@ -46,6 +55,8 @@ export function endBudgetCardOnChange(budgetId: string, limitUsd: number, period
   const row = getDb().prepare('SELECT limit_usd, period, alert_words FROM budgets WHERE id = ?').get(budgetId) as
     { limit_usd: number; period: string; alert_words: string | null } | undefined;
   if (row?.alert_words && (row.limit_usd !== limitUsd || row.period !== period)) endBudgetCard(budgetId, row.alert_words);
+  // A new line is a new window for "the limit is reached" too (t167): the stop's told-record and card end with it.
+  if (row && (row.limit_usd !== limitUsd || row.period !== period)) ownerConditionCleared(budgetStopKey(budgetId));
 }
 
 /**

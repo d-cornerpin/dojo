@@ -42,7 +42,7 @@ import { noteWaitingOfParked, noticeIdentityFor } from './honest-stop-notes.js';
 import { AgentError } from '../errors.js';
 import { setAgentStatus } from '../agent-status.js';
 import { SystemPromptTooLargeError } from '../../memory/budget.js';
-import { exceededBudget, WALL_ESTIMATE_USD, type ExceededBudget } from '../../costs/budget.js';
+import { exceededBudget, WALL_ESTIMATE_USD, budgetStopToTell, type ExceededBudget } from '../../costs/budget.js';
 import { routedCandidateCosts } from '../../router/selector.js';
 import { limitTurnsAway } from './limit-turns-away.js';
 import type { PromptTurnContext } from '../../prompt/assembler.js';
@@ -204,10 +204,10 @@ function noteInChat(agentId: string, content: string, answers?: { id?: string; c
  * Healer. Returns true when it handled the error.
  *
  * The owner is told when the lock goes on. A stop that finds its own lock already on (the message
- * was served again, or he sent another) is silent: the status and the card already say it. It
- * sends NO text for a budget stop: it is always preceded by the budget's own crossing alert (t138: the
- * wall and the router's budget filter both run `checkBudget`, which texts and raises the dashboard card
- * before it refuses), once per window, so a second text would be a second telling of the same window.
+ * was served again, or he sent another) is silent: the status and the card already say it.
+ * A BUDGET STOP is told once per BUDGET WINDOW, not per agent or per park (t167): "the limit is reached" is
+ * one fact. The crossing alert says it when the spend was at or over the limit; else the first stop that
+ * parks an agent sends the one notice and its card. Both share one told-record (`budgetStopToTell`).
  * A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): it gets one text and a card.
  */
 export async function tryHonestStopRecovery(state: AgentTurnState, error: unknown): Promise<boolean> {
@@ -235,5 +235,6 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
   // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.
   if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) sendAlert(wordsOf(`nofit:${agentId}`), 'notice');
+  if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => sendAlert(words, 'notice'));   // t167: once per budget window, however many agents stop
   return true;
 }

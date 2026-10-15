@@ -220,7 +220,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     budget.setGlobalBudget(10);
     spend(recordCost, 5.1);
     expectPaired(1);
-    expect(cards()[0].error).toContain('50%');
+    expect(cards()[0].error).toContain('51%');
     expect(cards()[0]).toMatchObject({ severity: 'warning', retryable: false });
   });
 
@@ -271,7 +271,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     spend(mods.recordCost, 1.5);
     spend(mods.recordCost, 0.3);
     expectPaired(3);
-    expect(cards().map((c) => c.error.match(/(\d+)%/)?.[1])).toEqual(['50', '75', '90']);
+    expect(cards().map((c) => c.error.match(/(\d+)%/)?.[1])).toEqual(['51', '78', '93']);
 
     mods = await boot(); // a fresh process: the crossing is already told
     spend(mods.recordCost, 0.1);
@@ -318,7 +318,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     spend(recordCost, 9.2);
     expect(texts()).toHaveLength(0);
     expect(cards()).toHaveLength(1);
-    expect(cards()[0].error).toContain('90%');
+    expect(cards()[0].error).toContain('92%');
   });
 
   it('the phone send failed: the card is still there', async () => {

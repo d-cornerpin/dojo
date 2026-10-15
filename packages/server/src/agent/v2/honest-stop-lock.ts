@@ -11,6 +11,7 @@
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import type { HonestStopKind } from './error-format.js';
+import { budgetStopCardsLifted } from '../../healer/owner-notices.js';
 
 const logger = createLogger('honest-stop');
 
@@ -53,7 +54,9 @@ export function parkedForFreeDown(agentId: string): boolean {
 async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; onModelsChange?: boolean }): Promise<string[]> {
   if (parkedAgents(kind, opts.agentId).length === 0) return [];
   try {
-    return await (await import('./honest-stop.js')).releaseHonestStops(kind, opts);
+    const released = await (await import('./honest-stop.js')).releaseHonestStops(kind, opts);
+    if (kind === 'budget_stop' && released.length > 0 && parkedAgents(kind).length === 0) budgetStopCardsLifted();   // t167: the last one is out, so the window's card leaves
+    return released;
   } catch (err) {
     // The change that called this is already saved; a failed release is logged, never a failed save.
     logger.warn('honest stop: could not release', { kind, error: err instanceof Error ? err.message : String(err) });
