@@ -2,6 +2,27 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 3003,
+      "to": 3005,
+      "by": "t172 (2026-10-15), a long sweep is not circling; a continuation turn's working note is not the owner's to read",
+      "why": "+2: the review prompt now states what the meter counts and carries the novelty facts (one line calling effortNoveltyLines), and the pending check compares against the lifetime total (one comment line). The facts' rendering, the signature ledger and the charge all live in effort-governor.ts, which is unpinned; the first draft put the renderer here (+30) and it was moved out. Header comments were rewritten line-neutral."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 433,
+      "to": 438,
+      "by": "t172 (2026-10-15), a long sweep is not circling; a continuation turn's working note is not the owner's to read",
+      "why": "+5: one import, a three-line comment, and the agent-only decision at the demotion (one const). The decision cannot live elsewhere: it reads hasUnansweredUser and userDeliverableRunTurn, which are this function's locals at the exact line where the note's prefix is chosen. The label-only test was put in the new unpinned module memory/row-label-only.ts rather than here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts",
+      "from": 196,
+      "to": 198,
+      "by": "t172 (2026-10-15), a long sweep is not circling; a continuation turn's working note is not the owner's to read",
+      "why": "+2: one import and the one-line guard in demoteToWorkingNote (the file's single demotion door), so a note that is only the turn's label text is not written by this door either. The predicate itself is in memory/row-label-only.ts."
+    },
+    {
       "path": "packages/server/src/memory/compaction-brakes.ts",
       "from": 317,
       "to": 318,
@@ -8735,7 +8756,7 @@
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 129,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
-    "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 196,
+    "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 198,
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 300,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 320,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
@@ -8748,7 +8769,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 293,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 433,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 438,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
@@ -8878,7 +8899,7 @@
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
-    "packages/server/src/tracker/pm-agent.ts": 3003,
+    "packages/server/src/tracker/pm-agent.ts": 3005,
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
