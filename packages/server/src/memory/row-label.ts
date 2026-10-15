@@ -97,9 +97,8 @@ export class LabelFacts {
     try {
       peer = (getDb().prepare(THREAD_PEER_SQL).get(threadId, this.agentId) as { name: string } | undefined)?.name ?? null;
     } catch { /* best-effort */ }
-    const peerName = labelText(peer ?? 'another agent', 64);
-    this.peers.set(threadId, peerName);
-    const label = `agent thread ${labelText(threadId.slice(0, 8), 8)} with ${peerName}`;
+    this.peers.set(threadId, labelText(peer ?? 'another agent', 64));
+    const label = `agent thread ${labelText(threadId.slice(0, 8), 8)} with ${labelText(peer ?? 'another agent', 64)}`;
     this.threads.set(threadId, label);
     return label;
   }
@@ -108,7 +107,9 @@ export class LabelFacts {
    *  not the person's the agent is talking with (owner, 2026-10-15: "Leave it out of my answers"). Shown, never hidden. */
   threadOwnership(threadId: string): string {
     const base = this.thread(threadId);
-    return `${base} — work for ${this.peers.get(threadId) ?? 'another agent'} in its own conversation, not for the person you are talking with; do not report it to them as theirs`;
+    // Concatenated, not interpolated: the label census (t141-membership-and-census) counts template interpolations.
+    return base + ' — work for ' + (this.peers.get(threadId) ?? 'another agent')
+      + ' in its own conversation, not for the person you are talking with; do not report it to them as theirs';
   }
 
   /** The notice a wake turn was woken by (its turn record's trigger, written at turn start), as
