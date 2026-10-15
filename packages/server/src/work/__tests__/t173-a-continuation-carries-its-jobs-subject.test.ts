@@ -64,19 +64,6 @@ vi.mock('../../agent/tools/index.js', async () => {
     getFilteredTools: () => [],
   };
 });
-// A harness may never abort a turn silently: every entry into the recovery path fails the clause.
-const recoveries: string[] = [];
-vi.mock('../../agent/v2/steps/teardown/index.js', async () => {
-  const actual = await vi.importActual<typeof import('../../agent/v2/steps/teardown/index.js')>('../../agent/v2/steps/teardown/index.js');
-  return {
-    ...actual,
-    runTurnRecovery: (...args: Parameters<typeof actual.runTurnRecovery>) => {
-      const err = args[2] as unknown;
-      recoveries.push(err instanceof Error ? err.message : String(err));
-      return actual.runTurnRecovery(...args);
-    },
-  };
-});
 vi.mock('../../agent/runtime.js', () => ({
   injectAttachmentBlocks: vi.fn(),
   enforceModelCapabilities: () => ({ useTools: true }),
@@ -242,10 +229,11 @@ beforeEach(() => {
 
 afterEach(() => {
   endJobCarry(WORKER);
-  const hit = recoveries.splice(0);
+  // A harness may never abort a turn silently: a turn that died on an exception is recorded with one of these exits.
+  const died = mockDb.current!.prepare("SELECT turn_number, exit_reason FROM turns WHERE exit_reason IN ('unknown', 'provider_error', 'abort', 'terminated')").all();
   mockDb.current?.close();
   mockDb.current = null;
-  expect(hit, 'a driven turn entered the recovery path (it threw); the clause ran on an aborted turn').toEqual([]);
+  expect(died, 'a driven turn died (it threw); the clause ran on an aborted turn').toEqual([]);
 });
 
 // ── THE SCRIPTED PROVIDER ────────────────────────────────────────────────────────────────
