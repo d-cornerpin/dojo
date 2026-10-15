@@ -357,7 +357,7 @@ async function expectTheContinuationHoldsTheOrigin(parkedTurn: number, door: { r
 }
 
 describe('t173b: the run 11 shape — the parking turn names no task, the task was opened earlier', () => {
-  it.fails('EVIDENCE: a forced A2A retry on another thread parks at the budget; its continuation is the turn of the ASSIGN\'s thread', async () => {
+  it('EVIDENCE: a forced A2A retry on another thread parks at the budget; its continuation is the turn of the ASSIGN\'s thread', async () => {
     await pmJob();
     // The healer-style retry request on ANOTHER thread, unreplied: the next turn is an A2A turn on it.
     const q = await deliverA2AMessage({
@@ -380,7 +380,7 @@ describe('t173b: the run 11 shape — the parking turn names no task, the task w
 });
 
 describe('t173b: EVERY park door hands the job\'s origin to its continuation', () => {
-  it.fails('door 1, the 75-call tool-loop cap (a timer wake)', async () => {
+  it('door 1, the 75-call tool-loop cap (a timer wake)', async () => {
     await pmJob();
     anUnrelatedNotice('notice-loop');
     script({ reads: 80 });
@@ -388,7 +388,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'tool-loop', how: 'timer' }, 'iteration_cap');
   });
 
-  it.fails('door 2, the 15-minute turn budget (the shared wake set)', async () => {
+  it('door 2, the 15-minute turn budget (the shared wake set)', async () => {
     await pmJob();
     anUnrelatedNotice('notice-budget');
     const clock = Date.now.bind(Date);
@@ -399,7 +399,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'budget');
   });
 
-  it.fails('door 3, the context gate\'s emergency arm (96-99%), the wake queued now', async () => {
+  it('door 3, the context gate\'s emergency arm (96-99%), the wake queued now', async () => {
     await pmJob();
     anUnrelatedNotice('notice-emergency');
     world.gateRatio = 0.975;
@@ -409,7 +409,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'drain' });
   });
 
-  it.fails('door 4, the context gate\'s block arm (99%+)', async () => {
+  it('door 4, the context gate\'s block arm (99%+)', async () => {
     await pmJob();
     anUnrelatedNotice('notice-block');
     world.gateRatio = 0.995;
@@ -419,7 +419,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'drain' });
   });
 
-  it.fails('door 3/4, a gate arm while the compaction brake binds: the wake waits for the brake on its own timer', async () => {
+  it('door 3/4, a gate arm while the compaction brake binds: the wake waits for the brake on its own timer', async () => {
     await pmJob();
     anUnrelatedNotice('notice-braked');
     // A forced pass that won nothing arms the brake against the next forced pass.
@@ -431,7 +431,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'timer' });
   });
 
-  it.fails('door 5, error recovery\'s forced compaction after a context overflow', async () => {
+  it('door 5, error recovery\'s forced compaction after a context overflow', async () => {
     await pmJob();
     anUnrelatedNotice('notice-overflow');
     recoveryDoor = true;
@@ -440,7 +440,7 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'recovery-forced-compaction', how: 'drain' });
   });
 
-  it.fails('door 6, error recovery\'s compaction after a declared-patience exhaustion', async () => {
+  it('door 6, error recovery\'s compaction after a declared-patience exhaustion', async () => {
     await pmJob();
     anUnrelatedNotice('notice-patience');
     recoveryDoor = true;

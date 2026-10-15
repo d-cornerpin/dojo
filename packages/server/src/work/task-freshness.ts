@@ -20,6 +20,7 @@
 import { getDb } from '../db/connection.js';
 import { taskScope } from './tracker-view.js';
 import { turnContext } from '../agent/turn-context.js';
+import type { JobOrigin } from './job-origin.js';
 
 /** Epoch ms the task aliased `a` last moved. */
 export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALESCE((SELECT MAX(e.created_at)
@@ -41,22 +42,28 @@ export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at, COALE
  *      when the owner stops the agent, or when the agent leaves the running states (`endJobCarry`,
  *      called by the one status writer).
  *  In memory on purpose: a restart ends the job's turn. There is no clock: a call may run for hours. */
-const jobWork = new Map<string, { ids: string[]; asks: string[]; drainWake: boolean; timerWakes: number; running: boolean }>();
+const jobWork = new Map<string, { ids: string[]; asks: string[]; origin: JobOrigin | null; drainWake: boolean; timerWakes: number; running: boolean }>();
 
 const carryOf = (agentId: string) => {
   let c = jobWork.get(agentId);
-  if (!c) { c = { ids: [], asks: [], drainWake: false, timerWakes: 0, running: false }; jobWork.set(agentId, c); }
+  if (!c) { c = { ids: [], asks: [], origin: null, drainWake: false, timerWakes: 0, running: false }; jobWork.set(agentId, c); }
   return c;
 };
 
 /** A park names the job it is handing on: never replaces a standing job with less. `asks` (t145) are the
  *  owner messages the parking turn SERVED — the same record carries them, so a job with no task still
  *  has its words re-shown to its continuation (`memory/served-ask.ts`), and ONLY to that continuation. */
-export function carryJobWork(agentId: string, ids: string[], asks: string[] = []): void {
-  if (ids.length === 0 && asks.length === 0 && !jobWork.has(agentId)) return;
+export function carryJobWork(agentId: string, ids: string[], asks: string[] = [], origin: JobOrigin | null = null): void {
+  if (ids.length === 0 && asks.length === 0 && !origin && !jobWork.has(agentId)) return;
   const c = carryOf(agentId);
   c.ids = [...new Set([...c.ids, ...ids])];
   c.asks = [...new Set([...c.asks, ...asks])];
+  c.origin = c.origin ?? origin;   // t173b: the request the job started from; the first one a park found stands for the whole chain
+}
+
+/** t173b: where the job this agent carries started (`work/job-origin.ts`), whether or not any task rides with it. */
+export function jobCarriedOrigin(agentId: string): JobOrigin | null {
+  return jobWork.get(agentId)?.origin ?? null;
 }
 
 /** The park queued its continuation on the shared wake set (the runtime's drain serves it). */
@@ -186,7 +193,7 @@ function settleJob(agentId: string): { tasks: string[]; asks: string[] } {
   const asks = !inFlight || c.asks.length === 0 ? [] : (db.prepare(
     `SELECT w.root_id AS id FROM work w WHERE w.kind = 'ask' AND w.state = 'claimed'
        AND w.root_id IN (${c.asks.map(() => '?').join(', ')})`).all(...c.asks) as Array<{ id: string }>).map((r) => r.id);
-  if (tasks.length === 0 && asks.length === 0) jobWork.delete(agentId);
+  if (tasks.length === 0 && asks.length === 0 && !(inFlight && c.origin)) jobWork.delete(agentId);   // t173b: a job carried by its origin alone lives while its chain does
   else { c.ids = tasks; c.asks = asks; }
   return { tasks, asks };
 }

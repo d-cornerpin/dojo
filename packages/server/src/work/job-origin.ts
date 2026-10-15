@@ -1,28 +1,34 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t173 — WHAT A JOB'S CONTINUATION IS A CONTINUATION OF.
+// t173 / t173b — WHAT A JOB'S CONTINUATION IS A CONTINUATION OF.
 //
 // A park hands the running job to a trigger-less continuation turn (`work/job-continuation.ts`). That
 // turn is woken by nothing, so it used to record no kind, subject `none` and no root, and the request
-// the job started from was served to it by nobody: the served message (`memory/served-ask.ts`) belongs
-// to a turn whose own kind is a2a or owner. Its view could empty (run 10, S1).
+// the job started from was served to nobody: the served message (`memory/served-ask.ts`) belongs
+// to a turn whose own kind is a2a or owner. Its view could empty (run 10, S1; run 11, S1 variant B).
 //
-// THE ORIGIN IS READ FROM THE JOB'S TASK, NOT FROM THE TURN BEFORE. The turn that parked is not always
-// the job's own turn (in the measured case it was an engine notice about the task), and a chain of
-// continuations (park, park, park) has no turn record that names the request. The job's task does:
-// t143's job record already carries its ids across every park (`task-freshness.ts`), and the task row
-// holds where it came from. In order, for the oldest task of the job that names one:
+// THE ORIGIN IS READ AT THE PARK, from the job's task, and rides the job record (`task-freshness.ts`)
+// with the ids and asks, so it holds across a chain of parks and across a parking turn that was not the
+// job's own (an engine notice, a retry on another thread). `parkJob` is the one door every park goes
+// through, so it is the one place that reads it (`parkOrigin`). The tasks tried, in order:
+//   1. the work the parking turn NAMES (`turnWorkIds`), in the order it names them;
+//   2. else the task the agent is MOST RECENTLY working: its newest-moving claimed task. Run 11's
+//      parking turn named none (the task was opened on an earlier turn, on another turn's thread), so
+//      nothing was carried and no job existed at all. This is read for the ORIGIN only: it is never
+//      carried as the job's work, because a park that shields every task the agent holds hides an
+//      abandoned one from the PM and the close-out gate for a whole long job (t143 round 2).
+// For each task, the first tie that names an origin:
 //   * `a2a_thread_id`: the task the engine opens for an ASSIGN, tied to the thread;
 //   * `source_message_id`: the message the task answers. An A2A message names a thread; a person's
 //     message is an owner ask;
 //   * `origin_turn`: a task the agent opened itself, on a turn whose rows are stamped with its thread.
 // Only the run launched from the park's own wake carries the job (`runCarriesJob`), so any other
-// trigger-less run resolves nothing and is unchanged. A job with no task and no served ask is not a
-// job (t143): nothing was carried, there is no origin to find.
+// trigger-less run resolves nothing and is unchanged.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { jobCarriedIds, runCarriesJob } from './task-freshness.js';
+import { runCarriesJob, jobCarriedOrigin, taskMovedAtSql } from './task-freshness.js';
+import { taskScope } from './tracker-view.js';
 
 /** The request a job started from. */
 export type JobOrigin =
@@ -53,16 +59,15 @@ function a2aOrigin(agentId: string, threadId: string, named: MessageRow | undefi
   };
 }
 
-/** Where the job this run is carrying started; `null` when the run carries no job or its tasks name no origin. Never throws. */
-export function jobOrigin(agentId: string): JobOrigin | null {
+/** The origin of the first of `ids` (in the order given) whose task names one. Never throws. */
+function originOfTasks(agentId: string, ids: string[]): JobOrigin | null {
+  if (ids.length === 0) return null;
   try {
-    if (!runCarriesJob(agentId)) return null;
-    const ids = jobCarriedIds(agentId);
-    if (ids.length === 0) return null;
     const db = getDb();
-    const tasks = db.prepare(
-      `SELECT a2a_thread_id, source_message_id, origin_turn FROM work WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY opened_at ASC`,
-    ).all(...ids) as TaskOrigin[];
+    const rows = db.prepare(
+      `SELECT id, a2a_thread_id, source_message_id, origin_turn FROM work WHERE id IN (${ids.map(() => '?').join(', ')})`,
+    ).all(...ids) as Array<TaskOrigin & { id: string }>;
+    const tasks = ids.map((id) => rows.find((r) => r.id === id)).filter((r): r is TaskOrigin & { id: string } => !!r);
     const message = db.prepare(
       'SELECT id, role, a2a_thread_id, conversation_id, a2a_intent, source_agent_id FROM messages WHERE id = ? AND agent_id = ?');
     const turnThread = db.prepare(
@@ -82,6 +87,26 @@ export function jobOrigin(agentId: string): JobOrigin | null {
   } catch {
     return null;
   }
+}
+
+/** THE PARK'S READ (`parkJob`): where the job being parked started. `named`: the work the parking turn names. */
+export function parkOrigin(agentId: string, named: string[]): JobOrigin | null {
+  try {
+    const fromNamed = originOfTasks(agentId, named);
+    if (fromNamed) return fromNamed;
+    const held = getDb().prepare(
+      `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
+        ORDER BY ${taskMovedAtSql('w')} DESC LIMIT 1`,
+    ).get(agentId) as { id: string } | undefined;
+    return held ? originOfTasks(agentId, [held.id]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the job this run is carrying started; `null` when the run carries no job or the park found no origin. */
+export function jobOrigin(agentId: string): JobOrigin | null {
+  return runCarriesJob(agentId) ? jobCarriedOrigin(agentId) : null;
 }
 
 /** The A2A origin of the job this run carries, for the turn classifier: a trigger-less continuation whose job began on an A2A

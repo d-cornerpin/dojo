@@ -59,8 +59,9 @@ export function servedOwnerMessageIds(agentId: string): string[] {
     // other trigger-less run (an A2A, the scheduler, an engine event) serves nothing it did not pick up.
     if (!bag.root && runCarriesJob(agentId)) {
       // t173: and the ask the job's own task came from, for a continuation whose parking turn served no ask
-      // (an engine notice about the task parked it): the same message, shown the same way.
-      const origin = jobOrigin(agentId);
+      // (an engine notice about the task parked it): the same message, shown the same way. A continuation that
+      // restored its person's conversation (`bag.conversationId`) already carries that ask above.
+      const origin = bag.conversationId ? null : jobOrigin(agentId);
       return [...new Set([...jobCarriedAsks(agentId), ...(origin?.kind === 'ask' ? [origin.messageId] : [])])];
     }
     return [];
