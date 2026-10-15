@@ -26,6 +26,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { getRecentMessages } from '../store.js';
 import { LabelFacts, labelRows, renderRowLabel, withSubjectKinds } from '../row-label.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 const A = 'agent-t174-label';
 const THREAD = '7e1f2a3b-0000-4000-8000-00000000a2a1';
@@ -44,7 +45,7 @@ beforeEach(() => {
   insertMessage({ id: 'peer-own', agentId: A, role: 'assistant', lane: 'a2a', content: 'PELICAN mail search done', subjectKind: 'a2a_thread', a2aThreadId: THREAD });
   insertMessage({ id: 'owner-2', agentId: A, role: 'user', content: 'What have you finished for me today?', channel: 'dashboard', senderId: 'owner', conversationId: 'conv-owner' });
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { endTurnContext(A); mockDb.current?.close(); mockDb.current = null; });
 
 describe('t174 (iii) — an own row from an agent thread is labelled as that agent\'s work, and is still there', () => {
   it('stays in the view (OR-LABEL-NOT-HIDE) under a header that names whose work it is', () => {
@@ -72,5 +73,62 @@ describe('t174 (iii) — an own row from an agent thread is labelled as that age
     expect(label.slice(1, -1)).not.toMatch(/[[\]]/);
     expect(label).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect((label.match(/"/g) ?? []).length % 2).toBe(0);
+  });
+});
+
+const CLAUSE = /work for .* in its own conversation, not for the person you are talking with/;
+const THREAD_Y = '9c8d7e6f-0000-4000-8000-00000000b2b2';
+
+/** An agent turn serving `thread`, as the engine opens it: the bag says a2a and roots the turn at the thread. */
+function a2aTurnOn(thread: string): void {
+  const bag = openTurnContext(A);
+  bag.kind = 'a2a';
+  bag.root = { kind: 'a2a', id: thread, sourceMessageId: null };
+}
+
+describe('t174 — the clause is left off the thread the view IS the conversation with', () => {
+  beforeEach(() => {
+    mockDb.current!.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES ('peer-y', 'PeerY', 'idle', datetime('now'))`).run();
+    insertMessage({ id: 'y-in', agentId: A, role: 'user', lane: 'a2a', content: 'another thread asks', sourceAgentId: 'peer-y', a2aThreadId: THREAD_Y, a2aIntent: 'QUESTION' });
+    insertMessage({ id: 'y-own', agentId: A, role: 'assistant', lane: 'a2a', content: 'answered Y', subjectKind: 'a2a_thread', a2aThreadId: THREAD_Y });
+  });
+
+  it('(a) an agent turn on thread X: X\'s request and own rows wear the plain thread label', () => {
+    a2aTurnOn(THREAD);
+    const rows = getRecentMessages(A, 100);
+    const labelled = withSubjectKinds(A, rows);
+    const facts = new LabelFacts(A);
+    for (const id of ['peer-in', 'peer-own']) {
+      const label = renderRowLabel(labelled.find((r) => r.id === id)!, facts);
+      expect(label, id).toMatch(/agent thread 7e1f2a3b with Peer\]$/);
+      expect(label, id).not.toMatch(CLAUSE);
+    }
+    expect(labelRows(A, rows).get('peer-in')).not.toMatch(CLAUSE);
+  });
+
+  it('(b) an owner turn: the same rows carry the clause', () => {
+    const bag = openTurnContext(A);
+    bag.kind = 'user';
+    const labelled = withSubjectKinds(A, getRecentMessages(A, 100));
+    const facts = new LabelFacts(A);
+    for (const id of ['peer-in', 'peer-own']) expect(renderRowLabel(labelled.find((r) => r.id === id)!, facts), id).toMatch(CLAUSE);
+  });
+
+  it('(c) an agent turn on X that shows thread Y\'s rows: Y carries the clause, X does not', () => {
+    a2aTurnOn(THREAD);
+    const labelled = withSubjectKinds(A, getRecentMessages(A, 100));
+    const facts = new LabelFacts(A);
+    for (const id of ['y-in', 'y-own']) expect(renderRowLabel(labelled.find((r) => r.id === id)!, facts), id).toMatch(/with PeerY — work for PeerY in its own conversation/);
+    expect(renderRowLabel(labelled.find((r) => r.id === 'peer-own')!, facts)).not.toMatch(CLAUSE);
+  });
+
+  it('an agent turn whose thread is not recorded falls back to the newest inbound agent message, never a wrong clause', () => {
+    const bag = openTurnContext(A);
+    bag.kind = 'a2a';
+    const labelled = withSubjectKinds(A, getRecentMessages(A, 100));
+    const facts = new LabelFacts(A);
+    // The newest inbound agent row is Y's: Y is the served thread, X is another thread's work.
+    expect(renderRowLabel(labelled.find((r) => r.id === 'y-in')!, facts)).not.toMatch(CLAUSE);
+    expect(renderRowLabel(labelled.find((r) => r.id === 'peer-in')!, facts)).toMatch(CLAUSE);
   });
 });

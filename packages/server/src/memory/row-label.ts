@@ -59,6 +59,7 @@ export class LabelFacts {
   private readonly threads = new Map<string, string>();
   private readonly wakes = new Map<number, string | null>();
   private readonly peers = new Map<string, string>();
+  private served: string | null | undefined;
   constructor(private readonly agentId: string) {}
 
   /** "dashboard conversation with <owner>", "email thread with x@y, subject "…"" — or null. */
@@ -104,12 +105,38 @@ export class LabelFacts {
   }
 
   /** t174: an agent thread's header also says whose work the thread holds: that agent's, in its own conversation,
-   *  not the person's the agent is talking with (owner, 2026-10-15: "Leave it out of my answers"). Shown, never hidden. */
+   *  not the person's the agent is talking with (owner, 2026-10-15: "Leave it out of my answers"). Shown, never hidden.
+   *  Left off the thread this view IS the conversation with: there the peer is the party spoken to. */
   threadOwnership(threadId: string): string {
     const base = this.thread(threadId);
+    const own = this.servedThread();
+    if (own !== null && (own === '' || own === threadId)) return base;
     // Concatenated, not interpolated: the label census (t141-membership-and-census) counts template interpolations.
     return base + ' — work for ' + (this.peers.get(threadId) ?? 'another agent')
       + ' in its own conversation, not for the person you are talking with; do not report it to them as theirs';
+  }
+
+  /** The agent thread the turn in flight serves: null on a person's or an engine turn; '' on an agent turn whose thread
+   *  is not recorded (no clause is better than a wrong one). Read once per assembly: the turn's root, its record, else
+   *  the newest inbound agent message. */
+  private servedThread(): string | null {
+    if (this.served !== undefined) return this.served;
+    let t: string | null = null;
+    try {
+      const bag = liveTurnContext(this.agentId);
+      if (bag?.kind === 'a2a') {
+        const db = getDb();
+        t = bag.root?.kind === 'a2a' ? bag.root.id : null;
+        if (!t && bag.turnNumber != null) {
+          t = (db.prepare(`SELECT subject_id FROM turns WHERE agent_id = ? AND turn_number = ? AND subject_kind = 'a2a_thread'`)
+            .get(this.agentId, bag.turnNumber) as { subject_id: string | null } | undefined)?.subject_id ?? null;
+        }
+        t ??= (db.prepare(`SELECT a2a_thread_id FROM messages WHERE agent_id = ? AND role = 'user' AND a2a_thread_id IS NOT NULL
+                             ORDER BY seq DESC LIMIT 1`).get(this.agentId) as { a2a_thread_id: string } | undefined)?.a2a_thread_id ?? '';
+      }
+    } catch { /* best-effort: no bag, a person's view */ }
+    this.served = t;
+    return t;
   }
 
   /** The notice a wake turn was woken by (its turn record's trigger, written at turn start), as
