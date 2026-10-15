@@ -247,7 +247,9 @@ describe('the 45 service-agent scheduler cycles stay demoted — no human is wat
 
       expect(deliverAckSpy).not.toHaveBeenCalled();
       expect(notesWritten()).toHaveLength(1);
-      expect(notesWritten()[0]).toContain('[working-note] ');
+      // t172: a service-agent cycle has no person waiting, so its demoted narration is written
+      // agent-only; "still demoted, not promoted" is exactly what this clause pins.
+      expect(notesWritten()[0]).toContain('[working-note:internal] ');
       expect(out.state.surfacedReplyThisTurn).toBe(false);
     });
   }

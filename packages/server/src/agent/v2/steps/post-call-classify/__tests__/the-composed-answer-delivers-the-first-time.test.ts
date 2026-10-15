@@ -240,7 +240,9 @@ describe('the S5 shape: an owed compile composed with a tool call reaches the ow
     await runTerminalText(owedState(state), ctxFor(turnCtx), scratchFor());
     expect(deliverAckSpy).not.toHaveBeenCalled();
     expect(notesWritten()).toHaveLength(1);
-    expect(notesWritten()[0]).toContain('[working-note]');
+    // t172: no person is waiting on this turn (an owed compile never rides a waiting turn), so the
+    // note is the agent's own record — still a note, no longer the owner's to read.
+    expect(notesWritten()[0]).toContain('[working-note:internal]');
   });
 });
 
@@ -282,7 +284,9 @@ describe('everything outside the owed compile is byte-identical', () => {
     await runTerminalText(state, ctxFor(turnCtx), sc);
     expect(deliverAckSpy).not.toHaveBeenCalled();
     expect(notesWritten()).toHaveLength(1);
-    expect(notesWritten()[0]).toContain('[working-note]');
+    // t172: no person is waiting on this turn (an owed compile never rides a waiting turn), so the
+    // note is the agent's own record — still a note, no longer the owner's to read.
+    expect(notesWritten()[0]).toContain('[working-note:internal]');
     expect(notesWritten()[0]).toContain(THE_PLAN);
     expect(sc.persistedContent).toBeNull();
   });
