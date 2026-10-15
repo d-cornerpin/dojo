@@ -42,6 +42,7 @@ import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-as
 // Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
 // to prevent.
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../work/deliverable-declaration.js';
+import { runCarriesJob } from '../../../../work/task-freshness.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -406,9 +407,9 @@ export async function runTerminalText(
         // dashboard hides them by default (shown only in wordy/verbose mode). Owner
         // dashboard/voice turns are unchanged (there is one lane, nothing to confuse).
         // T41: the rule itself moved to `v2/counterparty.ts` — unchanged in every clause —
-        // because the assemble side now asks the same question and two copies drift.
+        // because the assemble side now asks the same question and two copies drift. t177: + a park's continuation.
         const routedHumanChannel = isRoutedHumanCounterparty(counterparty);
-        const agentOnly = routedHumanChannel || !(hasUnansweredUser || userDeliverableRunTurn);
+        const agentOnly = routedHumanChannel || runCarriesJob(agentId) || !(hasUnansweredUser || userDeliverableRunTurn);
         const notePrefix = agentOnly ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
         // Chat-native system note: prefix-marked, NO origin stamp, same
         // convention as routing markers and dividers. An origin_kind of
