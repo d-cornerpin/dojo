@@ -7,6 +7,7 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { googleRead } from './client.js';
+import { driveSearchQuery } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 
 /**
@@ -148,7 +149,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: "Drive search query (e.g., 'name contains report', 'mimeType = application/pdf')" },
+        query: { type: 'string', description: "Drive search query. Quote every value with single quotes, e.g. \"name contains 'report'\", \"mimeType = 'application/pdf'\", \"fullText contains 'budget'\". A bare word or phrase (e.g. report) searches file names and contents." },
         folder_id: { type: 'string', description: 'List files in a specific folder' },
         max_results: { type: 'number', description: 'Maximum results (default: 20)' },
         verbose: { type: 'boolean', description: 'If true, include full mime type and full timestamps per file. Default false (compact rows).' },
@@ -723,7 +724,7 @@ export async function executeGoogleReadTool(
       const verbose = args.verbose as boolean | undefined;
 
       let q = '';
-      if (driveQuery) q = driveQuery;
+      if (driveQuery) q = driveSearchQuery(driveQuery);
       if (folderId) {
         const folderQ = `'${folderId}' in parents`;
         q = q ? `${q} and ${folderQ}` : folderQ;
