@@ -8515,6 +8515,34 @@
       "to": 285,
       "by": "t166 (2026-10-14), terminating an agent stops its run in flight and nothing it started reaches anyone",
       "why": "+5 (3 code, 1 comment, 1 import): the executor choke point refuses a tool call whose agent row reads `terminated`. The refusal text, the log line and the one legitimate exemption (an agent that ended itself with `complete_task` earlier in the same response finishes the batch it called alongside) live in `refusalForTerminated` in the NEW module `agent/ended-mid-run.ts`; this file holds the call and the early return through its own `done`. The backstop exists for the calls a stopped run can still dispatch past the fence checks (a parallel batch already launched). From 285 it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2842,
+      "to": 2864,
+      "by": "t163 A (2026-10-14), a delegated answer reaches the owner once, after the turn that delegated it",
+      "why": "+22 net (27 added, 5 moved out). The one-piece relay body moves out of `resolveCompletedJoin` into `relayOnePieceJoin` unchanged (net 0) so two callers can use it; the additions are the deferral branch (6 lines: an agent with a turn in flight has the join noted in `agent/deferred-join-relay.ts`, not relayed) and `releaseDeferredJoinRelays` (11 lines: the runtime teardown calls it, it skips a join that is no longer complete, settles on a relay already sent rather than sending a second, and otherwise relays). Run 9 S3: the helper answered while the turn ran, the relay landed one second before the turn's own reply, and the owner read a stale line under the answer. ALTERNATIVES REFUSED. (a) A timer that retries the relay later: the owner's rule is no new timers, and the after-run path already exists. (b) Moving the release function into the new module: it needs `deliverJoinResultToOwner`, `noteSettlementRefusal` and the display-name resolver, all private to this file, and exporting three internals to save eleven lines is the wrong trade. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1788,
+      "to": 1793,
+      "by": "t163 A (2026-10-14), a delegated answer reaches the owner once, after the turn that delegated it",
+      "why": "+5: one try/catch in `handleMessage`'s `finally` that releases the relays held while the turn ran. It has to be this `finally`: it is the one teardown every exit passes through (a throw too), and the relay must go out after the turn's own reply and before the compile drive reads the same join. The catch logs and moves on, so a failed release cannot skip the rest of the teardown; the join reaper and the boot re-drain still find the join. ALTERNATIVE REFUSED: a hook inside the turn loop, which a throw would skip. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/ask-settlement.ts",
+      "from": 1522,
+      "to": 1525,
+      "by": "t163 A (2026-10-14), a delegated answer reaches the owner once, after the turn that delegated it",
+      "why": "+3: the import and one extra source for the existing CLOSE: `qualifyingDelivery(...) ?? (at finalize: delegatedRelayEvidence(...))`. The evidence read, its conditions and the audit mark live in the new `work/delegated-relay-evidence.ts`. The close itself stays at this file's one `done` site, which `ask-done-census.test.ts` requires (a separate close site in the new module failed that census). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts",
+      "from": 275,
+      "to": 277,
+      "by": "t163 A (2026-10-14), a delegated answer reaches the owner once, after the turn that delegated it",
+      "why": "+2: the owed-interrupt steer now records, on the owed ask's own ledger, the moment the model was pointed at it (`recordOwedAskShown`), so a delegation made before the model had seen the ask is never credited to it. It can only be written here: this is the step that knows which asks the steer shows. One comment line and one best-effort statement. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8561,7 +8589,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2842,
+    "packages/server/src/agent/a2a-transport.ts": 2864,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -8584,7 +8612,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 407,
-    "packages/server/src/agent/runtime.ts": 1788,
+    "packages/server/src/agent/runtime.ts": 1793,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1470,
     "packages/server/src/agent/stream-patience.ts": 473,
@@ -8659,7 +8687,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 176,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
-    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 275,
+    "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 277,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 404,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 293,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 437,
@@ -8815,7 +8843,7 @@
     "packages/server/src/voice/stt-service.ts": 586,
     "packages/server/src/voice/voice-ws.ts": 2352,
     "packages/server/src/work/ask-remediation.ts": 310,
-    "packages/server/src/work/ask-settlement.ts": 1522,
+    "packages/server/src/work/ask-settlement.ts": 1525,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
