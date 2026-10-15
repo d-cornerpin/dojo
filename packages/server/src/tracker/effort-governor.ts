@@ -106,8 +106,8 @@ export function callSignature(call: ChargeableCall): string {
 }
 
 function callLabel(call: ChargeableCall): string {
-  const args = canonicalArguments(call.arguments);
-  return `${call.name}(${args.length > 140 ? `${args.slice(0, 140)}…` : args})`;
+  const canon = canonicalArguments(call.arguments);
+  return `${call.name}(${canon.length > 140 ? `${canon.slice(0, 140)}…` : canon})`;
 }
 
 /** What this process has seen a task do since it last advanced. In memory ON PURPOSE (see

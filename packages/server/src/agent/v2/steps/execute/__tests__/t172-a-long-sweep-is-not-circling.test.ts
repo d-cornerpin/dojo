@@ -23,44 +23,44 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
-vi.mock('../../db/connection.js', () => ({
+vi.mock('../../../../../db/connection.js', () => ({
   getDb: () => {
     if (!mockDb.current) throw new Error('test DB not initialized');
     return mockDb.current;
   },
 }));
 
-vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
-vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
-vi.mock('../../memory/message-store.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../memory/message-store.js')>()),
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
+vi.mock('../../../../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
+vi.mock('../../../../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
+vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../../memory/message-store.js')>()),
   insertEngineEventIfAbsent: () => null,
 }));
 
 const callModelSpy = vi.fn();
 let verdictText: string | null = null;
-vi.mock('../../agent/model.js', () => ({
+vi.mock('../../../../../agent/model.js', () => ({
   callModel: async (params: unknown) => {
     callModelSpy(params);
     return { content: verdictText };
   },
 }));
-vi.mock('../../agent/runtime.js', () => ({
+vi.mock('../../../../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
-vi.mock('../../agent/a2a-transport.js', () => ({
+vi.mock('../../../../../agent/a2a-transport.js', () => ({
   deliverA2AMessage: async () => ({ delivered: true }),
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
 
-import { queueEffortReviewIfNeeded, runEffortReview, findPendingEffortReviewTaskIds } from '../pm-agent.js';
-import { EFFORT_REVIEW_DELTA_CALLS, effortDelta, chargeEffort } from '../effort-governor.js';
-import { countTrackerWorkThisIteration } from '../../agent/v2/steps/execute/tracker-counting.js';
-import { setTrackerStatus } from '../../work/tracker-store.js';
-import { initState } from '../../agent/v2/state.js';
-import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
-import type { ExecuteContext } from '../../agent/v2/steps/execute/index.js';
+import { queueEffortReviewIfNeeded, runEffortReview, findPendingEffortReviewTaskIds } from '../../../../../tracker/pm-agent.js';
+import { EFFORT_REVIEW_DELTA_CALLS, effortDelta, chargeEffort } from '../../../../../tracker/effort-governor.js';
+import { countTrackerWorkThisIteration } from '../tracker-counting.js';
+import { setTrackerStatus } from '../../../../../work/tracker-store.js';
+import { initState } from '../../../state.js';
+import { createWorkTable, seedTrackerTask } from '../../../../../work/__tests__/work-fixture.js';
+import type { ExecuteContext } from '../index.js';
 
 const AGENT = 'agent-sweeper';
 let TASK = 'unset';
