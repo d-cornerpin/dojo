@@ -22,7 +22,7 @@ import { TRIVIAL_TOOLS } from './tool-sets.js';
 import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
-import { chargeEffortCalls } from '../../../../tracker/effort-governor.js';
+import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
 
 /**
  * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.

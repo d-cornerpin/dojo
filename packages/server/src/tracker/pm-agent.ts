@@ -46,7 +46,8 @@ import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 import { isTerminalTaskStatus } from '../agent/tool-helpers.js';
 // SLOW-INFERENCE T79d: `effort-governor.ts` is a declared LEAF (its own header) — this file
 // may import from it, never the reverse, so no cycle.
-import { effortDelta, advanceBaseline, effortNoveltyLines, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
+import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclingVerdict } from './effort-governor.js';
+import { effortNoveltyLines } from './effort-ledger.js';
 import { taskLastMovedAt, agentIsLive } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
