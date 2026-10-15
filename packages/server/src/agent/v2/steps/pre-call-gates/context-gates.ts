@@ -33,7 +33,7 @@ import { getFreshTailCount } from '../../../../memory/budget.js';
 import { getContextWindow } from '../../../model.js';
 import { backgroundDrains } from '../../../shared-state.js';
 import { compactionBrakeMsLeft } from '../../../../memory/compaction-brakes.js';
-import { parkAfterForcedPass, endFullContextWait } from './full-context-wait.js';
+import { parkAfterForcedPass, endFullContextWait } from '../../full-context-wait.js';
 import { compactionGate } from '../../classifiers/compaction.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';

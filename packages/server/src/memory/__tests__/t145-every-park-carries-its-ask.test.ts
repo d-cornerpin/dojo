@@ -167,7 +167,7 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     const gates = engineCode("parkAfterForcedPass(agentId, 'context-gate-rebuild'");
     expect(gates).not.toMatch(/queueSelfWake\(agentId, 'context-gate-rebuild'\)/);
     expect(gates.match(/parkAfterForcedPass\(agentId, 'context-gate-rebuild', brakedBefore\)/g)?.length).toBe(2);
-    const wait = engineCode('export function parkAfterForcedPass');
+    const wait = strip(fs.readFileSync(path.join(SRC, 'agent/v2/full-context-wait.ts'), 'utf8'));
     expect(wait).not.toMatch(/queueSelfWake\(/);
     expect(wait.match(/\bparkJob\(agentId, reason\)/g)?.length).toBe(1);
     expect(wait.match(/\bparkJob\(agentId, reason, 'timer', msLeft\)/g)?.length).toBe(1);

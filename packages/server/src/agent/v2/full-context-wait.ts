@@ -30,11 +30,11 @@
 // writer answering again; the agent is never parked on a lock that only a click can lift.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { createLogger } from '../../../../logger.js';
-import { compactionBrakeMsLeft } from '../../../../memory/compaction-brakes.js';
-import { parkJob } from '../../../../work/job-continuation.js';
-import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../../../healer/owner-notices.js';
-import { sendAlert } from '../../../../services/imessage-bridge.js';
+import { createLogger } from '../../logger.js';
+import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
+import { parkJob } from '../../work/job-continuation.js';
+import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
+import { sendAlert } from '../../services/imessage-bridge.js';
 
 const logger = createLogger('v2-context-wait');
 

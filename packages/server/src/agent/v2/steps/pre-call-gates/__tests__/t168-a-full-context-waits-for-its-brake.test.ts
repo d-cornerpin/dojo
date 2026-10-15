@@ -27,7 +27,7 @@ import { stoppedAgents, preemptedAgents, pendingWakeups, turnContinuationCounts,
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import { compactionIsBraked, notePassOutcome, noteLowYield, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import { endJobCarry } from '../../../../../work/task-freshness.js';
-import { __resetFullContextWaitForTests } from '../full-context-wait.js';
+import { __resetFullContextWaitForTests } from '../../../full-context-wait.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../../../../db/connection.js', async () => {
