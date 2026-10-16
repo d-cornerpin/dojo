@@ -8,7 +8,8 @@ import { getDb } from '../../db/connection.js';
  *  RWNWC0KXA10DEL"; a shared "the", "note" or "list" names nothing. */
 const ORDINARY = new Set(['commitment', 'commitments', 'promise', 'tomorrow', 'reminder', 'follow', 'followup', 'tracker', 'recorded', 'logged', 'tracked', 'added', 'before', 'after', 'there', 'their', 'these', 'those', 'about', 'should', 'would', 'could', 'still', 'items', 'today']);
 function distinctiveWords(s: string): Set<string> {
-  return new Set((s.toLowerCase().match(/[a-z0-9]{6,}/g) ?? []).filter((w) => !ORDINARY.has(w)));
+  // t182: compared by stem, so "receipt" names a title's "receipts" (Run 16 S2 a2).
+  return new Set((s.toLowerCase().match(/[a-z0-9]{6,}/g) ?? []).filter((w) => !ORDINARY.has(w)).map((w) => w.replace(/(?:es|s)$/, '')));
 }
 export function namesOpenWork(claim: string, titles: readonly string[]): boolean {
   const said = distinctiveWords(claim);

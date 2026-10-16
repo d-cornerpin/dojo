@@ -6,6 +6,7 @@
 // entry at a time and the matching legacy block is deleted only at R7, after the
 // registry has been byte-proven on the dev server.
 
+import { isPresenceCheck, PRESENCE_HINT } from '../presence-check.js';
 import { register } from './registry.js';
 import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection, type AssemblyContext, type EngineMessage } from './types.js';
 import { renderCounterpartyHeader } from '../../agent/v2/counterparty.js';
@@ -296,6 +297,7 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
       resolvedDestination: tc.resolvedReplyChannel,
     }));
   }
+  if (tc?.counterparty && tc.counterparty.kind !== 'agent' && !tc.isEngineTurn && !tc.isNotificationTurn && isPresenceCheck(ctx.lastUserMessageContent)) parts.push(PRESENCE_HINT);   // t182
   const rd = renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName);
   if (rd) parts.push(rd);
   const cl = renderChannelLandscape(ctx.inboundChannel);
