@@ -1,3 +1,4 @@
+import { dropEmptyMessages } from './drop-empty.js';
 import type Anthropic from '@anthropic-ai/sdk';
 // W81: the tracker-stamp and tracker-view imports LEFT with the two work-board lanes. Their
 // one reader in this tree is `memory/work-board-lane.ts` now, which is where the SQL that
@@ -321,8 +322,8 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
     break;
   }
 
-  // Ensure alternating roles.
-  const merged = mergeConsecutiveRoles(messages);
+  // Ensure alternating roles (t183: after dropping messages and blocks that say nothing).
+  const merged = mergeConsecutiveRoles(dropEmptyMessages(messages));
 
   // Self-heal: drop orphaned tool blocks so a broken tool_use/tool_result
   // invariant doesn't cause provider errors. Loud warning if >half is dropped.

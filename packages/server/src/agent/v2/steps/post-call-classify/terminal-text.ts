@@ -323,7 +323,7 @@ export async function runTerminalText(
       if (
         (turnCtx.startAckSteerArmedThisTurn || turnCtx.startAckSteerRequested) &&
         !turnCtx.engineStartAckDeliveredThisTurn &&
-        turnCtx.deferredUserReplyWithTools &&
+        stripMoodMarker(turnCtx.deferredUserReplyWithTools ?? '').trim() && !isRowLabelOnly(turnCtx.deferredUserReplyWithTools) &&   // t183: a mood tag alone is no start line
         !startAckRepliedNow()
       ) {
         turnCtx.engineStartAckDeliveredThisTurn = true;
