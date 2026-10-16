@@ -279,9 +279,12 @@ describe('t139 §2b — every UNFINISHED task is listed, waiting ones labelled; 
     expect(block).toMatch(/waiting on [^\n]+ to answer/);
   });
 
-  it('a task scheduled for later (on_deck) is not current work and is not listed', async () => {
+  // t181 changed this clause: an on_deck task is left off ONLY when the scheduler will bring it back (it carries a
+  // schedule). With no time recorded nothing would, so it is listed as set aside (see the t181 block at the end).
+  it('a task scheduled for later (on_deck, WITH a time) is not current work and is not listed', async () => {
     ownerSays('msg-later', 'Next month, remind me to renew the domain.', DAY_ONE - 60_000);
     const id = task('Renew the domain', undefined, 'msg-later');
+    mockDb.current!.prepare('UPDATE work SET scheduled_start = ? WHERE id = ?').run('2026-11-01T09:00:00Z', id);
     const r = setTrackerStatus(id, 'on_deck', { by: 'agent', actorId: AGENT, reason: 'scheduled for later' });
     expect(r.kind).toBe('applied');
     expect((await buildWorkBoardLane(AGENT)).activeTasks).toBeNull();
@@ -519,5 +522,34 @@ describe('t139 §5 — round 5: rows, titles and notes follow the room too', () 
     const tight = (await buildWorkBoardLane(AGENT, roomOf(estimateTokens(roomy) - 1))).activeTasks!;
     expect(tight).toContain(`• ${title.slice(0, 120)}... (ID:`);
     expect(tight).toContain(`Last note: ${note.slice(0, 200)}\n`);
+  });
+});
+
+// ── t181 (Run 16 S2 attempt 1) ─────────────────────────────────────────────────────────────
+// The owner said "open a task … leave it open: I will ask you to look at the note tomorrow". The agent set it
+// `on_deck` ("scheduled for later") with NO time. `on_deck` is left off the list on purpose because the
+// scheduler brings a queued job back when it is due — but this one has no due time, so nothing ever would:
+// the owner's words left the agent's view for good. An on_deck task with no schedule is WAITING, so it is
+// shown and labelled like a paused one; a scheduled on_deck task stays off the list, as before.
+describe('t181 — a task set aside for later with no time stays on the list', () => {
+  it('an unscheduled on_deck task is listed, pointing to the owner\'s request, labelled as set aside', async () => {
+    const ask = 'Open a task called "Check the handover note T181-NOTE" and leave it open: I will ask you to look at the note tomorrow.';
+    ownerSays('m-t181', ask, DAY_ONE);
+    const id = task('Check the handover note T181-NOTE', undefined, 'm-t181');
+    expect(setTrackerStatus(id, 'on_deck', { by: 'agent', actorId: AGENT, reason: 'scheduled for later' }).kind).toBe('applied');
+    const board = await buildWorkBoardLane(AGENT, roomOf(reserveRoom()));
+    expect(board.activeTasks, 'the task is on the list').not.toBeNull();
+    expect(board.activeTasks!).toContain('T181-NOTE');
+    // A waiting task points to the owner's request (the same pointer a paused task carries), never drops it.
+    expect(board.activeTasks!).toContain('history_get(id="m-t181")');
+    expect(board.activeTasks!).toMatch(/set aside for later/);
+  });
+  it('CONTROL: an on_deck task WITH a scheduled start stays off the list (the scheduler owns it)', async () => {
+    ownerSays('m-t181b', 'Remind me to water the plants on Friday.', DAY_ONE);
+    const id = task('Water the plants T181-SCHED', undefined, 'm-t181b');
+    mockDb.current!.prepare('UPDATE work SET scheduled_start = ? WHERE id = ?').run('2026-10-03T09:00:00Z', id);
+    expect(setTrackerStatus(id, 'on_deck', { by: 'agent', actorId: AGENT, reason: 'scheduled for later' }).kind).toBe('applied');
+    const board = await buildWorkBoardLane(AGENT, roomOf(reserveRoom()));
+    expect(board.activeTasks ?? '').not.toContain('T181-SCHED');
   });
 });

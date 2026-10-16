@@ -47,6 +47,7 @@
 // and the cross-turn gate can still judge them separately.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { unscheduled } from './unscheduled-task.js';
 import { getDb } from '../db/connection.js';
 import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
@@ -141,7 +142,7 @@ interface TaskView {
   inView?: boolean;
 }
 
-type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other';
+type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other' | 'later';
 
 /** `WHOLE` when the view holds everything; the declared `LANE_LIMITS` widths (what the reserve
  *  was derived at) when it cannot. */
@@ -237,6 +238,7 @@ function waitingOn(v: TaskView, caps: TermCaps): string {
     case 'blocked': return 'waiting on what blocked it (its last note says what)';
     case 'engine': return `waiting on ${capLabel(v.origin.party, 'the person who asked', caps)} to answer`;
     case 'owner': return 'paused by the owner';
+    case 'later': return 'set aside for later with no time set — resume it when asked';
     default: return 'paused by whoever paused it';
   }
 }
@@ -503,6 +505,8 @@ export async function buildWorkBoardLane(agentId: string, view?: TaskListView): 
       (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
     tasks = BOARD_STATUSES.flatMap((status) =>
       (listTasks({ status, assignedTo: agentId }) as unknown as BoardTask[]).sort(newestFirst));
+    // t181: an on_deck task with NO schedule is waiting, not queued — nothing will bring it back, so it is listed.
+    tasks.push(...(listTasks({ status: 'on_deck', assignedTo: agentId }) as unknown as BoardTask[]).filter((t) => unscheduled(t.id)).sort(newestFirst));
   } catch {
     return { attemptLedger: null, activeTasks: null };   // tracker may not be available
   }
@@ -576,13 +580,13 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
         }
       } catch { /* stamps are best-effort */ }
       const { origin, conversationId, seq } = readOrigin(originStmt, t.id);
-      const isWaiting = t.status === 'paused' || t.status === 'blocked';
+      const isWaiting = t.status === 'paused' || t.status === 'blocked' || t.status === 'on_deck';
       let waiting: TaskView['waiting'] = null;
       if (isWaiting) {
-        const state = t.status === 'paused' ? 'paused' : 'blocked';
+        const state = t.status ?? 'paused';
         const into = sinceStmt.get(t.id, state) as { created_at: number | string; by: string | null } | undefined;
         const since = into?.created_at ?? null;
-        const by: WaitingBy = t.status === 'blocked' ? 'blocked'
+        const by: WaitingBy = t.status === 'blocked' ? 'blocked' : t.status === 'on_deck' ? 'later'
           : into?.by === 'engine' ? 'engine' : into?.by === 'owner' ? 'owner' : 'other';
         waiting = { since, by };
       }
@@ -713,10 +717,10 @@ export function activeTasksWorstCaseTokens(): number {
   const party = 'l'.repeat(labelCap + 10);
   const caps = declaredCaps();
   // The widest of the four "waiting on" texts, by rendering each through the real `waitingOn`.
-  const widestWaitingBy = (['blocked', 'engine', 'owner', 'other'] as const)
+  const widestWaitingBy = (['blocked', 'engine', 'owner', 'other', 'later'] as const)
     .map((by) => ({ by, len: waitingOn({ origin: { party }, waiting: { since: null, by } } as TaskView, caps).length }))
     .sort((a, b) => b.len - a.len)[0].by;
-  const widestWaitingStatus = BOARD_STATUSES.filter((st) => st !== 'in_progress').sort((a, b) => b.length - a.length)[0];
+  const widestWaitingStatus = [...BOARD_STATUSES.filter((st) => st !== 'in_progress'), 'on_deck'].sort((a, b) => b.length - a.length)[0];
   const view = (shape: 'current' | 'waiting' | 'inView', newestLen = wordsCap + 1): TaskView => ({
     t: {
       id: 'w'.repeat(36),
