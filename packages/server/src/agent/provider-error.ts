@@ -297,8 +297,8 @@ export function classifyProviderErrorText(text: string): ProviderErrorFacts {
   for (const code of TRANSPORT_CODES) {
     if (lower.includes(code.toLowerCase())) return decided('network');
   }
-  if (lower.includes('fetch failed') || lower.includes('socket hang up')
-    || lower.includes('getaddrinfo') || lower.includes('network')
+  if (lower.includes('fetch failed') || lower.includes('socket hang up') || /(?:^|:\s*)terminated\.?$/.test(lower.trim())
+    || lower.includes('other side closed') || lower.includes('getaddrinfo') || lower.includes('network')
     || lower.includes('timed out') || lower.includes('timeout')) {
     return decided('network');
   }
