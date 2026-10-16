@@ -15,7 +15,7 @@ describe('t182: a presence check asks nothing else', () => {
   it('the turn context carries the hint on a person\'s presence check, and not on an engine turn or another message', () => {
     const entry = getMessageEntries().find((e) => e.id === 'msg.turn-context')!;
     const base = { agentId: 'a', inboundChannel: null, lastUserContent: '', replyDestination: null } as Record<string, unknown>;
-    const cp = { kind: 'user', name: 'David', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
+    const cp = { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
     const text = (ctx: Record<string, unknown>): string => JSON.stringify((entry.render as (c: unknown) => unknown)(ctx) ?? '');
     expect(text({ ...base, lastUserMessageContent: 'You there?', turnContext: { counterparty: cp } })).toContain('only checks that you are here');
     expect(text({ ...base, lastUserMessageContent: 'You there?', turnContext: { counterparty: cp, isEngineTurn: true } })).not.toContain('only checks that you are here');
