@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/memory/work-board-lane.ts",
+      "from": 786,
+      "to": 790,
+      "by": "t181 (2026-10-15), a task set aside for later with no time stays on the list",
+      "why": "+4: the import, the comment and the one push of unscheduled on_deck tasks in buildWorkBoardLane, and the 'later' waiting label case. The schedule read lives in the new memory/unscheduled-task.ts; the other edits (the waiting kind, the widest-label sets) are token edits of existing lines."
+    },
+    {
       "path": "packages/server/src/agent/v2/recorded-commitment.ts",
       "from": 209,
       "to": 214,
@@ -8891,7 +8898,7 @@
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 464,
     "packages/server/src/memory/tail-horizon.ts": 552,
-    "packages/server/src/memory/work-board-lane.ts": 786,
+    "packages/server/src/memory/work-board-lane.ts": 790,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
