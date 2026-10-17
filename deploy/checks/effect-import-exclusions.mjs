@@ -106,6 +106,11 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'the update\'s disk-space pre-flight (SWEEP CORE-2 item 3, the owner\'s 2026-08-06 ask). Same class and same reasoning as gateway/routes/update.ts, which is its only caller: an agent can ask for an update, and this measures whether there is room for one. It is READ-ONLY — statfs on the data directory, statSync on the database and a walk of the installed platform tree — and every path is a platform literal (~/.dojo/data/dojo.db, ~/.dojo/platform) or is derived from it. The two parameters that can name a different path exist so a constrained-volume rehearsal and the unit suite can point it at a body of a known size; no agent-facing surface passes them. It writes nothing.',
   },
   {
+    file: 'update/install-tree.ts',
+    klass: 'agent-triggered',
+    why: 'the ONE platform installer (v3.4 t197), which the self-update and rollback routes and deploy/install.sh all call. Same class and reasoning as gateway/routes/update.ts, out of which it was moved: an agent can ask for an update, and every path here is a platform literal (~/.dojo/platform, its platform.backup-*/platform.staging-* siblings, the rollback.lock) or the release the platform downloaded. It clones dependencies, runs npm in the staged tree, loads the database module as a check, and renames trees. No argument an agent supplies forms a path or a command.',
+  },
+  {
     file: 'update-state.ts',
     klass: 'agent-triggered',
     why: 'the update state file, a fixed platform path. No argument reaches it.',
