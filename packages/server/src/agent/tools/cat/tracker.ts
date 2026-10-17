@@ -98,7 +98,7 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
   return [...nums].sort((a, b) => a - b).join(',');
 }
 
-export const trackerHandlers: ToolHandlerMap = {
+const tableOfHandlers: ToolHandlerMap = {
   async "work_open:project"({ agentId, args }) {
     let content = '';
     let isError = false;
@@ -126,7 +126,6 @@ export const trackerHandlers: ToolHandlerMap = {
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="project")');
     }
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -271,7 +270,6 @@ export const trackerHandlers: ToolHandlerMap = {
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="task")');
     }
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -368,7 +366,6 @@ export const trackerHandlers: ToolHandlerMap = {
       content = friendlyDbError(err, 'work_open(kind="reminder")');
     }
     // ASK_USER is an instruction to the agent, not an error.
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -398,7 +395,6 @@ export const trackerHandlers: ToolHandlerMap = {
     if (args.priority !== undefined) updateArgs.priority = args.priority;
     if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
     content = trackerUpdateStatus(agentId, updateArgs);
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -409,7 +405,6 @@ export const trackerHandlers: ToolHandlerMap = {
       taskId: args.task_id as string,
       notes: args.notes as string,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -425,7 +420,6 @@ export const trackerHandlers: ToolHandlerMap = {
         title: args.title as string | undefined,
         description: args.description as string | null | undefined,
       });
-      isError = content.startsWith('Error');
       return { content, isError };
     }
     const editErr = checkRequired([
@@ -490,7 +484,6 @@ export const trackerHandlers: ToolHandlerMap = {
       }
     }
     content = trackerEditTask(agentId, editArgs);
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -511,7 +504,6 @@ export const trackerHandlers: ToolHandlerMap = {
     // The tool takes a single 'id' param, try as task first, then project
     const lookupId = args.id as string;
     content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId, offset: coerceNumberArg(args.offset) });   // t169: pages the task's notes
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -532,7 +524,6 @@ export const trackerHandlers: ToolHandlerMap = {
     } else {
       content = trackerListActive(agentId, { scope: 'all', verbose });
     }
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -731,7 +722,6 @@ export const trackerHandlers: ToolHandlerMap = {
       result: args.result,
       evidence: args.evidence,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -758,7 +748,6 @@ export const trackerHandlers: ToolHandlerMap = {
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
     else if (vkind === 'complete') content = await trackerMod.trackerValidateComplete(agentId, vp);
     else content = await trackerMod.trackerValidateBlocked(agentId, vp);
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -776,7 +765,6 @@ export const trackerHandlers: ToolHandlerMap = {
       target_status: args.target_status as string | undefined,
       allow_regenerate: args.allow_regenerate as boolean | undefined,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -794,7 +782,6 @@ export const trackerHandlers: ToolHandlerMap = {
       requested_status: args.requested_status as string,
       justification: args.justification as string,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -812,7 +799,6 @@ export const trackerHandlers: ToolHandlerMap = {
       approve: args.approve as boolean,
       reason: args.reason as string,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -832,7 +818,6 @@ export const trackerHandlers: ToolHandlerMap = {
       agent_summary: args.agent_summary as string,
       pm_rejection_summary: args.pm_rejection_summary as string,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -850,7 +835,6 @@ export const trackerHandlers: ToolHandlerMap = {
       status: args.status as string,
       user_quote: args.user_quote as string,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -869,7 +853,6 @@ export const trackerHandlers: ToolHandlerMap = {
       user_quote: args.user_quote as string,
       feedback: args.feedback as string | undefined,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -887,7 +870,6 @@ export const trackerHandlers: ToolHandlerMap = {
       reason: args.reason as string,
       user_quote: args.user_quote,
     });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -897,7 +879,6 @@ export const trackerHandlers: ToolHandlerMap = {
     const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
     content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -907,7 +888,6 @@ export const trackerHandlers: ToolHandlerMap = {
     const trsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (trsErr) { content = trsErr; isError = true; return { content, isError }; }
     content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -930,7 +910,6 @@ export const trackerHandlers: ToolHandlerMap = {
     ]);
     if (trmrErr) { content = trmrErr; isError = true; return { content, isError }; }
     content = trackerResolveMissedRuns(agentId, { ...args, action: rawResolution });
-    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -991,3 +970,16 @@ export const trackerHandlers: ToolHandlerMap = {
     };
   },
 };
+
+// ── ONE RULE FOR "IS THIS AN ERROR" (t189 B3) ──
+// Each handler used to repeat `isError = content.startsWith('Error')` by hand, and six forgot it,
+// so a refused validate or override read as a success to the error-loop counter and the
+// identical-call brake. The rule is stated here, once, for every handler in the table (a handler
+// added later gets it too); a handler may still set `isError` itself for a refusal that does not
+// begin with `Error`.
+export const trackerHandlers: ToolHandlerMap = Object.fromEntries(
+  Object.entries(tableOfHandlers).map(([key, handler]) => [key, async (ctx) => {
+    const out = await handler(ctx);
+    return out.isError || !out.content.startsWith('Error') ? out : { ...out, isError: true };
+  }]),
+);
