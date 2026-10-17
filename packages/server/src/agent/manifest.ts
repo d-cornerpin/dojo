@@ -139,21 +139,37 @@ export function artifactPathFor(agentId: string): string {
   return path.join(homeDir(), '.dojo', 'uploads', agentId, '**');
 }
 
+// ── THE DIRECTORY ITSELF, FOR READS (t189 B5) ──
+// `<dir>/**` names the directory's CONTENTS: `matchPathPattern` anchors it as `^<dir>/.*$`,
+// which needs the trailing slash. So `file_read` of a file inside was granted while
+// `file_list` of the folder (a read of `<dir>` itself) was refused, `no-grant`. The bare
+// directory is granted too, on `file_read` only: listing is a read, and nothing in the
+// artifact flow needs to WRITE the directory node. It is this agent's own id, so no agent
+// gains another's path. The matcher is NOT widened to let `X/**` match `X`; that would
+// change every grant on the box and is a different ruling.
 function withArtifactPath(
   value: string[] | '*' | 'none',
   agentId: string,
+  alsoTheDirectory = false,
 ): string[] | '*' | 'none' {
   if (value === '*') return '*';
   if (value === 'none') return 'none';   // deny-all has nothing to widen
   const artifact = artifactPathFor(agentId);
-  return value.includes(artifact) ? value : [...value, artifact];
+  const wanted = alsoTheDirectory ? [artifact, artifactDirFor(agentId)] : [artifact];
+  const missing = wanted.filter((p) => !value.includes(p));
+  return missing.length === 0 ? value : [...value, ...missing];
 }
 
-/** Any manifest, with this agent's artifact directory readable and writable. */
+/** `~/.dojo/uploads/<agentId>` — the directory node, which `…/**` does not match. */
+export function artifactDirFor(agentId: string): string {
+  return path.join(homeDir(), '.dojo', 'uploads', agentId);
+}
+
+/** Any manifest, with this agent's artifact directory readable (and listable) and writable. */
 export function withArtifactPaths(manifest: PermissionManifest, agentId: string): PermissionManifest {
   return {
     ...manifest,
-    file_read: withArtifactPath(manifest.file_read, agentId),
+    file_read: withArtifactPath(manifest.file_read, agentId, true),
     file_write: withArtifactPath(manifest.file_write, agentId),
   };
 }

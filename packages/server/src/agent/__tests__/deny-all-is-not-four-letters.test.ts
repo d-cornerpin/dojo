@@ -55,7 +55,7 @@ vi.mock('../../config/platform.js', () => ({
   isTrainerAgent: () => false,
   isPrimaryAgent: () => false,
 }));
-import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor } from '../manifest.js';
+import { PRIMARY_AGENT_PERMISSIONS, artifactPathFor, artifactDirFor } from '../manifest.js';
 import { defaultChildScope, resolveChildScope, parseStoredManifest, scopeExcesses } from '../scope.js';
 import { projectManifestToRules, grantForManifest } from '../brokers/grants.js';
 import { authorizeFs } from '../brokers/fs.js';
@@ -97,7 +97,8 @@ describe('A — `none` stays `none` through the artifact-path widening', () => {
       { ...PRIMARY_AGENT_PERMISSIONS, file_read: ['/tmp/**'], file_write: ['/tmp/**'] },
       AGENT,
     );
-    expect(scoped.file_read).toEqual(['/tmp/**', artifactPathFor(AGENT)]);
+    // t189 B5: reads also gain the bare directory (listing is a read of the directory node).
+    expect(scoped.file_read).toEqual(['/tmp/**', artifactPathFor(AGENT), artifactDirFor(AGENT)]);
     expect(scoped.file_write).toEqual(['/tmp/**', artifactPathFor(AGENT)]);
   });
 
