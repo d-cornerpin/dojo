@@ -106,6 +106,10 @@ const ENTRIES = [
   'packages/shared/src/index.ts',
   'packages/dashboard/src/main.tsx',
   'watchdog/src/index.ts',
+  // v3.4 t197: a fifth real entry point. deploy/install.sh runs it with `node` from the unpacked
+  // release (`install-tree-cli.js`), so nothing imports it; it is how a (re)install reaches the
+  // same installer the in-app update uses.
+  'packages/server/src/update/install-tree-cli.ts',
 ];
 
 // ════════════════════════════════════════
