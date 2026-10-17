@@ -345,8 +345,14 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   );
 };
 
+// Keyed by id: the route reuses one element for every agent, so each agent gets a fresh panel
+// and a late answer for the agent you left lands in a panel that is gone (GitHub #14).
 export const AgentConfigPanel = () => {
   const { id } = useParams<{ id: string }>();
+  return <AgentConfigFor key={id} id={id} />;
+};
+
+const AgentConfigFor = ({ id }: { id: string | undefined }) => {
   const [agent, setAgent] = useState<AgentDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

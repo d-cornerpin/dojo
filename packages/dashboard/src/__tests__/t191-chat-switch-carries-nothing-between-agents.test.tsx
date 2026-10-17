@@ -55,14 +55,14 @@ import { ThemeProvider } from '../themes/ThemeProvider';
 
 /** The agent the provider defaults to, and the one we switch to. */
 const A = 'primary';
-const B = 'agent-bee';
+const B = 'agent-two';
 
 /** A hand on the provider's own selector: the same call the Agents panel makes. */
 function SwitchTo() {
   const { selectAgent } = useActiveAgent();
   return (
     <>
-      <button onClick={() => selectAgent({ id: B, name: 'Bee' })}>go-to-b</button>
+      <button onClick={() => selectAgent({ id: B, name: 'Second agent' })}>go-to-b</button>
       <button onClick={() => selectAgent(null)}>go-to-a</button>
     </>
   );

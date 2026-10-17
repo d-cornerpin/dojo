@@ -28,6 +28,8 @@ import { AttachmentChips } from '../components/AttachmentChips';
 import { ThinkingBubble } from '../components/ThinkingBubble';
 import { Dojo3Stage } from '../components/Dojo3Stage';
 import { PresenceProvider } from '../components/PresenceProvider';
+import { useAgentState } from '../hooks/useAgentScopedState';
+import { backfillUntilRenderable } from '../lib/chat-history-backfill';
 
 // ── Orb mood ──
 // Map a model-emitted `((mood: NAME))` marker to one of the orb's emotions.
@@ -758,19 +760,19 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
   const [agentName, setAgentName] = useState('');
   const [modelNames, setModelNames] = useState<Record<string, string>>({});
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useAgentState<ChatMessage[]>(AGENT_ID, []);
   const [input, setInput] = useState('');
-  const [isWorking, setIsWorking] = useState(false);
+  const [isWorking, setIsWorking] = useAgentState(AGENT_ID, false);
   // Kind of the current working turn, from agent:status. 'a2a' = the agent is
   // only talking to another agent; we keep the composer quiet for those (no
   // thinking dots / stop button) unless wordy mode is on.
-  const [turnKind, setTurnKind] = useState<'user' | 'a2a'>('user');
+  const [turnKind, setTurnKind] = useAgentState<'user' | 'a2a'>(AGENT_ID, 'user');
   // UX-REPAIR T7. What the LAST working frame said about serving a human, kept as its own
   // three-state value: `true` / `false` / `undefined` for a bare legacy frame that carried
   // no such field. It is deliberately NOT folded into `turnKind`: a background scheduler /
   // PM-poke / watcher turn is `turnKind:'user'` AND `userFacing:false`, so the two facts
   // disagree on exactly the frames this guard is for.
-  const [turnUserFacing, setTurnUserFacing] = useState<boolean | undefined>(undefined);
+  const [turnUserFacing, setTurnUserFacing] = useAgentState<boolean | undefined>(AGENT_ID, undefined);
   // The user has a request in flight (sent a message, no completion yet). Drives
   // the working UI (thinking dots + stop button) so it stays visible for the
   // WHOLE request — even when the agent dips into agent-to-agent (a2a)
@@ -780,13 +782,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // because the work ran over a2a). Set on send, cleared when the agent goes
   // idle (request done). Background a2a churn never sets this, so the UI still
   // stays quiet for PURE inter-agent work with no user waiting.
-  const [awaitingUserReply, setAwaitingUserReply] = useState(false);
+  const [awaitingUserReply, setAwaitingUserReply] = useAgentState(AGENT_ID, false);
   // A-5b / RULING #9 — work that outlives the turn, which no `agent:status` frame describes.
   // `stoppable` is the SERVER's answer; this component keeps no tally of its own.
-  const [backgroundStoppable, setBackgroundStoppable] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [backgroundStoppable, setBackgroundStoppable] = useAgentState(AGENT_ID, false);
+  const [loading, setLoading] = useAgentState(AGENT_ID, true);
+  const [loadingMore, setLoadingMore] = useAgentState(AGENT_ID, false);
+  const [hasMore, setHasMore] = useAgentState(AGENT_ID, true);
   const toast = useToast();
   const [wordyMode, setWordyMode] = useState(() => {
     const stored = localStorage.getItem('dojo_wordy_mode');
@@ -800,7 +802,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // button appears above the composer. Re-pin only when they click it or scroll
   // back to the bottom. The ref mirrors the state so the WS handlers + the
   // messages effect (set up once / not in deps) read the live value.
-  const [pinnedToBottom, setPinnedToBottom] = useState(true);
+  const [pinnedToBottom, setPinnedToBottom] = useAgentState(AGENT_ID, true);
   const pinnedToBottomRef = useRef(true);
   // True while a "jump to latest" is in flight: the scroll handler must not
   // un-pin (and re-show the button) on the intermediate positions of a multi-
@@ -815,6 +817,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
   }, []);
   const { subscribe } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
+  const statusFrameSeqRef = useRef(0); // frames heard for this agent: lets a load tell if its answer is stale
 
   // ── Orb mood ──
   // The active agent can lead a reply with a `((mood: NAME))` marker; we read it
@@ -854,9 +857,15 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
   // Reset mood tracking when the active agent changes (a new agent starts
   // neutral; its own next reply re-drives the orb).
+  // The same goes for every other per-agent ref (the per-agent STATE is `useAgentState`).
   useEffect(() => {
     lastEmotionKeyRef.current = null;
     streamTextRef.current.clear();
+    currentToolCallsRef.current = [];
+    lastMessageIdRef.current = null;
+    lastMessageSigRef.current = null;
+    pinnedToBottomRef.current = true;
+    jumpingRef.current = false;
   }, [AGENT_ID]);
 
   // Auto-scroll — fires on (a) new message appended and (b) the last
@@ -937,11 +946,17 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setLoading(true);
       return;
     }
+    // The cancel token: a load belongs to the agent (and mode) that started it.
+    let active = true;
     const loadHistory = async () => {
-      // Check if agent is currently working (e.g. user navigated away and came back)
+      // Ask the server whether this agent is working (e.g. user navigated away and came back),
+      // and take the ANSWER, working or idle: an idle agent sends no frame to say so. A status
+      // frame that arrived while we asked is newer than the answer, so it stands.
+      const seq = statusFrameSeqRef.current;
       const agentResult = await api.getAgent(AGENT_ID);
-      if (agentResult.ok && agentResult.data.status === 'working') {
-        setIsWorking(true);
+      if (!active) return;
+      if (agentResult.ok && statusFrameSeqRef.current === seq) {
+        setIsWorking(agentResult.data.status === 'working');
       }
       // …and the same question, asked once on the way in: a user who comes back mid-render
       // arrives before the next lifecycle edge. `inFlight` is `live-work.ts`'s own output.
@@ -958,6 +973,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
       // Load model name lookup for wordy mode display
       const modelsResult = await api.getModels();
+      if (!active) return;
       if (modelsResult.ok) {
         const lookup: Record<string, string> = {};
         for (const m of modelsResult.data) {
@@ -967,36 +983,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
       }
 
       const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
+      if (!active) return;
       if (result.ok) {
-        let loaded: Message[] = result.data;
-        // AUTO-BACKFILL (incident 2026-07-06, the blank-chat guarantee): the
-        // serving contract stays raw pages + client-side visibility, but a page
-        // can legitimately contain ZERO renderable rows when machine traffic
-        // (agent coordination) sits on top of the conversation. In that case do
-        // exactly what a user scrolling up would do, keep fetching older pages
-        // until real conversation renders (or history ends). Wordy mode renders
-        // every row, so its first page always satisfies the floor immediately.
-        // Bounded: 60 extra pages of 200 covers a pathological 12k-row pileup
-        // in a few seconds of background fetches; past that, the scroll-up path
-        // continues as always. After a user updates, this makes "open the chat,
-        // see nothing" impossible, their conversation is always dug up.
-        const rendersInRegular = (m: Message) =>
-          m.role === 'system'
-            ? false
-            : (m.role !== 'user' && m.role !== 'assistant')
-              ? false
-              : classifyMessageForDisplay(m).tier === 'user-visible';
-        const renderableCount = () =>
-          wordyMode ? loaded.length : loaded.filter(rendersInRegular).length;
-        let backfills = 0;
-        while (renderableCount() < 15 && loaded.length > 0 && backfills < 60) {
-          const oldest = loaded[0]?.id;
-          if (!oldest) break;
-          const older = await api.getChatHistory(AGENT_ID, 200, oldest, wordyMode);
-          if (!older.ok || older.data.length === 0) break;
-          loaded = [...older.data, ...loaded];
-          backfills++;
-        }
+        // Dig up older pages until real conversation renders (the blank-chat guarantee).
+        const loaded = await backfillUntilRenderable(result.data, wordyMode,
+          (oldest) => api.getChatHistory(AGENT_ID, 200, oldest, wordyMode), () => active);
+        if (!loaded) return;
         setMessages(
           loaded.map((m: Message) => ({
             id: m.id,
@@ -1030,6 +1022,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setLoading(false);
     };
     loadHistory();
+    return () => { active = false; };
     // wordyMode is a dep: the two modes are now different SERVER queries (wordy
     // adds the store's own-output rows), so toggling wordy must refetch history
     // rather than re-filter a single feed client-side.
@@ -1457,6 +1450,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
       const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a'; userFacing?: boolean; stopping?: boolean };
       if (e.agentId !== agentIdRef.current) return;
+      statusFrameSeqRef.current++;
       // T83: a `working` frame carrying `stopping: true` is the engine being HONEST — the row
       // still says working because the run is still unwinding, and it will keep saying so for
       // as long as that takes (a forced compaction has been measured at 285 s). The composer

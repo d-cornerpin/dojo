@@ -57,22 +57,20 @@ afterEach(() => { vi.resetAllMocks(); });
 
 describe('the config panel follows its agent', () => {
   it('the old agent is gone the moment the id changes, and a late answer for it never lands', async () => {
-    const slowA = defer<unknown>();
     const slowB = defer<unknown>();
     vi.mocked(api).getAgent.mockImplementation((async (id: string) => {
-      if (id === 'a') return detail('a', 'Agent-Aye');
+      if (id === 'a') return detail('a', 'Config-One');
       await slowB.promise;
-      return detail('b', 'Agent-Bee');
+      return detail('b', 'Config-Two');
     }) as unknown as typeof api.getAgent);
-    void slowA;
     render(tree());
-    await waitFor(() => expect(screen.queryAllByText('Agent-Aye').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.queryAllByText('Config-One').length).toBeGreaterThan(0));
 
     act(() => { screen.getByText('go-b').click(); });
-    expect(screen.queryAllByText('Agent-Aye').length, 'A\'s card stayed up under B\'s id').toBe(0);
+    expect(screen.queryAllByText('Config-One').length, 'A\'s card stayed up under B\'s id').toBe(0);
 
     await act(async () => { slowB.resolve(undefined); await Promise.resolve(); });
-    await waitFor(() => expect(screen.queryAllByText('Agent-Bee').length).toBeGreaterThan(0));
-    expect(screen.queryAllByText('Agent-Aye').length).toBe(0);
+    await waitFor(() => expect(screen.queryAllByText('Config-Two').length).toBeGreaterThan(0));
+    expect(screen.queryAllByText('Config-One').length).toBe(0);
   });
 });

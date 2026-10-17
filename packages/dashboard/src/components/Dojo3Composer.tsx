@@ -18,6 +18,7 @@ import { useDojoOrb } from './orb/OrbProvider';
 import { useToast } from '../hooks/useToast';
 import { usePresence } from './PresenceProvider';
 import { composerStopControl } from '../lib/stop-affordance';
+import { useAgentState } from '../hooks/useAgentScopedState';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
 // 1 GB per file, 2 GB per message. Mirrors ChatInput's caps for early UI
@@ -68,11 +69,12 @@ export function Dojo3Composer({
   onStop,
   placeholder,
 }: Dojo3ComposerProps) {
-  const [input, setInput] = useState('');
+  // Unsent work stays with the agent it was written for (GitHub #14).
+  const [input, setInput] = useAgentState(agentId, '', true);
   const [focused, setFocused] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [mode, setMode] = useState<'text' | 'file'>('text');
+  const [pendingFiles, setPendingFiles] = useAgentState<PendingFile[]>(agentId, [], true);
+  const [uploading, setUploading] = useAgentState(agentId, false, true);
+  const [mode, setMode] = useAgentState<'text' | 'file'>(agentId, 'text', true);
   const [dragOver, setDragOver] = useState(false);
 
   const composerRef = useRef<HTMLDivElement>(null);
