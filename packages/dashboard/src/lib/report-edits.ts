@@ -9,6 +9,8 @@
 // belongs in it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { GITHUB_EXPECTED_SCOPE } from './github-card';
+
 /** The five fields, named exactly as the server's `ReportBrief` is, so an edit needs no remap. */
 export interface BriefFields {
   title: string; whatHappened: string; whatShouldHaveHappened: string;
@@ -113,4 +115,26 @@ export function postTargetSentence(s: PostTarget): string {
   // retried). Printing `as null` would be the shape of bug this exists to make impossible.
   const asWho = who === '' ? 'the GitHub account connected to this Mac' : who;
   return `This will be posted as a public issue on ${where}, as ${asWho}. Anyone can read it.`;
+}
+
+/**
+ * WHAT CONNECTING GITHUB FROM THE REPORT CARD GRANTS, in one plain sentence (v3.4 E2).
+ *
+ * Read from the same constant the Settings card and the server pin, so it stops reassuring the
+ * moment the scope the Dojo asks for changes. The honest weight of `public_repo` is stated, not
+ * hidden: GitHub's sign-in for this kind of app has no narrower permission that can file an
+ * issue, so the same permission also covers changing the owner's public repositories. The Dojo
+ * only uses it to file reports. The Settings sentence (`scopeRequestSentence`) is the shorter
+ * one, and it undersells this; that is for its owner to revisit, not for this module to copy.
+ */
+export function connectOfferSentence(): string {
+  if (GITHUB_EXPECTED_SCOPE === 'public_repo') {
+    return 'Connect GitHub and this report is filed for you, with nothing to copy. The Dojo asks for '
+      + 'GitHub\'s "public_repo" permission. GitHub has no narrower permission for this kind of sign-in: '
+      + 'it lets the Dojo create issues on public repositories, and it also covers changing your own '
+      + 'public repositories. The Dojo only uses it to file reports and cannot read your private '
+      + 'repositories. You can disconnect any time in Settings.';
+  }
+  return `Connect GitHub and this report is filed for you, with nothing to copy. The Dojo asks GitHub for "${GITHUB_EXPECTED_SCOPE}". `
+    + 'Check what that permission allows before you connect.';
 }

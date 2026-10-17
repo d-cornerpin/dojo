@@ -4,6 +4,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { briefEditsFor, briefIsPostable, postTargetSentence, type BriefFields, type DuplicateMatch } from '../lib/report-edits';
 import { DeliveredPanel, DuplicatePanel } from './ReportDeliveryPanel';
+import { ReportConnectOffer } from './ReportConnectOffer';
 
 // ── THE PREVIEW CARD — THE ONLY DOOR TO POSTING (DOJO-REPORT T6) ──
 //
@@ -165,6 +166,8 @@ export const ReportPreviewCard = () => {
           repo: destination,
         })}
       </p>
+
+      <ReportConnectOffer github={github} onChanged={() => { void load(); }} />
 
       {problem && <div className="text-xs text-cp-coral">{problem}</div>}
 

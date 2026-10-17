@@ -29,11 +29,13 @@
 // C3) and the single place that may spend it is the route behind the Post button. This module
 // writes a file and builds a URL; it decides nothing.
 //
-// ── THE CAP BINDS THE LINK, NEVER THE FILE ──
+// ── THE CAP BINDS THE LINK, NEVER THE TEXT ──
 // A prefilled `issues/new` URL is a GET, and a SILENTLY truncated body is the owner's own words
-// cut off on a public page. So over the cap the link carries a short body naming the file and
-// the signature, and the result says `bodyWasTrimmed` so the card can say "the full text is in
-// the file — open it and paste". The file on disk is always whole.
+// cut off on a public page. So over the cap the link carries a short body (it names NOTHING
+// local: a path on the reporter's machine is useless to a maintainer and puts a home directory
+// on a public thread) and the result says `bodyWasTrimmed`. The whole text rides back in
+// `reportText`, so the dashboard's Copy button puts exactly the issue body on the clipboard and
+// nobody has to find a file. The file on disk is always whole too, and is the same bytes.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getReport } from './store.js';
@@ -55,20 +57,18 @@ export interface ExportResult {
   filePath: string;
   /** A prefilled `issues/new` link the owner can open and post themselves. */
   newIssueUrl: string;
-  /** True when the LINK carries a pointer instead of the brief. The file is whole either way. */
+  /** True when the LINK carries a pointer instead of the brief. The text is whole either way. */
   bodyWasTrimmed: boolean;
+  /** The full issue body, byte-identical to the file and to what the poster would send. */
+  reportText: string;
 }
 
-/** The short body a link falls back to. Names where the real text is, and what to search for. */
-function pointerBody(filePath: string, signature: string): string {
+/** The short body a link falls back to. Names the signature triage searches for, and nothing local. */
+function pointerBody(signature: string): string {
   return [
     'This report is too long to prefill into a link.',
     '',
-    `The full text is in this file on the reporter's Mac:`,
-    '',
-    `    ${filePath}`,
-    '',
-    'Open it and paste it here.',
+    'Paste the full report here, replacing this text. The Copy report button in the Dojo copies it.',
     '',
     `Signature: ${signature}`,
   ].join('\n');
@@ -90,7 +90,7 @@ export function exportReport(id: string): ExportResult | null {
 
   const encodedFull = encodeURIComponent(markdown);
   const bodyWasTrimmed = encodedFull.length > PREFILL_MAX_BODY_CHARS;
-  const body = bodyWasTrimmed ? pointerBody(filePath, row.signature) : markdown;
+  const body = bodyWasTrimmed ? pointerBody(row.signature) : markdown;
 
   // Built with `encodeURIComponent`, NOT `URLSearchParams`: the latter writes form encoding, so
   // a space becomes `+` and a brief containing a literal `+` becomes a brief containing a space
@@ -111,5 +111,6 @@ export function exportReport(id: string): ExportResult | null {
     filePath,
     newIssueUrl: `https://github.com/${reportRepo()}/issues/new?${query}`,
     bodyWasTrimmed,
+    reportText: markdown,
   };
 }

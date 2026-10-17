@@ -205,9 +205,12 @@ describe('the prefilled link is usable, or it says it is not', () => {
     const id = seeded(long);
     const result = exportReport(id)!;
     expect(result.bodyWasTrimmed, 'a body over the cap was handed to a browser unannounced').toBe(true);
-    // The short body names where the real text is, and the signature triage will search for.
+    // The short body names the signature triage will search for and NOTHING local (v3.4 E2: a
+    // path on the reporter's machine is no use to a maintainer); the whole text rides back in
+    // `reportText` for the Copy button.
     const body = new URL(result.newIssueUrl).searchParams.get('body') ?? '';
-    expect(body).toContain(result.filePath);
+    expect(body).not.toContain(result.filePath);
+    expect(result.reportText).toContain(long.whatHappened);
     expect(body).toContain('ds1-aaaaaaaaaaaa');
     expect(body.length).toBeLessThanOrEqual(PREFILL_MAX_BODY_CHARS);
     // ...and the FILE is whole. The cap binds the URL only.

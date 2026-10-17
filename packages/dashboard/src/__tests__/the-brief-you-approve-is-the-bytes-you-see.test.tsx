@@ -188,19 +188,21 @@ describe('the brief the owner approves is the brief the owner was shown', () => 
     await waitFor(() => expect(verbatimTexts(container as HTMLElement)).toContain(edited));
   });
 
-  it('shows the file path and the prefilled link when nothing was posted (T6 §7, the delivery panel)', async () => {
+  it('shows the prefilled link and a Copy button, and no file path, when nothing was posted (T6 §7, v3.4 E2)', async () => {
     const exportPath = '/tmp/a-scratch-home/.dojo/reports/r-0001/report.md';
     const newIssueUrl = 'https://example.invalid/a-scratch-org/a-scratch-repo/issues/new?title=a+title';
     mocked().approveReport.mockResolvedValue({
       ok: true,
-      data: { status: 'exported', issueUrl: null, issueNumber: null, exportPath, newIssueUrl },
+      data: { status: 'exported', issueUrl: null, issueNumber: null, exportPath, newIssueUrl, reportText: 'the whole report' },
     });
     const { container } = render(<ReportPreviewCard />);
     await screen.findByText(BRIEF.title);
 
     fireEvent.click(screen.getByRole('button', { name: 'Post' }));
 
-    expect(await screen.findByText(exportPath)).toBeDefined();
+    // v3.4 E2: nobody is sent to find a file; the text is one click from the clipboard.
+    expect(await screen.findByRole('button', { name: 'Copy report' })).toBeDefined();
+    expect(container.textContent).not.toContain(exportPath);
     const link = await screen.findByRole('link', { name: 'Open a new issue with this text' });
     expect(link.getAttribute('href')).toBe(newIssueUrl);
     // The row has left the card: the answer is held until the owner dismisses it.

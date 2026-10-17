@@ -1,5 +1,6 @@
 import * as api from '../lib/api';
 import { duplicateQuestion, type DuplicateMatch } from '../lib/report-edits';
+import { CopyReportButton } from './CopyReportButton';
 
 // ── WHAT HAPPENED TO THE REPORT — THE TWO PANELS THAT COME AFTER POST (DOJO-REPORT T7) ──
 //
@@ -54,16 +55,15 @@ export const DeliveredPanel = ({ delivery, onDone }: {
       </div>
     ) : (
       <div className="space-y-2">
-        <p className="text-xs text-ui/80">Saved on this Mac:</p>
-        <p className="text-[11px] text-ui/60 break-all bg-ui/[0.04] rounded p-2">{delivery.exportPath}</p>
         <p className="text-xs text-ui/80">
           {delivery.bodyWasTrimmed
-            ? 'It is too long to prefill, so the full text is in the file — open it and paste.'
-            : 'The link below opens a new issue with the text already filled in.'}
+            ? 'It is too long to fill in by link. Copy the report, open GitHub, and paste it into the new issue.'
+            : 'The link below opens a new issue with the text already filled in. You can also copy the report.'}
         </p>
+        {delivery.reportText && <CopyReportButton text={delivery.reportText} />}
         {delivery.newIssueUrl && (
           <a className="text-xs text-cp-teal underline break-all" href={delivery.newIssueUrl} target="_blank" rel="noreferrer">
-            Open a new issue with this text
+            {delivery.bodyWasTrimmed ? 'Open GitHub to paste it' : 'Open a new issue with this text'}
           </a>
         )}
       </div>

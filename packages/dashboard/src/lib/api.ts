@@ -2384,7 +2384,7 @@ export interface ReportRow {
 /** What the ONE door answers: `issueUrl` connected, `exportPath` not, `duplicate` = ask first (T7). `labelsDropped` = the issue landed, but the labels are not on it — GitHub either refused them or accepted them and saved the issue without them (measured by a read-back, T8 + T8 LIVE D-B) — and only write access can add them now. */
 export interface ReportDelivery {
   status: string; issueUrl: string | null; issueNumber: number | null;
-  exportPath: string | null; newIssueUrl?: string; bodyWasTrimmed?: boolean;
+  exportPath: string | null; newIssueUrl?: string; bodyWasTrimmed?: boolean; reportText?: string;
   duplicate?: { number: number; url: string; title: string } | null; labelsDropped?: string | null;
 }
 /** The owner's answer to "someone already reported this". No answer = they were never asked. */

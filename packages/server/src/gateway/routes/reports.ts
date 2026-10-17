@@ -226,12 +226,12 @@ reportsRouter.post('/:id/approve', async (c) => {
   // produce today. Defensive depth, deliberately untested: no clause can reach it.
   if (!delivered) return c.json({ ok: false, error: 'This report was already delivered.' }, 409);
   broadcast({ type: 'report:resolved', data: { id, status: 'posted' } });
-  // `newIssueUrl`/`bodyWasTrimmed` are beyond the plan's four and needed rather than nice: without
-  // them the owner is told a file was written and given no way to post it, which is half of D2.
+  // `newIssueUrl`/`bodyWasTrimmed`/`reportText` are beyond the plan's four and needed: without
+  // them the owner has no way to post it (half of D2). `reportText` is what Copy puts on the clipboard.
   return c.json({ ok: true, data: {
     status: delivered.status, issueUrl: delivered.issueUrl, issueNumber: delivered.issueNumber,
     exportPath: delivered.exportPath, newIssueUrl: exported.newIssueUrl,
-    bodyWasTrimmed: exported.bodyWasTrimmed,
+    bodyWasTrimmed: exported.bodyWasTrimmed, reportText: exported.reportText,
   } });
 });
 
