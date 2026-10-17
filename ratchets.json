@@ -8697,6 +8697,27 @@
       "to": 376,
       "by": "t155 A (2026-10-14) - one KNOWN_DIVERGENCES entry for the 129b sender-less peer row amendment",
       "why": "369 -> 376 (+7: seven lines of ledger ROW, no logic). The v3.3.3 cut checks found that `129b_stable_merge_messages.sql` section 4a aborts the whole update chain, on every boot, for a box holding one peer message with no sender (fixed in the commit before this one). 129b is a released, applied migration, so amending it means every box that already ran the old bytes reports MIGRATION DIVERGENCE at ERROR for ever unless `KNOWN_DIVERGENCES` holds the (file, appliedChecksum, fileChecksum) triple, and `check-migration-freeze.mjs` fails the build without that entry in the same commit. The same collision the 2026-09-26 raise above argued: a decrease-only pin on an append-only adjudication ledger forbids the act another blocking gate demands. The entry is five fields, its fileChecksum is machine-checked against the tree by migration-checksums.test.ts, and its appliedChecksum is checked by t155-migration-129b-null-sender-peer-row.test.ts, which rebuilds the pre-amend bytes by reversing the edit. REFUSED: trimming existing warrant prose to fit (it would delete the argument for the other entries), and a second module for the row (one consumer reads one array). From 376 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/row-label.ts",
+      "from": 292,
+      "to": 313,
+      "by": "t196 (2026-10-17), the relay row's label says it was sent, and a delegation thread is the owner's work",
+      "why": "+21: the import of the three stored-fact reads, the receipts cache field, the delegated-thread clause (one line), the relay receipt method (cache over a read) and the sent-to branch of the delivered label. The reads themselves (deliveries receipt, delegation join row, conversation counterparty) live in the NEW memory/relay-facts.ts. REFUSED: leaving the label as is (it never said the answer was sent, which is the defect)."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2864,
+      "to": 2867,
+      "by": "t196 (2026-10-17), the wake footer says the answer was already sent",
+      "why": "+3: the import of the footer builder, the join child kept (it was looked up and thrown away) and the one line that swaps the footer once the join has landed. The footer's facts and wording live in the NEW agent/a2a-join-footer.ts. The contextMessage block moved below the landing without growing."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steer-queue.ts",
+      "from": 341,
+      "to": 342,
+      "by": "t196 (2026-10-17), every steer carries the engine author head",
+      "why": "+1: the import of withAuthorHead, applied on the one line that stores the entry's content. The tag rule lives in the NEW agent/v2/steer-author-head.ts."
     }
   ],
   "maxNewFileLines": 400,
@@ -8743,7 +8764,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2864,
+    "packages/server/src/agent/a2a-transport.ts": 2867,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -8802,7 +8823,7 @@
     "packages/server/src/agent/v2/recovery.ts": 912,
     "packages/server/src/agent/v2/refused-delivery.ts": 111,
     "packages/server/src/agent/v2/state.ts": 769,
-    "packages/server/src/agent/v2/steer-queue.ts": 341,
+    "packages/server/src/agent/v2/steer-queue.ts": 342,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 390,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 214,
@@ -8920,7 +8941,7 @@
     "packages/server/src/memory/recall-lane.ts": 907,
     "packages/server/src/memory/recall.ts": 512,
     "packages/server/src/memory/retrieval.ts": 1184,
-    "packages/server/src/memory/row-label.ts": 292,
+    "packages/server/src/memory/row-label.ts": 313,
     "packages/server/src/memory/search-bounds.ts": 327,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
