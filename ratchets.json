@@ -2,6 +2,20 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/dashboard/src/components/Dojo3Composer.tsx",
+      "from": 750,
+      "to": 752,
+      "by": "t191 (2026-10-17), GitHub #14: unsent work stays with its agent",
+      "why": "+2: the import of `useAgentState` and one comment line. The four draft fields (text, staged files, uploading, mode) are the SAME four `useState` lines swapped for the per-agent hook in place, so the code is net zero; the hook itself lives in the new hooks/useAgentScopedState.ts. The composer is mounted once while the agent changes, so before this a draft and its files followed the owner to the next agent, and the files were uploaded to the wrong one. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/AgentConfigPanel.tsx",
+      "from": 394,
+      "to": 400,
+      "by": "t191 (2026-10-17), GitHub #14: the config panel follows its agent",
+      "why": "+6: a 2-line comment and a 4-line keyed wrapper (`AgentConfigPanel` renders the existing body with `key={id}`). The route reuses one element for every agent, so the old agent's card stayed up under the new id and a late answer for it could land on the new one. The key deletes that class rather than adding a reset list or a cancel flag to two loaders. REFUSED: threading a cancel token through `loadAgent` and `ConfigBody`'s own load, which fixes today's two loaders and leaves the next one unprotected. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/prompt/registry/entries.ts",
       "from": 609,
       "to": 611,
@@ -8693,7 +8707,7 @@
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
     "packages/dashboard/src/components/CanvasView.tsx": 430,
     "packages/dashboard/src/components/ContactsPanel.tsx": 470,
-    "packages/dashboard/src/components/Dojo3Composer.tsx": 750,
+    "packages/dashboard/src/components/Dojo3Composer.tsx": 752,
     "packages/dashboard/src/components/Dojo3Stage.tsx": 450,
     "packages/dashboard/src/components/ImportWizard.tsx": 663,
     "packages/dashboard/src/components/Markdown.tsx": 433,
@@ -8719,9 +8733,9 @@
     "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283,
-    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 394,
+    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 400,
     "packages/dashboard/src/pages/Agents.tsx": 683,
-    "packages/dashboard/src/pages/Chat.tsx": 2109,
+    "packages/dashboard/src/pages/Chat.tsx": 2103,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 660,
     "packages/dashboard/src/pages/Memory.tsx": 499,
