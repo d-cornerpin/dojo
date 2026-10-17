@@ -81,7 +81,7 @@ export async function recordToolResultEffects(
     // now share a signature — which is the right identity for "this call
     // keeps failing", and the service_name that says WHICH one survives.
     const crossTurnSig = canonicalToolSignature(tc.name, redactDeclaredSecretArgs(tc.name, tc.arguments));
-    const failCount = recordToolOutcome(agentId, tc.name, crossTurnSig, toolResult.isError === true);
+    const failCount = recordToolOutcome(agentId, tc.name, crossTurnSig, toolResult.isError === true, typeof toolResult.content === 'string' ? toolResult.content : null);
     if (toolResult.isError) {
       const note = crossTurnFailureNote(tc.name, failCount);
       if (note && typeof toolResult.content === 'string') {

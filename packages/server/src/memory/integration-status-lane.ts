@@ -46,13 +46,13 @@
 //                     names only the handful of tools that call `auditLog()` by hand. So the
 //                     Plaud line states NO last use, and the block's footer says why — an
 //                     absence of records, never a record of failure.
-//   last failure      `agent_tool_failures` (mig 067). Per agent, per canonical signature,
-//                     with `tool_name`, `last_at` and `hit_count` — and A SUCCESS DELETES THE
-//                     ROW (`agent/v2/attempt-record.ts:35`). That deletion is what makes the
-//                     term worth printing: a row present means a failure that has NOT since
-//                     succeeded, and NO ROW means the ledger holds nothing unresolved. The
-//                     second reading is the one that contradicts "Plaud is unreliable", and
-//                     it is available for a family with no success ledger at all.
+//   last failure      `agent_tool_outcomes` (mig 195, `agent/v2/tool-outcomes.ts`), written on
+//                     every tool result: per agent and TOOL, last success, last failure with its
+//                     error text, failures in a row since the last success. A tool's own success
+//                     ends its failure, so a failure prints only while it is the last thing
+//                     recorded for that tool. (It once read `agent_tool_failures`, a per-CALL
+//                     circling record: one old failure printed as unresolved for weeks while the
+//                     tool worked, and a worker blocked itself four times.)
 //   connected since   Plaud only: `plaud_connected_at` in `config`, via `getPlaudStatus()`.
 //                     Rendered ONLY when no last-success term exists, so it is the fallback
 //                     recency fact rather than a second one competing with it.
@@ -93,6 +93,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { isOpenFailure, readToolOutcomes } from '../agent/v2/tool-outcomes.js';
 import { TOOL_CATEGORIES } from '../tools/categories.js';
 import { recordedInstant } from './message-stamp.js';
 import { estimateTokens } from './budget.js';
@@ -105,12 +106,12 @@ export const INTEGRATION_STATUS_ENTRY_ID = 'msg.integration-status';
 /** The integration families this block can speak about — the registry's own union. */
 export type IntegrationFamily = 'google' | 'microsoft' | 'plaud';
 
-/** The last failure the ledger STILL HOLDS for a family (a success deletes the row). */
+/** The last failure a family's tool still carries: the last thing recorded for that tool. */
 export interface UnresolvedFailure {
   tool: string;
-  /** `agent_tool_failures.last_at`, rendered as a recorded instant by the row builder. */
+  /** `agent_tool_outcomes.last_fail_at`, rendered as a recorded instant by the row builder. */
   lastAt: string;
-  hits: number;
+  hits: number;   // failures in a row since that tool last succeeded (at least 1)
 }
 
 /**
@@ -191,8 +192,8 @@ export function integrationStatusLine(r: IntegrationStatusRow): string {
     const tool = r.unresolved.tool.length > toolCap
       ? `${r.unresolved.tool.slice(0, toolCap)}...` : r.unresolved.tool;
     parts.push(
-      `UNRESOLVED FAILURE: ${tool}, last failed ${recordedInstant(r.unresolved.lastAt)} `
-      + `after ${r.unresolved.hits} attempt${r.unresolved.hits === 1 ? '' : 's'}, with no success since.`,
+      `UNRESOLVED FAILURE: ${tool}, last failed ${recordedInstant(r.unresolved.lastAt)}, `
+      + `${r.unresolved.hits} in a row, with no success of that tool since.`,
     );
   } else {
     parts.push(NO_UNRESOLVED_FAILURE);
@@ -309,25 +310,16 @@ export function forgetToolFamilyIndex(): void {
   familyIndex = null;
 }
 
-/**
- * The unresolved failure each family still carries for this agent, newest first.
- *
- * One read of `agent_tool_failures` for the agent, bucketed here. Reading per family would
- * be three queries for one index scan, and the table's PK is (agent_id, signature).
- */
+/** The open failure each family carries for this agent; `readToolOutcomes` is newest-first and
+ *  an open failure's newest instant IS its failure, so the first seen per family wins. */
 function unresolvedByFamily(agentId: string): Map<IntegrationFamily, UnresolvedFailure> {
-  const out = new Map<IntegrationFamily, UnresolvedFailure>();
-  try {
-    const index = toolFamilyIndex();
-    const rows = getDb().prepare(
-      'SELECT tool_name, last_at, hit_count FROM agent_tool_failures WHERE agent_id = ? ORDER BY last_at DESC',
-    ).all(agentId) as Array<{ tool_name: string; last_at: string; hit_count: number }>;
-    for (const row of rows) {
-      const family = index.get(row.tool_name);
-      if (!family || out.has(family)) continue;   // ORDER BY means the first seen is newest
-      out.set(family, { tool: row.tool_name, lastAt: row.last_at, hits: row.hit_count });
+  const out = new Map<IntegrationFamily, UnresolvedFailure>(), index = toolFamilyIndex();
+  for (const o of readToolOutcomes(agentId).filter(isOpenFailure)) {
+    const family = index.get(o.toolName);
+    if (family && o.lastFailAt && !out.has(family)) {
+      out.set(family, { tool: o.toolName, lastAt: o.lastFailAt, hits: o.consecutiveFailures });
     }
-  } catch { /* the table may not exist on an old DB — the row then prints no failure term */ }
+  }
   return out;
 }
 
@@ -356,53 +348,61 @@ function lastSuccessAt(agentId: string, table: 'google_activity' | 'microsoft_ac
  * of nothing in `memory/` today and should stay that way.
  */
 export async function buildIntegrationStatusLane(agentId: string): Promise<string | null> {
-  let rows: IntegrationStatusRow[];
   try {
-    const [{ listIntegrationStatuses }, { mayUsePlaud, widestIntegrationLevel }, { getPlaudStatus }] =
-      await Promise.all([
-        import('../services/capability-registry.js'),
-        import('../agent/access/read.js'),
-        import('../plaud/auth.js'),
-      ]);
-    const failures = unresolvedByFamily(agentId);
-    // Sorted by family name so the block is byte-deterministic regardless of the registry's
-    // iteration order — C28 P-6's rule, which this block needs for the same reason.
-    const statuses = [...listIntegrationStatuses()].sort((a, b) => a.name.localeCompare(b.name));
-    rows = [];
-    for (const s of statuses) {
-      // CONFIGURED is the gate, not CONNECTED: a family the owner never set up has no truth
-      // to publish, while one that is set up and currently down is precisely what a false
-      // memory forms around. The disconnected row is the negative control, not an omission.
-      if (!s.configured) continue;
-      if (s.name === 'plaud') {
-        if (!mayUsePlaud(agentId)) continue;
-        const plaud = getPlaudStatus();
-        rows.push({
-          family: 'plaud',
-          displayName: DISPLAY_NAME.plaud,
-          connected: s.connected,
-          lastSuccessAt: null,           // no ledger exists; see the census in this file's head
-          connectedSince: plaud.connectedAt,
-          unresolved: failures.get('plaud') ?? null,
-          hasSuccessLedger: false,
-        });
-        continue;
-      }
-      if (widestIntegrationLevel(agentId, s.name) === 'none') continue;
-      rows.push({
-        family: s.name,
-        displayName: DISPLAY_NAME[s.name],
-        connected: s.connected,
-        lastSuccessAt: lastSuccessAt(agentId, s.name === 'google' ? 'google_activity' : 'microsoft_activity'),
-        connectedSince: null,
-        unresolved: failures.get(s.name) ?? null,
-        hasSuccessLedger: true,
-      });
-    }
+    return enforce(renderIntegrationStatusBlock(await integrationRows(agentId)), integrationStatusWorstCaseTokens());
   } catch {
     return null;   // a reader that cannot answer says nothing; it never guesses a state
   }
-  return enforce(renderIntegrationStatusBlock(rows), integrationStatusWorstCaseTokens());
+}
+
+/** The rows as bare lines, for the PM's block review (`tracker/block-review-facts.ts`). */
+export async function integrationFactLines(agentId: string): Promise<string[]> {
+  try { return (await integrationRows(agentId)).map(integrationStatusLine); } catch { return []; }
+}
+
+async function integrationRows(agentId: string): Promise<IntegrationStatusRow[]> {
+  const rows: IntegrationStatusRow[] = [];
+  const [{ listIntegrationStatuses }, { mayUsePlaud, widestIntegrationLevel }, { getPlaudStatus }] =
+    await Promise.all([
+      import('../services/capability-registry.js'),
+      import('../agent/access/read.js'),
+      import('../plaud/auth.js'),
+    ]);
+  const failures = unresolvedByFamily(agentId);
+  // Sorted by family name so the block is byte-deterministic regardless of the registry's
+  // iteration order — C28 P-6's rule, which this block needs for the same reason.
+  const statuses = [...listIntegrationStatuses()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const s of statuses) {
+    // CONFIGURED is the gate, not CONNECTED: a family the owner never set up has no truth
+    // to publish, while one that is set up and currently down is precisely what a false
+    // memory forms around. The disconnected row is the negative control, not an omission.
+    if (!s.configured) continue;
+    if (s.name === 'plaud') {
+      if (!mayUsePlaud(agentId)) continue;
+      const plaud = getPlaudStatus();
+      rows.push({
+        family: 'plaud',
+        displayName: DISPLAY_NAME.plaud,
+        connected: s.connected,
+        lastSuccessAt: null,           // no ledger exists; see the census in this file's head
+        connectedSince: plaud.connectedAt,
+        unresolved: failures.get('plaud') ?? null,
+        hasSuccessLedger: false,
+      });
+      continue;
+    }
+    if (widestIntegrationLevel(agentId, s.name) === 'none') continue;
+    rows.push({
+      family: s.name,
+      displayName: DISPLAY_NAME[s.name],
+      connected: s.connected,
+      lastSuccessAt: lastSuccessAt(agentId, s.name === 'google' ? 'google_activity' : 'microsoft_activity'),
+      connectedSince: null,
+      unresolved: failures.get(s.name) ?? null,
+      hasSuccessLedger: true,
+    });
+  }
+  return rows;
 }
 
 /** A post-budget lane may not exceed the reserve it declared — `work-board-lane.ts`'s rule,

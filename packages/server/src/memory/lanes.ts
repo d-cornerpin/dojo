@@ -354,7 +354,7 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // above the three that exist, so adding a fourth family does not silently drop a line the
   // agent was granted; a fifth would, and `the-status-line-beats-the-note.test.ts` fails on
   // that day with the reason attached. `chars.tool` bounds the one term the block does not
-  // author: a tool name read out of `agent_tool_failures`.
+  // author: a tool name read out of `agent_tool_outcomes`.
   'lane.integration-status': {
     rows: { integrations: 4 },
     chars: { tool: 60 },
@@ -657,7 +657,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.integration-status',
     slot: MessageSlot.IntegrationStatusTail,
-    reserveTokens: 554,
+    reserveTokens: 562,
     measured:
       'T76b, DERIVED BY CALLING THE RENDERER: `integrationStatusWorstCaseTokens()` '
       + '(`memory/integration-status-lane.ts`) builds LANE_LIMITS[\'lane.integration-status\'] '

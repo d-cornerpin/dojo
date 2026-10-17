@@ -10,9 +10,13 @@
 // Only failures are recorded: an identical SUCCEEDING call across turns is
 // routine (a daily email check has the same signature every day), not
 // circling. A success clears the record for that signature.
+//
+// This table is the CIRCLING record and nothing else. "Is this tool healthy" is answered by the
+// per-(agent, tool) record in `tool-outcomes.ts`, which this function also feeds (t190).
 // ════════════════════════════════════════
 
 import { getDb } from '../../db/connection.js';
+import { noteToolOutcome } from './tool-outcomes.js';
 
 const CROSS_TURN_FAILURE_NOTE_THRESHOLD = 3;
 // A failure streak older than this is stale history, not live circling.
@@ -28,7 +32,9 @@ export function recordToolOutcome(
   toolName: string,
   signature: string,
   isError: boolean,
+  errorText?: string | null,
 ): number {
+  noteToolOutcome(agentId, toolName, isError, errorText);
   try {
     const db = getDb();
     if (!isError) {

@@ -46,7 +46,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* not exercised */ }
 // rows, a `config` table and an `agents.permissions` JSON document — three storage shapes
 // that have nothing to do with the property under test, and seeding them would make this file
 // a test of `google/auth.ts`. What must NOT be stubbed is the LEDGER half: `google_activity`,
-// `microsoft_activity` and `agent_tool_failures` are real rows in a real migrated database
+// `microsoft_activity` and `agent_tool_outcomes` are real rows in a real migrated database
 // below, because "the term comes from a ledger" is the whole claim.
 const world = {
   statuses: [] as Array<{ name: 'google' | 'microsoft' | 'plaud'; configured: boolean; connected: boolean }>,
@@ -70,6 +70,7 @@ vi.mock('../../plaud/auth.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { noteToolOutcome } from '../../agent/v2/tool-outcomes.js';
 import {
   buildIntegrationStatusLane,
   renderIntegrationStatusBlock,
@@ -109,11 +110,11 @@ function seedActivity(
   ).run(`act-${table}-${atMs}-${success}-${agentId}`, agentId, success, sqliteStamp(atMs));
 }
 
-function seedFailure(tool: string, atMs: number, hits: number): void {
-  mockDb.current!.prepare(
-    `INSERT INTO agent_tool_failures (agent_id, signature, tool_name, hit_count, first_at, last_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(AGENT, `${tool}|sig`, tool, hits, sqliteStamp(atMs), sqliteStamp(atMs));
+/** t190: the failure term now reads the per-tool outcome record (`agent_tool_outcomes`), so a
+ *  seeded failure is `hits` failures in a row for the tool. The instant is stamped by the
+ *  recorder, so these clauses assert its presence, not a chosen time. */
+function seedFailure(tool: string, _atMs: number, hits: number): void {
+  for (let i = 0; i < hits; i++) noteToolOutcome(AGENT, tool, true, 'seeded failure');
 }
 
 const ALL_THREE_CONNECTED = [
@@ -190,11 +191,11 @@ describe('T76b §1 — the line carries only what a ledger records', () => {
   it('an unresolved failure prints its tool, its instant and its count', async () => {
     seedFailure('outlook_search', DAY_ONE - 2 * HOUR, 4);
     const block = await buildIntegrationStatusLane(AGENT);
-    expect(block).toMatch(/• Microsoft 365[^\n]*UNRESOLVED FAILURE: outlook_search, last failed \[[^\]]+\] after 4 attempts, with no success since\./);
+    expect(block).toMatch(/• Microsoft 365[^\n]*UNRESOLVED FAILURE: outlook_search, last failed \[[^\]]+\], 4 in a row, with no success of that tool since\./);
   });
 
-  it('NO failure row is itself a printed fact — a success DELETES the row, so silence means clear', async () => {
-    // `agent/v2/attempt-record.ts:35` deletes on success. That deletion is what makes the
+  it('NO failure row is itself a printed fact — a success ends the tool failure, so silence means clear', async () => {
+    // `agent/v2/tool-outcomes.ts` clears the streak on success. That is what makes the
     // sentence worth printing, and it is the one outcome fact available for a family with no
     // success ledger at all — which is exactly the family the incident was about.
     const block = await buildIntegrationStatusLane(AGENT);
