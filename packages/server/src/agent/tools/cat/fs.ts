@@ -321,9 +321,10 @@ async function executeFileRead(
           : line;
       const lineWidth = String(endLine).length;   // gutter width: the widest line number this page can hold
       // The footer is worst-cased up front (this page ends at the file's last line) and reserved out of the budget.
+      // Line numbers in the footer are the gutter's (1-based, inclusive); `offset` stays a count of lines to skip.
       const footerFor = (end: number): string => {
         const remaining = totalLines - end;
-        return `\n\n[Read lines ${startLine}-${end - 1} of ${totalLines} total. ${remaining} more lines remain.\n` +
+        return `\n\n[Read lines ${startLine + 1}-${end} of ${totalLines} total. ${remaining} more lines remain.\n` +
           ` To continue: file_read(path="${filePath}", offset=${end}, limit=${Math.min(remaining, 5000)}).\n` +
           ` To search for specific content: use grep instead.]`;
       };
@@ -343,7 +344,7 @@ async function executeFileRead(
       if (actualEnd < totalLines) {
         result += footerFor(actualEnd);
       } else if (startLine > 0) {
-        result += `\n\n[End of file. Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total.]`;
+        result += `\n\n[End of file. Read lines ${startLine + 1}-${actualEnd} of ${totalLines} total.]`;
       }
 
       auditLog(agentId, 'file_read', filePath, 'success', `${stat.size} bytes (lines ${startLine}-${actualEnd}/${totalLines})`);
