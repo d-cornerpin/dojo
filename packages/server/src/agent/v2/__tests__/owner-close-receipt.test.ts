@@ -201,12 +201,17 @@ describe('the enumeration the design rests on, re-derived rather than trusted', 
     //       this row at all, by construction rather than by a filter it might lose. The
     //       shape is deliberately not `outcome <> 'delivered'` — a negation would have swept
     //       the owner's own close in and turned it into "your claim is false".
+    //   (d) t189 B4 — the agent PURGE sweep (`work/purge-sweep.ts`), which deletes a purged
+    //       agent's receipts (keyed on `agent_id = ?`) and releases surviving work rows that
+    //       point at them. It removes rows; it never reads a receipt as evidence of anything,
+    //       so an owner-close row is no more reachable through it than through a DELETE.
     const OUTCOME_IN_LIST = /outcome\s+IN\s*\(([^)]*)\)/i;
     const positiveEnumWithoutOwnerClose = (stmt: string): boolean => {
       const m = OUTCOME_IN_LIST.exec(stmt);
       return m !== null && !/owner_closed/.test(m[1]);
     };
     const unfiltered = readers()
+      .filter((r) => r.file !== 'work/purge-sweep.ts')
       .filter((r) => !/outcome\s*=\s*'delivered'/i.test(r.stmt))
       .filter((r) => !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(r.stmt))
       .filter((r) => !/\bid\s*=\s*\?/.test(r.stmt))

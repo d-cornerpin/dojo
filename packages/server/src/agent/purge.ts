@@ -46,7 +46,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { deleteAllForAgent, deleteAgentBusRowsFor } from '../memory/message-store.js';
-import { deleteAllWorkForAgent } from '../work/purge-sweep.js';
+import { deleteAllWorkForAgent, releaseWorkPointersIntoAgent, deleteAgentDeliveries } from '../work/purge-sweep.js';
 import { agentPurgedForOwner } from './agent-owner-cards.js';
 import { endBudgetCard } from '../costs/budget-cards.js';
 import { budgetStopKey, ownerConditionCleared } from '../healer/owner-notices.js';
@@ -140,15 +140,10 @@ export function purgeAgentRows(agentId: string): PurgeCounts {
     //    `work.parent_id`); a delivery that is the evidence of a surviving DONE row is KEPT, by
     //    the guard trigger's own rule (migration 151): deleting it would make a closed task
     //    unprovable, and a purge that raises there would purge nothing.
-    db.prepare(`UPDATE work SET conversation_id = NULL
-                 WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?)`).run(agentId);
-    db.prepare(`UPDATE work SET result_delivery_id = NULL
-                 WHERE state != 'done' AND result_delivery_id IN (SELECT id FROM deliveries WHERE agent_id = ?)`).run(agentId);
+    releaseWorkPointersIntoAgent(agentId);
     for (const table of agentOwnedTables()) {
-      const guard = table === 'deliveries'
-        ? " AND id NOT IN (SELECT result_delivery_id FROM work WHERE state = 'done' AND result_delivery_id IS NOT NULL)"
-        : '';
-      db.prepare(`DELETE FROM "${table}" WHERE agent_id = ?${guard}`).run(agentId);
+      if (table === 'deliveries') deleteAgentDeliveries(agentId);
+      else db.prepare(`DELETE FROM "${table}" WHERE agent_id = ?`).run(agentId);
     }
 
     // 7. Its budget row (keyed `agent_<id>`, so no `agent_id` column finds it), and the card

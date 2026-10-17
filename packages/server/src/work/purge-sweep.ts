@@ -72,3 +72,31 @@ export function deleteAllWorkForAgent(agentId: string): number {
   });
   return removed;
 }
+
+/**
+ * t189 B4. Before a purged agent's conversations and deliveries are deleted, a SURVIVING agent's
+ * work row that points at one of them is released (`conversation_id` / `result_delivery_id`
+ * nulled): both are `NO ACTION` foreign keys, so a purge that left the pointer would fail whole.
+ * A `done` row keeps its `result_delivery_id`: that delivery is its evidence and
+ * `deleteAgentDeliveries` leaves it alone. Same lesser damage as `work.parent_id` above.
+ */
+export function releaseWorkPointersIntoAgent(agentId: string): void {
+  const db = getDb();
+  db.prepare(`UPDATE work SET conversation_id = NULL
+               WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?)`).run(agentId);
+  db.prepare(`UPDATE work SET result_delivery_id = NULL
+               WHERE state != 'done' AND result_delivery_id IN (SELECT id FROM deliveries WHERE agent_id = ?)`).run(agentId);
+}
+
+/**
+ * Delete the purged agent's delivery receipts, EXCEPT one that is the evidence of a surviving
+ * `done` work row: migration 151's guard trigger refuses that delete ("deleting the receipt would
+ * make a closed ticket unprovable"), and a refusal here would abort the whole purge. That receipt
+ * stays, for the same reason the trigger exists.
+ */
+export function deleteAgentDeliveries(agentId: string): void {
+  getDb().prepare(
+    `DELETE FROM deliveries WHERE agent_id = ?
+        AND NOT EXISTS (SELECT 1 FROM work w WHERE w.result_delivery_id = deliveries.id AND w.state = 'done')`,
+  ).run(agentId);
+}
