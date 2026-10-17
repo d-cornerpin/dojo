@@ -758,6 +758,7 @@ export const trackerHandlers: ToolHandlerMap = {
     if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
     else if (vkind === 'complete') content = await trackerMod.trackerValidateComplete(agentId, vp);
     else content = await trackerMod.trackerValidateBlocked(agentId, vp);
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -793,6 +794,7 @@ export const trackerHandlers: ToolHandlerMap = {
       requested_status: args.requested_status as string,
       justification: args.justification as string,
     });
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -810,6 +812,7 @@ export const trackerHandlers: ToolHandlerMap = {
       approve: args.approve as boolean,
       reason: args.reason as string,
     });
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -829,6 +832,7 @@ export const trackerHandlers: ToolHandlerMap = {
       agent_summary: args.agent_summary as string,
       pm_rejection_summary: args.pm_rejection_summary as string,
     });
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -846,6 +850,7 @@ export const trackerHandlers: ToolHandlerMap = {
       status: args.status as string,
       user_quote: args.user_quote as string,
     });
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
@@ -864,6 +869,7 @@ export const trackerHandlers: ToolHandlerMap = {
       user_quote: args.user_quote as string,
       feedback: args.feedback as string | undefined,
     });
+    isError = content.startsWith('Error');
     return { content, isError };
   },
 
