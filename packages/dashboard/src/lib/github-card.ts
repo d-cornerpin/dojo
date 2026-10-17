@@ -108,7 +108,7 @@ export const GITHUB_EXPECTED_SCOPE = 'public_repo';
  */
 export const describeScope = (scope: string | null): string => {
   if (scope === GITHUB_EXPECTED_SCOPE) {
-    return 'It can create issues on public repositories. It cannot read your private repositories.';
+    return 'It can create issues on public repositories, and GitHub\'s permission for that also covers changing your own public repositories (the Dojo only files reports). It cannot read your private repositories.';
   }
   const recorded = (scope ?? '').trim();
   if (recorded === '') {
@@ -137,8 +137,8 @@ export const describeScope = (scope: string | null): string => {
  */
 export const scopeRequestSentence = (): string => {
   if (GITHUB_EXPECTED_SCOPE === 'public_repo') {
-    return 'It asks for one permission: creating issues on public repositories. '
-      + 'It cannot read your private repositories.';
+    return 'It asks for one permission, GitHub\'s "public_repo": it lets the Dojo create issues on public repositories, '
+      + 'and it also covers changing your own public repositories (the Dojo only files reports). It cannot read your private repositories.';
   }
   return `It asks GitHub for "${GITHUB_EXPECTED_SCOPE}". `
     + 'Check what that permission allows before you connect.';
