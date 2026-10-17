@@ -63,6 +63,9 @@ export interface Provider {
   updatedAt: string;
 }
 
+/** How hard a model thinks. DeepSeek's documented values; the engine sends only what a contract lists. */
+export type ThinkingLevel = 'low' | 'high' | 'max';
+
 export interface Model {
   id: string;
   providerId: string;
@@ -99,6 +102,15 @@ export interface Model {
   // when the capabilities array includes 'thinking'; for non-thinking
   // models the field is stored but has no runtime effect.
   thinkingEnabled: boolean;
+  // How hard the model thinks, for models whose contract offers levels. Stored per
+  // model, default 'high' (the provider's own default). Only SENT to a model whose
+  // `thinkingLevels` lists it; for every other model it is stored and never sent.
+  thinkingLevel?: ThinkingLevel;
+  // The levels this model's contract supports on the wire, derived server-side from
+  // the one model contract. Empty means the model has no level control and the
+  // Settings row shows no selector. Absent on payloads that do not carry the model row's
+  // settings (the agent card), which render no selector either.
+  thinkingLevels?: ThinkingLevel[];
   // Per-model override for Ollama's `num_ctx` parameter. null means "use
   // the auto-computed recommendation (numCtxRecommended); if that's also
   // null, fall back to the model's Modelfile default". Only meaningful

@@ -10,7 +10,8 @@ import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderP
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
-import type { Provider, Model } from '@dojo/shared';
+import type { Provider, Model, ThinkingLevel } from '@dojo/shared';
+import { contractForModel } from '../../agent/model-contract.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { renameAgent, roleNameKeyToIdKey } from '../../prompt/agent-rename.js';
 import { homeDir } from '../../home.js';
@@ -2102,29 +2103,50 @@ configRouter.patch('/models/:id/limits', async (c) => {
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
-// PATCH /models/:id/thinking — toggle per-model thinking/reasoning
-// Body: { enabled: boolean }
+// PATCH /models/:id/thinking — toggle per-model thinking/reasoning, and/or set its level
+// Body: { enabled?: boolean, level?: 'low' | 'high' | 'max' } (at least one)
+// t195: the level is stored for any model but is only SENT to a model whose contract lists it
+// (`model-contract.ts` `thinkingLevels`). A level the model's contract does not offer is refused here,
+// so the stored value is always one the wire would accept.
 // Only meaningful when the model's capabilities array includes 'thinking';
 // we accept the update for any model (forward-compat) but it only affects
 // call-time behavior on providers we've wired (ollama, openrouter).
 configRouter.patch('/models/:id/thinking', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
-  if (!body || typeof body.enabled !== 'boolean') {
-    return c.json({ ok: false, error: 'Request body must be { enabled: boolean }' }, 400);
+  const hasEnabled = !!body && body.enabled !== undefined;
+  const hasLevel = !!body && body.level !== undefined;
+  if (!body || (!hasEnabled && !hasLevel) || (hasEnabled && typeof body.enabled !== 'boolean')
+    || (hasLevel && typeof body.level !== 'string')) {
+    return c.json({ ok: false, error: 'Request body must be { enabled?: boolean, level?: string } with at least one' }, 400);
   }
 
   const db = getDb();
-  const model = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  const model = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!model) {
     return c.json({ ok: false, error: 'Model not found' }, 404);
   }
 
-  db.prepare("UPDATE models SET thinking_enabled = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(body.enabled ? 1 : 0, id);
+  if (hasLevel) {
+    const offered = thinkingLevelsForRow(model);
+    if (!(offered as readonly string[]).includes(body.level)) {
+      return c.json({
+        ok: false,
+        error: offered.length === 0
+          ? 'This model has no thinking levels'
+          : `Thinking level must be one of: ${offered.join(', ')}`,
+      }, 400);
+    }
+    db.prepare("UPDATE models SET thinking_level = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.level, id);
+  }
+  if (hasEnabled) {
+    db.prepare("UPDATE models SET thinking_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.enabled ? 1 : 0, id);
+  }
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
-  logger.info('Model thinking toggle updated', { modelId: id, enabled: body.enabled });
+  logger.info('Model thinking setting updated', { modelId: id, enabled: hasEnabled ? body.enabled : undefined, level: hasLevel ? body.level : undefined });
   return c.json({ ok: true, data: rowToModel(row) });
 });
 
@@ -2599,6 +2621,22 @@ function rowToProvider(row: Record<string, unknown>): Provider {
   };
 }
 
+/** The thinking levels this model's wire accepts, from the one model contract. Empty: no level control. */
+function thinkingLevelsForRow(row: Record<string, unknown>): ThinkingLevel[] {
+  try {
+    const provider = getDb().prepare('SELECT base_url, behaves_like FROM providers WHERE id = ?')
+      .get(row.provider_id as string) as { base_url: string | null; behaves_like: string | null } | undefined;
+    if (!provider) return [];
+    return [...contractForModel({
+      providerBaseUrl: provider.base_url,
+      apiModelId: row.api_model_id as string,
+      providerBehavesLike: provider.behaves_like,
+    }).thinkingLevels];
+  } catch {
+    return [];
+  }
+}
+
 function rowToModel(row: Record<string, unknown>): Model {
   // thinking_enabled may be missing on pre-migration reads in rare paths;
   // default to true so the behavior matches the migration default.
@@ -2694,6 +2732,8 @@ function rowToModel(row: Record<string, unknown>): Model {
     priceUnknown,
     isEnabled: Boolean(row.is_enabled),
     thinkingEnabled,
+    thinkingLevel: row.thinking_level === 'low' || row.thinking_level === 'max' ? row.thinking_level : 'high',
+    thinkingLevels: thinkingLevelsForRow(row),
     numCtxOverride,
     numCtxRecommended,
     generationParams,

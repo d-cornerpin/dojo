@@ -340,6 +340,10 @@ export const ModelRow = ({
   // flips instantly on click while the PATCH is in flight.
   const [thinkingEnabled, setThinkingEnabled] = useState(model.thinkingEnabled);
   const supportsThinking = model.capabilities.includes('thinking');
+  // t195: the level selector, beside the toggle. Shown only when the server says this model's wire takes
+  // levels (`thinkingLevels` comes from the one model contract); a model with none shows no selector.
+  const thinkingLevels = model.thinkingLevels ?? [];
+  const [thinkingLevel, setThinkingLevel] = useState<string>(model.thinkingLevel ?? 'high');
 
   // Inline capability editor — opens when the user clicks Edit next to
   // the capability badges. Lets the user overwrite the probed
@@ -432,6 +436,18 @@ export const ModelRow = ({
     const result = await api.updateModelThinking(model.id, next);
     if (!result.ok) {
       setThinkingEnabled(!next); // roll back
+    } else {
+      onPricingChange();
+    }
+  };
+
+  const handleThinkingLevel = async (next: string) => {
+    const prev = thinkingLevel;
+    setThinkingLevel(next); // optimistic
+    const result = await api.updateModelThinkingLevel(model.id, next);
+    if (!result.ok) {
+      setThinkingLevel(prev); // roll back
+      toast.error(result.error ?? 'Could not change the thinking level');
     } else {
       onPricingChange();
     }
@@ -579,6 +595,24 @@ export const ModelRow = ({
               <span className="text-[11px] text-ui/55">
                 Enable thinking
               </span>
+            </label>
+          )}
+          {supportsThinking && thinkingLevels.length > 0 && (
+            <label
+              className="mt-2 ml-3 inline-flex items-center gap-2 select-none"
+              title="How hard the model thinks before it answers. High is the provider's default; Low is quicker and cheaper; Max thinks longest."
+            >
+              <span className="text-[11px] text-ui/55">Thinking level</span>
+              <select
+                value={thinkingLevel}
+                disabled={!thinkingEnabled}
+                onChange={(e) => handleThinkingLevel(e.target.value)}
+                className="rounded border border-ui/[0.15] bg-ui/[0.05] px-1.5 py-0.5 text-[11px] text-ui/70 disabled:opacity-40"
+              >
+                {thinkingLevels.map((lv) => (
+                  <option key={lv} value={lv}>{lv.charAt(0).toUpperCase() + lv.slice(1)}</option>
+                ))}
+              </select>
             </label>
           )}
         </div>

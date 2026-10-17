@@ -454,6 +454,10 @@ export interface ModelCallParams {
    * arrive inside content and don't use this callback.
    */
   onReasoningChunk?: (chunk: string) => void;
+  /** t195: extra output room for THIS call, in tokens. The turn's engine sets it after a call ran out of room
+   *  mid-thought (`state.outputTokensEscalated`); `resolveOutputBudget` honours it up to the room the model and the
+   *  window can hold. Absent or 0 means the everyday budget. */
+  outputRoomAsk?: number;
   routerTier?: string; purpose?: string; // routerTier: the auto-router's tier. purpose: WHAT THIS CALL IS, for the cost ledger's `request_type` — the served-turn path declares 'agent_turn' (`v2/steps/call-llm/model-call.ts`); every engine utility dial leaves it unset and records 'completion'. Never inferred from `tools`: `runtime.ts`'s tools gate turns a REAL turn toolless on a model without the capability.
   /** A utility caller that knows its artifact's size (the summariser knows its `targetTokens`) may ask
    *  for LESS than that purpose's ceiling; nobody may ask for more. Ignored unless `purpose` names a
@@ -490,6 +494,12 @@ export interface ModelCallResult {
    * be echoed on tool-call follow-up turns).
    */
   reasoningContent?: string;
+  /**
+   * t195: the room this call was given and the most a retry could be given, in output tokens. Reported by the
+   * transport that sizes room itself (the OpenAI-compatible path); absent where the transport does not, which the
+   * engine reads as "no extra room to offer" rather than guessing one.
+   */
+  outputRoom?: { sent: number; ceiling: number };
 }
 
 // OAuth tokens require specific beta headers per Anthropic's API
@@ -669,15 +679,23 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
 export const OUTPUT_FLOOR_TOKENS = 1024;
 export const THINKING_OUTPUT_FLOOR_TOKENS = 4096;
 
-/** What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with. */
+/**
+ * What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with.
+ *
+ * t195: `escalatedAsk` is the engine giving a call that ran out of room mid-thought MORE room. It is honoured
+ * up to `resolveOutputCeiling` and never lowers the everyday budget, so the everyday number stays modest
+ * (owner ruling 10) and only the one retry gets the room.
+ */
 export function resolveOutputBudget(
   modelInfo: {
     contextWindow: number;
     maxOutputTokens: number;
     thinkingEnabled: boolean;
     capabilities: string[];
+    outputEscalationCeiling?: number | null;
   },
   inputEstimate: number,
+  escalatedAsk = 0,
 ): number {
   // Thinking has to be both DECLARED by the model and left ON by the owner. A capability the
   // Models page switched off spends no output tokens, so it earns no extra room.
@@ -690,7 +708,32 @@ export function resolveOutputBudget(
     floor,
     Math.min(maxOutputBudget, modelInfo.contextWindow - inputEstimate - 1000),
   );
-  return Math.min(modelInfo.maxOutputTokens, availableForOutput);
+  const everyday = Math.min(modelInfo.maxOutputTokens, availableForOutput);
+  if (!(escalatedAsk > everyday)) return everyday;
+  return Math.max(everyday, Math.min(escalatedAsk, resolveOutputCeiling(modelInfo, inputEstimate)));
+}
+
+/**
+ * The most output room one call to this model could be given on this prompt: the room the window has left
+ * after the prompt, bounded by the contract's documented ceiling, or by the stored cap when the contract knows
+ * nothing more. Never below the everyday budget. The engine's escalation asks for at most this.
+ */
+export function resolveOutputCeiling(
+  modelInfo: {
+    contextWindow: number;
+    maxOutputTokens: number;
+    thinkingEnabled: boolean;
+    capabilities: string[];
+    outputEscalationCeiling?: number | null;
+  },
+  inputEstimate: number,
+): number {
+  const thinkingActive = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking');
+  const floor = thinkingActive ? THINKING_OUTPUT_FLOOR_TOKENS : OUTPUT_FLOOR_TOKENS;
+  const windowRoom = Math.max(floor, modelInfo.contextWindow - inputEstimate - 1000);
+  const declared = modelInfo.outputEscalationCeiling ?? modelInfo.maxOutputTokens;
+  const everyday = resolveOutputBudget(modelInfo, inputEstimate);
+  return Math.max(everyday, Math.min(declared, windowRoom));
 }
 
 // Determine max output tokens based on model family
@@ -730,10 +773,10 @@ function sanitizeOrphanToolBlocks(
   }
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; thinkingLevel: string; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like, p.first_chunk_timeout_ms as provider_first_chunk_timeout_ms, p.stream_idle_timeout_ms as provider_stream_idle_timeout_ms, p.prefill_tokens_per_sec as provider_prefill_tokens_per_sec, p.measured_prefill_tokens_per_sec as provider_measured_prefill_tokens_per_sec
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.thinking_level, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url, p.auth_type as provider_auth_type, p.behaves_like as provider_behaves_like, p.first_chunk_timeout_ms as provider_first_chunk_timeout_ms, p.stream_idle_timeout_ms as provider_stream_idle_timeout_ms, p.prefill_tokens_per_sec as provider_prefill_tokens_per_sec, p.measured_prefill_tokens_per_sec as provider_measured_prefill_tokens_per_sec
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
@@ -743,6 +786,7 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     context_window: number | null;
     max_output_tokens: number | null;
     thinking_enabled: number | null;
+    thinking_level: string | null;
     num_ctx_override: number | null;
     num_ctx_recommended: number | null;
     capabilities: string | null;
@@ -819,6 +863,8 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
       : Boolean(row.thinking_enabled),
+    // t195: how hard it thinks (migration 198). Default high, the provider's own default.
+    thinkingLevel: row.thinking_level ?? 'high',
     capabilities,
     // Ollama num_ctx controls. Runtime uses `override ?? recommended`.
     // Both null → no `options.num_ctx` sent, Ollama uses Modelfile default.
@@ -2061,7 +2107,9 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
  * into each upstream provider's convention (Anthropic thinking, o-series
  * reasoning_effort, Gemini thinkingBudget…). Only when the model can think at all.
  *
- * `native-thinking-param` — a top-level `thinking: { type }`. The per-model
+ * `native-thinking-param` — a top-level `thinking: { type }` and, from t195, a top-level
+ * `reasoning_effort` carrying the per-model thinking level (only values the contract's
+ * `thinkingLevels` lists). The per-model
  * `thinking_enabled` flag is honoured so the owner keeps control from the Models page;
  * the round trip is (a) `delta.reasoning_content` captured in the stream loop below and
  * (b) `reasoning_content` replayed by `buildOpenAIMessages`.
@@ -2077,7 +2125,7 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
 export function applyProviderRequestParams(
   requestParams: OpenAI.ChatCompletionCreateParams,
   contract: ModelContract,
-  opts: { supportsThinking: boolean; thinkingEnabled: boolean },
+  opts: { supportsThinking: boolean; thinkingEnabled: boolean; thinkingLevel?: string | null },
 ): void {
   if (contract.thinkingToggle === 'openrouter-reasoning' && opts.supportsThinking) {
     // `extra_body` survives the OpenAI SDK's pass-through to non-standard
@@ -2094,6 +2142,12 @@ export function applyProviderRequestParams(
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
       type: thinkingActive ? 'enabled' : 'disabled',
     };
+    // t195: the thinking LEVEL, beside the toggle. Only when thinking is on, only when the contract
+    // lists the value (a stored level this wire does not accept is never sent), and never on a
+    // contract with no levels. A caller that names no level (golden harnesses) sends none.
+    if (thinkingActive && opts.thinkingLevel && (contract.thinkingLevels as readonly string[]).includes(opts.thinkingLevel)) {
+      (requestParams as unknown as { reasoning_effort?: string }).reasoning_effort = opts.thinkingLevel;
+    }
   }
 
   if (contract.rejectsSamplingParamsWhenThinking && thinkingActive) {
@@ -2105,7 +2159,7 @@ export function applyProviderRequestParams(
 
 async function callOpenAIModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; providerAuthType: string; providerBehavesLike: string | null; firstChunkTimeoutMs: number | null; streamIdleTimeoutMs: number | null; prefillTokensPerSec: number | null; measuredPrefillTokensPerSec: number | null; thinkingEnabled: boolean; thinkingLevel?: string; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
   const startTime = Date.now();
@@ -2185,7 +2239,12 @@ async function callOpenAIModel(
   // up). Byte-preserving no-op when this provider has not declared a prefill throughput.
   refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
-  const effectiveMaxTokens = resolveOutputBudget(modelInfo, finalInputEstimate);
+  // t195: the contract's own ceiling bounds how much room a cut-off call may be given; the engine's ask
+  // (`params.outputRoomAsk`) is honoured up to it. The result reports what was sent and the most a retry
+  // could be given, so the escalation is sized from this call's own facts, not from a table.
+  const budgetInfo = { ...modelInfo, outputEscalationCeiling: contract.outputEscalationCeiling };
+  const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
+  const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);
 
   // v2.7.27: belt-and-suspenders tool_call/tool_result pair sanitizer.
   // The trimming logic earlier only fires when input exceeds the context
@@ -2307,7 +2366,7 @@ async function callOpenAIModel(
 
   const supportsThinking = modelInfo.capabilities.includes('thinking');
   applyProviderRequestParams(requestParams, contract, {
-    supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled,
+    supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled, thinkingLevel: modelInfo.thinkingLevel,
   });
 
   logger.info('Calling OpenAI model', {
@@ -2317,7 +2376,9 @@ async function callOpenAIModel(
     messageCount: openaiMessages.length,
     toolCount: openaiTools?.length ?? 0,
     maxOutputTokens: modelInfo.maxOutputTokens,
+    sentMaxTokens: effectiveMaxTokens,
     thinkingEnabled: modelInfo.thinkingEnabled,
+    thinkingLevel: (requestParams as unknown as { reasoning_effort?: string }).reasoning_effort ?? null,
     reasoningToggleApplied: contract.thinkingToggle === 'openrouter-reasoning' && supportsThinking,
   }, agentId);
 
@@ -2786,6 +2847,7 @@ async function callOpenAIModel(
       outputTokens,
       stopReason,
       reasoningContent: fullReasoning.length > 0 ? fullReasoning : undefined,
+      outputRoom: { sent: effectiveMaxTokens, ceiling: outputRoomCeiling },
     };
   } catch (err) {
     watchdog.finish();

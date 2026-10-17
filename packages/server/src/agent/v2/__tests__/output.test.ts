@@ -14,44 +14,15 @@ describe('outputTruncationClassifier', () => {
   });
 
   it('detects max_tokens (Anthropic)', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 8000, currentBudget: 8000 });
+    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 8000, currentBudget: 8000, ceiling: 64000 });
     expect(r.truncated).toBe(true);
-    if (r.truncated) {
-      expect(r.escalateTo).toBe(16000);
-    }
+    // t195: twice the budget the cut call was sent with, bounded by its reported room (was a fixed 8K/16K/32K/64K chain).
+    if (r.truncated) expect(r.escalateTo).toBe(16000);
   });
 
   it('detects length (OpenAI)', () => {
     const r = outputTruncationClassifier({ stopReason: 'length', contentLength: 8000, currentBudget: 8000 });
     expect(r.truncated).toBe(true);
-  });
-
-  it('escalates 8K → 16K', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 8000, currentBudget: 8000 });
-    if (r.truncated) expect(r.escalateTo).toBe(16000);
-  });
-
-  it('escalates 16K → 32K', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 16000, currentBudget: 16000 });
-    if (r.truncated) expect(r.escalateTo).toBe(32000);
-  });
-
-  it('escalates 32K → 64K', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 32000, currentBudget: 32000 });
-    if (r.truncated) expect(r.escalateTo).toBe(64000);
-  });
-
-  it('returns null escalation when budget already at 64K', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 64000, currentBudget: 64000 });
-    if (r.truncated) {
-      expect(r.escalateTo).toBeNull();
-      expect(r.reason).toContain('exhausted');
-    }
-  });
-
-  it('starts escalation from 8K when budget is 0 (not yet escalated)', () => {
-    const r = outputTruncationClassifier({ stopReason: 'max_tokens', contentLength: 4000, currentBudget: 0 });
-    if (r.truncated) expect(r.escalateTo).toBe(8000);
   });
 });
 

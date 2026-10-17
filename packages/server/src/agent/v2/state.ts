@@ -242,7 +242,7 @@ export interface AgentTurnState {
 
   // ── Recovery & escalation ──
   recoveryStreak: RecoveryStreak | null;
-  outputTokensEscalated: number;          // 8000, 16000, 32000, 64000
+  outputTokensEscalated: number;          // t195: the extra output room asked of the NEXT call, in tokens; 0 = none
   consecutivePermissionDenials: number;
   truncationRetryCount: number;
   consecutiveNoResultTools: number;       // tracks "No results found" / "not in memory" returns
@@ -700,8 +700,10 @@ export class StateValidationError extends Error {
 }
 
 export function validate(state: AgentTurnState): void {
-  if (state.outputTokensEscalated > 64000) {
-    throw new StateValidationError(`outputTokensEscalated overflow: ${state.outputTokensEscalated}`);
+  // t195: the escalation is a room ask in tokens, bounded where it is spent (the model call sizes it
+  // against the model and the window), so the only invariant here is that it is a sane count.
+  if (!Number.isFinite(state.outputTokensEscalated) || state.outputTokensEscalated < 0) {
+    throw new StateValidationError(`outputTokensEscalated invalid: ${state.outputTokensEscalated}`);
   }
   if (state.toolCallsExecutedThisTurn > 200) {
     throw new StateValidationError(`runaway tool count: ${state.toolCallsExecutedThisTurn}`);
@@ -753,17 +755,4 @@ export function bumpLoopSignature(
     return next.slice(-windowSize);
   }
   return next;
-}
-
-/**
- * Output token escalation chain, Part IX recovery cascade.
- * Returns the next budget level, or null if exhausted.
- */
-const OUTPUT_ESCALATION_CHAIN = [8000, 16000, 32000, 64000] as const;
-
-export function nextOutputEscalation(current: number): number | null {
-  const idx = OUTPUT_ESCALATION_CHAIN.indexOf(current as typeof OUTPUT_ESCALATION_CHAIN[number]);
-  if (idx < 0) return OUTPUT_ESCALATION_CHAIN[0]; // not yet escalated → start at 8K
-  if (idx >= OUTPUT_ESCALATION_CHAIN.length - 1) return null; // exhausted
-  return OUTPUT_ESCALATION_CHAIN[idx + 1];
 }

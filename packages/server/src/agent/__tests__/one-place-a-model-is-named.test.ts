@@ -44,6 +44,8 @@ describe('HL1 — the capability contract is the only place a model or provider 
       answersInReasoning: true,
       thinkingToggle: 'native-thinking-param',
       rejectsSamplingParamsWhenThinking: true,
+      thinkingLevels: ['low', 'high', 'max'],
+      outputEscalationCeiling: 384_000,
       emptyRetryBudget: 1,
       apiRootIsBareHost: true,
       systemPromptCacheMarker: 'provider-auto',
@@ -84,6 +86,8 @@ const FICTIONAL: ModelContract = {
   answersInReasoning: true,
   thinkingToggle: 'native-thinking-param',
   rejectsSamplingParamsWhenThinking: true,
+  thinkingLevels: ['low', 'high'],
+  outputEscalationCeiling: 100_000,
   emptyRetryBudget: 3,
   apiRootIsBareHost: true,
   systemPromptCacheMarker: 'explicit-ephemeral',
@@ -96,6 +100,8 @@ const NOTHING: ModelContract = {
   answersInReasoning: false,
   thinkingToggle: 'none',
   rejectsSamplingParamsWhenThinking: false,
+  thinkingLevels: [],
+  outputEscalationCeiling: null,
   emptyRetryBudget: 0,
   apiRootIsBareHost: false,
   systemPromptCacheMarker: 'provider-auto',
@@ -182,8 +188,8 @@ describe('HL1 — every declared field moves the request', () => {
     // Every field the interface still declares is one the tests above move end-to-end.
     const iface = src.slice(src.indexOf('export interface ModelContract'), src.indexOf('// ── THE DEFINITION SITE'));
     for (const field of ['requiresReasoningReplay', 'answersInReasoning', 'thinkingToggle',
-      'rejectsSamplingParamsWhenThinking', 'emptyRetryBudget', 'apiRootIsBareHost',
-      'systemPromptCacheMarker']) {
+      'rejectsSamplingParamsWhenThinking', 'thinkingLevels', 'outputEscalationCeiling',
+      'emptyRetryBudget', 'apiRootIsBareHost', 'systemPromptCacheMarker']) {
       expect(iface, `${field} must still be declared`).toContain(field);
     }
   });

@@ -97,7 +97,7 @@ describe('§THE PREMISE — the numbers, and a correction to the line that repor
     expect(model, 'the pre-dial fit gate no longer reads an estimate').toMatch(
       /refuseIfDoomed\(\s*agentId,\s*(finalInputEstimate|inputEstimate)/);
     expect(model, 'the output budget no longer reads an estimate').toMatch(
-      /resolveOutputBudget\(modelInfo,\s*finalInputEstimate\)/);
+      /resolveOutputBudget\(budgetInfo,\s*finalInputEstimate/);
   });
 });
 

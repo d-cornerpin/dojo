@@ -25,6 +25,7 @@ import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../../..
 import { advance, type AgentTurnState } from '../../state.js';
 import { abandonTurn, type StepOutcome } from '../step-outcome.js';
 import { latchEngineCut } from '../../engine-exit.js';
+import { isOutputCut } from '../../classifiers/output.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
 import { hydrateCredentialsInMessages } from '../../../../credentials/secret-values.js';
@@ -186,6 +187,10 @@ export async function callWithRetryAndFallback(
           const r = await reassembleForFitIfNeeded({ agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext });
           return r ? { messages: forTheWire(r.messages), systemPrompt: r.systemPrompt } : null;
         },
+        // t195: the extra output room the engine decided this retry gets (0 = the everyday budget).
+        // `state.outputTokensEscalated` used to be written and never read, so the "escalated" retry
+        // went out at the same `max_tokens`. `callModel` sizes the ask against the model and the window.
+        outputRoomAsk: state.outputTokensEscalated,
         // C28 P-2: system-side volatile lane (empty after P-1). Trails the
         // cached stable system block so it can't invalidate the cached prefix.
         systemVolatile: ctx.systemVolatile,
@@ -543,5 +548,11 @@ export async function callWithRetryAndFallback(
   // other ordering; see `work/ask-title.ts`'s re-vet header.
   revetOpenAskTitles(agentId);
 
+  // t195: extra room is for the ONE retry. A call that came back not cut off has spent it, so the next
+  // call of the turn is back at the everyday budget. A call cut off again keeps the mark: it tells the
+  // ladder the extra room was already given, so the owner's give-up surface speaks instead of a loop.
+  if (state.outputTokensEscalated > 0 && !isOutputCut(result.stopReason)) {
+    state = advance(state, { outputTokensEscalated: 0 });
+  }
   return { state, result, modelId };
 }

@@ -263,6 +263,17 @@ export const updateModelThinking = async (
   });
 };
 
+// t195: how hard the model thinks. The server refuses a level the model's wire does not accept.
+export const updateModelThinkingLevel = async (
+  modelId: string,
+  level: string,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/thinking`, {
+    method: 'PATCH',
+    body: JSON.stringify({ level }),
+  });
+};
+
 export const updateModelNumCtx = async (
   modelId: string,
   override: number | null,

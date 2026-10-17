@@ -86,7 +86,7 @@ beforeEach(() => {
       prefill_tokens_per_sec REAL, measured_prefill_tokens_per_sec REAL);
     CREATE TABLE models (
       id TEXT PRIMARY KEY, provider_id TEXT, name TEXT, api_model_id TEXT, capabilities TEXT,
-      context_window INTEGER, max_output_tokens INTEGER, thinking_enabled INTEGER,
+      context_window INTEGER, max_output_tokens INTEGER, thinking_enabled INTEGER, thinking_level TEXT,
       num_ctx_override INTEGER, num_ctx_recommended INTEGER);
   `);
 });

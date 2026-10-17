@@ -78,10 +78,19 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
   const grindTrunc = outputTruncationClassifier({
     stopReason: result.stopReason,
     contentLength: result.content?.length ?? 0,
-    currentBudget: state.outputTokensEscalated,
+    currentBudget: result.outputRoom?.sent ?? 0,
+    ceiling: result.outputRoom?.ceiling,
+    alreadyEscalated: state.outputTokensEscalated > 0,
   });
   if (grindTrunc.truncated && result.toolCalls.length === 0) {
     if (!steerFired(state.steerQueue, 'output-grind')) {
+      // t195: THE FIRST GRIND GETS REAL EXTRA ROOM, not only a steer. The ask is read by the call step
+      // (`call-llm/model-call.ts`) and sized against the model and the window by `resolveOutputBudget`.
+      // The old "plain truncation" rung below this one that was meant to do this set a number nobody read, and
+      // was unreachable besides (this rung takes every truncation with no tool call first); it is deleted.
+      if (grindTrunc.escalateTo !== null) {
+        state = advance(state, { outputTokensEscalated: grindTrunc.escalateTo });
+      }
       logger.warn('v2: the model spent its whole output budget with no tool call — steering, not re-running', {
         loopCount: state.loopCount, stopReason: result.stopReason,
         contentChars: result.content?.length ?? 0,
@@ -121,16 +130,6 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
   // single output-truncation check; if not truncated and no text/tools,
   // surface as toast and break.
   if (result.toolCalls.length === 0 && (!result.content || result.content.trim().length === 0)) {
-    const trunc = outputTruncationClassifier({
-      stopReason: result.stopReason,
-      contentLength: 0,
-      currentBudget: state.outputTokensEscalated,
-    });
-    if (trunc.truncated && trunc.escalateTo !== null) {
-      // Output was truncated, escalate budget and retry.
-      state = advance(state, { outputTokensEscalated: trunc.escalateTo });
-      return continueLoop(state);
-    }
     // ── WHO IS WAITING — HOISTED (t125, triage Q2). THE SAME PREDICATE, ONE SCOPE UP. ──
     // It used to be read ONLY inside the `answersInReasoning` gate — true for DeepSeek,
     // false for every other model (`model-contract.ts`: `/deepseek/i`; `BASE_CONTRACT`).

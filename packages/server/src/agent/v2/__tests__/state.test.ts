@@ -5,7 +5,6 @@ import {
   validate,
   bumpRecoveryStreak,
   bumpLoopSignature,
-  nextOutputEscalation,
   StateValidationError,
   type AgentTurnState,
 } from '../state.js';
@@ -81,7 +80,7 @@ describe('advance', () => {
 
   it('runs validation on the new state', () => {
     const s = freshState();
-    expect(() => advance(s, { outputTokensEscalated: 999999 }))
+    expect(() => advance(s, { outputTokensEscalated: -1 }))
       .toThrow(StateValidationError);
   });
 });
@@ -91,9 +90,10 @@ describe('validate', () => {
     expect(() => validate(freshState())).not.toThrow();
   });
 
-  it('throws on outputTokensEscalated > 64000', () => {
-    const s = { ...freshState(), outputTokensEscalated: 70000 };
-    expect(() => validate(s)).toThrow(/outputTokensEscalated overflow/);
+  // t195: the fixed 64,000 wall is gone (the room ask is bounded where it is spent); only a nonsense value throws.
+  it('throws on a negative outputTokensEscalated', () => {
+    const s = { ...freshState(), outputTokensEscalated: -5 };
+    expect(() => validate(s)).toThrow(/outputTokensEscalated invalid/);
   });
 
   it('throws on runaway tool count', () => {
@@ -152,27 +152,5 @@ describe('bumpLoopSignature', () => {
     const result = bumpLoopSignature(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 'i', 8);
     expect(result).toEqual(['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
     expect(result.length).toBe(8);
-  });
-});
-
-describe('nextOutputEscalation', () => {
-  it('returns 8000 when not yet escalated', () => {
-    expect(nextOutputEscalation(0)).toBe(8000);
-  });
-
-  it('escalates 8000 → 16000', () => {
-    expect(nextOutputEscalation(8000)).toBe(16000);
-  });
-
-  it('escalates 16000 → 32000', () => {
-    expect(nextOutputEscalation(16000)).toBe(32000);
-  });
-
-  it('escalates 32000 → 64000', () => {
-    expect(nextOutputEscalation(32000)).toBe(64000);
-  });
-
-  it('returns null when exhausted at 64000', () => {
-    expect(nextOutputEscalation(64000)).toBeNull();
   });
 });

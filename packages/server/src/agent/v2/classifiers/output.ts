@@ -5,8 +5,10 @@
 //
 // outputTruncationClassifier: detect when the model's output was cut
 // off (max_output_tokens hit, content_filter, etc.) and signal whether
-// the recovery cascade should escalate the output budget. This is the
-// 8K → 16K → 32K → 64K escalation chain from Part IX.
+// the engine can give the retry more output room. t195: the room is
+// twice the budget the cut call was SENT with, bounded by the room that
+// call reported it could be given, and given once per cut. There is no
+// table of levels and no fixed wall in the engine.
 //
 // outputPersistenceClassifier: decide whether to persist trailing
 // assistant text. Subsumes v1's "engine-level inter-agent silence"
@@ -24,8 +26,12 @@ export interface OutputTruncationInput {
   stopReason: string | null;
   /** Length of the model's content in characters. */
   contentLength: number;
-  /** Current escalation level. */
+  /** The output budget the cut call was sent with, in tokens. 0 or absent when the transport did not report it. */
   currentBudget: number;
+  /** The most output room a retry of that call could be given, in tokens (reported by the same call). */
+  ceiling?: number;
+  /** True when the cut call was itself the extra-room retry: extra room is given once. */
+  alreadyEscalated?: boolean;
 }
 
 export type OutputTruncationDecision =
@@ -40,28 +46,42 @@ const TRUNCATION_STOP_REASONS = new Set([
   'truncated',
 ]);
 
-const ESCALATION_CHAIN = [8000, 16000, 32000, 64000];
+/** True when a provider's stop reason says the output was cut off by its budget. */
+export function isOutputCut(stopReason: string | null | undefined): boolean {
+  return TRUNCATION_STOP_REASONS.has((stopReason ?? '').toLowerCase());
+}
 
 export function outputTruncationClassifier(
   input: OutputTruncationInput,
 ): OutputTruncationDecision {
-  const stopReason = (input.stopReason ?? '').toLowerCase();
-  const truncated = TRUNCATION_STOP_REASONS.has(stopReason);
-
-  if (!truncated) {
+  if (!isOutputCut(input.stopReason)) {
     return { truncated: false };
   }
+  const stopReason = (input.stopReason ?? '').toLowerCase();
 
-  // Find the next escalation level above current budget.
-  const next = ESCALATION_CHAIN.find((b) => b > input.currentBudget);
-  if (next === undefined) {
+  if (input.alreadyEscalated) {
     return {
       truncated: true,
       escalateTo: null,
-      reason: `output truncated (stop_reason=${stopReason}); escalation chain exhausted at ${input.currentBudget}`,
+      reason: `output truncated (stop_reason=${stopReason}); the extra room was already given once`,
     };
   }
-
+  // No report of the room means no honest number to escalate to.
+  if (!(input.currentBudget > 0) || input.ceiling === undefined) {
+    return {
+      truncated: true,
+      escalateTo: null,
+      reason: `output truncated (stop_reason=${stopReason}); the transport reported no room to give`,
+    };
+  }
+  const next = Math.min(input.currentBudget * 2, input.ceiling);
+  if (next <= input.currentBudget) {
+    return {
+      truncated: true,
+      escalateTo: null,
+      reason: `output truncated (stop_reason=${stopReason}); already at the most room there is (${input.currentBudget})`,
+    };
+  }
   return {
     truncated: true,
     escalateTo: next,

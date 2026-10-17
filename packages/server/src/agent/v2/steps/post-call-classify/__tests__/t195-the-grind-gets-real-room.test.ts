@@ -22,7 +22,7 @@ import type { PostCallClassifyContext } from '../index.js';
 
 const reArmSpy = vi.fn();
 
-const grind = (room: { sent: number; ceiling: number } | undefined = { sent: 16_384, ceiling: 384_000 }): PostCallClassifyContext['result'] => ({
+const grind = (room: { sent: number; ceiling: number } | null = { sent: 16_384, ceiling: 384_000 }): PostCallClassifyContext['result'] => ({
   content: '', toolCalls: [] as ToolCall[], inputTokens: 10, outputTokens: 16_384,
   stopReason: 'length', ...(room ? { outputRoom: room } : {}),
 } as unknown as PostCallClassifyContext['result']);
@@ -70,7 +70,7 @@ describe('t195 — a grind retries once with MORE room', () => {
   });
 
   it('a transport that reports no room (local or SDK path) is steered as before', () => {
-    const out = runEmptyResponse(freshState(), ctxFor(grind(undefined)));
+    const out = runEmptyResponse(freshState(), ctxFor(grind(null)));
     if (out.directive !== 'continue') throw new Error('unreachable');
     expect(out.state.outputTokensEscalated).toBe(0);
   });

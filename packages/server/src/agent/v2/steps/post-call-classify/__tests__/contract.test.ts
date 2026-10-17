@@ -380,7 +380,14 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // `__tests__/the-truth-guards-are-one-guard.test.ts` — the declared set IS the whole
     // truth band (`priority < 20`), so a guard quietly dropped during the merge fails
     // there. A future cut still cannot pass this clause by moving numbers in step.
-    expect(continueSites).toBe(17);
+    //
+    // ⚠ RE-DERIVED DOWNWARD (t195): SEVENTEEN -> SIXTEEN. The one site removed is the
+    // "plain truncation" escalate-and-retry in the empty-response ladder. It was UNREACHABLE
+    // (the grind rung above it takes every truncation that has no tool call, and the plain
+    // rung required exactly that) and it set a number nothing read. Real extra room now rides
+    // the grind rung's existing retry arm. Exits UNCHANGED at eight: no way out was added or
+    // converted, a dead one was deleted.
+    expect(continueSites).toBe(16);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {

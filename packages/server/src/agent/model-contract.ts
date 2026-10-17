@@ -30,6 +30,10 @@
 // |                                   |                                                                | ladder (HL2) |
 // | thinkingToggle                     | which wire mechanism turns thinking on/off for this model      | model.ts     |
 // | rejectsSamplingParamsWhenThinking | does this model 400 on temperature/top_p while thinking?       | model.ts     |
+// | thinkingLevels                    | which `reasoning_effort` values does this model's wire accept? | model.ts,    |
+// |                                   | (empty: none, the parameter is never sent)                     | config.ts    |
+// | outputEscalationCeiling           | the most output tokens one call may be asked for when the      | model.ts     |
+// |                                   | engine gives a cut-off call extra room (null: the stored cap)  |              |
 // | emptyRetryBudget                  | how many SILENT re-runs the empty-response ladder may spend    | the empty-   |
 // |                                   | before it nudges                                               | response     |
 // |                                   |                                                                | ladder       |
@@ -67,6 +71,8 @@
 // named reader — that is the invariant the table exists to hold, and
 // `__tests__/one-place-a-model-is-named.test.ts` pins the tombstone.
 // ════════════════════════════════════════════════════════════════════════════════════
+import type { ThinkingLevel } from '@dojo/shared';
+
 
 /** How thinking is turned on and off on the wire, for models that have a toggle. */
 export type ThinkingToggle =
@@ -92,6 +98,11 @@ export interface ModelContract {
   readonly answersInReasoning: boolean;
   readonly thinkingToggle: ThinkingToggle;
   readonly rejectsSamplingParamsWhenThinking: boolean;
+  /** The `reasoning_effort` values this wire accepts. Empty means the parameter is never sent. */
+  readonly thinkingLevels: readonly ThinkingLevel[];
+  /** The documented most one call may be asked for when a cut-off call is given extra room.
+   *  `null` means nothing is known beyond the stored per-model cap, so escalation stays inside it. */
+  readonly outputEscalationCeiling: number | null;
   readonly emptyRetryBudget: number;
   readonly apiRootIsBareHost: boolean;
   readonly systemPromptCacheMarker: SystemPromptCacheMarker;
@@ -106,6 +117,9 @@ export interface ModelContract {
  * endpoint at https://api.deepseek.com/chat/completions, not /v1/chat/completions.
  */
 const DEEPSEEK_HOSTS = ['api.deepseek.com', 'deepseek.com'];
+
+/** The documented output ceiling of DeepSeek's own API (V4 models), in tokens. */
+const DEEPSEEK_MAX_OUTPUT_TOKENS = 384_000;
 
 /** OpenRouter is a proxy, detected by base URL exactly as the dispatcher did. */
 const OPENROUTER_MARKER = 'openrouter.ai';
@@ -143,6 +157,8 @@ const BASE_CONTRACT: ModelContract = {
   answersInReasoning: false,
   thinkingToggle: 'none',
   rejectsSamplingParamsWhenThinking: false,
+  thinkingLevels: [],
+  outputEscalationCeiling: null,
   // The ladder's silent-retry rung has been bounded at exactly one re-run since it was
   // written (`empty-response.ts`, `state.retriedEmptyResponse`). Seeded from that.
   emptyRetryBudget: 1,
@@ -198,6 +214,11 @@ function profileContract(
         // Their docs: temperature / top_p are rejected while thinking is enabled. The
         // dispatcher asserted this in a comment and sent neither; now it is enforced.
         rejectsSamplingParamsWhenThinking: true,
+        // Their thinking-mode page: `reasoning_effort` is low | high | max (default high).
+        thinkingLevels: ['low', 'high', 'max'],
+        // Their pricing page: up to 384K output tokens for the V4 models. This is the room a
+        // cut-off call may be given, NOT the everyday budget (owner ruling 10).
+        outputEscalationCeiling: DEEPSEEK_MAX_OUTPUT_TOKENS,
         apiRootIsBareHost: facts.apiRootIsBareHost,
       };
     case 'openrouter-proxy':
