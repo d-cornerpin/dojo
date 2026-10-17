@@ -334,7 +334,7 @@ describe('(5) a version or digest is checked against its OWN declared shape', ()
   it('keeps a pre-release semver and refuses a digest of the wrong length or alphabet', () => {
     expect((buildTelemetry(sources({ platformVersion: '3.2.0-rc.1' }))
       .platform as Record<string, unknown>).version).toBe('3.2.0-rc.1');
-    for (const bad of ['ds1-9F2C1A0B4D77', 'ds1-9f2c1a0b4d7', 'ds1-9f2c1a0b4d777', 'ds2-9f2c1a0b4d77']) {
+    for (const bad of ['ds1-9F2C1A0B4D77', 'ds1-9f2c1a0b4d7', 'ds1-9f2c1a0b4d777', 'ds3-9f2c1a0b4d77']) {
       expect((buildTelemetry(sources({ signature: bad })).report as Record<string, unknown>).signature,
         `signature admitted ${bad}`).toBe(UNRECOGNISED);
     }

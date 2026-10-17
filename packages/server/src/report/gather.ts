@@ -57,8 +57,11 @@ function osOf(p: string): string {
   return p === 'darwin' || p === 'linux' || p === 'win32' ? p : 'other';
 }
 
-/** Tool name → its dominant NON-SUCCESS verdict in this window. Ties break lexicographically. */
-function verdictByTool(calls: readonly ToolCallFacts[]): Map<string, string> {
+/**
+ * Tool name → its non-success tally IN THIS WINDOW: the total count and the dominant verdict.
+ * Ties on the verdict break lexicographically.
+ */
+function failuresByTool(calls: readonly ToolCallFacts[]): { tool: string; result: string; count: number }[] {
   const tally = new Map<string, Map<string, number>>();
   for (const c of calls) {
     if (c.result === null || c.result === 'success') continue;
@@ -66,28 +69,23 @@ function verdictByTool(calls: readonly ToolCallFacts[]): Map<string, string> {
     byResult.set(c.result, (byResult.get(c.result) ?? 0) + 1);
     tally.set(c.name, byResult);
   }
-  const out = new Map<string, string>();
-  for (const [tool, byResult] of tally) {
-    out.set(tool, [...byResult].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]);
-  }
-  return out;
+  return [...tally].map(([tool, byResult]) => ({
+    tool,
+    result: [...byResult].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0],
+    count: [...byResult.values()].reduce((n, v) => n + v, 0),
+  }));
 }
 
 /**
- * THE FAILURE SHAPE THE SIGNATURE HASHES. Tool failures outrank turn exits
- * (`signature.ts` argues why: an exit reason is downstream of whatever went wrong).
- * `'unrecorded'` is what a failure streak whose audit rows fell outside the window
- * becomes — an honest literal, never a verdict borrowed from some other tool.
+ * THE FAILURE SHAPE THE SIGNATURE HASHES: IN-WINDOW EVIDENCE ONLY. Tool failures outrank turn
+ * exits (`signature.ts` argues why: an exit reason is downstream of whatever went wrong). Tool
+ * failures are ranked by how often each tool failed inside this window, ties by tool name. The
+ * cumulative per-agent streak counter is deliberately not read here: it counts failures from
+ * outside the window, so it made two different problems share one signature (v3.4 E3).
  */
-function dominantOf(
-  failures: readonly Row[], calls: readonly ToolCallFacts[], turns: readonly TurnFacts[],
-): DominantFailure {
-  const verdicts = verdictByTool(calls);
-  const toolFailures = failures.map(f => ({
-    tool: str(f.tool_name) ?? 'unknown',
-    result: verdicts.get(str(f.tool_name) ?? '') ?? 'unrecorded',
-    count: num(f.hit_count),
-  }));
+function dominantOf(calls: readonly ToolCallFacts[], turns: readonly TurnFacts[]): DominantFailure {
+  const toolFailures = failuresByTool(calls)
+    .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
   const exits = new Map<string, number>();
   for (const t of turns) {
     if (t.answered || t.exitReason === null || t.exitReason === 'answered') continue;
@@ -219,7 +217,7 @@ export function gatherEvidence(agentId: string, req: WindowRequest, now: Date = 
       windowMinutes: window.minutes, windowTurns: window.turns, windowTruncated: window.truncated,
       turns, calls, toolCalls, work, settings: readSettings(agentId),
     },
-    dominant: dominantOf(failureRows, toolCalls, turns),
+    dominant: dominantOf(toolCalls, turns),
     bundle: scrub(agentId, { bounds: bounded.notes, window, ...bounded.sections }),
   };
 }

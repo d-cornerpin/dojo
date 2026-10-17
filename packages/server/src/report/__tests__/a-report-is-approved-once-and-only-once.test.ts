@@ -294,12 +294,10 @@ describe('posted is terminal', () => {
 describe('the signature is stable and not content-derived', () => {
   it('is identical for the same failure shape and differs when the shape differs', () => {
     const d = { toolFailures: [{ tool: 'work_open', result: 'denied', count: 3 }], turnExits: [] };
-    expect(deriveReportSignature('3.1.28', 'tool-error', d))
-      .toBe(deriveReportSignature('3.1.28', 'tool-error', d));
-    expect(deriveReportSignature('3.1.28', 'tool-error', d))
-      .not.toBe(deriveReportSignature('3.1.29', 'tool-error', d));
-    expect(deriveReportSignature('3.1.28', 'tool-error', d))
-      .not.toBe(deriveReportSignature('3.1.28', 'silence', d));
+    // v3.4 (owner decision 17): the version is no longer an input, so there is no
+    // "differs by release" clause any more; the same shape is one token on every release.
+    expect(deriveReportSignature('tool-error', d)).toBe(deriveReportSignature('tool-error', d));
+    expect(deriveReportSignature('tool-error', d)).not.toBe(deriveReportSignature('silence', d));
   });
 
   it('falls back from tool failures to turn exits to none', () => {
@@ -310,10 +308,10 @@ describe('the signature is stable and not content-derived', () => {
     expect(dominantToken({ toolFailures: [], turnExits: [] })).toBe('none');
   });
 
-  it('matches the ds1- shape and every lane is legal', () => {
+  it('matches the ds2- shape and every lane is legal', () => {
     for (const lane of FAILURE_LANES) {
-      expect(deriveReportSignature('3.1.28', lane, { toolFailures: [], turnExits: [] }))
-        .toMatch(/^ds1-[0-9a-f]{12}$/);
+      expect(deriveReportSignature(lane, { toolFailures: [], turnExits: [] }))
+        .toMatch(/^ds2-[0-9a-f]{12}$/);
     }
   });
 
@@ -325,11 +323,11 @@ describe('the signature is stable and not content-derived', () => {
   });
 
   it('carries no report content into the token — only the platform\'s own verdicts', () => {
-    const withContent = deriveReportSignature('3.1.28', 'tool-error', {
+    const withContent = deriveReportSignature('tool-error', {
       toolFailures: [{ tool: 'work_open', result: 'denied', count: 3 }], turnExits: [],
     });
     // Same dominant shape, a different COUNT and a different runner-up: same signature.
-    const sameShape = deriveReportSignature('3.1.28', 'tool-error', {
+    const sameShape = deriveReportSignature('tool-error', {
       toolFailures: [{ tool: 'work_open', result: 'denied', count: 91 },
         { tool: 'exec', result: 'error', count: 4 }],
       turnExits: [{ exitReason: 'brake', count: 12 }],

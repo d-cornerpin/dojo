@@ -261,9 +261,11 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
  *    its window filter and the rule that stops a report re-swallowing the last report's
  *    payload. `gather.ts` no longer imports the logger AT ALL, which is a narrowing: the
  *    one module that can read back what this feature wrote is now a single named door.
+ *  · `− ../../../gateway/routes/update.js` (handler, v3.4 E3): the signature no longer hashes the
+ *    platform version, so the handler stopped reading it. A narrowing: one edge fewer.
  */
 const HANDLER_IMPORTS: readonly string[] = [
-  '../../../gateway/routes/update.js', '../../../gateway/ws.js', '../../../report/bounds.js',
+  '../../../gateway/ws.js', '../../../report/bounds.js',
   '../../../report/bundle.js', '../../../report/gather.js', '../../../report/signature.js',
   '../../../report/store.js', '../../../report/telemetry-build.js', '../../../report/window.js',
   '../handler.js', './report-prose.js',

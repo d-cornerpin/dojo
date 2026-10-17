@@ -317,7 +317,11 @@ describe('the window EXCLUDES what falls outside it, in every collector\'s own s
   it('tool failures: the streak that last fired before the window is left out', () => {
     seedBoundary();
     const ev = gatherEvidence(AGENT, {}, NOW);
-    expect(ev.dominant.toolFailures.length).toBe(2);
+    // The bundle still shows the live streaks whose last hit is in the window (edge and in)...
+    expect((ev.bundle as { toolFailures?: { rows?: unknown[] } | unknown[] }).toolFailures).toBeDefined();
+    // ...and the signature's dominant failure (v3.4: in-window audit rows, not the streak
+    // counter) counts the two in-window denials of the tool and not the stale one.
+    expect(ev.dominant.toolFailures).toEqual([{ tool: 'file_read', result: 'denied', count: 2 }]);
   });
 
   it('audit rows: the stale row\'s path never reaches the bundle, let alone the sources', () => {

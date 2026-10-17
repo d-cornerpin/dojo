@@ -42,7 +42,6 @@
 
 import type { ToolHandlerMap } from '../handler.js';
 import { broadcast } from '../../../gateway/ws.js';
-import { getCurrentVersion } from '../../../gateway/routes/update.js';
 import { gatherEvidence } from '../../../report/gather.js';
 import { buildTelemetry } from '../../../report/telemetry-build.js';
 import { writeBundle } from '../../../report/bundle.js';
@@ -103,7 +102,7 @@ export const reportHandlers: ToolHandlerMap = {
     if (phase === 'gather') {
       const asked: WindowRequest = { turns: num(args.turns), minutes: num(args.minutes) };
       const ev = gatherEvidence(agentId, asked);
-      const signature = deriveReportSignature(getCurrentVersion(), 'other', ev.dominant);
+      const signature = deriveReportSignature('other', ev.dominant);
       const row = createReport(agentId, 'other', signature);
       rememberAsk(row.id, asked);
       return ok([
@@ -141,7 +140,7 @@ export const reportHandlers: ToolHandlerMap = {
           + 'against the id it returns — drafting now would attach a window nobody asked for.');
       }
       const ev = gatherEvidence(agentId, asked);
-      const signature = deriveReportSignature(getCurrentVersion(), lane, ev.dominant);
+      const signature = deriveReportSignature(lane, ev.dominant);
       const brief: ReportBrief = {
         title: text(args.title), whatHappened: text(args.what_happened),
         whatShouldHaveHappened: text(args.what_should_have_happened),

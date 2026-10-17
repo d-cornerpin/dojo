@@ -114,7 +114,7 @@ export const TELEMETRY_WHITELIST: readonly TelemetryField[] = [
     pattern: /^dojo-telemetry-1$/ },                 // equality with the constant, anchored
   { path: 'report.created_at',        kind: 'timestamp', source: 'report row created_at' },
   { path: 'report.signature',         kind: 'digest',    source: 'report/signature.ts',
-    pattern: /^ds1-[0-9a-f]{12}$/ },                 // exactly what signature.ts mints
+    pattern: /^ds[12]-[0-9a-f]{12}$/ },               // ds2 is what signature.ts mints; ds1 is a draft from before v3.4
   { path: 'report.lane',              kind: 'enum',      source: 'agent choice from FAILURE_LANES',
     members: ['tool-error', 'wrong-answer', 'silence', 'permission', 'other'] },
   // ── the box ──

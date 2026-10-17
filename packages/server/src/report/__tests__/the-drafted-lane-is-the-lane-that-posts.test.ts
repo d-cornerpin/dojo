@@ -70,9 +70,9 @@ const call = async (args: Record<string, unknown>): Promise<{ content: string; i
     agentId: AGENT, name: 'dojo_report', args, callId: 'c1', toolCall: {} as ToolCall,
   });
 
-/** Every `ds1-` token in a string, de-duplicated. The instrument clause 2 turns on the body. */
+/** Every `ds2-` token in a string, de-duplicated. The instrument clause 2 turns on the body. */
 const digestsIn = (text: string): string[] =>
-  [...new Set(text.match(/ds1-[0-9a-f]{12}/g) ?? [])];
+  [...new Set(text.match(/ds2-[0-9a-f]{12}/g) ?? [])];
 
 /** The lane and the digest the ATTACHMENT carries, read out of the stored JSON. */
 function telemetryIdentity(id: string): { lane: unknown; signature: unknown } {
@@ -160,7 +160,7 @@ describe('a draft on a lane other than gather\'s provisional one moves the row',
     expect(row?.lane, 'the row and the attachment name different lanes').toBe(attachment.lane);
     expect(row?.signature, 'the row and the attachment carry different digests')
       .toBe(attachment.signature);
-    expect(String(attachment.signature)).toMatch(/^ds1-[0-9a-f]{12}$/);
+    expect(String(attachment.signature)).toMatch(/^ds2-[0-9a-f]{12}$/);
   });
 
   it('is keyed on the LANE — two lanes over the same evidence differ, and `other` comes back', async () => {
@@ -177,7 +177,7 @@ describe('a draft on a lane other than gather\'s provisional one moves the row',
     // …and the lane gather itself used must land back on gather's own digest, which is what
     // proves the derivation is the SAME one and not merely a different one.
     expect(sig(other.id), 'drafting on gather\'s own lane produced a different digest — the row '
-      + 'is not being derived from `version|lane|dominant`').toBe(other.provisionalSignature);
+      + 'is not being derived from `lane|dominant`').toBe(other.provisionalSignature);
   });
 
   it('every one of the five lanes reaches the row — none is silently collapsed', async () => {
@@ -203,7 +203,7 @@ describe('the issue body says one thing about one report', () => {
 
     // Non-vacuity: the instrument has to be able to see a digest at all.
     const found = digestsIn(body);
-    expect(found.length, 'no `ds1-` token in the rendered body — this clause is blind').toBeGreaterThan(0);
+    expect(found.length, 'no `ds2-` token in the rendered body — this clause is blind').toBeGreaterThan(0);
     expect(found, `the body carries ${found.length} different digests: ${found.join(', ')} — a `
       + 'reader cannot tell which half of one page is true').toHaveLength(1);
     expect(found[0]).toBe(getReport(id)!.signature);
