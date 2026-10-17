@@ -202,11 +202,12 @@ describe('the check cannot be skipped by adding another download', () => {
     expect(downloaders).toEqual(['gateway/routes/update.ts']);
 
     const src = fs.readFileSync(path.join(srcRoot, 'gateway/routes/update.ts'), 'utf8');
-    // The command text is now built ONCE in a helper and invoked twice, so counting the text
-    // would read 1 where there are 2 downloads. The call site is the download.
+    // t197: apply and rollback now share ONE download->verify->install sequence
+    // (`downloadAndInstall`), so there is one download call site, called by both doors.
     const downloads = (src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? []).length;
     const verifies = (src.match(/verifyArtifactAgainstManifest\s*\(/g) ?? []).length;
-    expect(downloads).toBe(2);
+    expect(downloads).toBe(1);
+    expect((src.match(/await downloadAndInstall\(/g) ?? []).length, 'both doors use it').toBe(2);
     expect(verifies).toBe(downloads);
     // Calling the verifier and ignoring it is the shape this would otherwise
     // decay into, so the verdict must be ACTED ON as many times as it is asked.

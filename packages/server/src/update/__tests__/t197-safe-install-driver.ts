@@ -13,7 +13,10 @@ const home = process.env.DOJO_HOME as string;
 const dojoDir = path.join(home, '.dojo');
 
 if (mode === 'boot') {
+  // Exactly what index.ts does at its boot sentinel: settle, then count the boot.
   const { recordBootAttempt, readMarker } = await import('../../update-state.js');
+  const { settlePendingInstall } = await import('../install-tree.js');
+  settlePendingInstall(dojoDir);
   recordBootAttempt();
   process.stdout.write(`RESULT ${JSON.stringify(readMarker())}\n`);
 } else {

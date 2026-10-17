@@ -10,7 +10,9 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '../../../../..');
 export const ROLLBACK_SH = path.join(REPO_ROOT, 'deploy/scripts/rollback.sh');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The repo's tsx loaded INTO one node process (not the `tsx` launcher, which runs the code in a
+// child): a SIGKILL at a step must be the death of the very process the test observes.
+const TSX_LOADER = path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'esm', 'index.mjs');
 const DRIVER = path.join(HERE, 't197-safe-install-driver.ts');
 
 /** A tree that looks like an installed platform of `version`. `native` adds a loadable database module. */
@@ -80,7 +82,7 @@ export interface DriverRun { status: number | null; signal: NodeJS.Signals | nul
 
 /** Run the real installer in a CHILD process, so a SIGKILL at a step is a real crash. */
 export function runInstaller(box: Box, env: Record<string, string>): DriverRun {
-  const r = spawnSync(TSX, [DRIVER], {
+  const r = spawnSync(process.execPath, ['--import', TSX_LOADER, DRIVER], {
     env: { ...process.env, DOJO_HOME: box.home, HOME: box.home, PATH: `${box.bin}:${process.env.PATH ?? ''}`, ...env },
     encoding: 'utf8', timeout: 120_000,
   });

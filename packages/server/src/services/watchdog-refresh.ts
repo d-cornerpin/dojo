@@ -71,6 +71,21 @@ function shouldRefresh(bundle: WatchdogVersion, installed: WatchdogVersion | nul
   return false;
 }
 
+/**
+ * t197: the watchdog's code is switched whole, like the platform's: a complete `dist.next` is
+ * built beside `dist`, then `dist` -> `dist.previous` and `dist.next` -> `dist`. A crash between
+ * those renames leaves no `dist`, and launchd cannot start the watchdog — so the next platform
+ * boot (which always passes through here) puts a whole copy back. Never throws.
+ */
+export function healWatchdogDistSwap(installedDir: string): 'none' | 'restored-next' | 'restored-previous' {
+  const dist = path.join(installedDir, 'dist');
+  if (fs.existsSync(dist)) return 'none';
+  for (const [side, outcome] of [['dist.next', 'restored-next'], ['dist.previous', 'restored-previous']] as const) {
+    try { fs.renameSync(path.join(installedDir, side), dist); logger.warn('Watchdog code folder was missing; put a whole copy back', { from: side }); return outcome; } catch { /* try the other side */ }
+  }
+  return 'none';
+}
+
 export interface WatchdogRefreshResult {
   refreshed: boolean;
   /** Machine-readable outcome for logs/tests. */
@@ -95,6 +110,7 @@ export async function refreshBundledWatchdog(opts: { force?: boolean } = {}): Pr
     // is not a standard production box (a dev checkout), so there is nothing to
     // refresh or kickstart.
     if (!fs.existsSync(INSTALLED_DIR)) return { refreshed: false, reason: 'no-installed-watchdog' };
+    healWatchdogDistSwap(INSTALLED_DIR);
     // An older package that predates bundling ships nothing here.
     if (!fs.existsSync(path.join(BUNDLE_DIR, 'dist'))) return { refreshed: false, reason: 'no-bundle' };
 
@@ -114,16 +130,18 @@ export async function refreshBundledWatchdog(opts: { force?: boolean } = {}): Pr
 
     const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}` };
 
-    // Copy the built code + manifest + version marker over the installed watchdog,
-    // PRESERVING node_modules. install.sh runs `npm ci --production` in the watchdog
-    // dir at install time, so the native (better-sqlite3) build already lives at
-    // ~/.dojo/watchdog/node_modules; the bundle intentionally ships no node_modules
-    // (mirrors deploy/build-package.sh), and we must not delete the compiled one.
-    // rsync the dist subtree with --delete so stale compiled files are removed, then
-    // copy package.json + the version marker beside it (node_modules is a sibling of
-    // dist, so --delete on dist never touches it).
-    await execAsync(`rsync -a --delete "${path.join(BUNDLE_DIR, 'dist')}/" "${path.join(INSTALLED_DIR, 'dist')}/"`, { timeout: 30000, env });
-    await execAsync(`cp -f "${path.join(BUNDLE_DIR, 'package.json')}" "${path.join(INSTALLED_DIR, 'package.json')}"`, { timeout: 15000 });
+    // Switch in the built code whole (t197: see healWatchdogDistSwap), PRESERVING node_modules:
+    // install.sh built the native (better-sqlite3) module there and the bundle ships none.
+    // The version marker is written LAST, so a refresh cut off anywhere is retried next boot.
+    const dist = path.join(INSTALLED_DIR, 'dist');
+    await execAsync(`rm -rf "${dist}.next" "${dist}.previous" && cp -R "${path.join(BUNDLE_DIR, 'dist')}" "${dist}.next"`, { timeout: 30000, env });
+    // package.json says "type": "module"; a truncated one makes node misread every file, so it
+    // is replaced by a rename of a complete copy, never written in place.
+    fs.copyFileSync(path.join(BUNDLE_DIR, 'package.json'), path.join(INSTALLED_DIR, 'package.json.next'));
+    fs.renameSync(path.join(INSTALLED_DIR, 'package.json.next'), path.join(INSTALLED_DIR, 'package.json'));
+    if (fs.existsSync(dist)) fs.renameSync(dist, `${dist}.previous`);
+    fs.renameSync(`${dist}.next`, dist);
+    fs.rmSync(`${dist}.previous`, { recursive: true, force: true });
     await execAsync(`cp -f "${path.join(BUNDLE_DIR, VERSION_FILE)}" "${path.join(INSTALLED_DIR, VERSION_FILE)}"`, { timeout: 15000 });
 
     // Native deps: the preserved node_modules covers the (unchanged) better-sqlite3

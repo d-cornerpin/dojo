@@ -8,6 +8,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { REPO_ROOT, makeBox, makeTree, runRollbackSh, versionAt, type Box } from './t197-safe-install-fixtures.js';
 
 const read = (rel: string): string => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
@@ -36,6 +37,17 @@ describe('census: nothing copies a tree over the live platform any more', () => 
     const files = ['packages/server/src/gateway/routes/update.ts', 'packages/server/src/update/install-tree.ts'];
     const legs = files.flatMap((f) => code(f).match(/'npm install --omit=dev'/g) ?? []);
     expect(legs.length).toBe(1);
+  });
+});
+
+describe('the next boot names what is live before it counts itself', () => {
+  it('index.ts settles a cut-off install immediately before the boot sentinel', () => {
+    const idx = code('packages/server/src/index.ts');
+    const settle = idx.indexOf('.settlePendingInstall(');
+    const count = idx.indexOf('let bootEpisode = recordBootAttempt();');
+    expect(settle).toBeGreaterThan(-1);
+    expect(count - settle, 'settle, then count: nothing in between').toBeLessThan(200);
+    expect(settle).toBeLessThan(count);
   });
 });
 
@@ -164,5 +176,88 @@ describe('the bundled watchdog refresh swaps its code whole, and heals the gap',
 
   it('the refresh no longer rsyncs over the running watchdog code', () => {
     expect(code('packages/server/src/services/watchdog-refresh.ts')).not.toMatch(/rsync -a --delete/);
+  });
+});
+
+describe('install.sh goes through the same installer', () => {
+  const CLI = path.join(REPO_ROOT, 'packages/server/src/update/install-tree-cli.ts');
+  const LOADER = path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'esm', 'index.mjs');
+  const runCli = (box: Box, src: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, ['--import', LOADER, CLI, src], {
+        env: { ...process.env, DOJO_HOME: box.home, HOME: box.home, PATH: `${box.bin}:${process.env.PATH ?? ''}`, NPM_MODE: 'ok' },
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  };
+
+  it('a fresh box: the platform appears whole, and no update episode is invented', () => {
+    const box = makeBox('t197-cli-fresh-');
+    try {
+      const src = makeTree(path.join(box.home, 'pkg', 'platform'), '3.4.0', { native: true });
+      const r = runCli(box, src);
+      expect(r.code, r.out).toBe(0);
+      expect(versionAt(box.platform)).toBe('3.4.0');
+      expect(fs.existsSync(path.join(box.dojo, 'update-state.json'))).toBe(false);
+      expect(fs.readdirSync(box.dojo).filter((n) => n.startsWith('platform.staging-')), 'no work left behind').toEqual([]);
+    } finally { fs.rmSync(box.home, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('a reinstall over a working box keeps the old tree as the backup and opens a supervised episode', () => {
+    const box = makeBox('t197-cli-re-');
+    try {
+      makeTree(box.platform, '3.3.3', { native: true });
+      const src = makeTree(path.join(box.home, 'pkg', 'platform'), '3.4.0');
+      const r = runCli(box, src);
+      expect(r.code, r.out).toBe(0);
+      expect(versionAt(box.platform)).toBe('3.4.0');
+      expect(versionAt(path.join(box.dojo, 'platform.backup-3.3.3'))).toBe('3.3.3');
+      expect(fs.existsSync(path.join(box.platform, 'node_modules', 'better-sqlite3')), 'dependencies carried').toBe(true);
+      const m = JSON.parse(fs.readFileSync(path.join(box.dojo, 'update-state.json'), 'utf8'));
+      // install.sh restarts the services next; that boot settles this to booting-new.
+      expect(m.phase).toBe('pending-update');
+      expect(m.backupDir).toBe(path.join(box.dojo, 'platform.backup-3.3.3'));
+    } finally { fs.rmSync(box.home, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('the CLI runs from an unpacked release with NO node_modules: its imports are Node built-ins only', () => {
+    // install.sh runs it before any dependency is installed. A package import anywhere in its
+    // graph would make every fresh install fail at this line.
+    const seen = new Set<string>();
+    const bad: string[] = [];
+    const walk = (abs: string): void => {
+      if (seen.has(abs)) return;
+      seen.add(abs);
+      const src = fs.readFileSync(abs, 'utf8');
+      for (const m of src.matchAll(/^import\s+(type\s+)?[^'"]*from\s+'([^']+)'/gm)) {
+        if (m[1]) continue;  // erased at compile time
+        const spec = m[2];
+        if (spec.startsWith('node:')) continue;
+        if (spec.startsWith('.')) walk(path.resolve(path.dirname(abs), spec.replace(/\.js$/, '.ts')));
+        else bad.push(`${path.relative(REPO_ROOT, abs)} imports ${spec}`);
+      }
+    };
+    walk(CLI);
+    expect(bad).toEqual([]);
+    expect(seen.size).toBeGreaterThan(3);
+  });
+});
+
+describe('the interrupted-update notice is claimed exactly once', () => {
+  it('two claims on the same record: one wins, and the record goes quiet', async () => {
+    const box = makeBox('t197-claim-');
+    try {
+      const { claimInterruptedNotice } = await import('../../../../../watchdog/src/swap-heal.js');
+      const statePath = path.join(box.dojo, 'update-state.json');
+      const m = { phase: 'interrupted', targetVersion: '3.4.0', previousVersion: '3.3.3', writeSeq: 7 } as never;
+      fs.writeFileSync(statePath, JSON.stringify(m));
+      expect(claimInterruptedNotice(m, statePath)).toBe(true);
+      expect(claimInterruptedNotice(m, statePath)).toBe(false);
+      expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).phase).toBe('idle');
+    } finally { fs.rmSync(box.home, { recursive: true, force: true }); }
   });
 });

@@ -7,8 +7,16 @@
 # boot (the exact situation it exists for). So no running server, no network,
 # no re-download — it only moves local directories and toggles launchd. The
 # menu-bar app shells out to this; it is also safe to run by hand over SSH.
+#
+# --heal (v3.4, t197; the watchdog runs it when ~/.dojo/platform is MISSING):
+# every install switches trees with two renames, so a crash between them leaves
+# no platform folder. If the cut-off swap was an update whose staged tree is
+# whole, finish it (the new version goes live); otherwise restore as below.
+# With the platform folder in place, --heal does nothing at all.
 # ════════════════════════════════════════
 set -uo pipefail
+HEAL=0
+[ "${1:-}" = "--heal" ] && HEAL=1
 
 DOJO_DIR="$HOME/.dojo"
 PLATFORM_DIR="$DOJO_DIR/platform"
@@ -20,15 +28,61 @@ BACKUP_PREFIX="platform.backup-"
 # THIS same script; they must never run at the same time (two concurrent platform
 # moves would race and could lose the build). Putting the lock in the script
 # itself means both callers inherit it. `mkdir` is an atomic lock on POSIX:
-# exactly one caller can create the directory; a second caller fails fast. The
-# lock is released on ANY exit (success, error, or signal) via the trap.
+# exactly one caller can create the directory; a second caller fails fast.
+# v3.4 (t197): it is THE lock for anything that moves the platform folder (the
+# installer takes it too), and it holds its holder's pid: a lock whose holder
+# is dead (a SIGKILL skips the trap) is broken, not obeyed for ever. A lock
+# with no pid is one being taken right now, or a pre-v3.4 leftover once old.
 mkdir -p "$DOJO_DIR" 2>/dev/null || true
 LOCK_DIR="$DOJO_DIR/rollback.lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "ERROR: another rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
+take_lock() {
+    if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
+    local holder age
+    holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 1; fi
+    age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
+    if [ -z "$holder" ] && [ "$age" -lt 60 ]; then return 1; fi
+    echo "   (Clearing a lock left by a process that is no longer running.)"
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" 2>/dev/null && echo $$ > "$LOCK_DIR/pid"
+}
+if ! take_lock; then
+    echo "ERROR: another install or rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
     exit 1
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+trap '[ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"' EXIT
+
+# A field of the update-state marker, read with sed (node may be what is broken).
+marker_field() {
+    [ -f "$DOJO_DIR/update-state.json" ] || return 0
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$DOJO_DIR/update-state.json" | head -1
+}
+tree_version() {
+    [ -f "$1/package.json" ] || return 0
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/package.json" | head -1
+}
+
+if [ "$HEAL" = 1 ]; then
+    if [ -f "$PLATFORM_DIR/package.json" ]; then
+        echo "Nothing to repair: the platform folder is in place."
+        exit 0
+    fi
+    staging="$(marker_field stagingDir)"
+    target="$(marker_field targetVersion)"
+    if [ "$(marker_field phase)" = "pending-update" ] && [ -n "$staging" ] && [ -n "$target" ] \
+       && [ "$(tree_version "$staging")" = "$target" ]; then
+        echo "🥋 An update to $target was cut off at its last step. Finishing it."
+        launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
+        [ -d "$PLATFORM_DIR" ] && mv "$PLATFORM_DIR" "$DOJO_DIR/platform.failed-unknown-$(date +%Y%m%d-%H%M%S)"
+        if mv "$staging" "$PLATFORM_DIR"; then
+            launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
+            echo "✅ Finished installing $target. The server is restarting."
+            exit 0
+        fi
+        echo "   Could not move the prepared $target into place; restoring the previous version instead."
+    fi
+    # Otherwise the ordinary restore below puts the newest whole backup back.
+fi
 
 # Emit a fixed-width, lexically-sortable key for a version string so a plain
 # string comparison orders versions correctly.

@@ -1,17 +1,15 @@
 // ════════════════════════════════════════
 // Update-state marker (D-F auto-rollback)
 //
-// A tiny JSON file at ~/.dojo/update-state.json that records where we are in a
-// self-update episode, so the INDEPENDENT watchdog can tell a FAILING self-update
-// apart from a generic outage and safely auto-roll-back CODE ONLY (owner decision
-// 2026-07-06, OPTION A: rollback restores code only; if the failed build ran ANY
-// migration, escalate loudly instead of trusting a code-only rollback).
+// A tiny JSON file at ~/.dojo/update-state.json that records where we are in a self-update episode,
+// so the INDEPENDENT watchdog can tell a FAILING self-update apart from a generic outage and safely
+// auto-roll-back CODE ONLY (owner decision 2026-07-06, OPTION A: rollback restores code only; if
+// the failed build ran ANY migration, escalate loudly instead of trusting a code-only rollback).
 //
-// This is deliberately NOT the platform DB: it must be readable/writable even
-// when the DB, or the whole platform, will not boot, and it is the ONE piece of
-// state the watchdog (a separate package that cannot import from the platform)
-// also reads. The watchdog keeps a byte-for-byte-compatible copy of this shape +
-// reader in watchdog/src/auto-rollback.ts. KEEP THE TWO IN SYNC: there is no
+// This is deliberately NOT the platform DB: it must be readable/writable even when the DB, or the
+// whole platform, will not boot, and it is the ONE piece of state the watchdog (a separate package
+// that cannot import from the platform) also reads. The watchdog keeps a byte-for-byte-compatible
+// copy of this shape + reader in watchdog/src/auto-rollback.ts. KEEP THE TWO IN SYNC: there is no
 // shared import across the independence boundary, only this documented contract.
 // ════════════════════════════════════════
 
@@ -25,19 +23,18 @@ const logger = createLogger('update-state');
 const DOJO_DIR = path.join(homeDir(), '.dojo');
 export const UPDATE_STATE_PATH = path.join(DOJO_DIR, 'update-state.json');
 
-// Failing-boot thresholds. SHARED CONTRACT with watchdog/src/auto-rollback.ts.
-// bootAttempts catches a crash-exit loop; wall-clock catches a wedged-but-alive
-// build. Either one, while still inside the episode, means "the new build did
-// not come up healthy".
+// Failing-boot thresholds. SHARED CONTRACT with watchdog/src/auto-rollback.ts. bootAttempts catches
+// a crash-exit loop; wall-clock catches a wedged-but-alive build. Either one, while still inside
+// the episode, means "the new build did not come up healthy".
 export const FAIL_BOOT_ATTEMPTS = 3;
-// Wall clock is for the WEDGED-BUT-ALIVE case only; a crash-exit loop is caught
-// fast by bootAttempts>=3. 15 min because firstBootAt is stamped BEFORE
-// runMigrations and the health-confirm fires ~90s AFTER listen, so a one-time
-// heavy migration can hold the episode open for minutes on a slow box while the
-// build is about to be healthy. A 5-minute clock tripped a false escalation there.
+// Wall clock is for the WEDGED-BUT-ALIVE case only; a crash-exit loop is caught fast by
+// bootAttempts>=3. 15 min because firstBootAt is stamped BEFORE runMigrations and the
+// health-confirm fires ~90s AFTER listen, so a one-time heavy migration can hold the episode open
+// for minutes on a slow box while the build is about to be healthy. A 5-minute clock tripped a
+// false escalation there.
 export const FAIL_WALL_CLOCK_MS = 15 * 60_000;
-// At most ONE auto-rollback per episode. If the restored build also fails we
-// escalate loudly rather than descend a second backup (old code vs newer schema).
+// At most ONE auto-rollback per episode. If the restored build also fails we escalate loudly rather
+// than descend a second backup (old code vs newer schema).
 export const MAX_AUTO_ROLLBACKS = 1;
 
 export type UpdatePhase =
@@ -46,7 +43,9 @@ export type UpdatePhase =
   | 'booting-new'
   | 'healthy'
   | 'rolled-back'
-  | 'failed-permanently';
+  | 'failed-permanently'
+  // t197: the swap was cut off before it switched anything; the old build is live and whole.
+  | 'interrupted';
 
 export interface UpdateMarker {
   phase: UpdatePhase;
@@ -56,6 +55,8 @@ export interface UpdateMarker {
   previousVersion: string | null;
   /** Absolute path of the backup made right before the swap. */
   backupDir: string | null;
+  /** t197: the verified staged tree the swap renames into place (null: an in-place updater). */
+  stagingDir: string | null;
   /** Times the boot sentinel has seen this episode's build start. */
   bootAttempts: number;
   /** ISO, first sentinel observation of this build (wall-clock anchor). */
@@ -91,7 +92,7 @@ export interface UpdateMarker {
 }
 
 const PHASES: readonly UpdatePhase[] = [
-  'idle', 'pending-update', 'booting-new', 'healthy', 'rolled-back', 'failed-permanently',
+  'idle', 'pending-update', 'booting-new', 'healthy', 'rolled-back', 'failed-permanently', 'interrupted',
 ];
 
 function nowIso(): string {
@@ -104,6 +105,7 @@ export function emptyMarker(): UpdateMarker {
     targetVersion: null,
     previousVersion: null,
     backupDir: null,
+    stagingDir: null,
     bootAttempts: 0,
     firstBootAt: null,
     lastBootAt: null,
@@ -116,9 +118,9 @@ export function emptyMarker(): UpdateMarker {
   };
 }
 
-// Corrupt-tolerant read: a missing OR malformed marker reads as null, and the
-// caller treats null as "no episode in flight". Never throws. Unknown phases
-// clamp to 'idle' so a hand-edited or half-written file can never crash boot.
+// Corrupt-tolerant read: a missing OR malformed marker reads as null, and the caller treats null as
+// "no episode in flight". Never throws. Unknown phases clamp to 'idle' so a hand-edited or
+// half-written file can never crash boot.
 export function readMarker(): UpdateMarker | null {
   try {
     if (!fs.existsSync(UPDATE_STATE_PATH)) return null;
@@ -138,6 +140,7 @@ export function readMarker(): UpdateMarker | null {
       targetVersion: str(parsed.targetVersion),
       previousVersion: str(parsed.previousVersion),
       backupDir: str(parsed.backupDir),
+      stagingDir: str(parsed.stagingDir),
       bootAttempts: num(parsed.bootAttempts),
       firstBootAt: str(parsed.firstBootAt),
       lastBootAt: str(parsed.lastBootAt),
@@ -155,8 +158,8 @@ export function readMarker(): UpdateMarker | null {
 
 // ── THE SERIALISED WRITE PATH (SWEEP CORE-2 item 6) ─────────────────────────
 //
-// Every write below goes: take an exclusive lock → read → decide → compare-and-
-// swap → release. Two things made that necessary and neither is hypothetical.
+// Every write below goes: take an exclusive lock → read → decide → compare-and-swap → release. Two
+// things made that necessary and neither is hypothetical.
 //
 //   THE LOST UPDATE. `recordBootAttempt` / `markMigrationsRan` / `confirmHealthy`
 //   and the watchdog's rollback transition are all read-modify-writes on one
@@ -172,10 +175,9 @@ export function readMarker(): UpdateMarker | null {
 //   rename is atomic; writing the temp file is not, and two writers sharing one
 //   temp name can rename a partially-written document over the real marker.
 //
-// The lock is best-effort by design: it is broken when stale, and a writer that
-// cannot take it still proceeds — the compare-and-swap is what makes a stale
-// write harmless, and the last line of defense must never be BLOCKED by a lock
-// file. Nothing here throws into the boot or update path.
+// The lock is best-effort by design: it is broken when stale, and a writer that cannot take it
+// still proceeds — the compare-and-swap is what makes a stale write harmless, and the last line of
+// defense must never be BLOCKED by a lock file. Nothing here throws into the boot or update path.
 
 const LOCK_PATH = `${UPDATE_STATE_PATH}.lock`;
 /** A lock older than this belonged to a process that died holding it. SHARED
@@ -219,10 +221,9 @@ function acquireMarkerLock(): (() => void) | null {
   return null;
 }
 
-// Atomic write: temp file + rename (rename is atomic on POSIX, so a crash
-// mid-write leaves either the old file or the new one, never a half file).
-// Best-effort: a persist failure must NEVER throw into the boot/update path.
-// The write counter advances here so no caller can forget to bump it.
+// Atomic write: temp file + rename (rename is atomic on POSIX, so a crash mid-write leaves either
+// the old file or the new one, never a half file). Best-effort: a persist failure must NEVER throw
+// into the boot/update path. The write counter advances here so no caller can forget to bump it.
 export function writeMarker(marker: UpdateMarker): void {
   try {
     if (!fs.existsSync(DOJO_DIR)) fs.mkdirSync(DOJO_DIR, { recursive: true });
@@ -279,23 +280,24 @@ export function updateMarker(mutate: (current: UpdateMarker | null) => UpdateMar
 
 // ── Writer helpers (who writes which phase, when) ──
 
-// applyUpdate / rollback seam (gateway/routes/update.ts): call right AFTER the
-// pre-swap backup exists. Opens a fresh episode.
-export function markPendingUpdate(args: { targetVersion: string; previousVersion: string; backupDir: string }): void {
-  // A new episode resets every field EXCEPT the write counter: rewinding it would
-  // let a straggling write from the previous episode pass the compare-and-swap.
+// The installer (update/install-tree.ts): written right BEFORE the two renames, so the record names
+// both sides of the swap. Opens a fresh episode.
+export function markPendingUpdate(args: { targetVersion: string; previousVersion: string; backupDir: string; stagingDir: string }): void {
+  // A new episode resets every field EXCEPT the write counter: rewinding it would let a straggling
+  // write from the previous episode pass the compare-and-swap.
   updateMarker((prev) => ({
     ...emptyMarker(),
     phase: 'pending-update',
     targetVersion: args.targetVersion,
     previousVersion: args.previousVersion,
     backupDir: args.backupDir,
+    stagingDir: args.stagingDir,
     writeSeq: prev?.writeSeq ?? 0,
   }));
 }
 
-// applyUpdate / rollback seam: call right BEFORE the scheduled process.exit(0)
-// that hands off to launchd. The NEW process boots and the sentinel increments.
+// applyUpdate / rollback seam: call right BEFORE the scheduled process.exit(0) that hands off to
+// launchd. The NEW process boots and the sentinel increments.
 export function markBootingNew(): void {
   updateMarker((m) => ({
     ...(m ?? emptyMarker()),
@@ -307,9 +309,9 @@ export function markBootingNew(): void {
   }));
 }
 
-// Boot sentinel (index.ts, BEFORE runMigrations). If a self-update boot episode
-// is in flight, count this start. Returns the updated marker (so the caller can
-// decide whether to watch migrations), or null on a normal (non-update) boot.
+// Boot sentinel (index.ts, BEFORE runMigrations). If a self-update boot episode is in flight, count
+// this start. Returns the updated marker (so the caller can decide whether to watch migrations), or
+// null on a normal (non-update) boot.
 export function recordBootAttempt(): UpdateMarker | null {
   let acted = false;
   const after = updateMarker((m) => {
@@ -322,21 +324,19 @@ export function recordBootAttempt(): UpdateMarker | null {
   return acted ? after : null;
 }
 
-// Jump-#1 synthetic episode. An OLD in-app updater (one that predates the D-F
-// marker) can swap ~/.dojo/platform WITHOUT writing an update-state marker, so on
-// the very first jump to a marker-aware build recordBootAttempt finds nothing even
-// though this boot is a genuine self-update carrying a long chain of new
-// migrations. The freshly self-installed patient watchdog (services/watchdog-
-// refresh.ts, run before migrations) needs a 'booting-new' phase to read to hold
+// Jump-#1 synthetic episode. An OLD in-app updater (one that predates the D-F marker) can swap
+// ~/.dojo/platform WITHOUT writing an update-state marker, so on the very first jump to a
+// marker-aware build recordBootAttempt finds nothing even though this boot is a genuine self-update
+// carrying a long chain of new migrations. The freshly self-installed patient watchdog
+// (services/watchdog-refresh.ts, run before migrations) needs a 'booting-new' phase to read to hold
 // its restart across that migration window. Create one here.
 //
-// migrationsRanDuringEpisode is set TRUE up front on purpose: a synthetic episode
-// has no backupDir/previousVersion (the old updater recorded none), so if it ever
-// goes failing the watchdog MUST escalate loudly (owner alert) rather than try a
-// code-only rollback with no backup to restore. The caller only ever invokes this
-// when NO real marker exists AND pending migrations were detected on an ALREADY-
-// migrated box, so it can never fire on a fresh install (that box has 0 applied
-// migrations) or a normal restart (no pending migrations).
+// migrationsRanDuringEpisode is set TRUE up front on purpose: a synthetic episode has no
+// backupDir/previousVersion (the old updater recorded none), so if it ever goes failing the
+// watchdog MUST escalate loudly (owner alert) rather than try a code-only rollback with no backup
+// to restore. The caller only ever invokes this when NO real marker exists AND pending migrations
+// were detected on an ALREADY-migrated box, so it can never fire on a fresh install (that box has 0
+// applied migrations) or a normal restart (no pending migrations).
 export function synthesizeMigrationBootEpisode(targetVersion: string | null): UpdateMarker {
   const now = nowIso();
   const after = updateMarker((prev) => ({
@@ -355,10 +355,9 @@ export function synthesizeMigrationBootEpisode(targetVersion: string | null): Up
   return after ?? { ...emptyMarker(), phase: 'booting-new', targetVersion, bootAttempts: 1, firstBootAt: now, lastBootAt: now, migrationsRanDuringEpisode: true };
 }
 
-// Boot sentinel follow-up (index.ts, right AFTER runMigrations) when a migration
-// applied during a boot episode. Owner decision 2026-07-06: if the failed build
-// changed the database, we must NOT trust a code-only rollback; the watchdog
-// escalates loudly instead.
+// Boot sentinel follow-up (index.ts, right AFTER runMigrations) when a migration applied during a
+// boot episode. Owner decision 2026-07-06: if the failed build changed the database, we must NOT
+// trust a code-only rollback; the watchdog escalates loudly instead.
 export function markMigrationsRan(): void {
   updateMarker((m) => {
     if (!m) return null;
@@ -368,12 +367,11 @@ export function markMigrationsRan(): void {
   });
 }
 
-// Health-confirm (index.ts, ~90s after server.listen). The booting build proved
-// itself healthy. A NEW build ending healthy closes the episode as 'healthy'; a
-// RESTORED build (phase 'rolled-back') stays 'rolled-back' as the durable record
-// that an auto-rollback happened, but confirmedHealthyAt is what stops the
-// watchdog treating the now-stable box as still-failing. Returns whether it
-// acted (false on a normal boot or an already-confirmed marker).
+// Health-confirm (index.ts, ~90s after server.listen). The booting build proved itself healthy. A
+// NEW build ending healthy closes the episode as 'healthy'; a RESTORED build (phase 'rolled-back')
+// stays 'rolled-back' as the durable record that an auto-rollback happened, but confirmedHealthyAt
+// is what stops the watchdog treating the now-stable box as still-failing. Returns whether it acted
+// (false on a normal boot or an already-confirmed marker).
 export function confirmHealthy(): boolean {
   let acted = false;
   let recovered = false;
@@ -387,20 +385,19 @@ export function confirmHealthy(): boolean {
       return { ...m, phase: m.phase === 'booting-new' ? 'healthy' : 'rolled-back', confirmedHealthyAt: nowIso() };
     }
 
-  // FALSE-ESCALATION RECOVERY. A migration-carrying self-update can legitimately
-  // finish AFTER the watchdog's 15-min wall-clock (FAIL_WALL_CLOCK_MS): by then
-  // the watchdog has already escalated to 'failed-permanently' (reason 'migration')
-  // and texted the owner. When THIS build then confirms itself genuinely healthy
-  // (the caller has already re-checked the DB is serving), clear that FALSE
-  // terminal state so the box is not stranded with a zombie 'failed-permanently'
-  // marker and an uncorrected owner alert. The watchdog emits the owner-facing "it
-  // finished after all" correction on its OWN alert path the next time it sees the
-  // box healthy (it resolves the auto_rollback_failed alert it raised).
+  // FALSE-ESCALATION RECOVERY. A migration-carrying self-update can legitimately finish AFTER the
+  // watchdog's 15-min wall-clock (FAIL_WALL_CLOCK_MS): by then the watchdog has already escalated
+  // to 'failed-permanently' (reason 'migration') and texted the owner. When THIS build then
+  // confirms itself genuinely healthy (the caller has already re-checked the DB is serving), clear
+  // that FALSE terminal state so the box is not stranded with a zombie 'failed-permanently' marker
+  // and an uncorrected owner alert. The watchdog emits the owner-facing "it finished after all"
+  // correction on its OWN alert path the next time it sees the box healthy (it resolves the
+  // auto_rollback_failed alert it raised).
   //
-  // ONLY the migration reason may recover. An 'exhausted' escalation (a code-only
-  // rollback was already spent and the restored build ALSO failed) or any other
-  // terminal state must NEVER self-bless: that would let a genuinely half-rolled-
-  // back box paper over its own failure. Preserve that refusal.
+  // ONLY the migration reason may recover. An 'exhausted' escalation (a code-only rollback was
+  // already spent and the restored build ALSO failed) or any other terminal state must NEVER
+  // self-bless: that would let a genuinely half-rolled-back box paper over its own failure.
+  // Preserve that refusal.
     if (m.phase === 'failed-permanently' && m.failedReason === 'migration' && !m.confirmedHealthyAt) {
       acted = true;
       recovered = true;

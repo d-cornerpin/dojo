@@ -134,18 +134,21 @@ echo ""
 echo "📁 Setting up DOJO directories..."
 
 mkdir -p "$DOJO_DIR"/{data,logs,prompts,uploads,techniques}
-mkdir -p "$PLATFORM_DIR"
 mkdir -p "$LAUNCH_DIR"
 
-# ── Copy platform files ──
+# ── Install platform files ──
+# v3.4 (t197): the platform is prepared BESIDE the installed one (files copied, dependencies
+# installed, the database module loaded as a check) and switched in by two renames, by the same
+# installer the in-app update uses. If this window is closed part-way, Dojo is left wholly on
+# the old version or wholly on the new one, never a mix, and nothing is half-installed.
 
-echo "📋 Installing platform files..."
-
-# Copy platform
-if [[ -d "$SCRIPT_DIR/platform" ]]; then
-    rsync -a --delete "$SCRIPT_DIR/platform/" "$PLATFORM_DIR/"
-else
+echo "📋 Installing platform files (this may take a minute)..."
+if [[ ! -d "$SCRIPT_DIR/platform" ]]; then
     echo "❌ Platform files not found in $SCRIPT_DIR/platform/"
+    exit 1
+fi
+if ! node "$SCRIPT_DIR/platform/packages/server/dist/update/install-tree-cli.js" "$SCRIPT_DIR/platform"; then
+    echo "❌ The platform could not be installed (the reason is above). Your existing Dojo, if any, was not changed."
     exit 1
 fi
 
@@ -166,16 +169,7 @@ cp "$SCRIPT_DIR/scripts/"*.sh "$SCRIPT_DIR/scripts/"*.md "$DOJO_DIR/scripts/" 2>
 cp "$SCRIPT_DIR/uninstall.sh" "$DOJO_DIR/scripts/" 2>/dev/null || true
 chmod +x "$DOJO_DIR/scripts/"*.sh
 
-# ── Install npm dependencies ──
-
-echo ""
-echo "📦 Installing dependencies (this may take a minute)..."
-cd "$PLATFORM_DIR"
-npm ci --production 2>/dev/null || npm install --production
-if [[ ! -d "$PLATFORM_DIR/node_modules" ]]; then
-    echo "❌ npm dependency installation failed. Cannot continue."
-    exit 1
-fi
+# ── Watchdog dependencies ── (the platform's were installed and checked above, before the switch)
 
 # Watchdog deps
 if [[ -f "$DOJO_DIR/watchdog/package.json" ]]; then

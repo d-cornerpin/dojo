@@ -366,14 +366,14 @@ async function main(): Promise<void> {
   }
 
   // 3. Run database migrations
-  // D-F boot sentinel: if this boot is part of a self-update episode, count the
-  // attempt BEFORE migrations run (a crash mid-migration still increments the
-  // tally the watchdog reads). Then, if a migration APPLIED during the episode,
-  // flag it so the watchdog escalates loudly instead of trusting a code-only
-  // rollback (owner decision 2026-07-06): the restored old build could choke on
-  // the new schema. On a normal (non-update) boot, recordBootAttempt returns null
-  // and this is all inert.
+  // D-F boot sentinel: if this boot is part of a self-update episode, count the attempt BEFORE
+  // migrations run (a crash mid-migration still increments the tally the watchdog reads). Then, if
+  // a migration APPLIED during the episode, flag it so the watchdog escalates loudly instead of
+  // trusting a code-only rollback (owner decision 2026-07-06): the restored old build could choke
+  // on the new schema. On a normal (non-update) boot, recordBootAttempt returns null and this is
+  // all inert. t197: first settle an install cut off mid-swap, so the record names what is live.
   const migCountBefore = countAppliedMigrations();
+  (await import('./update/install-tree.js')).settlePendingInstall(path.join(homeDir(), '.dojo'));
   let bootEpisode = recordBootAttempt();
   // Jump-#1: an OLD updater (pre-D-F) may have swapped the platform WITHOUT writing
   // a marker, so recordBootAttempt sees no episode even though this boot is a real

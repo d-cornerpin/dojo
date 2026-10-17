@@ -174,24 +174,27 @@ describe('§4 the updater is wired to it, and the install failure is legible', (
     expect(/spawnIdleBounded\('curl', curlDownloadArgv\(/.test(src), 'and no shell is involved').toBe(true);
   });
 
-  it('an install that fails after the rsync says so, and names the backup to restore', () => {
-    const raw = fs.readFileSync(path.join(SRC, 'gateway/routes/update.ts'), 'utf8');
-
-    // The old error said nothing about the state it left behind, which is what made this a
-    // silent integrity failure rather than a loud one.
-    expect(raw, 'it states the tree was already swapped').toContain('Update halted after the files were swapped');
-    expect(raw, 'and that the dependency tree is the part that is wrong').toContain('node_modules is');
-    expect(raw, 'it says the tree must not be booted as-is').toMatch(/must not be booted as-is/);
-    expect(raw, 'and it names the intact previous version').toMatch(/previous version is intact at/);
+  it('an install that fails says so, and says what is still running', () => {
+    // t197 (v3.4 F2): the install now runs in a STAGED tree beside the live one, so the state the
+    // old message described ("halted after the files were swapped ... node_modules is incomplete")
+    // can no longer exist. What a failed install must still be is LEGIBLE: it says nothing was
+    // changed and names the version the box is still running.
+    const raw = fs.readFileSync(path.join(SRC, 'update/install-tree.ts'), 'utf8');
+    expect(raw).toMatch(/add-ons did not install/);
+    expect(raw).toMatch(/Nothing was changed: Dojo is still running/);
+    expect(raw, 'the retired state is not described any more because it cannot happen')
+      .not.toMatch(/Update halted after the files were swapped/);
   });
 
-  it('CONTROL: both apply paths got the treatment, not just the first', () => {
+  it('CONTROL: both doors got the treatment, because there is only one sequence now', () => {
     const src = stripped('gateway/routes/update.ts');
-    // The route has two download->swap->install sequences (apply and reinstall/rollback). Fixing
-    // one and leaving the other is the shape that made this defect survive its own review.
-    const installs = src.match(/execIdleBounded\('npm install --omit=dev'/g) ?? [];
-    expect(installs.length, 'both install legs are bounded').toBe(2);
-    const downloads = src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? [];
-    expect(downloads.length, 'both download legs are bounded').toBe(2);
+    // The route had two download->swap->install sequences (apply and rollback); fixing one and
+    // leaving the other is the shape that made this defect survive its own review. t197 folded
+    // them into ONE (`downloadAndInstall`), called by both doors, so one bounded leg serves both.
+    expect((src.match(/spawnIdleBounded\('curl', curlDownloadArgv\(/g) ?? []).length, 'one bounded download').toBe(1);
+    expect((src.match(/await downloadAndInstall\(/g) ?? []).length, 'called by apply AND rollback').toBe(2);
+    const tree = stripped('update/install-tree.ts');
+    expect(tree, 'the one install leg is idle-bounded').toMatch(/attachIdleBound\(child, \{ idleMs: INSTALL_IDLE_MS, ceilingMs: INSTALL_CEILING_MS \}\)/);
+    expect(src, 'and the route no longer runs its own').not.toMatch(/npm install --omit=dev/);
   });
 });

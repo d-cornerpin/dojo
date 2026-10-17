@@ -35,14 +35,14 @@
 //                                 ALREADY INSTALLED on this box — a real measurement of the
 //                                 same artifact one version back, which is the closest honest
 //                                 number available and is stated as such rather than guessed at.
-//   4. THE `cp -R` APP BACKUP     the same measured tree again: `applyUpdate` copies
-//                                 `~/.dojo/platform` to `platform.backup-<version>` whole.
+//   4. THE STAGED DEPENDENCIES    the measured tree again (t197): node_modules is cloned into
+//                                 the staged tree, counted at full size as not every volume can
+//                                 clone. The old tree becomes the backup by rename, at no cost.
 //
-// ⚠ WHAT THIS DELIBERATELY DOES NOT DO: it does not model the pruning that happens along the
-// way (`MAX_BACKUPS_TO_KEEP = 2`, the tmpdir cleanup). Those FREE space, so ignoring them makes
-// the pre-flight conservative in the only direction it is allowed to err. Saying "you may be
-// short" and being wrong costs the owner a look at his disk; saying "you have room" and being
-// wrong costs him a half-applied update.
+// ⚠ WHAT THIS DELIBERATELY DOES NOT DO: model the pruning along the way (`MAX_BACKUPS_TO_KEEP
+// = 2`, the work-dir cleanup). Those FREE space, so ignoring them errs the only allowed way.
+// Saying "you may be short" and being wrong costs the owner a look at his disk; saying "you
+// have room" and being wrong costs him a failed update.
 //
 // ── AND IT MUST NOT INVENT A NO ─────────────────────────────────────────────────────────
 // When the volume cannot be measured (`statfs` unavailable on the platform, an exotic mount),
@@ -141,7 +141,7 @@ export function measureUpdateDiskNeed(input: {
   const backupNeedBytes = dbBytes * MIGRATION_BACKUP_FREE_DISK_MULTIPLE;
   const platformBytes = treeSize(platformDir);
   const artifactBytes = Math.max(0, input.artifactBytes);
-  // zip + extracted tree + `cp -R` of the current install + the database snapshot.
+  // zip + extracted tree + the staged dependency copy + the database snapshot.
   const totalNeedBytes = backupNeedBytes + artifactBytes + platformBytes * 2;
 
   let freeBytes: number | null = null;
@@ -176,8 +176,8 @@ export function describeUpdateDiskShortfall(need: UpdateDiskNeed): string {
     'There is not enough free disk space to install this update safely.',
     '',
     `The update needs about ${readableBytes(need.totalNeedBytes)} free while it works: `
-    + `${readableBytes(need.artifactBytes)} to download, ${readableBytes(need.platformBytes * 2)} to unpack it and keep `
-    + `a copy of the version you have now, and ${readableBytes(need.backupNeedBytes)} to back up your data `
+    + `${readableBytes(need.artifactBytes)} to download, ${readableBytes(need.platformBytes * 2)} to unpack it and `
+    + `prepare it beside the version you have now, and ${readableBytes(need.backupNeedBytes)} to back up your data `
     + `(your database is ${readableBytes(need.dbBytes)}). This disk has ${readableBytes(need.freeBytes ?? 0)} free — `
     + `about ${readableBytes(need.shortfallBytes)} short.`,
     '',
@@ -238,9 +238,9 @@ export function isOutOfSpaceError(err: unknown): boolean {
 /** What the owner is told when an update dies mid-flight because the disk filled. */
 export function outOfSpaceFailureMessage(detail: string): string {
   return (
-    'The update ran out of disk space part-way through and stopped. '
-    + 'Free up space on this Mac and run the update again — Dojo keeps a copy of the version '
-    + 'you were on and will not start a new version it could not finish installing. '
+    'The update ran out of disk space part-way through and stopped before switching anything. '
+    + 'Free up space on this Mac and run the update again — the new version is prepared beside '
+    + 'the one you have, and Dojo never switches to a version it could not finish preparing. '
     + `(Technical detail: ${detail})`
   );
 }

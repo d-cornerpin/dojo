@@ -7,13 +7,13 @@ import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
-import { markPendingUpdate, markBootingNew } from '../../update-state.js';
+import { markBootingNew } from '../../update-state.js';
+import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkDirs, acquireSwapLock } from '../../update/install-tree.js';
 // t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
 // never borrows the agent toolbox's capability facade (which would refuse it outright).
@@ -31,46 +31,18 @@ const execAsync = promisify(exec);
 
 // ── t114 (CENSUS U14) — THE UPDATE'S LONG LEGS ARE BOUNDED BY SILENCE ──
 //
-// THE DEFECT, and it is the one that cuts against the owner's update-integrity standard (a
-// release gate): `curl` on a ~200 MB zip and `npm install --omit=dev` were each given a FLAT
-// 120-second total. On a slow home line the download simply cannot finish inside it, so the box
-// becomes PERMANENTLY un-updatable — every attempt dies at the same wall. Worse, the `npm
-// install` wall fires AFTER the new tree has already been rsynced over `PLATFORM_DIR`: the files
-// are new, the dependencies are half-written, and the next boot runs a platform whose
-// `node_modules` does not match its package.json. A flat clock cannot tell either of those from
-// a wedge, because both are producing output the whole way through.
-//
-// Both now re-arm on output. `curl` writes its progress meter to stderr and `npm` writes its
-// phases, so an actively-moving transfer or install keeps its bound alive, and a genuinely stuck
-// one still dies — at which point the reason says SILENCE rather than claiming a work budget the
-// command never had. A non-re-arming ceiling sits behind each, so neither can run for ever.
+// `curl` on a ~200 MB zip and `npm install` were each given a FLAT 120-second total, so on a slow
+// home line the box became PERMANENTLY un-updatable. Both now re-arm on output: a moving transfer
+// or install keeps its bound alive, a stuck one still dies, and the reason says SILENCE. A
+// non-re-arming ceiling sits behind each. The install leg lives in `update/install-tree.ts`
+// (`runNpmInstall`), where it now runs in a staged tree beside the live one (t197).
 const UPDATE_DOWNLOAD_IDLE_MS = 60_000;
 const UPDATE_DOWNLOAD_CEILING_MS = 60 * 60_000;
-const UPDATE_INSTALL_IDLE_MS = 120_000;
-const UPDATE_INSTALL_CEILING_MS = 30 * 60_000;
 
 /**
- * Run a shell command under an output-idle bound, in the shape `execAsync` is called in here so
- * the call sites stay readable. Rejects with the `execFile`-shaped failure `attachIdleBound`
- * builds, whose `message` names which bound fired.
- */
-async function execIdleBounded(
-  cmd: string,
-  opts: { idleMs: number; ceilingMs: number; cwd?: string; env?: NodeJS.ProcessEnv },
-): Promise<{ stdout: string; stderr: string }> {
-  const child = spawn('/bin/sh', ['-c', cmd], {
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    ...(opts.env ? { env: opts.env } : {}),
-  });
-  return attachIdleBound(child, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
-}
-
-/**
- * The same idle bound with NO SHELL (review minor 3). `spawn(file, argv)` hands the arguments
- * straight to `execve`, so a URL is data rather than text inside a `/bin/sh -c` string. The
- * download leg is the one that takes a value from outside the process — the release asset URL —
- * so it is the leg that should not be assembled into a command line at all. The shell form above
- * stays for `npm install`, which genuinely has no untrusted input and reads better as a string.
+ * The idle bound with NO SHELL (review minor 3). `spawn(file, argv)` hands the arguments
+ * straight to `execve`, so the release asset URL — a value from outside the process — is data
+ * rather than text inside a `/bin/sh -c` string.
  */
 async function spawnIdleBounded(
   file: string, argv: readonly string[],
@@ -115,7 +87,7 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 //   ~/.dojo/platform.backup-2.7.16    (one per prior version)
 //   ~/.dojo/platform.backup-2.7.15
 //   ...
-// Each backup is a full copy of node_modules + dist + dashboards, easily
+// Each backup is the previous live tree itself (t197: renamed aside, not copied), easily
 // 100-200MB. Without pruning these accumulate forever and have been
 // reported to fill mac mini disks. Keep MAX_BACKUPS_TO_KEEP most recent
 // after each update (1 = the one we just made + nothing else; 2 gives
@@ -200,9 +172,11 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
   //   platform.failed-* , broken builds rollback.sh set aside for diagnosis;
   //                        before FA-D5 nothing deleted these and they filled
   //                        the disk. Same schedule, same keep count.
+  //   platform.staging-* , work dirs whose installer died (t197); a live installer's never.
   const toDelete = [
     ...sortNewestFirst(listPlatformBackups()).slice(keep),
     ...sortNewestFirst(listFailedBuilds()).slice(keep),
+    ...deadInstallWorkDirs(DOJO_DIR).map(p => ({ name: path.basename(p), path: p, mtimeMs: 0, version: '' })),
   ];
   const deleted: string[] = [];
   const failed: Array<{ name: string; error: string }> = [];
@@ -781,6 +755,104 @@ export interface ApplyUpdateResult {
 }
 
 /**
+ * DOWNLOAD, VERIFY, UNPACK AND INSTALL ONE RELEASE (t197). The one sequence the update and the
+ * rollback route share; the old code carried it twice, and two copies of the most dangerous
+ * sequence in the product drift. Everything lands in a work dir BESIDE the live tree (same
+ * volume, so the swap is a rename) and `installPlatformTree` switches it in whole or not at all.
+ * The work dir is removed on every exit; one orphaned by a crash is pruned at the next boot.
+ */
+async function downloadAndInstall(o: {
+  zipUrl: string; manifestUrl: string | undefined; targetVersion: string; currentVersion: string;
+}): Promise<{ ok: true; backupDir: string | null } | { ok: false; message: string; status: number }> {
+  const kept = `Nothing was changed: Dojo is still running ${o.currentVersion}.`;
+  // Refuse a second install before downloading anything (the installer re-checks under the lock).
+  const probe = acquireSwapLock(DOJO_DIR);
+  if (typeof probe !== 'function') return { ok: false, message: `The update could not start: ${probe.busy}. ${kept}`, status: 409 };
+  probe();
+  const work = newInstallWorkDir(DOJO_DIR);
+  try {
+    const zipPath = path.join(work, 'dojo-platform.zip');
+    await spawnIdleBounded('curl', curlDownloadArgv(o.zipUrl, zipPath), {
+      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    });
+    // INTEGRITY BEFORE ANYTHING IS UNPACKED (PHASE-5 T6B). A release with no manifest is
+    // installed and recorded as unverified — refusing those would end the rollback path to
+    // every release published before manifests existed. Reasoning: `update/artifact-integrity.ts`.
+    const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
+    if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
+
+    await execAsync(`unzip -o "${zipPath}" -d "${work}"`, { timeout: 60000 });
+    // The zip is dojo-platform/{platform,scripts,...}; only platform/ is the installed tree.
+    const staged = path.join(work, 'dojo-platform', 'platform');
+    if (!fs.existsSync(path.join(staged, 'package.json'))) {
+      return { ok: false, message: `The download does not contain a dojo-platform/platform tree. ${kept}`, status: 500 };
+    }
+    const r = await installPlatformTree({
+      dojoDir: DOJO_DIR, stagedDir: staged, targetVersion: o.targetVersion, previousVersion: o.currentVersion,
+      runInstall: (cwd) => runNpmInstall(cwd),
+    });
+    if (!r.ok) return { ok: false, message: r.message, status: 500 };
+    refreshMaintenanceScripts(path.join(work, 'dojo-platform', 'scripts'), path.join(DOJO_DIR, 'scripts'));
+    return r;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Update download/unpack failed; the live tree was not touched', { error: msg });
+    if (isOutOfSpaceError(err)) return { ok: false, message: `${outOfSpaceFailureMessage(msg)} ${kept}`, status: 507 };
+    return { ok: false, message: `The update failed before anything was installed (${msg}). ${kept}`, status: 500 };
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The maintenance scripts (~/.dojo/scripts: rollback.sh and its siblings) live beside platform/
+ * in the package, so the platform swap does not carry them. Each file is replaced by a rename of
+ * a complete copy, never truncated in place: a half-written rollback.sh is a recovery path that
+ * fails exactly when it is needed. Best-effort: never fails an otherwise-good update.
+ */
+function refreshMaintenanceScripts(src: string, dest: string): void {
+  try {
+    if (!fs.existsSync(src)) return;
+    fs.mkdirSync(dest, { recursive: true });
+    for (const name of fs.readdirSync(src).filter(n => /\.(sh|md)$/.test(n))) {
+      const tmp = path.join(dest, `.${name}.${process.pid}.tmp`);
+      fs.copyFileSync(path.join(src, name), tmp);
+      if (name.endsWith('.sh')) fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, path.join(dest, name));
+    }
+    logger.info('Refreshed maintenance scripts from package', { dest });
+  } catch (err) {
+    logger.warn('Script refresh during update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * After a successful swap: refresh the bundled watchdog (so the watchdog that supervises the
+ * new build is the one shipped with it), prune old trees (keep 2, owner decision 21), then
+ * flip the record to booting-new and hand the restart to launchd.
+ */
+async function finishAndRestart(kind: 'update' | 'rollback', from: string, to: string): Promise<void> {
+  try {
+    const { refreshBundledWatchdog } = await import('../../services/watchdog-refresh.js');
+    const r = await refreshBundledWatchdog({ force: true });
+    logger.info(`Watchdog refresh after ${kind}`, { refreshed: r.refreshed, reason: r.reason });
+  } catch (err) {
+    logger.warn(`Watchdog refresh after ${kind} failed (non-fatal)`, { error: err instanceof Error ? err.message : String(err) });
+  }
+  // Fire-and-forget: the response must not wait on `rm -rf`; the boot prune finishes the job.
+  pruneOldBackupsAsync().catch(err => {
+    logger.warn(`Backup prune after ${kind} failed (non-fatal)`, { error: err instanceof Error ? err.message : String(err) });
+  });
+  logger.info(`${kind} complete`, { from, to });
+  // D-F: the boot sentinel + watchdog take the episode from here.
+  markBootingNew();
+  setTimeout(() => {
+    logger.info(`Restarting server after ${kind}`);
+    process.exit(0); // launchd will restart us
+  }, 1000);
+}
+
+/**
  * Download + install the latest release, then schedule a process restart
  * (launchd brings us back up). Production installs only. Shared by the
  * POST /apply route and the agent's apply_update tool. The restart is
@@ -830,7 +902,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     // ── 1b. SWEEP CORE-2 item 3 — THE DISK-SPACE PRE-FLIGHT, BEFORE A SINGLE BYTE. ──
     //
     // Placed here on purpose: after the release metadata is in hand (so the artifact's own size
-    // is a fact rather than an estimate) and before the download, the unzip, the `cp -R` and
+    // is a fact rather than an estimate) and before the download, the unzip, the staged copy and
     // the swap. Refusing HERE is strictly safer than the migration chain's refusal downstream,
     // which the RESTORE-PATH work measured as protective precisely because nothing had been
     // applied: refusing before the episode EXISTS means there is not even an episode to roll
@@ -851,172 +923,19 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     }
 
     logger.info('Starting update', { channel: ch, from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
-
-    // 2. Download the zip to a temp location
-    const tmpDir = path.join(os.tmpdir(), `dojo-update-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const zipPath = path.join(tmpDir, 'dojo-platform.zip');
-
-    await spawnIdleBounded('curl', curlDownloadArgv(zipAsset.browser_download_url, zipPath), {
-      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    const installed = await downloadAndInstall({
+      zipUrl: zipAsset.browser_download_url,
+      manifestUrl: release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url,
+      targetVersion: latestVersion, currentVersion,
     });
-
-    // 2b. INTEGRITY BEFORE ANY SWAP (PHASE-5 T6B). Nothing is extracted and
-    // nothing is rsynced until the bytes match the manifest published beside
-    // them. A release with no manifest is applied and recorded as unverified —
-    // every artifact published before this change has none, and refusing them
-    // would end the rollback path. Reasoning: `update/artifact-integrity.ts`.
-    const applyVerdict = await verifyArtifactAgainstManifest(
-      zipPath,
-      await fetchArtifactManifest(release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url),
-    );
-    if (applyVerdict.outcome === 'refused') {
-      return { ok: false, message: `Update REFUSED — ${applyVerdict.reason}`, status: 502 };
-    }
-
-    // 3. Extract the zip
-    await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
-
-    // 4. Find the extracted platform directory
-    // The zip structure is: dojo-platform/platform/{packages,package.json,...}
-    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
-    if (!fs.existsSync(extractedDir)) {
-      // Fallback: maybe zip structure changed
-      const fallback = path.join(tmpDir, 'dojo-platform');
-      if (fs.existsSync(path.join(fallback, 'package.json'))) {
-        // package.json at top level means flat structure
-        return { ok: false, message: 'Unexpected zip structure -- package.json at dojo-platform/ root', status: 500 };
-      }
-      return { ok: false, message: 'Extracted zip does not contain dojo-platform/platform directory', status: 500 };
-    }
-
-    // 5. Backup the current platform
-    const backupDir = `${PLATFORM_DIR}.backup-${currentVersion}`;
-    if (fs.existsSync(backupDir)) {
-      fs.rmSync(backupDir, { recursive: true });
-    }
-    logger.info('Backing up current platform', { from: PLATFORM_DIR, to: backupDir });
-    await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
-    // D-F: the update episode begins the moment a restorable backup exists.
-    // The watchdog only ever auto-rolls-back when this marker proves a
-    // self-update is in flight and failing, never on a generic outage.
-    markPendingUpdate({ targetVersion: latestVersion, previousVersion: currentVersion, backupDir });
-
-    // 6. Copy new files over (preserve node_modules, data, secrets)
-    // Use rsync to properly overwrite existing directories
-    // --delete ensures old files that no longer exist in the update are removed
-    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
-    const entries = fs.readdirSync(extractedDir);
-    for (const entry of entries) {
-      if (entry === 'node_modules') continue;
-      const src = path.join(extractedDir, entry);
-      const dest = path.join(PLATFORM_DIR, entry);
-      const stat = fs.statSync(src);
-      if (stat.isDirectory()) {
-        // For directories: rsync with trailing slashes to merge/overwrite properly
-        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
-      } else {
-        // For files: simple copy
-        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
-      }
-    }
-
-    // 6b. Refresh maintenance scripts (~/.dojo/scripts) from the package. The
-    // rsync above only covers entries inside platform/; the launcher/recovery
-    // scripts live as a sibling of platform/ in the package, so without this
-    // step a script-level fix or a new tool (e.g. the menu-bar rollback's
-    // rollback.sh) would only reach a box on a full reinstall. Best-effort: a
-    // script-copy failure must never abort an otherwise-good update.
-    try {
-      const scriptsSrc = path.join(tmpDir, 'dojo-platform', 'scripts');
-      const scriptsDest = path.join(path.dirname(PLATFORM_DIR), 'scripts');
-      if (fs.existsSync(scriptsSrc)) {
-        fs.mkdirSync(scriptsDest, { recursive: true });
-        await execAsync(`cp -f "${scriptsSrc}/"*.sh "${scriptsSrc}/"*.md "${scriptsDest}/" 2>/dev/null; chmod +x "${scriptsDest}/"*.sh`, { timeout: 30000, env });
-        logger.info('Refreshed maintenance scripts from package', { dest: scriptsDest });
-      }
-    } catch (err) {
-      logger.warn('Script refresh during update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    logger.info('Files updated, running npm install');
-
-    // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
-    // t114 (U14), the second half: THIS LEG RUNS AFTER THE RSYNC, so a failure here does not
-    // leave the box where it started — the tree is already the new version and only its
-    // dependencies are incomplete. The flat 120s wall made that the ORDINARY outcome on a slow
-    // box, and the error it threw said nothing about the state it left behind. The bound above
-    // stops it killing a working install; this catch makes the remaining failure legible, names
-    // the backup that can be restored, and keeps the pending-update marker standing so the
-    // watchdog's rollback path still owns the episode rather than a half-updated tree booting as
-    // if it were whole.
-    try {
-      await execIdleBounded('npm install --omit=dev', {
-        cwd: PLATFORM_DIR, env,
-        idleMs: UPDATE_INSTALL_IDLE_MS, ceilingMs: UPDATE_INSTALL_CEILING_MS,
-      });
-    } catch (err) {
-      const why = (err as { message?: string }).message ?? String(err);
-      const stderr = ((err as { stderr?: string }).stderr ?? '').slice(0, 500);
-      logger.error('npm install after update FAILED — the platform tree is new but its dependencies are incomplete', {
-        error: why, stderr, platformDir: PLATFORM_DIR, backupDir,
-        restoreWith: `rm -rf "${PLATFORM_DIR}" && cp -R "${backupDir}" "${PLATFORM_DIR}"`,
-      });
-      throw new Error(
-        `Update halted after the files were swapped: \`npm install\` did not complete (${why}). `
-        + `The platform tree at ${PLATFORM_DIR} is version ${latestVersion} but its node_modules is `
-        + `incomplete, so it must not be booted as-is. The previous version is intact at ${backupDir}. `
-        + `Restore it, or re-run the update once the box can reach the registry.`,
-      );
-    }
-
-    // Note: system-dependency installation (brew packages like whisper-cpp)
-    // runs at server STARTUP via packages/server/src/services/ensure-system-deps.ts,
-    // not here. That way deps get installed on the next launchd-driven reboot
-    // regardless of which old version's update.ts shipped the files.
-
-    // 8. Clean up temp files
-    fs.rmSync(tmpDir, { recursive: true });
-
-    // 8a. Refresh the watchdog from the just-installed platform bundle and kickstart
-    // it, so the NEW watchdog (with its auto-rollback + read-only-WAL fixes) takes
-    // over BEFORE we hand off to the restarted build. The updater only rewrites
-    // ~/.dojo/platform, so without this the watchdog would stay on the old code
-    // forever. force=true because we KNOW the platform tree just changed; a no-op
-    // when this box predates watchdog bundling. Best-effort: never fail an otherwise-
-    // good update. Shared with the boot-time self-refresh.
-    try {
-      const { refreshBundledWatchdog } = await import('../../services/watchdog-refresh.js');
-      const r = await refreshBundledWatchdog({ force: true });
-      logger.info('Watchdog refresh after update', { refreshed: r.refreshed, reason: r.reason });
-    } catch (err) {
-      logger.warn('Watchdog refresh after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    // 8b. Prune old backups - fire-and-forget. Background `rm -rf` keeps
-    // the apply response fast and never blocks Cloudflare's 100s timeout.
-    pruneOldBackupsAsync().catch(err => {
-      logger.warn('Backup prune after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    });
-
-    logger.info('Update complete', { from: currentVersion, to: latestVersion });
-
-    // 9. Schedule the restart. Small delay so the caller's response (HTTP
-    // body or tool result) flushes first; launchd restarts us.
-    // D-F: flip the marker to booting-new right before the exit; the boot
-    // sentinel + watchdog take the episode from here.
-    markBootingNew();
-    setTimeout(() => {
-      logger.info('Restarting server after update');
-      process.exit(0); // launchd will restart us
-    }, 1000);
-
+    if (!installed.ok) return { ok: false, message: installed.message, status: installed.status };
+    await finishAndRestart('update', currentVersion, latestVersion);
     return {
       ok: true,
       message: `Updated from ${currentVersion} to ${latestVersion}. Server is restarting...`,
       previousVersion: currentVersion,
       newVersion: latestVersion,
-      backupDir,
+      backupDir: installed.backupDir ?? undefined,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1170,120 +1089,22 @@ updateRouter.post('/rollback', async (c) => {
     }
 
     logger.info('Starting rollback', { from: currentVersion, to: targetVersion, url: zipAsset.browser_download_url });
-
-    // Same process as apply: download → extract → backup → copy → npm install → restart
-    const tmpDir = path.join(os.tmpdir(), `dojo-rollback-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const zipPath = path.join(tmpDir, 'dojo-platform.zip');
-
-    await spawnIdleBounded('curl', curlDownloadArgv(zipAsset.browser_download_url, zipPath), {
-      idleMs: UPDATE_DOWNLOAD_IDLE_MS, ceilingMs: UPDATE_DOWNLOAD_CEILING_MS,
+    // The same sequence as an update, and the same marker discipline: a manual rollback is an
+    // update episode too (the restored build must come up healthy or the watchdog escalates).
+    const installed = await downloadAndInstall({
+      zipUrl: zipAsset.browser_download_url,
+      manifestUrl: release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url,
+      targetVersion, currentVersion,
     });
-
-    // Same gate as apply, and it must be here too: this path also rsyncs with
-    // `--delete` over the running install (PHASE-5 T6B).
-    const rollbackVerdict = await verifyArtifactAgainstManifest(
-      zipPath,
-      await fetchArtifactManifest(release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url),
-    );
-    if (rollbackVerdict.outcome === 'refused') {
-      return c.json({ ok: false, error: `Rollback REFUSED — ${rollbackVerdict.reason}` }, 502);
-    }
-
-    await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
-
-    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
-    if (!fs.existsSync(extractedDir)) {
-      return c.json({ ok: false, error: 'Extracted zip does not contain dojo-platform/platform directory' }, 500);
-    }
-
-    // Backup current
-    const backupDir = `${PLATFORM_DIR}.backup-${currentVersion}`;
-    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true });
-    logger.info('Backing up current platform for rollback', { from: PLATFORM_DIR, to: backupDir });
-    await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
-    // D-F: a manual rollback is an update episode too (the restored build must
-    // come up healthy or the watchdog escalates); same marker discipline.
-    markPendingUpdate({ targetVersion, previousVersion: currentVersion, backupDir });
-
-    // Copy files (same logic as apply)
-    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
-    const entries = fs.readdirSync(extractedDir);
-    for (const entry of entries) {
-      if (entry === 'node_modules') continue;
-      const src = path.join(extractedDir, entry);
-      const dest = path.join(PLATFORM_DIR, entry);
-      const stat = fs.statSync(src);
-      if (stat.isDirectory()) {
-        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
-      } else {
-        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
-      }
-    }
-
-    // t114 (U14), the second half: THIS LEG RUNS AFTER THE RSYNC, so a failure here does not
-    // leave the box where it started — the tree is already the new version and only its
-    // dependencies are incomplete. The flat 120s wall made that the ORDINARY outcome on a slow
-    // box, and the error it threw said nothing about the state it left behind. The bound above
-    // stops it killing a working install; this catch makes the remaining failure legible, names
-    // the backup that can be restored, and keeps the pending-update marker standing so the
-    // watchdog's rollback path still owns the episode rather than a half-updated tree booting as
-    // if it were whole.
-    try {
-      await execIdleBounded('npm install --omit=dev', {
-        cwd: PLATFORM_DIR, env,
-        idleMs: UPDATE_INSTALL_IDLE_MS, ceilingMs: UPDATE_INSTALL_CEILING_MS,
-      });
-    } catch (err) {
-      const why = (err as { message?: string }).message ?? String(err);
-      const stderr = ((err as { stderr?: string }).stderr ?? '').slice(0, 500);
-      logger.error('npm install after update FAILED — the platform tree is new but its dependencies are incomplete', {
-        error: why, stderr, platformDir: PLATFORM_DIR, backupDir,
-        restoreWith: `rm -rf "${PLATFORM_DIR}" && cp -R "${backupDir}" "${PLATFORM_DIR}"`,
-      });
-      throw new Error(
-        `Update halted after the files were swapped: \`npm install\` did not complete (${why}). `
-        + `The platform tree at ${PLATFORM_DIR} is version ${targetVersion} but its node_modules is `
-        + `incomplete, so it must not be booted as-is. The previous version is intact at ${backupDir}. `
-        + `Restore it, or re-run the update once the box can reach the registry.`,
-      );
-    }
-    fs.rmSync(tmpDir, { recursive: true });
-
-    // Refresh the watchdog from the just-restored platform bundle and kickstart it,
-    // so the watchdog matches the build it now supervises (a rollback is an update
-    // episode too). force=true because the platform tree just changed; a no-op if the
-    // restored build predates watchdog bundling. Best-effort. Shared helper.
-    try {
-      const { refreshBundledWatchdog } = await import('../../services/watchdog-refresh.js');
-      const r = await refreshBundledWatchdog({ force: true });
-      logger.info('Watchdog refresh after rollback', { refreshed: r.refreshed, reason: r.reason });
-    } catch (err) {
-      logger.warn('Watchdog refresh after rollback failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    // Fire-and-forget: prune runs in background using rm -rf so it never
-    // blocks the rollback's response and never trips Cloudflare timeouts.
-    pruneOldBackupsAsync().catch(err => {
-      logger.warn('Backup prune after rollback failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    });
-
-    logger.info('Rollback complete', { from: currentVersion, to: targetVersion });
-
-    // D-F: same booting-new flip as the update path.
-    markBootingNew();
-    setTimeout(() => {
-      logger.info('Restarting server after rollback');
-      process.exit(0);
-    }, 1000);
-
+    if (!installed.ok) return c.json({ ok: false, error: `Rollback: ${installed.message}` }, installed.status as 500);
+    await finishAndRestart('rollback', currentVersion, targetVersion);
     return c.json({
       ok: true,
       data: {
         message: `Rolled back from ${currentVersion} to ${targetVersion}. Server is restarting...`,
         previousVersion: currentVersion,
         newVersion: targetVersion,
-        backupDir,
+        backupDir: installed.backupDir,
       },
     });
   } catch (err) {
@@ -1343,7 +1164,8 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as { keep?: number }));
-  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : 1;
+  // Default is the same two the automatic prune keeps (owner decision 21, v3.4).
+  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : MAX_BACKUPS_TO_KEEP;
 
   // Snapshot the target count up front so the dashboard can show progress
   // ("Cleaning up 8 backups...") even before the first deletion completes.
