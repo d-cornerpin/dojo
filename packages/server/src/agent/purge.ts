@@ -19,6 +19,9 @@
 //   context_items       agent_id       NO ACTION    explicit delete
 //   large_files         agent_id       NO ACTION    explicit delete
 //
+// (That table is the state of the door when it was first written down. The sweep below no longer
+// names its tables: see PURGE_KEEPS.)
+//
 // The two ⚠ rows are real bugs, not tidiness: with `foreign_keys = ON` — which is what
 // `db/connection.ts` sets — `DELETE FROM agents` against a row that another agent names as its
 // `parent_agent`, or that has a `briefings` row, **fails the FK check and the purge errors out**.
@@ -45,6 +48,31 @@ import { withUnit } from '../db/unit.js';
 import { deleteAllForAgent, deleteAgentBusRowsFor } from '../memory/message-store.js';
 import { deleteAllWorkForAgent } from '../work/purge-sweep.js';
 import { agentPurgedForOwner } from './agent-owner-cards.js';
+import { endBudgetCard } from '../costs/budget-cards.js';
+import { budgetStopKey, ownerConditionCleared } from '../healer/owner-notices.js';
+
+// ── WHAT A PURGE KEEPS, AND NOTHING ELSE (t189 B4, owner decision 28) ──
+// "Keep the purged agent's SPENDING history for cost reports; remove everything else."
+// The purge used to be a hand-written list, so each table added after it became an orphan
+// class (25 tables of rows, plus the agent's budget row, were left behind when this was
+// measured). It is now the OTHER way round: every table with an `agent_id` column is swept,
+// found from the schema each time, and only the tables named HERE survive, each with its reason.
+// A new per-agent table is therefore swept the day its migration lands; keeping one is a
+// deliberate edit to this list, and `__tests__/t189-purge-sweeps-every-agent-table.test.ts`
+// fails on any other outcome.
+export const PURGE_KEEPS: Readonly<Record<string, string>> = {
+  cost_records: 'Spending history: the cost reports and the budget windows read it, and the owner asked for it to outlive the agent (decision 28).',
+};
+
+/** Every table with an `agent_id` column, from the live schema, minus the kept ones. */
+function agentOwnedTables(): string[] {
+  return (getDb().prepare(
+    `SELECT m.name FROM sqlite_master m
+      WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+        AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'agent_id')
+      ORDER BY m.name`,
+  ).all() as Array<{ name: string }>).map((r) => r.name).filter((t) => !(t in PURGE_KEEPS));
+}
 
 /** What the sweep removed, for the log line and the route's response. */
 export interface PurgeCounts {
@@ -67,7 +95,9 @@ export interface PurgeCounts {
  *     `work/purge-sweep.ts`.
  *  2. The summary link tables go before `summaries`, which they reference.
  *  3. The work spine goes through its own owner, which has its own four-way FK order.
- *  4. `agents` goes LAST, when nothing references it any more.
+ *  4. Every other table with an `agent_id` column is swept from the schema (`PURGE_KEEPS` names the
+ *     ones that survive), AFTER the work spine, then the agent's `agent_<id>` budget row.
+ *  5. `agents` goes LAST, when nothing references it any more.
  */
 export function purgeAgentRows(agentId: string): PurgeCounts {
   const db = getDb();
@@ -99,21 +129,37 @@ export function purgeAgentRows(agentId: string): PurgeCounts {
     ).run(agentId, agentId);
     db.prepare('DELETE FROM summaries WHERE agent_id = ?').run(agentId);
 
-    // 4. The rest of this agent's own side tables. `briefings` is the one this list was
-    //    missing; the other three are the `CASCADE` tables the door was trusting a pragma for.
-    db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM large_files WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM briefings WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM audit_log WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM grant_rule WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM drain_state WHERE agent_id = ?').run(agentId);
-    db.prepare('DELETE FROM error_loop_state WHERE agent_id = ?').run(agentId);
-
     // 5. The work spine — no FK on `work.agent_id` at all (migration 135, PART 0 rider 1), so
     //    nothing in the database would ever do this.
     const workRows = deleteAllWorkForAgent(agentId);
 
-    // 6. The agent itself.
+    // 6. EVERY OTHER TABLE THAT NAMES THIS AGENT, found from the schema (see PURGE_KEEPS), after
+    //    the work spine because `work.conversation_id` and `work.result_delivery_id` point INTO
+    //    two of them. A SURVIVING agent's row that points at one of this agent's conversations
+    //    or deliveries is nulled rather than left to fail the delete (the same lesser damage as
+    //    `work.parent_id`); a delivery that is the evidence of a surviving DONE row is KEPT, by
+    //    the guard trigger's own rule (migration 151): deleting it would make a closed task
+    //    unprovable, and a purge that raises there would purge nothing.
+    db.prepare(`UPDATE work SET conversation_id = NULL
+                 WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?)`).run(agentId);
+    db.prepare(`UPDATE work SET result_delivery_id = NULL
+                 WHERE state != 'done' AND result_delivery_id IN (SELECT id FROM deliveries WHERE agent_id = ?)`).run(agentId);
+    for (const table of agentOwnedTables()) {
+      const guard = table === 'deliveries'
+        ? " AND id NOT IN (SELECT result_delivery_id FROM work WHERE state = 'done' AND result_delivery_id IS NOT NULL)"
+        : '';
+      db.prepare(`DELETE FROM "${table}" WHERE agent_id = ?${guard}`).run(agentId);
+    }
+
+    // 7. Its budget row (keyed `agent_<id>`, so no `agent_id` column finds it), and the card
+    //    that row's latch is holding: the card ends live, then the row goes.
+    const budgetId = `agent_${agentId}`;
+    const held = db.prepare('SELECT alert_words FROM budgets WHERE id = ?').get(budgetId) as { alert_words: string | null } | undefined;
+    if (held?.alert_words) endBudgetCard(budgetId, held.alert_words);
+    ownerConditionCleared(budgetStopKey(budgetId));
+    db.prepare('DELETE FROM budgets WHERE id = ?').run(budgetId);
+
+    // 8. The agent itself.
     db.prepare('DELETE FROM agents WHERE id = ?').run(agentId);
 
     counts = { messages, workRows, orphanedChildren };
