@@ -24,7 +24,7 @@ import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { recordError, AgentError, pausedWords } from '../errors.js';
 import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
-import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
+import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemblyFault } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 import { parkJob } from '../../work/job-continuation.js';
@@ -302,7 +302,7 @@ export async function recoverFromError(
   //    Phase 1: no status change for Tier B. Same-kind cap replaced with
   //    "same kind + same inputs" so the agent has unlimited adaptation
   //    attempts as long as it actually changes its approach.
-  if (await tryProviderRecovery(state, fullErrText, message, facts)) {
+  if (!isEngineAssemblyFault(error) && await tryProviderRecovery(state, fullErrText, message, facts)) { // t192 D5: an engine fault is no provider 4xx
     return;
   }
 

@@ -22,6 +22,7 @@
 // ════════════════════════════════════════
 
 import type { ErrorKind, ErrorContext } from '../error-format.js';
+import { AssemblyValidationError } from '../../../memory/assembly-validation.js';
 import {
   classifyProviderErrorText,
   type ProviderErrorFacts,
@@ -54,6 +55,21 @@ export interface RecoverableProviderError {
   guidance: string;
   // v2.3.19 additions for template formatting via error-format.ts
   context?: ErrorContext;
+}
+
+/**
+ * t192 D5. An `AssemblyValidationError` is the ENGINE's own refusal to send a malformed array (a shape
+ * fault that survived every upstream repair, or an array no repair can fit): an engine defect with a
+ * type. It is never a provider answer, so it is never recoverable by telling the model something
+ * about its tool calls. Its text happens to hold "tool" and "unknown", which the text rules below
+ * read as a provider 400 about an unknown tool (conversation 8). The TYPE decides, down the cause
+ * chain, before any text rule runs.
+ */
+export function isEngineAssemblyFault(err: unknown): boolean {
+  for (let e: unknown = err, depth = 0; e instanceof Error && depth < 8; e = e.cause, depth++) {
+    if (e instanceof AssemblyValidationError) return true;
+  }
+  return false;
 }
 
 export function classifyRecoverableProviderError(
