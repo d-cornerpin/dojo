@@ -111,7 +111,8 @@ describe('persistEngineSteer: does both writes', () => {
       deps,
     );
     expect(steerFired(after.steerQueue, 'tracker-stop-directive')).toBe(true);
-    expect(nextSteer(after.steerQueue)?.content).toBe('x');
+    // t196 (A4): the queue tags a bare steer as an engine line on the way in.
+    expect(nextSteer(after.steerQueue)?.content).toBe('[System: x]');
   });
 
   it('still enqueues the steer even if the dashboard row write throws (delivery is load-bearing)', () => {
@@ -124,7 +125,7 @@ describe('persistEngineSteer: does both writes', () => {
     const after = persistEngineSteer(
       freshState(), { agentId: 'a1', content: 'y', turnNumber: 1, floor: 'hoarding-advisory', atLoop: 1 }, deps,
     );
-    expect(nextSteer(after.steerQueue)?.content).toBe('y');
+    expect(nextSteer(after.steerQueue)?.content).toBe('[System: y]');
   });
 });
 

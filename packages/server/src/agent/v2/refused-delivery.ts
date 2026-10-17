@@ -105,7 +105,7 @@ export function decideRefusedDelivery(results: readonly TurnToolResult[]): Refus
  * guard may never resolve a contradiction by asking the model to say less.
  */
 export function refusedDeliverySteer(d: RefusedDelivery): string {
-  return 'You told the user that went out, and the only tool this turn that could have sent it '
+  return '[System: You told the user that went out, and the only tool this turn that could have sent it '
     + `REFUSED. Its own words: "${d.quoted}". Nothing was delivered. Tell them plainly what the `
-    + 'state really is and what you can do about it — do not let the claim stand, and do not go silent.';
+    + 'state really is and what you can do about it — do not let the claim stand, and do not go silent.]';
 }

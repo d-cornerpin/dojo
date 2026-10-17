@@ -551,7 +551,8 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
     await submitUserMessage(AGENT, 'Thanks — anything else?');
     const t = await turn({ content: 'No.' });
     const label = labelBefore(wireText(t[0]), 'PELICAN status is green');
-    expect(label).toMatch(/dashboard conversation with TestUser — result delivered later, for the request of /);
+    // t196: a relayed result now says it was SENT (the old "result delivered later" wording stays for media results).
+    expect(label).toMatch(/dashboard conversation with TestUser — sent to TestUser on dashboard at .* by the engine as the result of the request of /);
     expect(label).not.toMatch(/subject not recorded/);
   });
 
@@ -620,7 +621,8 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
     const all = wireText(t[0]);
     expect(all.split('all clear at every site').length - 1, 'shown once').toBe(1);
     expect(headerBefore(all, 'all clear at every site'), 'labelled with THE REQUEST it answers')
-      .toMatch(/result delivered later, for the request of [^\]]*"Please try the HERON report again\."/);
+      // t196: the engine's relay says it was SENT, still naming the request it answers.
+      .toMatch(/sent to TestUser on dashboard at [^\]]* as the result of the request of [^\]]*"Please try the HERON report again\."/);
   });
 });
 

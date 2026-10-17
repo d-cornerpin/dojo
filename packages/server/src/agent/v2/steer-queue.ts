@@ -53,6 +53,7 @@
 // no-assign-id branch, which had none) are named here rather than discovered later.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { withAuthorHead } from './steer-author-head.js';
 /** Every floor that may steer the model. One id per floor — never two floors sharing one. */
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
@@ -264,7 +265,7 @@ export function enqueueSteer(q: SteerQueue, req: SteerRequest): SteerQueue {
   const spec = BY_ID.get(req.floor);
   if (!spec) return q; // unreachable: the id union is the table's own keys
   const entry: SteerEntry = {
-    floor: req.floor, content: req.content, key,
+    floor: req.floor, content: withAuthorHead(req.content), key,
     priority: spec.priority, seq: q.seq + 1, atLoop: req.atLoop, attempts: 0,
   };
   return {

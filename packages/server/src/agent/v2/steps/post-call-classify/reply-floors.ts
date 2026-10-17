@@ -201,9 +201,9 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
       }, agentId);
       return {
         content:
-          `You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
+          `[System: You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
           + `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool `
-          + `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.`,
+          + `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.]`,
       };
     },
   },

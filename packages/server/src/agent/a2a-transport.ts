@@ -60,6 +60,7 @@ import {
   releaseScaffoldCardsAfterRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
+import { joinWakeFooter } from './a2a-join-footer.js';   // t196
 import { currentTurnNumber } from './v2/turn-record.js';
 import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
@@ -867,7 +868,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // owner gets it twice, seconds apart, or gets a PARTIAL piece surfaced as the answer.
   // ONE lookup now covers both cases: the engine owns delivery on any joined thread. It is
   // read HERE, before the piece lands, because landing it settles the child.
-  const joinHandlesDelivery = !!findJoinChildByThread(target.id, threadId);
+  const joinChild = findJoinChildByThread(target.id, threadId), joinHandlesDelivery = !!joinChild;
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent, getOwnerName } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
@@ -896,23 +897,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
         `Skip the iMessage only if you and ${ownerName} are actively going back and forth in dashboard chat about THIS specific deliverable right now (in which case dashboard is the natural place to surface it).]`;
     }
   } catch { /* best effort */ }
-
-  const promotionTag = autoPromotedFromFyi
-    ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
-    : '';
-  let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
-
-  // ── ND-3: attach the recipient's OWN task evidence to a validation QUESTION ──
-  // A QUESTION cross-examining an agent about a task IT completed otherwise makes
-  // the floor model spin through dozens of history searches to reconstruct evidence
-  // it already recorded. We render that stored evidence into the inbound so it can
-  // answer in 1-2 calls. Purely additive to CONTENT, appended AFTER the [Thread ...]
-  // footer (see helper), so dedup's payload extractor and the [A2A:...] marker
-  // parsers, which read only the leading payload, are untouched. No tool budget, no
-  // loop cap; the model is still free to search.
-  if (effectiveIntent === 'QUESTION') {
-    contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
-  }
 
   // ── Close-the-loop: the ENGINE delivers the delegated answer to the owner ──
   // When the recipient earlier asked someone on the owner's behalf, the owner's question was
@@ -957,6 +941,25 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     }
   }
   void handledByJoin;
+
+  // t196 (A1.2): composed AFTER the join landed the piece; what it says of the owner's copy is that landing's fact.
+  threadInfo = (joinChild && joinWakeFooter({ agentId: target.id, parentId: joinChild.parentId, replyConversationId: joinChild.replyConversationId, intent: effectiveIntent, threadShort })) || threadInfo;
+  const promotionTag = autoPromotedFromFyi
+    ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
+    : '';
+  let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
+
+  // ── ND-3: attach the recipient's OWN task evidence to a validation QUESTION ──
+  // A QUESTION cross-examining an agent about a task IT completed otherwise makes
+  // the floor model spin through dozens of history searches to reconstruct evidence
+  // it already recorded. We render that stored evidence into the inbound so it can
+  // answer in 1-2 calls. Purely additive to CONTENT, appended AFTER the [Thread ...]
+  // footer (see helper), so dedup's payload extractor and the [A2A:...] marker
+  // parsers, which read only the leading payload, are untouched. No tool budget, no
+  // loop cap; the model is still free to search.
+  if (effectiveIntent === 'QUESTION') {
+    contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
+  }
 
   // Owner ruling (2026-07-19): a terminal SUCCESS reply from the assignee on
   // its assignment thread files the worker's Key-1 close request from the

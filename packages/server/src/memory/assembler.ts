@@ -271,6 +271,7 @@ type LoopMsg = {
 // instant is a pure function of its rows.
 import { renderMessageTimeStamp, renderInstant } from './message-stamp.js';
 import { servedRowsOutOfView } from './served-ask.js';
+import { END_OF_HISTORY, endOfHistoryMarker } from './end-of-history.js';
 export { renderMessageTimeStamp };
 
 /** Put a row's label in front of what the model reads: before a text body, or as a leading text
@@ -298,7 +299,7 @@ export function labelContent(
  * (B11) stay after this pass because they depend on session/config state. This
  * pass is the INTEGRITY core (B3-B10). Byte-equivalent extraction.
  */
-function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
+function applyIntegrityPass(messages: LoopMsg[], agentId: string, markerText = END_OF_HISTORY): LoopMsg[] {
   pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
   capLargeToolResultsInPlace(messages);
 
@@ -385,10 +386,7 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
   if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
     merged.push(tagMessageLane({
       role: 'user',
-      content:
-        '[Engine: end of recorded history. Everything above, including your own final ' +
-        'replies, was already delivered to its recipients. Continue from the newest ' +
-        'event of THIS turn; do not re-send or re-answer anything above.]',
+      content: markerText,
     }, 'lane.engine-end-of-history'));
   }
 
@@ -1611,7 +1609,7 @@ async function assembleMessageContext(
   const outOfViewThroughSeq = Math.max(tailPayload?.droppedThroughSeq ?? 0, horizonSkippedThroughSeq);
 
   // ── Integrity pass (R6): post-combine repairs, one named stage ──
-  let merged = applyIntegrityPass(messages, agentId);
+  let merged = applyIntegrityPass(messages, agentId, endOfHistoryMarker(agentId, tailPayload?.rows ?? []));
 
   // ── Post-budget lanes (B7). Each is DECLARED in `lanes.ts` with a reserved allowance, so
   // the fit above already set their tokens aside instead of spending them after the fact. ──

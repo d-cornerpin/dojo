@@ -15,6 +15,7 @@ import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { PromptTurnContext } from '../prompt/assembler.js';
 import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
+import { readRelayReceipt, readDelegatedForAsk, readCounterparty } from './relay-facts.js';
 
 /** A tail row as the assembler holds it once its label column has been read beside it. */
 export type LabelledMessage = Message & { subjectKind?: SubjectKind | null };
@@ -59,6 +60,7 @@ export class LabelFacts {
   private readonly threads = new Map<string, string>();
   private readonly wakes = new Map<number, string | null>();
   private readonly peers = new Map<string, string>();
+  private readonly receipts = new Map<string, { channel: string; at: string } | null>();
   private served: string | null | undefined;
   constructor(private readonly agentId: string) {}
 
@@ -112,6 +114,8 @@ export class LabelFacts {
     const own = this.servedThread();
     if (own !== null && (own === '' || own === threadId)) return base;
     // Concatenated, not interpolated: the label census (t141-membership-and-census) counts template interpolations.
+    // t196: a thread the agent opened by delegating a person's request is that person's work, not "not for you".
+    if (readDelegatedForAsk(this.agentId, threadId)) return base + ' — work you delegated to ' + (this.peers.get(threadId) ?? 'another agent') + ' for the request of the person you are talking with';
     return base + ' — work for ' + (this.peers.get(threadId) ?? 'another agent')
       + ' in its own conversation, not for the person you are talking with; do not report it to them as theirs';
   }
@@ -158,6 +162,17 @@ export class LabelFacts {
     return label;
   }
 
+  /** t196: the engine's receipt that it SENT this row to the person: where and when. Null for any other delivered row
+   *  (a media result), which says only "delivered later". */
+  relayReceipt(messageId: string): { channel: string; at: string } | null {
+    if (!this.receipts.has(messageId)) {
+      const r = readRelayReceipt(this.agentId, messageId);
+      const at = r ? renderInstant(r.createdAt) : null;
+      this.receipts.set(messageId, r && at ? { channel: labelText(r.channel ?? 'dashboard', 24), at } : null);
+    }
+    return this.receipts.get(messageId) ?? null;
+  }
+
   /** The request a delivered result answers, by instant + first words (two in a minute differ). */
   requestInstant(resultMessageId: string): string | null {
     try {
@@ -198,6 +213,12 @@ export function rowSubject(m: LabelledMessage, facts: LabelFacts): string {
     case 'delivered': {
       const where = (m.conversationId && facts.conversation(m.conversationId)) || 'no conversation recorded';
       const asked = facts.requestInstant(m.id);
+      // t196: a row the engine relayed says so, from its own receipt: the agent must not tell the person again.
+      const receipt = facts.relayReceipt(m.id);
+      if (receipt) {
+        const who = labelText(readCounterparty(m.conversationId) ?? 'the person who asked', 64);   // concatenated: the label census counts interpolations
+        return where + ' — sent to ' + who + ' on ' + receipt.channel + ' at ' + receipt.at + ' by the engine' + (asked ? ' as the result of the request of ' + asked : '') + '; ' + who + ' has it';
+      }
       return `${where} — result delivered later${asked ? `, for the request of ${asked}` : ''}`;
     }
     default: return 'subject not recorded';

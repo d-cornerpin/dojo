@@ -3,12 +3,12 @@
 // reached the model with no "[System" / "[Engine" head, so they read as the user's own words. The tag is
 // now held at the ONE seam every steer crosses (`enqueueSteer`), and the two texts carry it at the source.
 import { describe, it, expect } from 'vitest';
-import { enqueueSteer, nextSteer, STEER_PRECEDENCE, type SteerQueue } from '../steer-queue.js';
+import { emptySteerQueue, enqueueSteer, nextSteer, STEER_PRECEDENCE, type SteerQueue } from '../steer-queue.js';
 import { TRUTH_GUARDS } from '../steps/post-call-classify/reply-floors.js';
 import { refusedDeliverySteer } from '../refused-delivery.js';
 
 const TAGGED = /^\[(System|Engine)\b/;
-const EMPTY: SteerQueue = { pending: [], fired: [], delivered: [], seq: 0 } as unknown as SteerQueue;
+const EMPTY: SteerQueue = emptySteerQueue();
 
 describe('t196 (A4) - the two steers that were untagged', () => {
   it('failed-save-claim carries the author head', () => {

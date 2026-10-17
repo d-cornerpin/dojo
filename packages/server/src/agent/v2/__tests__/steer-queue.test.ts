@@ -25,6 +25,9 @@ import {
   type SteerQueue,
 } from '../steer-queue.js';
 
+
+/** t196 (A4): the queue tags a bare steer as an engine line on the way in; these fixtures are bare. */
+const sys = (text: string): string => `[System: ${text}]`;
 function freshState(): AgentTurnState {
   return initState({
     agentId: 'steer-queue-test',
@@ -81,7 +84,7 @@ describe('THE ONE-SLOT LOSS', () => {
     // Advisory first, truth guard second. Precedence, not arrival, decides.
     s = persistEngineSteer(s, { agentId: 'a1', content: 'advice', turnNumber: 3, floor: 'hoarding-advisory', atLoop: 1 }, deps);
     s = persistEngineSteer(s, { agentId: 'a1', content: GUARD_A, turnNumber: 3, floor: 'ungrounded-claim', atLoop: 1 }, deps);
-    expect(deliverable(s)).toEqual([GUARD_A, 'advice']);
+    expect(deliverable(s)).toEqual([GUARD_A, sys('advice')]);
   });
 
   it('ACROSS ITERATIONS: draining one leaves the rest queued, never dropped', () => {
@@ -92,16 +95,16 @@ describe('THE ONE-SLOT LOSS', () => {
 
     // Iteration 1 delivers exactly one entry; two survive untouched.
     const one = nextSteer(q)!;
-    expect(one.content).toBe('first');
+    expect(one.content).toBe(sys('first'));
     q = markSteerDelivered(q, one);
-    expect(q.pending.map((e) => e.content)).toEqual(['second', 'third']);
+    expect(q.pending.map((e) => e.content)).toEqual([sys('second'), sys('third')]);
 
     // Iteration 2, then 3.
     q = markSteerDelivered(q, nextSteer(q)!);
-    expect(q.pending.map((e) => e.content)).toEqual(['third']);
+    expect(q.pending.map((e) => e.content)).toEqual([sys('third')]);
     q = markSteerDelivered(q, nextSteer(q)!);
     expect(q.pending).toEqual([]);
-    expect(q.delivered.map((e) => e.content)).toEqual(['first', 'second', 'third']);
+    expect(q.delivered.map((e) => e.content)).toEqual([sys('first'), sys('second'), sys('third')]);
   });
 
   it('FIFO within one priority band (the tiebreak is arrival, and it is deterministic)', () => {
@@ -109,7 +112,7 @@ describe('THE ONE-SLOT LOSS', () => {
     // Two keyed entries of the SAME floor share a priority; the earlier one wins.
     q = enqueueSteer(q, { floor: 'thrash-gate', content: 'sig-A', key: 'A', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'thrash-gate', content: 'sig-B', key: 'B', atLoop: 1 });
-    expect(nextSteer(q)!.content).toBe('sig-A');
+    expect(nextSteer(q)!.content).toBe(sys('sig-A'));
   });
 });
 
@@ -266,7 +269,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     const { q, entry } = pushed();
     const after = markSteerDelivered(q, entry!);
     expect(after.pending).toEqual([]);
-    expect(after.delivered.map((e) => e.content)).toEqual(['speak']);
+    expect(after.delivered.map((e) => e.content)).toEqual([sys('speak')]);
   });
 
   it('an UNCONFIRMED push stays queued — it rides the next iteration instead of vanishing', () => {
@@ -281,7 +284,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     let { q } = pushed();
     for (let i = 0; i < MAX_STEER_DELIVERY_ATTEMPTS; i++) q = markSteerAttempted(q, nextSteer(q)!);
     expect(q.pending).toEqual([]);
-    expect(q.abandoned.map((e) => e.content)).toEqual(['speak']);
+    expect(q.abandoned.map((e) => e.content)).toEqual([sys('speak')]);
     expect(q.delivered).toEqual([]);
     // fired-without-delivered is the fact the single slot destroyed. It survives here.
     expect(steerFired(q, 'ghosted-ask')).toBe(true);
@@ -301,7 +304,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     let q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
     q = clearSteerQueueFor(q, ['repetition']);
     expect(q.pending).toEqual([]);
-    expect(q.abandoned.map((e) => e.content)).toEqual(['r']);
+    expect(q.abandoned.map((e) => e.content)).toEqual([sys('r')]);
   });
 
   it('HL4 2b: …and NOBODY ELSE\'S. The clear is scoped, and the unscoped spelling is gone', () => {
