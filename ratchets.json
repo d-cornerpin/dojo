@@ -8718,6 +8718,48 @@
       "to": 342,
       "by": "t196 (2026-10-17), every steer carries the engine author head",
       "why": "+1: the import of withAuthorHead, applied on the one line that stores the entry's content. The tag rule lives in the NEW agent/v2/steer-author-head.ts."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 3959,
+      "to": 3995,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+36: the output-budget input type shared by two exported functions, `resolveOutputCeiling` (the room the window and the contract allow a cut-off retry), the `escalatedAsk` branch in `resolveOutputBudget`, the two request fields (`outputRoomAsk` in, `outputRoom` out), the thinking-level column read in `getModelInfo`, and the `reasoning_effort` send beside the thinking toggle in `applyProviderRequestParams`. About half of it is one-line comments. ALTERNATIVES MEASURED AND REFUSED. (a) Put the budget arithmetic in a new module: refused, `resolveOutputBudget` and its two floors live here and the arithmetic must stay beside them so one place answers what `max_tokens` is. (b) Skip the ceiling and let the call step guess a number: refused, that is how the old escalation became a number nothing could size against a model. The fixed 8K-64K chain and its 64,000 state wall were DELETED elsewhere in the same change. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/model-contract.ts",
+      "from": 279,
+      "to": 300,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+21: two declared fields (`thinkingLevels`, `outputEscalationCeiling`), their two rows in the field table the file requires for every field, the DeepSeek seed values with the documented sources, and the one constant. The field table is the contract's own rule (one doc-line per field is the price of adding one). Both fields have named readers in `model.ts` and `gateway/routes/config.ts`. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
+      "from": 547,
+      "to": 555,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+8: the call now hands the escalation to the model call (`outputRoomAsk`, one line) and spends it after a clean answer (a four-line reset), plus one import. The escalation was written and never read; this is the reader. From here this file may only shrink."
+    },
+    {
+      "path": "packages/shared/src/types.ts",
+      "from": 643,
+      "to": 655,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+12: the `ThinkingLevel` type and the two optional model-row fields (`thinkingLevel`, `thinkingLevels`) the dashboard row needs to render the selector beside the existing Thinking toggle. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/lib/api.ts",
+      "from": 2405,
+      "to": 2416,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+11: `updateModelThinkingLevel`, the client call for the selector. It is deliberately its own function beside `updateModelThinking` rather than a changed signature, so the existing toggle call is untouched. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/ModelRows.tsx",
+      "from": 1223,
+      "to": 1257,
+      "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
+      "why": "+34: the level state, its optimistic handler with rollback and the toast the row already uses, and the one select rendered beside the Thinking toggle only when the server says the model's contract offers levels. No new page and no new component: it lives in the existing model row (owner ruling 8). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8741,7 +8783,7 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 604,
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
-    "packages/dashboard/src/components/settings/ModelRows.tsx": 1223,
+    "packages/dashboard/src/components/settings/ModelRows.tsx": 1257,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
     "packages/dashboard/src/components/settings/PlatformTab.tsx": 1042,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 939,
@@ -8749,7 +8791,7 @@
     "packages/dashboard/src/components/settings/VoiceTab.tsx": 1229,
     "packages/dashboard/src/lib/access-edits.ts": 354,
     "packages/dashboard/src/lib/access-summary.ts": 113,
-    "packages/dashboard/src/lib/api.ts": 2405,
+    "packages/dashboard/src/lib/api.ts": 2416,
     "packages/dashboard/src/lib/manifest-edits.ts": 205,
     "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
@@ -8781,8 +8823,8 @@
     "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
-    "packages/server/src/agent/model-contract.ts": 279,
-    "packages/server/src/agent/model.ts": 3959,
+    "packages/server/src/agent/model-contract.ts": 300,
+    "packages/server/src/agent/model.ts": 3995,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
@@ -8830,7 +8872,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 274,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 547,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 555,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 400,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
@@ -9034,7 +9076,7 @@
     "packages/shared/src/markers.ts": 358,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 643,
+    "packages/shared/src/types.ts": 655,
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
