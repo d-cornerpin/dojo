@@ -548,8 +548,6 @@ export async function callWithRetryAndFallback(
 
   // t195: extra room is for the ONE retry. A call not cut off has spent it (back to the everyday budget);
   // one cut off again keeps the mark, telling the ladder the room was already given.
-  if (state.outputTokensEscalated > 0 && !isOutputCut(result.stopReason)) {
-    state = advance(state, { outputTokensEscalated: 0 });
-  }
+  if (state.outputTokensEscalated > 0 && !isOutputCut(result.stopReason)) state = advance(state, { outputTokensEscalated: 0 });
   return { state, result, modelId };
 }
