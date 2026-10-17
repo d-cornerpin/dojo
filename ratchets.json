@@ -8736,9 +8736,9 @@
     {
       "path": "packages/server/src/agent/v2/steps/call-llm/model-call.ts",
       "from": 547,
-      "to": 555,
+      "to": 553,
       "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
-      "why": "+8: the call now hands the escalation to the model call (`outputRoomAsk`, one line) and spends it after a clean answer (a four-line reset), plus one import. The escalation was written and never read; this is the reader. From here this file may only shrink."
+      "why": "+6: the call now hands the escalation to the model call (`outputRoomAsk`, one line) and spends it after a clean answer (a one-line reset), plus one import. The escalation was written and never read; this is the reader. From here this file may only shrink."
     },
     {
       "path": "packages/shared/src/types.ts",
@@ -8872,7 +8872,7 @@
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
     "packages/server/src/agent/v2/steps/call-llm/index.ts": 274,
-    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 555,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 553,
     "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 400,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
