@@ -5,6 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { resolveGmailLabelTarget } from './gmail-archive.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import {
   type LocalAttachment,
@@ -133,16 +134,18 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_label',
-    description: 'Add or remove labels from an email (move to folders, archive, etc.). Call gmail_list_labels first if you do not know what custom labels exist on the account.',
+    description: 'Add or remove labels on an email. Archiving (removing INBOX) acts on the WHOLE conversation by default, because Gmail keeps a conversation in the inbox while any message in it is there; pass this_message_only=true to change just that one message. Pass thread_id instead of message_id to act on a conversation directly. Call gmail_list_labels first if you do not know what custom labels exist on the account.',
     effects: [],
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID' },
+        thread_id: { type: 'string', description: 'Conversation (thread) ID, instead of message_id' },
+        this_message_only: { type: 'boolean', description: 'Archive only the one message, not its conversation' },
         add_labels: { type: 'array', items: { type: 'string' }, description: "Labels to add (e.g., 'IMPORTANT', 'STARRED', or a custom label name from gmail_list_labels)" },
         remove_labels: { type: 'array', items: { type: 'string' }, description: "Labels to remove (e.g., 'INBOX' to archive)" },
       },
-      required: ['message_id'],
+      required: [],
     },
   },
   {
@@ -1333,23 +1336,16 @@ export async function executeGoogleWriteTool(
     }
 
     case 'gmail_label': {
-      const messageId = args.message_id as string;
       const addLabels = (args.add_labels as string[]) ?? [];
       const removeLabels = (args.remove_labels as string[]) ?? [];
+      const target = await resolveGmailLabelTarget(args, GMAIL_BASE, agentId, agentName, slot);
+      if (!target.ok) return target.error;
 
-      const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/modify`;
-      const result = await googleWrite('POST', url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId, addLabels, removeLabels }, undefined, slot);
+      const result = await googleWrite('POST', target.url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId: target.messageId, threadId: target.threadId, addLabels, removeLabels }, undefined, slot);
       if (!result.ok) {
-        // FIX-WAVE ITEM 4 (live-test finding): the bare Gmail 400 — "Invalid
-        // label: Junk E-mail" — has no remedy. A live agent trying to move a
-        // message to spam guessed an Outlook-ism ("Junk E-mail"), got this
-        // text back, and had nowhere to go: the same decision-moment
-        // principle as the tool-NAME fixes elsewhere on this branch, one
-        // layer down at label VALUES. `name` here is the tool AS CALLED
-        // (`gmail_label` or `user_gmail_label`), so the lister/creator
-        // pointers below are derived from it rather than hardcoded — an
-        // agent on the user_ slot gets pointed at user_gmail_list_labels /
-        // user_gmail_create_label, never the base names it cannot call.
+        // A bare Gmail 400 ("Invalid label: Junk E-mail") has no remedy: point the agent at the
+        // lister and creator with the SAME prefix as the tool as called (`name`), so a user_ call
+        // is never sent to a base tool it cannot use.
         if (/invalid label/i.test(result.error ?? '')) {
           const prefix = name.startsWith('user_') ? 'user_' : '';
           const listerTool = `${prefix}gmail_list_labels`;
@@ -1365,7 +1361,9 @@ export async function executeGoogleWriteTool(
         }
         return `Error modifying labels: ${result.error}`;
       }
-      return `Labels updated on message ${messageId}`;
+      if (!target.conversation) return `Labels updated on message ${target.messageId}`;
+      const count = (result.data as { messages?: unknown[] } | null)?.messages?.length;
+      return `Labels updated on the WHOLE conversation ${target.threadId}${count ? ` (${count} message${count === 1 ? '' : 's'})` : ''}. To change only one message next time, pass message_id with this_message_only=true.`;
     }
 
     case 'gmail_create_label': {
