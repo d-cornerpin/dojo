@@ -70,7 +70,6 @@ vi.mock('../../plaud/auth.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { noteToolOutcome } from '../../agent/v2/tool-outcomes.js';
 import {
   buildIntegrationStatusLane,
   renderIntegrationStatusBlock,
@@ -110,11 +109,13 @@ function seedActivity(
   ).run(`act-${table}-${atMs}-${success}-${agentId}`, agentId, success, sqliteStamp(atMs));
 }
 
-/** t190: the failure term now reads the per-tool outcome record (`agent_tool_outcomes`), so a
- *  seeded failure is `hits` failures in a row for the tool. The instant is stamped by the
- *  recorder, so these clauses assert its presence, not a chosen time. */
-function seedFailure(tool: string, _atMs: number, hits: number): void {
-  for (let i = 0; i < hits; i++) noteToolOutcome(AGENT, tool, true, 'seeded failure');
+/** t190: the failure term reads the per-tool outcome record (`agent_tool_outcomes`); a seeded
+ *  failure is `hits` failures in a row for the tool, last failed at `atMs`. */
+function seedFailure(tool: string, atMs: number, hits: number): void {
+  mockDb.current!.prepare(
+    `INSERT INTO agent_tool_outcomes (agent_id, tool_name, last_fail_at, last_error, consecutive_failures, total_failures)
+     VALUES (?, ?, ?, 'seeded failure', ?, ?)`,
+  ).run(AGENT, tool, sqliteStamp(atMs), hits, hits);
 }
 
 const ALL_THREE_CONNECTED = [
