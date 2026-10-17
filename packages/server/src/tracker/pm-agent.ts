@@ -160,10 +160,8 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   // ⛔ `work_update:reassign` WAS HERE. OWNER RULING 2026-10-02: "Their job is not to reassign a
   // task because they don't feel it is getting worked on fast enough. At no point during the
   // construction of the dojo did I ever ask for the PM agent to simply reassign tasks to another
-  // agent." The PM has no reassignment concept at all — not autonomous, not by asking. The verb
-  // itself survives for the PRIMARY (it is not in `PM_ONLY_WORK_OPS`), which is how a human's
-  // "move this to someone else" still reaches the board; what is gone is the overseer's standing
-  // authority to decide it. `the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses this.
+  // agent." Re-ruled for v3.4 (dec 1): NEVER. `work/row-authority.ts:checkMove` also refuses the
+  // PM by identity. `the-pm-waits-for-the-model-it-assigned.test.ts` §2 censuses this list.
   'work_validate:override',
   'work_close_request:override',
   'work_validate:apply_user_verdict',
@@ -2065,6 +2063,8 @@ async function runPMReview(): Promise<void> {
         evidenceLines = parsed.map((e, i) => `    ${i + 1}. [${e.kind ?? '?'}] ${e.claim ?? ''}${e.pointer ? ` @ ${e.pointer}` : ''}`).join('\n');
       }
     } catch { /* leave as default */ }
+    // t193 (B2): the closer's last words on the task; a `complete_step` note never reached here.
+    const lastNote = getRecentObservations(cTask.id, 1)[0], lastNoteLine = lastNote ? `\n  Latest note on the task: ${formatEntryLine(lastNote)}` : '';
     // TB8 JOB 2: this row is now IN FRONT OF the validator. Recorded here, judged after
     // the turn returns — coverage is about what was ASKED, never the board's total backlog.
     askedForKeyTwo.push({ id: cTask.id, awaitingSinceMs: cTask.updated_at_ms });
@@ -2105,7 +2105,7 @@ async function runPMReview(): Promise<void> {
         `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${doorbellLine}${smellLine}${runLine}${goalEditLine}\n` +
         `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
-        `  Evidence:\n${evidenceLines}${deliveredLine}\n` +
+        `  Evidence:\n${evidenceLines}${lastNoteLine}${deliveredLine}\n` +
         `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
         `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +

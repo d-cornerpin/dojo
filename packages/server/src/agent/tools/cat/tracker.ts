@@ -38,10 +38,8 @@ import { getDb } from '../../../db/connection.js';
 import { turnContext } from '../../turn-context.js';
 import { checkRequired, friendlyDbError } from '../../tool-helpers.js';
 import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
-import { taskScope } from '../../../work/tracker-view.js';
-import { patchWork } from '../../../work/tracker-store.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
-import { recordReassignment } from '../../../tracker/assignee-patience.js';
+import { moveAssignee } from '../../../work/row-authority.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
@@ -394,8 +392,11 @@ export const trackerHandlers: ToolHandlerMap = {
     if (args.evidence !== undefined) updateArgs.evidence = args.evidence;
     // assigned_to / priority forwards (these were missing before, even
     // though trackerUpdateStatus accepts them)
+    // t193: forwarded so the door can REFUSE a move it no longer performs (silently dropping it
+    // would let a model believe the task moved).
     if (args.assigned_to !== undefined) updateArgs.assignedTo = args.assigned_to;
     if (args.priority !== undefined) updateArgs.priority = args.priority;
+    if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
     content = trackerUpdateStatus(agentId, updateArgs);
     isError = content.startsWith('Error');
     return { content, isError };
@@ -726,6 +727,9 @@ export const trackerHandlers: ToolHandlerMap = {
     content = trackerCompleteStep(agentId, {
       taskId: (args.task_id ?? args.taskId) as string | undefined,
       notes: args.notes as string | undefined,
+      // t193 (owner decision 27): the same close-out proof as status="complete".
+      result: args.result,
+      evidence: args.evidence,
     });
     isError = content.startsWith('Error');
     return { content, isError };
@@ -875,6 +879,7 @@ export const trackerHandlers: ToolHandlerMap = {
       project_id: args.project_id as string,
       status: args.status as string | undefined,
       reason: args.reason as string,
+      user_quote: args.user_quote,
     });
     isError = content.startsWith('Error');
     return { content, isError };
@@ -924,74 +929,59 @@ export const trackerHandlers: ToolHandlerMap = {
   },
 
   async "work_update:reassign"({ agentId, args }) {
-    let content = '';
-    let isError = false;
+    // t193 — THE REASSIGN DOOR IS A CALL INTO THE ROW-AUTHORITY GATE, AND NOTHING ELSE.
+    // It used to resolve the id globally and `patchWork` the assignee with no ownership check, no
+    // cause and no state check, recording the fixed reason "reassigned to a new owner". Every
+    // rule now lives in `work/row-authority.ts:moveAssignee` — who may move it, for which cause
+    // (assignee_gone · coordination · user_requested; never pace), blocked or declined work
+    // escalating to the owner — and that function writes and records the move (cause, who,
+    // from, to) on the row's own event log.
     const rawReassignTaskId = args.task_id as string;
-    if (!rawReassignTaskId) { content = 'Error: task_id is required'; isError = true; return { content, isError }; }
-
-    // Resolve task id prefix to the full UUID so this tool accepts
-    // the 8-char ids emitted by work_update(action="list"), same pattern as
-    // every other work operation.
+    if (!rawReassignTaskId) return { content: 'Error: task_id is required', isError: true };
     const reassignResolved = resolveTaskId(rawReassignTaskId);
     if (!reassignResolved.ok) {
-      content = formatResolveError('task', rawReassignTaskId, reassignResolved);
-      isError = true;
-      return { content, isError };
+      return { content: formatResolveError('task', rawReassignTaskId, reassignResolved), isError: true };
     }
     const reassignTaskId = reassignResolved.id;
-
     const reassignDb = getDb();
-    const reassignTask = reassignDb.prepare(`SELECT w.id AS id, w.title AS title, w.agent_id AS from_agent FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(reassignTaskId) as { id: string; title: string; from_agent: string | null } | undefined;
-    if (!reassignTask) { content = `Error: Task ${reassignTaskId} was deleted before reassignment could be applied.`; isError = true; return { content, isError }; }
     let newAgent = args.assigned_to as string | undefined;
     const newGroup = args.assigned_to_group as string | undefined;
-    if (newAgent) {
-      // Resolve name → UUID. Match by id OR name (case-insensitive) so
-      // sensei ids like "primary" and capitalised names both work. Friendlier
-      // error than the bare FK violation.
-      if (!newAgent.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
-        const lookup = reassignDb.prepare(
-          `SELECT id FROM agents
-             WHERE (id = ? OR name = ? COLLATE NOCASE)
-               AND status != 'terminated'
-             ORDER BY created_at DESC LIMIT 1`
-        ).get(newAgent, newAgent) as { id: string } | undefined;
-        if (!lookup) {
-          content = `Agent "${newAgent}" doesn't exist yet. Spawn them first with spawn_agent, then reassign. Or pass an existing agent's UUID directly.`;
-          isError = true;
-          return { content, isError };
-        }
-        newAgent = lookup.id;
-      }
-      // PHASE-6 T0D — the two sites in this file get a BRANCH rather than the
-      // recorder, because a model is waiting on the answer: the row was resolved
-      // and re-read above, so a refusal here means it was deleted in between, and
-      // the old code went on to say "reassigned to X" about a row that is not
-      // there. Telling a model a write landed when it did not is the stale-id
-      // class doing its damage one layer up from the door.
-      const moved = patchWork(reassignTaskId, { agent_id: newAgent, assignee_agent: newAgent, assigned_to_group: null });
-      if (moved.kind !== 'applied') { content = `Error: ${moved.detail}`; isError = true; return { content, isError }; }
-      // Resolve name for response
-      const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
-      content = `Task "${reassignTask.title}" reassigned to ${agentName}`;
-    } else if (newGroup) {
-      const moved = patchWork(reassignTaskId, { assignee_agent: null, assigned_to_group: newGroup });
-      if (moved.kind !== 'applied') { content = `Error: ${moved.detail}`; isError = true; return { content, isError }; }
-      const groupName = (reassignDb.prepare('SELECT name FROM agent_groups WHERE id = ?').get(newGroup) as { name: string } | undefined)?.name ?? newGroup;
-      content = `Task "${reassignTask.title}" reassigned to group "${groupName}", PM will pick an agent at run time`;
-    } else {
-      content = 'Error: Provide either assigned_to (agent ID) or assigned_to_group (group ID)';
-      isError = true;
+    if (!newAgent && !newGroup) {
+      return { content: 'Error: Provide either assigned_to (agent ID) or assigned_to_group (group ID)', isError: true };
     }
-    // Reassign is a remediation: the task is moving to a new assignee (or
-    // back to a group for the PM to pick), which starts a fresh escalation
-    // cycle. Re-arm the ladder so it climbs from nudge(1) against the new
-    // owner instead of staying stuck at the old assignee's rung. Marking at
-    // a remediation event (never mid-cycle) keeps the cross-restart poke
-    // dedup intact. Skip on the error path so a rejected reassign doesn't
-    // re-arm a live escalation cycle.
-    if (!isError) recordReassignment({ taskId: reassignTaskId, actor: agentId, fromAgentId: reassignTask.from_agent, toAgentId: newAgent ?? null, toGroupId: newGroup ?? null, reason: 'reassigned to a new owner' });   // t90 D1: who, why, and the prior assignee's last state — and the re-arm rides along
-    return { content, isError };
+    if (newAgent && !newAgent.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
+      // A non-UUID reference: match the agent row by id or by its stored name, so a short id
+      // like the main agent's works as well as a UUID. Live agents only.
+      const lookup = reassignDb.prepare(
+        `SELECT id FROM agents
+           WHERE (id = ? OR name = ? COLLATE NOCASE)
+             AND status != 'terminated'
+           ORDER BY created_at DESC LIMIT 1`,
+      ).get(newAgent, newAgent) as { id: string } | undefined;
+      if (!lookup) {
+        return {
+          content: `Agent "${newAgent}" doesn't exist yet. Spawn them first with spawn_agent, then reassign. Or pass an existing agent's UUID directly.`,
+          isError: true,
+        };
+      }
+      newAgent = lookup.id;
+    }
+    const moved = moveAssignee({
+      taskId: reassignTaskId, by: 'agent', actorId: agentId,
+      cause: args.cause, userQuote: args.user_quote,
+      to: newAgent ? { agentId: newAgent } : { groupId: newGroup as string },
+      door: 'work_update(action="reassign")',
+    });
+    if (!moved.ok) return { content: moved.text, isError: true };
+    const title = (reassignDb.prepare('SELECT title FROM work WHERE id = ?').get(reassignTaskId) as { title: string } | undefined)?.title ?? reassignTaskId;
+    if (newAgent) {
+      const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
+      return { content: `Task "${title}" reassigned to ${agentName} (cause: ${moved.cause}).`, isError: false };
+    }
+    const groupName = (reassignDb.prepare('SELECT name FROM agent_groups WHERE id = ?').get(newGroup) as { name: string } | undefined)?.name ?? newGroup;
+    return {
+      content: `Task "${title}" reassigned to group "${groupName}" (cause: ${moved.cause}), PM will pick an agent at run time`,
+      isError: false,
+    };
   },
-
 };

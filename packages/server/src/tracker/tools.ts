@@ -73,7 +73,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 // t129 / S5: the ONE reassignment recorder, so the status door's assignee side path leaves
 // the same shape of record the two declared reassignment doors already write.
-import { recordReassignment } from './assignee-patience.js';
+import { taskWriteRefusal, takeoverRefusal, projectCloseRefusal } from '../work/row-authority.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { turnContext, getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-context.js';
@@ -497,6 +497,9 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
       + `he rules; (3) if you just have something to add, use work_note. Do NOT retry this `
       + `status change, and do not try a different terminal word — the same answer comes back.`
     );
+  }
+  if (r.reason === 'takeover-needs-the-owner') {
+    return `Error: "${wanted}" was refused. ${r.detail} Nothing changed on the task.`;
   }
   return `Error: that status change was refused (${r.reason}): ${r.detail}`;
 }
@@ -1534,6 +1537,135 @@ function receiptDetailAccepted(row: ToolReceiptRow): boolean {
   }
 }
 
+/** The complete hard gate (result + evidence + C26 receipts, persisted for the PM); refusal text
+ *  or null. t193 (owner decision 27): `complete_step` calls it too — it used to take notes only,
+ *  which the Key-1 filing dropped, so the PM saw "Result: (none)" on an honest close. */
+function closeEvidenceGate(agentId: string, taskId: string, args: Record<string, unknown>, door = 'status="complete"'): string | null {
+  const result = typeof args.result === 'string' ? args.result.trim() : '';
+  const evidence = Array.isArray(args.evidence) ? args.evidence : null;
+  if (!result) {
+    const breaker = noteHardGateRejection(taskId, agentId, 'missing result field on complete');
+    return (
+      `Error: ${door} requires a non-empty \`result\` field describing what was done. ` +
+      `Example call: work_update(action="status", task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
+      breaker
+    );
+  }
+  if (!evidence || evidence.length === 0) {
+    const breaker = noteHardGateRejection(taskId, agentId, 'missing or empty evidence array on complete');
+    return (
+      `Error: ${door} requires \`evidence\` as a non-empty array. Each entry must be {kind, claim, pointer?}. ` +
+      `Supported kinds (text-only, PM-readable): claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. ` +
+      `Example: evidence=[{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].` +
+      breaker
+    );
+  }
+  // Each entry must carry real evidence CONTENT (a non-empty `claim`); the
+  // `kind` is only a PM-readable LABEL. The correctness-floor model routinely
+  // mislabels the kind (e.g. kind="web_fetch", the tool it just called) while
+  // still handing over a valid claim. Forgive the LABEL, never the substance:
+  // an unrecognized kind is COERCED to the catch-all `claim` (the model's
+  // claim text is preserved, its attempted label noted) instead of failing
+  // the close. What stays HARD: (a) each entry must be a real object, (b) it
+  // must have a non-empty claim (THAT is the evidence-required rule,
+  // unchanged), and (c) the engine-reserved `verified_receipt` kind is still
+  // refused so an agent cannot fabricate a machine receipt.
+  const normEvidence: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < evidence.length; i++) {
+    const e = evidence[i] as Record<string, unknown> | null;
+    if (!e || typeof e !== 'object') {
+      const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] is not an object`);
+      return `Error: evidence[${i}] must be an object with {kind, claim, pointer?}, got ${typeof e}.${breaker}`;
+    }
+    const rawKind = typeof e.kind === 'string' ? e.kind.trim() : '';
+    const claim = typeof e.claim === 'string' ? e.claim.trim() : '';
+    if (!claim) {
+      const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing claim`);
+      return `Error: evidence[${i}] must carry a non-empty \`claim\` string describing the concrete artifact (file path, count, id, what you did). The \`kind\` is only a label; the claim is the evidence.${breaker}`;
+    }
+    // C26: verified_receipt is engine-only; the engine appends it after the
+    // gate passes. An agent supplying it is trying to fabricate a receipt.
+    if (rawKind === 'verified_receipt') {
+      const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] used the reserved verified_receipt kind`);
+      return `Error: evidence[${i}] kind "verified_receipt" is reserved for the engine and cannot be supplied by an agent. The engine writes verified receipts itself from the tool's provider response. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
+    }
+    // C26 (softened, correctness-floor): a recognized kind passes through; an
+    // unrecognized/empty label is coerced to `claim` rather than rejected, so
+    // valid-shaped evidence with a wrong kind label is ACCEPTED. The claim
+    // text is kept verbatim and the attempted label appended so nothing is
+    // hidden and PM still sees exactly what the agent meant.
+    if (VALID_EVIDENCE_KINDS.has(rawKind)) {
+      normEvidence.push({ ...e, kind: rawKind, claim });
+    } else {
+      const note = rawKind ? ` [labeled "${rawKind}"]` : '';
+      normEvidence.push({ ...e, kind: 'claim', claim: `${claim}${note}` });
+    }
+  }
+  // ── C26 receipt gate ──
+  // A turn that ran a tier-1/2 (machine-verifiable) send tool must produce a
+  // verified receipt to close as complete. This makes Layer 1 a REAL gate
+  // for the send subset, on the weakest model, instead of structure-only.
+  // Tier-3 (iMessage) turns impose NO new requirement; a turn that ran no
+  // receipt tool at all keeps the existing prose-evidence + PM path (D-3).
+  const turnReceiptIds = getTurnReceipts(agentId);
+  const receiptRows = turnReceiptIds.length > 0 ? getReceiptsByIds(turnReceiptIds) : [];
+  const tier12 = receiptRows.filter(r => r.tier === 1 || r.tier === 2);
+  if (tier12.length > 0) {
+    const satisfied = tier12.some(r => r.verified === 1 || (r.tier === 2 && receiptDetailAccepted(r)));
+    if (!satisfied) {
+      const worst = tier12[0];
+      const breaker = noteHardGateRejection(taskId, agentId, `send via ${worst.tool} not verified by receipt`);
+      return (
+        `Error: this turn ran a send tool (${worst.tool}) but the engine could NOT verify the send landed ` +
+        `(basis=${worst.basis}, detail=${worst.detail ?? '(none)'}). A send-class task cannot be marked complete ` +
+        `until delivery is confirmed. The send may still have gone out: verify FIRST (check the sent folder / thread / recipient) ` +
+        `and re-send only if you confirm it did not land. If it genuinely failed, mark the task blocked with the reason. ` +
+        `Do not claim it was sent.${breaker}`
+      );
+    }
+  }
+
+  // On pass, the engine appends one verified_receipt evidence entry per
+  // receipt written THIS turn (tier 3 included, honestly marked unverified)
+  // so PM's existing evidence-reading flow sees the machine receipts, then
+  // stamps task_id on the consumed rows. Engine-authored, appended AFTER the
+  // agent-supplied evidence was validated above.
+  const evidenceOut: unknown[] = [...normEvidence];
+  for (const r of receiptRows) {
+    const label = r.verified === 1 ? 'verified' : 'unverified';
+    const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
+    evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id });
+  }
+
+  // Persist result + (augmented) evidence on the task row for PM to read.
+  //
+  // t118 — BOTH HALVES ARE REDACTED ON THE BIND. `result` and every `claim` in
+  // `evidence_json` are MODEL-AUTHORED free text kept VERBATIM by design (the
+  // coerce-not-reject rule above is explicit that "the claim text is kept verbatim"),
+  // so a model that quotes a credential it just handled into its own closing evidence
+  // writes that credential into two unencrypted columns. Observed: one draw's attempt 1
+  // carried the value in `evidence_json` as well as `description`, attempt 2 in
+  // `description` alone — the difference was only whether the model happened to quote it.
+  // The evidence is redacted AFTER serialization, the shape `report/bundle.ts:96` uses:
+  // one pass covers every nested `claim`/`pointer`, and the placeholder is plain
+  // `<redacted-credential:cN>` text, so the JSON stays parseable for the PM's reader
+  // (`pm-agent.ts:2051`). Unchanged by reference when this agent has handled nothing.
+  try {
+    const resultOut = redactHandedCredentials(agentId, result);
+    const evidenceJsonOut = redactHandedCredentials(agentId, JSON.stringify(evidenceOut));
+    noteUnsettled(patchWork(taskId, { result: resultOut, evidence_json: evidenceJsonOut }), 'trackerUpdateStatus: result + evidence recorded', { taskId });
+  } catch (err) {
+    logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  // Stamp task_id (+ updated_at) on the receipts consumed as evidence.
+  if (turnReceiptIds.length > 0) stampReceiptsTask(turnReceiptIds, taskId);
+  // Clear circuit-breaker tracking, the hard gate accepted.
+  clearHardGateBreaker(taskId, agentId);
+  return null;
+}
+
 export function trackerUpdateStatus(agentId: string, args: Record<string, unknown>): string {
   try {
     const rawTaskId = args.taskId as string;
@@ -1595,18 +1727,21 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
       status = mapped;
     }
-    let assignedTo = args.assignedTo as string | undefined;
-    if (assignedTo) {
-      const r = resolveAgentName(assignedTo);
-      if (!r.ok) return r.error;
-      assignedTo = r.id;
+    // t193: the `assigned_to` side door is GONE (it moved work with no cause or ownership check).
+    // Moving is `:reassign`'s, under the row-authority cause rule; the whole call is refused.
+    if (args.assignedTo !== undefined && args.assignedTo !== null && args.assignedTo !== '') {
+      return 'Error: action="status" does not move a task to another agent, and nothing was changed. '
+        + 'Make the status change without assigned_to; to move the task, call '
+        + 'work_update(action="reassign", task_id, assigned_to, cause) with a cause '
+        + '("assignee_gone", "coordination" for your own task, or "user_requested" with user_quote).';
     }
     const priority = args.priority as string | undefined;
 
-    if (!status && !assignedTo && !priority) {
-      return 'Error: at least one of status, assignedTo, or priority must be provided';
+    if (!status && !priority) {
+      return 'Error: at least one of status or priority must be provided';
     }
 
+    { const no = taskWriteRefusal(agentId, taskId, 'change the status of'); if (no) return no; }   // t193 (dec 3): only the task's holder, its creator, the PM and the main agent change it.
     // Check if this is a scheduled recurring task. Also snapshot the prior
     // status so we can emit a task_log transition entry below with the
     // accurate from→to pair (we cannot read it AFTER updateTask, the row
@@ -1629,7 +1764,6 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // priority, fall through to the normal update so those land.
     if (
       status &&
-      !assignedTo &&
       !priority &&
       priorStatus === status &&
       // For recurring per-run completion, "complete" is a real
@@ -1660,7 +1794,6 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
     const updates: Record<string, string | null> = {};
     if (status) updates.status = status;
-    if (assignedTo) updates.assignedTo = assignedTo;
     if (priority) updates.priority = priority;
 
     // v2.8.x rule: 'on_deck' is reserved for tasks with a FUTURE
@@ -1742,129 +1875,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
     // ── Phase B.1: complete engine hard gate ──
     // Structure only. Engine never inspects evidence content; that is PM's job.
+    // t193 (dec 27): ONE gate for both close doors — `complete_step` calls it too.
     if (status === 'complete' && !callerIsPM) {
-      const result = typeof args.result === 'string' ? args.result.trim() : '';
-      const evidence = Array.isArray(args.evidence) ? args.evidence : null;
-      if (!result) {
-        const breaker = noteHardGateRejection(taskId, agentId, 'missing result field on complete');
-        return (
-          `Error: status="complete" requires a non-empty \`result\` field describing what was done. ` +
-          `Example call: work_update(action="status", task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
-          breaker
-        );
-      }
-      if (!evidence || evidence.length === 0) {
-        const breaker = noteHardGateRejection(taskId, agentId, 'missing or empty evidence array on complete');
-        return (
-          `Error: status="complete" requires \`evidence\` as a non-empty array. Each entry must be {kind, claim, pointer?}. ` +
-          `Supported kinds (text-only, PM-readable): claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. ` +
-          `Example: evidence=[{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].` +
-          breaker
-        );
-      }
-      // Each entry must carry real evidence CONTENT (a non-empty `claim`); the
-      // `kind` is only a PM-readable LABEL. The correctness-floor model routinely
-      // mislabels the kind (e.g. kind="web_fetch", the tool it just called) while
-      // still handing over a valid claim. Forgive the LABEL, never the substance:
-      // an unrecognized kind is COERCED to the catch-all `claim` (the model's
-      // claim text is preserved, its attempted label noted) instead of failing
-      // the close. What stays HARD: (a) each entry must be a real object, (b) it
-      // must have a non-empty claim (THAT is the evidence-required rule,
-      // unchanged), and (c) the engine-reserved `verified_receipt` kind is still
-      // refused so an agent cannot fabricate a machine receipt.
-      const normEvidence: Array<Record<string, unknown>> = [];
-      for (let i = 0; i < evidence.length; i++) {
-        const e = evidence[i] as Record<string, unknown> | null;
-        if (!e || typeof e !== 'object') {
-          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] is not an object`);
-          return `Error: evidence[${i}] must be an object with {kind, claim, pointer?}, got ${typeof e}.${breaker}`;
-        }
-        const rawKind = typeof e.kind === 'string' ? e.kind.trim() : '';
-        const claim = typeof e.claim === 'string' ? e.claim.trim() : '';
-        if (!claim) {
-          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing claim`);
-          return `Error: evidence[${i}] must carry a non-empty \`claim\` string describing the concrete artifact (file path, count, id, what you did). The \`kind\` is only a label; the claim is the evidence.${breaker}`;
-        }
-        // C26: verified_receipt is engine-only; the engine appends it after the
-        // gate passes. An agent supplying it is trying to fabricate a receipt.
-        if (rawKind === 'verified_receipt') {
-          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] used the reserved verified_receipt kind`);
-          return `Error: evidence[${i}] kind "verified_receipt" is reserved for the engine and cannot be supplied by an agent. The engine writes verified receipts itself from the tool's provider response. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
-        }
-        // C26 (softened, correctness-floor): a recognized kind passes through; an
-        // unrecognized/empty label is coerced to `claim` rather than rejected, so
-        // valid-shaped evidence with a wrong kind label is ACCEPTED. The claim
-        // text is kept verbatim and the attempted label appended so nothing is
-        // hidden and PM still sees exactly what the agent meant.
-        if (VALID_EVIDENCE_KINDS.has(rawKind)) {
-          normEvidence.push({ ...e, kind: rawKind, claim });
-        } else {
-          const note = rawKind ? ` [labeled "${rawKind}"]` : '';
-          normEvidence.push({ ...e, kind: 'claim', claim: `${claim}${note}` });
-        }
-      }
-      // ── C26 receipt gate ──
-      // A turn that ran a tier-1/2 (machine-verifiable) send tool must produce a
-      // verified receipt to close as complete. This makes Layer 1 a REAL gate
-      // for the send subset, on the weakest model, instead of structure-only.
-      // Tier-3 (iMessage) turns impose NO new requirement; a turn that ran no
-      // receipt tool at all keeps the existing prose-evidence + PM path (D-3).
-      const turnReceiptIds = getTurnReceipts(agentId);
-      const receiptRows = turnReceiptIds.length > 0 ? getReceiptsByIds(turnReceiptIds) : [];
-      const tier12 = receiptRows.filter(r => r.tier === 1 || r.tier === 2);
-      if (tier12.length > 0) {
-        const satisfied = tier12.some(r => r.verified === 1 || (r.tier === 2 && receiptDetailAccepted(r)));
-        if (!satisfied) {
-          const worst = tier12[0];
-          const breaker = noteHardGateRejection(taskId, agentId, `send via ${worst.tool} not verified by receipt`);
-          return (
-            `Error: this turn ran a send tool (${worst.tool}) but the engine could NOT verify the send landed ` +
-            `(basis=${worst.basis}, detail=${worst.detail ?? '(none)'}). A send-class task cannot be marked complete ` +
-            `until delivery is confirmed. The send may still have gone out: verify FIRST (check the sent folder / thread / recipient) ` +
-            `and re-send only if you confirm it did not land. If it genuinely failed, mark the task blocked with the reason. ` +
-            `Do not claim it was sent.${breaker}`
-          );
-        }
-      }
-
-      // On pass, the engine appends one verified_receipt evidence entry per
-      // receipt written THIS turn (tier 3 included, honestly marked unverified)
-      // so PM's existing evidence-reading flow sees the machine receipts, then
-      // stamps task_id on the consumed rows. Engine-authored, appended AFTER the
-      // agent-supplied evidence was validated above.
-      const evidenceOut: unknown[] = [...normEvidence];
-      for (const r of receiptRows) {
-        const label = r.verified === 1 ? 'verified' : 'unverified';
-        const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
-        evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id });
-      }
-
-      // Persist result + (augmented) evidence on the task row for PM to read.
-      //
-      // t118 — BOTH HALVES ARE REDACTED ON THE BIND. `result` and every `claim` in
-      // `evidence_json` are MODEL-AUTHORED free text kept VERBATIM by design (the
-      // coerce-not-reject rule above is explicit that "the claim text is kept verbatim"),
-      // so a model that quotes a credential it just handled into its own closing evidence
-      // writes that credential into two unencrypted columns. Observed: one draw's attempt 1
-      // carried the value in `evidence_json` as well as `description`, attempt 2 in
-      // `description` alone — the difference was only whether the model happened to quote it.
-      // The evidence is redacted AFTER serialization, the shape `report/bundle.ts:96` uses:
-      // one pass covers every nested `claim`/`pointer`, and the placeholder is plain
-      // `<redacted-credential:cN>` text, so the JSON stays parseable for the PM's reader
-      // (`pm-agent.ts:2051`). Unchanged by reference when this agent has handled nothing.
-      try {
-        const resultOut = redactHandedCredentials(agentId, result);
-        const evidenceJsonOut = redactHandedCredentials(agentId, JSON.stringify(evidenceOut));
-        noteUnsettled(patchWork(taskId, { result: resultOut, evidence_json: evidenceJsonOut }), 'trackerUpdateStatus: result + evidence recorded', { taskId });
-      } catch (err) {
-        logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
-          taskId, error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      // Stamp task_id (+ updated_at) on the receipts consumed as evidence.
-      if (turnReceiptIds.length > 0) stampReceiptsTask(turnReceiptIds, taskId);
-      // Clear circuit-breaker tracking, the hard gate accepted.
-      clearHardGateBreaker(taskId, agentId);
+      const refused = closeEvidenceGate(agentId, taskId, args);
+      if (refused) return refused;
     }
 
     // ── Phase B.1: blocked engine hard gate ──
@@ -2080,43 +2094,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // "the task vanished".
     const { status: statusUpdate, ...columnUpdates } = updates as Record<string, unknown>;
 
-    // ── t129 / S5 — THE SIDE DOOR IS AUDITED. ──
-    //
-    // `work_update(action="status", assigned_to=X)` resolves as `work_update:status`
-    // (`tools/work-verbs.ts`: an explicit `action` always wins, and in the no-action shape
-    // ladder `status` is read before `assigned_to`). So it moved a task's assignee WITHOUT
-    // touching `work_update:reassign` — and `recordReassignment` is wired at the two
-    // reassignment doors, not here. The result was the triage's S5: the one assignee-moving
-    // path in the platform with NO audit record at all, which is also why it is the one the
-    // owner's own dating queries cannot see. It both caused his "you keep reassigning"
-    // complaint and hid itself from every query that would have dated it.
-    //
-    // The judge's P4 drive came through this same door, which is why the two are one lane.
-    //
-    // Read BEFORE the patch lands, because the patch is what destroys the answer. The record
-    // is written AFTER, and only if the row actually moved to someone new: naming the current
-    // assignee moves nothing, and a reassignment event for a no-op would make the audit
-    // trail's own counts lie.
-    const assigneeBefore = (typeof columnUpdates.assignedTo === 'string' && columnUpdates.assignedTo)
-      ? (db.prepare('SELECT agent_id FROM work WHERE id = ?').get(taskId) as { agent_id: string } | undefined)?.agent_id ?? null
-      : null;
-
     let task = Object.keys(columnUpdates).length > 0
       ? updateTask(taskId, columnUpdates)
       : getTask(taskId);
 
-    if (assigneeBefore !== null && assigneeBefore !== columnUpdates.assignedTo && task) {
-      // Same recorder the `work_update:reassign` door and the dashboard PUT use, so there is
-      // ONE shape of reassignment record rather than a second one invented here: who moved
-      // it, from whom, to whom, why, and what the previous assignee was last seen doing. The
-      // ladder re-arm rides along inside it, which is correct for this door too — the work
-      // has a new owner and the escalation cycle starts against them.
-      recordReassignment({
-        taskId, actor: agentId, fromAgentId: assigneeBefore,
-        toAgentId: columnUpdates.assignedTo as string, toGroupId: null,
-        reason: 'moved through work_update(action="status") — the status door\'s assignee side path',
-      });
-    }
     if (statusUpdate) {
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
@@ -2126,6 +2107,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         // The tool path is the one that stops the schedule with the status (updateTask's
         // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
         syncSchedulePause: true,
+        userQuote: typeof args.user_quote === 'string' ? args.user_quote : null,
       });
       if (!workSettled(sr.result)) {
         return closeRefusalText(taskId, sr.result, String(statusUpdate));
@@ -2416,6 +2398,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
+    { const no = taskWriteRefusal(agentId, taskId, 'edit'); if (no) return no; }   // t193 (dec 3): editors only — holder, creator, PM, main agent.
     // RC-18: local wall-clock schedule input on edit too. Convert local_time to
     // scheduled_start engine-side before the field reads below. Explicit
     // scheduled_start wins if both are given.
@@ -3455,6 +3438,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
+    { const no = taskWriteRefusal(agentId, taskId, 'complete'); if (no) return no; }   // t193 (dec 3): a step is a task; its editors finish it.
     const notes = args.notes as string | undefined;
     const db = getDb();
 
@@ -3483,6 +3467,17 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
         `To finish THIS run, call work_update(action="status", task_id="${taskId}", status="complete", result="...", evidence=[...]); the engine advances the schedule to the next run. ` +
         `To stop the whole recurring schedule (no more runs), call work_update(action="status", task_id="${taskId}", status="complete", complete_all_runs=true).`
       );
+    }
+
+    // t193 (owner decision 27): the same result + evidence as `complete`, through the same gate;
+    // the step's notes are recorded as the status door records them (a Key-1 filing drops them).
+    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"');
+    if (stepRefused) return stepRefused;
+    if (notes && notes.trim()) {
+      writeTaskLog({
+        taskId, fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`,
+        entryKind: 'observation', note: notes.trim(), actionTaken: 'notes attached to complete_step',
+      });
     }
 
     // Mark current task as complete
@@ -3569,6 +3564,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
   if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
   const projectId = resolved.id;
 
+  { const no = taskWriteRefusal(agentId, projectId, 'edit'); if (no) return no; }   // t193 (dec 3): the same editors as a task.
   const title = args.title as string | undefined;
   const description = args.description as string | null | undefined;
 
@@ -3642,6 +3638,10 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
   const project = getProject(projectId);
   if (!project) return `Error: Project ${projectId} was deleted before close could be applied.`;
 
+  { const no = taskWriteRefusal(agentId, projectId, 'close'); if (no) return no; }   // t193 (dec 3): the project's editors close it.
+  const userQuote = typeof args.user_quote === 'string' ? args.user_quote : null;
+  { const no = projectCloseRefusal(agentId, projectId, project.title, status, reason, userQuote); if (no) return no; }   // t193 (dec 29)
+
   try {
     const result = closeProjectAndOpenTasks({
       projectId,
@@ -3649,6 +3649,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
       taskStatus: status,
       projectStatus: status,
       reason,
+      userQuote,
     });
     notifyPrimaryAgent(
       `Project "${project.title}" was bulk-closed by ${agentId} (status=${status}). ${result.tasksClosed} open task(s) closed; ${result.alreadyClosed} were already terminal. Reason: ${reason}`,
@@ -3868,7 +3869,7 @@ export async function trackerRetask(
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) has already had its work delivered to the user and is awaiting adjudication. Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, bless the close with work_validate(action="validate", kind="complete", valid=true); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
   }
   if (!task.assigned_to) {
-    return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use work_update(action="reassign") first, then retask.`;
+    return `Error: task "${task.title}" (${taskId}) has no assigned agent, so there is nobody to retask. The PM does not move tasks (owner ruling): tell the main agent so it can give the task a holder.`;
   }
 
   const targetStatus = args.target_status ?? 'in_progress';
@@ -3950,6 +3951,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
   const markComplete = (args.mark_complete as boolean) ?? false;
 
   const db = getDb();
@@ -4002,6 +4004,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
   const db = getDb();
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before resume could be applied.`;
@@ -4055,6 +4058,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
+  { const no = taskWriteRefusal(agentId, taskId, 'change the schedule of'); if (no) return no; }   // t193 (dec 3): a schedule is part of the task; the task's editors change it.
   const db = getDb();
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} no longer exists.`;
@@ -4868,6 +4872,12 @@ export function trackerRequestOverride(
 
   const requestedStatus = (args.requested_status ?? '').trim();
   if (!requestedStatus) return 'Error: requested_status is required.';
+
+  // t193: an override request is a status change by proxy — same editors (dec 3), and no
+  // cancelling or reopening another live agent's work through the PM's override (dec 2).
+  { const no = taskWriteRefusal(agentId, taskId, 'request a status override on'); if (no) return no; }
+  const takeover = takeoverRefusal(taskId, statusToState(requestedStatus), { by: 'agent', actorId: agentId });
+  if (takeover) return `Error: ${takeover.detail}`;
 
   const justification = (args.justification ?? '').trim();
   if (justification.length < 30) {

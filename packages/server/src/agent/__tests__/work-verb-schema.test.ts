@@ -165,20 +165,43 @@ const T107_BASELINE_CHARS = { work_open: 6338, work_update: 7918 };
 // `work_note` description also changed, outside this schema measure: see the t169 report.)
 const T169_BASELINE_CHARS = { work_open: 6338, work_update: 8111 };
 
+// ── t193 — THE ROW-AUTHORITY GATE NEEDS A CAUSE AND THE OWNER'S WORDS: +677 ──
+// Measured, not estimated:
+//   work_open   6,338 → 6,338  (+0)
+//   work_update 8,111 → 8,788  (+677 — TWO declared properties, `cause` (a closed enum of the
+//   owner's reassignment causes) and `user_quote` (the owner's words, checked against his
+//   message), plus `result`/`evidence` naming `action="complete_step"` (owner decision 27)).
+// The guard below undoes exactly those edits and must land back on t169's bytes.
+const T193_BASELINE_CHARS = { work_open: 6338, work_update: 8788 };
+const T193_STEP_PHRASE = ' and for action="complete_step"';
+
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
   const upd = schemaOf('work_update');
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(open).length).toBe(T169_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(upd).length).toBe(T169_BASELINE_CHARS.work_update);
+    expect(JSON.stringify(open).length).toBe(T193_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(upd).length).toBe(T193_BASELINE_CHARS.work_update);
+  });
+
+  it('t193 — the +677 is `cause`, `user_quote` and the complete_step phrase, and nothing else moved', () => {
+    expect(T193_BASELINE_CHARS.work_open - T169_BASELINE_CHARS.work_open).toBe(0);
+    const pu = structuredClone((upd as { properties: Record<string, { description?: string; enum?: string[] }> }).properties);
+    expect(pu.cause!.enum).toEqual(['assignee_gone', 'coordination', 'user_requested']);
+    delete pu.cause;
+    delete pu.user_quote;
+    for (const k of ['result', 'evidence']) {
+      expect(pu[k]!.description).toContain(T193_STEP_PHRASE);
+      pu[k]!.description = pu[k]!.description!.replace(T193_STEP_PHRASE, '');
+    }
+    expect(JSON.stringify({ ...(upd as object), properties: pu }).length).toBe(T169_BASELINE_CHARS.work_update);
   });
 
   it('t169 — the +193 is ONE declared property (offset), and no enum moved', () => {
     expect(T169_BASELINE_CHARS.work_open - T107_BASELINE_CHARS.work_open).toBe(0);
     expect(T169_BASELINE_CHARS.work_update - T107_BASELINE_CHARS.work_update).toBe(193);
     const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(pu)).toHaveLength(34);
+    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`
     const offset = pu.offset as { type: string; description: string };
     expect(offset.type).toBe('number');
     expect(offset.description).toMatch(/first note to show/);
@@ -196,7 +219,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     const pu = (upd as { properties: Record<string, unknown> }).properties;
     // No capability rode in on the 11: both rosters are exactly T18's and T65's counts.
     expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(34);   // t169 added `offset` after this moment; the t107 delta itself is unchanged
+    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // t169 added `offset` after this moment; the t107 delta itself is unchanged
     // And the bytes landed where they were declared to land — the role, and no invented person.
     const description = String((po.description as { description?: string }).description ?? '');
     expect(description).toContain('email <that contact> the roof quote after the site visit');
@@ -242,7 +265,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(BASELINE_CHARS.work_open - T18_BASELINE_CHARS.work_open).toBe(0);
     expect(BASELINE_CHARS.work_update - T18_BASELINE_CHARS.work_update).toBe(312);
     const pu = (upd as { properties: Record<string, unknown> }).properties;
-    expect(Object.keys(pu)).toHaveLength(34);   // 33 at T65; t169 added `offset` after
+    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // 33 at T65; t169 added `offset` after
     expect(Object.keys(pu)).toContain('hours');
     const hours = pu.hours as { type: string; description: string };
     expect(hours.type).toBe('number');
@@ -273,7 +296,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // No capability rode in on T18's bytes: `work_open` is still exactly T0C-W's roster, and
     // `work_update`'s is T0C-W's plus T65's one declared window property, counted below.
     expect(Object.keys(po)).toHaveLength(25);
-    expect(Object.keys(pu)).toHaveLength(34);   // 33 at T65; t169 added `offset` after
+    expect(Object.keys(pu)).toHaveLength(36);   // 34 + t193's `cause` and `user_quote`   // 33 at T65; t169 added `offset` after
     // Nor did the ENUM move: `cancelled` was always advertised. What changed is that it now
     // MEANS something the tool honours.
     const status = pu.status as { enum: string[]; description: string };

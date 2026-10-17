@@ -374,7 +374,7 @@ describe('§5 trackerCompleteStep and closeProjectAndOpenTasks, called directly 
       seedDelivery(mockDb.current!, 'd-1', 'a1');
       chargeEffort('complete-step-task', 60);
 
-      const out = trackerCompleteStep('a1', { taskId: 'complete-step-task' });
+      const out = trackerCompleteStep('a1', { taskId: 'complete-step-task', result: 'the step is done', evidence: [{ kind: 'claim', claim: 'the step is done' }] });   // t193 (dec 27): a step closes with result + evidence
 
       expect(out, out).toContain('[FILED]');
       expect(stateOf('complete-step-task')).toBe('claimed'); // NOT moved to done — Key 1 only
@@ -389,7 +389,7 @@ describe('§5 trackerCompleteStep and closeProjectAndOpenTasks, called directly 
       chargeEffort('req-task-001', 60);
 
       // Step 1 — the worker files the request (Key 1). Baseline untouched, exactly as above.
-      const filed = trackerCompleteStep('a1', { taskId: 'req-task-001' });
+      const filed = trackerCompleteStep('a1', { taskId: 'req-task-001', result: 'the step is done', evidence: [{ kind: 'claim', claim: 'the step is done' }] });   // t193 (dec 27)
       expect(filed, filed).toContain('[FILED]');
       expect(effortDelta(effortRow('req-task-001'))).toBe(60);
 

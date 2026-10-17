@@ -534,19 +534,22 @@ describe('§3 a human reassignment is recorded at both of its doors', () => {
     expect(src, 'and so was the extended-patience door').not.toContain('extended-patience');
   });
 
-  it('WIRE: the primary\'s reassign verb calls it, with the FROM assignee read before the write', () => {
-    const src = readFileSync(join(
-      dirname(fileURLToPath(import.meta.url)), '..', '..', 'agent', 'tools', 'cat', 'tracker.ts',
-    ), 'utf8');
-    const call = src.match(/^\s*if \(!isError\) recordReassignment\(.*$/m)?.[0];
-    expect(call, 'the reassign executor must record, not merely remediate').toBeTruthy();
-    expect(call, 'and must name where the task came FROM').toContain('reassignTask.from_agent');
-    expect(src, 'which it can only know by selecting it before patchWork moves it')
-      .toContain('w.agent_id AS from_agent');
-    expect(src.indexOf('w.agent_id AS from_agent'))
-      .toBeLessThan(src.indexOf('if (!isError) recordReassignment('));
+  it('WIRE: the reassign verb records through the row-authority gate, FROM read before the write', () => {
+    // t193: the verb no longer writes or records by itself; `moveAssignee` checks the cause,
+    // writes, and records cause/who/from/to. Both halves are asserted where they now live.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const verb = readFileSync(join(here, '..', '..', 'agent', 'tools', 'cat', 'tracker.ts'), 'utf8');
+    const body = verb.slice(verb.indexOf('async "work_update:reassign"('));
+    expect(body, 'the reassign executor moves through the gate').toContain('moveAssignee({');
+    expect(body, 'and never writes the row itself').not.toContain('patchWork(');
+    const gate = readFileSync(join(here, '..', '..', 'work', 'row-authority.ts'), 'utf8');
+    const move = gate.slice(gate.indexOf('export function moveAssignee('));
+    expect(move, 'the gate must record, not merely remediate').toContain('recordReassignment({');
+    expect(move, 'and must name where the task came FROM').toContain('fromAgentId: c.facts.holder');
+    expect(move.indexOf('checkMove(req)'), 'which it reads before the write moves it')
+      .toBeLessThan(move.indexOf('writeAssignee('));
     // And the bare re-arm is gone: one call does both, so neither can be forgotten.
-    expect(src, 'the old standalone re-arm must not survive beside it')
+    expect(verb, 'the old standalone re-arm must not survive beside it')
       .not.toContain('recordRemediation(reassignTaskId');
   });
 });

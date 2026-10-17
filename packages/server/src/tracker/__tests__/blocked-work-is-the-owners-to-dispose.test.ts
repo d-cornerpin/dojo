@@ -300,10 +300,16 @@ describe("§1 the primary cannot dispose of another agent's PM-upheld blocked wo
     expect(rowOf().state).toBe('blocked');
   });
 
-  it('CONTROL: the gate is about BLOCKED rows — an in-progress row is disposable as before', () => {
+  it('CONTROL: THIS gate is about BLOCKED rows — an in-progress row is refused by the OTHER rule, and its holder disposes', () => {
+    // t193 (owner decision 2) inverted the bystander half of this control: the primary cancelling a
+    // live agent's in-progress row is now refused by `work/row-authority.ts:takeoverRefusal`, a
+    // different reason from this gate's. The holder's own disposal is the control that stays.
     seedTrackerTask(mockDb.current!, { id: 'inprog-01', title: TITLE, status: 'in_progress', agentId: VICTIM });
     const out = trackerUpdateStatus(PRIMARY, { taskId: 'inprog-01', status: 'cancelled', notes: 'no longer needed' });
-    expect(out, `an in-progress row is untouched by this gate, got: ${out}`).toContain('[OK]');
+    expect(out.startsWith('Error'), out).toBe(true);
+    expect(out, 'refused by the takeover rule, not by this gate').not.toContain('not yours to set on blocked work');
+    const own = trackerUpdateStatus(VICTIM, { taskId: 'inprog-01', status: 'cancelled', notes: 'no longer needed' });
+    expect(own, `the holder's own in-progress row is disposable as before, got: ${own}`).toContain('[OK]');
     expect(rowOf('inprog-01').state).toBe('abandoned');
   });
 });
@@ -498,40 +504,29 @@ describe('§3 resolving forward is what agents do with a block', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — S5: THE SIDE DOOR IS AUDITED. The judge went through `action: "status"`; an assignee
-//      move on that path wrote `agent_id` and NOTHING ELSE — no record, no reason, and
-//      `assignee_agent` left pointing at the agent who no longer holds the work.
+// §4 — S5: THE SIDE DOOR. The judge went through `action: "status"`; an assignee move on that
+//      path wrote `agent_id` and NOTHING ELSE. t129 made it leave a record; t193 (owner decisions
+//      1-3) CLOSED it: moving work is `work_update(action="reassign")`'s, under the row-authority
+//      gate's cause rule, and the status door refuses a call that carries `assigned_to`.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§4 S5 — work_update(action="status", assigned_to=X) leaves a record', () => {
-  it('⚠ THE GAP: the status door\'s assignee move is recorded — who, from, to, why', () => {
+describe('§4 S5 — work_update(action="status", assigned_to=X) no longer moves anything', () => {
+  it('⚠ THE GAP, CLOSED (t193): the side door refuses the whole call — nothing moves, nothing is recorded', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0001', title: TITLE, status: 'in_progress', agentId: VICTIM });
-
     const out = trackerUpdateStatus(PRIMARY, {
       taskId: 'ride-0001', status: 'in_progress', assignedTo: 'third',
     });
-    expect(out).not.toContain('Error:');
-
-    const audit = reassignmentsOf('ride-0001');
-    expect(audit.length, 'the side door records the move exactly once').toBe(1);
-    const a = audit[0]!;
-    const payload = a.payload;
-    expect(a.actor, 'WHO moved it').toBe(PRIMARY);
-    expect(payload.action_taken, 'FROM and TO').toContain(VICTIM);
-    expect(payload.action_taken).toContain('third');
-    expect(payload.reason, 'WHY, and it names the door it came through').toBeTruthy();
-    expect(payload.reason).toContain('work_update(action="status")');
+    expect(out.startsWith('Error'), out).toBe(true);
+    expect(out, 'the refusal names the door that does move work').toContain('action="reassign"');
+    expect(reassignmentsOf('ride-0001')).toEqual([]);
   });
 
-  it('⚠ THE SPLIT-BRAIN: both assignee columns agree after the move', () => {
+  it('⚠ THE SPLIT-BRAIN cannot arise on this door: both assignee columns stay on the holder', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0002', title: TITLE, status: 'in_progress', agentId: VICTIM });
-    expect(rowOf('ride-0002').assignee_agent).toBe(VICTIM);
-
     trackerUpdateStatus(PRIMARY, { taskId: 'ride-0002', status: 'in_progress', assignedTo: 'third' });
-
     const r = rowOf('ride-0002');
-    expect(r.agent_id, 'the holder moved').toBe('third');
-    expect(r.assignee_agent, 'and the column beside it is not left on the old agent').toBe('third');
+    expect(r.agent_id).toBe(VICTIM);
+    expect(r.assignee_agent).toBe(VICTIM);
   });
 
   it('CONTROL: a status call with NO assignee change records no reassignment', () => {
@@ -598,15 +593,14 @@ describe('§5 the audit census', () => {
     expect(eventsOf().find((e) => e.kind === 'transition')!.actor).toBe(VICTIM);
   });
 
-  it('SIDE-DOOR move: the assignee change and the transition are BOTH on the record', () => {
+  it('SIDE-DOOR call (t193): refused whole — no move and no transition on the record', () => {
     seedTrackerTask(mockDb.current!, { id: 'ride-0006', title: TITLE, status: 'in_progress', agentId: VICTIM });
     trackerUpdateStatus(PRIMARY, {
       taskId: 'ride-0006', status: 'paused', assignedTo: 'third',
-      // The pause door has its own notes floor; this clause is about the audit, not that gate.
       notes: 'handing this to a colleague while the supplier portal credential is reissued',
     });
-    expect(reassignmentsOf('ride-0006').length, 'the move is recorded').toBe(1);
-    expect(censusOf('ride-0006').transition, 'and so is the status change').toBe(1);
+    expect(reassignmentsOf('ride-0006').length, 'nothing moved').toBe(0);
+    expect(censusOf('ride-0006').transition ?? 0, 'and the status half did not half-apply').toBe(0);
   });
 });
 

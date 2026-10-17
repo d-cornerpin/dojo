@@ -60,7 +60,8 @@ import { recordedId } from '../../v2/delivery-outcome.js';
 import { getAgentPermissions } from '../../permissions.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
-import { resolveTaskId, getTask } from '../../../tracker/schema.js';
+import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
+import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
 import { sanitizeMessagesOnModelChange } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
@@ -378,6 +379,19 @@ export const agentsHandlers: ToolHandlerMap = {
       timeoutSecondsArg = Math.round(tm * 60);
     }
 
+    // t193 (owner decision 4): with a task, keep-or-transfer is an explicit choice, decided by the
+    // row-authority gate BEFORE anything is created (`planSpawnTask`); no silent default.
+    let taskPlan: SpawnTaskPlan | null = null;
+    if (args.task_id !== undefined && args.task_id !== null && args.task_id !== '') {
+      const rt = resolveTaskId(args.task_id as string);
+      const planned = rt.ok ? planSpawnTask(agentId, rt.id, args.task_handling) : { ok: false as const, text: `${formatResolveError('task', args.task_id as string, rt)} No agent was created.` };
+      if (!planned.ok) {
+        auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', 'task handling refused');
+        return { content: planned.text, isError: true };
+      }
+      taskPlan = planned.plan;
+    }
+
     // P4 (mandatory squads): resolve the squad this spawn lands in before
     // creating the agent, so its group_id is set at insert and the tool
     // result can name the squad.
@@ -425,38 +439,19 @@ export const agentsHandlers: ToolHandlerMap = {
         alwaysLoadedTools: declared.names,
         autoStart: args.auto_start as boolean | undefined,
       });
-      // Delegation assignment (demolition Phase 1.7, the Brookstom modeling
-      // fix): spawning WITH a task_id means the caller is delegating that task
-      // to the new agent, so reassign it (assigned_to = the spawned agent)
-      // unless keep_assignment=true. Tasks pre-created by the parent default to
-      // assigned_to=parent; without this, the tracker would model the parent as
-      // the doer while the sub-agent actually does the work. spawnAgent already
-      // set agents.task_id but does NOT touch tasks.assigned_to, so we do it
-      // here. Resolve the id the same way the tracker verbs do, and skip
-      // silently if it no longer resolves (the FK on spawn would already have
-      // failed a bad id).
+      // t193: the task half of the choice, now the agent exists. A transfer is `moveAssignee` (cause,
+      // who, from, to on the task's log); a failure is SAID, never swallowed. A keep logs the helper.
       let reassignNote = '';
-      if (args.task_id && args.keep_assignment !== true) {
-        try {
-          const resolvedTask = resolveTaskId(args.task_id as string);
-          if (resolvedTask.ok) {
-            noteUnsettled(patchWork(resolvedTask.id, { agent_id: result.agentId, assignee_agent: result.agentId, assigned_to_group: null }), 'spawn_agent: task reassigned to the spawned agent', { taskId: resolvedTask.id });
-            writeTaskLog({
-              taskId: resolvedTask.id,
-              fromEntity: `agent:${agentId}`,
-              entryKind: 'observation',
-              actionTaken: 'reassigned on delegation (spawn_agent with task_id)',
-              reason: `work delegated to newly spawned agent ${result.name} (${result.agentId})`,
-            });
-            const freshTask = getTask(resolvedTask.id);
-            if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
-            reassignNote = `\nTask ${resolvedTask.id.slice(0, 8)} reassigned to ${result.name}.${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`;   // t90 D3: the delegated TASK's own words, read off the row rather than an undeclared arg (the effects-conformance walk is right to refuse one)
-          }
-        } catch (reassignErr) {
-          logger.warn('spawn_agent: task reassignment failed (non-fatal, agent still spawned)', {
-            taskId: args.task_id, error: reassignErr instanceof Error ? reassignErr.message : String(reassignErr),
-          }, agentId);
-        }
+      if (taskPlan?.handling === 'transfer') {
+        const moved = moveAssignee({ taskId: taskPlan.taskId, by: 'agent', actorId: agentId, cause: taskPlan.cause, to: { agentId: result.agentId }, door: 'spawn_agent(task_handling="transfer")' });
+        const freshTask = getTask(taskPlan.taskId);
+        if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
+        reassignNote = moved.ok
+          ? `\nTask ${taskPlan.taskId.slice(0, 8)} transferred to ${result.name} (cause: ${moved.cause}).${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`   // t90 D3: the delegated TASK's own words, read off the row rather than an undeclared arg (the effects-conformance walk is right to refuse one)
+          : `\nThe agent was created, but task ${taskPlan.taskId.slice(0, 8)} was NOT transferred: ${moved.text.replace(/^Error: /, '')}`;
+      } else if (taskPlan) {
+        writeTaskLog({ taskId: taskPlan.taskId, fromEntity: `agent:${agentId}`, entryKind: 'observation', actionTaken: 'helper linked (spawn_agent with task_handling="keep")', reason: `agent ${result.agentId} spawned to help; the task stays with its current holder` });
+        reassignNote = `\nTask ${taskPlan.taskId.slice(0, 8)} stays with its current holder; ${result.name} is linked to it as a helper.`;
       }
       // ── UX-ACCESS A2 (ruling 4): every model-made grant change is AUDITED ──
       // Actor, target, delta. The delta is measured against the most restrictive

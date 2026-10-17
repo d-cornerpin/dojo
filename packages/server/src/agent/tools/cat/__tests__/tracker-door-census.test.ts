@@ -145,6 +145,8 @@ const SPECS: DoorSpec[] = [
       reason: 'action="close_project" — the audit sentence written onto every closed task',
       assigned_to: 'action="reassign" — reassignment notifies and re-scopes; edit deliberately skips that',
       assigned_to_group: 'action="reassign"',
+      cause: 'action="reassign" (t193) — why a task moves; an edit moves nothing',
+      user_quote: 'actions "reassign", "status" and "close_project" (t193) — the owner\'s words that let an agent act on another live agent\'s work; edits stay with the row\'s editors',
       filter: 'action="list" — a query parameter, not a field on a row',
       verbose: 'action="list" — a rendering parameter, not a field on a row',
       offset: 'action="get" (t169) — the first note to show when a task\'s notes run past one result; a field edit has no page',

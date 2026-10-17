@@ -205,6 +205,8 @@ describe('no a2a caller throws its delivery away', () => {
       'scheduler/runner.ts',
       'techniques/distillation.ts',
       'tracker/tools.ts',
+      // t193: a refused close_project (owner decision 29) is relayed to the main agent to put to the owner.
+      'work/row-authority.ts',
     ]);
     const tools = stripComments(fs.readFileSync(path.join(SRC, 'tracker/tools.ts'), 'utf8'));
     // t143 r2: 8 -> 7 — the pause-lifted notice is no longer an A2A (it owes the PM no reply; it is an
@@ -213,7 +215,7 @@ describe('no a2a caller throws its delivery away', () => {
     // re-drives too (`redriveWithoutReply`: a wake that owes the PM no reply).
     expect(tools.match(/\bdeliverA2ANotice\s*\(\{/g)).toHaveLength(4);
     // every call hands the door a NOTICE NAME — a door called with no words to say says nothing
-    for (const f of ['gateway/routes/tracker.ts', 'healer/injury-recovery.ts', 'scheduler/runner.ts', 'techniques/distillation.ts', 'tracker/tools.ts']) {
+    for (const f of ['gateway/routes/tracker.ts', 'healer/injury-recovery.ts', 'scheduler/runner.ts', 'techniques/distillation.ts', 'tracker/tools.ts', 'work/row-authority.ts']) {
       const t = stripComments(fs.readFileSync(path.join(SRC, f), 'utf8'));
       const opens = (t.match(/\bdeliverA2ANotice\s*\(\{/g) ?? []).length;
       const named = (t.match(/\}\s*,\s*'[^']+'\s*,/g) ?? []).length;

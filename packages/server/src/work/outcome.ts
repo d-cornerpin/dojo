@@ -102,7 +102,10 @@ export type WorkOutcomeReason =
   | TransitionGate
   | 'already-in-state'
   | 'state-conflict'
-  | 'blocked-disposal-not-the-actors';
+  | 'blocked-disposal-not-the-actors'
+  // t193: the same layer's second refusal — another live agent's work is cancelled or reopened
+  // only on the owner's word (`work/row-authority.ts:takeoverRefusal`).
+  | 'takeover-needs-the-owner';
 
 /** The applied proof. `eventId` is the row somebody can go and read. */
 export interface TransitionApplied {
@@ -143,6 +146,7 @@ export type WorkUnsettledOutcome =
   // existing `if (!workSettled(r))` branch — and `closeRefusalText`'s renderer — reads it
   // without a second code path. See `WorkOutcomeReason` above for why it is not a gate.
   | (OutcomeRefused<'blocked-disposal-not-the-actors'> & { readonly workId: string })
+  | (OutcomeRefused<'takeover-needs-the-owner'> & { readonly workId: string })
   | Extract<LiveOutcome<TransitionApplied, WorkOutcomeReason>, { kind: 'failed' }>;
 
 /**

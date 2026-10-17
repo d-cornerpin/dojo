@@ -619,7 +619,7 @@ const FAILURE_STATE_LIST = FAILURE_TRANSITION_STATES.map((s) => `'${s}'`).join('
  * hand-translating the edges into a parallel query — the TB5 drift class, which this module has
  * now hit twice (the state arms above, and this), so nothing here is written twice.
  */
-const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): string =>
+export const pieceIdsExpr = (owner: string, extraFrom = '', extraWhere = ''): string =>
   `SELECT c.id FROM work c${extraFrom}`
   + `  WHERE c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.parent_id IS NOT NULL${extraWhere}`
   + `    AND (c.parent_id = ${owner}.id`

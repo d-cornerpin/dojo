@@ -43,6 +43,7 @@ import {
 // t129's gate names the owner in its refusal. `config/platform.ts` is a leaf read of the
 // config row, so it adds no cycle to this module.
 import { getOwnerName } from '../config/platform.js';
+import { takeoverRefusal } from './row-authority.js';
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
 // leaf (imports only the DB connection), so importing it here creates no cycle with the
 // CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
@@ -732,6 +733,7 @@ export interface SetStatusInput {
   expectedState?: WorkState;
   claimedByTurn?: number | null;
   note?: string | null;
+  userQuote?: string | null;   // t193: the owner's words for acting on another live agent's work; checked, never trusted
   /** Legacy side-effect of `updateTask({ status: 'paused' })`: the resume time rides the
    *  same call. Epoch-ms; the legacy column was TEXT and `137` converted it. */
   pausedUntilMs?: number | null;
@@ -770,9 +772,9 @@ export function setTrackerStatus(
   // t129: the blocked-work disposal gate. HERE, and not one layer up in `tracker/schema.ts`,
   // because this function is "the tracker's one status writer" and that is the only place
   // every tracker status writer crosses — see the gate's own header below.
-  const disposal = blockedDisposalRefusal(id, status, input);
+  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input);   // t193 (dec 2): nor another live agent's work, unless the owner asked
   if (disposal) {
-    logger.warn('blocked-work disposal refused', { workId: id, status, by: input.by, actorId: input.actorId });
+    logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
   }
   const before = db.prepare('SELECT state FROM work WHERE id = ?').get(id) as

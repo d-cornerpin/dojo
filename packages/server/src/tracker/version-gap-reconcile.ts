@@ -263,7 +263,7 @@ export function scanVersionGap(): ReconcileScan {
       shape: 'dangling-in-progress-dormant-assignee', subject: 'task', id: t.id,
       title: t.title ?? t.id,
       why: `this task is still assigned to ${t.agent_name ?? 'an agent'}, who no longer exists, so nobody is going to pick it up. Nothing here has been changed — reassigning work on a guess moves real work.`,
-      correction: `work_update(action="reassign", task_id="${t.id}", assigned_to="<an agent who is here>")`,
+      correction: `work_update(action="reassign", task_id="${t.id}", assigned_to="<an agent who is here>", cause="assignee_gone")`,
     });
   }
 

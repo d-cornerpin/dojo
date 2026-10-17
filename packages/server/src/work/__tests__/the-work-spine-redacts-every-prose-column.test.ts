@@ -325,6 +325,9 @@ describe('§2 every attribute column is classified as prose or not-prose', () =>
 /** The reviewed raw-SQL writers of `work`, with the verdict that makes each one safe.
  *  A file that writes `work` and is not here fails the clause below. */
 const REVIEWED_RAW_WRITERS: Record<string, string> = {
+  'work/row-authority.ts':
+    't193: writeAssignee binds agent ids and a group id to agent_id / assignee_agent / '
+    + 'assigned_to_group, plus updated_at. No prose column.',
   'work/tracker-store.ts':
     'THE DOORS. openTrackerProject / openTrackerTask / patchWork / appendWorkNotes, each of '
     + 'which redacts the prose columns it binds (§1 drives all four).',

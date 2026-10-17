@@ -213,6 +213,23 @@ describe('B1 the reassign verb needs a cause the engine can check', () => {
     expect(reassignmentsOf()[0]!.payload.reason).toContain('cause=user_requested');
   });
 
+  it('declined work escalates to the owner; a block that was resolved forward does not freeze the row', async () => {
+    const db = mockDb.current!;
+    seedTrackerTask(db, { id: TASK, title: TITLE, status: 'in_progress', agentId: WORKER, a2a_thread_id: 'thread-0001' });
+    // The holder's delegated piece came back FAIL — the decline OR-PM-1v2 names.
+    db.prepare(`INSERT INTO work (id, kind, parent_id, agent_id, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
+                VALUES ('piece-0001', 'task', 'join-0001', ?, 'a2a_thread', 'thread-0001', 'failed', 'ask', 0, 0, 1, 1)`).run(PEER);
+    db.prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('piece-0001', 'transition', '{"from":"claimed","to":"failed"}', ?, 2)`).run(PEER);
+    const r = await reassign(WORKER, { assigned_to: PEER, cause: 'coordination' });
+    expect(r.isError).toBe(true);
+    expect(r.content).toMatch(/declined/);
+    // A different row that was blocked once and has since resumed is handed on as usual.
+    seedTrackerTask(db, { id: 'task-0000-0002', title: TITLE, status: 'in_progress', agentId: WORKER });
+    db.prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('task-0000-0002', 'transition', '{"from":"claimed","to":"blocked"}', ?, 3)`).run(WORKER);
+    const ok = await trackerHandlers['work_update:reassign']!({ agentId: WORKER, args: { task_id: 'task-0000-0002', assigned_to: PEER, cause: 'coordination' } } as never);
+    expect(ok.isError, ok.content).toBe(false);
+  });
+
   it('dec 1: the PM never moves a task, whatever cause it names', async () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: TITLE, status: 'in_progress', agentId: GONE });
     const r = await reassign(PM, { assigned_to: PEER, cause: 'assignee_gone' });

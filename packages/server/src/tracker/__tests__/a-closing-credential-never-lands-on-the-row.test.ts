@@ -165,7 +165,7 @@ afterEach(() => {
 
 describe('§1 a close that quotes a handed credential stores the marker, not the value', () => {
   it('RED BEFORE THE FIX: `result` and `evidence_json` both carry the placeholder', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress' });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress', agentId: AGENT });
     noteHandedCredentialValues(AGENT, [FAKE_TOKEN]);
 
     trackerUpdateStatus(AGENT, {
@@ -189,7 +189,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
   });
 
   it('the evidence is still PARSEABLE JSON with its claim intact — the PM reader is not broken', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress' });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress', agentId: AGENT });
     noteHandedCredentialValues(AGENT, [FAKE_TOKEN]);
 
     trackerUpdateStatus(AGENT, {
@@ -213,7 +213,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
   });
 
   it('the value is nowhere in the DATABASE after the close', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress' });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Connect the provider', status: 'in_progress', agentId: AGENT });
     noteHandedCredentialValues(AGENT, [FAKE_TOKEN, FAKE_PW]);
 
     trackerUpdateStatus(AGENT, {
@@ -233,7 +233,7 @@ describe('§1 a close that quotes a handed credential stores the marker, not the
 
 describe('§2 an ordinary close is unchanged', () => {
   it('an agent that handled no credential stores exactly what it wrote', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Tidy the inbox', status: 'in_progress' });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Tidy the inbox', status: 'in_progress', agentId: AGENT });
 
     const result = 'Filed 31 messages and drafted 4 replies for review.';
     trackerUpdateStatus(AGENT, {
@@ -248,7 +248,7 @@ describe('§2 an ordinary close is unchanged', () => {
   });
 
   it('a credential handled by a DIFFERENT agent does not rewrite this close', () => {
-    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Tidy the inbox', status: 'in_progress' });
+    seedTrackerTask(mockDb.current!, { id: TASK, title: 'Tidy the inbox', status: 'in_progress', agentId: AGENT });
     noteHandedCredentialValues('someone-else', [FAKE_TOKEN]);
 
     const result = `A literal that happens to look like ${FAKE_TOKEN} but was never handed here.`;

@@ -27,6 +27,7 @@ import {
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
+import { writeAssignee } from '../work/row-authority.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -373,12 +374,15 @@ export function closeProjectAndOpenTasks(params: {
    * `closingAgentId`, and a string is not an authority.
    */
   authority?: { by: Actor; actorId: string };
+  /** t193: the owner's exact words when an agent closes over other live agents' tasks because
+   *  the owner asked; `setTrackerStatus`'s takeover gate checks them per task. */
+  userQuote?: string | null;
 }): { projectId: string; tasksClosed: number; alreadyClosed: number; refused: number } {
   const db = getDb();
   const { projectId, closingAgentId, taskStatus, projectStatus, reason, authority } = params;
   const actor = authority
     ? { by: authority.by, actorId: authority.actorId, claim: 'authoritative' as const }
-    : { by: 'agent' as Actor, actorId: closingAgentId, claim: undefined };
+    : { by: 'agent' as Actor, actorId: closingAgentId, claim: undefined, userQuote: params.userQuote ?? null };
 
   // Kanban DB-status mapping. This USED to read: "the board only renders the six legacy task
   // statuses … storing a literal 'cancelled' on a task would make it disappear from the
@@ -978,26 +982,19 @@ export function updateTask(id: string, updates: Partial<{
   anchorTime: string | null;
 }>): Task | null {
   const patch: WorkPatch = {};
-  // M7 / P706 — the clear protocol at the assignee. `null` means "nobody in particular is
-  // assigned", and that fact does NOT live in `agent_id`: the spine declares it
-  // `TEXT NOT NULL` (`135_work_spine.sql:42`), so writing null there is a constraint abort,
-  // not an unassignment. `assignee_agent` is the nullable column that carries it, and
-  // `openTrackerTask` already sets exactly this pair — an unassigned task belongs to its
-  // creator until someone claims it. So a null CLEARS the assignee and leaves the holder.
-  if (updates.assignedTo === null) patch.assignee_agent = null;
-  else if (updates.assignedTo !== undefined) {
-    // t129 / S5 — AND `assignee_agent`, which this write used to leave pointing at the agent
-    // who no longer holds the work. The triage ranks that split-brain as half of S5's harm:
-    // `work_update(action="status", assigned_to=X)` reached here and moved `agent_id` alone,
-    // so the two columns disagreed and a reader got whichever one it happened to ask. The
-    // `work_update:reassign` door has always written BOTH
-    // (`agent/tools/cat/tracker.ts`: `{ agent_id, assignee_agent, assigned_to_group: null }`),
-    // and so does `openTrackerTask` at birth; this is the same pair, stated once more.
-    // The null branch above is untouched: M7 / P706's clear protocol is a DIFFERENT fact
-    // (`agent_id` is `TEXT NOT NULL`, so "nobody in particular" can only live in
-    // `assignee_agent`, and the holder survives a clear).
-    patch.agent_id = updates.assignedTo;
-    patch.assignee_agent = updates.assignedTo;
+  // t193 — THE ASSIGNEE HALF IS WRITTEN BY `work/row-authority.ts:writeAssignee`, the one writer
+  // of the assignee columns (M7 / P706's clear protocol and t129 / S5's both-columns rule live
+  // there now). After t193 the only caller that passes `assignedTo` is the OWNER's dashboard PUT
+  // (`gateway/routes/tracker.ts`, which records the reassignment itself); the model doors move
+  // work only through `moveAssignee`. `t193-row-authority-census.test.ts` holds both facts.
+  let assigneeWritten = false;
+  if (updates.assignedTo !== undefined) {
+    const changed = writeAssignee(id, updates.assignedTo === null ? { clear: true } : { agentId: updates.assignedTo });
+    if (changed === 0) {
+      logger.warn('updateTask: assignee not applied (no such work)', { taskId: id });
+      return null;
+    }
+    assigneeWritten = true;
   }
   if (updates.priority !== undefined) patch.priority = updates.priority;
   if (updates.notes !== undefined) patch.notes = updates.notes;
@@ -1015,7 +1012,9 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.repeatDaysOfWeek !== undefined) patch.repeat_days_of_week = updates.repeatDaysOfWeek;
   if (updates.anchorTime !== undefined) patch.anchor_local = updates.anchorTime;
 
-  const patched = patchWork(id, patch);
+  const patched = assigneeWritten && Object.keys(patch).length === 0
+    ? { kind: 'applied' as const, value: 1 }
+    : patchWork(id, patch);
   if (patched.kind !== 'applied') {
     // The door refused or had nothing to do. Callers that pass the result
     // through tracker tools should have already resolved the id via
