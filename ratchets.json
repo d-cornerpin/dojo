@@ -8760,6 +8760,27 @@
       "to": 1257,
       "by": "t195 (2026-10-17), thinking-level selector and real output escalation",
       "why": "+34: the level state, its optimistic handler with rollback and the toast the row already uses, and the one select rendered beside the Thinking toggle only when the server says the model's contract offers levels. No new page and no new component: it lives in the existing model row (owner ruling 8). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5203,
+      "to": 5213,
+      "by": "t193 (2026-10-17), one row-authority gate for who may move, edit, cancel or close a task",
+      "why": "+10 net, after DELETING more than was added. Removed here: the status door's assigned_to side path and its t129 audit block (the door now refuses the call), and the inline copy of the complete hard gate (extracted verbatim into closeEvidenceGate so complete_step can share it, owner decision 27). Added: one line per gated door (eight doors call taskWriteRefusal, owner decision 3), the override-request takeover check (owner decision 2), the complete_step evidence call and its notes record, the close_project call (decision 29), the gate's function header, and the takeover refusal renderer in closeRefusalText. Every rule itself lives in the NEW work/row-authority.ts (398 lines, under maxNewFileLines and unpinned), including the close_project blocker logic and the owner relay, which were moved out of this file to hold the raise to +10. REFUSED: putting the door checks inside each inner writer instead of at the doors (the PM and engine paths cross the same writers and are governed differently). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 1013,
+      "to": 1015,
+      "by": "t193 (2026-10-17), one row-authority gate for who may move, edit, cancel or close a task",
+      "why": "+2: the import of takeoverRefusal and the SetStatusInput field userQuote (the owner's words, checked structurally, never trusted). The check itself rides the EXISTING disposal line (`blockedDisposalRefusal(...) ?? takeoverRefusal(...)`) so setTrackerStatus, the tracker's one status writer, refuses another live agent's cancel or reopen (owner decision 2) with no new branch; the rule lives in work/row-authority.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/row-authority.ts",
+      "from": 0,
+      "to": 398,
+      "by": "t193 (2026-10-17), one row-authority gate for who may move, edit, cancel or close a task",
+      "why": "A NEW file, under the 400-line cap but past the growth detector's 240-line crossing line, pinned deliberately rather than split. The lane's brief is ONE gate module that every door calls and a census proves it: edit rights (dec 3), the takeover rule setTrackerStatus asks (dec 2), the move rule with its closed cause vocabulary (dec 1 and OR-PM-1v2), the structural owner-ask proof, the spawn plan (dec 4) and the project-close rule (dec 29) all read the same row facts and the same owner-ask proof, and splitting them would put the predicates the census counts in more than one place. Its single column writer (writeAssignee) is what makes the census's exception list short. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9043,7 +9064,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
-    "packages/server/src/tracker/tools.ts": 5203,
+    "packages/server/src/tracker/tools.ts": 5213,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
@@ -9067,8 +9088,9 @@
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 835,
     "packages/server/src/work/override-requests.ts": 247,
+    "packages/server/src/work/row-authority.ts": 398,
     "packages/server/src/work/store.ts": 2264,
-    "packages/server/src/work/tracker-store.ts": 1013,
+    "packages/server/src/work/tracker-store.ts": 1015,
     "packages/server/src/work/tracker-view.ts": 700,
     "packages/server/src/work/validation-drive.ts": 1313,
     "packages/server/src/work/work-reaper.ts": 694,
