@@ -271,9 +271,10 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
  *  none is in the feature's own code, and all three are the update/migration machinery that
  *  fetches and syncs a release. Same reading as E2: the guard is the delta. */
 const SHELL_EGRESS_IN_CLOSURE: readonly string[] = [
-  'gateway/routes/update.ts',           // curl, rsync — the updater
+  'gateway/routes/update.ts',           // curl — the updater's download
   'migration/step-classify.ts',         // curl, wget — classifies a migration step's command
-  'services/watchdog-refresh.ts',       // rsync — refreshes the watchdog's copy
+  // services/watchdog-refresh.ts LEFT this set at v3.4 t197: it swaps the watchdog's code by
+  // `cp -R` and renames now, and no longer shells `rsync`. A shrink, recorded.
 ];
 
 /**

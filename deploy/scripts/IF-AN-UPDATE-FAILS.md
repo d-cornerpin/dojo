@@ -33,6 +33,18 @@ data, that change is still there. Usually that is fine — the older app reads t
 data without complaining; that has been tested. If something still looks wrong
 afterwards, carry on to Situation B.
 
+### If the watchdog said Dojo's program folder was missing
+
+That means an update, a reinstall or a rollback was cut off at the moment it switched
+versions. The watchdog repairs it by itself within a couple of minutes. To do it by hand:
+
+```
+bash ~/.dojo/scripts/rollback.sh --heal
+```
+
+This finishes the update if it had been fully prepared, and otherwise puts the previous
+version back. If the program folder is already in place, it does nothing at all.
+
 ### A2. If it still will not start
 
 You may have hit the safety stop. Dojo refuses to change your data when it could not

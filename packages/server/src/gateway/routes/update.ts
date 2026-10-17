@@ -1164,8 +1164,7 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as { keep?: number }));
-  // Default is the same two the automatic prune keeps (owner decision 21, v3.4).
-  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : MAX_BACKUPS_TO_KEEP;
+  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : 1;
 
   // Snapshot the target count up front so the dashboard can show progress
   // ("Cleaning up 8 backups...") even before the first deletion completes.

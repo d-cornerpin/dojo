@@ -67,6 +67,11 @@ describe('the watchdog repairs a missing platform folder and tells the owner', (
       const { decideSwapHeal } = await import('../../../../../watchdog/src/swap-heal.js');
       makeTree(box.platform, '3.3.3');
       expect(decideSwapHeal(box.dojo, null).action).toBe('none');
+      // CONTROL: no packaged install (no launchd platform job): a missing folder is not news.
+      fs.renameSync(box.platform, path.join(box.dojo, 'platform.backup-3.3.3'));
+      expect(decideSwapHeal(box.dojo, null).action, 'a source-checkout box is never told its program is missing').toBe('none');
+      fs.renameSync(path.join(box.dojo, 'platform.backup-3.3.3'), box.platform);
+      fs.writeFileSync(path.join(box.home, 'Library', 'LaunchAgents', 'com.dojo.platform.plist'), '<plist/>');
 
       fs.renameSync(box.platform, path.join(box.dojo, 'platform.backup-3.3.3'));
       const staged = makeTree(path.join(box.dojo, 'platform.staging-1-1', 'platform'), '3.4.0');
@@ -93,6 +98,7 @@ describe('the watchdog repairs a missing platform folder and tells the owner', (
     const box = makeBox('t197-wd-lock-');
     try {
       const { decideSwapHeal } = await import('../../../../../watchdog/src/swap-heal.js');
+      fs.writeFileSync(path.join(box.home, 'Library', 'LaunchAgents', 'com.dojo.platform.plist'), '<plist/>');
       makeTree(path.join(box.dojo, 'platform.backup-3.3.3'), '3.3.3');
       const lock = path.join(box.dojo, 'rollback.lock');
       fs.mkdirSync(lock);

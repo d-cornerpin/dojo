@@ -49,6 +49,10 @@ export type SwapHeal =
 
 export function decideSwapHeal(dojoDir: string, marker: UpdateMarker | null): SwapHeal {
   if (fs.existsSync(path.join(dojoDir, 'platform', 'package.json'))) return { action: 'none' };
+  // Only a packaged install has a platform folder to lose: install.sh writes this launchd job
+  // beside it. A box that runs from a source checkout has neither, and nothing is missing.
+  const job = path.join(path.dirname(dojoDir), 'Library', 'LaunchAgents', 'com.dojo.platform.plist');
+  if (!fs.existsSync(job)) return { action: 'none' };
   if (swapInProgress(dojoDir)) return { action: 'wait' };
 
   const target = marker?.targetVersion ?? null;
