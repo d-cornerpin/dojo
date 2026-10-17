@@ -51,6 +51,7 @@ import { effortNoveltyLines } from './effort-ledger.js';
 import { taskLastMovedAt, agentIsLive } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
 import { reportCirclingToOwner } from './pm-owner-report.js';
+import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 const logger = createLogger('pm-agent');
 
@@ -2137,13 +2138,11 @@ async function runPMReview(): Promise<void> {
     const blockReason = obsRow?.note?.trim() || '(no recent observation)';
     issues.push({
       stableId: `${bTask.id}|UNVALIDATED_BLOCK|${bTask.revert_count}`,
-      text:
-        `UNVALIDATED_BLOCK: "${bTask.title}" (${bTask.id.slice(0, 8)}) marked blocked by ${agentName}, awaiting validation.\n` +
-        `  Goal: ${bTask.goal ?? '(no goal recorded)'}\n` +
-        `  Block reason: ${blockReason}\n` +
-        `  Priority=${bTask.priority}, revert_count=${bTask.revert_count}.\n` +
-        `  Real block (genuine external obstacle, no workaround) -> work_validate(action="validate", kind="blocked", task_id="${bTask.id}", valid=true). ` +
-        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> work_validate(action="validate", kind="blocked", task_id="${bTask.id}", valid=false, reject_reason="...").`,
+      // C3 (t190): the review always carries the platform's own recent tool/connection facts.
+      text: await unvalidatedBlockIssueText({
+        taskId: bTask.id, title: bTask.title, agentName, assigneeId: bTask.assigned_to,
+        goal: bTask.goal, priority: bTask.priority, revertCount: bTask.revert_count, blockReason,
+      }),
     });
   }
 
