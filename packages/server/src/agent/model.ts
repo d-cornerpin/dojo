@@ -454,9 +454,7 @@ export interface ModelCallParams {
    * arrive inside content and don't use this callback.
    */
   onReasoningChunk?: (chunk: string) => void;
-  /** t195: extra output room for THIS call, in tokens. The turn's engine sets it after a call ran out of room
-   *  mid-thought (`state.outputTokensEscalated`); `resolveOutputBudget` honours it up to the room the model and the
-   *  window can hold. Absent or 0 means the everyday budget. */
+  /** t195: extra output room asked for THIS call (the engine's escalation); 0/absent = the everyday budget. */
   outputRoomAsk?: number;
   routerTier?: string; purpose?: string; // routerTier: the auto-router's tier. purpose: WHAT THIS CALL IS, for the cost ledger's `request_type` — the served-turn path declares 'agent_turn' (`v2/steps/call-llm/model-call.ts`); every engine utility dial leaves it unset and records 'completion'. Never inferred from `tools`: `runtime.ts`'s tools gate turns a REAL turn toolless on a model without the capability.
   /** A utility caller that knows its artifact's size (the summariser knows its `targetTokens`) may ask
@@ -494,11 +492,7 @@ export interface ModelCallResult {
    * be echoed on tool-call follow-up turns).
    */
   reasoningContent?: string;
-  /**
-   * t195: the room this call was given and the most a retry could be given, in output tokens. Reported by the
-   * transport that sizes room itself (the OpenAI-compatible path); absent where the transport does not, which the
-   * engine reads as "no extra room to offer" rather than guessing one.
-   */
+  /** t195: the output room this call was sent with and the most a retry could be given. Absent = none to offer. */
   outputRoom?: { sent: number; ceiling: number };
 }
 
@@ -679,24 +673,21 @@ function getClient(providerId: string, patience: StreamPatience): CachedClient {
 export const OUTPUT_FLOOR_TOKENS = 1024;
 export const THINKING_OUTPUT_FLOOR_TOKENS = 4096;
 
+/** The fields the output budget reads. */
+type OutputBudgetInfo = {
+  contextWindow: number;
+  maxOutputTokens: number;
+  thinkingEnabled: boolean;
+  capabilities: string[];
+  outputEscalationCeiling?: number | null;
+};
+
 /**
  * What `max_tokens` will be for this model on this prompt. Pure, so it can be argued with.
- *
- * t195: `escalatedAsk` is the engine giving a call that ran out of room mid-thought MORE room. It is honoured
- * up to `resolveOutputCeiling` and never lowers the everyday budget, so the everyday number stays modest
- * (owner ruling 10) and only the one retry gets the room.
+ * t195: `escalatedAsk` (the engine giving a cut-off call more room) is honoured up to `resolveOutputCeiling`
+ * and never lowers the everyday budget, which stays modest (owner ruling 10).
  */
-export function resolveOutputBudget(
-  modelInfo: {
-    contextWindow: number;
-    maxOutputTokens: number;
-    thinkingEnabled: boolean;
-    capabilities: string[];
-    outputEscalationCeiling?: number | null;
-  },
-  inputEstimate: number,
-  escalatedAsk = 0,
-): number {
+export function resolveOutputBudget(modelInfo: OutputBudgetInfo, inputEstimate: number, escalatedAsk = 0): number {
   // Thinking has to be both DECLARED by the model and left ON by the owner. A capability the
   // Models page switched off spends no output tokens, so it earns no extra room.
   const thinkingActive = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking');
@@ -710,30 +701,18 @@ export function resolveOutputBudget(
   );
   const everyday = Math.min(modelInfo.maxOutputTokens, availableForOutput);
   if (!(escalatedAsk > everyday)) return everyday;
-  return Math.max(everyday, Math.min(escalatedAsk, resolveOutputCeiling(modelInfo, inputEstimate)));
+  return Math.min(escalatedAsk, resolveOutputCeiling(modelInfo, inputEstimate));
 }
 
 /**
- * The most output room one call to this model could be given on this prompt: the room the window has left
- * after the prompt, bounded by the contract's documented ceiling, or by the stored cap when the contract knows
- * nothing more. Never below the everyday budget. The engine's escalation asks for at most this.
+ * The most output room one call could be given on this prompt: what the window has left after the prompt,
+ * bounded by the contract's documented ceiling (or the stored cap when the contract knows nothing more).
+ * Never below the everyday budget.
  */
-export function resolveOutputCeiling(
-  modelInfo: {
-    contextWindow: number;
-    maxOutputTokens: number;
-    thinkingEnabled: boolean;
-    capabilities: string[];
-    outputEscalationCeiling?: number | null;
-  },
-  inputEstimate: number,
-): number {
-  const thinkingActive = modelInfo.thinkingEnabled && modelInfo.capabilities.includes('thinking');
-  const floor = thinkingActive ? THINKING_OUTPUT_FLOOR_TOKENS : OUTPUT_FLOOR_TOKENS;
-  const windowRoom = Math.max(floor, modelInfo.contextWindow - inputEstimate - 1000);
+export function resolveOutputCeiling(modelInfo: OutputBudgetInfo, inputEstimate: number): number {
+  const windowRoom = modelInfo.contextWindow - inputEstimate - 1000;
   const declared = modelInfo.outputEscalationCeiling ?? modelInfo.maxOutputTokens;
-  const everyday = resolveOutputBudget(modelInfo, inputEstimate);
-  return Math.max(everyday, Math.min(declared, windowRoom));
+  return Math.max(resolveOutputBudget(modelInfo, inputEstimate), Math.min(declared, windowRoom));
 }
 
 // Determine max output tokens based on model family
@@ -863,7 +842,6 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
       : Boolean(row.thinking_enabled),
-    // t195: how hard it thinks (migration 198). Default high, the provider's own default.
     thinkingLevel: row.thinking_level ?? 'high',
     capabilities,
     // Ollama num_ctx controls. Runtime uses `override ?? recommended`.
@@ -2107,9 +2085,7 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
  * into each upstream provider's convention (Anthropic thinking, o-series
  * reasoning_effort, Gemini thinkingBudget…). Only when the model can think at all.
  *
- * `native-thinking-param` — a top-level `thinking: { type }` and, from t195, a top-level
- * `reasoning_effort` carrying the per-model thinking level (only values the contract's
- * `thinkingLevels` lists). The per-model
+ * `native-thinking-param` — a top-level `thinking: { type }` plus (t195) the level as `reasoning_effort`. The per-model
  * `thinking_enabled` flag is honoured so the owner keeps control from the Models page;
  * the round trip is (a) `delta.reasoning_content` captured in the stream loop below and
  * (b) `reasoning_content` replayed by `buildOpenAIMessages`.
@@ -2142,9 +2118,8 @@ export function applyProviderRequestParams(
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
       type: thinkingActive ? 'enabled' : 'disabled',
     };
-    // t195: the thinking LEVEL, beside the toggle. Only when thinking is on, only when the contract
-    // lists the value (a stored level this wire does not accept is never sent), and never on a
-    // contract with no levels. A caller that names no level (golden harnesses) sends none.
+    // t195: the thinking LEVEL, beside the toggle: only while thinking is on, and only a value the
+    // contract lists (none, for a contract without levels). A caller that names no level sends none.
     if (thinkingActive && opts.thinkingLevel && (contract.thinkingLevels as readonly string[]).includes(opts.thinkingLevel)) {
       (requestParams as unknown as { reasoning_effort?: string }).reasoning_effort = opts.thinkingLevel;
     }
@@ -2239,9 +2214,8 @@ async function callOpenAIModel(
   // up). Byte-preserving no-op when this provider has not declared a prefill throughput.
   refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo.prefillTokensPerSec, modelInfo.measuredPrefillTokensPerSec);
 
-  // t195: the contract's own ceiling bounds how much room a cut-off call may be given; the engine's ask
-  // (`params.outputRoomAsk`) is honoured up to it. The result reports what was sent and the most a retry
-  // could be given, so the escalation is sized from this call's own facts, not from a table.
+  // t195: the engine's ask for extra room is honoured up to the contract's ceiling; the result reports
+  // what was sent and the most a retry could be given, so escalation is sized from this call's own facts.
   const budgetInfo = { ...modelInfo, outputEscalationCeiling: contract.outputEscalationCeiling };
   const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
   const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);

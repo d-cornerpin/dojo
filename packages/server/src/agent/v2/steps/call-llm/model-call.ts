@@ -187,9 +187,7 @@ export async function callWithRetryAndFallback(
           const r = await reassembleForFitIfNeeded({ agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext });
           return r ? { messages: forTheWire(r.messages), systemPrompt: r.systemPrompt } : null;
         },
-        // t195: the extra output room the engine decided this retry gets (0 = the everyday budget).
-        // `state.outputTokensEscalated` used to be written and never read, so the "escalated" retry
-        // went out at the same `max_tokens`. `callModel` sizes the ask against the model and the window.
+        // t195: the extra room the engine gave this retry (0 = everyday). It was written and never read.
         outputRoomAsk: state.outputTokensEscalated,
         // C28 P-2: system-side volatile lane (empty after P-1). Trails the
         // cached stable system block so it can't invalidate the cached prefix.
@@ -548,9 +546,8 @@ export async function callWithRetryAndFallback(
   // other ordering; see `work/ask-title.ts`'s re-vet header.
   revetOpenAskTitles(agentId);
 
-  // t195: extra room is for the ONE retry. A call that came back not cut off has spent it, so the next
-  // call of the turn is back at the everyday budget. A call cut off again keeps the mark: it tells the
-  // ladder the extra room was already given, so the owner's give-up surface speaks instead of a loop.
+  // t195: extra room is for the ONE retry. A call not cut off has spent it (back to the everyday budget);
+  // one cut off again keeps the mark, telling the ladder the room was already given.
   if (state.outputTokensEscalated > 0 && !isOutputCut(result.stopReason)) {
     state = advance(state, { outputTokensEscalated: 0 });
   }
