@@ -400,12 +400,11 @@ const tableOfHandlers: ToolHandlerMap = {
 
   async "work_note"({ agentId, args }) {
     let content = '';
-    let isError = false;
     content = trackerAddNotes(agentId, {
       taskId: args.task_id as string,
       notes: args.notes as string,
     });
-    return { content, isError };
+    return { content, isError: false };
   },
 
   async "work_update:edit"({ agentId, args }) {
@@ -509,7 +508,6 @@ const tableOfHandlers: ToolHandlerMap = {
 
   async "work_update:list"({ agentId, args }) {
     let content = '';
-    let isError = false;
     const listFilter = args.filter as string | undefined;
     const verbose = args.verbose as boolean | undefined;
     if (listFilter === 'mine') {
@@ -524,7 +522,7 @@ const tableOfHandlers: ToolHandlerMap = {
     } else {
       content = trackerListActive(agentId, { scope: 'all', verbose });
     }
-    return { content, isError };
+    return { content, isError: false };
   },
 
   // ── UX-REPAIR ROUND 13 T60 — WHAT CHANGED OVER A WINDOW ───────────────────────────────
@@ -709,7 +707,6 @@ const tableOfHandlers: ToolHandlerMap = {
 
   async "work_update:complete_step"({ agentId, args }) {
     let content = '';
-    let isError = false;
     // task_id is intentionally NOT hard-required here: a single-task agent
     // (the floor model working its one assigned step) routinely omits it.
     // trackerCompleteStep resolves the obvious task when exactly one is in
@@ -722,7 +719,7 @@ const tableOfHandlers: ToolHandlerMap = {
       result: args.result,
       evidence: args.evidence,
     });
-    return { content, isError };
+    return { content, isError: false };
   },
 
   async "work_validate:validate"({ agentId, args }) {

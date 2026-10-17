@@ -1,47 +1,14 @@
-// ── EVERYTHING AN AGENT OWNS, DELETED IN ONE UNIT (BACKLOG LANE-1) ───────────────────────
+// ── EVERYTHING AN AGENT OWNS, DELETED IN ONE UNIT ──
+// `POST /api/agents/:id/purge` used to carry a hand-written delete list with no completeness check,
+// and it was wrong twice over: purging a parent, or an agent with a `briefings` row, RAISED on a
+// foreign key, and every per-agent table added later became an orphan class. This module owns the
+// sequence now, in ONE transaction (`withUnit`), so a failure part-way cannot leave a half-purged
+// agent, and so the FK order below is a guarantee rather than a hope.
 //
-// ── WHY THIS IS A MODULE AND NOT NINE LINES IN THE ROUTE ──
-// `POST /api/agents/:id/purge` carried the delete sequence inline: seven hand-written
-// statements, no transaction, and no way to tell from the route whether the list was COMPLETE.
-// It was not. Ten tables carry a foreign key into `agents`, and the route named six of them —
-// so the door had two outright FAILURE modes and three silent dependencies:
-//
-//   table               column         on delete    the door did
-//   ─────────────────── ────────────── ──────────── ─────────────────────────────────────────
-//   agents              parent_agent   NO ACTION    ⚠ NOTHING — purging a parent RAISED
-//   briefings           agent_id       NO ACTION    ⚠ NOTHING — purging an agent with one RAISED
-//   drain_state         agent_id       CASCADE      nothing; relied on the cascade
-//   error_loop_state    agent_id       CASCADE      nothing; relied on the cascade
-//   grant_rule          agent_id       CASCADE      nothing; relied on the cascade
-//   audit_log           agent_id       CASCADE      explicit delete
-//   messages            agent_id       CASCADE      explicit delete (+ the agent-bus half)
-//   summaries           agent_id       NO ACTION    explicit delete (+ its two link tables)
-//   context_items       agent_id       NO ACTION    explicit delete
-//   large_files         agent_id       NO ACTION    explicit delete
-//
-// (That table is the state of the door when it was first written down. The sweep below no longer
-// names its tables: see PURGE_KEEPS.)
-//
-// The two ⚠ rows are real bugs, not tidiness: with `foreign_keys = ON` — which is what
-// `db/connection.ts` sets — `DELETE FROM agents` against a row that another agent names as its
-// `parent_agent`, or that has a `briefings` row, **fails the FK check and the purge errors out**.
-// `briefings` is empty on the owner's box, which is the only reason nobody has hit that half.
-//
-// ── WHY THE THREE `CASCADE` TABLES GET EXPLICIT DELETES ANYWAY ──
-// Not belt-and-braces duplication. `memory/message-store.ts` already wrote the reason down for
-// its own pair: FK enforcement is a **per-connection pragma**, and it is OFF for the whole
-// migration chain — and, as this lane measured, OFF for every `sqlite3` CLI writer as well. A
-// statement that is only correct while somebody else's pragma is set is not correct. These
-// deletes make the sweep say what it means regardless of who opened the connection.
-//
-// That is not hypothetical: the 2,252 `audit_log`, 284 `grant_rule` and 3 `drain_state` rows
-// migration `173` sweeps were all minted by exactly that hole — see the WHERE THE ORPHANS CAME
-// FROM note in that file.
-//
-// ── ONE UNIT ──
-// The sequence was a bare run of `db.prepare().run()` calls, so a failure part-way left a
-// half-purged agent: rows gone, agent still listed. `withUnit` makes it atomic, which is also
-// what makes the FK ordering below a guarantee rather than a hope.
+// Explicit deletes never lean on `ON DELETE CASCADE`: FK enforcement is a per-connection pragma,
+// OFF for the migration chain and for every `sqlite3` CLI writer, and a statement that is only
+// correct while somebody else's pragma is set is not correct (migration 173 sweeps the rows that
+// hole minted).
 
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
@@ -52,14 +19,11 @@ import { endBudgetCard } from '../costs/budget-cards.js';
 import { budgetStopKey, ownerConditionCleared } from '../healer/owner-notices.js';
 
 // ── WHAT A PURGE KEEPS, AND NOTHING ELSE (t189 B4, owner decision 28) ──
-// "Keep the purged agent's SPENDING history for cost reports; remove everything else."
-// The purge used to be a hand-written list, so each table added after it became an orphan
-// class (25 tables of rows, plus the agent's budget row, were left behind when this was
-// measured). It is now the OTHER way round: every table with an `agent_id` column is swept,
-// found from the schema each time, and only the tables named HERE survive, each with its reason.
-// A new per-agent table is therefore swept the day its migration lands; keeping one is a
-// deliberate edit to this list, and `__tests__/t189-purge-sweeps-every-agent-table.test.ts`
-// fails on any other outcome.
+// "Keep the purged agent's SPENDING history; remove everything else." Every table with an
+// `agent_id` column is swept, found from the schema each time (25 tables plus the budget row were
+// being left behind), and only the tables named HERE survive, each with its reason. A new
+// per-agent table is swept the day its migration lands; keeping one is a deliberate edit here, and
+// `__tests__/t189-purge-sweeps-every-agent-table.test.ts` fails on any other outcome.
 export const PURGE_KEEPS: Readonly<Record<string, string>> = {
   cost_records: 'Spending history: the cost reports and the budget windows read it, and the owner asked for it to outlive the agent (decision 28).',
 };
@@ -133,21 +97,15 @@ export function purgeAgentRows(agentId: string): PurgeCounts {
     //    nothing in the database would ever do this.
     const workRows = deleteAllWorkForAgent(agentId);
 
-    // 6. EVERY OTHER TABLE THAT NAMES THIS AGENT, found from the schema (see PURGE_KEEPS), after
-    //    the work spine because `work.conversation_id` and `work.result_delivery_id` point INTO
-    //    two of them. A SURVIVING agent's row that points at one of this agent's conversations
-    //    or deliveries is nulled rather than left to fail the delete (the same lesser damage as
-    //    `work.parent_id`); a delivery that is the evidence of a surviving DONE row is KEPT, by
-    //    the guard trigger's own rule (migration 151): deleting it would make a closed task
-    //    unprovable, and a purge that raises there would purge nothing.
+    // 6. EVERY OTHER TABLE THAT NAMES THIS AGENT (see PURGE_KEEPS), after the work spine because
+    //    `work` points INTO two of them, so surviving rows' pointers are released first.
     releaseWorkPointersIntoAgent(agentId);
     for (const table of agentOwnedTables()) {
       if (table === 'deliveries') deleteAgentDeliveries(agentId);
       else db.prepare(`DELETE FROM "${table}" WHERE agent_id = ?`).run(agentId);
     }
 
-    // 7. Its budget row (keyed `agent_<id>`, so no `agent_id` column finds it), and the card
-    //    that row's latch is holding: the card ends live, then the row goes.
+    // 7. Its budget row (keyed `agent_<id>`: no `agent_id` column finds it) and the card it holds.
     const budgetId = `agent_${agentId}`;
     const held = db.prepare('SELECT alert_words FROM budgets WHERE id = ?').get(budgetId) as { alert_words: string | null } | undefined;
     if (held?.alert_words) endBudgetCard(budgetId, held.alert_words);
