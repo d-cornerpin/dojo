@@ -24,6 +24,7 @@ import type { UnrepliedAssign } from '../../../a2a-replies.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
 import { getPendingEngineEvent, type WaitingConversation } from '../../counterparty.js';
 import { resolveServedWork } from '../../stale-work-ids.js';
+import { engineEventRoot } from '../../work-lineage.js';
 import { a2aJobOrigin } from '../../../../work/job-origin.js';
 import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
@@ -313,9 +314,7 @@ export async function runTurnClassification(
     // and the served task's kind/origin are published to turn-state so lanes
     // (reminder delivery) can read what this turn's output belongs to.
     if (engineClaimed) {
-      turnCtx.root = pendingEngineEvent.runId
-        ? { kind: 'occurrence', id: pendingEngineEvent.runId, sourceMessageId: null }
-        : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null };
+      turnCtx.root = engineEventRoot(pendingEngineEvent);   // t232: a wake that carries its work's lineage is rooted in that work
       turnCtx.triggerMessageId = pendingEngineEvent.id;   // t207 (D8)
       if (pendingEngineEvent.taskId) {
         try {

@@ -91,14 +91,18 @@ describe('serve boundary (P2)', () => {
     // never carried on the trigger row. The run's referent is the occurrence row, asked
     // through the module that owns it (`occurrenceRunStatus`), so the read cannot drift from
     // the writer the way a hand-copied SQL string can.
-    expect(body, 'the run referent must be read live, not taken off the trigger')
-      .toMatch(/occurrenceRunStatus\(ev\.run_id\)/);
-    // ...and it is a FUNCTION CALL, not a status cached on the message row — the property the
-    // old literal was standing for. A negative control on the whole class of regression.
+    // t232: the two readers moved out of this function into `agent/v2/work-lineage.ts` (the approval
+    // decision asks the same question of the same rows), so the sweep CALLS them and the live reads sit
+    // there. Re-expressed, not weakened: the sweep reads both referents through those readers, off the
+    // trigger's ids, and the readers read the ledger.
+    expect(body, 'the run referent must be read live, not taken off the trigger').toMatch(/spentRun\(ev\.run_id\)/);
+    expect(body).toMatch(/spentTask\(ev\.task_id\)/);
     expect(body, 'no run status may be read from the trigger row itself')
       .not.toMatch(/ev\.run_status|m\.run_status/);
+    const lineage = read('agent/v2/work-lineage.ts');
+    expect(lineage, 'the run referent is asked through the module that owns it').toMatch(/occurrenceRunStatus\(runId\)/);
     // PHASE-2 T8b: the live referent is a `work` row, read through the tracker's own scope.
-    expect(body).toMatch(/AS status, w\.is_paused AS is_paused FROM work w/);
+    expect(lineage).toMatch(/AS status, w\.is_paused AS is_paused FROM work w/);
   });
 });
 

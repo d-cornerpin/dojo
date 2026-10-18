@@ -23,7 +23,7 @@ import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_AL
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
+import { deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 // SWEEP CORE-2 item 5: STATIC, because the relay's scope check runs on the synchronous
@@ -531,7 +531,7 @@ export interface A2ADeliveryResult {
  * a send re-points is a fact about the delegating platform, not about the message, and the
  * only producer is `send_to_agent`'s own optional argument.
  */
-export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null };
+export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null; work?: EngineEventWork | null };   // t232: the work a wake belongs to, as the columns the serve boundary reads
 
 /**
  * Central delivery point for ALL inter-agent messages. Enforces the full
@@ -914,7 +914,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // payload is still relayed to the owner.)
   const isReplyIntent =
     effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL';
-  let handledByJoin = false;
   // ROUND-11 T43 leg (c): the sender's declared hand-off outcome, surfaced to their tool
   // result. Undefined unless they passed the argument.
   let handOffReport: { applied: boolean; message: string } | undefined;
@@ -925,7 +924,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
         fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: null, senderName,
         handsOffThread: envelope.handsOffThread ?? null,
       });
-      handledByJoin = landed.handled;
       handOffReport = landed.handOff;
     } catch (err) {
       // RULING 7 rider (b), PHASE-2 T10. This was a `warn` with the error string and nothing
@@ -940,7 +938,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       });
     }
   }
-  void handledByJoin;
 
   // t196 (A1.2): composed AFTER the join landed the piece; what it says of the owner's copy is that landing's fact.
   threadInfo = (joinChild && joinWakeFooter({ agentId: target.id, parentId: joinChild.parentId, replyConversationId: joinChild.replyConversationId, intent: effectiveIntent, threadShort })) || threadInfo;
@@ -1148,6 +1145,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     attachments: attachmentsJson,
     originIntent,
     conversationId,
+    taskId: envelope.work?.taskId ?? null, runId: envelope.work?.runId ?? null,
+    rootKind: envelope.work?.rootKind ?? null, rootId: envelope.work?.rootId ?? null,
   });
 
   // ── 11b. Confirm the row actually persisted (FA-C4) ──

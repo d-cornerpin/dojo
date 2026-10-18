@@ -155,7 +155,7 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
     id: 'approval_ttl', ms: 60 * MIN,
     reason:
       'A destructive-approval request nobody decided within this window is EXPIRED with an owner-visible note, rather than left pending forever behind a worker that is waiting on it.',
-    carriedFrom: 'APPROVAL_TTL_MINUTES = 60 — agent/destructive-gate.ts',
+    carriedFrom: 'APPROVAL_TTL_MINUTES = 60 — agent/approval-decision.ts',
   },
   stuck_agent_threshold: {
     // PHASE-6 T10: READ from the one stuck-threshold table rather than restated here, so the

@@ -52,7 +52,7 @@ vi.mock('../a2a-transport.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { transition } from '../../work/store.js';
-import { decideApproval } from '../destructive-gate.js';
+import { decideApproval } from '../approval-decision.js';
 import { runTurnClassification } from '../v2/steps/preflight/turn-classification.js';
 import type { PreflightContext, PreflightScratch } from '../v2/steps/preflight/index.js';
 import type { TurnContext } from '../turn-context.js';
@@ -203,6 +203,22 @@ describe('t232 (c) a decision on work that is STILL OPEN wakes the requester INT
     expect(wakes[0].work).toMatchObject({ taskId });
     const turnCtx = await classify();
     expect(turnCtx.servedWork?.taskId).toBe(taskId);
+  });
+});
+
+describe('t232 the work is finished only when EVERY referent the ledger can answer for is finished', () => {
+  it('an ask that closed while its task is still open is open work: woken, carrying the task and not the dead ask', async () => {
+    const ask = openOwnerAsk();
+    const taskId = 'task-t232-still-going';
+    seedTask(taskId, 'claimed');
+    const token = fileHeldCall({ rootKind: 'ask', rootId: ask.messageId, taskId });
+    closeAsk(ask.workId);
+
+    await decideApproval({ deciderAgentId: PRIMARY, token, decision: 'deny' });
+
+    const wakes = wakesTo(WORKER);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].work).toEqual({ taskId, runId: null, rootKind: null, rootId: null });
   });
 });
 

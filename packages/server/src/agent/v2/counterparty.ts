@@ -24,10 +24,8 @@ import {
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
 import { transition } from '../../work/store.js';
-import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
-import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
+import { spentRun, spentTask } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
-import { isTerminalTaskStatus } from '../tool-helpers.js';
 
 const logger = createLogger('counterparty');
 // ── Counterparty serialization helper ──
@@ -459,24 +457,10 @@ export function retireSpentEngineEvents(agentId: string): number {
        LIMIT 50`,
     ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string }>;
     for (const ev of candidates) {
-      let reason: string | null = null;
-      let referentState: string | null = null;
-      if (ev.run_id) {
-        const runStatus = occurrenceRunStatus(ev.run_id); // T10F: an occurrence id now
-        if (!runStatus) { reason = 'run_missing'; referentState = 'run row gone'; }
-        else if (runStatus !== 'running') { reason = 'run_closed'; referentState = `run ${runStatus}`; }
-      }
-      if (!reason && ev.task_id) {
-        const task = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.is_paused AS is_paused FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(ev.task_id) as { status: string; is_paused: number } | undefined;
-        if (!task) { reason = 'task_missing'; referentState = 'task row gone'; }
-        else if (isTerminalTaskStatus(task.status)) { reason = 'task_terminal'; referentState = `task ${task.status}`; }
-        else if (task.status === 'paused' && task.is_paused === 1) { reason = 'task_paused'; referentState = 'task paused'; }
-      }
-      if (reason) {
-        if (retireOneEngineEvent(ev.rowid, reason, {
-          taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState,
-        })) retired++;
-      }
+      const spent = (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null);
+      if (spent && retireOneEngineEvent(ev.rowid, spent.reason, {
+        taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState: spent.state,
+      })) retired++;
     }
   } catch { /* serve boundary is best-effort; eligibility gates still apply */ }
   return retired;
@@ -695,7 +679,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
   return row ? { rowid: row.rowid } : null;
 }
 
-export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null } | null {
+export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; rootKind: string | null; rootId: string | null } | null {
   const db = getDb();
   // D8: dispose exhausted/overdue events LOUDLY before answering "what's pending",
   // so every consumer of eligibility (loop pickup, runtime drain, boot owed-check)
@@ -716,10 +700,10 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
   const row = db.prepare(
-    `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent FROM messages
+    `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent, root_kind, root_id FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
      ORDER BY created_at ASC, rowid ASC LIMIT 1`,
-  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null } | undefined;
+  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null; root_kind: string | null; root_id: string | null } | undefined;
   // C6: exclude non-deliverable engine intents (thrash-gate steers, hints, system chatter)
   // so they can never drive an engine turn, a deliverable event (scheduler/reminder/
   // tracker/healer/completion) still qualifies. Belt-and-suspenders on top of the conv_key
@@ -734,7 +718,7 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
   // historical unstamped engine rows (migration 076 did not backfill conv_key)
   // can't replay as "pending events" (migration 078 backfilled those; this is the
   // runtime guard for anything the backfill missed).
-  return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent } : null;
+  return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent, rootKind: row.root_kind, rootId: row.root_id } : null;
 }
 
 export interface TurnCounterparty {

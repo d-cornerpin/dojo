@@ -97,6 +97,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 import { runPreflight } from './steps/preflight/index.js';
 import { noteEngineCheckpoint, deliverPendingCirclingVerdict } from '../../work/engine-checkpoint-note.js';
 import { parkJob } from '../../work/job-continuation.js';
+import { ensureArtifactDir } from '../artifact-dir.js';
 
 const logger = createLogger('v2-loop');
 
@@ -364,6 +365,7 @@ function stopStatusHeartbeat(agentId: string): void {
  * ⚠ FOR T12: the tripwire's subject — "the driver's residual" — is `runV2TurnBody`.
  */
 export async function runV2Turn(agentId: string): Promise<void> {
+  await ensureArtifactDir(agentId);   // t232: the folder the manifest grants exists before the agent acts
   const turnCtx = openTurnContext(agentId);
   try {
     await runV2TurnBody(agentId, turnCtx);

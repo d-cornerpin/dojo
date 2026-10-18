@@ -105,7 +105,7 @@ describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with 
   };
 
   it('SELF-TEST: the provenance extractor reads both spellings and refuses neither silently', () => {
-    expect(constantAt('agent/destructive-gate.ts', 'APPROVAL_TTL_MINUTES')).toBe(60);
+    expect(constantAt('agent/approval-decision.ts', 'APPROVAL_TTL_MINUTES')).toBe(60);
     expect(constantAt('agent/runtime.ts', 'STUCK_AGENT_CHECK_MS')).toBe(300_000);
     expect(() => constantAt('agent/runtime.ts', 'NO_SUCH_CONSTANT_T9')).toThrow(/provenance is stale/);
   });
@@ -114,7 +114,7 @@ describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with 
     expect(DEADLINES.approval_stale_pending.ms)
       .toBe(constantAt('agent/destructive-gate.ts', 'STALE_PENDING_MINUTES') * 60_000);
     expect(DEADLINES.approval_ttl.ms)
-      .toBe(constantAt('agent/destructive-gate.ts', 'APPROVAL_TTL_MINUTES') * 60_000);
+      .toBe(constantAt('agent/approval-decision.ts', 'APPROVAL_TTL_MINUTES') * 60_000);
     // PHASE-6 T10 moved this constant to the one stuck-threshold table, and THIS CLAUSE IS
     // HOW THE MOVE WAS FOUND — it went red with "provenance is stale", named the file, and
     // was repaired to the new site rather than deleted. The table now READS the constant, so

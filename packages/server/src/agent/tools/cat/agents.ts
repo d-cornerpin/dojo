@@ -50,7 +50,7 @@ import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer }
 import { auditLog, agentCanSelfCompleteById, toolsLogger as logger } from '../util.js';
 import { activeRuns } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
-import { decideApproval } from '../../destructive-gate.js';
+import { decideApproval } from '../../approval-decision.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
 import { requestOnThreadForAnotherTurn } from '../../a2a-own-turn.js';
 // t116 E3: the ONE delivery-ledger writer every send door goes through. `send_to_agent` is

@@ -32,6 +32,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { runV2Turn } from '../v2/loop.js';
+import { ensureArtifactDir } from '../artifact-dir.js';
 
 const AGENT = 'brand-new-agent';
 const folder = (): string => path.join(homeDir(), '.dojo', 'uploads', AGENT);
@@ -64,5 +65,20 @@ describe('t232 (e) a brand-new agent\'s first turn', () => {
   it('is owner-only', async () => {
     await runV2Turn(AGENT).catch(() => undefined);
     expect(fs.statSync(folder()).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe('t232 (e) the folder is made safely', () => {
+  it('leaves an existing folder and what is in it alone', async () => {
+    fs.mkdirSync(folder(), { recursive: true });
+    fs.writeFileSync(path.join(folder(), 'report.txt'), 'kept');
+    await ensureArtifactDir(AGENT);
+    expect(fs.readFileSync(path.join(folder(), 'report.txt'), 'utf8')).toBe('kept');
+  });
+
+  it('never fails the turn when the folder cannot be made', async () => {
+    fs.mkdirSync(path.dirname(folder()), { recursive: true });
+    fs.writeFileSync(folder(), 'a file is in the way');   // mkdir -p cannot turn a file into a folder
+    await expect(ensureArtifactDir(AGENT)).resolves.toBeUndefined();
   });
 });
