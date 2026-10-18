@@ -8844,6 +8844,41 @@
       "to": 1043,
       "by": "t201-followups (2026-10-17), the merged lanes' hand-ups",
       "why": "+1: `keepCount`, the server's `keepDefault` (the owner chose two backups, decision 21), replaces the literal 1 in three places: the request, the button label and the button's own visibility test. One declaration line is the whole growth; the three uses are in-place edits. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 1030,
+      "to": 1040,
+      "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
+      "why": "+10: the import and four one-line floor checks, one per door that sets an agent's main model (move-model PATCH, create, edit PUT) plus the once-only notice call on the agent read. The logic (window read, the 32K rule, the message, the stored once-flag) lives in the new agent/main-model-floor.ts; only the call sites are here. REFUSED: one shared Hono middleware, which would have to parse the body twice and cannot know the agent's current model for the same-model exemption. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 1257,
+      "to": 1265,
+      "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
+      "why": "+8: `retireById`, the first runtime writer of `messages.retired_at` (display suppression only), 3 lines of doc and 5 of code. This file is the single writer of the messages table (single-writer conformance), so the UPDATE cannot live in the caller. Owner ruling v3.4 decision 19 (dedupe the double-stored note) needs exactly this write. REFUSED: an inline UPDATE in deferred-recovery.ts, which the conformance census would count as a second writer. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 646,
+      "to": 650,
+      "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
+      "why": "+4: the `deferredNoteId` field (2 lines of doc, 1 of type) and its initial value. It is the stored fact that lets the recovery retire the exact note row the seam wrote for the held text, instead of comparing words. REFUSED: finding the note by a content match (text similarity, which the lane brief rules out) or a second per-turn map elsewhere. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts",
+      "from": 439,
+      "to": 442,
+      "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
+      "why": "+3: reset the note id where the held text is assigned, and set it where the note row is written (one line each, one comment line). The seam is the only place that knows the note's id. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts",
+      "from": 108,
+      "to": 109,
+      "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
+      "why": "+1: the retire call (one comment line plus one statement) replacing nothing; the recovery keeps writing the answer unchanged. Owner ruling v3.4 decision 19. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8934,7 +8969,7 @@
     "packages/server/src/agent/tools/surface.ts": 735,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 646,
+    "packages/server/src/agent/turn-context.ts": 650,
     "packages/server/src/agent/turn-state.ts": 239,
     "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
@@ -8974,7 +9009,7 @@
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 452,
     "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 158,
     "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 154,
-    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 108,
+    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 109,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
@@ -8993,7 +9028,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 293,
     "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 439,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 140,
-    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 439,
+    "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 442,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,
     "packages/server/src/agent/v2/steps/post-call-classify/turn-classification.ts": 169,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 233,
@@ -9026,7 +9061,7 @@
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 376,
-    "packages/server/src/gateway/routes/agents.ts": 1030,
+    "packages/server/src/gateway/routes/agents.ts": 1040,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
@@ -9061,7 +9096,7 @@
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/memory/lanes.ts": 1330,
-    "packages/server/src/memory/message-store.ts": 1257,
+    "packages/server/src/memory/message-store.ts": 1265,
     "packages/server/src/memory/other-threads-lane.ts": 276,
     "packages/server/src/memory/reader-pool.ts": 336,
     "packages/server/src/memory/recall-lane.ts": 907,
