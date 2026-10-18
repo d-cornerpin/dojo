@@ -13,7 +13,7 @@
 //               which ride by value on positive evidence (one and two write sites,
 //               all straight-line, none in a timer or a callback).
 //   OUTPUT      a step outcome — the advanced state, ONE directive, and (on the
-//               proceed arm ONLY) the SIX values the span declares and the rest of
+//               proceed arm ONLY) the SEVEN values the span declares and the rest of
 //               the turn reads.
 //   TRANSITION  the driver advances `phase` INTO the step; the step never writes it.
 //   EXIT        the exit-request channel: the step ASKS by returning.
@@ -176,7 +176,7 @@ function stepFiles(dir: string = STEP_DIR): string[] {
 const stepText = (): string => stepFiles().map((f) => readFileSync(f, 'utf8')).join('\n');
 
 describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
-  it('INPUTS (state, ctx) → ONE outcome, and the SIX values the span declares come back as OUTPUTS', async () => {
+  it('INPUTS (state, ctx) → ONE outcome, and the SEVEN values the span declares come back as OUTPUTS', async () => {
     const out = await runAssemble(freshState(), ctxFor());
 
     expect(out.directive).toBe('proceed');
@@ -189,6 +189,7 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     expect(typeof out.volatileFrom).toBe('number');
     expect(out.modelContext).toBeDefined();
     expect(out.steerAwaitingConfirm).toBeNull();          // nothing queued on this turn
+    expect(out.selection.modelId).toBe('test-model');     // t212: the model it was built for, chosen before the build
     // The state came back advanced — the driver assigns it before honouring anything.
     expect(out.state).toBeDefined();
   });
@@ -217,7 +218,7 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     expect(advanceAt).toBeLessThan(callAt);
   });
 
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: two directives, ONE exit site', () => {
+  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: two directives, TWO exit sites', () => {
     // A new silent way out of this step cannot appear without failing here. The walk
     // is over the package's own AST, so a directive smuggled in as a string literal in
     // a comment does not count and a real call does.
@@ -238,9 +239,10 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
       walk(sf);
     }
     expect([...directives].sort()).toEqual(['exit', 'proceed']);
-    // ONE: the empty-assembled-context clean exit, preserved from v1
-    // (`runtime.ts:1014-1020`). It is this span's only loop exit and always was.
-    expect(exitSites).toBe(1);
+    // TWO: the empty-assembled-context clean exit, preserved from v1
+    // (`runtime.ts:1014-1020`); and (t212, moved here from `callLLM` with the routing, which now runs
+    // before the build) t140 round 7's exit when no router pick can hold the agent and the owner was told why.
+    expect(exitSites).toBe(2);
   });
 
   it('A STEP THAT ASKS TO EXIT STOPS — and the exit carries a reason, by construction', async () => {

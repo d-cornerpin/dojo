@@ -2,8 +2,9 @@
 // PHASE-6 T5 (CUT 5) — THE `callLLM` STEP. RULING P6-R1: a step is a DIRECTORY
 // with one entry point; this is it. CUT 5 in the ordinal order (P6-R3(3)).
 //
-// WHAT MOVED: `loop.ts`'s `callLLM` span — mint the turn's message id, choose the
-// model, put the volatile injections on the tail, call the provider with the
+// WHAT MOVED: `loop.ts`'s `callLLM` span — mint the turn's message id, check the
+// model `assemble` chose and built for (t212: the choice moved there, ahead of the
+// build), put the volatile injections on the tail, call the provider with the
 // retry-and-fallback ladder and the streaming sinks, then the post-call
 // bookkeeping (the shadow probe, the model lock, the no-reply sentinel and the
 // tool-alias resolution).
@@ -35,7 +36,7 @@ type ModelMessage = ModelCallParams['messages'][number];
 import type { callModel } from '../../../model.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import { advance, type AgentTurnState } from '../../state.js';
-import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { proceed, type StepOutcome } from '../step-outcome.js';
 import { resolveToolAlias } from '../../../../tools/aliases.js';
 import { isBareNoReplySentinel } from '@dojo/shared';
 import { queueEmbedding } from '../../../../memory/embeddings.js';
@@ -45,11 +46,10 @@ import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { selectModel } from './model-selection.js';
+import type { ModelSelection } from './model-selection.js';
 import { injectAndRecord } from './pre-call-injections.js';
 import { callWithRetryAndFallback } from './model-call.js';
 import { reassembleForFitIfNeeded } from './reassemble-for-fit.js';
-import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
@@ -66,8 +66,9 @@ export interface CallLLMContext {
   readonly counterparty: TurnCounterparty;
   readonly isA2ATurn: boolean;
   readonly isAutoRouted: boolean;
-  readonly configuredModelId: string;
   readonly lastUserMessageContent: string | null;
+  /** t212: the model `assemble` chose and built this iteration for, with the router's facts. */
+  readonly selection: ModelSelection;
   /** The assembled call, as `assemble` left it. The injections append to this array. */
   readonly messages: ModelMessage[];
   readonly systemPrompt: string;
@@ -75,14 +76,8 @@ export interface CallLLMContext {
   readonly modelContext: AssemblyContext;
   readonly volatileFrom: number | undefined;
   readonly steerAwaitingConfirm: SteerEntry | null;
-  /**
-   * T82a fix wave — the EXACT turn context `assemble` called `assembleContext` with. The
-   * auto-router names the real model AFTER that assembly ran (against the `'__auto__'`
-   * sentinel, which declares no provider ceiling by construction), so this step re-runs
-   * `assembleContext` with the real model when the estimate demands it — see
-   * `reassembleForResolvedModel` below — and must hand it the SAME turn context or the
-   * re-assembly's content would silently diverge from what this iteration decided.
-   */
+  /** T82a fix wave — the EXACT turn context `assemble` called `assembleContext` with: a re-fit
+   *  (this iteration's tail, or a fallback pick) must reproduce the same content decisions. */
   readonly assemblyTurnContext: PromptTurnContext;
   /** Driver CLOSURES, passed as values so their bindings stay live across the
    *  boundary (CUT 2's precedent) and so a step never points back at the driver. */
@@ -96,13 +91,13 @@ export type CallLLMOutcome =
 
 export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext): Promise<CallLLMOutcome> {
   const {
-    agentId, turnCtx, turnNumber, counterparty, isA2ATurn, isAutoRouted, configuredModelId,
+    agentId, turnCtx, turnNumber, counterparty, isA2ATurn, isAutoRouted,
     lastUserMessageContent, assembled: assembledIn, modelContext: mctx,
     steerAwaitingConfirm, assemblyTurnContext, revertTriggerStampOnAbort,
   } = ctxIn;
   let state = stateIn;
-  // Mutable locals: `reassembleForResolvedModel` below may replace all four when the
-  // router's pick was not the model this assembly was sized for. Every other reader in
+  // Mutable locals: `reassembleForFitIfNeeded` below may replace all four when the
+  // array does not fit the pick's own budget. Every other reader in
   // this function (and everything it hands downstream) reads these, never `ctxIn`'s
   // originals, so a re-assembly is invisible to call sites outside this function.
   let messages = ctxIn.messages;
@@ -113,58 +108,14 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
   const messageId = uuidv4();
   state = advance(state, { currentMessageId: messageId });
 
-  const selection = await selectModel(state, agentId, isAutoRouted, configuredModelId, lastUserMessageContent, systemPrompt, messages, revertTriggerStampOnAbort);
-  state = selection.state;
-  const { routerTier, routerConfidence, routerFreshDecision, excludedModels } = selection;
-
-  // ══════════════════════════════════════════════════════════════════════════════════
-  // T82a FIX WAVE — THE ROUTER'S PICK RE-CHECKS THE BUDGET IT WAS ASSEMBLED WITHOUT.
-  // ══════════════════════════════════════════════════════════════════════════════════
-  //
-  // `assemble` ran against `contextModelId` — the `'__auto__'` sentinel on an
-  // auto-routed turn — because the router names the REAL model from THIS array's own
-  // content (`decideTier` reads the assembled messages), so the model cannot be known
-  // before the assembly it would size. `getProviderCeilingTokens('__auto__')` is
-  // `null` by construction (no such row exists), so T82a's provider-aware cap never
-  // engaged for that assembly: the admission budget and the compaction trigger both
-  // learned the box, but an auto-routed turn's actual dial target was never told to
-  // them at all.
-  //
-  // The fix is NOT a second trimmer. `assembleContext` is already provider-aware (this
-  // task's first commit); the gap was that it never got CALLED with the model whose
-  // ceiling matters. So: once the real model is known, ask `reassembleForFitIfNeeded`
-  // (shared with `model-call.ts`'s fallback ladder — the SAME hole one layer deeper,
-  // round 2) whether the array this turn already built still fits, and use its answer.
-  // t140 round 6 (H2): a router pick that cannot hold this agent's instructions and tools is passed over
-  // like a fallback (no card). Round 7 (H2'): when none the router can reach holds it, the owner is told
-  // why and the turn ends (`no-pick-holds.ts`; the "cannot hold a conversation" card only if true).
-  let pick = selection.modelId;
-  const passedOver: string[] = [];
-  let reassembly: Awaited<ReturnType<typeof reassembleForFitIfNeeded>>;
-  for (;;) {
-    try {
-      reassembly = await reassembleForFitIfNeeded({
-        agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,
-      });
-      break;
-    } catch (err) {
-      if (!isAutoRouted || !(err instanceof SystemPromptTooLargeError)) throw err;
-      passedOver.push(pick);
-      const { selectModel: nextRoutedPick } = await import('../../../../router/selector.js');
-      const next = nextRoutedPick(routerTier, agentId, [...excludedModels, ...passedOver], ['tools']);
-      if (!next) {
-        const { tellOwnerNoPickHolds } = await import('./no-pick-holds.js');
-        const said = await tellOwnerNoPickHolds({ agentId, turnNumber, tier: routerTier, excluded: excludedModels, turnContext: assemblyTurnContext, refusal: err, revertTrigger: revertTriggerStampOnAbort });
-        return requestExit(state, said) as CallLLMOutcome;
-      }
-      logger.warn('v2 auto-router: the pick cannot hold this agent\'s instructions and tools; passed over', { passedOver: pick, next: next.modelId, tier: routerTier }, agentId);
-      pick = next.modelId;
-    }
-  }
-  if (passedOver.length > 0) {
-    excludedModels.push(...passedOver);
-    state = advance(state, { modelId: pick });
-  }
+  const { routerTier, routerConfidence, routerFreshDecision, excludedModels, modelId: pick } = ctxIn.selection;
+  // T82a / t140: the array `assemble` built for this pick, plus this iteration's own tail, must fit
+  // the pick's budget (its window, output cap and provider ceiling); if not, the ONE assembler
+  // builds it again for the pick (shared with `model-call.ts`'s fallback ladder). An auto-routed
+  // pick was built for in the first place (t212), so this is the same check a pinned turn gets.
+  const reassembly = await reassembleForFitIfNeeded({
+    agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,
+  });
   if (reassembly) {
     messages = reassembly.messages;
     systemPrompt = reassembly.systemPrompt;

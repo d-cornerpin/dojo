@@ -17,6 +17,10 @@
 // R-FIXTURE (never a code constant): 600s declared patience, 180 tok/s declared prefill
 // throughput -> `resolveDoomCeiling(600_000, 180) === 102_600` (T81b/T82a's own pin) -> a
 // 60K-token assembly must re-assemble to <= 51,300.
+//
+// t212 (v3.4 D11): an auto-routed turn is now routed BEFORE it is assembled, and assembled for its
+// pick; the re-check below stays, for the array the pick's own budget still cannot hold (this
+// iteration's tail, a declared ceiling) and for every fallback pick.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
@@ -87,7 +91,8 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
     isA2ATurn: false,
     isAutoRouted: false,
-    configuredModelId: 'test-model',
+    // t212: the model is chosen in `assemble` before the build; the call step reads this selection.
+    selection: { modelId: routerPick.modelId, routerTier: 'standard', routerConfidence: 0.9, routerFreshDecision: true, excludedModels: [] },
     lastUserMessageContent: 'hello',
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
     systemPrompt: 'you are zargo',
@@ -180,7 +185,7 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
 
     const out = await runCallLLM(freshState(), ctxFor({
       isAutoRouted: false,
-      configuredModelId: 'pinned-model',
+      selection: { modelId: 'pinned-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
       messages: [{ role: 'user', content: 'hi' }] as unknown as CallLLMContext['messages'],
       volatileFrom: 1,
     }));
@@ -200,7 +205,7 @@ describe('T82a fix wave — the router\'s pick re-checks the budget it was assem
 
     await runCallLLM(freshState(), ctxFor({
       isAutoRouted: false,
-      configuredModelId: 'pinned-model',
+      selection: { modelId: 'pinned-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
       messages: [{ role: 'user', content: 'hi' }] as unknown as CallLLMContext['messages'],
       volatileFrom: 1,
     }));

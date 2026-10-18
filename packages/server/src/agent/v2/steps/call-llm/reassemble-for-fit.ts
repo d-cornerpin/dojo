@@ -2,7 +2,8 @@
 // T82a FIX WAVE — THE ONE RE-ASSEMBLE-AGAINST-THE-TRUTH HELPER.
 //
 // Extracted from `index.ts`'s round-1 fix (the router's INITIAL pick re-checks the budget
-// it was assembled without) once round 2 found the same hole one layer deeper: a same-turn
+// it was assembled without; since t212 the turn is built for that pick, and the check is the one
+// every pick gets) once round 2 found the same hole one layer deeper: a same-turn
 // FALLBACK pick, after a failed dial, can be a declared-slow model too, and
 // `callWithRetryAndFallback` (`model-call.ts`) dials whatever array it already has,
 // unchecked. Both sites need the identical answer to "does this model's declared ceiling
@@ -192,9 +193,17 @@ export async function anOwnModelHolds(agentId: string, toolPayloadTokens: number
 
 /** Whether `modelId` can hold this agent's system prompt and tools (round 7: also names a no-pick cause). */
 export async function modelHoldsAgent(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<boolean> {
+  return (await refusalFor(agentId, modelId, toolPayloadTokens, turnContext)) === null;
+}
+
+/** t212: the refusal the assembler would raise for `modelId` (its system prompt and tools do not fit its
+ *  budget), or null. Asked BEFORE an auto-routed turn is assembled for its pick, so a pick too small is
+ *  passed over without the assembler's card (`call-llm/model-selection.ts`). */
+export async function refusalFor(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<SystemPromptTooLargeError | null> {
   const [{ contextWindowPolicy }, model] = await Promise.all([import('../../../../memory/budget.js'), import('../../../model.js')]);
-  const budget = contextWindowPolicy(model.getContextWindow(modelId), {
+  const policy = contextWindowPolicy(model.getContextWindow(modelId), {
     toolPayloadTokens, maxOutputTokens: model.getModelOutputCap(modelId), providerCeilingTokens: model.getProviderCeilingTokens(modelId),
-  }).assemblyBudgetTokens;
-  return await systemTokensFor(agentId, modelId, turnContext) <= budget;
+  });
+  const systemTokens = await systemTokensFor(agentId, modelId, turnContext);
+  return systemTokens > policy.assemblyBudgetTokens ? new SystemPromptTooLargeError(systemTokens, policy) : null;
 }

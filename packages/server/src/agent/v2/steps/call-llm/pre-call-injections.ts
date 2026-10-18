@@ -352,7 +352,7 @@ export async function injectAndRecord(
   // ── t210 (decision 37): a later call of the turn APPENDS to what the previous call sent ──
   // (`append-only-turn.ts`). Every block of `messages` is in `sent`, appended or unchanged above.
   const sent = await appendOnlyTurn({
-    turn: turnCtx, loopCount: state.loopCount, fresh: messages, volatileFrom: volatileFrom ?? messages.length, blocksFrom,
+    turn: turnCtx, loopCount: state.loopCount, modelId, fresh: messages, volatileFrom: volatileFrom ?? messages.length, blocksFrom,
     fits: async (arr) => estimateAssembledArrayTokens(systemPrompt, arr) <= (await dialedPolicy(agentId, modelId)).policy.assemblyBudgetTokens,
   });
 

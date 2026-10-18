@@ -12,10 +12,11 @@
 //   1. `getContextWindow('__auto__')`   — the turn's window, exactly as `preflight/turn-trigger.ts`
 //                                          computes it for an auto-routed agent
 //   2. `runPreCallGates`                — the pre-call step, as the driver calls it
-//   3. `assembleWithNothingOutOfViewUnsummarised(… assembleContext('__auto__'))` — the assemble step
-//   4. `selectModel` (call-llm)         — the call step's own routing (tier decision scripted: the
-//                                          subject is which window is measured, not classification)
-//   5. `reassembleForFitIfNeeded`       — the call step, once the router has named its pick
+//   3. `selectModel` (call-llm)         — the routing, which the assemble step runs BEFORE it builds
+//                                          (t212; tier decision scripted: the subject is which window
+//                                          is measured, not classification)
+//   4. `assembleWithNothingOutOfViewUnsummarised(… assembleContext(pick))` — the assemble step's one build
+//   5. `reassembleForFitIfNeeded`       — the call step: the pick's fit and its condensing check
 //   6. `callModel`                      — the dial, through the provider boundary
 // Real migrations, real router selector, real window resolver, real gate, real assembler, real
 // compaction trigger. Scripted: the tier decision, the summariser's text, the transport, the vault.
@@ -191,12 +192,17 @@ async function oneRoutedCall(): Promise<{ turnWindow: number; dialedModelId: str
   const gated = await runPreCallGates(state, gateCtx);
   expect(gated.directive, 'the gate lets the turn proceed').toBe('proceed');
   state = gated.state;
-  // 3. the assemble step: the turn's model id and window, through the engine's assembly door.
+  // 3. the assemble step's routing, before anything is built (t212).
   const turnCtx = undefined as unknown as PromptTurnContext;
-  const assembled = await assembleWithNothingOutOfViewUnsummarised(AGENT, turnWindow, () => assembleContext(AGENT, '__auto__', turnCtx));
-  // 4. the call step's router.
-  const selection = await selectModel(state, AGENT, true, 'auto', ASK, assembled.systemPrompt, assembled.messages, () => undefined);
-  // 5. the call step, once the pick is named.
+  const routed = await selectModel(state, {
+    agentId: AGENT, isAutoRouted: true, configuredModelId: 'auto', lastUserMessageContent: ASK, conversationId: null,
+    turnNumber: 201, turnContext: turnCtx, revertTriggerStampOnAbort: () => undefined,
+  });
+  if (routed.said !== undefined) throw new Error(`no pick holds: ${routed.said}`);
+  const { selection } = routed;
+  // 4. the assemble step's one build, for the pick, through the engine's assembly door.
+  const assembled = await assembleWithNothingOutOfViewUnsummarised(AGENT, getContextWindow(selection.modelId), () => assembleContext(AGENT, selection.modelId, turnCtx));
+  // 5. the call step, for the pick it was built for.
   const re = await reassembleForFitIfNeeded({
     agentId: AGENT, modelId: selection.modelId, messages: assembled.messages as never,
     systemPrompt: assembled.systemPrompt, volatileFrom: assembled.messages.length, assemblyTurnContext: turnCtx,

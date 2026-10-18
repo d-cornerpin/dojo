@@ -78,17 +78,19 @@ function isEngineInjection(text: string): boolean {
   return ENGINE_MARKERS.some(m => t.startsWith(m));
 }
 
-// The most recent real user request before a confirmation (skips the
-// confirmation itself, other short acks, and engine injections).
+/** A real user request: not the current query itself, not a short ack or confirmation, not an
+ *  engine injection. `routing-view.ts` reads the store back to the first one with this same test. */
+export function isSubstantiveRequest(text: string, currentQuery: string): boolean {
+  const t = text.trim();
+  return !!t && t !== currentQuery.trim() && t.length > 15 && !shortConfirmation(t) && !isEngineInjection(t);
+}
+
+// The most recent real user request before a confirmation.
 function priorSubstantiveUserText(messages: Msg[], currentQuery: string): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role !== 'user') continue;
     const t = textOf(messages[i].content).trim();
-    if (!t || t === currentQuery.trim()) continue;
-    if (t.length <= 15) continue;
-    if (shortConfirmation(t)) continue;
-    if (isEngineInjection(t)) continue;
-    return t;
+    if (isSubstantiveRequest(t, currentQuery)) return t;
   }
   return '';
 }
@@ -106,8 +108,8 @@ function hasVision(messages: Msg[]): boolean {
   return false;
 }
 
+/** `messages` is the routing view (`routing-view.ts`): the newest rows, read before assembly. */
 export async function decideTier(
-  systemPrompt: string,
   messages: Msg[],
   agentId: string,
   userText?: string | null,
@@ -159,7 +161,7 @@ export async function decideTier(
       };
     }
     // Embedder unavailable -> keyword heuristic safety net.
-    const h = scoreQuery(systemPrompt, messages);
+    const h = scoreQuery('', messages);
     return {
       tier: h.tier, method: 'fallback', confidence: h.confidence,
       scores: h.scores, rawScore: h.rawScore, latencyMs: performance.now() - start,
@@ -169,7 +171,7 @@ export async function decideTier(
     logger.warn('Semantic routing errored; heuristic fallback', {
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
-    const h = scoreQuery(systemPrompt, messages);
+    const h = scoreQuery('', messages);
     return {
       tier: h.tier, method: 'fallback', confidence: h.confidence,
       scores: h.scores, rawScore: h.rawScore, latencyMs: performance.now() - start,

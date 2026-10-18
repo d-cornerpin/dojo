@@ -20,9 +20,9 @@
 // agent, with no clock or chunk cap of its own (round 5, owner ruling 2026-10-13).
 //
 // t140: THE ROUTINE CONDENSE MEASURES THE MODEL THIS ITERATION WILL DIAL — a fixed model, or an
-// auto-routed loop's locked one. With nothing locked the router has not decided (it reads the
-// assembled array), so the check runs once it names its pick (`condenseForTheDialedModel`, from
-// `call-llm/reassemble-for-fit.ts`), never against the building window (round 5).
+// auto-routed loop's locked one. With nothing locked the router has not decided yet (it decides in
+// the assemble step, after this gate; t212), so the check runs once it names its pick
+// (`condenseForTheDialedModel`, from `call-llm/reassemble-for-fit.ts`), never against a stand-in (round 5).
 // ════════════════════════════════════════
 
 import { createLogger } from '../../../../logger.js';

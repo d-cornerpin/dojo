@@ -14,7 +14,7 @@ const fits = async () => true;
 /** A call's fresh array: history rows, then one-shots, then the blocks (clock last). */
 function call(history: M[], oneShots: M[], blocks: Array<[string, string]>) {
   const fresh = [...history, ...oneShots, ...blocks.map(([lane, text]) => msg('user', text, lane))];
-  return { fresh, volatileFrom: history.length, blocksFrom: history.length + oneShots.length };
+  return { fresh, volatileFrom: history.length, blocksFrom: history.length + oneShots.length, modelId: 'm-one' };   // t212: every call here dials one model
 }
 const H1 = [msg('user', 'ask'), msg('assistant', 'tool call 1')];
 const H2 = [...H1, msg('user', 'tool result 1')];

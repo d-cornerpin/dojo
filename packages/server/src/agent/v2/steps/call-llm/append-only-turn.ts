@@ -20,6 +20,8 @@
 //     changed something the previous call already sent (94% of later calls on the dev box
 //     DO simply grow: 162 of 172);
 //   - the appended array does not fit the room of the model about to be dialed;
+//   - the model about to be dialed is not the one the previous call went to (t212: a re-route
+//     mid-turn; the previous array was built for, and cached by, the other model);
 //   - the call is a retry, a fallback or a re-fit (`model-call.ts` forgets the memo).
 // A fresh call starts the memo again, so the next call appends to it.
 //
@@ -46,6 +48,8 @@ interface TurnArray {
   shown: Map<string, string>;
   /** The turn's first allocator boundary: the receipt's cross-turn cacheable region. */
   firstVolatileFrom: number;
+  /** The model the previous call was sent to. */
+  modelId: string;
 }
 
 const turns = new WeakMap<object, TurnArray>();
@@ -59,6 +63,8 @@ export interface AppendInput {
   /** The turn's own context object; the memo lives exactly as long as it. */
   readonly turn: object;
   readonly loopCount: number;
+  /** The model this call dials. */
+  readonly modelId: string;
   /** This call's array, built from scratch (every injection already pushed). */
   readonly fresh: ModelMessage[];
   /** Where the allocator's region ends in `fresh`. */
@@ -96,17 +102,17 @@ function labelled(label: string, body: string, id: string | null, role: ModelMes
 }
 
 export async function appendOnlyTurn(input: AppendInput): Promise<AppendOutput> {
-  const { turn, fresh, volatileFrom, blocksFrom } = input;
+  const { turn, fresh, volatileFrom, blocksFrom, modelId } = input;
   const history = fresh.slice(0, volatileFrom).map((m) => JSON.stringify(m));
   const blocks = keyed(fresh.slice(blocksFrom));
   const goFresh = (): AppendOutput => {
     const shown = new Map(blocks.flatMap((b) => (b.key ? [[b.key, textOf(b.m)] as const] : [])));
-    turns.set(turn, { history, sent: fresh, shown, firstVolatileFrom: volatileFrom });
+    turns.set(turn, { history, sent: fresh, shown, firstVolatileFrom: volatileFrom, modelId });
     return { messages: fresh, volatileFrom, appended: false };
   };
 
   const prev = input.loopCount > 1 ? turns.get(turn) : undefined;
-  if (!prev || history.length < prev.history.length || prev.history.some((h, i) => h !== history[i])) return goFresh();
+  if (!prev || prev.modelId !== modelId || history.length < prev.history.length || prev.history.some((h, i) => h !== history[i])) return goFresh();
 
   const out = [...prev.sent, ...fresh.slice(prev.history.length, volatileFrom), ...fresh.slice(volatileFrom, blocksFrom)];
   const shown = new Map(prev.shown);
@@ -136,6 +142,6 @@ export async function appendOnlyTurn(input: AppendInput): Promise<AppendOutput> 
   }
 
   if (!(await input.fits(out))) return goFresh();
-  turns.set(turn, { history, sent: out, shown, firstVolatileFrom: prev.firstVolatileFrom });
+  turns.set(turn, { history, sent: out, shown, firstVolatileFrom: prev.firstVolatileFrom, modelId });
   return { messages: out, volatileFrom: prev.firstVolatileFrom, appended: true };
 }

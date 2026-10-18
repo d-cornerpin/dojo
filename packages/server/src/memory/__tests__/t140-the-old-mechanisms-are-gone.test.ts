@@ -259,10 +259,14 @@ describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, 
 });
 
 describe('t140 census, round 6 (H2) — the router\'s own pick is passed over like a fallback', () => {
-  it('the call step re-fits the router\'s pick as a candidate and asks the router for the next, excluding refused picks', () => {
+  // t212: the pass-over moved with the routing, ahead of the build (`call-llm/model-selection.ts`, called
+  // by `assemble`): a refused pick is passed over before anything is assembled for it.
+  it('the router\'s pick is checked before it is built for, and the router is asked for the next, excluding refused picks', () => {
+    const sel = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/model-selection.ts`)!.code;
+    expect(sel).toMatch(/for \(let refusal = await refusalFor\(agentId, modelId, toolPayloadTokens, turnContext\); refusal;/);
+    expect(sel).toMatch(/const next = selector\.selectModel\(routerTier, agentId, excludedModels, \['tools'\]\);/);
     const step = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/index.ts`)!.code;
     expect(step).toMatch(/agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow: isAutoRouted,/);
-    expect(step).toMatch(/const next = nextRoutedPick\(routerTier, agentId, \[\.\.\.excludedModels, \.\.\.passedOver\], \['tools'\]\);/);
     expect(step).toMatch(/const called = await callWithRetryAndFallback\(state, pick, \{/);
   });
 });
@@ -288,12 +292,15 @@ describe('t140 census, round 7 — no turn cancels a background summary', () => 
 });
 
 describe('t140 census, round 7 — when no router pick holds the agent, the owner is told why and the turn ends', () => {
-  it('the call step ends the turn with the owner notice, never a throw into the injury cascade', () => {
-    const step = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/index.ts`)!.code;
-    const branch = step.slice(step.indexOf('if (!next) {'));
+  it('the routing ends the turn with the owner notice, never a throw into the injury cascade', () => {
+    // t212: the routing runs in `assemble`, ahead of the build; the notice is said there and the step asks to exit.
+    const sel = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/call-llm/model-selection.ts`)!.code;
+    const branch = sel.slice(sel.indexOf('if (!next) {'));
     const body = branch.slice(0, branch.indexOf('\n      }\n'));
-    expect(body).toMatch(/const said = await tellOwnerNoPickHolds\(\{[^}]*\}\);\s*return requestExit\(state, said\) as CallLLMOutcome;/);
-    expect(body, "the refusal is not rethrown (only an unrelated re-fit failure is)").not.toMatch(/\bthrow err\b/);
-    expect(filesWith(/\btellOwnerNoPickHolds\(/)).toEqual([`${ENGINE_STEPS_REL}/call-llm/index.ts`, `${ENGINE_STEPS_REL}/call-llm/no-pick-holds.ts`]);
+    expect(body).toMatch(/const said = await tellOwnerNoPickHolds\(\{[^}]*\}\);\s*return \{ state, said \};/);
+    expect(body, "the refusal is not rethrown").not.toMatch(/\bthrow\b/);
+    const asm = FILES.find((f) => f.rel === `${ENGINE_STEPS_REL}/assemble/index.ts`)!.code;
+    expect(asm).toMatch(/if \(routed\.said !== undefined\) return requestExit\(state, routed\.said\)/);
+    expect(filesWith(/\btellOwnerNoPickHolds\(/)).toEqual([`${ENGINE_STEPS_REL}/call-llm/model-selection.ts`, `${ENGINE_STEPS_REL}/call-llm/no-pick-holds.ts`]);
   });
 });

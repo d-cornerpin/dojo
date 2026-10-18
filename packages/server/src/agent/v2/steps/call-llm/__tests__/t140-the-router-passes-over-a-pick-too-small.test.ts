@@ -10,8 +10,10 @@
 // When nothing the router can reach right now holds the agent, the turn ends with the true cause told
 // to the owner (round 7) — and the card only if it is true (the agent's own models cannot hold it).
 //
-// THE DOOR: `runCallLLM`, the engine's call step, on a migrated DB with the real router selector,
-// the real assembler and re-fit; scripted: the tier decision and the provider call.
+// THE DOOR: the routing (`selectModel`, which the `assemble` step runs before it builds; t212 moved the
+// pass-over there, ahead of the build), the one assembly for the pick, then `runCallLLM`, on a migrated
+// DB with the real router selector, the real assembler and re-fit; scripted: the tier decision and the
+// provider call.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -63,6 +65,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
 import { advance, initState } from '../../../state.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
+import { selectModel } from '../model-selection.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 
 const AGENT = 'agent-t140-tiny-light';
@@ -97,18 +100,23 @@ function seed(roomyOverBudget: boolean): void {
 
 async function callStep(): Promise<Awaited<ReturnType<typeof runCallLLM>>> {
   const turnCtx = undefined as unknown as PromptTurnContext;
-  const assembled = await assembleContext(AGENT, '__auto__', turnCtx);
+  const routed = await selectModel(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), {
+    agentId: AGENT, isAutoRouted: true, configuredModelId: 'auto', lastUserMessageContent: 'Is the north dock open?',
+    conversationId: null, turnNumber: 21, turnContext: turnCtx, revertTriggerStampOnAbort: () => {},
+  });
+  if (routed.said !== undefined) return { directive: 'exit', state: routed.state, reason: routed.said };
+  const assembled = await assembleContext(AGENT, routed.selection.modelId, turnCtx);
   const ctx: CallLLMContext = {
     agentId: AGENT,
     turnCtx: { agentId: AGENT, conversationId: null } as unknown as CallLLMContext['turnCtx'],
     turnNumber: 21, db: db(),
     counterparty: { kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null } as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted: true, configuredModelId: 'auto', lastUserMessageContent: 'Is the north dock open?',
+    isA2ATurn: false, isAutoRouted: true, lastUserMessageContent: 'Is the north dock open?', selection: routed.selection,
     messages: assembled.messages as CallLLMContext['messages'], systemPrompt: assembled.systemPrompt, assembled,
     modelContext: {} as CallLLMContext['modelContext'], volatileFrom: assembled.messages.length, steerAwaitingConfirm: null,
     assemblyTurnContext: turnCtx, revertTriggerStampOnAbort: () => {},
   };
-  return runCallLLM(advance(initState(AGENT, 'auto'), { phase: CALL_LLM_PHASE, loopCount: 1 }), ctx);
+  return runCallLLM(routed.state, ctx);
 }
 
 beforeEach(async () => {

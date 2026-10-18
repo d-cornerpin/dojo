@@ -8,7 +8,7 @@
 // stop is not an injury and nothing the Healer can do changes it. So the cause is read here, from
 // the router's own filters (`routedSkipReasons`) restricted to the models that WOULD hold the agent,
 // said once to the owner (a persisted note in the agent's chat and a `chat:error` notice), and the
-// call step asks the driver to end the turn (`requestExit`). The agent is left idle, not errored.
+// turn ends: the `assemble` step, which routes before it builds (t212), asks the driver to end it (`requestExit`). The agent is left idle, not errored.
 // The "cannot hold a conversation" card shows too, only when it is true: no model of the agent's own
 // (its configured model, or a pick the router opens a tier on) can hold it.
 //

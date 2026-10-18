@@ -3,17 +3,19 @@
 // with one entry point; this is it. CUT 6 in the ordinal order (P6-R3(3)), and
 // the cut whose close is T12's SECOND ORDINAL CHECKPOINT.
 //
-// WHAT MOVED: `loop.ts`'s `assemble` span — build the one shared turn context,
-// ask the allocator for the window, record the VOLATILE BOUNDARY, then append the
+// WHAT MOVED: `loop.ts`'s `assemble` span — build the one shared turn context, choose the
+// model this iteration dials (t212: BEFORE it is built, so an auto-routed turn is built once,
+// for its pick; `call-llm/model-selection.ts`), ask the allocator for that model's window,
+// record the VOLATILE BOUNDARY, then append the
 // loop's own tail entries (technique hints, the context-gap nudge, the multi-step
 // scaffold and its notices, the delegation hint, the user's attachments) and drain
 // one steer onto the tail.
 //
 // WHAT THIS STEP IS ALONE IN OWING, and both are in its contract test:
-//   • SIX OUTPUTS — the most of any tranche, against CUT 5's two. They are the
+//   • SEVEN OUTPUTS — the most of any tranche, against CUT 5's two. They are the
 //     whole of what the model call consumes: the assembled context, its message
-//     array, its system prompt, the volatile boundary, the injection context and
-//     the steer awaiting confirmation. `callLLM`'s own context comment already
+//     array, its system prompt, the volatile boundary, the injection context, the
+//     steer awaiting confirmation and (t212) the model it was all built for. `callLLM`'s own context comment already
 //     said so before this cut existed ("five of its inputs … are produced by
 //     `assemble`, inside this same iteration"), so the outputs are not a new
 //     surface — they are the seam that was already written down.
@@ -52,6 +54,8 @@ import { detectMultistepAndScaffold } from './multistep-detection.js';
 import { injectDelegationHintAndAttachments } from './delegation-and-attachments.js';
 import { runSteerCheckpoint } from './steer-checkpoint.js';
 import { proceed, requestExit } from '../step-outcome.js';
+import { selectModel, type ModelSelection } from '../call-llm/model-selection.js';
+import { getContextWindow } from '../../../model.js';
 
 const logger = createLogger('v2-loop');
 
@@ -100,9 +104,13 @@ export interface AssembleContext {
   /** Driver CLOSURES and helpers, passed as values so their bindings stay live across
    *  the boundary (CUT 2's precedent) and so a step never points back at the driver. */
   readonly startAckRepliedNow: () => boolean;
+  /** t212: the model is chosen here, before the build. An auto-routed turn's `contextModelId` is the
+   *  `'__auto__'` stand-in, never built for; a pinned turn's is its model. */
+  readonly isAutoRouted: boolean;
+  readonly revertTriggerStampOnAbort: () => void;
 }
 
-/** The six values the span DECLARES and the rest of the turn reads. A module cannot
+/** The seven values the span DECLARES and the rest of the turn reads. A module cannot
  *  leave a declaration behind for its caller, so they come back on the proceed arm,
  *  where the type puts them out of reach of every other arm. */
 export type AssembleOutcome =
@@ -115,19 +123,14 @@ export type AssembleOutcome =
       readonly volatileFrom: number;
       readonly modelContext: AssemblyContext;
       readonly steerAwaitingConfirm: SteerEntry | null;
+      /** t212: the model this was built for, and the router's facts the call step reads. */
+      readonly selection: ModelSelection;
       /**
-       * T82a fix wave — THE EXACT TURN CONTEXT `assembleContext` WAS CALLED WITH.
-       *
-       * The router (auto-routing) picks the model AFTER this assembly ran, against the
-       * `'__auto__'` sentinel (`getProviderCeilingTokens('__auto__')` is `null` by
-       * construction — no such model row exists — so the provider-aware cap this task's
-       * first commit taught `contextWindowPolicy` never engaged for an auto-routed turn).
-       * `callLLM` re-runs `assembleContext` with the REAL model once the router names it,
-       * and it must call it with the SAME turn context or the re-assembly would silently
-       * diverge in content (a different counterparty header, a different othersWaiting
-       * count) from the one this iteration actually decided. One object, handed across —
-       * not rebuilt — for the same reason `staleTaskWindowMinutes` is passed rather than
-       * recomputed (see this file's header).
+       * T82a fix wave — THE EXACT TURN CONTEXT `assembleContext` WAS CALLED WITH. `callLLM`
+       * re-runs `assembleContext` when a FALLBACK pick (or this iteration's own tail) does not
+       * fit, and must call it with the SAME turn context or the re-assembly would silently
+       * diverge in content (a different counterparty header, a different othersWaiting count)
+       * from the one this iteration decided. One object, handed across, not rebuilt.
        */
       readonly assemblyTurnContext: PromptTurnContext;
     }
@@ -139,7 +142,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser, isA2ATurn, isEngineTurn,
     isNotificationTurn, lastUserMessageContent, latestTtsEngine, latestUserSource,
     mostRecentIsA2A, pendingEngineEvent, mostRecentInbound, waitingConvs, engineStartAckDeliveredThisTurn,
-    staleTaskWindowMinutes, startAckRepliedNow,
+    staleTaskWindowMinutes, startAckRepliedNow, isAutoRouted,
   } = ctxIn;
   let state = stateIn;
 
@@ -247,10 +250,19 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     turnCtx.kind = 'a2a';
     broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
   }
+  // t212 (v3.4 D11): the model this iteration dials, chosen BEFORE the build, so the one build is for it.
+  const routed = await selectModel(state, {
+    agentId, isAutoRouted, configuredModelId: contextModelId, lastUserMessageContent, conversationId: turnCtx.conversationId ?? null,
+    turnNumber, turnContext: sharedTurnContext, revertTriggerStampOnAbort: ctxIn.revertTriggerStampOnAbort,
+  });
+  state = routed.state;
+  if (routed.said !== undefined) return requestExit(state, routed.said) as Extract<AssembleOutcome, { directive: 'exit' }>;
+  const modelId = routed.selection.modelId;
+  const dialWindow = modelId === contextModelId ? contextWindow : getContextWindow(modelId);
   // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
   // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view-fold.ts`).
-  const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, contextWindow,
-    () => assembleContext(agentId, contextModelId, sharedTurnContext));
+  const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, dialWindow,
+    () => assembleContext(agentId, modelId, sharedTurnContext));
   // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──
   // `memory/assembler.ts` used to `UPDATE agents SET config` from inside its own read
   // path to clear the one-shot A2A-preempt and Stop markers it had just rendered. That
@@ -312,7 +324,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   if (!turnCtx.freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
     turnCtx.freshTailDropWarned = true;
     logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
-      agentId, dropped: ctx.freshTailDropped ?? 0, contextWindow,
+      agentId, dropped: ctx.freshTailDropped ?? 0, contextWindow: dialWindow,
     }, agentId);
   }
 
@@ -323,7 +335,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // registry is the only assembler path (R7), so this is always built.
   const mctx: AssemblyContext = buildAssemblyContext(
     agentId,
-    contextModelId,
+    modelId,
     sharedTurnContext,
     // The steer starts null: which entry (if any) rides this iteration is the DRAIN's
     // decision, taken below against the declared precedence table.
@@ -362,6 +374,6 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   return {
     ...proceed(state), directive: 'proceed', state,
     assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm,
-    assemblyTurnContext: sharedTurnContext,
+    selection: routed.selection, assemblyTurnContext: sharedTurnContext,
   } as AssembleOutcome;
 }

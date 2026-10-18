@@ -85,6 +85,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { advance, initState } from '../../../state.js';
 import { runAssemble, ASSEMBLE_PHASE, type AssembleContext } from '../../assemble/index.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
+import { appendOnlyTurn } from '../append-only-turn.js';
 
 const AGENT = 'agent-t212-dock-desk';
 const SMALL = 'm-t212-small-32k';
@@ -133,13 +134,13 @@ async function oneIteration(configured: string): Promise<void> {
     isA2ATurn: false, isEngineTurn: false, isNotificationTurn: false, lastUserMessageContent: ASK,
     latestTtsEngine: null, latestUserSource: null, mostRecentIsA2A: false, pendingEngineEvent: null,
     mostRecentInbound: null, waitingConvs: [], engineStartAckDeliveredThisTurn: false,
-    staleTaskWindowMinutes: 60, startAckRepliedNow: () => false,
+    staleTaskWindowMinutes: 60, startAckRepliedNow: () => false, isAutoRouted, revertTriggerStampOnAbort: () => undefined,
   });
   if (assembled.directive !== 'proceed') throw new Error(`assemble exited: ${assembled.reason}`);
   state = advance(assembled.state, { phase: CALL_LLM_PHASE });
   const ctx: CallLLMContext = {
     agentId: AGENT, turnCtx: tc, turnNumber: 31, db: db(), counterparty: OWNER as unknown as CallLLMContext['counterparty'],
-    isA2ATurn: false, isAutoRouted, configuredModelId: configured, lastUserMessageContent: ASK,
+    isA2ATurn: false, isAutoRouted, lastUserMessageContent: ASK, selection: assembled.selection,
     messages: assembled.messages, systemPrompt: assembled.systemPrompt, assembled: assembled.assembled,
     modelContext: assembled.modelContext, volatileFrom: assembled.volatileFrom, steerAwaitingConfirm: assembled.steerAwaitingConfirm,
     assemblyTurnContext: assembled.assemblyTurnContext, revertTriggerStampOnAbort: () => undefined,
@@ -180,5 +181,20 @@ describe('t212 — an auto-routed turn is assembled once, for the model it dials
     await oneIteration(SMALL);
     expect(dialed.map((d) => d.modelId)).toEqual([SMALL]);
     expect(built).toEqual([SMALL]);
+  });
+});
+
+describe('t212 — t210\'s append-only turn holds across routing', () => {
+  it('a call re-routed to another model mid-turn goes out fresh; the same model appends', async () => {
+    const turn = {};
+    const fits = async (): Promise<boolean> => true;
+    const H1 = [{ role: 'user' as const, content: 'ask' }, { role: 'assistant' as const, content: 'tool call' }];
+    const H2 = [...H1, { role: 'user' as const, content: 'tool result' }];
+    const clock = (t: string) => ({ role: 'user' as const, content: t });
+    await appendOnlyTurn({ turn, loopCount: 1, modelId: 'm-small', fresh: [...H1, clock('T1')], volatileFrom: 2, blocksFrom: 2, fits });
+    const rerouted = await appendOnlyTurn({ turn, loopCount: 2, modelId: 'm-large', fresh: [...H2, clock('T2')], volatileFrom: 3, blocksFrom: 3, fits });
+    expect(rerouted.appended, 'another model: fresh').toBe(false);
+    const same = await appendOnlyTurn({ turn, loopCount: 3, modelId: 'm-large', fresh: [...H2, { role: 'assistant' as const, content: 'more' }, { role: 'user' as const, content: 'r2' }, clock('T3')], volatileFrom: 5, blocksFrom: 5, fits });
+    expect(same.appended, 'the same model: appends').toBe(true);
   });
 });

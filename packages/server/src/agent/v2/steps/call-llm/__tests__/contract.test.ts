@@ -91,8 +91,9 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
     isA2ATurn: false,
     isAutoRouted: false,
-    configuredModelId: 'test-model',
     lastUserMessageContent: 'hello',
+    // t212: the model is chosen (and built for) in `assemble`; the call step reads the selection.
+    selection: { modelId: 'test-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
     systemPrompt: 'you are zargo',
     assembled: {
@@ -179,12 +180,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     expect(callAt).toBeGreaterThan(advanceAt);
   });
 
-  it('THE EXIT-REQUEST CHANNEL, AS A CENSUS WITH A DENOMINATOR: three ways out, and exactly two abandons', () => {
+  it('THE EXIT-REQUEST CHANNEL, AS A CENSUS WITH A DENOMINATOR: two ways out, and exactly two abandons', () => {
     // A step that grows a third way out has to come through this clause. The
     // `abandon` sites are pinned at TWO because CUT 4's finalize contract pins the
     // same two exits from the driver's side ("the exits that genuinely bypass it").
-    // t140 round 7 (re-review H2'): the third is `requestExit` — no router pick can hold the agent,
-    // the owner has been told the true cause, and the turn ends cleanly (finalize and teardown run).
+    // t140 round 7's `requestExit` (no router pick can hold the agent) left with the routing at t212:
+    // the model is chosen in `assemble`, before the build, and that step asks to exit.
     const src = stepText();
     const sf = ts.createSourceFile('step.ts', src, ts.ScriptTarget.ES2022, true);
     const directives = new Set<string>();
@@ -198,7 +199,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
       ts.forEachChild(n, walk);
     };
     walk(sf);
-    expect([...directives].sort()).toEqual(['abandonTurn', 'proceed', 'requestExit']);
+    expect([...directives].sort()).toEqual(['abandonTurn', 'proceed']);
     expect(abandons).toBe(2);
   });
 

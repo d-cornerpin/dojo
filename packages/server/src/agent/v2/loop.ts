@@ -473,25 +473,25 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // PATH (`work-reaper.test.ts`, the narrower and therefore stronger corpus)
         // and `execute` reads it too. Handed across, never copied.
         staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
-        startAckRepliedNow,
+        startAckRepliedNow, isAutoRouted, revertTriggerStampOnAbort,
       });
       turnCtx.state = assembled.state;
       if (assembled.directive === 'exit') break;
-      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm, assemblyTurnContext } = assembled;
+      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm, assemblyTurnContext, selection } = assembled;
       // ── Phase: model call ──
-      // (Auto-routing + capability gate + retry-fallback + TRUE streaming.)
+      // (Capability gate + retry-fallback + TRUE streaming; the model was chosen in `assemble`, t212.)
       turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`), and this step
       // is the one that can ask to leave the TURN rather than the loop: `abandon`
       // is honoured by RETURNING, so finalize does not run and only the `finally`
       // does. That is what the two mid-call `return`s did, preserved exactly.
       // What this step reads from the driver. Built HERE rather than beside the other
-      // step contexts because five of its inputs — the assembled call, its system
-      // prompt, the assembly context, the volatile boundary and the steer awaiting
-      // confirmation — are produced by `assemble`, inside this same iteration.
+      // step contexts because six of its inputs — the assembled call, its system
+      // prompt, the assembly context, the volatile boundary, the steer awaiting
+      // confirmation and the model selection — are produced by `assemble`, inside this same iteration.
       const callLLMContext: CallLLMContext = {
         agentId, turnCtx, turnNumber, db,
-        counterparty, isA2ATurn, isAutoRouted, configuredModelId, lastUserMessageContent,
+        counterparty, isA2ATurn, isAutoRouted, lastUserMessageContent, selection,
         messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
         steerAwaitingConfirm, assemblyTurnContext,
         revertTriggerStampOnAbort,

@@ -3906,17 +3906,17 @@ export function getContextWindow(modelId: string): number {
 //  * DEFAULT: one number for "this model declared no usable window" — a NULL, ZERO, negative or
 //    non-finite `context_window` (`?? 200000` replaced only NULL, so a stored 0 budgeted every
 //    dial on that row to "N tokens against 0"), and an id with no row at all.
-//  * THE AUTO-ROUTER: a routed turn is assembled before the router names its model, against the
-//    `'__auto__'` sentinel (and `'auto'`, the seeded row agents point at). It fell into the catch
-//    above and was sized for 200K whatever the box routes to (#13's "45K family").
-//    Round 5: it is the largest window among the models the router OPENS each tier on
-//    (`router/selector.ts`'s `routedFirstPicks`) — never a model the router only reaches past them
-//    (a box with several 1M rows enabled below its 128K picks builds for 128K). This is a BUILDING
-//    size, not a measuring one: the tier is decided from the assembled array, so the turn's first
-//    assembly cannot know which opening pick it will dial, and it must not be smaller than the
-//    one it does dial (the assembly door folds whatever its view cuts). Every condensing decision
-//    for the call is made once the router has named the pick, against that pick's own window
-//    (`pre-call-gates/context-gates.ts`, `call-llm/reassemble-for-fit.ts`).
+//  * THE AUTO-ROUTER: the `'__auto__'` sentinel (and `'auto'`, the seeded row agents point at)
+//    names no model. It fell into the catch above and was sized for 200K whatever the box routes
+//    to (#13's "45K family"). Round 5: it is the largest window among the models the router OPENS
+//    each tier on (`router/selector.ts`'s `routedFirstPicks`) — never a model the router only
+//    reaches past them (a box with several 1M rows enabled below its 128K picks answers 128K).
+//    Since t212 no turn is BUILT for it: the router picks from the newest rows first and the turn
+//    is assembled once, for the pick (`call-llm/model-selection.ts`, called by the assemble step).
+//    It remains the answer for a reader that asks an auto agent's window without a pick (the
+//    turn's opening state, the pre-call gate's frame). Every condensing decision for a call is
+//    made against the dialed pick's own window (`pre-call-gates/context-gates.ts`,
+//    `call-llm/reassemble-for-fit.ts`).
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 function declaredContextWindow(stored: number | null | undefined): number {

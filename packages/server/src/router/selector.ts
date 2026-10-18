@@ -228,14 +228,14 @@ export function routedSkipReasons(
 /**
  * t140 round 5 — THE MODEL EACH TIER OPENS ON: for every tier an auto-routed turn can be decided
  * into, the model `selectModel` would return first for it (the turn's own call asks for `tools`,
- * so this does too). The router decides the tier from the ASSEMBLED array (`router/decide.ts`
- * reads it for images, a confirmation's prior request and the keyword fallback), so before an
- * auto-routed turn is assembled the engine knows these candidates and not yet which of them it
- * dials. The per-call filters are left out on purpose: the budget check carries its own alerting
- * side effects and is the call's to make, and the fit check needs an assembled array.
- * Round 7 (H2'): so are the filters that PASS (a rate limit, an open breaker): building only for a
- * stand-in failed the assembly with a false "cannot hold a conversation" card. The call step re-fits
- * to the pick it gets, or tells the owner why none holds (`call-llm/no-pick-holds.ts`).
+ * so this does too). It answers "can a model of this agent's own hold it" (the "cannot hold a
+ * conversation" card is true only when none can) and the window of an auto agent asked without a
+ * pick (`agent/model.ts`). The per-call filters are left out on purpose: the budget check carries
+ * its own alerting side effects and is the call's to make, and the fit check needs an assembled array.
+ * Round 7 (H2'): so are the filters that PASS (a rate limit, an open breaker): an agent is not
+ * "unable to hold a conversation" because its roomy model is briefly rate-limited. Since t212 the
+ * turn routes first and passes over a pick too small before building (`call-llm/model-selection.ts`),
+ * or tells the owner why none holds (`call-llm/no-pick-holds.ts`).
  */
 export function routedFirstPicks(): string[] {
   const picks = new Set<string>();
