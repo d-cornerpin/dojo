@@ -36,7 +36,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachIdleBound, CHILD_MAX_BUFFER_BYTES, type ChildRunFailure } from '../child-idle-bound.js';
+import { attachIdleBound, CHILD_KEEP_CEILING_CHARS, type ChildRunFailure } from '../child-idle-bound.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -138,9 +138,8 @@ describe('§3 the bounds are still bounds', () => {
     expect((err as ChildRunFailure).killed, 'and it is not reported as a kill').toBeUndefined();
   }, 20_000);
 
-  it('CONTROL: the output buffer is still capped', () => {
-    expect(CHILD_MAX_BUFFER_BYTES, 'the 1MB maxBuffer the buffered primitive had is carried')
-      .toBe(1024 * 1024);
+  it('CONTROL (t209): output is no longer killed at 1 MiB; only a memory-safety ceiling on what is held remains', () => {
+    expect(CHILD_KEEP_CEILING_CHARS, 'far past the old 1MB maxBuffer').toBeGreaterThan(64 * 1024 * 1024);
   });
 });
 

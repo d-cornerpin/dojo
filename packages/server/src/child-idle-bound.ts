@@ -1,3 +1,5 @@
+import { constants as bufferConstants } from 'node:buffer';
+
 // ════════════════════════════════════════════════════════════════════════════
 // BOUNDING A CHILD PROCESS BY ITS SILENCE (t114, census U2 / U14 / U21 / U22).
 //
@@ -56,8 +58,15 @@ export interface WatchableChild {
   kill(signal?: NodeJS.Signals): unknown;
 }
 
-/** Both streams together. Carried from `execFile`'s `maxBuffer` on the buffered primitive. */
-export const CHILD_MAX_BUFFER_BYTES = 1024 * 1024;
+/**
+ * THE ONE MEMORY-SAFETY BOUND on what is HELD (t209; owner: no hard limits, keep it whole).
+ * A command is never killed for how much it prints: past the old 1 MiB `execFile` buffer the
+ * output keeps streaming into the result the caller keeps whole. This is not a policy cap, it is
+ * where a JavaScript string stops being safe to build (a quarter of the engine's longest string,
+ * both streams together). Past it the pipe is still drained so the child never blocks, the
+ * command still runs to its end, and the result names how much was not kept.
+ */
+export const CHILD_KEEP_CEILING_CHARS = Math.floor(bufferConstants.MAX_STRING_LENGTH / 4);
 
 /** The shape `execFile` rejects with, rebuilt from a streaming run so that callers which used to
  *  read `err.killed` / `err.signal` / `err.code` keep working unchanged. */
@@ -75,8 +84,8 @@ export interface IdleBoundOptions {
   idleMs: number;
   /** The one bound on TOTAL life. Does not re-arm. */
   ceilingMs: number;
-  /** Combined stdout+stderr cap; defaults to `CHILD_MAX_BUFFER_BYTES`. */
-  maxBufferBytes?: number;
+  /** Combined stdout+stderr characters HELD; defaults to `CHILD_KEEP_CEILING_CHARS`. Never a kill. */
+  keepCeilingChars?: number;
 }
 
 /**
@@ -89,15 +98,23 @@ export async function attachIdleBound(
   child: WatchableChild,
   opts: IdleBoundOptions,
 ): Promise<{ stdout: string; stderr: string }> {
-  const maxBytes = opts.maxBufferBytes ?? CHILD_MAX_BUFFER_BYTES;
+  const keepCeiling = opts.keepCeilingChars ?? CHILD_KEEP_CEILING_CHARS;
   return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
-    let bytes = 0;
+    const outChunks: string[] = [];
+    const errChunks: string[] = [];
+    let kept = 0;
+    let notKept = 0;
+    // Joined once, at the end: no repeated string growth while a long output streams in.
+    const collected = (): { stdout: string; stderr: string } => {
+      const note = notKept > 0
+        ? `\n[${notKept} characters of output were not kept: the command printed more than can be held in memory (${keepCeiling}). It ran to its end.]`
+        : '';
+      return { stdout: outChunks.join('') + note, stderr: errChunks.join('') };
+    };
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     /** Which bound fired, so the reason can name it. */
-    let killedBy: 'idle' | 'ceiling' | 'buffer' | null = null;
+    let killedBy: 'idle' | 'ceiling' | null = null;
 
     const done = (fn: () => void): void => {
       if (settled) return;
@@ -107,7 +124,7 @@ export async function attachIdleBound(
       fn();
     };
 
-    const kill = (why: 'idle' | 'ceiling' | 'buffer'): void => {
+    const kill = (why: 'idle' | 'ceiling'): void => {
       if (settled) return;
       killedBy = why;
       // SIGTERM first, exactly as `execFile`'s own timeout does; the `close` handler reports it.
@@ -129,9 +146,11 @@ export async function attachIdleBound(
 
     const take = (which: 'out' | 'err') => (chunk: Buffer | string): void => {
       const text = typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
-      bytes += Buffer.byteLength(text, 'utf-8');
-      if (which === 'out') stdout += text; else stderr += text;
-      if (bytes > maxBytes) { kill('buffer'); return; }
+      const room = Math.max(0, keepCeiling - kept);
+      const keep = text.length <= room ? text : text.slice(0, room);
+      kept += keep.length;
+      notKept += text.length - keep.length;
+      if (keep) (which === 'out' ? outChunks : errChunks).push(keep);
       bumpIdle();
     };
 
@@ -142,21 +161,20 @@ export async function attachIdleBound(
 
     child.on('error', (err: NodeJS.ErrnoException) => {
       done(() => reject({
-        stdout, stderr, code: err.code, message: err.message,
+        ...collected(), code: err.code, message: err.message,
       } satisfies ChildRunFailure));
     });
 
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       done(() => {
+        const { stdout, stderr } = collected();
         if (killedBy !== null) {
           reject({
             stdout, stderr, killed: true, signal: signal ?? 'SIGTERM',
             code: code ?? undefined,
             message: killedBy === 'idle'
               ? `no output for ${Math.round(opts.idleMs / 1000)}s`
-              : killedBy === 'ceiling'
-                ? `ran past the ${Math.round(opts.ceilingMs / 60000)}-minute ceiling`
-                : `output exceeded the ${Math.round(maxBytes / (1024 * 1024))}MB buffer`,
+              : `ran past the ${Math.round(opts.ceilingMs / 60000)}-minute ceiling`,
           } satisfies ChildRunFailure);
           return;
         }
