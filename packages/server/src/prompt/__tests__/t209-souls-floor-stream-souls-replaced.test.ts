@@ -129,8 +129,8 @@ describe('dec 33: Dojo-supplied souls are replaced on update, the main soul is n
     expect(fs.readFileSync(path.join(PROMPTS, 'PM-SOUL.md'), 'utf-8')).toBe(EDIT);
   });
 
-  it('a soul file that is absent is left to the first-read seed (nothing is created here)', () => {
+  it('a soul file that is absent is seeded with the shipped version (as the first read would)', () => {
     refreshShippedSoulsOnce('3.4.0');
-    expect(fs.existsSync(path.join(PROMPTS, 'PM-SOUL.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(PROMPTS, 'PM-SOUL.md'), 'utf-8')).toBe(readSoulFile(soulFileForAgent(PM)!));
   });
 });

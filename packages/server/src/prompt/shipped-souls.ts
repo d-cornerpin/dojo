@@ -1,11 +1,8 @@
 // OWNER DECISION 33 lives here, apart from the assembler it calls.
-import fs from 'node:fs';
-import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { homeDir } from '../home.js';
 import { getPMAgentId, getTrainerAgentId, getHealerAgentId, getImaginerAgentId } from '../config/platform.js';
-import { soulFileForAgent, writeSoulFile } from './assembler.js';
+import { soulFileForAgent, readSoulFile, writeSoulFile } from './assembler.js';
 
 const logger = createLogger('shipped-souls');
 
@@ -33,9 +30,8 @@ export function refreshShippedSoulsOnce(version: string): string[] {
   for (const id of [getPMAgentId(), getTrainerAgentId(), getHealerAgentId(), getImaginerAgentId()]) {
     const soul = soulFileForAgent(id);
     if (!soul || soul.file === 'SOUL.md' || !soul.fallback) continue;
-    const onDisk = path.join(homeDir(), '.dojo', 'prompts', soul.file);
-    if (!fs.existsSync(onDisk)) continue;
-    if (fs.readFileSync(onDisk, 'utf-8') === soul.fallback) continue;
+    // `readSoulFile` seeds an absent file with the shipped version, which is already what is wanted.
+    if (readSoulFile(soul) === soul.fallback) continue;
     writeSoulFile(soul, soul.fallback);
     replaced.push(soul.file);
   }
