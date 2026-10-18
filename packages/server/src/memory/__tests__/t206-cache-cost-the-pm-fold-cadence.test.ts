@@ -73,7 +73,7 @@ function reviewCycle(): void {
 
 async function foldIfLeaving(): Promise<boolean> {
   const { view } = await estimateAssembledTokens(PM, 32_000, MODEL);
-  const leaving = leavingFromView(PM, 32_000, view);
+  const leaving = leavingFromView(view);
   if (!leaving) return false;
   const r = await checkAndCompact(PM, MODEL, 32_000, { leaving });
   return r.leafCreated > 0;

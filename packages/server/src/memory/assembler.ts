@@ -1360,11 +1360,11 @@ async function assembleMessageContext(
     // PM's input cost at a 61% hit rate, and the prefix broke at the tail's head on 49% of turn
     // starts and 70% of the calls inside a turn. requirement preserved: "the PM's prompt stays
     // bounded" — by the same two owners every other agent's tail answers to: the compaction
-    // boundary (`freshTailHorizon`: every row since the newest folded one, with its quantised row
-    // ceiling) and the token trim below. Between folds the tail is a pure append; at a fold the
+    // boundary (`freshTailHorizon`: every row since the newest folded one, read newest-first until
+    // the budget is covered) and the token trim below. Between folds the tail is a pure append; at a fold the
     // front moves once. t123's slot problem cannot recur: the read is no longer a row count, so a
     // row that renders to nothing spends no one else's place.
-    const horizon = freshTailHorizon(agentId, policy);
+    const horizon = freshTailHorizon(agentId, policy, 2 * (maxTokens - systemTokens));   // t207: a token-bounded read
     const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
     const freshTail = horizon.keepFromSeq > 0
       ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
@@ -1375,7 +1375,7 @@ async function assembleMessageContext(
     const trimmed = freshTail.length - budgeted.length;
     const outOfViewThroughSeq = Math.max(
       trimmed > 0 ? (freshTail[trimmed - 1].rowid ?? 0) : 0,
-      horizon.ceilingBound && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0,
+      horizon.unreadRows > 0 && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0,
     );
     const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
     tagMessageLanes(pm.messages, 'lane.pm-tail');
@@ -1393,7 +1393,7 @@ async function assembleMessageContext(
       view: viewOf({ budget: maxTokens - systemTokens, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
     const messages = applyIntegrityPass([...pm.messages], agentId);
     // FA-M1: live-view loss, as the main path counts it — the trim's drop plus the ceiling's skip.
-    const freshTailDropped = trimmed + horizon.skippedRows;
+    const freshTailDropped = trimmed + horizon.unreadRows;
     // The report the PM path never produced. One lane, its real grant, its reason in words:
     // a receipt that simply lacked the PM's assembly could not tell "the PM has no lanes"
     // from "nobody wrote this down" (research 06 §8's own complaint about this return).
