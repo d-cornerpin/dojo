@@ -8921,6 +8921,13 @@
       "to": 1473,
       "by": "t209 (2026-10-17): souls refresh and the 32K floor at the remaining doors",
       "why": "+3: the 32K main-model floor (decision 13) at the one spawn door: an import, one call and one throw. The spawner is the single door every spawner caller shares, so the check cannot live elsewhere without leaving a caller uncovered."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 1040,
+      "to": 1041,
+      "by": "t209 (2026-10-17): split the once-only small-model notice out of the floor module",
+      "why": "+1: the floor module's notice (which broadcasts) moved to its own file so the spawn door can use the floor without loading the websocket layer; this route now has two import lines where it had one. Nothing else in the file changed."
     }
   ],
   "maxNewFileLines": 400,
@@ -9103,7 +9110,7 @@
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 376,
-    "packages/server/src/gateway/routes/agents.ts": 1040,
+    "packages/server/src/gateway/routes/agents.ts": 1041,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
     "packages/server/src/gateway/routes/config.ts": 2977,
