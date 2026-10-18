@@ -53,6 +53,7 @@ beforeEach(() => {
   fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(work, { recursive: true });
   makeTree(platform, '3.3.3', { native: true });
+  fs.mkdirSync(path.join(dojo, 'data'), { recursive: true }); // the volume the pre-flight measures
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
     tag_name: 'v3.4.0', name: 'v3.4.0', published_at: '2026-10-17T00:00:00Z', body: '',
     assets: [{ name: 'dojo-platform.zip', browser_download_url: 'https://example.invalid/dojo-platform.zip', size: 1000 }],
@@ -81,7 +82,7 @@ describe('a download that fails is described in words, never as an object', () =
 
   it('curl exit 23 on a volume measured full is the out-of-space sentence', async () => {
     standInCurl(23, 'curl: (23) Failure writing output to destination, passed 16384 returned 337');
-    stubVolume(30e6);
+    stubVolume(100);
     const { applyUpdate } = await import('../../gateway/routes/update.js');
     const r = await applyUpdate('stable');
     expect(r.message).not.toContain('[object Object]');
@@ -105,7 +106,7 @@ describe('a download that fails is described in words, never as an object', () =
 
   it('NEGATIVE CONTROL: a 404 is never relabelled a disk problem, even on a full volume', async () => {
     standInCurl(22, 'curl: (22) The requested URL returned error: 404');
-    stubVolume(30e6);
+    stubVolume(100);
     const { applyUpdate } = await import('../../gateway/routes/update.js');
     const r = await applyUpdate('stable');
     expect(r.message).not.toContain('[object Object]');
@@ -187,6 +188,6 @@ describe('grep guard: no child-runner rejection is rendered by String()', () => 
     for (const s of sections) expect(s).not.toMatch(/String\(err\)/);
     const inst = fs.readFileSync(path.join(SRC, 'update', 'install-tree.ts'), 'utf8');
     expect(inst).not.toMatch(/String\(err\)/);
-    expect(inst).not.toMatch(/\(err as Error\)\.message/);
+    expect(inst).not.toMatch(/\.message \?\? err/);
   });
 });

@@ -18,6 +18,7 @@ import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkD
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
 // never borrows the agent toolbox's capability facade (which would refuse it outright).
 import { attachIdleBound } from '../../child-idle-bound.js';
+import { childFailureText, isUnnamedWriteFailure } from '../../update/child-failure.js';
 import { routeFailure } from './route-failure.js';
 import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
 // SWEEP CORE-2 item 3 — the owner's disk-space check, BEFORE anything is downloaded.
@@ -763,6 +764,8 @@ export interface ApplyUpdateResult {
  */
 async function downloadAndInstall(o: {
   zipUrl: string; manifestUrl: string | undefined; targetVersion: string; currentVersion: string;
+  /** The release asset's own size, for re-measuring the volume after a write failure. */
+  artifactBytes: number;
 }): Promise<{ ok: true; backupDir: string | null } | { ok: false; message: string; status: number }> {
   const kept = `Nothing was changed: Dojo is still running ${o.currentVersion}.`;
   // Refuse a second install before downloading anything (the installer re-checks under the lock).
@@ -795,9 +798,13 @@ async function downloadAndInstall(o: {
     refreshMaintenanceScripts(path.join(work, 'dojo-platform', 'scripts'), path.join(DOJO_DIR, 'scripts'));
     return r;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = childFailureText(err);
     logger.error('Update download/unpack failed; the live tree was not touched', { error: msg });
-    if (isOutOfSpaceError(err)) return { ok: false, message: `${outOfSpaceFailureMessage(msg)} ${kept}`, status: 507 };
+    // A write failure that names no cause (curl exit 23) is a disk problem only when the volume
+    // is MEASURED short right now (the pre-flight's own measure), never guessed from the code.
+    const diskFull = isOutOfSpaceError(err)
+      || (isUnnamedWriteFailure(err) && !measureUpdateDiskNeed({ artifactBytes: o.artifactBytes }).ok);
+    if (diskFull) return { ok: false, message: `${outOfSpaceFailureMessage(msg)} ${kept}`, status: 507 };
     return { ok: false, message: `The update failed before anything was installed (${msg}). ${kept}`, status: 500 };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -873,7 +880,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     try {
       release = await resolveLatestRelease(ch);
     } catch (err) {
-      return { ok: false, message: `Failed to check GitHub releases: ${err instanceof Error ? err.message : String(err)}`, status: 500 };
+      return { ok: false, message: `Failed to check GitHub releases: ${childFailureText(err)}`, status: 500 };
     }
     if (!release) {
       return { ok: false, message: `No release found on the ${ch} channel`, status: 500 };
@@ -926,7 +933,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     const installed = await downloadAndInstall({
       zipUrl: zipAsset.browser_download_url,
       manifestUrl: release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url,
-      targetVersion: latestVersion, currentVersion,
+      targetVersion: latestVersion, currentVersion, artifactBytes: zipAsset.size ?? 0,
     });
     if (!installed.ok) return { ok: false, message: installed.message, status: installed.status };
     await finishAndRestart('update', currentVersion, latestVersion);
@@ -938,7 +945,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       backupDir: installed.backupDir ?? undefined,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = childFailureText(err);
     logger.error('Update failed', { error: msg });
     // SWEEP CORE-2 item 3, requirement (3): a mid-update failure for space says SO, in plain
     // words. `curl`, `unzip`, `cp` and `rsync` each report a full disk differently and none of
@@ -1081,7 +1088,7 @@ updateRouter.post('/rollback', async (c) => {
       return c.json({ ok: false, error: `Release ${targetTag} not found on GitHub (HTTP ${response.status})` }, 404);
     }
 
-    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
+    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string; size?: number }> };
     const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
 
     if (!zipAsset) {
@@ -1094,7 +1101,7 @@ updateRouter.post('/rollback', async (c) => {
     const installed = await downloadAndInstall({
       zipUrl: zipAsset.browser_download_url,
       manifestUrl: release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url,
-      targetVersion, currentVersion,
+      targetVersion, currentVersion, artifactBytes: zipAsset.size ?? 0,
     });
     if (!installed.ok) return c.json({ ok: false, error: `Rollback: ${installed.message}` }, installed.status as 500);
     await finishAndRestart('rollback', currentVersion, targetVersion);
@@ -1108,7 +1115,7 @@ updateRouter.post('/rollback', async (c) => {
       },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = childFailureText(err);
     logger.error('Rollback failed', { error: msg });
     return c.json({ ok: false, error: `Rollback failed: ${msg}` }, 500);
   }

@@ -22,6 +22,7 @@ import { createLogger } from '../logger.js';
 import { markPendingUpdate, updateMarker, type UpdatePhase } from '../update-state.js';
 import { attachIdleBound } from '../child-idle-bound.js';
 import { isOutOfSpaceError, outOfSpaceFailureMessage } from './disk-preflight.js';
+import { childFailureText } from './child-failure.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('install-tree');
@@ -194,8 +195,8 @@ export async function installPlatformTree(a: InstallTreeArgs): Promise<InstallTr
       await a.runInstall(a.stagedDir);
       step('deps-installed');
     } catch (err) {
-      const why = `${(err as Error).message ?? err} ${(err as { stderr?: string }).stderr ?? ''}`.trim();
-      if (isOutOfSpaceError(err) || isOutOfSpaceError(why)) return fail(`${outOfSpaceFailureMessage(why.slice(0, 300))} ${kept}`);
+      const why = childFailureText(err);
+      if (isOutOfSpaceError(err)) return fail(`${outOfSpaceFailureMessage(why.slice(0, 300))} ${kept}`);
       return fail(`The update could not finish preparing ${a.targetVersion}: its add-ons did not install (${why.slice(0, 300)}). ${kept} Check the internet connection and run the update again.`);
     }
     const bad = await verifyStagedTree(a.stagedDir, a.targetVersion);

@@ -60,6 +60,7 @@ import {
   migrationBackupOverridePresent,
 } from '../db/migration-backup.js';
 import { homeDir } from '../home.js';
+import { childFailureEvidence } from './child-failure.js';
 
 const logger = createLogger('update-disk');
 
@@ -228,11 +229,9 @@ export function updateDiskRefusal(
  * worse failure than the generic message it replaced.
  */
 export function isOutOfSpaceError(err: unknown): boolean {
-  if (err && typeof err === 'object' && 'code' in err && (err as { code?: string }).code === 'ENOSPC') {
-    return true;
-  }
-  const msg = err instanceof Error ? err.message : String(err ?? '');
-  return /no space left on device|ENOSPC|disk full|write error \(disk full/i.test(msg);
+  if ((err as { code?: string } | null)?.code === 'ENOSPC') return true;
+  // t219: a child's failure is a plain object (stdout, stderr, exit code), not an Error.
+  return /no space left on device|ENOSPC|disk full|write error \(disk full/i.test(childFailureEvidence(err));
 }
 
 /** What the owner is told when an update dies mid-flight because the disk filled. */
