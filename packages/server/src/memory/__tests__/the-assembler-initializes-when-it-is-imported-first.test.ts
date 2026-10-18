@@ -46,7 +46,7 @@
 // cycle) and arms 1-3 go red together. No import reordering can make them pass.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,22 +67,38 @@ const codeOf = (...seg: string[]): string =>
 /**
  * Import ONE module, first, in a fresh ESM process, and report whether its graph initialized.
  * Returns the child's verdict: `'OK'`, or `THROW|<message>`.
+ *
+ * ASYNC ON PURPOSE. A `spawnSync` here froze this test's vitest worker for the child's whole cold
+ * boot of the server graph; on a full-suite run with every core busy that boot outlasted the
+ * worker's own report call to the runner ("Timeout calling onTaskUpdate"), which turned an
+ * all-green suite red on every release dry run. Awaiting the child keeps the worker answering.
  */
-function importsCleanlyAlone(relFromServerSrc: string): string {
+function importsCleanlyAlone(relFromServerSrc: string): Promise<string> {
   const target = path.join(SERVER_SRC, relFromServerSrc);
   expect(fs.existsSync(target), `${relFromServerSrc} exists`).toBe(true);
   expect(fs.existsSync(TSX), `the repo's own tsx is present at ${TSX}`).toBe(true);
-  const r = spawnSync(TSX, ['-e', `
+  return new Promise((resolve, reject) => {
+    const proc = spawn(TSX, ['-e', `
     import(${JSON.stringify(target)})
       .then(() => console.log('OK'))
       .catch((e) => console.log('THROW|' + (e && e.message ? String(e.message).split('\\n')[0] : String(e))));
-  `], { encoding: 'utf8', cwd: REPO_ROOT, timeout: 180_000 });
-  const lines = (r.stdout || '').trim().split('\n').filter(Boolean);
-  const verdict = lines.reverse().find((l) => l === 'OK' || l.startsWith('THROW|'));
-  if (!verdict) {
-    throw new Error(`the child printed no verdict for ${relFromServerSrc}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
-  }
-  return verdict;
+  `], { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += String(d); });
+    proc.stderr.on('data', (d) => { stderr += String(d); });
+    const hardStop = setTimeout(() => proc.kill('SIGKILL'), 180_000);
+    proc.on('close', () => {
+      clearTimeout(hardStop);
+      const lines = stdout.trim().split('\n').filter(Boolean);
+      const verdict = lines.reverse().find((l) => l === 'OK' || l.startsWith('THROW|'));
+      if (!verdict) {
+        reject(new Error(`the child printed no verdict for ${relFromServerSrc}\nstdout: ${stdout}\nstderr: ${stderr}`));
+        return;
+      }
+      resolve(verdict);
+    });
+  });
 }
 
 // ── THE GRAPH, AND A POOLED PROBE OVER IT (the census arm below) ────────────────────────────
@@ -158,22 +174,22 @@ async function censusOfFirstImportThrows(modules: string[], concurrency = 12): P
 
 describe('a module in the assembler graph can be the first thing a process imports', () => {
   // ARM 1 — the gate's own entry point. This is the import that refused the v3.3.0 release.
-  it('memory/assembler.ts initializes when imported first in a fresh process', () => {
-    expect(importsCleanlyAlone('memory/assembler.ts')).toBe('OK');
+  it('memory/assembler.ts initializes when imported first in a fresh process', async () => {
+    expect(await importsCleanlyAlone('memory/assembler.ts')).toBe('OK');
   }, 200_000);
 
   // ARM 2 — the other side of the cycle. message-store is the module whose mid-init state the
   // module-scope read used to observe, so it must be safe as an entry point too.
-  it('memory/message-store.ts initializes when imported first in a fresh process', () => {
-    expect(importsCleanlyAlone('memory/message-store.ts')).toBe('OK');
+  it('memory/message-store.ts initializes when imported first in a fresh process', async () => {
+    expect(await importsCleanlyAlone('memory/message-store.ts')).toBe('OK');
   }, 200_000);
 
   // ARM 3 — the settlement authority, which owns the module-scope read itself. This arm is the
   // CONTROL: it passed even with the defect in place, because entering ask-settlement first
   // finishes message-store before ask-settlement's own top level runs. That is precisely the
   // luck of import order the booted server was living on, and why arms 1 and 2 exist.
-  it('work/ask-settlement.ts initializes when imported first in a fresh process', () => {
-    expect(importsCleanlyAlone('work/ask-settlement.ts')).toBe('OK');
+  it('work/ask-settlement.ts initializes when imported first in a fresh process', async () => {
+    expect(await importsCleanlyAlone('work/ask-settlement.ts')).toBe('OK');
   }, 200_000);
 });
 
@@ -194,12 +210,12 @@ describe('a module in the assembler graph can be the first thing a process impor
 // MUTANT: move `VALIDATION_ESCALATION_MIN` back into `scheduler/runner.ts` and both arms red.
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('the owner-escalation clock is readable from module scope too', () => {
-  it('scheduler/runner.ts initializes when imported first in a fresh process', () => {
-    expect(importsCleanlyAlone('scheduler/runner.ts')).toBe('OK');
+  it('scheduler/runner.ts initializes when imported first in a fresh process', async () => {
+    expect(await importsCleanlyAlone('scheduler/runner.ts')).toBe('OK');
   }, 200_000);
 
-  it('tracker/pm-agent.ts initializes when imported first in a fresh process', () => {
-    expect(importsCleanlyAlone('tracker/pm-agent.ts')).toBe('OK');
+  it('tracker/pm-agent.ts initializes when imported first in a fresh process', async () => {
+    expect(await importsCleanlyAlone('tracker/pm-agent.ts')).toBe('OK');
   }, 200_000);
 
   it('scheduler/validation-clock.ts is a leaf — it imports nothing', () => {
