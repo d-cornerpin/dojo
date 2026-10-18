@@ -9,6 +9,7 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
 import { routeFailure } from './route-failure.js';
+import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('healer-routes');
 
@@ -25,6 +26,14 @@ healerRouter.post('/config', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body) return c.json({ ok: false, error: 'Invalid request body' }, 400);
 
+  // 32K main-model floor (owner decision 13): this is the healer's MAIN model; refuse before any write.
+  const { getHealerAgentId } = await import('../../config/platform.js');
+  const tooSmall = refuseSmallMainModel(
+    typeof body.modelId === 'string' ? body.modelId : null,
+    (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id,
+  );
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+
   setHealerConfig({
     modelId: body.modelId,
     healerTime: body.healerTime,
@@ -33,7 +42,6 @@ healerRouter.post('/config', async (c) => {
 
   // Keep agents.model_id in sync so the agent card reflects the same value
   if (body.modelId) {
-    const { getHealerAgentId } = await import('../../config/platform.js');
     const db = (await import('../../db/connection.js')).getDb();
     db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
       .run(body.modelId, getHealerAgentId());

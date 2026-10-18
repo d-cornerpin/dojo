@@ -115,3 +115,18 @@ export function noteSmallMainModelOnce(agentId: string, modelId: string | null |
     return true;
   } catch { return false; }   // a notice is a courtesy; never break the read it rides on
 }
+
+/** True when the model may serve as an agent's main model (unknown windows and `auto` pass). */
+export function passesMainModelFloor(modelId: string): boolean {
+  const w = windowOf(modelId);
+  return !w || w.window >= MAIN_MODEL_MIN_WINDOW;
+}
+
+/**
+ * The config keys through which a person (or the setup wizard) picks a service agent's MAIN
+ * model; the agent's own start-up code copies them onto its row. `PUT /settings/:key` refuses a
+ * small model for these before writing, with the same sentence every other door gives.
+ */
+export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
+  'healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model',
+];

@@ -24,6 +24,7 @@ import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/mess
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import type { PermissionManifest, Agent, Message } from '@dojo/shared';
+import { refuseSmallMainModel } from './main-model-floor.js';
 
 const logger = createLogger('spawner');
 
@@ -234,6 +235,10 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   // Resolve model: "auto" means use the router
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
+  // 32K main-model floor (owner decision 13): a model the caller NAMED must clear it. A model
+  // inherited from the parent is not a new choice and is never refused here.
+  const tooSmall = refuseSmallMainModel(modelId, parent.model_id);
+  if (tooSmall) throw new Error(tooSmall);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }

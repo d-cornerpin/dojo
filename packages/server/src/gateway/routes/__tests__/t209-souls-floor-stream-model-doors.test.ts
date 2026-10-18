@@ -179,6 +179,7 @@ describe('a model deleted from under agents is replaced by one that passes the f
     db().prepare("UPDATE models SET input_cost_per_m = 0 WHERE id = 'tiny'").run();
     db().prepare("UPDATE models SET input_cost_per_m = 5 WHERE id = 'big'").run();
     db().prepare("UPDATE models SET input_cost_per_m = 99 WHERE id = 'unknown'").run();
+    db().prepare("UPDATE models SET is_enabled = 0 WHERE id = 'auto'").run();   // the migration-seeded router row would win on cost
     seedModel('gone', 128_000);
     db().prepare("UPDATE models SET input_cost_per_m = 9 WHERE id = 'gone'").run();
     seedAgent('stranded', 'gone');

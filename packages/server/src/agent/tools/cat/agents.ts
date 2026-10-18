@@ -79,6 +79,7 @@ import { writeGrants } from '../../access/materialize.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
+import { refuseSmallMainModel } from '../../main-model-floor.js';
 
 // ── P4: mandatory squad resolution for agent spawns ──
 // Every agent-spawned agent lands in a squad so the owner can see which spawned
@@ -1080,6 +1081,30 @@ export const agentsHandlers: ToolHandlerMap = {
       const changes: string[] = [];
       let finalName = target.name;
 
+      // Model, resolved and checked FIRST so a refusal leaves the whole edit unwritten (no rename
+      // without the model it came with). 32K main-model floor: owner decision 13.
+      let resolvedModel: { id: string; name: string; is_enabled: number } | undefined;
+      if (typeof newModelId === 'string' && newModelId !== 'auto') {
+        // Resolve forgivingly: id, then case-insensitive name/api_model_id,
+        // then a unique name substring. The tool primes model NAMES, so a
+        // weak model passes a name where a uuid id is expected and an
+        // exact-id lookup misses.
+        let model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
+        if (!model) {
+          const exact = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) = LOWER(?) OR LOWER(api_model_id) = LOWER(?)').all(newModelId, newModelId) as Array<{ id: string; name: string; is_enabled: number }>;
+          if (exact.length === 1) model = exact[0];
+          else if (exact.length === 0) {
+            const sub = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) LIKE LOWER(?)').all(`%${newModelId}%`) as Array<{ id: string; name: string; is_enabled: number }>;
+            if (sub.length === 1) model = sub[0];
+          }
+        }
+        if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
+        if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
+        resolvedModel = model;
+        const tooSmall = refuseSmallMainModel(model.id, target.model_id);
+        if (tooSmall) { content = `Error: ${tooSmall}`; isError = true; return { content, isError }; }
+      }
+
       // Identity (name / system_prompt): forbidden on the primary agent.
       if (newName !== undefined || newPrompt !== undefined) {
         if (isPrimaryAgent(target.id)) {
@@ -1112,21 +1137,7 @@ export const agentsHandlers: ToolHandlerMap = {
           sanitizeMessagesOnModelChange(target.id);
           changes.push('model → auto-routing');
         } else {
-          // Resolve forgivingly: id, then case-insensitive name/api_model_id,
-          // then a unique name substring. The tool primes model NAMES, so a
-          // weak model passes a name where a uuid id is expected and an
-          // exact-id lookup misses.
-          let model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
-          if (!model) {
-            const exact = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) = LOWER(?) OR LOWER(api_model_id) = LOWER(?)').all(newModelId, newModelId) as Array<{ id: string; name: string; is_enabled: number }>;
-            if (exact.length === 1) model = exact[0];
-            else if (exact.length === 0) {
-              const sub = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) LIKE LOWER(?)').all(`%${newModelId}%`) as Array<{ id: string; name: string; is_enabled: number }>;
-              if (sub.length === 1) model = sub[0];
-            }
-          }
-          if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
-          if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
+          const model = resolvedModel!;
           db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(model.id, target.id);
           const { collapsed } = sanitizeMessagesOnModelChange(target.id);
           changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);

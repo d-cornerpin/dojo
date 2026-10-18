@@ -23,6 +23,8 @@ import { runDreamingCycle, getDreamingConfig, setDreamingConfig } from '../../va
 import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
 import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
+import { getDb } from '../../db/connection.js';
+import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('vault-routes');
 
@@ -231,6 +233,13 @@ vaultRouter.get('/dream/config', (c) => {
 
 vaultRouter.put('/dream/config', async (c) => {
   const body = await c.req.json();
+  // 32K main-model floor (owner decision 13): this is the dreamer's MAIN model; refuse before any write.
+  const { getDreamerAgentId } = await import('../../config/platform.js');
+  const tooSmall = refuseSmallMainModel(
+    typeof body.modelId === 'string' ? body.modelId : null,
+    (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id,
+  );
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
   setDreamingConfig({
     modelId: body.modelId,
     dreamTime: body.dreamTime,
@@ -239,8 +248,6 @@ vaultRouter.put('/dream/config', async (c) => {
 
   // Keep agents.model_id in sync so the agent card reflects the same value
   if (body.modelId) {
-    const { getDreamerAgentId } = await import('../../config/platform.js');
-    const { getDb } = await import('../../db/connection.js');
     getDb().prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
       .run(body.modelId, getDreamerAgentId());
   }

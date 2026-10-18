@@ -26,6 +26,7 @@ import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
+import { refuseSmallMainModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
@@ -76,18 +77,21 @@ function reassignAffectedAgents(modelIds: string[]): number {
   // Find a fallback model — first enabled TEXT-capable model not in the affected
   // set. Media-generation/embedding models cost 0 and would otherwise win the
   // cost order, leaving an agent pointed at a model that can't hold a chat.
-  let fallback: { id: string } | undefined;
+  // 32K main-model floor (owner decision 13): the cheapest candidate that clears it wins; if
+  // none does, the cheapest is still used so the agent is never left without a model.
+  let candidates: Array<{ id: string }>;
   try {
     const placeholders = modelIds.map(() => '?').join(',');
-    fallback = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC LIMIT 1`
-    ).get(...modelIds) as { id: string } | undefined;
+    candidates = db.prepare(
+      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC`
+    ).all(...modelIds) as Array<{ id: string }>;
   } catch {
     // If query fails, try without the exclusion
-    fallback = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC LIMIT 1`
-    ).get() as { id: string } | undefined;
+    candidates = db.prepare(
+      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC`
+    ).all() as Array<{ id: string }>;
   }
+  const fallback = candidates.find(m => passesMainModelFloor(m.id)) ?? candidates[0];
 
   const fallbackId = fallback?.id ?? null;
 
@@ -2309,6 +2313,14 @@ configRouter.put('/settings/:key', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.value !== 'string') {
     return c.json({ ok: false, error: 'value string is required' }, 400);
+  }
+
+  // 32K main-model floor (owner decision 13): these keys name a service agent's MAIN model.
+  // Refused before any write; re-saving the value already stored is never refused.
+  if (MAIN_MODEL_SETTING_KEYS.includes(key)) {
+    const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+    const tooSmall = refuseSmallMainModel(body.value, current);
+    if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
   }
 
   // UX-REPAIR T50 — THE DECISIVE RENAME DOOR, and the one nobody would guess.
