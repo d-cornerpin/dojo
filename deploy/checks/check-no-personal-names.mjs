@@ -221,6 +221,28 @@ function defaultDbPath() {
   return path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
 }
 
+/**
+ * THE ONE DATABASE READER (t229): every database read in this gate goes through here, and it cannot
+ * write. A running server keeps `<db>-wal` and `<db>-shm` beside a WAL-mode database, and
+ * `-readonly` is right then. A server that has stopped cleanly removes them, and a read-only open
+ * of a WAL database cannot create them: `unable to open database file (14)`. With no `-wal` file
+ * no writer has the database open, so it is opened immutable, which needs no lock and no side file.
+ * Throws the sqlite error; each caller decides what an unreadable database means.
+ */
+function readDb(dbPath, sql) {
+  const uriPath = dbPath.split('/').map(encodeURIComponent).join('/');
+  const args = fs.existsSync(`${dbPath}-wal`)
+    ? ['-readonly', dbPath, sql]
+    : [`file:${uriPath}?mode=ro&immutable=1`, sql];
+  try {
+    return execFileSync('sqlite3', args,
+      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    const detail = String(err?.stderr ?? '').trim() || (err instanceof Error ? err.message : String(err));
+    throw new Error(detail);
+  }
+}
+
 function liveRoster(dbPath = defaultDbPath()) {
   // NO DATABASE: fall back to the committed fictional roster rather than to nothing, so the
   // matching machinery runs in CI. `available` stays FALSE — the run still says out loud that it
@@ -228,19 +250,13 @@ function liveRoster(dbPath = defaultDbPath()) {
   if (!fs.existsSync(dbPath)) {
     return { available: false, source: 'fixture', names: [...FIXTURE_ROSTER], dbPath };
   }
+  // A database that is THERE but cannot be read is not "no database": falling back would check
+  // invented names while claiming the real roster does not exist. Refuse, and say why.
   try {
-    // `sqlite3 -readonly` rather than a driver: this gate must not be able to write, and the CLI is
-    // what every other read-only instrument in this tree uses.
-    const out = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} "SELECT name FROM agents"`,
-      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
-    const names = out.split('\n').map((s) => s.trim()).filter(Boolean);
+    const names = readDb(dbPath, 'SELECT name FROM agents').split('\n').map((s) => s.trim()).filter(Boolean);
     return { available: true, names, dbPath };
   } catch (err) {
-    // An unreadable database is the same situation as an absent one: measure SOMETHING.
-    return {
-      available: false, source: 'fixture', names: [...FIXTURE_ROSTER], dbPath,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    throw new Error(`could not read the roster at ${dbPath}: ${err.message}`);
   }
 }
 
@@ -271,7 +287,7 @@ const NOT_AN_ACCOUNT = new Set([
  * FILES WHERE A ROSTER NAME IS NOT A LEAK, each with the reason it is exempt.
  *
  * This is a FILE list, never a NAME list — the difference matters, because a name list in a public
- * repo is the leak this gate exists to prevent. The four entries are the vendor voice catalogues: a
+ * repo is the leak this gate exists to prevent. The first four entries are the vendor voice catalogues: a
  * TTS voice id such as `am_michael` is a product identifier from Kokoro/OpenAI, and the day
  * somebody on the box names an agent after one, the roster half would otherwise flag the vendor's
  * own vocabulary. The audit settled this class in its §2.
@@ -281,6 +297,10 @@ const ROSTER_EXEMPT_FILES = new Map([
   ['packages/server/src/services/voice-catalog.ts', 'vendor TTS voice catalogue'],
   ['packages/server/src/services/audio-generation.ts', 'vendor TTS/music voice ids'],
   ['packages/server/src/services/capabilities.ts', 'names a vendor voice in a capability example'],
+  // The registry of coined stand-ins holds the fictional fixture roster's own names, by design, so
+  // the roster half run on that roster would flag the registry itself. A real roster name that
+  // collides with a stand-in is already caught by `checkStandIns`, before this scan runs.
+  ['deploy/checks/fixture-names.json', 'the registry of coined stand-in names'],
 ]);
 
 /**
@@ -339,8 +359,7 @@ function derivedIdentities() {
   const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
   if (fs.existsSync(dbPath)) {
     try {
-      const rows = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} "SELECT login FROM github_account"`,
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const rows = readDb(dbPath, 'SELECT login FROM github_account');
       for (const l of rows.split('\n').map((x) => x.trim()).filter(Boolean)) out.add(l);
     } catch { /* no table on an older box: the structural shape still runs */ }
   }
@@ -386,9 +405,7 @@ function ownerNames() {
     fallback = m ? m[1].toLowerCase() : null;
   } catch { /* the roleNames() read above already fails loudly if this file is unreadable */ }
   try {
-    const out = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} `
-      + `"SELECT value FROM config WHERE key = 'owner_name'"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = readDb(dbPath, "SELECT value FROM config WHERE key = 'owner_name'");
     const names = out.split('\n').map((s2) => s2.trim()).filter(Boolean)
       .filter((n) => n.length >= 3 && /^[A-Za-z][A-Za-z0-9 ._-]*$/.test(n))
       .filter((n) => n.toLowerCase() !== fallback)
@@ -412,8 +429,7 @@ function liveAgentIds() {
   const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
   if (!fs.existsSync(dbPath)) return [];
   try {
-    const out = execSync(`sqlite3 -readonly ${JSON.stringify(dbPath)} "SELECT id FROM agents WHERE length(id) >= 32"`,
-      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = readDb(dbPath, 'SELECT id FROM agents WHERE length(id) >= 32');
     return out.split('\n').map((s) => s.trim()).filter((s) => /^[0-9a-f-]{32,}$/i.test(s));
   } catch { return []; }
 }
@@ -978,7 +994,11 @@ function selfTest() {
 
 // ── THE SCAN ────────────────────────────────────────────────────────────────
 const roles = roleNames();
-const roster = liveRoster();
+let roster;
+try { roster = liveRoster(); } catch (err) {
+  console.error(`✗ names gate: ${err.message}`);
+  process.exit(1);
+}
 const owner = ownerNames();
 const handles = derivedIdentities();
 const agentIds = liveAgentIds();
