@@ -13,6 +13,10 @@
 // is a separate, plain set, notified by the ONE door that means "the owner pressed stop"
 // (`stopAgent`) and by nothing else.
 //
+// t224: the other waiter is every child process the toolbox spawns (`effects/proc-tree.ts`). It
+// sat in the registry for a while and made a running command read as a model request to liveness
+// and to the preempt above; it waits here instead.
+//
 // THE SAME RACE `registerAbortable` CLOSES IS CLOSED HERE: a waiter opened while a stop is
 // already standing is born stopped. There is no window in which a wait can begin after the
 // press and miss it.

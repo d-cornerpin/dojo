@@ -7,18 +7,32 @@
 // processes somebody else was authorized to start.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { openAgentCall } from '../abortable-call.js';
+import { untilUserStop } from '../stop-waiters.js';
 
 // ════════════════════════════════════════
 // t203 (B6) — THE OWNER'S STOP REACHES EVERY PROCESS THE TOOLBOX STARTED.
 //
-// Before this, nothing a tool spawned was known to the stop: `stopAgent` aborts the abort
-// registry, and no child was in it. Every child that comes through this door now holds a slot
-// there (via `spawnAuthorized`, the toolbox's one spawn door) for as long as it lives, so the stop (and the turn's own teardown, for a call the
-// executor abandoned) ends it. SIGTERM to the whole group first — a process mid-write deserves
-// its syscall — then SIGKILL to whatever ignored it. The grace is the kill's own escalation,
-// not a bound on the work: nothing is killed here that the owner (or the turn ending) did not
-// already cut.
+// Before this, nothing a tool spawned was known to the stop. Every child that comes through this
+// door (via `spawnAuthorized`, the toolbox's one spawn door) now waits on the owner's stop for as
+// long as it lives, so the stop (and the turn's own teardown, for a command a thrown turn left
+// running) ends it. SIGTERM to the whole group first — a process mid-write deserves its syscall —
+// then SIGKILL to whatever ignored it. The grace is the kill's own escalation, not a bound on the
+// work: nothing is killed here that the owner (or the turn ending) did not already cut.
+//
+// t224 — THE WAIT IS A STOP WAITER, NOT AN ABORT-REGISTRY SLOT. t203 first held each child as a
+// `turn`-scoped slot in the abort registry. That registry means "a model or media request is
+// open", and two readers act on exactly that: liveness (an open request is movement RIGHT NOW,
+// so a sub-agent wedged on a command that never exits was never SILENT and the owner was never
+// told) and the urgent preempt (a running command made a barge-in arm `preemptedAgents` and cut
+// the command along with the model call). `stop-waiters.ts` exists for what WAITS on the stop as
+// opposed to what the stop ABORTS, so the child waits there, and the registry is again only the
+// requests. The three doors that used to end a child through the registry, and what ends it now:
+//   • the owner's stop (`stopAgent`, scope all)      -> `untilUserStop` (also born-stopped);
+//   • the stuck-stopped-run reaper (scope all)       -> nothing new: it only follows a stop,
+//                                                       which already ended the child;
+//   • a thrown turn's teardown (scope turn)          -> `endAgentCommands` below, called there;
+//   • the urgent preempt (scope turn)                -> deliberately NOT: a barge-in cuts the
+//                                                       model call, never a running command.
 //
 // THE PROCESS GROUP IS WHAT MAKES "NO ORPHANS" TRUE. A shell script's pipeline, or a job it put
 // in the background, is a child of the shell, not of the server; signalling only the shell
@@ -48,17 +62,39 @@ export function signalProcessTree(child: Pick<ProcessTreeRoot, 'pid' | 'kill'>, 
   try { child.kill(signal); } catch { /* already gone */ }
 }
 
+/** Each agent's commands that have not ended yet, as the cut that ends one. */
+const running = new Map<string, Set<() => void>>();
+
 export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): void {
-  const slot = openAgentCall(agentId, 'turn');
   if (child.pid !== undefined) rememberGroup(child.pid);
+  let over = false;
   const cut = (): void => {
+    if (over) return;
     signalProcessTree(child, 'SIGTERM');
     setTimeout(() => signalProcessTree(child, 'SIGKILL'), KILL_GRACE_MS).unref();
   };
-  if (slot.signal.aborted) cut();
-  else slot.signal.addEventListener('abort', cut, { once: true });
-  child.once('close', () => slot.release());
-  child.once('error', () => slot.release());
+  const wait = untilUserStop(agentId);
+  if (wait.already) { cut(); return; }
+  let cuts = running.get(agentId);
+  if (!cuts) { cuts = new Set(); running.set(agentId, cuts); }
+  cuts.add(cut);
+  void wait.stopped.then(cut);
+  const settle = (): void => {
+    over = true;
+    wait.dispose();
+    cuts.delete(cut);
+    if (cuts.size === 0 && running.get(agentId) === cuts) running.delete(agentId);
+  };
+  child.once('close', settle);
+  child.once('error', settle);
+}
+
+/** A turn that threw is over: end whatever it left running for this agent. Returns how many. */
+export function endAgentCommands(agentId: string): number {
+  const cuts = running.get(agentId);
+  if (!cuts) return 0;
+  for (const cut of [...cuts]) cut();
+  return cuts.size;
 }
 
 function rememberGroup(pgid: number): void {

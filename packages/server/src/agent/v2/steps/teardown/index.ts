@@ -66,10 +66,10 @@
 // sink records, and a relocation that renames the field its own operators grep
 // by has changed behaviour it did not admit to.
 // ════════════════════════════════════════
-
 import { createLogger } from '../../../../logger.js';
 import type { getDb } from '../../../../db/connection.js';
 import { abortInFlight } from '../../../shared-state.js';
+import { endAgentCommands } from '../../../effects/proc-tree.js';
 import { setAgentStatus } from '../../../agent-status.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { advance, type AgentTurnState, type ChannelInboundContext, type TurnPhase } from '../../state.js';
@@ -174,6 +174,7 @@ export async function runTurnRecovery(
   // just after `video_create` killed the job that call had created one statement earlier.
   stopStatusHeartbeat(agentId);
   abortInFlight(agentId, 'turn-teardown', { scope: 'turn' });
+  endAgentCommands(agentId); // t224: and a command it left running (children wait on the stop, not in that registry)
 
   // C2: a throw anywhere AFTER the pickup-stamp (assembleContext, decideTier,
   // enforceModelCapabilities, the grounding INSERT, the assistant/tool persists,
