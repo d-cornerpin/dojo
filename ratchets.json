@@ -8900,6 +8900,27 @@
       "to": 1795,
       "by": "t203 (2026-10-17), Stop ends a turn whose tool call is stuck (B6, decision 5)",
       "why": "+2: one import and one call in `stopAgent` — `notifyUserStop`, so every executor WAIT on a running tool call ends when the owner presses Stop. It cannot ride the existing `abortInFlight` call: the waiters are deliberately NOT abort-registry entries, because `preemptAgentForUrgentMessage` counts the turn-scoped entries to decide whether a barge-in has anything to cut, and an entry per running tool would make every tool call count. THE MECHANISM IS NOT HERE: the race, the cancel wording and the owner's after-stop notice live in the new `agent/v2/steps/execute/stop-race.ts`; the stop waiters in the new `agent/stop-waiters.ts`; the process-tree kill in the new `agent/effects/proc-tree.ts`. What this file gained is the call into it and nothing else."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1325,
+      "to": 1328,
+      "by": "t209 (2026-10-17): souls refresh and the 32K floor at the remaining doors",
+      "why": "+3: the boot call that replaces the Dojo-supplied souls once per version (decision 33). The mechanism lives in the new prompt/shipped-souls.ts; the call site is a comment line, a one-line await, and a blank line, and it needs to run in this order (after migrations, before the service-agent ensures), which is only knowable here."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1673,
+      "to": 1678,
+      "by": "t209 (2026-10-17): souls refresh and the 32K floor at the remaining doors",
+      "why": "+5: update_agent's model lookup is moved ahead of the rename (so a refused model leaves the whole edit unwritten) and gains the 32K main-model floor check (decision 13). The lookup itself is the same lines moved up, not new; the new lines are the floor call, its refusal return and the hoisted variable."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1470,
+      "to": 1473,
+      "by": "t209 (2026-10-17): souls refresh and the 32K floor at the remaining doors",
+      "why": "+3: the 32K main-model floor (decision 13) at the one spawn door: an import, one call and one throw. The spawner is the single door every spawner caller shares, so the check cannot live elsewhere without leaving a caller uncovered."
     }
   ],
   "maxNewFileLines": 400,
@@ -8971,11 +8992,11 @@
     "packages/server/src/agent/provider-error.ts": 407,
     "packages/server/src/agent/runtime.ts": 1795,
     "packages/server/src/agent/shared-state.ts": 458,
-    "packages/server/src/agent/spawner.ts": 1470,
+    "packages/server/src/agent/spawner.ts": 1473,
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1673,
+    "packages/server/src/agent/tools/cat/agents.ts": 1678,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -9104,7 +9125,7 @@
     "packages/server/src/healer/diagnostic.ts": 1084,
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
-    "packages/server/src/index.ts": 1325,
+    "packages/server/src/index.ts": 1328,
     "packages/server/src/memory/assembler.ts": 2886,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
