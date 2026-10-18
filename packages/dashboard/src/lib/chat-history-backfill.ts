@@ -8,9 +8,10 @@ import { classifyMessageForDisplay } from '@dojo/shared';
  * what a user scrolling up would do, keep fetching older pages until real conversation renders
  * (or history ends). Wordy mode renders every row, so its first page always satisfies the floor
  * immediately.
- * Bounded: 60 extra pages of 200 covers a pathological 12k-row pileup in a few seconds of
- * background fetches; past that, the scroll-up path continues as always. After a user updates,
- * this makes "open the chat, see nothing" impossible, their conversation is always dug up.
+ * It ends on a real signal, never a page count (t207, no hard limits): enough renderable rows,
+ * the end of history (an empty or failed page), a page that brings nothing new (a server that
+ * repeats itself cannot hold the loop), or the load being cancelled. This makes "open the chat,
+ * see nothing" impossible: the conversation is always dug up, however deep the machine traffic.
  *
  * Returns the rows to show, or `null` when `stillActive()` went false (the load was cancelled
  * because the agent changed): the caller then drops the result.
@@ -29,15 +30,17 @@ export async function backfillUntilRenderable(
         ? false
         : classifyMessageForDisplay(m).tier === 'user-visible';
   const renderableCount = () => (wordyMode ? loaded.length : loaded.filter(rendersInRegular).length);
-  let backfills = 0;
-  while (renderableCount() < 15 && loaded.length > 0 && backfills < 60) {
+  const known = new Set(loaded.map((m) => m.id));
+  while (renderableCount() < 15 && loaded.length > 0) {
     const oldest = loaded[0]?.id;
     if (!oldest) break;
     const older = await fetchOlder(oldest);
     if (!stillActive()) return null;
     if (!older.ok || !older.data || older.data.length === 0) break;
-    loaded = [...older.data, ...loaded];
-    backfills++;
+    const fresh = older.data.filter((m) => !known.has(m.id));
+    if (fresh.length === 0) break;   // nothing new: history has ended as far as this server will say
+    for (const m of fresh) known.add(m.id);
+    loaded = [...fresh, ...loaded];
   }
   return loaded;
 }
