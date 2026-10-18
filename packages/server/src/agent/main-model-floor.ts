@@ -22,10 +22,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
-import { createLogger } from '../logger.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
-
-const logger = createLogger('main-model-floor');
 
 /** The owner's floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
 export const MAIN_MODEL_MIN_WINDOW = 32_000;
