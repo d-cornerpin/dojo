@@ -97,7 +97,7 @@ beforeEach(async () => {
   setConfig('primary_agent_name', 'Zargo');
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
-  setConfig('owner_name', 'Marcus');
+  setConfig('owner_name', 'Glimmerton');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current

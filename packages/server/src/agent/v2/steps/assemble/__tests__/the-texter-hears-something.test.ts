@@ -91,7 +91,7 @@ const bag = (over: Partial<Bag> = {}): Bag => ({
 });
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'Marcus', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: 'Glimmerton', relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 

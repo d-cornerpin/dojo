@@ -1164,7 +1164,7 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as { keep?: number }));
-  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : 1;
+  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : MAX_BACKUPS_TO_KEEP;
 
   // Snapshot the target count up front so the dashboard can show progress
   // ("Cleaning up 8 backups...") even before the first deletion completes.
