@@ -123,7 +123,7 @@ describe('t158 C — the full check reads the rows the assembler will budget', (
     // t200: the control was "priced at est + stored cost, the view reads full". It leaned on the old
     // 15K-token view of this row; the row's view is now its short pointer (the whole is kept), so
     // the control is the bound below instead: a dry run that priced the stored row would fail it.
-    expect(est.liveTailTokens + storedCost, 'control: priced at the stored cost the tail is far over the bound below')
+    expect(est.view.tailTokens + storedCost, 'control: priced at the stored cost the tail is far over the bound below')
       .toBeGreaterThan(25_000);
 
     // What the assembler budgets: the tool result capped at 15K. The dry run now agrees.
