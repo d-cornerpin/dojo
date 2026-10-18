@@ -126,7 +126,8 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE CENSUS — every reader of `summaries.kind`, and what it does with 'uncondensed' (reviewed):
-//   assembler.ts            renders `kind="uncondensed"` on the note's tag: an honest label in view.
+//   summaries-lane.ts       renders `kind="uncondensed"` on the note's tag: an honest label in view
+//                           (moved verbatim from assembler.ts by t210).
 //   backfill.ts             selects and counts un-embedded summaries EXCLUDING notes.
 //   condense-until-fits.ts  counts and merges top-level summaries EXCLUDING notes (never folded).
 //   dag.ts                  maps the column; a note expands to its own rows (kind !== 'condensed');
@@ -154,8 +155,8 @@ describe('t140 — census: every reader of summaries.kind has been reviewed for 
     const readers = files.filter((rel) => fs.readFileSync(path.join(SRC, rel), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1').split('\n').some((l) => RE.test(l)));
     expect(readers.sort()).toEqual([
-      'memory/assembler.ts', 'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
-      'memory/embedding-sources.ts', 'memory/retrieval.ts', 'memory/summary-rebuild.ts',
+      'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
+      'memory/embedding-sources.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
       'memory/uncondensed-head.ts', 'memory/uncondensed-placeholder.ts',
     ]);
   });

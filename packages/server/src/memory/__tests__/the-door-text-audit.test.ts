@@ -105,16 +105,13 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§1 the summaries-lane header is demoted to a pointer', () => {
+  // t210: the lane's render (and its header) moved to `memory/summaries-lane.ts`; the slice is
+  // the header's own declaration there, bounded by the footer's, so it cannot widen silently.
   const laneSource = (): string => {
-    const src = read('memory/assembler.ts');
-    // W81: the end bound was `src.indexOf("id: 'lane.attempt-ledger'")`, and that declaration
-    // LEFT this file when the lane moved below the conversation — `indexOf` returned -1 and
-    // `slice(start, -1)` silently widened the window to the rest of the file, which is how a
-    // source-slice clause goes vacuous without going red. The bound is DERIVED now: the next
-    // lane declaration of any name after this one, so a future move cannot repeat it.
-    const from = src.indexOf("id: 'lane.summaries'");
-    const next = src.indexOf("id: 'lane.", from + 10);
-    if (from < 0 || next <= from) throw new Error('lane.summaries slice bounds not found in assembler.ts');
+    const src = read('memory/summaries-lane.ts');
+    const from = src.indexOf('const HEAD =');
+    const next = src.indexOf('const FOOT =', from);
+    if (from < 0 || next <= from) throw new Error('summaries header bounds not found in summaries-lane.ts');
     return src.slice(from, next);
   };
 
@@ -130,7 +127,7 @@ describe('§1 the summaries-lane header is demoted to a pointer', () => {
 
   it('the header is STILL STATIC — one literal, no interpolation (the cache law is unmoved)', () => {
     const lane = laneSource();
-    const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'), lane.indexOf('${summaryText}'));
+    const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'));
     expect(header.length).toBeGreaterThan(200);
     expect(header, 'the header is a literal; only the summaries themselves interpolate')
       .not.toContain('${');
@@ -138,6 +135,7 @@ describe('§1 the summaries-lane header is demoted to a pointer', () => {
 
   it('stored summaries are still never rewritten at render time (T20\'s law, unchanged)', () => {
     expect(read('memory/assembler.ts')).not.toContain('annotateSummaryObligations');
+    expect(read('memory/summaries-lane.ts')).not.toContain('annotateSummaryObligations'); // t210: the render moved here
   });
 });
 

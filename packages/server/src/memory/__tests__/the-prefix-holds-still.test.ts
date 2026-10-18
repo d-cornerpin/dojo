@@ -90,9 +90,10 @@ vi.mock('../vector-search.js', () => ({
 }));
 
 import {
-  assembleContext, selectSummariesForPrefix, renderScratchpadBlock, renderEventsBlock,
+  assembleContext, renderScratchpadBlock, renderEventsBlock,
   scratchpadWorstCaseTokens, eventsLaneWorstCaseTokens,
 } from '../assembler.js';
+import { selectSummaries } from '../summaries-lane.js';
 import { activeTasksWorstCaseTokens } from '../work-board-lane.js';
 import { attemptLedgerWorstCaseTokens } from '../attempt-ledger.js';
 import { POST_BUDGET_LANES, LANE_PRIORITY, isProtectedLaneId } from '../lanes.js';
@@ -591,11 +592,10 @@ describe('W81 §2 — a PURE READ never re-truncates a cached lane', () => {
 
   it('CONTROL: a cached lane still shrinks when its OWN content grows past the ceiling', () => {
     // The clause above must not be satisfied by a lane that stopped responding to anything.
-    const many = Array.from({ length: 40 }, (_, i) => ({
-      id: `s-${i}`, tokenCount: 500, content: `c${i}`,
-    })) as unknown as Parameters<typeof selectSummariesForPrefix>[0];
-    expect(selectSummariesForPrefix(many, 20000).length)
-      .toBeGreaterThan(selectSummariesForPrefix(many, 2000).length);
+    // t210: the selector measures each summary's RENDERED piece (`memory/summaries-lane.ts`).
+    const many = Array.from({ length: 40 }, (_, i) => ({ xml: `<summary id="s-${i}">${'c'.repeat(2000)}</summary>` }));
+    expect(selectSummaries(many, 20000).chosen.length)
+      .toBeGreaterThan(selectSummaries(many, 2000).chosen.length);
   });
 });
 

@@ -16,7 +16,8 @@ import { getRecentMessages, getMessagesByIds } from './store.js';
 import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
-import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
+import { LabelFacts } from './summary-subject.js';
+import { renderSummariesLane, truncateSummariesLane, type SummariesPayload } from './summaries-lane.js';
 import { freshTailHorizon, groupsToDropForBudget, maxTrimUnits, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
@@ -270,7 +271,7 @@ type LoopMsg = {
 // stamp is for; in one line: a tail block that says "3 hours ago" is a function of the wall
 // clock and re-bills every token behind it once an hour, a block that states the recorded
 // instant is a pure function of its rows.
-import { renderMessageTimeStamp, renderInstant } from './message-stamp.js';
+import { renderMessageTimeStamp } from './message-stamp.js';
 import { servedRowsOutOfView } from './served-ask.js';
 import { END_OF_HISTORY, endOfHistoryMarker } from './end-of-history.js';
 export { renderMessageTimeStamp };
@@ -1128,8 +1129,10 @@ function buildContentLanes(
       slot: MessageSlot.Summaries,
       priority: LANE_PRIORITY['lane.summaries'],
       minTokens: 0,
-      maxTokens: summariesCeiling,
-      truncate: truncateTextLane,
+      // t210: the ROOM bounds the lane; `summariesCeiling` only decides how many OLDER summaries
+      // ride along, and the newest is never cut to meet it (`memory/summaries-lane.ts`).
+      maxTokens: Math.floor(contentBudget * SUMMARY_SHARE),
+      truncate: truncateSummariesLane as Lane<LaneRenderCtx, unknown>['truncate'],
       // ── T67b §4 — THE SELECTION STOPS ASKING WHAT THE LIVE ASK IS ─────────────────────
       // `selectSummariesByRelevance` ranked this block by vector similarity to
       // `buildPerTurnRecallQuery` — the live ask — from MessageSlot.Summaries = 300, ahead of
@@ -1150,17 +1153,7 @@ function buildContentLanes(
       // tail; `history_search` reaches the summaries themselves on demand. What is given up
       // is an OLD summary being auto-hoisted into the prefix because it matched today's
       // question — and it was being paid for with the entire prefix behind it.
-      render: async (ctx) => {
-        const summaries = ctx.summaries();
-        if (summaries.length === 0) return null;
-        const chosen = selectSummariesForPrefix(summaries, summariesCeiling);
-        if (chosen.length === 0) return null;
-        const facts = new LabelFacts(ctx.agentId);
-        const summaryText = chosen.map((s) => formatSummaryXml(s, facts)).join('\n\n');
-        return textRender(
-          `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it. Obligation lines here are HISTORICAL — the OPEN COMMITMENTS snapshot below is the complete current record of what is owed, whatever tense a summary uses.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`,
-        );
-      },
+      render: async (ctx) => renderSummariesLane(ctx.summaries(), ctx.agentId, summariesCeiling),
     },
     // SWEEP CORE-2 item 4: `lane.relevant-memory` LEFT this candidate list. It is a
     // post-budget TAIL lane now (`memory/recall-lane.ts`, MessageSlot.RecalledMemory = 1870):
@@ -1684,7 +1677,7 @@ async function assembleMessageContext(
       budget: contentBudget, before: tailBefore, kept: tailPayload?.rows ?? [], outOfViewThroughSeq,
       cached: report.grants.filter((g) => g.slot < MessageSlot.FreshTail).reduce((n, g) => n + g.granted, 0),
       summaries: laneCtx.summaries(), summaryGrantTokens: summaryGrant?.granted ?? 0,
-      summariesAdmitted: summaryGrant ? selectSummariesForPrefix(laneCtx.summaries(), summariesCeilingFor(contentBudget)) : [],
+      summariesAdmitted: (candidates.find((c) => c.lane.id === 'lane.summaries')?.render?.payload as SummariesPayload | undefined)?.chosen ?? [],
     }, policy, systemTokens) };
   }
 
@@ -2096,39 +2089,7 @@ export function compileOrderReachedTheModel(
   return orders.some((m) => text.includes(m.content as string));
 }
 
-// t141 — ONE CLOCK: `earliest`/`latest` were bare UTC beside a local-time tail. Cached region:
-// moves ONCE per agent (argued in the t141 report), never again — stored columns only.
-// t144 — and the ONE conversation the note is about (labelled, never filtered: OR-LABEL-NOT-HIDE).
-function formatSummaryXml(summary: Summary, facts: LabelFacts): string {
-  const earliest = renderInstant(summary.earliestAt) ?? summary.earliestAt;
-  const latest = renderInstant(summary.latestAt) ?? summary.latestAt;
-  return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" conversation="${summaryConversationLabel(summary, facts)}" earliest="${earliest}" latest="${latest}">
-${summary.content}
-</summary>`;
-}
-
-// ── SUMMARY SELECTION (T67b §4 rewrites the rule this block declares) ───────────────────
-//
-// THE OLD RULE, and why it could not stay. Remediation Phase 2 replaced a recency packer
-// that loaded ~50K tokens of mostly-irrelevant history with a MEANING-ranked selection under
-// a hard cap, and the cap is what made that a real improvement. But the ranking query was
-// `buildPerTurnRecallQuery` — THE LIVE ASK — and this lane sits at MessageSlot.Summaries =
-// 300, ahead of the entire conversation. So the lane re-picked its set on every turn and
-// rewrote bytes the provider had already cached, which is the class T67b exists to close and
-// which SWEEP CORE-2 item 4 had already settled for `lane.relevant-memory`: a lane ahead of
-// the tail may hold only session-stable content.
-//
-// THE RULE NOW: newest-first under the SAME declared ceiling, emitted chronologically, with
-// no query of any kind. `selectSummariesForPrefix` is that rule, and it subsumes
-// `budgetSummaries` — the old internal fallback — so there is ONE selector rather than a
-// primary and a shadow. It is a pure function of (the summary set, the ceiling), so two
-// assemblies with no summary written between them are byte-identical here.
-//
-// PHASE-3 T3: `SUMMARY_RELEVANCE_BUDGET_TOKENS = 6000` and `SUMMARY_RECENCY_FLOOR = 2`
-// (§T0-B E `:1587`/`:1588`) are lane declarations — `LANE_LIMITS['lane.summaries']` — and the
-// caller passes the lane's own granted ceiling rather than re-deriving a share here. The
-// recency floor survives as a FLOOR: the newest N summaries are the compressed tail of the
-// live thread and ride along even when the ceiling is too small to hold them by cost alone.
+// t210: the summaries lane (render, selection, room-driven truncate) is `memory/summaries-lane.ts`.
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // W81 — THE SCRATCHPAD AND THE EVENTS BLOCK, RENDERED FOR THE TAIL.
@@ -2227,30 +2188,6 @@ export function eventsLaneWorstCaseTokens(): number {
   const lines = Array.from({ length: rows }, () => `• HANDLED ${at}[${label}] ${'g'.repeat(gistCap)}`);
   eventsWorstCase = estimateTokens(renderEventsBlock(lines) ?? '');
   return eventsWorstCase;
-}
-
-export function selectSummariesForPrefix(summaries: Summary[], budget: number): Summary[] {
-  if (summaries.length === 0) return [];
-  const floorCount = laneLimit('lane.summaries', 'tokens', 'recencyFloor');
-  const picked = new Set<string>();
-  let used = 0;
-
-  // The continuity floor first, oldest-of-the-floor first so its cost is spent in the same
-  // order every time (a set built in two different orders can hold two different sets when
-  // the ceiling bites mid-way).
-  for (const s of summaries.slice(-floorCount)) {
-    picked.add(s.id);
-    used += s.tokenCount;
-  }
-  // Then the rest, newest-first, while they fit. Chronological on the way out.
-  for (let i = summaries.length - 1; i >= 0; i--) {
-    const s = summaries[i];
-    if (picked.has(s.id)) continue;
-    if (used + s.tokenCount > budget) continue;
-    picked.add(s.id);
-    used += s.tokenCount;
-  }
-  return summaries.filter((s) => picked.has(s.id));
 }
 
 // ── The recall lane MOVED (SWEEP CORE-2 item 4) ─────────────────────────────────────────

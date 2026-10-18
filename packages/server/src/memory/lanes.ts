@@ -267,18 +267,15 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // which is that module's declaration and not this lane's.
   'lane.vault': {},
 
-  // §T0-B C `:840`(30) — the fresh-technique scrub window. E `:1587`/`:1588`/`:1595`/`:1637`
-  // — the relevance budget, the recency floor, and the share of what remains.
-  //
-  // T67b: `retrieval.limit` / `retrieval.minSimilarity` are RETIRED with the vector ranking
-  // they parameterised — this lane sits ahead of the tail and no longer asks what the live
-  // ask is (see `selectSummariesForPrefix`). `relevanceBudget` keeps its name and its job:
-  // it is the lane's token CEILING and always was. `scrubWindow` keeps its number and gains
-  // a new meaning stated where it is read — the cap on tool rows scanned SINCE SESSION START,
-  // rather than a scrolling last-N window whose exit re-wrote the lane.
+  // §T0-B C `:840`(30) — the fresh-technique scrub window. E `:1587`/`:1595` — the relevance
+  // budget and the share of what remains. T67b retired the vector ranking's two numbers.
+  // `scrubWindow` is the cap on tool rows scanned SINCE SESSION START. t210: `relevanceBudget`
+  // decides how many OLDER summaries ride along, never cuts the newest, and the recency floor
+  // is DELETED: it forced the two newest in over the ceiling and the fit then cut the newest
+  // (`memory/summaries-lane.ts` states the rule that replaces it: the newest is always whole).
   'lane.summaries': {
     rows: { scrubWindow: 30 },
-    tokens: { relevanceBudget: 6000, recencyFloor: 2 },
+    tokens: { relevanceBudget: 6000 },
   },
 
   // §T0-B E `:1646`/`:1647`, F `:1755`(8/0.35), `:1758`(fts 8), `:1805`(6/0.45),

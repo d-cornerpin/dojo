@@ -238,14 +238,11 @@ describe('the summaries lane header says which block is current', () => {
     const path = await import('node:path');
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const src = fs.readFileSync(path.resolve(here, '../assembler.ts'), 'utf8');
-    // W81: the end bound was `src.indexOf("id: 'lane.attempt-ledger'")`, and that declaration
-    // LEFT this file when the lane moved below the conversation — `indexOf` returned -1 and
-    // `slice(start, -1)` silently widened the window to the rest of the file, which is how a
-    // source-slice clause goes vacuous without going red. The bound is DERIVED now: the next
-    // lane declaration of any name after this one, so a future move cannot repeat it.
-    const from = src.indexOf("id: 'lane.summaries'");
-    const next = src.indexOf("id: 'lane.", from + 10);
+    // t210: the lane's render (and its header) moved to `memory/summaries-lane.ts`; the slice is
+    // the header's own declaration there, bounded by the footer's, so it cannot widen silently.
+    const src = fs.readFileSync(path.resolve(here, '../summaries-lane.ts'), 'utf8');
+    const from = src.indexOf('const HEAD =');
+    const next = src.indexOf('const FOOT =', from);
     expect(from).toBeGreaterThan(0);
     expect(next).toBeGreaterThan(from);
     const lane = src.slice(from, next);
@@ -264,7 +261,7 @@ describe('the summaries lane header says which block is current', () => {
     expect(lane).toContain('OPEN COMMITMENTS');
     expect(lane).not.toContain('the OPEN WORK block is the current record of what is owed');
     // it is STATIC — no interpolation joined the header, so the prefix stays byte-stable
-    const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'), lane.indexOf('${summaryText}'));
+    const header = lane.slice(lane.indexOf('═══ COMPRESSED HISTORY'));
     expect(header.length).toBeGreaterThan(200);
     expect(header, 'the header is a literal; only the summaries themselves interpolate')
       .not.toContain('${');
@@ -277,5 +274,7 @@ describe('the summaries lane header says which block is current', () => {
     const here = path.dirname(url.fileURLToPath(import.meta.url));
     const src = fs.readFileSync(path.resolve(here, '../assembler.ts'), 'utf8');
     expect(src).not.toContain('annotateSummaryObligations');
+    // t210: the lane's render moved to `summaries-lane.ts`; the law follows it.
+    expect(fs.readFileSync(path.resolve(here, '../summaries-lane.ts'), 'utf8')).not.toContain('annotateSummaryObligations');
   });
 });
