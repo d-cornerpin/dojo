@@ -8879,6 +8879,27 @@
       "to": 109,
       "by": "t202 (2026-10-17), v3.4 A2 + D10: one live copy of a recovered answer; the 32K main-model floor",
       "why": "+1: the retire call (one comment line plus one statement) replacing nothing; the recovery keeps writing the answer unchanged. Owner ruling v3.4 decision 19. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/run-one.ts",
+      "from": 285,
+      "to": 288,
+      "by": "t203 (2026-10-17), Stop ends a turn whose tool call is stuck (B6, decision 5)",
+      "why": "+3: the import of `runUnlessStopped` and the one call that replaces the bare `await executeTool` with the race against the owner's Stop, plus the early return of the cut call's slot. This is the executor choke point the investigation names; the race has to sit on the single `executeTool` call, and putting it anywhere else (the batch loop in index.ts) would mean racing twice, once per arm. THE MECHANISM IS NOT HERE: the race, the cancel wording and the owner's after-stop notice live in the new `agent/v2/steps/execute/stop-race.ts`; the stop waiters in the new `agent/stop-waiters.ts`; the process-tree kill in the new `agent/effects/proc-tree.ts`. What this file gained is the call into it and nothing else. REFUSED: returning the cut slot through the normal post-result path to save the early return — that path records the call in the cross-turn attempt record and the identical-call brake as a FAILURE of the tool, which a call the owner cut is not."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/index.ts",
+      "from": 310,
+      "to": 312,
+      "by": "t203 (2026-10-17), Stop ends a turn whose tool call is stuck (B6, decision 5)",
+      "why": "+2: the import of the shared cancel text (the two literal copies already here now use it) and ONE check after the batch loop, so a stop that lands during the LAST batch exits through the existing `stopped-mid-batch` arm and latches the engine cut as `stop` (the turn record says the owner ended it). Without it a raced cancel in the final batch would fall through to another model dial that the pre-call gate then refuses. THE MECHANISM IS NOT HERE: the race, the cancel wording and the owner's after-stop notice live in the new `agent/v2/steps/execute/stop-race.ts`; the stop waiters in the new `agent/stop-waiters.ts`; the process-tree kill in the new `agent/effects/proc-tree.ts`. What this file gained is the call into it and nothing else. [re-pinned by the orchestrator at the stacked merge: 310 -> 312, the same +2 on top of the earlier lanes in the stack]"
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1793,
+      "to": 1795,
+      "by": "t203 (2026-10-17), Stop ends a turn whose tool call is stuck (B6, decision 5)",
+      "why": "+2: one import and one call in `stopAgent` — `notifyUserStop`, so every executor WAIT on a running tool call ends when the owner presses Stop. It cannot ride the existing `abortInFlight` call: the waiters are deliberately NOT abort-registry entries, because `preemptAgentForUrgentMessage` counts the turn-scoped entries to decide whether a barge-in has anything to cut, and an entry per running tool would make every tool call count. THE MECHANISM IS NOT HERE: the race, the cancel wording and the owner's after-stop notice live in the new `agent/v2/steps/execute/stop-race.ts`; the stop waiters in the new `agent/stop-waiters.ts`; the process-tree kill in the new `agent/effects/proc-tree.ts`. What this file gained is the call into it and nothing else."
     }
   ],
   "maxNewFileLines": 400,
@@ -8948,7 +8969,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 407,
-    "packages/server/src/agent/runtime.ts": 1793,
+    "packages/server/src/agent/runtime.ts": 1795,
     "packages/server/src/agent/shared-state.ts": 458,
     "packages/server/src/agent/spawner.ts": 1470,
     "packages/server/src/agent/stream-patience.ts": 473,
@@ -8996,11 +9017,11 @@
     "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 400,
     "packages/server/src/agent/v2/steps/execute/delegation-exit.ts": 176,
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 266,
-    "packages/server/src/agent/v2/steps/execute/index.ts": 310,
+    "packages/server/src/agent/v2/steps/execute/index.ts": 312,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
     "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 389,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 147,
-    "packages/server/src/agent/v2/steps/execute/run-one.ts": 285,
+    "packages/server/src/agent/v2/steps/execute/run-one.ts": 288,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 98,
     "packages/server/src/agent/v2/steps/execute/tracker-counting.ts": 203,
     "packages/server/src/agent/v2/steps/execute/tracker-floors.ts": 349,
