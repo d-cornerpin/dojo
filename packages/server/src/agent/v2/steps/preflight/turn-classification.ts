@@ -212,8 +212,9 @@ export async function runTurnClassification(
   // re-relay the deliverable to the owner.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
     // P1 lineage spine: an A2A wake turn's root is its thread.
-    const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
-    if (twThread) turnCtx.root = { kind: 'a2a', id: String(twThread), sourceMessageId: null };
+    // t211: the wake's field is `threadId`; this read once asked for `a2a_thread_id` (the column name) and so
+    // never set the root.
+    if (terminalWakeA2A.threadId) turnCtx.root = { kind: 'a2a', id: terminalWakeA2A.threadId, sourceMessageId: null };
     turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);   // t207 (D8)
   }
 

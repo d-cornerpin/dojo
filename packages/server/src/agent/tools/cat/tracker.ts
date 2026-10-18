@@ -565,7 +565,7 @@ const tableOfHandlers: ToolHandlerMap = {
       description: args.description as string,
       conversationId: coRoot?.conversationId ?? null,
       turnNumber: coTurn,
-      sourceMessageId: coRoot?.id ?? null,
+      sourceMessageId: coRoot?.sourceMessageId ?? null,
     });
     if (!coId) {
       content = 'Error: pass the promise you made as `description`.';
