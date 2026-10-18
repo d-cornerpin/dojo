@@ -17,6 +17,7 @@ import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { isRowUnserved } from '../../../../memory/message-store.js';
+import { messageIdAtSeq } from '../../../../memory/served-ask.js';
 import { forceA2ATurn, lastTurnWasA2A } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { UnrepliedAssign } from '../../../a2a-replies.js';
@@ -28,15 +29,6 @@ import { preflightAbandon, preflightProceed, type PreflightOutcome } from '../st
 import type { PreflightContext, PreflightScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
-
-/** The id of this agent's message at `seq` (the "rowid" the inbound reads carry), or null. */
-function messageIdAtSeq(db: Database, agentId: string, seq: number): string | null {
-  try {
-    return (db.prepare('SELECT id FROM messages WHERE agent_id = ? AND seq = ?').get(agentId, seq) as { id: string } | undefined)?.id ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /** What the sections before this one produced that it reads. */
 export interface TurnClassificationInputs {
@@ -213,14 +205,8 @@ export async function runTurnClassification(
   // and its own thread is scoped instead). Only then is the terminal message the one
   // this turn scopes to and should claim.
   const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null && unrepliedAssign === null;
-  // PHASE-2 T4: the terminal-wake claim is the SERVE edge, not a fake conversation.
-  //
-  // It used to stamp `conv_key='a2a'` — a sentinel that is not a conversation, on the column
-  // that carries conversation IDENTITY, purely so `findUnservedTerminalWake` (whose predicate
-  // was `conv_key IS NULL`) would stop returning the row. That is the same overloading the
-  // owner-ask queue was rekeyed off at T3, and it is the last one in the A2A lane (3l).
-  // `messages.served_by_turn` already means exactly "a turn took this", it is already stamped
-  // on this row a few lines below, and the finder now reads it.
+  // PHASE-2 T4: the terminal-wake claim is the SERVE edge (`messages.served_by_turn`, stamped on this
+  // row a few lines below, and what the finder reads), not a fake `conv_key='a2a'` conversation.
   // requirement preserved: the driving wake drives exactly ONE turn — without a stamp it stays
   // most-recent and unserved, and a later spurious wake would re-detect it and (worst case)
   // re-relay the deliverable to the owner.
@@ -228,8 +214,7 @@ export async function runTurnClassification(
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
     if (twThread) turnCtx.root = { kind: 'a2a', id: String(twThread), sourceMessageId: null };
-    // t207 (D8): the deliverable that woke this turn is what it serves until it ends.
-    turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);
+    turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);   // t207 (D8)
   }
 
   // ── Engine turn classification (OPEN-11) ──
@@ -330,8 +315,7 @@ export async function runTurnClassification(
       turnCtx.root = pendingEngineEvent.runId
         ? { kind: 'occurrence', id: pendingEngineEvent.runId, sourceMessageId: null }
         : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null };
-      // t207 (D8): the event's own row is the trigger this turn serves until it ends.
-      turnCtx.triggerMessageId = pendingEngineEvent.id;
+      turnCtx.triggerMessageId = pendingEngineEvent.id;   // t207 (D8)
       if (pendingEngineEvent.taskId) {
         try {
           // PHASE-6 T0D: the map used to be set even when this read came back

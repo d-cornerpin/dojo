@@ -93,7 +93,8 @@ import {
   assembleContext, selectSummariesForPrefix, renderScratchpadBlock, renderEventsBlock,
   scratchpadWorstCaseTokens, eventsLaneWorstCaseTokens,
 } from '../assembler.js';
-import { activeTasksWorstCaseTokens, attemptLedgerWorstCaseTokens } from '../work-board-lane.js';
+import { activeTasksWorstCaseTokens } from '../work-board-lane.js';
+import { attemptLedgerWorstCaseTokens } from '../attempt-ledger.js';
 import { POST_BUDGET_LANES, LANE_PRIORITY, isProtectedLaneId } from '../lanes.js';
 import { estimateTokens } from '../budget.js';
 import { MessageSlot } from '../../prompt/registry/types.js';

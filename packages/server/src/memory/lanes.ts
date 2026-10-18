@@ -338,12 +338,9 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
     chars: { tool: 60 },
   },
 
-  // §T0-B E `:911`(800) — the ledger's own hard ceiling, and C `:896`/`:897`/`:898`,
-  // D `:959`/`:962`, C `:892`(0,2), `:949`(0,5).
-  //
-  // t207 (D6): the ledger has NO row counts and NO token cap any more. It is laid out in the room the array
-  // leaves after the task list (`memory/work-board-lane.ts`); what is declared here are two WIDTHS, not
-  // limits on how much it says: the width a task title is printed at, and the width its guaranteed newest
+  // t207 (D6): the ledger has NO row counts and NO token cap (it was §T0-B E `:911`, 800). It is laid out in
+  // the room the array leaves after the task list (`memory/work-board-lane.ts`); declared here are two WIDTHS,
+  // not limits on how much it says: the width a task title prints at, and the width its guaranteed newest
   // entry is offered when the room is scarce (a longer entry is cut with the cut said).
   'lane.attempt-ledger': {
     chars: { title: 120, entryFloor: 400 },
@@ -523,7 +520,7 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     reserveTokens: 239,
     measured:
       't207 (D6), DERIVED BY CALLING THE RENDERER: `attemptLedgerWorstCaseTokens()` '
-      + '(`memory/work-board-lane.ts`) renders the smallest block the ledger promises: the frame, one task at the '
+      + '(`memory/attempt-ledger.ts`) renders the smallest block the ledger promises: the frame, one task at the '
       + 'title width carrying a revert note, a pointer to its notes and an "earlier entries" line, and its newest '
       + 'entry at the entry floor = 239 tokens. It was 800 (W81, the lane\'s old hard ceiling, which also capped '
       + 'it at 2 tasks and 6 entries each); the ledger now has no ceiling and is laid out in the room the array '

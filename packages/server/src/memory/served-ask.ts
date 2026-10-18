@@ -42,6 +42,7 @@ import { jobOrigin } from '../work/job-origin.js';
 import { findUnrepliedAssignForAgent } from '../agent/a2a-replies.js';
 import { getMessagesByIds } from './store.js';
 import type { Message } from '@dojo/shared';
+import type { Database } from 'better-sqlite3';
 
 /** The message ids the running turn serves, oldest first; `[]` when none. */
 export function servedOwnerMessageIds(agentId: string): string[] {
@@ -94,6 +95,15 @@ export function servedAssignMessageIds(agentId: string): string[] {
     return assign ? [assign.messageId] : [];
   } catch {
     return [];
+  }
+}
+
+/** The id of this agent's message at `seq` (the "rowid" the inbound reads carry), or null. */
+export function messageIdAtSeq(db: Database, agentId: string, seq: number): string | null {
+  try {
+    return (db.prepare('SELECT id FROM messages WHERE agent_id = ? AND seq = ?').get(agentId, seq) as { id: string } | undefined)?.id ?? null;
+  } catch {
+    return null;
   }
 }
 

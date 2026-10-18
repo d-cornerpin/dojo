@@ -423,8 +423,8 @@ export interface AssembledContext {
   freshTailDropped?: number;
   /**
    * t140 round 2 (re-review C1): the newest `messages.seq` this assembly took OUT of the live
-   * view — the token trim's front cut (`budgetFreshTail`) or the horizon's row-ceiling skip,
-   * whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
+   * view — the token trim's front cut (`budgetFreshTail`) or the rows the horizon's bounded read
+   * left unread, whichever reaches further. 0/absent when nothing left the view. Every unsummarised row at or
    * below it is out of view with no summary, which the engine's assembly door
    * (`out-of-view-fold.ts`'s `assembleWithNothingOutOfViewUnsummarised`) folds before the turn dials.
    * Read off the trim's own result, so the fold covers exactly what the trim took.
@@ -1233,11 +1233,10 @@ function buildContentLanes(
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
         // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
-        const elsewhere = p.inEvents ?? [];
-        let served = servedRowsOutOfView(p.agentId, [...kept, ...elsewhere]);
+        let served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]);
         if (served.length > 0) {
           kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));
-          served = servedRowsOutOfView(p.agentId, [...kept, ...elsewhere]);
+          served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]);
         }
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
@@ -1251,7 +1250,6 @@ function buildContentLanes(
         // Pre-cap oversized tool_result content BEFORE budgeting: without it a single
         // 5.9MB tool_result consumes the whole budget and evicts the user's question.
         const rows = capLargeToolResultStrings(freshTail);
-        // t207 (D8): the awareness rows the EVENTS lane renders are in view there (its newest N).
         const inEvents = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events'));
         return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: servedRowsOutOfView(ctx.agentId, [...rows, ...inEvents]), inEvents });
       },
@@ -1459,14 +1457,9 @@ async function assembleMessageContext(
 
   // ── The lane render context ──
   let tailCache: { freshTail: Message[]; awarenessEvents: Message[] } | null = null;
-  // t94: rows the HORIZON's ceiling skipped, carried out to FA-M1's `freshTailDropped`.
-  // The pre-t94 row window dropped two rows off the front every turn and counted NOTHING —
-  // `freshTailDropped` only ever saw the token trimmer's evictions, so the dominant trim was
-  // invisible to the receipt and to the dashboard toast alike. A ceiling trim is the rare
-  // large one, and "large and rare" is only safe if it is also LOUD in the channel a person
-  // reads: the same one, with the same words, now carrying the real number.
+  // t94: rows the HORIZON's bounded read left unread, carried out to FA-M1's `freshTailDropped`.
   let horizonSkippedRows = 0;
-  /** t140 round 2: the newest seq the horizon's row ceiling skipped (0: it skipped nothing). */
+  /** t140 round 2: the newest seq the horizon's bounded read left unread (0: it left none). */
   let horizonSkippedThroughSeq = 0;
   let summaryCache: Summary[] | null = null;
   const laneCtx: LaneRenderCtx = {
@@ -1510,9 +1503,8 @@ async function assembleMessageContext(
       // behind the new row 0. The owner's capture is 55K tokens ≈ 270s per turn; this lane's
       // instrument measured 8,856 of 8,908 bytes re-billed on 15 consecutive fictional turns
       // with the token budget nowhere near binding. `memory/tail-horizon.ts` carries the
-      // whole derivation, the ceiling and its hysteresis.
-      // t207: the read stops once the newest rows cover twice the content budget (the half-the-tail trim law
-      // needs that much to have a legal cut); rows before that point are unread, set aside and owed their fold.
+      // whole derivation and its hysteresis.
+      // t207: the read stops once the newest rows cover twice the content budget; the rest are owed their fold.
       const horizon = freshTailHorizon(agentId, policy, 2 * contentBudget);
       horizonSkippedRows = horizon.unreadRows;
       horizonSkippedThroughSeq = horizon.unreadRows > 0 && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0;
@@ -2364,8 +2356,6 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
       const len = contentStr.length;
       const turnLabel = msg.turnNumber !== null && msg.turnNumber !== undefined ? `turn ${msg.turnNumber}` : 'pre-v2 history';
       messageChanged = true;
-      // t207 (t200): the whole result is kept (the row, or the store), so the stub points to the reader
-      // and never advises running the tool again.
       const readBack = b.tool_use_id ? `; ${readCall(b.tool_use_id)} reads it back` : '';
       return {
         ...b,
