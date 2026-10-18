@@ -15,8 +15,16 @@
 //     behind a delegation, say) is NOT this turn's and is never re-shown by it;
 //   * a continuation carrying a job (no trigger of its own): exactly the ask(s) the parking turn served,
 //     carried on t143's job record (`work/task-freshness.ts`) and still claimed.
-// With no running turn, or any other kind of turn (engine, A2A, occurrence), the answer is empty, so
-// a finished ask is never re-shown (the #7 defect). Oldest first. Never throws.
+// With no running turn, or any other kind of turn (engine, A2A, occurrence), `servedOwnerMessageIds` is
+// empty, so a finished ask is never re-shown (the #7 defect). Oldest first. Never throws.
+//
+// t207 (D8) — EVERY OTHER KIND OF TURN SERVES ITS OWN TRIGGER. The two answers above and the assignment below
+// were built per trigger type, so a terminal-wake A2A turn (a peer's deliverable woke the agent), an engine
+// turn and an occurrence turn relied on staying in view, and a fold took the trigger out from under them.
+// One rule instead of a list: the turn's claim records the row that woke it on its root
+// (`triggerMessageId` on the turn's bag, `agent/turn-context.ts`), and `servedTriggerMessageIds` returns it for as long as
+// the turn runs. "A finished trigger is never re-shown" holds by scope: the bag exists only while the turn
+// runs, and it names this turn's trigger, not older ones.
 //
 // t159 I — AN A2A TURN SERVES ITS ASSIGNED MESSAGE TOO (`servedAssignMessageIds`, a separate answer on
 // purpose: `servedOwnerMessageIds` is the owner's words and is what a PARK carries on the job record;
@@ -89,9 +97,20 @@ export function servedAssignMessageIds(agentId: string): string[] {
   }
 }
 
+/** The row that woke the running turn, for a turn kind whose root is not itself a message (t207, D8); `[]`
+ *  otherwise. An ask's trigger is already `servedOwnerMessageIds`' first answer. */
+export function servedTriggerMessageIds(agentId: string): string[] {
+  try {
+    const bag = turnContext(agentId);
+    return bag && bag.root?.kind !== 'ask' && bag.triggerMessageId ? [bag.triggerMessageId] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** The served rows that are NOT among `inView` (compared by id), as stored rows, oldest first. */
 export function servedRowsOutOfView(agentId: string, inView: readonly { id: string }[]): Message[] {
-  const ids = [...servedOwnerMessageIds(agentId), ...servedAssignMessageIds(agentId)];
+  const ids = [...new Set([...servedOwnerMessageIds(agentId), ...servedAssignMessageIds(agentId), ...servedTriggerMessageIds(agentId)])];
   if (ids.length === 0) return [];
   const seen = new Set(inView.map((m) => m.id));
   const missing = ids.filter((id) => !seen.has(id));

@@ -930,6 +930,9 @@ type TailPayload = {
   served?: Message[];
   /** t140 round 2: the newest seq the token trim has taken off this tail's front (0: none). */
   droppedThroughSeq?: number;
+  /** t207 (D8): rows the EVENTS lane carries (the awareness rows it renders). A served trigger that is one of
+   *  them is in view there and is not re-emitted beside it. */
+  inEvents?: Array<{ id: string }>;
 };
 
 // STRIP (T56): `storedRowCost` MOVED to `memory/budget.ts`, with its PHASE-3 T3 history
@@ -1230,24 +1233,27 @@ function buildContentLanes(
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
         // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
-        let served = servedRowsOutOfView(p.agentId, kept);
+        const elsewhere = p.inEvents ?? [];
+        let served = servedRowsOutOfView(p.agentId, [...kept, ...elsewhere]);
         if (served.length > 0) {
           kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));
-          served = servedRowsOutOfView(p.agentId, kept);
+          served = servedRowsOutOfView(p.agentId, [...kept, ...elsewhere]);
         }
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
         // at the row just before it.
         const droppedThroughSeq = Math.max(p.droppedThroughSeq ?? 0, dropped > 0 ? (p.rows[dropped - 1].rowid ?? 0) : 0);
-        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served });
+        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served, inEvents: p.inEvents });
       },
       render: (ctx) => {
-        const { freshTail } = ctx.tail();
+        const { freshTail, awarenessEvents } = ctx.tail();
         if (freshTail.length === 0) return null;
         // Pre-cap oversized tool_result content BEFORE budgeting: without it a single
         // 5.9MB tool_result consumes the whole budget and evicts the user's question.
         const rows = capLargeToolResultStrings(freshTail);
-        return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: servedRowsOutOfView(ctx.agentId, rows) });
+        // t207 (D8): the awareness rows the EVENTS lane renders are in view there (its newest N).
+        const inEvents = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events'));
+        return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: servedRowsOutOfView(ctx.agentId, [...rows, ...inEvents]), inEvents });
       },
     },
   ];

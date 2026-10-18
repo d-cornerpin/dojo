@@ -35,7 +35,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
-import { openTurnContext, endTurnContext, type TurnRoot } from '../../agent/turn-context.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { servedRowsOutOfView } from '../served-ask.js';
 import { assembleContext } from '../assembler.js';
 import { runTurnClassification } from '../../agent/v2/steps/preflight/turn-classification.js';
@@ -76,6 +76,17 @@ beforeEach(() => {
 });
 afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
+/** A compaction fold: a leaf summary now covers these rows, so the boundary moves past them and they leave the live view. */
+function fold(...ids: string[]): void {
+  const db = mockDb.current!;
+  db.prepare(
+    `INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, descendant_count, earliest_at, latest_at, created_at)
+     VALUES ('sum-fold', ?, 1, 'leaf', 'Earlier the crew worked on the ledger audit.', 12, ?, datetime('now'), datetime('now'), datetime('now'))`,
+  ).run(AGENT, ids.length);
+  db.prepare("INSERT INTO context_items (agent_id, item_type, item_id, ordinal) VALUES (?, 'summary', 'sum-fold', 0)").run(AGENT);
+  for (const id of ids) db.prepare('INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)').run('sum-fold', id);
+}
+
 /** `pairs` rounds of the worker's own tool work after the trigger, padded so a 40K window cannot hold them all. */
 function ownWork(pairs: number): void {
   for (let i = 0; i < pairs; i++) {
@@ -95,8 +106,12 @@ const wire = async (): Promise<{ text: string; messages: Array<{ role: string; c
   const ctx = await assembleContext(AGENT, 'm');
   return { text: JSON.stringify(ctx.messages), messages: ctx.messages as Array<{ role: string; content: unknown }> };
 };
-const withTrigger = (root: Omit<TurnRoot, 'triggerMessageId'>, triggerMessageId: string): TurnRoot =>
-  ({ ...root, triggerMessageId } as TurnRoot);
+/** The trigger is a user message that sits ahead of the first of the turn's own tool rows. */
+const leadsTheLiveWork = (messages: Array<{ role: string; content: unknown }>, words: string): boolean => {
+  const at = messages.findIndex((m) => JSON.stringify(m.content).includes(words));
+  const firstWork = messages.findIndex((m) => JSON.stringify(m.content).includes('page 0 '));
+  return at >= 0 && messages[at].role === 'user' && (firstWork < 0 || at < firstWork);
+};
 
 describe('t207 D8 — the trigger of every kind of turn stays in view', () => {
   it('a terminal-wake A2A turn: the peer\'s deliverable, behind the boundary, is re-emitted once and labelled', async () => {
@@ -104,43 +119,60 @@ describe('t207 D8 — the trigger of every kind of turn stays in view', () => {
       id: 'wake-row', agentId: AGENT, role: 'user', lane: 'a2a', content: `[A2A:DELIVERABLE thread:f00dcafe from:Helper] ${DELIVERABLE}`,
       sourceAgentId: PEER, a2aThreadId: THREAD, a2aIntent: 'DELIVERABLE',
     });
+    fold('wake-row');                    // the fold takes the deliverable behind the boundary
     ownWork(40);
     const bag = openTurnContext(AGENT);
     bag.kind = 'a2a';
-    bag.root = withTrigger({ kind: 'a2a', id: THREAD, sourceMessageId: null }, 'wake-row');
+    bag.root = { kind: 'a2a', id: THREAD, sourceMessageId: null };
+    bag.triggerMessageId = 'wake-row';
     const { text, messages } = await wire();
     expect(occurrences(text, DELIVERABLE), 'the deliverable, once').toBe(1);
     expect(occurrences(text, LABEL), 'labelled').toBe(1);
-    expect(JSON.stringify(messages[0])).toContain(DELIVERABLE);
-    expect(messages[0].role).toBe('user');
+    expect(leadsTheLiveWork(messages, DELIVERABLE), 'it leads the live work, ahead of the tool rows').toBe(true);
     expect(text).toContain('page 39');
   });
 
   it('an engine turn: the engine notice, behind the boundary, is re-emitted once and labelled', async () => {
     insertMessage({ id: 'engine-row', agentId: AGENT, role: 'user', lane: 'events', content: ENGINE_NOTICE, originIntent: 'completion_report' });
+    fold('engine-row');
     ownWork(40);
     const bag = openTurnContext(AGENT);
-    bag.root = withTrigger({ kind: 'engine', id: 'engine-row', sourceMessageId: null }, 'engine-row');
+    bag.root = { kind: 'engine', id: 'engine-row', sourceMessageId: null };
+    bag.triggerMessageId = 'engine-row';
     const { text, messages } = await wire();
     expect(occurrences(text, ENGINE_NOTICE), 'the notice, once').toBe(1);
     expect(occurrences(text, LABEL), 'labelled').toBe(1);
-    expect(JSON.stringify(messages[0])).toContain(ENGINE_NOTICE);
+    expect(leadsTheLiveWork(messages, ENGINE_NOTICE), 'it leads the live work, ahead of the tool rows').toBe(true);
   });
 
   it('an occurrence turn: the scheduled directive, behind the boundary, is re-emitted once and labelled', async () => {
     insertMessage({ id: 'occ-row', agentId: AGENT, role: 'user', lane: 'events', content: OCCURRENCE, originIntent: 'scheduled_task' });
+    fold('occ-row');
     ownWork(40);
     const bag = openTurnContext(AGENT);
-    bag.root = withTrigger({ kind: 'occurrence', id: 'run-1', sourceMessageId: null }, 'occ-row');
+    bag.root = { kind: 'occurrence', id: 'run-1', sourceMessageId: null };
+    bag.triggerMessageId = 'occ-row';
     const { text } = await wire();
     expect(occurrences(text, OCCURRENCE), 'the directive, once').toBe(1);
     expect(occurrences(text, LABEL), 'labelled').toBe(1);
   });
 
+  it('an engine trigger still in the read is carried by the EVENTS lane and is not re-emitted beside it', async () => {
+    insertMessage({ id: 'engine-row', agentId: AGENT, role: 'user', lane: 'events', content: ENGINE_NOTICE, originIntent: 'completion_report' });
+    ownWork(40);                         // trimmed off the live view by the window, but never folded: the lane still has it
+    const bag = openTurnContext(AGENT);
+    bag.root = { kind: 'engine', id: 'engine-row', sourceMessageId: null };
+    bag.triggerMessageId = 'engine-row';
+    const { text } = await wire();
+    expect(occurrences(text, ENGINE_NOTICE), 'once, in the events lane').toBe(1);
+    expect(occurrences(text, LABEL), 'not also re-served').toBe(0);
+  });
+
   it('a trigger that is already in view is not shown twice, and a finished turn re-shows nothing', async () => {
     insertMessage({ id: 'engine-row', agentId: AGENT, role: 'user', lane: 'events', content: ENGINE_NOTICE, originIntent: 'completion_report' });
     const bag = openTurnContext(AGENT);
-    bag.root = withTrigger({ kind: 'engine', id: 'engine-row', sourceMessageId: null }, 'engine-row');
+    bag.root = { kind: 'engine', id: 'engine-row', sourceMessageId: null };
+    bag.triggerMessageId = 'engine-row';
     expect(servedRowsOutOfView(AGENT, [{ id: 'engine-row' }]), 'in view: nothing to re-emit').toEqual([]);
     expect(servedRowsOutOfView(AGENT, []).map((m) => m.id)).toEqual(['engine-row']);
     endTurnContext(AGENT);
@@ -172,7 +204,7 @@ describe('t207 D8 — the claim records the trigger', () => {
     insertMessage({ id: 'engine-row', agentId: AGENT, role: 'user', lane: 'events', content: ENGINE_NOTICE, originIntent: 'completion_report' });
     const turnCtx = await classify();
     expect(turnCtx.root?.kind).toBe('engine');
-    expect((turnCtx.root as TurnRoot).triggerMessageId).toBe('engine-row');
+    expect(turnCtx.triggerMessageId).toBe('engine-row');
   });
 
   it('a peer\'s terminal deliverable is the root\'s trigger', async () => {
@@ -181,7 +213,6 @@ describe('t207 D8 — the claim records the trigger', () => {
       sourceAgentId: PEER, a2aThreadId: THREAD, a2aIntent: 'DELIVERABLE', a2aRequiresResponse: true,
     });
     const turnCtx = await classify();
-    expect(turnCtx.root?.kind).toBe('a2a');
-    expect((turnCtx.root as TurnRoot).triggerMessageId).toBe('wake-row');
+    expect(turnCtx.triggerMessageId).toBe('wake-row');
   });
 });

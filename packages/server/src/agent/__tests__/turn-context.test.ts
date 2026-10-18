@@ -50,7 +50,7 @@ const read = (p: string): string => readFileSync(path.join(SRC, p), 'utf8');
 const THE_TURN_OWNS = [
   'agentId',
   'kind', 'convKey', 'conversationId', 'imRecipient', 'modelRequestId',
-  'turnNumber', 'root', 'servedWork', 'receiptIds', 'recallTokens',
+  'turnNumber', 'root', 'servedWork', 'triggerMessageId', 'receiptIds', 'recallTokens',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
   'jobParked',   // t159 G2: written by `parkJob` (work/), read by `turnParkedTheJob` (v2/engine-exit): a published fact
 ];

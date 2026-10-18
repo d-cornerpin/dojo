@@ -29,6 +29,15 @@ import type { PreflightContext, PreflightScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
+/** The id of this agent's message at `seq` (the "rowid" the inbound reads carry), or null. */
+function messageIdAtSeq(db: Database, agentId: string, seq: number): string | null {
+  try {
+    return (db.prepare('SELECT id FROM messages WHERE agent_id = ? AND seq = ?').get(agentId, seq) as { id: string } | undefined)?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** What the sections before this one produced that it reads. */
 export interface TurnClassificationInputs {
   readonly db: Database;
@@ -219,6 +228,8 @@ export async function runTurnClassification(
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
     if (twThread) turnCtx.root = { kind: 'a2a', id: String(twThread), sourceMessageId: null };
+    // t207 (D8): the deliverable that woke this turn is what it serves until it ends.
+    turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);
   }
 
   // ── Engine turn classification (OPEN-11) ──
@@ -319,6 +330,8 @@ export async function runTurnClassification(
       turnCtx.root = pendingEngineEvent.runId
         ? { kind: 'occurrence', id: pendingEngineEvent.runId, sourceMessageId: null }
         : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null };
+      // t207 (D8): the event's own row is the trigger this turn serves until it ends.
+      turnCtx.triggerMessageId = pendingEngineEvent.id;
       if (pendingEngineEvent.taskId) {
         try {
           // PHASE-6 T0D: the map used to be set even when this read came back

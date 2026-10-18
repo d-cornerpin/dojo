@@ -152,6 +152,13 @@ export interface TurnContext {
   root: TurnRoot | null | undefined;
   servedWork: ServedWork | null | undefined;
 
+  /** t207 (D8): the message row that woke this turn, recorded at the claim for the turn kinds whose root is
+   *  not itself a message (a terminal-wake A2A, an engine event, an occurrence). Until the turn ends that row
+   *  is re-emitted, labelled, whenever a fold or the trim has taken it out of view (`memory/served-ask.ts`).
+   *  An ask's trigger is `root.sourceMessageId`; this is the same fact for every other kind. Kept beside the
+   *  root rather than on it: the root is the lineage origin, and a terminal wake's root is not recorded. */
+  triggerMessageId: string | null | undefined;
+
   /** C26: the register of engine-written tool_receipts ids. writeToolReceipt appends
    *  the moment it persists the row; the tracker complete gate demands a verified
    *  receipt for a turn that ran a send-class tool. Same-process, deterministic,
@@ -507,6 +514,7 @@ export function openTurnContext(agentId: string): TurnContext {
     turnNumber: undefined,
     root: undefined,
     servedWork: undefined,
+    triggerMessageId: undefined,
     receiptIds: [],
     recallTokens: 0,
     startAckTimer: null,
