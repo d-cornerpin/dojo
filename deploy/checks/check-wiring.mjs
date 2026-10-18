@@ -126,16 +126,6 @@ const ENTRIES = [
 // rather than a guess.
 const ALLOWLIST = [
   {
-    path: 'packages/server/src/agent/v2/full-context-wait.ts',
-    date: '2026-10-17',
-    owner: 'v3.4 orchestrator (hand-up from t194; context item 11 decides)',
-    reason:
-      'Its only callers were the context gate\'s two surrender arms, which t194 DELETED (owner decision 7: ' +
-      'a full view is condensed, never surrendered). It is outside t194\'s fence, and context item 11 ' +
-      '(the recovery cascade\'s two forced compactions still use a bare parkJob) proposes reusing ' +
-      '`parkAfterForcedPass` there — so wire it there or delete it; not a builder\'s guess.',
-  },
-  {
     path: 'packages/server/src/imaginer/imaginer-agent.ts',
     date: '2026-07-28',
     owner: 'SWEEP-F',
