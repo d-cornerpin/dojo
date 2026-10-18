@@ -8823,6 +8823,27 @@
       "to": 771,
       "by": "t200 (2026-10-17), D12: a long tool result is kept whole and read in parts",
       "why": "+1: `tool_result_read` in DEFAULT_ALWAYS_LOADED_TOOLS. The pointer on a long result names it, so it must be one call away for every agent, not behind a load_tool_docs round trip. From 771 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1071,
+      "to": 1084,
+      "by": "t201-followups (2026-10-17), the merged lanes' hand-ups",
+      "why": "+13: the t197 update phase `interrupted` gets its diagnostic item (UPDATE_INTERRUPTED, info, notify-only), one branch beside the two phases the collector already reported (rolled-back, failed-permanently): a 12-line items.push with the plain detail text the healer relays, plus a one-line comment and the phase listed in the collector's header. It is new capability, not new structure: the collector, its cap and its severity vocabulary are unchanged. The alternative, a second collector in a new file, would split one marker-reading function in two. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2147,
+      "to": 2152,
+      "by": "t201-followups (2026-10-17), the merged lanes' hand-ups",
+      "why": "+5: the scheduler's fire on a terminated assignee now records the move (cause assignee_gone, who, from, to) through the shared recorder `work/move-record.ts`, the way `moveAssignee` records. One import, a one-line recordMove call and a try/catch so a failed record cannot stop the tick; the recorder itself lives in the new work/move-record.ts (a 15-line file) so this file carries the call and nothing else. The task's own assignee is unchanged. From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/PlatformTab.tsx",
+      "from": 1042,
+      "to": 1043,
+      "by": "t201-followups (2026-10-17), the merged lanes' hand-ups",
+      "why": "+1: `keepCount`, the server's `keepDefault` (the owner chose two backups, decision 21), replaces the literal 1 in three places: the request, the button label and the button's own visibility test. One declaration line is the whole growth; the three uses are in-place edits. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -8848,7 +8869,7 @@
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
     "packages/dashboard/src/components/settings/ModelRows.tsx": 1257,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
-    "packages/dashboard/src/components/settings/PlatformTab.tsx": 1042,
+    "packages/dashboard/src/components/settings/PlatformTab.tsx": 1043,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 939,
     "packages/dashboard/src/components/settings/UpdateTab.tsx": 328,
     "packages/dashboard/src/components/settings/VoiceTab.tsx": 1229,
@@ -9024,7 +9045,7 @@
     "packages/server/src/google/tools-write.ts": 2024,
     "packages/server/src/healer/approval-routing.ts": 513,
     "packages/server/src/healer/auto-fix.ts": 519,
-    "packages/server/src/healer/diagnostic.ts": 1071,
+    "packages/server/src/healer/diagnostic.ts": 1084,
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1325,
@@ -9073,7 +9094,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2147,
+    "packages/server/src/scheduler/runner.ts": 2152,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
