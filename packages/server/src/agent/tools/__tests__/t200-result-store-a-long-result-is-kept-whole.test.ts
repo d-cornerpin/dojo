@@ -37,10 +37,11 @@ vi.mock('../../../db/connection.js', async () => {
 });
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 // A real child process is spawned, so the capability facade answers rather than refuses. The
-// capability itself is not under test here; its own contract suite owns it.
+// capability itself is not under test here; its own contract suite owns it. It answers with the
+// one field the process door reads from the real capability (t203): which agent's stop it is under.
 vi.mock('../../effects/capability.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  requireAuthorized: () => undefined,
+  requireAuthorized: () => ({ agentId: 'result-store-test-agent' }),
 }));
 
 import { runMigrations } from '../../../db/migrations.js';
