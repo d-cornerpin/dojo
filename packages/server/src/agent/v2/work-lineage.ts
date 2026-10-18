@@ -44,6 +44,17 @@ export function spentAsk(messageId: string): Spent | null {
   return isTerminal(row.state) ? { reason: 'ask_closed', state: `ask ${row.state}` } : null;
 }
 
+/**
+ * The serve-boundary half of the approval decision (t232): a queued `a2a_request` wake that `engineEventRoot`
+ * would root in an ask is spent when the work it carries is FINISHED, by the same verdict the decision used —
+ * so an ask closed while its task is still open stays served. Events of any other origin whose root columns
+ * only label a referent are not this rule's business.
+ */
+export function spentWakeAsk(ev: { origin_intent: string | null; root_kind: string | null; root_id: string | null; task_id: string | null }): Spent | null {
+  if (ev.origin_intent !== 'a2a_request' || ev.root_kind !== 'ask' || !ev.root_id) return null;
+  return lineageVerdict({ rootKind: ev.root_kind, rootId: ev.root_id, taskId: ev.task_id }).finished ? spentAsk(ev.root_id) : null;
+}
+
 export interface WorkLineage { rootKind: string | null; rootId: string | null; taskId: string | null }
 
 export interface LineageVerdict {

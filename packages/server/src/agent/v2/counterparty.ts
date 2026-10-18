@@ -24,7 +24,7 @@ import {
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
 import { transition } from '../../work/store.js';
-import { spentRun, spentTask } from './work-lineage.js';
+import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
@@ -452,12 +452,12 @@ export function retireSpentEngineEvents(agentId: string): number {
   try {
     const db = getDb();
     const candidates = db.prepare(
-      `SELECT seq AS rowid, task_id, run_id, ${createdAtText()} FROM messages
-         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
+      `SELECT seq AS rowid, task_id, run_id, origin_intent, root_kind, root_id, ${createdAtText()} FROM messages
+         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL OR (origin_intent = 'a2a_request' AND root_kind = 'ask'))
        LIMIT 50`,
-    ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string }>;
+    ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null; created_at: string }>;
     for (const ev of candidates) {
-      const spent = (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null);
+      const spent = (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
       if (spent && retireOneEngineEvent(ev.rowid, spent.reason, {
         taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState: spent.state,
       })) retired++;
