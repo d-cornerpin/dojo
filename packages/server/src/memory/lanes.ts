@@ -340,9 +340,13 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
 
   // §T0-B E `:911`(800) — the ledger's own hard ceiling, and C `:896`/`:897`/`:898`,
   // D `:959`/`:962`, C `:892`(0,2), `:949`(0,5).
+  //
+  // t207 (D6): the ledger has NO row counts and NO token cap any more. It is laid out in the room the array
+  // leaves after the task list (`memory/work-board-lane.ts`); what is declared here are two WIDTHS, not
+  // limits on how much it says: the width a task title is printed at, and the width its guaranteed newest
+  // entry is offered when the room is scarce (a longer entry is cut with the cut said).
   'lane.attempt-ledger': {
-    rows: { tasks: 2, observations: 4, transitions: 4, entries: 6 },
-    tokens: { cap: 800 },
+    chars: { title: 120, entryFloor: 400 },
   },
   // T67b: `recentMentionWindow` is GONE with the suppression it sized. The lane dropped
   // itself when the last 6 rows happened to name its task ids — a decision derived from a
@@ -516,20 +520,17 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.attempt-ledger',
     slot: MessageSlot.AttemptLedgerTail,
-    reserveTokens: 800,
+    reserveTokens: 239,
     measured:
-      'W81, DERIVED FROM THE LANE\'S OWN DECLARED CEILING: `attemptLedgerWorstCaseTokens()` '
-      + '(`memory/work-board-lane.ts`) returns LANE_LIMITS[\'lane.attempt-ledger\'].tokens.cap '
-      + '= 800, which was this lane\'s `maxTokens` at MessageSlot.AttemptLedger = 500 and was '
-      + 'enforced by `truncateTextLane` on every assembly — so 800 is the largest this block '
-      + 'has ever been permitted to be, not a new allowance. The render enforces the same '
-      + 'ceiling itself now, because no allocator runs downstream of a post-budget lane. '
-      + 'WHY IT IS A RESERVE AT ALL: every `work_*` write reaches this block through the '
-      + 'spine\'s `work_events` transition branch (`work/audit-trail.ts`), and it sat AHEAD '
-      + 'of the whole conversation, so a `work_update` re-billed the entire array behind it. '
-      + 'WHAT IT COSTS: 800 tokens leave the content budget on every assembly and the block '
-      + 'is now recomputed every turn instead of cached. What it replaces spent the same '
-      + 'tokens AND every cached token behind them, on every tool call that touched a row.',
+      't207 (D6), DERIVED BY CALLING THE RENDERER: `attemptLedgerWorstCaseTokens()` '
+      + '(`memory/work-board-lane.ts`) renders the smallest block the ledger promises: the frame, one task at the '
+      + 'title width carrying a revert note, a pointer to its notes and an "earlier entries" line, and its newest '
+      + 'entry at the entry floor = 239 tokens. It was 800 (W81, the lane\'s old hard ceiling, which also capped '
+      + 'it at 2 tasks and 6 entries each); the ledger now has no ceiling and is laid out in the room the array '
+      + 'leaves after the task list, so this is a GUARANTEE, not a maximum. WHAT IT COSTS: 561 tokens come off the '
+      + 'reserved top of every assembly and go to the content budget; the post-budget block is recomputed every '
+      + 'turn as before and sits behind the conversation, so no cached prefix byte moves (the content budget, and '
+      + 'with it where the trim and the fold cut, shifts once, at the next compaction boundary).',
   },
   {
     id: 'lane.active-tasks',

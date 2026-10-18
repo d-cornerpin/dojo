@@ -193,12 +193,10 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
   });
 
   it('honours a declared lane ceiling even when the budget could afford more', () => {
-    // W81: `lane.attempt-ledger` is post-budget now, so it has no rung; the CEILING is the
-    // property this clause pins and `LANE_LIMITS` still declares it. The priority is a
-    // fixture literal because the lane no longer supplies one.
-    const ledger = textLane('lane.attempt-ledger', 60, 500, {
-      maxTokens: laneLimit('lane.attempt-ledger', 'tokens', 'cap'),
-    });
+    // W81: `lane.attempt-ledger` is post-budget, so it has no rung; t207 removed its declared ceiling
+    // altogether (it reads the room). The property this clause pins is `fitLanes` honouring ANY lane's
+    // `maxTokens`, so the fixture declares its own 800. The priority is a fixture literal.
+    const ledger = textLane('lane.attempt-ledger', 60, 500, { maxTokens: 800 });
     const { report } = fitLanes([candidate(ledger, 5000)], 100000);
     const g = report.grants.find((x) => x.id === 'lane.attempt-ledger')!;
     expect(g.status).toBe('truncated');
@@ -510,7 +508,8 @@ describe('over-budget is a recorded EVENT, not a shrug (B8)', () => {
 
 describe('the declared numbers (§T0-B clusters C/D/E/F) are lane declarations', () => {
   it('reads a declared limit and refuses an undeclared one', () => {
-    expect(laneLimit('lane.attempt-ledger', 'tokens', 'cap')).toBe(800);
+    expect(laneLimit('lane.attempt-ledger', 'chars', 'title')).toBe(120);   // t207: widths only, no counts or cap
+    expect(() => laneLimit('lane.attempt-ledger', 'tokens', 'cap')).toThrow(/not declared/);
     expect(laneLimit('lane.events', 'rows', 'events')).toBe(10);
     expect(laneLimit('lane.events', 'chars', 'gist')).toBe(400);
     expect(() => laneLimit('lane.events', 'rows', 'nope')).toThrow(/not declared/);

@@ -50,10 +50,6 @@ beforeEach(() => {
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-/** A view with this many tokens of room beyond the loop's declared appends (they are subtracted inside). */
-function viewWith(extraTokens: number): TaskListView {
-  return { availableTokens: 200_000 + extraTokens - 200_000 + 3_000, emitted: [], blocks: [], liveRows: [] };
-}
 const roomy: TaskListView = { availableTokens: 120_000, emitted: [], blocks: [], liveRows: [] };
 
 describe('t207 — a roomy window shows the whole ledger', () => {
@@ -70,8 +66,8 @@ describe('t207 — a roomy window shows the whole ledger', () => {
 
 describe('t207 — a small window gets what fits, newest first, and a count of the rest', () => {
   it('the ledger fits its room, lists every task, and counts what it left off', async () => {
-    const view = viewWith(0);
-    const small: TaskListView = { ...view, availableTokens: 5_000 };
+    // The loop's own appends (declared reserves) come off the available tokens first, so this leaves a small room.
+    const small: TaskListView = { availableTokens: 2_800, emitted: [], blocks: [], liveRows: [] };
     const lane = await buildWorkBoardLane(AGENT, small);
     const ledger = lane.attemptLedger ?? '';
     expect(ledger.length).toBeGreaterThan(0);
@@ -82,7 +78,7 @@ describe('t207 — a small window gets what fits, newest first, and a count of t
     expect(ledger).not.toContain('T0-E00');
     // and the block plus the list together stay inside the room the array left
     const whole = estimateTokens(ledger) + estimateTokens(lane.activeTasks ?? '');
-    expect(whole).toBeLessThanOrEqual(5_000);
+    expect(whole).toBeLessThanOrEqual(2_800);
   });
 });
 

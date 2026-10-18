@@ -180,14 +180,18 @@ describe('2 — more notes than one view holds come in pages that can be followe
 
 describe('3 — the attempt ledger says there are more notes and how to read them', () => {
   it('with more notes than the ledger shows, its section names work_update get on that task', async () => {
-    for (let i = 0; i < 9; i++) await note('helper', `NOTE-${String(i).padStart(2, '0')} found something on page ${i}`);
-    const lane = await buildWorkBoardLane('helper');
+    // t207: the ledger shows as many notes as the room holds (no fixed count), so the notes are long enough
+    // that nine of them do not fit the room the array leaves a view this small.
+    const filler = 'y'.repeat(900);
+    for (let i = 0; i < 9; i++) await note('helper', `NOTE-${String(i).padStart(2, '0')} found something on page ${i} ${filler}`);
+    const lane = await buildWorkBoardLane('helper', { availableTokens: 3_600, emitted: [], blocks: [], liveRows: [] });
     const ledger = lane.attemptLedger ?? '';
     expect(ledger).toContain('NOTE-08');
     expect(ledger).not.toContain('NOTE-00');
     expect(ledger).toMatch(/work_update/);
     expect(ledger).toContain(`id="${TASK}"`);
-    expect(ledger).toMatch(/\b5 more notes\b/);
+    expect(ledger).toMatch(/\b\d+ more notes\b/);
+    expect(ledger).toMatch(/\d+ earlier entries not shown/);
   });
 
   it('with every note already shown, the ledger adds no pointer', async () => {
