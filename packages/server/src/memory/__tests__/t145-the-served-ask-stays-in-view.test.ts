@@ -199,7 +199,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
     runningTurnOn('ask-row');
     expect(getMessagesOutsideFreshTail(AGENT, 24).map((m) => m.rowid as number)).toContain(askSeq);
     // t194: "full" is the trim's own cut, handed in by the gauge; nothing clamps it at the served ask.
-    const leaving = rowsLeavingView(AGENT, policy, { full: { throughSeq: askSeq + 10, rows: 10 } });
+    const leaving = rowsLeavingView({ full: { throughSeq: askSeq + 10, rows: 10 } });
     expect(leaving!.throughSeq).toBeGreaterThanOrEqual(askSeq);
   });
 

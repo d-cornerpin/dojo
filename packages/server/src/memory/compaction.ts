@@ -118,12 +118,12 @@ export async function estimateAssembledTokens(
   };
 }
 
-/** The rows leaving the view, off the gauge: the row ceiling's next cut, or what one more trim block of
- *  growth would cut. Exactly the trim's own cut (whole half-tail blocks), so never "a few rows every
+/** The rows leaving the view, off the gauge: what one more trim block of
+ *  growth would cut (t207: there is no row ceiling). Exactly the trim's own cut (whole half-tail blocks), so never "a few rows every
  *  turn" (fix round 1, I4): those rows leave whatever happens, and folding them first is owed. */
 export function leavingFromView(agentId: string, contextWindow: number, view: ContextView): LeavingView | null {
   const full = view.leavingThroughSeq > 0 ? { throughSeq: view.leavingThroughSeq, rows: view.leavingRows } : null;
-  return rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { full });
+  return rowsLeavingView({ full });
 }
 
 /** t194 (D4, owner decision 12): when each agent last needed a FORCED pass. Every context-overflow door
@@ -235,7 +235,7 @@ export function getLeafTargetTokens(): number {
 // boundary, so those rows were the ones the model was READING (tracker #13; the owner's
 // decision #16, re-opened and reversed 2026-10-12). requirement preserved: "every row is
 // summarised before it leaves the live view" — owned now by `tail-horizon.ts`'s
-// `rowsLeavingView` (the ceiling is its single owner of the number) and the leaving-view pass
+// `rowsLeavingView` and the leaving-view pass
 // below, which fold exactly the rows that are leaving and nothing the agent is still reading.
 
 // ── Chat divider helpers ──
@@ -376,7 +376,7 @@ export interface CheckAndCompactOptions {
   /**
    * t140: the rows the caller has measured are leaving the live view (`rowsLeavingView`). When
    * the call is not under pressure, ONLY these are folded. Absent, an unforced call asks
-   * `rowsLeavingView` itself, ceiling cause only (it has no view-full measurement of its own).
+   * the gauge itself (`leavingFromView`).
    */
   leaving?: LeavingView | null;
   /**
@@ -760,7 +760,7 @@ export function archiveBeforeCovering(agentId: string, rows: readonly Message[])
  * The leaf machinery is the pressure path's own (archive first, abort if the archive fails,
  * chunk, summarise, rebuild, age out at the boundary), pointed at one bounded span: every
  * unsummarised row of this session with `seq <= leaving.throughSeq`. The span is the bound: the
- * trim and the row ceiling never name the newest group (t194: no row floor besides). Condensing
+ * trim never names the newest group (t194: no row floor besides). Condensing
  * older summaries is the caller's (`runCheckAndCompact`, in the same background pass, so the
  * prefix moves once). No backoff is ARMED by a small yield either — the span
  * is leaving the view whatever it reclaims — but an existing brake is honoured, so a summary

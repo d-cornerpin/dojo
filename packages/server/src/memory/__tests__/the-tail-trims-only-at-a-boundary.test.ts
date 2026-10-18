@@ -41,8 +41,8 @@
 // the anchor advances once, the rows it passed are already represented by the summary
 // compaction just wrote ABOVE the tail, and that single discontinuity is the one turn the
 // owner's prescription says should pay. The row cap survives as the FLOOR (never show less
-// than before) and a hard ceiling exists for the case where compaction cannot run at all —
-// and that ceiling trims LARGE, RARE and LOUD.
+// than before); where compaction cannot run at all the token trim cuts LARGE, RARE and LOUD
+// (t207: the row ceiling that used to be the hard stop is gone).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -102,8 +102,8 @@ import {
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { getFreshTailCount, contextWindowPolicy, estimateTokens } from '../budget.js';
 import {
-  TAIL_HORIZON_CEILING_MULTIPLE, tailCeilingStepRows, tailTrimBlockGroups,
-  groupsToDropForBudget, freshTailHorizon, rowsLeavingView,
+  tailTrimBlockGroups,
+  groupsToDropForBudget, freshTailHorizon,
 } from '../tail-horizon.js';
 // t100 §9's floor fixture: the deep-compaction state is built by hand, so a leaf summary is
 // written directly rather than driven out of a pass whose divider is throttled.
@@ -118,9 +118,6 @@ const AGENT = 'agent-t94';
 const MODEL = 'model-t94';
 /** A modest window, so pressure is real: `getFreshTailCount(32000) = 40` rows. */
 const WINDOW = 32_000;
-/** The row ceiling and its step at this window: 320 rows, 160 per cut. */
-const CEILING_ROWS = 40 * TAIL_HORIZON_CEILING_MULTIPLE;
-const CEILING_STEP_ROWS = tailCeilingStepRows(40);
 /** The TOKEN trim's quantum in groups — and in this fixture one row is one group. */
 const TOKEN_BLOCK_GROUPS = tailTrimBlockGroups(40);
 const windowNow = { value: WINDOW };
@@ -391,7 +388,7 @@ describe('t94 §1 — a long run is append-only between compaction boundaries', 
 // ── §2 BACKWARDS-LIFECYCLE PROBES (D6) ──────────────────────────────────────────────────
 
 describe('t94 §2 — the lifecycle probes', () => {
-  it('compaction UNAVAILABLE: the tail grows, and the ceiling trims LARGE and RARE', async () => {
+  it('compaction UNAVAILABLE: the tail grows, and the token trim cuts LARGE and RARE', async () => {
     // 200 turns = 400 rows. Two bounds exist and the clause does not care which one bites:
     // the ROW ceiling at 40 × 8 = 320 rows, and the TOKEN grant, which on this fixture's
     // 32K window runs out first (a ~290-row tail against a 25,624-token assembly budget).
@@ -431,8 +428,11 @@ describe('t94 §2 — the lifecycle probes', () => {
     // turns later and is a 20-row `maxDrop` step, after which the row ceiling caps the loaded
     // span and the drop stabilises for the remaining 40 turns. A smaller cut rule reds this.
     expect(bad[0].droppedFromFront).toBe(7 * TOKEN_BLOCK_GROUPS);
-    expect(bad.length).toBe(2);
-    expect(bad[1].turn - bad[0].turn).toBeGreaterThanOrEqual(15);
+    // t207: with no row ceiling to cap the loaded span, the front keeps moving by one WHOLE block each time the
+    // tail has grown a block past the budget (never a nibble), at least 15 turns apart.
+    expect(bad.length).toBeGreaterThanOrEqual(2);
+    for (const d of bad.slice(1)) expect(d.droppedFromFront % TOKEN_BLOCK_GROUPS).toBe(0);
+    for (let i = 1; i < bad.length; i++) expect(bad[i].turn - bad[i - 1].turn).toBeGreaterThanOrEqual(15);
 
     // RARE: fewer than one turn in twenty rewrites the prefix. PRE-t94 this run front-trimmed
     // on every turn past row 40, i.e. 180 of these 199.
@@ -528,8 +528,8 @@ describe('t94 §4 — an unpressured agent takes the pre-t94 path exactly', () =
     expect(policy.freshTailCount).toBe(40);
     for (let t = 1; t <= 10; t++) appendTurn();                 // 20 rows, nothing compacted
     const h = freshTailHorizon(AGENT, policy);
-    expect({ requestRows: h.requestRows, keepFromSeq: h.keepFromSeq, ceilingBound: h.ceilingBound })
-      .toEqual({ requestRows: 40, keepFromSeq: 0, ceilingBound: false });
+    expect({ requestRows: h.requestRows, keepFromSeq: h.keepFromSeq, unreadRows: h.unreadRows })
+      .toEqual({ requestRows: 40, keepFromSeq: 0, unreadRows: 0 });
   });
 
   it('a tail inside its token grant drops nothing at all', () => {
@@ -554,12 +554,6 @@ describe('t94 §5 — the trim quanta', () => {
     expect([tailTrimBlockGroups(24), tailTrimBlockGroups(40), tailTrimBlockGroups(64), tailTrimBlockGroups(80)])
       .toEqual([12, 20, 32, 40]);
     expect(tailTrimBlockGroups(4)).toBe(8);                      // the floor
-  });
-
-  it('the ceiling step is half the ceiling — the monotonicity half', () => {
-    expect({ ceiling: CEILING_ROWS, step: CEILING_STEP_ROWS }).toEqual({ ceiling: 320, step: 160 });
-    expect(tailCeilingStepRows(40)).toBe((40 * TAIL_HORIZON_CEILING_MULTIPLE) / 2);
-    expect(tailCeilingStepRows(64)).toBe(256);
   });
 
   it('a drop is the WHOLE half-the-tail bound, never the minimum that fits', () => {
@@ -707,13 +701,13 @@ describe('t94 §6 — the budget, named, with its unit', () => {
 //
 // ── RE-AIMED BY t140 ─────────────────────────────────────────────────────────────────────
 // The row-gap drain this section measured is deleted (it folded rows the model was reading).
-// A backlog is now caught by the tail horizon's own ceiling: 300 rows since the boundary on a
-// 32K box is one trim block short of the 320-row ceiling, so `rowsLeavingView` names the rows
-// the ceiling's next cut would skip — exactly one step, 160 rows — and the condense folds
-// those and nothing else. The measured result is ONE discontinuity where the drain cost two,
+// A backlog is caught by the view being full (t207: the row ceiling that used to catch it is gone):
+// 300 rows since the boundary on a 32K box overrun the token budget, so the gauge names the rows the
+// trim's next cut would take — the half-the-tail bound, 140 rows — and the condense folds those and
+// nothing else. The measured result is ONE discontinuity where the drain cost two,
 // and the 24 turns after it are pure appends with no second fold.
 describe('t94 §7 — the seam: a compaction backlog drains across consecutive turns', () => {
-  it('a 300-row backlog costs exactly one discontinuity: one fold of the rows the ceiling would cut', async () => {
+  it('a 300-row backlog costs exactly one discontinuity: one fold of the rows the token trim would cut', async () => {
     // The backlog arrives while the writer is down — exactly the state §2 ends in. Two turns
     // are driven first so there is a snapshot to compare the fold against.
     summariser.up = false;
@@ -742,28 +736,29 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
     expect(deltas.length).toBe(25);
     expect(deltas.filter((d) => d.appendOnly).length).toBe(deltas.length - 1);
 
-    // THE FOLD WAS EXACTLY THE ROWS THE CEILING WOULD HAVE CUT: one step from the boundary.
+    // THE FOLD WAS EXACTLY THE ROWS THE TOKEN TRIM WOULD HAVE CUT (t207: there is no row ceiling).
     // (The writer-down turns summarised nothing, so every summarised row is this fold's.)
     const summarised = (db().prepare(
       `SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?`,
     ).get(AGENT) as { n: number }).n;
-    expect(summarised).toBe(CEILING_STEP_ROWS);
+    // t207: the ceiling is gone, so the rows that leave are the token trim's own cut: the half-the-tail bound,
+    // seven whole blocks of this 288-group backlog.
+    expect(summarised).toBe(7 * TOKEN_BLOCK_GROUPS);
     // And the ceiling never had to cut: no turn in the run carried a horizon skip.
     expect(deltas.filter((d) => (d.note ?? '').includes('freshTailDropped')).map((d) => d.turn)).toEqual([]);
   }, 300_000);
 });
 
-// ── §8 THE CEILING TRIM IS LOUD IN THE CHANNEL A PERSON READS ───────────────────────────
+// ── §8 THE LARGE TRIM IS LOUD IN THE CHANNEL A PERSON READS ───────────────────────────
 //
-// `freshTailDropped` is FA-M1's number: `agent/v2/steps/assemble/index.ts` logs a warn and
-// broadcasts ONE `CONTEXT_HIGH` toast per turn naming it ("set aside its N oldest recent
-// messages"). Pre-t94 the row window dropped two rows off the front every turn and that
+// `freshTailDropped` is FA-M1's number: `agent/v2/steps/assemble/index.ts` logs a warn once per turn
+// naming it (t207: the owner-facing "set aside its N oldest recent messages" toast is gone, decision 34). Pre-t94 the row window dropped two rows off the front every turn and that
 // number stayed ZERO — the dominant trim was invisible to the receipt and to the toast alike,
 // while the token trimmer's rarer evictions were the only thing either ever saw. "Large and
 // rare" is only safe if it is also loud, so the horizon's own skip is carried out there now.
 
-describe('t94 §8 — the horizon\'s ceiling trim reaches FA-M1', () => {
-  it('a ceiling trim lands in freshTailDropped, and the number is a whole block', async () => {
+describe('t94 §8 — the horizon\'s large trim reaches FA-M1', () => {
+  it('a large trim lands in freshTailDropped, and the number is a whole block', async () => {
     // 200 turns with no compaction possible: the hard stops bind and the count must be big.
     summariser.up = false;
     const snaps = await driveRun({ turns: 200 });
@@ -1070,7 +1065,6 @@ describe('t109 §11 — the deep-compaction floor re-anchors instead of trimming
     expect(h.anchorSeq, 'precondition: nothing is compacted').toBe(0);
     expect(h.keepFromSeq, 'no filter — literally the pre-t94 call').toBe(0);
     expect(h.requestRows).toBe(policy.freshTailCount);
-    expect(h.skippedRows).toBe(0);
-    expect(h.ceilingBound).toBe(false);
+    expect(h.unreadRows).toBe(0);
   });
 });

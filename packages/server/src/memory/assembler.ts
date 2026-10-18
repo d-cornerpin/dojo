@@ -1511,9 +1511,11 @@ async function assembleMessageContext(
       // instrument measured 8,856 of 8,908 bytes re-billed on 15 consecutive fictional turns
       // with the token budget nowhere near binding. `memory/tail-horizon.ts` carries the
       // whole derivation, the ceiling and its hysteresis.
-      const horizon = freshTailHorizon(agentId, policy);
-      horizonSkippedRows = horizon.skippedRows;
-      horizonSkippedThroughSeq = horizon.ceilingBound && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0;
+      // t207: the read stops once the newest rows cover twice the content budget (the half-the-tail trim law
+      // needs that much to have a legal cut); rows before that point are unread, set aside and owed their fold.
+      const horizon = freshTailHorizon(agentId, policy, 2 * contentBudget);
+      horizonSkippedRows = horizon.unreadRows;
+      horizonSkippedThroughSeq = horizon.unreadRows > 0 && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0;
       // THE ASK, and the slack is CONDITIONAL — review I1. The slack exists for ONE reason:
       // `turnCutoff` excludes the newest user rows, so a `LIMIT` sized to the span would
       // reach that many rows further back, and the seq filter below is what trims them off

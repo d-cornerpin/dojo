@@ -91,7 +91,7 @@ function seedAgent(window: number): void {
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Busy Desk', ?, 'idle', '{}', datetime('now'))`).run(AGENT, MODEL);
 }
 
-/** `rows` rows of `body` each — under the row ceiling's lead, the ceiling is the cause. */
+/** `rows` rows of `body` each — enough of them that the view is FULL for the window (the cause t207 left). */
 function seedRows(rows: number, body: string): void {
   for (let i = 0; i < rows; i++) {
     insertMessage({
@@ -100,6 +100,9 @@ function seedRows(rows: number, body: string): void {
     });
   }
 }
+
+/** 100 rows of this overrun a 32K window's budget without reaching twice it (the read's cover). */
+const FULL_32K_BODY = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(9);
 
 function gate(window: number): Promise<unknown> {
   const s: AgentTurnState = advance(initState({
@@ -150,31 +153,31 @@ afterEach(() => {
 
 describe('t140 round 5 — the routine background condense is never cut short by a clock of ours', () => {
   it('a writer that answers after 200 s — longer than the old three-minute clock — gets its summary written', async () => {
-    seedAgent(200_000);
-    seedRows(610, 'Quick one: is the dock open? Yes, the dock is open.');   // the ceiling cause
+    seedAgent(32_000);
+    seedRows(100, FULL_32K_BODY);   // the view is full for a 32K window
     summariser.slowMs = 200_000;
-    await gate(200_000);
+    await gate(32_000);
     expect(backgroundDrains.has(AGENT), 'precondition: a background condense started').toBe(true);
     await settleOnTheClock();
     expect(summaryCount(), 'the working writer finished; nothing refused its summary').toBeGreaterThan(0);
   });
 
   it('a leaving span of more than ten leaf chunks is folded in one background run — exactly as many as are leaving', async () => {
-    seedAgent(1_000_000);
-    // ~1,000 tokens a row, 610 rows: far from full on 1M, but at the row ceiling's lead —
-    // 320 rows (~320K tokens, eleven 30K chunks) are leaving.
-    seedRows(610, 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(48));
-    await gate(1_000_000);
+    seedAgent(500_000);
+    // ~1,000 tokens a row, 900 rows: the view is full on 500K, and the trim's cut is the half-the-tail bound,
+    // 440 rows (over 400K tokens, more than ten 30K chunks), all leaving.
+    seedRows(900, 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(48));
+    await gate(500_000);
     await settleOnTheClock();
     expect(summariser.calls.length, 'every chunk of the leaving span, not ten').toBeGreaterThan(10);
   });
 
   // Round 6 (R-V333-15): the retry is earned by a real change — this gate is a person's new turn.
   it('a writer that failed once is tried first again at a person\'s new turn — the change that earns it another try', async () => {
-    seedAgent(200_000);
-    seedRows(610, 'Quick one: is the dock open? Yes, the dock is open.');
+    seedAgent(32_000);
+    seedRows(100, FULL_32K_BODY);
     noteSummaryWriterOutcome(MODEL, false);   // it failed a moment ago
-    await gate(200_000);
+    await gate(32_000);
     await settleOnTheClock();
     expect(summariser.calls[0], 'the agent\'s own writer, first, in the background').toBe(MODEL);
   });

@@ -187,8 +187,8 @@ afterEach(() => {
 //
 //   * 34 turns × 2 rows × 600 tokens = 68 rows, 40,800 tokens. Over 30,720.
 //   * the newest 40 of those rows — the row cap's view — are 24,000 tokens. Under 30,720.
-//   * no ROW trigger can help: 68 rows is nowhere near the row ceiling's lead (t140's
-//     `rowsLeavingView`, which replaced the 30-row gap trigger). So the token trigger is the
+//   * no ROW trigger can help: there is no row count that fires a condense (t207: the row ceiling is gone;
+//     t140's `rowsLeavingView` only relays the gauge). So the token trigger is the
 //     ONLY door, which is the condition this clause exists for.
 //
 // Post-seam the gate reads 40,800, the trigger fires and a leaf summary is written. Pre-seam
@@ -203,7 +203,7 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
     for (let t = 1; t <= 34; t++) appendTurn(600);
     expect(rowCapViewTokens(cap)).toBeLessThan(TOKEN_TRIGGER);          // 24,000 < 30,720
     // And the row trigger is genuinely shut, so nothing but the token trigger can act.
-    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, {})).toBeNull();
+    expect(rowsLeavingView({})).toBeNull();
   }
 
   it('the gate measures the whole span, and that reading is over the trigger', async () => {
@@ -219,8 +219,11 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
 
     // THE SEAM: the gate's dry run measures the span the assembler will ask for.
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
-    // The ASK is the whole span (68 rows at 600, not a 40-row slice), and it is over the room.
-    expect(est.view.tailTokens).toBe(68 * 600);
+    // The ASK is the span the assembler reads, not a 40-row slice, and it is over the room. t207: the
+    // read stops once the newest rows cover twice the budget (the rest are unread, set aside and owed their
+    // fold), so on this 3.5x-over-budget fixture the ask is that cover, more than the 40-row cap's 24,000.
+    expect(est.view.tailTokens).toBeGreaterThan(40 * 600);
+    expect(est.view.tailTokens).toBeLessThanOrEqual(68 * 600);
     expect(est.view.tailTokens).toBeGreaterThan(est.view.tailRoomTokens);
     // What the view holds is what the trim keeps — never more than the room.
     expect(est.freshTailTokens).toBeLessThanOrEqual(est.view.tailRoomTokens);
@@ -266,7 +269,7 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
     expect(est.view.tailTokens).toBe(30 * 600);                         // every row there is
     expect(est.total).toBeLessThan(TOKEN_TRIGGER);                       // 18,000 < 30,720
-    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, {})).toBeNull();
+    expect(rowsLeavingView({})).toBeNull();
 
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, {});
     expect(result.leafCreated).toBe(0);

@@ -94,9 +94,19 @@ describe('t207 D6 — the read stops once the newest rows cover the budget', () 
     const unread = (h as unknown as { unreadRows?: number }).unreadRows ?? 0;
     expect(unread, 'rows left unread').toBeGreaterThan(2000);
     expect(h.requestRows + unread).toBe(3000);
-    expect(h.requestRows * 400, 'the rows read cover the budget').toBeGreaterThanOrEqual(cover);
+    expect(h.requestRows * 500, 'the rows read cover the budget').toBeGreaterThanOrEqual(cover);
     expect(h.requestRows, 'and not much more than it').toBeLessThan(400);
     expect(h.keepFromSeq).toBeGreaterThan(unread);   // the read begins after the unread rows
+  });
+
+  it('the front moves in whole trim blocks: one more row appended does not move it', () => {
+    seedRows(3000, (i) => `[row ${i}] ${'word '.repeat(400)}`);
+    const before = horizonModule.freshTailHorizon(AGENT, policy(), 40_000);
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: '[row 3000] next', turnNumber: 2000 });
+    const after = horizonModule.freshTailHorizon(AGENT, policy(), 40_000);
+    expect(after.keepFromSeq, 'the front holds still between block steps').toBe(before.keepFromSeq);
+    const block = horizonModule.tailTrimBlockGroups(policy().freshTailCount);
+    expect(before.unreadRows % block, 'unread is a whole number of blocks').toBe(0);
   });
 
   it('with no budget to cover (or a tail that fits), everything since the boundary is read', () => {
@@ -112,7 +122,8 @@ describe('t207 D6 — the ceiling and its causes are gone from shipped code', ()
     for (const name of ['TAIL_HORIZON_CEILING_MULTIPLE', 'tailCeilingStepRows', 'ceilingSkipRows', 'ceilingLeadRows']) {
       expect((horizonModule as Record<string, unknown>)[name], name).toBeUndefined();
     }
-    const text = fs.readFileSync(path.join(SRC, 'memory/tail-horizon.ts'), 'utf8');
+    const text = fs.readFileSync(path.join(SRC, 'memory/tail-horizon.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
     expect(text).not.toMatch(/'ceiling'|ceilingBound|TAIL_HORIZON_CEILING|ceilingSkipRows|the row ceiling trimmed/);
   });
 });

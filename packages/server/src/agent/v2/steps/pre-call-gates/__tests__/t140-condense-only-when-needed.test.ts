@@ -105,6 +105,17 @@ function seedBusyHistory(rows: number): void {
   }
 }
 
+/** Rows of ~1,700 tokens each: 160 of them overrun a 200K window's budget without reaching twice it. */
+function seedHeavyHistory(rows: number): void {
+  const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(80);
+  for (let i = 0; i < rows; i++) {
+    insertMessage({
+      agentId: AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner', senderId: i % 2 === 0 ? 'owner' : null,
+      content: `[row ${i}] ${body}`, turnNumber: 1 + Math.floor(i / 2),
+    });
+  }
+}
+
 function summaryCount(): number {
   return (db().prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ?').get(AGENT) as { n: number }).n;
 }
@@ -189,56 +200,26 @@ function allSeqs(agentId: string): number[] {
     .map((r) => r.seq);
 }
 
-describe('t140 — rows ABOUT TO LEAVE the view are folded before the ceiling cuts them', () => {
-  it('one trim block short of the row ceiling, the gate folds exactly the step the ceiling would cut, and nothing newer', async () => {
-    // 200K window: row floor 80, ceiling 640, ceiling step 320, lead one block (40 rows).
-    // 610 tiny rows: the view is nowhere near full, so the CEILING is the only cause.
+describe('t207 — there is no row ceiling: a long run of small rows is never folded for being long', () => {
+  it('610 tiny rows (formerly one trim block short of the 640-row ceiling) fold nothing', async () => {
     seedBusyHistory(610);
     const out = await runPreCallGates(freshState(), makeCtx());
     expect(out.directive).toBe('proceed');
     await settle();
-
-    const seqs = allSeqs(AGENT);
-    const folded = summarisedSeqs(AGENT);
-    expect(folded, 'exactly the rows the ceiling\'s next cut would skip: the oldest 320').toEqual(seqs.slice(0, 320));
-    // The 290 newest rows — everything the agent is still reading — are untouched.
-    expect(folded.some((q) => q > seqs[319])).toBe(false);
-  });
-
-  it('BACKWARDS LIFECYCLE — a box upgraded with a 1,000-row unsummarised backlog catches up in ONE fold of what the ceiling is already cutting', async () => {
-    // Past the ceiling already (640 on this window): the horizon is cutting 640 rows today
-    // (`ceilingSkipRows(1000)`), so those rows have left the view and are owed their summary.
-    seedBusyHistory(1000);
-    await runPreCallGates(freshState(), makeCtx());
-    await settle();
-    const seqs = allSeqs(AGENT);
-    expect(summarisedSeqs(AGENT)).toEqual(seqs.slice(0, 640));
-    // And the next gate finds nothing more leaving: 360 rows is under the ceiling's lead.
-    generateSummarySpy.mockClear();
-    await runPreCallGates(freshState(), makeCtx());
-    await settle();
+    expect(summarisedSeqs(AGENT), 'the view is nowhere near full and nothing is leaving it').toEqual([]);
     expect(generateSummarySpy).not.toHaveBeenCalled();
   });
 
-  it('a fold never splits a tool_use from its tool_result: it extends by the one paired row', async () => {
-    // Row 320 (the first row the fold would KEEP) is the tool result of row 319's call.
-    seedBusyHistory(319);
-    insertMessage({
-      agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: 120,
-      content: JSON.stringify([{ type: 'tool_use', id: 'call-dock', name: 'dock_status', input: {} }]),
-    });
-    insertMessage({
-      agentId: AGENT, role: 'tool', lane: 'owner', turnNumber: 120,
-      content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-dock', content: 'open' }]),
-    });
-    seedBusyHistory(290);
+  it('BACKWARDS LIFECYCLE — a box upgraded with a 1,000-row unsummarised backlog of small rows folds nothing and loses nothing from view', async () => {
+    // Past what the ceiling used to cut (640 on this window): all 1,000 rows are ~25K tokens, in a 200K window.
+    seedBusyHistory(1000);
     await runPreCallGates(freshState(), makeCtx());
     await settle();
-    const seqs = allSeqs(AGENT);
-    expect(summarisedSeqs(AGENT), 'the step (320 rows) plus the tool result paired with its last row').toEqual(seqs.slice(0, 321));
+    expect(summarisedSeqs(AGENT)).toEqual([]);
+    expect(generateSummarySpy).not.toHaveBeenCalled();
   });
 
-  it('far from the ceiling and with room in the window, the same gate folds nothing', async () => {
+  it('far from full and with room in the window, the same gate folds nothing', async () => {
     seedBusyHistory(300);
     await runPreCallGates(freshState(), makeCtx());
     await settle();
@@ -259,7 +240,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     db().prepare(
       `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Snug Desk', ?, 'idle', '{}', datetime('now'))`,
     ).run(SMALL_AGENT, SMALL_MODEL);
-    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(12);
+    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(9);
     for (let i = 0; i < rows; i++) {
       insertMessage({
         agentId: SMALL_AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner',
@@ -290,6 +271,30 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     expect(folded.some((q) => q > seqs[39]), 'the newest 60 rows are the live view and stay raw').toBe(false);
   });
 
+  it('a fold never splits a tool_use from its tool_result (the trim cuts whole groups)', async () => {
+    seedSmallAgent(100);
+    // Make rows 38-39 a tool call and its result, straddling the trim's cut of 40 rows.
+    const rows = db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(SMALL_AGENT) as Array<{ id: string }>;
+    db().prepare('UPDATE messages SET role = ?, content = ? WHERE id = ?').run('assistant',
+      JSON.stringify([{ type: 'tool_use', id: 'call-dock', name: 'dock_status', input: {} }]), rows[38].id);
+    db().prepare('UPDATE messages SET role = ?, content = ? WHERE id = ?').run('tool',
+      JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-dock', content: 'open' }]), rows[39].id);
+    const state = advance(initState({
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, isAutoRouted: false, configuredModelId: SMALL_MODEL,
+      turnNumber: 60, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
+      lastUserMessageContent: 'tally?', lastUserMessageId: null,
+      inboundChannel: 'dashboard', inboundContext: null, pendingTechniqueAck: null,
+    }), { phase: PRE_CALL_GATES_PHASE, loopCount: 1 });
+    const ctx = Object.assign(makeCtx(), {
+      agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
+    });
+    await runPreCallGates(state, ctx);
+    for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
+    const folded = new Set(summarisedSeqs(SMALL_AGENT));
+    const seqOf = (id: string): number => (db().prepare('SELECT seq FROM messages WHERE id = ?').get(id) as { seq: number }).seq;
+    expect(folded.has(seqOf(rows[38].id)), 'the call and its result are folded together or not at all').toBe(folded.has(seqOf(rows[39].id)));
+  });
+
   it('THE FLOOR (fix round 1, I4): a full view with less than one trim block above the floor folds NOTHING', async () => {
     // 50 heavy rows: full, but only 10 rows sit above the 40-row floor — the pressure is INSIDE
     // the floor. Before fix round 1 the trigger folded those 10 (and then 1–5 rows every turn
@@ -305,7 +310,7 @@ describe('t140 — when the view is FULL for the dialed window, only the rows th
     const ctx = Object.assign(makeCtx(), {
       agentId: SMALL_AGENT, contextWindow: SMALL_WINDOW, contextModelId: SMALL_MODEL, configuredModelId: SMALL_MODEL,
     });
-    expect(rowsLeavingView(SMALL_AGENT, { freshTailCount: 40 }, { viewFull: true })).toBeNull();
+    expect(rowsLeavingView({})).toBeNull();
     await runPreCallGates(state, ctx);
     for (let i = 0; i < 200 && backgroundDrains.has(SMALL_AGENT); i++) await new Promise((r) => setTimeout(r, 5));
     expect(summarisedSeqs(SMALL_AGENT)).toEqual([]);
@@ -336,7 +341,7 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
     db().prepare(
       `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Routed Desk', 'auto', 'idle', '{}', datetime('now'))`,
     ).run(ROUTED_AGENT);
-    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(12);
+    const body = 'The north dock tally, row by row, with the damaged lids noted beside each stack. '.repeat(9);
     for (let i = 0; i < 100; i++) {
       insertMessage({
         agentId: ROUTED_AGENT, role: i % 2 === 0 ? 'user' : 'assistant', lane: 'owner',
@@ -410,7 +415,7 @@ describe('t140 round 4, re-aimed round 7 — the gate\'s background fold runs to
       await new Promise((r) => setTimeout(r, 50));
       return { ok: true, content: 'The dock opens at nine; the crane is booked.' };
     });
-    seedBusyHistory(610);   // the ceiling cause: the gate starts a background fold
+    seedHeavyHistory(160);   // the view is full (t207: the row ceiling is gone): the gate starts a background fold
     await runPreCallGates(freshState(), makeCtx());
     expect(backgroundDrains.has(AGENT), 'precondition: a background fold is running').toBe(true);
     await settle();

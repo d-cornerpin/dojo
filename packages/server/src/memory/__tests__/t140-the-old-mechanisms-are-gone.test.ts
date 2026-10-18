@@ -80,13 +80,12 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
     expect(gate).toMatch(/checkAndCompact\(agentId, writerModelId, contextWindow, \{\s*leaving,/);
   });
 
-  it('the ceiling and the trim bound each have ONE owner, read by the cut AND by the trigger', () => {
-    expect(filesWith(/\bceilingSkipRows\(/)).toEqual(['memory/tail-horizon.ts']);
+  it('the trim bound has ONE owner, read by the cut AND by the trigger; t207: the row ceiling is gone', () => {
+    expect(filesWith(/\bceilingSkipRows\(|TAIL_HORIZON_CEILING_MULTIPLE|ceilingLeadRows\(/)).toEqual([]);
     // t194: the "full" trigger is the gauge (`assembler.ts`'s dry run), so the trim bound's readers are
     // its declaration and the trim (tail-horizon) and the gauge's trigger (assembler) — still ONE law.
     expect(filesWith(/\bmaxTrimUnits\(/)).toEqual(['memory/assembler.ts', 'memory/tail-horizon.ts']);
     const horizon = FILES.find((f) => f.rel === 'memory/tail-horizon.ts')!.code;
-    expect(horizon.match(/ceilingSkipRows\(/g)?.length, 'declaration + the cut + the trigger').toBe(3);
     expect(horizon.match(/maxTrimUnits\(/g)?.length, 'declaration + the trim').toBe(2);
     const assembler = FILES.find((f) => f.rel === 'memory/assembler.ts')!.code;
     expect(assembler.match(/maxTrimUnits\(/g)?.length, 'the gauge\'s trigger').toBe(1);

@@ -11,7 +11,7 @@ const visible = (i: number): Message => ({
 } as unknown as Message);
 const machine = (i: number): Message => ({
   id: `m-${String(i).padStart(6, '0')}`, agentId: 'a', role: 'assistant', content: `[A2A:STATUS thread:abc from:Peer] note ${i}`,
-  createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(), turnNumber: i, lane: 'a2a', displayTier: 'agent-only',
+  createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(), turnNumber: i, lane: 'a2a',
 } as unknown as Message);
 const rendersInRegular = (m: Message): boolean => classifyMessageForDisplay(m).tier === 'user-visible';
 
