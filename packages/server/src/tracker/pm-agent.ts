@@ -1005,41 +1005,24 @@ function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
 // window small. PM is still stateless conceptually (tracker is its
 // memory), this is just enough scratch space.
 // t123 RAISED THIS FROM 30 TO 60, for coherence with the lane rather than as a tuning nudge.
-// t206: it is a FLOOR now, not the pruner's whole rule. The PM's tail is every row since its
-// newest fold (`memory/assembler.ts`, PM branch), which can be far more than 60 rows, so a
-// pruner that kept "the newest 60" deleted rows the view was showing and moved the prompt's
-// first message under the provider's cache. The pruner now stops at the fold boundary as well:
-// it removes only rows a fold has already taken out of the view for good.
+// t206: a FLOOR now. The PM's tail is every row since its newest fold, often more than 60 rows,
+// so the pruner also stops at the fold boundary: it removes only rows a fold took out of view.
 const PM_MAX_MESSAGES = 60;
 
-/**
- * Prune old PM engine rows to bound the table. Exported for the cache-stability test
- * (`memory/__tests__/t206-cache-cost-the-pm-tail-holds-still.test.ts` §1d).
- *
- * t206: NEVER AT OR PAST THE FOLD BOUNDARY. Rows from the newest folded row onward are the PM's
- * live view (or the row the boundary is anchored on), so the cut is the older of the two:
- * the newest `PM_MAX_MESSAGES` rows, and the boundary. Nothing folded yet means nothing is out of
- * view for good, so nothing is pruned (the token trim bounds the prompt meanwhile).
- */
+/** Prune old PM engine rows to bound the table, never at or past the fold boundary (t206): the
+ *  cut is the older of the newest `PM_MAX_MESSAGES` rows and the boundary. Exported for t206 §1d. */
 export function pruneOldPMMessages(pmId: string): void {
   const db = getDb();
   try {
-    // Count total messages
-    const countRow = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id = ?').get(pmId) as { c: number };
-    if (countRow.c <= PM_MAX_MESSAGES) return;
-
-    // The fold boundary (`freshTailHorizon`, the one owner of where a tail starts). `keepFromSeq`
-    // is 0 on the floor, where the view is "the newest rows" and nothing is out of view for good.
+    // The fold boundary (`freshTailHorizon` owns where a tail starts). `keepFromSeq` 0 is the
+    // floor, where the view is "the newest rows" and nothing is out of view for good.
     const modelId = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined)?.model_id ?? '';
     const horizon = freshTailHorizon(pmId, contextWindowPolicy(getContextWindow(modelId), { toolPayloadTokens: 0 }));
     if (horizon.keepFromSeq <= 0 || horizon.anchorSeq <= 0) return;
 
-    // The Nth most recent message, then the older of it and the boundary: the cut candidate.
-    const floorRow = db.prepare(`
-      SELECT seq FROM messages WHERE agent_id = ?
-      ORDER BY seq DESC
-      LIMIT 1 OFFSET ?
-    `).get(pmId, PM_MAX_MESSAGES) as { seq: number } | undefined;
+    // The Nth most recent message (none: too few rows to prune), then the older of it and the boundary.
+    const floorRow = db.prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?')
+      .get(pmId, PM_MAX_MESSAGES) as { seq: number } | undefined;
     if (!floorRow) return;
     const cutSeq = Math.min(floorRow.seq, horizon.anchorSeq);
 
