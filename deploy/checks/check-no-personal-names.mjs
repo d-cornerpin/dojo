@@ -217,8 +217,11 @@ function rosterNeedlesFrom(names, roles) {
 }
 
 // ── HALF ONE: THE LIVE ROSTER (read at runtime, never written down) ─────────
-function liveRoster() {
-  const dbPath = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
+function defaultDbPath() {
+  return path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
+}
+
+function liveRoster(dbPath = defaultDbPath()) {
   // NO DATABASE: fall back to the committed fictional roster rather than to nothing, so the
   // matching machinery runs in CI. `available` stays FALSE — the run still says out loud that it
   // could not read a real roster, because a skip must never quietly become silence.
@@ -908,6 +911,61 @@ function selfTest() {
     console.log(`  ${collides ? '✗' : '✓'} ${fixture} is not a real identity on this box`);
   }
 
+  // ── THE ROSTER READER, DRIVEN ON REAL DATABASES IN A TEMP DIR (t229) ────────────────────
+  // A stopped server leaves a WAL-mode database with no side files, and a read-only open of that
+  // cannot create them. The reader must still read it; a database that is THERE but unreadable must
+  // refuse out loud; and only the ABSENCE of a database may fall back to the fictional roster.
+  const check = (ok, why) => { if (!ok) bad++; console.log(`  ${ok ? '✓' : '✗'} ${why}`); };
+  console.log('── the roster reader: a stopped WAL database, an unreadable one, and none ──');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'names-gate-db-'));
+  try {
+    const sideFiles = (p) => ['-wal', '-shm'].filter((x) => fs.existsSync(p + x));
+
+    const walDb = path.join(tmp, 'wal.db');
+    execFileSync('sqlite3', [walDb,
+      `PRAGMA journal_mode=WAL; CREATE TABLE agents(name TEXT); INSERT INTO agents VALUES ('${FIXTURE_ROSTER[0]}');`],
+      { stdio: 'ignore' });
+    // The sqlite3 CLI may leave its side files behind on exit; a cleanly stopped server does not.
+    // Removing them reproduces the stopped server's state: WAL mode in the header, no side files.
+    for (const x of sideFiles(walDb)) fs.rmSync(walDb + x);
+    check(sideFiles(walDb).length === 0, 'the temp WAL database starts with no side files (a stopped server)');
+    let got = null; let err = null;
+    try { got = liveRoster(walDb); } catch (e) { err = e; }
+    check(!err && got && got.available === true && got.source !== 'fixture'
+      && got.names.length === 1 && got.names[0] === FIXTURE_ROSTER[0],
+      'a WAL database with no side files is READ, and its roster is the one used (not the fixture)');
+    check(sideFiles(walDb).length === 0, 'reading it left no side file behind: the gate cannot write');
+
+    const junkDb = path.join(tmp, 'junk.db');
+    fs.writeFileSync(junkDb, Buffer.from('not a database '.repeat(400)));
+    got = null; err = null;
+    try { got = liveRoster(junkDb); } catch (e) { err = e; }
+    check(!got && err && err.message.includes('could not read the roster at') && err.message.includes(junkDb),
+      'a present but unreadable database REFUSES, naming the path (and never the fixture roster)');
+
+    const missing = path.join(tmp, 'absent.db');
+    got = null; err = null;
+    try { got = liveRoster(missing); } catch (e) { err = e; }
+    check(!err && got && got.available === false && got.source === 'fixture'
+      && got.names.join() === FIXTURE_ROSTER.join(),
+      'no database at all: the fictional fixture roster, said out loud (CI)');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+
+  // The registry of coined stand-ins holds the fixture roster's own names BY DESIGN. It must not be
+  // a finding for the roster half; the same name in any other scanned file must still be one.
+  console.log('── the stand-in registry is not a leak, and nothing else is exempted with it ──');
+  {
+    const registry = 'deploy/checks/fixture-names.json';
+    const registryText = fs.readFileSync(path.join(ROOT, registry), 'utf8').split('\n');
+    const regHits = registryText.flatMap((l, i) => rosterHitsFor(registry, l, l, i + 1, fixtureNeedles));
+    check(regHits.length === 0, `the real registry file is clean against the fixture roster (${regHits.length} hit(s))`);
+    const sample = `const createdBy = "${FIXTURE_ROSTER[0]}";`;
+    for (const rel of ['packages/server/src/example.ts', 'deploy/checks/other-file.mjs']) {
+      const n = rosterHitsFor(rel, sample, sample, 1, fixtureNeedles).length;
+      check(n > 0, `a coined fixture name in ${rel} is still a finding`);
+    }
+  }
+
   console.log('── roster matching is whole-word, so vendor identifiers are not names ──');
   for (const [line, name, want] of FIX_WORD_ONLY) {
     const got = new RegExp(`\\b${name}\\b`).test(line);
@@ -951,6 +1009,26 @@ if (process.argv.includes('--self-test')) process.exit(0);
 const rosterNeedles = rosterNeedlesFrom(roster.names, roles);
 
 /**
+ * The roster half's verdict on ONE line of ONE file. Extracted from the scan loop so the self-test
+ * drives the very code the scan runs, including the file exemption.
+ */
+function rosterHitsFor(rel, line, rawLine, lineNo, needles) {
+  if (ROSTER_EXEMPT_FILES.has(rel)) return [];
+  const hits = [];
+  for (const { name, re, lower } of needles) {
+    if (re.test(line)) hits.push({ rel, line: lineNo, kind: 'agent-name', detail: name, text: rawLine.trim() });
+    // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE, so a
+    // lowercase vendor voice id is not the agent named after it — and that let the audit's own worst
+    // finding ride green, because `createdBy: '<a roster name, lowercased>'` is the roster name in a
+    // LIVE STRING LITERAL. FIX_QUOTED_LOWER carries the instances; this note does not.
+    // Case-insensitivity is therefore restricted to QUOTED strings: an agent id written as data is
+    // the shape that shipped, while a bare lowercase identifier stays exempt.
+    else if (lower.test(line)) hits.push({ rel, line: lineNo, kind: 'agent-name-in-string', detail: name, text: rawLine.trim() });
+  }
+  return hits;
+}
+
+/**
  * The owner's own name, needled exactly like a roster name (lane t101, half 1c). Whole-word and
  * case-SENSITIVE for the bare pass, case-insensitive inside quotes — the same two passes, for the
  * same reason: `setConfig('owner_name', '<name>')` is a display name written as DATA, which is the
@@ -973,7 +1051,6 @@ for (const rel of files) {
   const lines = text.split('\n');
   // Comments stripped ONCE per file, newlines preserved, so `codeLines[i]` is still line i + 1.
   const codeLines = stripComments(text).split('\n');
-  const rosterExempt = ROSTER_EXEMPT_FILES.has(rel);
   // The one corpus exemption (D5): inside this file's sentinel-delimited fixture table, a shape is
   // the test rather than the defect. Pattern half only, and only between the two sentinels.
   const fenced = rel === CORPUS_FENCE.file
@@ -1003,16 +1080,7 @@ for (const rel of files) {
     // a space before matching is the whole fix; it cannot invent a hit (a space never completes an
     // address, a path or a handle) and the line number is untouched because this is per line.
     const line = unescapeForMatching(rawLine);
-    if (!rosterExempt) for (const { name, re, lower } of rosterNeedles) {
-      if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name', detail: name, text: rawLine.trim() });
-      // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE, so a
-      // lowercase vendor voice id is not the agent named after it — and that let the audit's own worst
-      // finding ride green, because `createdBy: '<a roster name, lowercased>'` is the roster name in a
-      // LIVE STRING LITERAL. FIX_QUOTED_LOWER carries the instances; this note does not.
-      // Case-insensitivity is therefore restricted to QUOTED strings: an agent id written as data is
-      // the shape that shipped, while a bare lowercase identifier stays exempt.
-      else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'agent-name-in-string', detail: name, text: rawLine.trim() });
-    }
+    findings.push(...rosterHitsFor(rel, line, rawLine, i + 1, rosterNeedles));
     for (const id of agentIds) {
       if (line.includes(id)) findings.push({ rel, line: i + 1, kind: 'live-agent-id', detail: id, text: rawLine.trim() });
     }
