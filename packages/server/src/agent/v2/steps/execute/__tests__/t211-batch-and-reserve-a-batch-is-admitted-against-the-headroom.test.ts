@@ -83,7 +83,7 @@ function seed(): void {
   }
 }
 
-const TOKENS_EACH = 12_000;
+let TOKENS_EACH = 12_000;
 /** A result of about 12,000 tokens: numbered lines, then the engine's trailer line. */
 function bigResult(tag: string): string {
   const lines: string[] = [];
@@ -140,7 +140,7 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
 const call = (i: number): ToolCall => ({ id: `tc-${i}`, name: 'exec', arguments: { command: `./audit --bay ${i}` } } as ToolCall);
 
 /** Run one response of `n` parallel calls, each returning `bigResult`. Returns the stored tool row's blocks. */
-async function runBatch(n: number): Promise<Array<{ tool_use_id: string; content: string }>> {
+async function runBatch(n: number, decorate: (id: string, content: string) => string = (_i, c) => c): Promise<Array<{ tool_use_id: string; content: string }>> {
   const calls = Array.from({ length: n }, (_, i) => call(i));
   insertMessage({
     id: 'msg-call', agentId: AGENT, role: 'assistant', turnNumber: 7,
@@ -150,14 +150,14 @@ async function runBatch(n: number): Promise<Array<{ tool_use_id: string; content
   executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => {
     const whole = bigResult(tc.id);
     const admitted = admitToolResult(tc.name, tc.id, whole, false);
-    return { toolCallId: tc.id, name: tc.name, content: admitted.content, isError: false, ...(admitted.keptWhole ? { keptWhole: admitted.keptWhole } : {}) };
+    return { toolCallId: tc.id, name: tc.name, content: decorate(tc.id, admitted.content), isError: false, ...(admitted.keptWhole ? { keptWhole: admitted.keptWhole } : {}) };
   });
   await runExecute(advance(initState(AGENT, MODEL), { phase: EXECUTE_PHASE, loopCount: 2 }), ctxFor(calls));
   const row = db().prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'tool' ORDER BY seq DESC LIMIT 1").get(AGENT) as { content: string };
   return JSON.parse(row.content);
 }
 
-beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(); seed(); executeToolSpy.mockReset(); });
+beforeEach(() => { TOKENS_EACH = 12_000; mockDb.current = new Database(':memory:'); runMigrations(); seed(); executeToolSpy.mockReset(); });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('t211 D7a — the batch is admitted against the room the turn has', () => {
@@ -171,12 +171,19 @@ describe('t211 D7a — the batch is admitted against the room the turn has', () 
     expect(blocks).toHaveLength(6);
     const rowTokens = blocks.reduce((t, b) => t + estimateTokens(b.content), 0);
     expect(rowTokens, 'the batch together fits the headroom').toBeLessThanOrEqual(headroom);
+    let pointers = 0;
     for (const [i, b] of blocks.entries()) {
       expect(b.content, `result ${i}: its start`).toContain(`tc-${i} line 1:`);
       expect(b.content, `result ${i}: its end, with the engine's trailer`).toContain(`[exit code 0 for tc-${i}]`);
-      expect(b.content, `result ${i}: the cut is named and the rest is one call away`).toMatch(/KEPT WHOLE[\s\S]*tool_result_read/);
+      // Whole, or its pointer: the cut is named and the rest is one call away. The largest give way first, so
+      // the ones that were not needed to make room stay as the tool returned them.
+      if (b.content !== bigResult(`tc-${i}`)) {
+        expect(b.content, `result ${i}: the cut is named and the rest is one call away`).toMatch(/KEPT WHOLE[\s\S]*tool_result_read/);
+        pointers++;
+      }
       expect(findToolResult(AGENT, `tc-${i}`)?.content, `result ${i} is kept whole`).toBe(bigResult(`tc-${i}`));
     }
+    expect(pointers, 'the room needed most of them to give way').toBeGreaterThanOrEqual(4);
   });
 
   it('the array the next call is sent holds the conversation with the batch inside its budget', async () => {
@@ -191,5 +198,37 @@ describe('t211 D7a — the batch is admitted against the room the turn has', () 
   it('a small batch that fits is stored exactly as the tools returned it', async () => {
     const blocks = await runBatch(1);
     expect(blocks[0].content).toBe(bigResult('tc-0'));
+  });
+});
+
+describe('t211 D7a — when even the pointers do not fit, the room is shared', () => {
+  it('forty results: every one still says how big it is and how to read it, and the batch fits', async () => {
+    const view = (await estimateAssembledTokens(AGENT, WINDOW, MODEL)).view;
+    const headroom = Math.floor(view.tailRoomTokens / 2);
+    const blocks = await runBatch(40);
+    expect(blocks).toHaveLength(40);
+    expect(blocks.reduce((t, b) => t + estimateTokens(b.content), 0)).toBeLessThanOrEqual(headroom);
+    for (const [i, b] of blocks.entries()) {
+      expect(b.content, `result ${i}`).toMatch(/KEPT WHOLE[\s\S]*tool_result_read/);
+      expect(findToolResult(AGENT, `tc-${i}`)?.content, `result ${i} is kept whole`).toBe(bigResult(`tc-${i}`));
+    }
+  });
+
+  it('what the engine added around a result survives a narrower view of it', async () => {
+    const blocks = await runBatch(40, (_id, c) => `${c}\n[Engine notice: the next identical call is refused.]`);
+    for (const [i, b] of blocks.entries()) expect(b.content, `result ${i}`).toContain('[Engine notice: the next identical call is refused.]');
+  });
+
+  it('a result the executor already made a pointer (past one view) narrows too, with its notice intact', async () => {
+    TOKENS_EACH = 30_000;
+    const view = (await estimateAssembledTokens(AGENT, WINDOW, MODEL)).view;
+    const headroom = Math.floor(view.tailRoomTokens / 2);
+    const blocks = await runBatch(40, (_id, c) => `${c}\n[Engine notice: the next identical call is refused.]`);
+    expect(blocks.reduce((t, b) => t + estimateTokens(b.content), 0)).toBeLessThanOrEqual(headroom);
+    for (const [i, b] of blocks.entries()) {
+      expect(b.content, `result ${i}`).toContain('[Engine notice: the next identical call is refused.]');
+      expect(b.content, `result ${i}`).toMatch(/KEPT WHOLE[\s\S]*tool_result_read/);
+      expect(findToolResult(AGENT, `tc-${i}`)?.content, `result ${i} is kept whole`).toBe(bigResult(`tc-${i}`));
+    }
   });
 });

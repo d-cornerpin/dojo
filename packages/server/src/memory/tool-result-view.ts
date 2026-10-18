@@ -41,6 +41,11 @@ export const RESULT_READ_TOOL = 'tool_result_read';
 /** How much of a too-long result its pointer shows: an eighth of one view (header). */
 export const RESULT_EXCERPT_CHARS = Math.floor(TOOL_RESULT_VIEW_CHARS / 8);
 
+/** The room a pointer's label takes beyond its excerpt: a view of `RESULT_EXCERPT_CHARS` plus this is the view
+ *  at which a result becomes its standard pointer (`toolResultView` shows `viewChars` less this much of it). */
+export const POINTER_LABEL_ROOM_CHARS = 1000;
+export const POINTER_VIEW_CHARS = RESULT_EXCERPT_CHARS + POINTER_LABEL_ROOM_CHARS;
+
 /** A result's lines, numbered from 1. A final newline ends the last line rather than opening an
  *  empty one, so the count is the one a person reading the output would give. */
 export function resultLines(text: string): string[] {
@@ -71,7 +76,7 @@ function lineAt(text: string, at: number): number {
  */
 export function toolResultView(text: string, id: string, viewChars: number = TOOL_RESULT_VIEW_CHARS): string {
   if (text.length <= viewChars) return text;
-  const excerpt = Math.max(0, Math.min(RESULT_EXCERPT_CHARS, viewChars - 1000));
+  const excerpt = Math.max(0, Math.min(RESULT_EXCERPT_CHARS, viewChars - POINTER_LABEL_ROOM_CHARS));
   const headBudget = Math.floor(excerpt * 3 / 4);
   // Cut at a line end when one falls in the second half of the budget; otherwise mid-line.
   const nl = text.lastIndexOf('\n', headBudget);

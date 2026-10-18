@@ -39,6 +39,7 @@ import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
 import { CANCELLED_BY_STOP } from './stop-race.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
+import { admitBatchToRoom } from './batch-admission.js';
 import { countTrackerWorkThisIteration } from './tracker-counting.js';
 import { runTrackerFloors } from './tracker-floors.js';
 import { runDelegationTurnEnd } from './delegation-exit.js';
@@ -142,13 +143,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   const { agentId, result, counterparty, identicalCallState } = ctx;
 
   const batches = partitionTools(result.toolCalls);
-  const turnToolResults: Array<{
-    toolCallId: string;
-    name: string;
-    content: string;
-    isError: boolean;
-    contentBlocks?: Array<{ type: string; [key: string]: unknown }>;
-  }> = [];
+  const turnToolResults: PendingToolResult[] = [];
 
   let stoppedMidBatch = false;
   let calledCompleteTask = false;
@@ -234,6 +229,8 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     }
   }
   if (isStopFenced(agentId)) stoppedMidBatch = true; // t203: a stop during the LAST batch, too
+  // t211 (D7a): the response's results are admitted TOGETHER, against the room the turn has, before anything reads them.
+  await admitBatchToRoom(ctx, turnToolResults);
   state = sc.state;
   recentSigs = sc.recentSigs;
   calledCompleteTask = sc.calledCompleteTask;
