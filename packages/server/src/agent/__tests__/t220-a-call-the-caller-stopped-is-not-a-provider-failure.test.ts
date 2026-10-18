@@ -5,7 +5,7 @@
 // Each transport's generic catch used to treat that as a provider failure: it marked the
 // provider unhealthy (`recordProviderError`) and logged at ERROR ("... call failed:
 // fold-in-turn-limit") for a call the provider never failed. The question "did the call's own
-// abort signal end it?" is now asked in one place (`caller-stop.ts`) and every transport asks it.
+// abort signal end it?" is now asked in one place (`caller-stop.ts`; `failed-call.ts` settles the catch) and every transport asks it.
 //
 // Drives the REAL `callModel` on all four transports. Ollama and OpenAI-compatible talk to a
 // real HTTP stub that accepts the request and never answers (or answers 400 for the control);

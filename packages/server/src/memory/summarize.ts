@@ -2,10 +2,10 @@ import { callModel } from '../agent/model.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
-import { noteSummaryWriterFailure } from '../providers/billing-breaker.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
+import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import type { Summary } from './dag.js';
@@ -390,10 +390,7 @@ async function writeSummary(params: {
     // importing `AgentError`, because any thrower attaching the same field is equally credible
     // and this file must never depend on which one it was.
     const facts = (err as { provider?: ProviderErrorFacts | null } | null)?.provider ?? undefined;
-    const permanent = noteSummaryWriterFailure(modelId, message, agentId, facts);
-    logger.error('SUMMARY_REFUSED summarization model call failed', {
-      error: message, depth, targetTokens, permanent: permanent ?? 'transient',
-    }, agentId);
+    noteSummaryCallFailed({ modelId, message, agentId, facts, depth, targetTokens, abortSignal });   // t220: not for a call its caller stopped
     return { ok: false, reason: `summarizer model call failed: ${message}` };
   }
 }

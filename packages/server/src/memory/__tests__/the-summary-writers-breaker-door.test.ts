@@ -169,9 +169,15 @@ describe('D4b the summary writer\'s own 402 opens its provider\'s breaker', () =
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '..', 'summarize.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-    const call = src.match(/^\s*const permanent = noteSummaryWriterFailure\(.*$/m)?.[0];
+    // t220: the breaker note moved to `noteSummaryCallFailed` (agent/failed-call.ts), which also
+    // declines to blame a writer for a call its caller stopped. `summarize.ts` still derives the facts
+    // and hands them to it; that function still hands them to the breaker.
+    const call = src.match(/^\s*noteSummaryCallFailed\(.*$/m)?.[0];
     expect(call, '`summarize.ts` must still be the caller of this door').toBeTruthy();
     expect(call, 'and it must hand over the SDK\'s own facts, not only the wrapped prose').toContain('facts');
+    const health = readFileSync(join(here, '..', '..', 'agent', 'failed-call.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    expect(health.match(/noteSummaryWriterFailure\(.*$/m)?.[0], 'which forwards them to the breaker').toContain('facts');
     const derive = src.match(/^\s*const facts = .*$/m)?.[0];
     expect(derive, 'read off the thrown error\'s `provider` field, which model.ts already attaches')
       .toMatch(/provider/);

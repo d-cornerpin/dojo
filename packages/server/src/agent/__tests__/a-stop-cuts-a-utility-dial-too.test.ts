@@ -26,10 +26,11 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 
 const warnSpy = vi.fn();
+const infoSpy = vi.fn();
 const errorSpy = vi.fn();
 vi.mock('../../logger.js', () => ({
   createLogger: () => ({
-    debug: vi.fn(), info: vi.fn(),
+    debug: vi.fn(), info: (...a: unknown[]) => infoSpy(...a),
     warn: (...a: unknown[]) => warnSpy(...a),
     error: (...a: unknown[]) => errorSpy(...a),
   }),
@@ -126,6 +127,7 @@ beforeEach(() => {
   openResponses = [];
   dialsReceived = 0;
   warnSpy.mockClear();
+  infoSpy.mockClear();
   errorSpy.mockClear();
   stoppedAgents.delete(AGENT);
   activeAbortControllers.delete(AGENT);
@@ -186,7 +188,9 @@ describe('the stop button reaches a utility dial in flight', () => {
     // an agent error. `resolveAskTitle` then returns null and the ticket keeps the id it was filed
     // with — a person sees a ticket with a plain title, not an error.
     expect(errorSpy, 'a best-effort abort must not log at error level').not.toHaveBeenCalled();
-    expect(warnSpy.mock.calls.length).toBeGreaterThan(0);
+    // t220: a call its caller aborted leaves one INFO line (it was no failure); before, a WARN.
+    const stopLines = [...warnSpy.mock.calls, ...infoSpy.mock.calls].filter((c) => String(c[0]).includes('stopped by its caller'));
+    expect(stopLines.length).toBeGreaterThan(0);
   });
 
   it('the budget signal does NOT replace the stop linkage — both reach the same dial', async () => {

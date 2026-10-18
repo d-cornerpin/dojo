@@ -28,6 +28,7 @@ import { checkBudget, WALL_ESTIMATE_USD } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
 import { routedFirstPicks } from '../router/selector.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
+import { settleFailedCall } from './failed-call.js';
 import { broadcast } from '../gateway/ws.js';
 // T83: the abort registry's two doors. `shared-state.ts` imports nothing but the logger, so
 // this is a leaf edge — no cycle back through the runtime.
@@ -1655,15 +1656,10 @@ async function callOllamaModel(
       throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
 
-    recordProviderError(modelInfo.providerId);
-    // F3: best-effort utility calls (caller has a fallback) log at WARN, a
-    // handled recoverable failure is not an agent-level error.
-    logger[params.bestEffort ? 'warn' : 'error'](`Ollama call failed: ${message}`, {
-      model: ollamaModelName,
-      baseUrl,
-      latencyMs,
-      bestEffort: params.bestEffort ?? false,
-    }, agentId);
+    // F3: best-effort utility calls (caller has a fallback) log at WARN, a handled recoverable
+    // failure is not an agent-level error; t220: a call the caller stopped is no failure at all.
+    settleFailedCall('Ollama call', message, { model: ollamaModelName, baseUrl, latencyMs },
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
     throw err instanceof AgentError ? err : new AgentError(`Ollama call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
       retryable: true,
@@ -2842,17 +2838,11 @@ async function callOpenAIModel(
     }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
-    recordProviderError(modelInfo.providerId);
 
-    // F3/W3-1: best-effort utility calls (caller fully handles failure with a
-    // fallback) log at WARN; genuine agent-turn calls stay at ERROR. Same
-    // severity rule as the Ollama path below.
-    logger[params.bestEffort ? 'warn' : 'error'](`OpenAI call failed: ${message}`, {
-      model: modelInfo.apiModelId,
-      providerId: modelInfo.providerId,
-      latencyMs,
-      bestEffort: params.bestEffort ?? false,
-    }, agentId);
+    // F3/W3-1: best-effort utility calls (caller fully handles failure with a fallback) log at
+    // WARN; genuine agent-turn calls stay at ERROR; t220: a call the caller stopped is no failure.
+    settleFailedCall('OpenAI call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
     // PHASE-4 T5 (provider-error.ts): the provider's STATUS, never this message's digits —
     // `message.includes('503')` was true of "prompt is too long: 250316 tokens".
@@ -3153,14 +3143,8 @@ async function callAnthropicSdkModel(
       throw new AgentError(declaredMsg, agentId, { code, retryable: code === STREAM_IDLE_TIMEOUT_CODE });
     }
 
-    recordProviderError(modelInfo.providerId);
-
-    logger[params.bestEffort ? 'warn' : 'error'](`Agent SDK call failed: ${message}`, {
-      model: modelInfo.apiModelId,
-      providerId: modelInfo.providerId,
-      latencyMs,
-      bestEffort: params.bestEffort ?? false,
-    }, agentId);
+    settleFailedCall('Agent SDK call', message, { model: modelInfo.apiModelId, providerId: modelInfo.providerId, latencyMs },
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
     // Classify with the SHARED recovery classifier so the SDK path, the direct
     // Anthropic path, and the FA-A1 step-0 passthrough all agree on what counts
@@ -3762,9 +3746,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     const message = err instanceof Error ? err.message : String(err);
 
     // Extract detailed error info from Anthropic SDK
-    // Track provider health
-    recordProviderError(modelInfo.providerId);
-
     const errorDetail: Record<string, unknown> = {
       model: modelInfo.apiModelId,
       providerId: modelInfo.providerId,
@@ -3784,8 +3765,9 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     // F3/W3-1: best-effort utility calls log at WARN (caller fully handles the
     // failure); genuine agent-turn calls stay at ERROR.
     const statusStr = err instanceof Anthropic.APIError ? `[${err.status}] ` : '';
-    errorDetail.bestEffort = params.bestEffort ?? false;
-    logger[params.bestEffort ? 'warn' : 'error'](`Model call failed: ${statusStr}${message}`, errorDetail, agentId);
+    // Provider health is tracked in the same place (t220: not for a call the caller stopped).
+    settleFailedCall('Model call', `${statusStr}${message}`, errorDetail,
+      { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort });
 
     // Determine if retryable — PHASE-4 T5, from `err.status` (which the line above already
     // read into errorDetail) and the structured body, never the message's digits.

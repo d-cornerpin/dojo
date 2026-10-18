@@ -28,6 +28,7 @@ import { writerBreaker } from './compaction-defect.js';
 import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
+import { callerStopped } from '../agent/caller-stop.js';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
@@ -38,8 +39,6 @@ export const FOLD_STOPPED_BY_OWNER = 'fold-stopped-by-owner';
  *  declared patience, see `out-of-view-fold.ts`). Not a failure — no card — but the turn will not
  *  wait on that writer again until it answers (`noteDidNotAnswerInTurn`). */
 export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
-/** Abort reasons that say nothing about the writer. */
-const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
 
 /** Per agent: the moment (same ordinal as the marks) a person last wrote to it. */
 const personSpokeAt = new Map<string, number>();
@@ -151,9 +150,10 @@ export function settleSummaryCall(
   return result;
 }
 
-/** Does this abort say anything about the writer? (No for Stop or the turn's patience.) */
+/** Does this abort say anything about the writer? No: a call its caller stopped (Stop, the turn's
+ *  patience, a teardown; t220 whatever the reason) was the caller's decision. */
 export function abortBlamesWriter(signal?: AbortSignal): boolean {
-  return !(signal?.aborted && NOT_THE_WRITERS_FAILURE.has(signal.reason));
+  return !callerStopped(signal);
 }
 
 /** Record how a summary call went. Called by `summarize.ts` for every call it makes. */
