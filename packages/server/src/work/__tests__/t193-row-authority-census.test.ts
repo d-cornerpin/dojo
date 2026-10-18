@@ -92,10 +92,6 @@ const ASSIGNEE_WRITERS: Record<string, { shapes: string[]; why: string }> = {
     shapes: ['UPDATE work SET'],
     why: 'repointJoinPieceToHandOff moves an a2a join PIECE (outside taskScope) and refuses anyone but the piece\'s own assignee — the holder handing its own piece on.',
   },
-  'healer/auto-fix.ts': {
-    shapes: ['patchWork literal'],
-    why: 'ENGINE: clears the assignee of rows whose holder is VERIFIED terminated by the shared ORPHANED_TASK predicate. Outside this lane\'s fence; handed up to route through writeAssignee.',
-  },
   'agent/groups.ts': {
     shapes: ['patchWork literal'],
     why: 'deleteGroup clears a dangling group reference when the group itself is deleted; no task moves to anybody.',
