@@ -95,6 +95,10 @@ interface RunLog {
 async function drive(turns: number, largeEvery: number): Promise<RunLog> {
   const log: RunLog = { trimmedTurns: [], folds: [], outOfViewFoldTurns: [] };
   for (let t = 1; t <= turns; t++) {
+    // Let the event loop turn between simulated turns, as a server does between real ones: without it this
+    // loop runs tens of seconds without yielding and its vitest worker cannot answer the runner
+    // ("Timeout calling onTaskUpdate" under a full-suite load, an all-green suite exiting 1).
+    await new Promise<void>((resolve) => setImmediate(resolve));
     appendTurn(t % largeEvery === 0);
     // t194: the routine check reads the gauge (the assembler's own dry run), as `context-gates.ts` does.
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
@@ -203,6 +207,10 @@ function lostRows(view: string): string[] {
 async function driveCounting(turns: number, largeEvery: number, timing: FoldTiming): Promise<CountLog> {
   const log: CountLog = { lostRowTurns: 0, turnsWithLoss: 0, worstTurn: null, folds: 0 };
   for (let t = 1; t <= turns; t++) {
+    // Let the event loop turn between simulated turns, as a server does between real ones: without it this
+    // loop runs tens of seconds without yielding and its vitest worker cannot answer the runner
+    // ("Timeout calling onTaskUpdate" under a full-suite load, an all-green suite exiting 1).
+    await new Promise<void>((resolve) => setImmediate(resolve));
     appendTurn(t % largeEvery === 0);
     const before = summariser.calls;
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);

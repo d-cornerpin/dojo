@@ -222,6 +222,10 @@ interface RunOptions {
 async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
   const snaps: TurnSnapshot[] = [];
   for (let t = 1; t <= opts.turns; t++) {
+    // Let the event loop turn between simulated turns, as a server does between real ones: without it this
+    // loop runs tens of seconds without yielding and its vitest worker cannot answer the runner
+    // ("Timeout calling onTaskUpdate" under a full-suite load, an all-green suite exiting 1).
+    await new Promise<void>((resolve) => setImmediate(resolve));
     appendTurn();
     let note = '';
     const pass = opts.compaction === false ? null : await runRoutineCompactionGate();
