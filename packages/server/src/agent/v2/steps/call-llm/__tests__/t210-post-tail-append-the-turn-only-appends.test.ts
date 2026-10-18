@@ -17,6 +17,10 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const mockDb = { current: null as Database.Database | null };
 const callModelSpy = vi.fn();
@@ -128,6 +132,8 @@ let script: Array<{ content?: string; tool?: { name: string; arguments: Record<s
 let toolSeq = 0;
 /** What a scripted tool does to the world when it runs (a task written, a task closed). */
 let onTool: (() => void) | null = null;
+/** Runs on EVERY tool call, with the call's sequence number (the long-turn measurement). */
+let everyTool: ((n: number) => void) | null = null;
 
 function installModel(): void {
   callModelSpy.mockImplementation(async (params: { messages: Wire[] }) => {
@@ -145,6 +151,7 @@ function installModel(): void {
   executeToolSpy.mockImplementation(async (...a: unknown[]) => {
     const tc = a.find((x) => x && typeof x === 'object' && 'id' in (x as object)) as { id: string; name: string };
     if (onTool) { const f = onTool; onTool = null; f(); }
+    everyTool?.(toolSeq);
     return { toolCallId: tc.id, name: tc.name, content: `results for ${tc.name}`, isError: false };
   });
 }
@@ -190,6 +197,7 @@ beforeEach(() => {
   script = [];
   toolSeq = 0;
   onTool = null;
+  everyTool = null;
   callModelSpy.mockReset();
   executeToolSpy.mockReset();
   installModel();
@@ -266,5 +274,60 @@ describe('decision 37 — within one turn, the array only grows', () => {
     const [first] = await turn({ content: 'Two tasks are open.' });
     expect(first.map(textOf).join('\n')).not.toContain('[update · ');
     expect(taskListAt(first)).toHaveLength(1);
+  });
+});
+
+// ── THE BILL: one long turn, measured with the report tool's own prefix walk ──────────────
+// `scripts/cost-measure.mjs` `prefixBreak` reads two consecutive receipts' per-message hashes and
+// names the first message that differs; everything from it on is what a provider bills again.
+// Fixture: a 12-call turn, a tool on every call, and the task list changing on every 4th.
+const COST_MEASURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../../../../scripts/cost-measure.mjs');
+type Receipt = { loopCount: number; messages: { items: Array<{ chars?: number; textChars?: number }> } };
+
+describe('the bill — a long turn, measured with scripts/cost-measure.mjs', () => {
+  const REAL_HOME = process.env.DOJO_HOME;
+  const REAL_MODE = process.env.DOJO_RECEIPT_MODE;
+  afterEach(() => { process.env.DOJO_HOME = REAL_HOME; process.env.DOJO_RECEIPT_MODE = REAL_MODE; });
+
+  it('every later call keeps the whole previous call cached and re-bills only what is new', async () => {
+    const scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t210-bill-'));
+    process.env.DOJO_HOME = scratch;
+    process.env.DOJO_RECEIPT_MODE = 'meta';
+    task('Reconcile the PELICAN manifests');
+    await submitUserMessage(AGENT, 'Work through the PELICAN reconciliation, bay by bay.');
+    everyTool = (n) => { if (n % 4 === 0) task(`Recount bay ${n}`); };
+    const steps = Array.from({ length: 11 }, (_, i) => ({ tool: { name: 'web_search', arguments: { query: `bay ${i}` } } }));
+    const calls = await turn(...steps, { content: 'All bays reconciled.' });
+    expect(calls.length).toBe(12);
+
+    const dir = path.join(scratch, '.dojo', 'receipts', AGENT);
+    let receipts: Receipt[] = [];
+    for (let i = 0; i < 300 && receipts.length < 12; i++) {
+      try { receipts = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as Receipt); } catch { receipts = []; }
+      if (receipts.length < 12) await new Promise((r) => setTimeout(r, 10));
+    }
+    receipts.sort((x, y) => x.loopCount - y.loopCount);
+    expect(receipts).toHaveLength(12);
+    const { prefixBreak } = (await import(/* @vite-ignore */ COST_MEASURE)) as {
+      prefixBreak: (a: Receipt, b: Receipt) => { where: string; sharedItems: number; nextItems: number };
+    };
+    const size = (it: { chars?: number; textChars?: number }) => it.chars ?? it.textChars ?? 0;
+    let rebilled = 0;
+    let total = 0;
+    const lines: string[] = [];
+    const held: boolean[] = [];
+    for (let i = 1; i < receipts.length; i++) {
+      const prev = receipts[i - 1].messages.items;
+      const next = receipts[i].messages.items;
+      const b = prefixBreak(receipts[i - 1], receipts[i]);
+      const billed = next.slice(b.sharedItems).reduce((n, it) => n + size(it), 0);
+      rebilled += billed;
+      total += next.reduce((n, it) => n + size(it), 0);
+      held.push(b.sharedItems >= prev.length);
+      lines.push(`call ${i + 1}: break at ${b.where} (${b.sharedItems}/${prev.length} kept), billed again ${billed} chars`);
+    }
+    // eslint-disable-next-line no-console
+    console.log(`T210 BILL  later calls ${receipts.length - 1}: billed again ${rebilled} of ${total} message chars (${((rebilled / total) * 100).toFixed(1)}%)\n  ${lines.join('\n  ')}`);
+    expect(held.every(Boolean), 'every later call keeps the whole previous call').toBe(true);
   });
 });
