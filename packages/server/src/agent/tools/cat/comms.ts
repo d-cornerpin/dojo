@@ -861,7 +861,7 @@ export const commsHandlers: ToolHandlerMap = {
       to: args.to as string,
       opening_message: args.opening_message as string | undefined,
       purpose: args.purpose as string | undefined,
-      from: args.from as string | undefined,
+      from: args.from as string | undefined, agentId, // t203: so the owner's Stop can abort it
     });
     content = result.message;
     isError = !result.ok;

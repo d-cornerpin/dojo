@@ -26,7 +26,7 @@ function authHeader(sid: string, token: string): string {
   return 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64');
 }
 
-async function twilioPost<T>(path: string, params: Record<string, string>): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number }> {
+async function twilioPost<T>(path: string, params: Record<string, string>, signal?: AbortSignal): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number }> {
   const creds = getTwilioCreds();
   if (!creds) return { ok: false, error: 'Twilio is not configured.', status: 400 };
   const body = new URLSearchParams(params).toString();
@@ -40,6 +40,7 @@ async function twilioPost<T>(path: string, params: Record<string, string>): Prom
         'Accept': 'application/json',
       },
       body,
+      signal, // t203: the caller's slot under the owner's Stop (`sms-outbound.ts`, `voice-outbound.ts`)
     });
   } catch (err) {
     return { ok: false, error: `Twilio network error: ${err instanceof Error ? err.message : String(err)}`, status: 0 };
@@ -75,6 +76,7 @@ export async function sendSms(
   to: string,
   body: string,
   from: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; data: TwilioSmsResponse } | { ok: false; error: string }> {
   if (!to.trim() || !body.trim() || !from.trim()) {
     return { ok: false, error: 'to, body, and from are all required.' };
@@ -85,7 +87,7 @@ export async function sendSms(
     To: to,
     From: from,
     Body: formatForPlainTextChannel(body),
-  });
+  }, signal);
   // PHASE-2 T5: THE DOOR RECORDS. All three SMS paths (auto-reply, the sms_send tool, the
   // A2A relay) pass through here, and a FAILED send now produces `outcome='failed'` — the
   // caller-written record was gated on success and could not express one.
@@ -124,6 +126,7 @@ export async function placeCall(
   from: string,
   twimlUrl: string,
   statusCallbackUrl?: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; data: TwilioCallResponse } | { ok: false; error: string }> {
   if (!to.trim() || !from.trim() || !twimlUrl.trim()) {
     return { ok: false, error: 'to, from, and twimlUrl are all required.' };
@@ -138,7 +141,7 @@ export async function placeCall(
     params.StatusCallbackMethod = 'POST';
     params.StatusCallbackEvent = 'initiated ringing answered completed';
   }
-  const res = await twilioPost<TwilioCallResponse>('/Calls.json', params);
+  const res = await twilioPost<TwilioCallResponse>('/Calls.json', params, signal);
   // PHASE-2 T5: placing a call reaches a person. `voice_call` was one of the ten send paths
   // that recorded nothing.
   recordedId(recordAtDoor({

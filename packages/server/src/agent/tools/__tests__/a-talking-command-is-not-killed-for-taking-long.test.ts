@@ -34,10 +34,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 // Real child processes are spawned here, so the capability facade has to answer rather than
 // refuse. Nothing about the capability is under test in this file — the facade's own contract
 // suite owns that — so it is answered at its narrowest: the authorization check becomes a no-op
-// and the genuine `spawn` runs underneath it.
+// and the genuine `spawn` runs underneath it. t203: it answers with the one field the process
+// door now reads from the real capability — which agent's stop the child is bound to.
 vi.mock('../../effects/capability.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  requireAuthorized: () => undefined,
+  requireAuthorized: () => ({ agentId: 'idle-bound-test-agent' }),
 }));
 
 import {

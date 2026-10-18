@@ -13,6 +13,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { cancelAgentGenerationJobs } from '../services/generation-jobs.js';
+import { notifyUserStop } from './stop-waiters.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { tagMessageLane } from '../memory/message-lane-tag.js';
 import { prepareImageForModel } from './image-prep.js';
@@ -492,6 +493,7 @@ export function stopAgent(agentId: string): void {
   // are the engine's own aborts and are narrowed to `turn`, so a voice barge-in or a thrown
   // turn can no longer reach a thirty-minute render and file it as something the owner did.
   const cut = abortInFlight(agentId, 'user-stop', { scope: 'all' });
+  notifyUserStop(agentId); // t203: and every WAIT on a tool call ends now (`stop-waiters.ts`)
 
   // A-5 — AND THE RUN-ONCE MEDIA JOBS THIS AGENT HAS OPEN, which the registry alone cannot
   // reach. `image_create`'s delivery IIFE waits for the turn to END before it dials, so at the

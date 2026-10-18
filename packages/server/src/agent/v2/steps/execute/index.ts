@@ -37,6 +37,7 @@ import { anyIdenticalCallRefused, type RepeatCallState } from '../../identical-c
 import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
+import { CANCELLED_BY_STOP } from './stop-race.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
 import { countTrackerWorkThisIteration } from './tracker-counting.js';
 import { runTrackerFloors } from './tracker-floors.js';
@@ -195,7 +196,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
         turnToolResults.push({
           toolCallId: rem.id,
           name: rem.name,
-          content: 'Cancelled by user (agent stopped).',
+          content: CANCELLED_BY_STOP,
           isError: true,
         });
       }
@@ -220,7 +221,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
             turnToolResults.push({
               toolCallId: rem.id,
               name: rem.name,
-              content: 'Cancelled by user (agent stopped).',
+              content: CANCELLED_BY_STOP,
               isError: true,
             });
           }
@@ -232,6 +233,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
       }
     }
   }
+  if (isStopFenced(agentId)) stoppedMidBatch = true; // t203: a stop during the LAST batch, too
   state = sc.state;
   recentSigs = sc.recentSigs;
   calledCompleteTask = sc.calledCompleteTask;

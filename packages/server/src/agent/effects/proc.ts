@@ -20,6 +20,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { requireAuthorized } from './capability.js';
+import { endsWithTheStop } from './proc-tree.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,9 +66,13 @@ export function spawnAuthorized(
   argv: readonly string[],
   options?: { cwd?: string },
 ): ChildProcessWithoutNullStreams {
-  requireAuthorized({ op: 'proc', program: file });
+  const { agentId } = requireAuthorized({ op: 'proc', program: file });
   // t114: `cwd` is forwarded so the exec door can reach this streaming form without losing the
   // working directory it has always honoured. Still no `shell` — `spawn` without `shell: true`
   // hands argv straight to `execve`, which is the whole argv-no-shell property of both doors.
-  return spawn(file, [...argv], options?.cwd ? { cwd: options.cwd } : undefined);
+  // t203: `detached` makes the child the leader of its OWN process group, so the owner's Stop and
+  // the idle clock can end the whole tree it starts, not just the first process (`proc-tree.ts`).
+  const child = spawn(file, [...argv], { ...(options?.cwd ? { cwd: options.cwd } : {}), detached: true });
+  endsWithTheStop(agentId, child);
+  return child;
 }

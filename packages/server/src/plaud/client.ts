@@ -14,6 +14,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createLogger } from '../logger.js';
+import { openAgentCall } from '../agent/abortable-call.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('plaud-client');
@@ -47,9 +48,12 @@ export async function runPlaudCommand(
   const timeoutMs = options.timeoutMs ?? 30_000;
   const fullArgs = ['-y', PLAUD_NPM_PACKAGE, ...args];
 
+  // t203: a call made for an agent is cut by that agent's Stop (execFile kills the CLI on abort).
+  const slot = options.agentId ? openAgentCall(options.agentId, 'turn') : null;
   try {
     const { stdout, stderr } = await execFileAsync('npx', fullArgs, {
       timeout: timeoutMs,
+      ...(slot ? { signal: slot.signal } : {}),
       maxBuffer: 16 * 1024 * 1024, // 16MB - transcripts can be long
       env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}` },
     });
@@ -104,6 +108,8 @@ export async function runPlaudCommand(
         ? 'Plaud is no longer connected (token expired or revoked). Reconnect from Settings → Integrations → Plaud.'
         : errMsg,
     };
+  } finally {
+    slot?.release();
   }
 }
 

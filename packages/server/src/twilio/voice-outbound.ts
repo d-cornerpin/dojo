@@ -19,6 +19,7 @@
 
 import { createLogger } from '../logger.js';
 import { placeCall } from './client.js';
+import { openAgentCall } from '../agent/abortable-call.js';
 import {
   getDefaultFromNumber,
   getNumber,
@@ -34,6 +35,8 @@ export interface VoiceCallInput {
   opening_message?: string;
   purpose?: string;
   from?: string;
+  /** t203: the agent placing it, so the owner's Stop can abort it on its way to Twilio. */
+  agentId?: string;
 }
 
 export interface VoiceCallResult {
@@ -70,7 +73,8 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
     return { ok: false, message: `Voice NOT placed - Voice is disabled on ${from}.` };
   }
 
-  const res = await placeCall(to, from, voiceWebhook, statusWebhook);
+  const slot = input.agentId === undefined ? null : openAgentCall(input.agentId, 'turn');
+  const res = await placeCall(to, from, voiceWebhook, statusWebhook, slot?.signal).finally(() => slot?.release());
   if (!res.ok) {
     logger.warn('Outbound voice call failed', { to, from, error: res.error });
     return { ok: false, message: `Voice NOT placed - Twilio rejected the call: ${res.error}` };

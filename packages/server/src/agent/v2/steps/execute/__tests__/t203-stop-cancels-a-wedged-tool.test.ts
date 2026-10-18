@@ -262,7 +262,7 @@ describe('t203: Stop ends a turn whose tool call is stuck', () => {
     const out = await runExecute(freshState(), ctxFor([call('file_read', { path: 'a.txt' })]));
     expect(out.directive).toBe('proceed');
     expect(out.state.engineCutExit).toBeNull();
-    const { stopWaiterCount } = await import('../../../../abortable-call.js');
+    const { stopWaiterCount } = await import('../../../../stop-waiters.js');
     expect(stopWaiterCount(AGENT)).toBe(0);
   });
 });

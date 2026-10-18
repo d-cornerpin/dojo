@@ -38,6 +38,7 @@ import { appendBookkeepingNudgeIfRelevant, appendVisibilityHintIfRelevant, userR
 import { runRefusalGates } from './refusal-gates.js';
 import { recordDispatchAndHold } from './dispatch-bookkeeping.js';
 import { recordToolResultEffects } from './post-result.js';
+import { runUnlessStopped } from './stop-race.js';
 import type { ExecuteContext, ExecuteScratch, PendingToolResult } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -187,7 +188,9 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
         }
       }
     } else {
-      toolResult = toolResultOf(await executeTool(agentId, tc));
+      const raced = await runUnlessStopped(agentId, tc, () => executeTool(agentId, tc));
+      if (raced.stopped) return done(raced.result); // t203: the owner's Stop cut it (`stop-race.ts`)
+      toolResult = toolResultOf(raced.outcome);
     }
     // P3 once-guard, post-result half: a SUCCESSFUL non-idempotent
     // execution registers its signature for the rest of this response.

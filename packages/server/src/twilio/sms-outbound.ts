@@ -13,6 +13,7 @@ import {
 } from './auth.js';
 import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
+import { openAgentCall } from '../agent/abortable-call.js';
 
 const logger = createLogger('twilio-sms-outbound');
 
@@ -76,7 +77,10 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
     return { ok: false, message: `SMS NOT sent - SMS is disabled on ${from}. The owner can re-enable it in Settings → Channels → Twilio.` };
   }
 
-  const result = await sendSms(to, body, from);
+  // t203: the owner's Stop aborts the text while it is still on its way to Twilio. Once Twilio
+  // has accepted it, it cannot be called back; the executor tells the owner which happened.
+  const slot = openAgentCall(agentId, 'turn');
+  const result = await sendSms(to, body, from, slot.signal).finally(() => slot.release());
   if (!result.ok) {
     logger.warn('SMS send failed', { agentId, to, from, error: result.error });
     return { ok: false, message: `SMS NOT sent - Twilio rejected the send: ${result.error}` };

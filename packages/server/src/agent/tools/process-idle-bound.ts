@@ -21,7 +21,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { spawnAuthorized } from '../effects/proc.js';
-import { attachIdleBound, type ChildRunFailure } from '../../child-idle-bound.js';
+import { signalProcessTree } from '../effects/proc-tree.js';
+import { attachIdleBound, type ChildRunFailure, type WatchableChild } from '../../child-idle-bound.js';
 
 /** Re-exported so the exec door's failure translation keeps one name for the shape it reads. */
 export type { ChildRunFailure };
@@ -42,5 +43,13 @@ export async function runWithIdleBound(
   // The capability check lives INSIDE `spawnAuthorized`: a program this call was not authorized
   // for never becomes a child, so the clock below is only ever handed a process the gate allowed.
   const child = spawnAuthorized(file, argv, opts.cwd ? { cwd: opts.cwd } : undefined);
-  return attachIdleBound(child, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
+  // t203: the clock's kill reaches the whole tree. Signalling only the shell left a script's
+  // background job running, and holding the pipe, so this run did not even come back.
+  const tree: WatchableChild = {
+    stdout: child.stdout,
+    stderr: child.stderr,
+    on: ((ev: string, cb: (...a: unknown[]) => void) => child.on(ev, cb)) as WatchableChild['on'],
+    kill: (signal) => signalProcessTree(child, signal ?? 'SIGTERM'),
+  };
+  return attachIdleBound(tree, { idleMs: opts.idleMs, ceilingMs: opts.ceilingMs });
 }
