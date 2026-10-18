@@ -33,7 +33,8 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { getSoulContent, soulFileForAgent, readSoulFile, refreshShippedSoulsOnce } from '../assembler.js';
+import { getSoulContent, soulFileForAgent, readSoulFile } from '../assembler.js';
+import { refreshShippedSoulsOnce } from '../shipped-souls.js';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');

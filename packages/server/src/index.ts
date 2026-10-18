@@ -423,18 +423,8 @@ async function main(): Promise<void> {
     });
   }
 
-  // 3a-b. Owner decision 33: the Dojo-supplied souls (PM, Trainer, Healer, Imaginer) are replaced
-  //       with the shipped version once per platform version, edited or not. The primary's soul is
-  //       never touched. Before the service ensures below, so they read the fresh files.
-  try {
-    const { getCurrentVersion } = await import('./gateway/routes/update.js');
-    const { refreshShippedSoulsOnce } = await import('./prompt/assembler.js');
-    refreshShippedSoulsOnce(getCurrentVersion());
-  } catch (err) {
-    logger.warn('Shipped-soul refresh failed (non-fatal; the souls on disk keep being read)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // 3a-b. Owner decision 33: Dojo-supplied souls are replaced once per version (primary's never).
+  await (await import('./prompt/shipped-souls.js')).refreshShippedSoulsAtBoot();
 
   // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
   //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into

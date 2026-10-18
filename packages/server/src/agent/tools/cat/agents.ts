@@ -1081,8 +1081,7 @@ export const agentsHandlers: ToolHandlerMap = {
       const changes: string[] = [];
       let finalName = target.name;
 
-      // Model, resolved and checked FIRST so a refusal leaves the whole edit unwritten (no rename
-      // without the model it came with). 32K main-model floor: owner decision 13.
+      // Model resolved + 32K-floor checked (dec 13) FIRST, so a refusal leaves the edit unwritten.
       let resolvedModel: { id: string; name: string; is_enabled: number } | undefined;
       if (typeof newModelId === 'string' && newModelId !== 'auto') {
         // Resolve forgivingly: id, then case-insensitive name/api_model_id,
