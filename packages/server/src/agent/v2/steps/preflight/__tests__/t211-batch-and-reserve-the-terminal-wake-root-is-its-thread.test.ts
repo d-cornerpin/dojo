@@ -25,6 +25,8 @@ vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
+import { openTurnContext, endTurnContext } from '../../../../../agent/turn-context.js';
+import { trackerHandlers } from '../../../../../agent/tools/cat/tracker.js';
 import { runTurnClassification } from '../turn-classification.js';
 import type { PreflightContext, PreflightScratch } from '../index.js';
 import type { TurnContext } from '../../../../../agent/turn-context.js';
@@ -73,5 +75,21 @@ describe('t211 hand-up 1 — the terminal-wake root is set', () => {
     });
     const turnCtx = await classify();
     expect(turnCtx.root).toEqual({ kind: 'a2a', id: THREAD, sourceMessageId: null });
+  });
+});
+
+describe('t211 hand-up 1 audit — a reader of the root asks for the field it means', () => {
+  it('a commitment promised in a thread-rooted turn does not record the THREAD id as a message id', async () => {
+    const bag = openTurnContext(AGENT);
+    bag.turnNumber = 3;
+    bag.root = { kind: 'a2a', id: THREAD, sourceMessageId: null };
+    try {
+      const out = await trackerHandlers['work_open:commitment']({
+        agentId: AGENT, args: { description: 'send the corrected ledger' },
+      } as never);
+      expect(out.isError).toBeFalsy();
+      const row = mockDb.current!.prepare("SELECT root_id FROM work WHERE kind = 'commitment' AND agent_id = ?").get(AGENT) as { root_id: string };
+      expect(row.root_id, 'a thread id is not a message id').toBe('turn:3');
+    } finally { endTurnContext(AGENT); }
   });
 });
