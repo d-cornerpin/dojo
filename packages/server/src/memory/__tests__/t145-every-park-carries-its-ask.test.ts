@@ -176,8 +176,11 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     const recovery = strip(fs.readFileSync(path.join(SRC, 'agent/v2/recovery.ts'), 'utf8'));
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-forced-compaction'\)/);
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-doomed-prefill-compaction'\)/);
-    expect(recovery).toMatch(/parkJob\(agentId, 'recovery-forced-compaction'\)/);
-    expect(recovery).toMatch(/parkJob\(agentId, 'recovery-doomed-prefill-compaction'\)/);
+    // t211: both recovery parks go through the one wait door (`forcedPassThenPark` -> `parkAfterForcedPass`, above).
+    expect(recovery).not.toMatch(/\bparkJob\(/);
+    expect(recovery).toMatch(/forcedPassThenPark\(state, 'recovery-forced-compaction'\)/);
+    expect(recovery).toMatch(/forcedPassThenPark\(state, 'recovery-doomed-prefill-compaction'/);
+    expect(recovery).toMatch(/parkAfterForcedPass\(agentId, reason, brakedBefore\)/);
     expect(engineCode("parkJob(agentId, 'turn-budget-continuation')")).toMatch(/parkJob\(agentId, 'turn-budget-continuation'\)/);
     expect(engineCode("parkJob(agentId, 'tool-loop', 'timer')")).toMatch(/parkJob\(agentId, 'tool-loop', 'timer'\)/);
   });
