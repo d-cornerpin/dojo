@@ -68,8 +68,7 @@ const grantsOff = new Set<string>();
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  OTHER_THREADS_MAX_ROWS, OTHER_THREADS_WINDOW_DAYS, buildOtherThreadsInjection,
-  otherThreadsWorstCaseChars, readOtherThreads, renderOtherThreads,
+  buildOtherThreadsInjection, readOtherThreads, renderOtherThreads,
 } from '../other-threads-lane.js';
 import { recalledRowLabel } from '../party-label.js';
 // ⚠ NOT A PATH. `guard-corpus-census.test.ts` refuses a guard that reaches into `agent/v2/steps` by
@@ -137,9 +136,10 @@ describe('§1 the read', () => {
   });
 
   it('`theySpokeLast` is false when the agent replied last — the waiting signal', () => {
+    // t207: an answered thread is named when it moved since the agent's last turn here (the served thread began 1h ago).
     seedConversation('conv-im', { channel: 'imessage', counterpartyId: 'x', counterpartyName: 'a contact' });
     seedMessage({ conversationId: 'conv-im', role: 'user', content: 'their question', atMs: hoursAgo(4) });
-    seedMessage({ conversationId: 'conv-im', role: 'assistant', content: 'my reply', atMs: hoursAgo(3) });
+    seedMessage({ conversationId: 'conv-im', role: 'assistant', content: 'my reply', atMs: hoursAgo(0.5) });
     expect(readOtherThreads(AGENT, SERVED).rows[0].theySpokeLast).toBe(false);
   });
 
@@ -149,13 +149,15 @@ describe('§1 the read', () => {
     expect(readOtherThreads(AGENT, SERVED).rows).toHaveLength(0);
   });
 
-  it('a thread outside the window is history, not a live silo', () => {
+  // t207: there is no 7-day window any more — an old thread that is still waiting is named (see the
+  // t207-context-rest-the-other-threads-follow-the-signal test). An old thread that was answered is counted.
+  it('an old thread that was answered is history: counted, not named', () => {
     seedConversation('conv-old', { channel: 'imessage', counterpartyId: 'y', counterpartyName: 'a contact' });
-    seedMessage({
-      conversationId: 'conv-old', role: 'user', content: 'ancient',
-      atMs: hoursAgo(OTHER_THREADS_WINDOW_DAYS * 24 + 1),
-    });
-    expect(readOtherThreads(AGENT, SERVED).rows).toHaveLength(0);
+    seedMessage({ conversationId: 'conv-old', role: 'user', content: 'ancient', atMs: hoursAgo(24 * 30) });
+    seedMessage({ conversationId: 'conv-old', role: 'assistant', content: 'answered', atMs: hoursAgo(24 * 30 - 1) });
+    const read = readOtherThreads(AGENT, SERVED);
+    expect(read.rows).toHaveLength(0);
+    expect(read.hidden).toBe(1);
   });
 
   it('ANOTHER AGENT\'S thread can never appear — the W3-4 rule', () => {
@@ -165,16 +167,20 @@ describe('§1 the read', () => {
     expect(readOtherThreads(AGENT, SERVED).rows).toHaveLength(0);
   });
 
-  it('newest first, capped, and the overflow is COUNTED not swallowed', () => {
-    for (let i = 0; i < OTHER_THREADS_MAX_ROWS + 3; i++) {
+  it('newest first among the waiting, none left out, and the quiet ones COUNTED not swallowed', () => {
+    for (let i = 0; i < 6; i++) {
       seedConversation(`conv-${i}`, { channel: 'imessage', counterpartyId: `p${i}`, counterpartyName: `contact ${i}` });
       seedMessage({ conversationId: `conv-${i}`, role: 'user', content: `q${i}`, atMs: hoursAgo(20 - i) });
     }
+    for (let i = 0; i < 3; i++) {
+      seedConversation(`quiet-${i}`, { channel: 'imessage', counterpartyId: `q${i}`, counterpartyName: `quiet ${i}` });
+      seedMessage({ conversationId: `quiet-${i}`, role: 'assistant', content: 'done', atMs: hoursAgo(40 + i) });
+    }
     const read = readOtherThreads(AGENT, SERVED);
-    expect(read.rows).toHaveLength(OTHER_THREADS_MAX_ROWS);
+    expect(read.rows).toHaveLength(6);      // t207: every waiting thread, no cap
     expect(read.hidden).toBe(3);
     // Newest first: the last-seeded conversation has the most recent message.
-    expect(read.rows[0].label).toContain(`contact ${OTHER_THREADS_MAX_ROWS + 2}`);
+    expect(read.rows[0].label).toContain('contact 5');
   });
 
   it('a thread whose party cannot be named is not printed at all', () => {
@@ -229,11 +235,13 @@ describe('§2 the render', () => {
   });
 
   it('the elision is never silent', () => {
-    for (let i = 0; i < OTHER_THREADS_MAX_ROWS + 2; i++) {
+    withOneThread();
+    for (let i = 0; i < 2; i++) {
       seedConversation(`c${i}`, { channel: 'imessage', counterpartyId: `p${i}`, counterpartyName: `contact ${i}` });
-      seedMessage({ conversationId: `c${i}`, role: 'user', content: 'x', atMs: hoursAgo(10 - i) });
+      seedMessage({ conversationId: `c${i}`, role: 'user', content: 'x', atMs: hoursAgo(90 + i) });
+      seedMessage({ conversationId: `c${i}`, role: 'assistant', content: 'y', atMs: hoursAgo(89 + i) });
     }
-    expect(buildOtherThreadsInjection(AGENT, SERVED)).toContain('and 2 more threads active in the last');
+    expect(buildOtherThreadsInjection(AGENT, SERVED)).toContain('and 2 more threads with nothing waiting and nothing new');
   });
 
   it('a read that throws costs the lane and nothing else', () => {
@@ -413,28 +421,20 @@ describe('§5 the lane rides the tail, provably', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §6 — THE BYTE BOUND, derived by calling the renderer at maximal caps.
+// §6 — THE BLOCK IS AS LONG AS THE SIGNAL (t207: no fixed caps), AND STILL CARRIES NO CONTENT.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§6 the worst case is measured, not asserted', () => {
-  it('the widest shape this lane can emit is bounded and stated', () => {
-    const worst = otherThreadsWorstCaseChars();
-    // Measured 2026-09-26. The bound is what a reserve derivation may rely on; if this moves, the
-    // lane got wider and somebody meant it to.
-    expect(worst).toBeGreaterThan(600);
-    expect(worst).toBeLessThan(1400);
-  });
-
-  it('the widest REAL shape on a seeded body stays well under that bound', () => {
-    for (let i = 0; i < OTHER_THREADS_MAX_ROWS + 5; i++) {
+describe('§6 the block is as long as the signal, and still carries no content', () => {
+  it('twelve waiting people with 4,000-character messages: twelve lines, no message body', () => {
+    for (let i = 0; i < 12; i++) {
       seedConversation(`c${i}`, { channel: 'imessage', counterpartyId: `p${i}`, counterpartyName: `a contact ${i}` });
-      seedMessage({ conversationId: `c${i}`, role: 'user', content: 'x'.repeat(4000), atMs: hoursAgo(10 - i) });
+      seedMessage({ conversationId: `c${i}`, role: 'user', content: 'x'.repeat(4000), atMs: hoursAgo(10 - i / 10) });
     }
     const text = buildOtherThreadsInjection(AGENT, SERVED)!;
-    expect(text.length).toBeLessThanOrEqual(otherThreadsWorstCaseChars());
-    // 4,000-char messages in every thread, and the block is still this small: the proof that no
-    // content rides along is arithmetic, not a promise.
-    expect(text.length).toBeLessThan(1400);
+    expect(text.match(/\[other conversation\]/g)).toHaveLength(12);
+    // 4,000-char messages in every thread, and the block is still small: no content rides along.
+    expect(text).not.toContain('xxxxxxxxxxxxxxxxxxxx');
+    expect(text.length).toBeLessThan(3000);
   });
 });
 

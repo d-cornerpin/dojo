@@ -63,14 +63,12 @@ import { toolCategoryGranted } from '../agent/access/read.js';
 
 const logger = createLogger('other-threads-lane');
 
-/** How far back a thread counts as LIVE. Seven days, the same window the report-state lane uses
- *  for the same reason: a thread nobody has touched in a week is history, not a live silo. */
-export const OTHER_THREADS_WINDOW_DAYS = 7;
-/** Rows printed. `work/obligations.ts` chose 3 for its cross-conversation overflow; this is the
- *  same decision on the same surface, with the same non-silent tail when more exist. */
-export const OTHER_THREADS_MAX_ROWS = 3;
-/** Hard ceiling on the read, so a body with hundreds of threads cannot make this scan expensive. */
-export const OTHER_THREADS_READ_CAP = 40;
+// ── t207 (D6): NO FIXED NUMBERS. The lane used to carry three — 3 rows, a 7-day window and a 40-row read — so
+// a person who wrote eight days ago and was never answered was not named, and a fourth waiting person was a
+// count. What it names now is derivable from stored rows (the owner's no-hard-limits law):
+//   1. every thread where the person spoke last and nothing answered (WAITING), however old;
+//   2. then every thread touched since the agent's last turn in THIS conversation;
+//   3. then a count of the rest, never silent.
 
 export interface OtherThread {
   conversationId: string;
@@ -85,7 +83,7 @@ export interface OtherThread {
 
 export interface OtherThreadsRead {
   rows: OtherThread[];
-  /** Threads inside the window beyond `OTHER_THREADS_MAX_ROWS`. Printed, never swallowed. */
+  /** Threads with nothing waiting and nothing new since the agent's last turn here. Counted, never swallowed. */
   hidden: number;
   /** Channels the platform receives on right now, for the capability half. */
   channels: Array<{ displayName: string; inboundLive: boolean }>;
@@ -94,37 +92,52 @@ export interface OtherThreadsRead {
 }
 
 /**
- * The agent's OTHER live human threads, newest first.
+ * The agent's OTHER human threads that matter now: waiting first, then touched since its last turn here.
  *
- * Excludes: the conversation being served (that is the fresh tail's job), `a2a` peer threads (agent
- * coordination is not a person waiting, and `party-label.ts` deliberately refuses to name them),
- * and anything outside the window. Agent-scoped by `c.agent_id`, so no thread of another agent can
- * appear — the W3-4 rule the recall lane applies to its own hits.
+ * Excludes: the conversation being served (that is the fresh tail's job) and `a2a` peer threads (agent
+ * coordination is not a person waiting, and `party-label.ts` deliberately refuses to name them). Agent-scoped
+ * by `c.agent_id`, so no thread of another agent can appear — the W3-4 rule the recall lane applies to its own
+ * hits.
  *
- * ⚠ THE WINDOW IS ON THE MESSAGE, NOT ON THE CONVERSATION ROW. `conversations` carries no
- * last-activity column that every door maintains, so "live" is derived from `messages` — which is
- * also what makes the instant printable. One grouped read, bounded by `OTHER_THREADS_READ_CAP`.
+ * ⚠ ACTIVITY IS DERIVED FROM `messages`, NOT THE CONVERSATION ROW: `conversations` carries no last-activity
+ * column that every door maintains. One grouped read; only the threads that will be NAMED are party-labelled.
  */
 export function readOtherThreads(agentId: string, currentConversationId: string | null): OtherThreadsRead {
-  const since = Date.now() - OTHER_THREADS_WINDOW_DAYS * 86_400_000;
-  const rows = getDb().prepare(
+  const db = getDb();
+  // "Since the agent's last turn in THIS conversation": its newest reply here, else when this conversation began.
+  let since: number | null = null;
+  if (currentConversationId) {
+    const anchor = db.prepare(
+      `SELECT MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_reply, MIN(created_at) AS began
+         FROM messages WHERE agent_id = ? AND conversation_id = ?`,
+    ).get(agentId, currentConversationId) as { last_reply: number | null; began: number | null } | undefined;
+    since = anchor?.last_reply ?? anchor?.began ?? null;
+  }
+  const rows = db.prepare(
     `SELECT c.id AS conversation_id, c.channel AS channel,
             MAX(m.created_at) AS last_at,
             (SELECT m2.role FROM messages m2
               WHERE m2.conversation_id = c.id AND m2.agent_id = ?
               ORDER BY m2.created_at DESC, m2.seq DESC LIMIT 1) AS last_role
        FROM conversations c JOIN messages m ON m.conversation_id = c.id
-      WHERE c.agent_id = ? AND m.agent_id = ? AND c.channel <> 'a2a'
-        AND m.created_at >= ? AND c.id <> COALESCE(?, '')
+      WHERE c.agent_id = ? AND m.agent_id = ? AND c.channel <> 'a2a' AND c.id <> COALESCE(?, '')
       GROUP BY c.id
-      ORDER BY last_at DESC
-      LIMIT ?`,
-  ).all(agentId, agentId, agentId, since, currentConversationId, OTHER_THREADS_READ_CAP) as Array<{
+      ORDER BY last_at DESC`,
+  ).all(agentId, agentId, agentId, currentConversationId) as Array<{
     conversation_id: string; channel: string; last_at: number; last_role: string | null;
   }>;
 
-  const all: OtherThread[] = [];
+  const named: OtherThread[] = [];
+  let hidden = 0;
+  const entry = (r: typeof rows[number], label: string): OtherThread => ({
+    conversationId: r.conversation_id, label, channel: r.channel, lastAtMs: r.last_at, theySpokeLast: r.last_role === 'user',
+  });
+  const waiting: OtherThread[] = [];
+  const touched: OtherThread[] = [];
   for (const r of rows) {
+    const isWaiting = r.last_role === 'user';
+    const isTouched = since !== null && r.last_at > since;
+    if (!isWaiting && !isTouched) { hidden++; continue; }
     const label = conversationLabel(r.conversation_id);
     // A thread whose party cannot be named is not printed.
     //
@@ -135,25 +148,15 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
     // about whose, which is worse than silence because it invites a guess — and a guess about who
     // is waiting on the other end is the failure this whole lane is repairing.
     if (!label || label === r.channel) continue;
-    all.push({
-      conversationId: r.conversation_id,
-      label,
-      channel: r.channel,
-      lastAtMs: r.last_at,
-      theySpokeLast: r.last_role === 'user',
-    });
+    (isWaiting ? waiting : touched).push(entry(r, label));
   }
+  named.push(...waiting, ...touched);   // each group is already newest first
 
   const channels = listChannelStatuses()
     .filter((c) => c.configured)
     .map((c) => ({ displayName: c.displayName, inboundLive: c.inboundLive }));
 
-  return {
-    rows: all.slice(0, OTHER_THREADS_MAX_ROWS),
-    hidden: Math.max(0, all.length - OTHER_THREADS_MAX_ROWS),
-    channels,
-    route: routeSentence(agentId),
-  };
+  return { rows: named, hidden, channels, route: routeSentence(agentId) };
 }
 
 export const OTHER_THREADS_HEAD = '═══ YOUR OTHER LIVE THREADS — LIVE PLATFORM TRUTH ═══';
@@ -231,8 +234,7 @@ export function renderOtherThreads(read: OtherThreadsRead): string | null {
   if (read.rows.length === 0) return null;
   const lines = read.rows.map((t, i) => threadLine(t, i + 1));
   const tail = read.hidden > 0
-    ? `\n… and ${read.hidden} more thread${read.hidden === 1 ? '' : 's'} active in the last `
-      + `${OTHER_THREADS_WINDOW_DAYS} days, not listed (the ${read.rows.length} most recent are shown)`
+    ? `\n… and ${read.hidden} more thread${read.hidden === 1 ? '' : 's'} with nothing waiting and nothing new since your last turn here, not listed`
     : '';
   const channels = read.channels.length > 0 ? `\n${CHANNELS_LINE(read.channels)}` : '';
   return `${OTHER_THREADS_HEAD}\n${OTHER_THREADS_HEADLINE}${read.route}\n${lines.join('\n')}${tail}${channels}\n${OTHER_THREADS_TAIL}`;
@@ -249,28 +251,4 @@ export function buildOtherThreadsInjection(agentId: string, currentConversationI
     }, agentId);
     return null;
   }
-}
-
-/**
- * The worst case in bytes, DERIVED BY CALLING THE RENDERER at maximal caps.
- *
- * The `integration-status-lane.ts:449` discipline: a reserve that is typed in by hand is a guess,
- * and a lane whose reserve is a guess either steals budget it never uses or overruns the one turn
- * that fills it. Labels are sized at a realistic ceiling rather than an imagined one — a
- * `counterparty_name` is a person's name, not prose.
- */
-export function otherThreadsWorstCaseChars(): number {
-  const label = 'x'.repeat(48);
-  const read: OtherThreadsRead = {
-    rows: Array.from({ length: OTHER_THREADS_MAX_ROWS }, (_, i) => ({
-      conversationId: `c${i}`, label: `${label} (imessage)`, channel: 'imessage',
-      lastAtMs: Date.now(), theySpokeLast: i % 2 === 0,
-    })),
-    hidden: OTHER_THREADS_READ_CAP - OTHER_THREADS_MAX_ROWS,
-    channels: listChannelStatuses().map((c) => ({ displayName: c.displayName, inboundLive: false })),
-    route: ': to read any of these, call `history_search` or `history_get` or '
-      + '`recall_recent_thread(scope:"all")` — searching ALL of your threads, not just this one. '
-      + 'Do that BEFORE telling anyone you cannot see another conversation.',
-  };
-  return (renderOtherThreads(read) ?? '').length;
 }
