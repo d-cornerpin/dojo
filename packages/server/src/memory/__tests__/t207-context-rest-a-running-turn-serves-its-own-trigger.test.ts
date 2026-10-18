@@ -38,6 +38,7 @@ import { insertMessage } from '../message-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { servedRowsOutOfView } from '../served-ask.js';
 import { assembleContext } from '../assembler.js';
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 import { runTurnClassification } from '../../agent/v2/steps/preflight/turn-classification.js';
 import type { PreflightContext, PreflightScratch } from '../../agent/v2/steps/preflight/index.js';
 import type { TurnContext } from '../../agent/turn-context.js';
@@ -181,6 +182,11 @@ describe('t207 D8 — the trigger of every kind of turn stays in view', () => {
 });
 
 describe('t207 D8 — the claim records the trigger', () => {
+  it('the claim sites exist for both kinds: the terminal-wake claim and the engine/occurrence claim', () => {
+    const classification = engineFileContaining('turnCtx.triggerMessageId')?.text ?? '';
+    expect(classification.match(/turnCtx\.triggerMessageId = /g)?.length).toBe(2);
+  });
+
   const preflightCtx = (): PreflightContext => ({
     agentId: AGENT,
     startStatusHeartbeat: () => undefined,

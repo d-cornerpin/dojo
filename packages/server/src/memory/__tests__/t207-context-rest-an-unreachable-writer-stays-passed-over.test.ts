@@ -14,8 +14,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -101,8 +100,8 @@ describe('t207 D9 — the mark survives a restart', () => {
 
 describe('t207 D9 — "answered" means a summary call, not any call', () => {
   it('no chat call re-arms a writer: the call step does not tell the writer health about its answers', () => {
-    const SRC = path.resolve(__dirname, '../..');
-    const callStep = readFileSync(path.join(SRC, 'agent/v2/steps/call-llm/index.ts'), 'utf8');
+    const callStep = engineFileContaining('callWithRetryAndFallback(state, pick')?.text ?? '';
+    expect(callStep.length, 'the call step was found').toBeGreaterThan(1000);
     expect(callStep).not.toMatch(/noteProviderAnswered/);
   });
 

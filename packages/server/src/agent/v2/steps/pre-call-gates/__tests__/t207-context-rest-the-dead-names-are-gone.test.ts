@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
+import { engineFileContaining } from '../../../__tests__/engine-sources.js';
 import path from 'node:path';
 
 const SRC = path.resolve(__dirname, '../../../../..');
@@ -26,7 +27,8 @@ const hits = (needle: RegExp): string[] =>
 
 describe('t207 — census of the t194 leftovers in shipped code', () => {
   it('PreCallGatesExitReason lists only reasons something returns', () => {
-    const idx = readFileSync(path.join(SRC, 'agent/v2/steps/pre-call-gates/index.ts'), 'utf8');
+    const idx = engineFileContaining('export type PreCallGatesExitReason')?.text ?? '';
+    expect(idx.length, 'the gates step was found').toBeGreaterThan(1000);
     const decl = idx.slice(idx.indexOf('export type PreCallGatesExitReason'), idx.indexOf('export interface PreCallGatesContext'));
     expect(decl).not.toContain('context-emergency-compact');
     expect(decl).not.toContain('context-full');

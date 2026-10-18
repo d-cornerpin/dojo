@@ -7,11 +7,11 @@ import { backfillUntilRenderable } from '../lib/chat-history-backfill';
 
 const visible = (i: number): Message => ({
   id: `m-${String(i).padStart(6, '0')}`, agentId: 'a', role: i % 2 ? 'assistant' : 'user', content: `hello ${i}`,
-  createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(), turnNumber: i, lane: 'owner',
+  createdAt: '2023-11-14T22:13:20.000Z', turnNumber: i, lane: 'owner',
 } as unknown as Message);
 const machine = (i: number): Message => ({
   id: `m-${String(i).padStart(6, '0')}`, agentId: 'a', role: 'assistant', content: `[A2A:STATUS thread:abc from:Peer] note ${i}`,
-  createdAt: new Date(1_700_000_000_000 + i * 1000).toISOString(), turnNumber: i, lane: 'a2a',
+  createdAt: '2023-11-14T22:13:20.000Z', turnNumber: i, lane: 'a2a',
 } as unknown as Message);
 const rendersInRegular = (m: Message): boolean => classifyMessageForDisplay(m).tier === 'user-visible';
 
