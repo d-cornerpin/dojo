@@ -1,13 +1,14 @@
 // t207 (t194 hand-ups) — THE LEFTOVERS OF THE CONTEXT SURRENDER ARE GONE.
 //
-// t194 made a full window condense and proceed instead of surrendering the turn. Three things were
-// left behind, and each is checked by what the shipped source contains, not by a sentence:
-//   * `agent/v2/full-context-wait.ts` — the park-and-wait for a surrender; nothing imports it;
+// t194 made a full window condense and proceed instead of surrendering the turn. Two things were
+// left behind, and each is checked by what the shipped source contains, not by a sentence. (A third,
+// `agent/v2/full-context-wait.ts`, is NOT deleted here: its one proposed new caller is the recovery
+// cascade's forced compactions, which belong to the batch-admission item, so it stays for that lane.)
 //   * the exit reasons `context-emergency-compact` and `context-full` — nothing returns them;
 //   * `assemblerOverheadTokens` — written every assembly, read by no gate.
 
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const SRC = path.resolve(__dirname, '../../../../..');
@@ -24,11 +25,6 @@ const hits = (needle: RegExp): string[] =>
   sourceFiles(SRC).filter((f) => needle.test(readFileSync(f, 'utf8'))).map((f) => path.relative(SRC, f));
 
 describe('t207 — census of the t194 leftovers in shipped code', () => {
-  it('the orphaned surrender-wait module is deleted and nothing names it', () => {
-    expect(existsSync(path.join(SRC, 'agent/v2/full-context-wait.ts'))).toBe(false);
-    expect(hits(/full-context-wait|parkAfterForcedPass|endFullContextWait/)).toEqual([]);
-  });
-
   it('PreCallGatesExitReason lists only reasons something returns', () => {
     const idx = readFileSync(path.join(SRC, 'agent/v2/steps/pre-call-gates/index.ts'), 'utf8');
     const decl = idx.slice(idx.indexOf('export type PreCallGatesExitReason'), idx.indexOf('export interface PreCallGatesContext'));

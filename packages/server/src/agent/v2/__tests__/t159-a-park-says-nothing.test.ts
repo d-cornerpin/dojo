@@ -662,6 +662,8 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
       return (code.match(/\bparkJob\(/g) ?? []).map(() => path.relative(root, f));
     }).filter((f) => f !== 'work/job-continuation.ts').sort();
     expect(sites).toEqual([
+      // t168: the gate's two arms park through `parkAfterForcedPass`, whose two parks (now, or at the brake's expiry) are these.
+      'agent/v2/full-context-wait.ts', 'agent/v2/full-context-wait.ts',
       'agent/v2/loop.ts',
       'agent/v2/recovery.ts', 'agent/v2/recovery.ts',
       'agent/v2/steps/pre-call-gates/turn-budget.ts',
