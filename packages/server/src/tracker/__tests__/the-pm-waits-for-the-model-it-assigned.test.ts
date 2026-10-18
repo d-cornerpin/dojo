@@ -544,8 +544,13 @@ describe('§3 a human reassignment is recorded at both of its doors', () => {
     expect(body, 'and never writes the row itself').not.toContain('patchWork(');
     const gate = readFileSync(join(here, '..', '..', 'work', 'row-authority.ts'), 'utf8');
     const move = gate.slice(gate.indexOf('export function moveAssignee('));
-    expect(move, 'the gate must record, not merely remediate').toContain('recordReassignment({');
-    expect(move, 'and must name where the task came FROM').toContain('fromAgentId: c.facts.holder');
+    // t201: the record moved to the one shared recorder (`work/move-record.ts`), which the healer's
+    // orphan sweep and the scheduler's gone-assignee fire file through too; the gate still calls it.
+    expect(move, 'the gate must record, not merely remediate').toContain('recordMove({');
+    expect(move, 'and must name where the task came FROM').toContain('from: c.facts.holder');
+    const recorder = readFileSync(join(here, '..', '..', 'work', 'move-record.ts'), 'utf8');
+    expect(recorder, 'the recorder files the reassignment record and re-arm').toContain('recordReassignment({');
+    expect(recorder, 'with the FROM it was given').toContain('fromAgentId: p.from');
     expect(move.indexOf('checkMove(req)'), 'which it reads before the write moves it')
       .toBeLessThan(move.indexOf('writeAssignee('));
     // And the bare re-arm is gone: one call does both, so neither can be forgotten.
