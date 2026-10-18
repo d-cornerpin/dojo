@@ -647,7 +647,7 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
     expect(body).not.toMatch(/continuationContext|toolLoopCapReached|engineCutExit/);
   });
 
-  it('every park door sets it: the callers of parkJob are exactly the six known doors', () => {
+  it('every park door sets it: the callers of parkJob are exactly the four known doors', () => {
     const walk = (dir: string, out: string[] = []): string[] => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, e.name);
@@ -662,10 +662,11 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
       return (code.match(/\bparkJob\(/g) ?? []).map(() => path.relative(root, f));
     }).filter((f) => f !== 'work/job-continuation.ts').sort();
     expect(sites).toEqual([
-      // t168: the gate's two arms park through `parkAfterForcedPass`, whose two parks (now, or at the brake's expiry) are these.
+      // t168: surrenders park through `parkAfterForcedPass`, whose two parks (now, or at the brake's expiry) are these.
       'agent/v2/full-context-wait.ts', 'agent/v2/full-context-wait.ts',
+      // t211: the two recovery forced compactions park through the same door (`forcedPassThenPark`), so
+      // `recovery.ts` no longer calls `parkJob` itself.
       'agent/v2/loop.ts',
-      'agent/v2/recovery.ts', 'agent/v2/recovery.ts',
       'agent/v2/steps/pre-call-gates/turn-budget.ts',
     ]);
   });

@@ -1,6 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // t168 (v3.3.3 run 9) — A SURRENDER FOR A FULL CONTEXT WAITS FOR THE EVENT THAT CAN CHANGE IT.
 //
+// t211: THE CALLERS NOW ARE THE TWO ERROR-RECOVERY FORCED COMPACTIONS (`recovery.ts`: a provider's context
+// overflow, and the one-shot after a declared-patience exhaustion). The context gate's two surrender arms this
+// was written for were removed with the gauge (t194: a full view is condensed, never surrendered); the recovery
+// pair were the same pre-t168 park (pass, then an immediate wake) and now go through `parkAfterForcedPass`.
+// What follows is the incident, kept because its reasoning is unchanged.
+//
 // The context gate's emergency (96-99%) and block (99%+) arms both end the same way: run one forced
 // compaction pass, park the job, queue a wake, leave the turn. The wake exists so "the next iteration
 // assembles fresh post-compaction context". When the pass reclaimed, that is true. When the pass was

@@ -27,7 +27,8 @@ import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemblyFault } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
-import { parkJob } from '../../work/job-continuation.js';
+import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
+import { parkAfterForcedPass } from './full-context-wait.js';
 import {
   queueSelfWake,
   recoveryRunStreak,
@@ -119,8 +120,7 @@ export function declaredPatienceStatusLine(): string {
 // T82 FIX WAVE, Important I2 — `didCompact` forks the trim clause. This function used to claim
 // "even after I trimmed it once and tried again" UNCONDITIONALLY, but `recordInjury` (below)
 // is reachable on a FIRST occurrence too: when `tryDeclaredPatienceCompactOnceRecovery` bails
-// before any compaction runs (the agent's model is the `'auto'` sentinel, or `checkAndCompact`
-// itself threw), no trim ever happened, and the old wording asserted one anyway. `didCompact` is
+// before any compaction lands (`checkAndCompact` itself threw; t211: the auto-router no longer bails), no trim ever happened, and the old wording asserted one anyway. `didCompact` is
 // true exactly when a compaction genuinely completed for THIS doomed chain — either on the
 // immediately preceding turn (the ladder-exhaustion case: `spentAtTurn === turnNumber - 1`,
 // still true and correct) or never (the bail cases) — never a re-derivation, just the caller's
@@ -254,7 +254,7 @@ export async function recoverFromError(
   // gate), so this default is never read for any other class.
   let declaredPatienceDidCompact = false;
   if (error instanceof AgentError && error.code === DECLARED_PATIENCE_EXCEEDED_CODE) {
-    const compactAttempt = await tryDeclaredPatienceCompactOnceRecovery(agentId, state.turnNumber);
+    const compactAttempt = await tryDeclaredPatienceCompactOnceRecovery(state);
     declaredPatienceDidCompact = compactAttempt.didCompact;
     if (compactAttempt.recovered) {
       // T82d (R3) CASE 1 — the FIRST live patience death on a turn a human is actually
@@ -268,8 +268,7 @@ export async function recoverFromError(
       }
       return;
     }
-    // The one compaction attempt is already spent (or compaction could not even run, e.g. the
-    // agent's model is the 'auto' sentinel) — fall through to the ordinary cascade. None of the
+    // The one compaction attempt is already spent (or the pass threw before it could land) — fall through to the ordinary cascade. None of the
     // steps below recognise this code, so it lands on `recordInjury`: T81a's honest fail, and
     // still never a dial that would only re-prove the same arithmetic. `declaredPatienceDidCompact`
     // is `true` here iff that spent attempt genuinely ran (on the turn just before this one) —
@@ -278,7 +277,7 @@ export async function recoverFromError(
 
   // 1. Context overflow — provider rejected because prompt too big.
   //    Dreamer gets batch-resize; everyone else gets force-compact + wakeup.
-  if (await tryContextOverflowRecovery(agentId, fullErrText, message, code, cause)) {
+  if (await tryContextOverflowRecovery(state, fullErrText, message, code, cause)) {
     return;
   }
 
@@ -364,15 +363,39 @@ export function classifyError(error: Error, facts?: ProviderErrorFacts): Classif
   return { kind: 'unknown' };
 }
 
+// ── The forced pass both compaction recoveries run, and what they do after it (t211, D7b) ──
+//
+// Both used to read the agent's stored model, bail on the auto-router, measure THAT model's window, and park with
+// an unconditional immediate wake: the pre-t168 park. They share one door now, the one the context gate's
+// surrenders already use (`parkAfterForcedPass`, `full-context-wait.ts`): the wake is queued now when the pass
+// reclaimed, and set for the compaction brake's expiry when the brake binds (a skipped pass changes nothing, so an
+// immediate wake re-ran the same wall). The pass is for the model the failed call dialed (the locked model on an
+// auto-routed turn, else the configured one) and that model's window, so nothing bails on the auto-router.
+// `brakedBefore` is read as the gate read it: before the pass is asked. `afterPass` runs once the pass has
+// returned without throwing, before the park.
+async function forcedPassThenPark(state: AgentTurnState, reason: string, afterPass?: () => void): Promise<void> {
+  const { agentId } = state;
+  const { checkAndCompact } = await import('../../memory/compaction.js');
+  const { getContextWindow } = await import('../model.js');
+  const contextWindow = state.lockedModelId ? getContextWindow(state.lockedModelId) : state.contextWindow;
+  const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
+  await checkAndCompact(agentId, state.configuredModelId, contextWindow, {
+    force: true, dialedModelId: state.lockedModelId ?? state.configuredModelId,
+  });
+  afterPass?.();
+  parkAfterForcedPass(agentId, reason, brakedBefore);
+}
+
 // ── Step 1: context overflow ──
 
 async function tryContextOverflowRecovery(
-  agentId: string,
+  state: AgentTurnState,
   fullErrText: string,
   message: string,
   code: string | undefined,
   cause: string | undefined,
 ): Promise<boolean> {
+  const agentId = state.agentId;
   try {
     const { isContextOverflowError, recoverDreamerFromContextOverflow } = await import(
       '../../vault/maintenance.js'
@@ -399,21 +422,10 @@ async function tryContextOverflowRecovery(
       return false;
     }
 
-    // Non-Dreamer agents: force a compaction + wakeup so the next turn
-    // assembles fresh post-compaction context. Keeps the agent working
-    // instead of going into the error/injury loop.
-    const lastModelRow = getDb()
-      .prepare('SELECT model_id FROM agents WHERE id = ?')
-      .get(agentId) as { model_id: string | null } | undefined;
-    const compactModelId = lastModelRow?.model_id ?? null;
-    if (!compactModelId || compactModelId === 'auto') return false;
-
-    const { checkAndCompact } = await import('../../memory/compaction.js');
-    const { getContextWindow } = await import('../model.js');
-    const cw = getContextWindow(compactModelId);
-    await checkAndCompact(agentId, compactModelId, cw, { force: true });
+    // Non-Dreamer agents: force a compaction, then park the job with the wake that fits what the pass left
+    // behind (t211: `parkAfterForcedPass`, the same door the context gate's surrenders use).
+    await forcedPassThenPark(state, 'recovery-forced-compaction');
     logger.warn('v2: forced compaction after context overflow on non-Dreamer agent', { agentId }, agentId);
-    parkJob(agentId, 'recovery-forced-compaction');
     return true;
   } catch (recovErr) {
     logger.warn('v2: context overflow recovery attempt failed', {
@@ -461,10 +473,9 @@ async function tryContextOverflowRecovery(
  *   `recovered`  — did THIS call just compact and queue a retry (the caller returns early on
  *                  `true`, posting CASE 1's status line).
  *   `didCompact` — did a compaction genuinely complete for this doomed chain AT ALL, whether
- *                  just now or on the turn immediately before this one. `false` only in the
- *                  two BAIL arms (the model is the `'auto'` sentinel, or `checkAndCompact`
- *                  itself threw) — the two arms `recordInjury`'s honest-fail wording must NOT
- *                  claim a trim for.
+ *                  just now or on the turn immediately before this one. `false` only when
+ *                  `checkAndCompact` itself threw — the arm `recordInjury`'s honest-fail wording
+ *                  must NOT claim a trim for.
  * `recovered: true` implies `didCompact: true`; the reverse does not hold (the ladder-exhaustion
  * arm below is `recovered: false, didCompact: true` — a trim ran, on the PRIOR turn, and it
  * still was not enough).
@@ -475,9 +486,10 @@ interface DeclaredPatienceCompactAttempt {
 }
 
 async function tryDeclaredPatienceCompactOnceRecovery(
-  agentId: string,
-  turnNumber: number,
+  state: AgentTurnState,
 ): Promise<DeclaredPatienceCompactAttempt> {
+  const agentId = state.agentId;
+  const turnNumber = state.turnNumber;
   const spentAtTurn = doomedPrefillCompactionSpent.get(agentId);
   if (spentAtTurn === turnNumber - 1) {
     // The one attempt ran on the turn immediately before this one, and THIS declared-patience
@@ -490,21 +502,8 @@ async function tryDeclaredPatienceCompactOnceRecovery(
   }
 
   try {
-    const lastModelRow = getDb()
-      .prepare('SELECT model_id FROM agents WHERE id = ?')
-      .get(agentId) as { model_id: string | null } | undefined;
-    const compactModelId = lastModelRow?.model_id ?? null;
-    // BAIL ARM 1 (I2) — no model to compact against (the 'auto' sentinel, or none at all): no
-    // trim was even attempted, let alone completed.
-    if (!compactModelId || compactModelId === 'auto') return { recovered: false, didCompact: false };
-
-    const { checkAndCompact } = await import('../../memory/compaction.js');
-    const { getContextWindow } = await import('../model.js');
-    const cw = getContextWindow(compactModelId);
-    await checkAndCompact(agentId, compactModelId, cw, { force: true });
-    doomedPrefillCompactionSpent.set(agentId, turnNumber);
+    await forcedPassThenPark(state, 'recovery-doomed-prefill-compaction', () => doomedPrefillCompactionSpent.set(agentId, turnNumber));
     logger.warn('v2: forced compaction after a declared-patience exhaustion (T81b/T82b)', { agentId, turnNumber }, agentId);
-    parkJob(agentId, 'recovery-doomed-prefill-compaction');
     return { recovered: true, didCompact: true };
   } catch (recovErr) {
     // BAIL ARM 2 (I2) — the attempt STARTED but did not complete: `checkAndCompact` threw

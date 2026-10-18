@@ -461,11 +461,13 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
   // `integration.test.ts`) pre-spends `doomedPrefillCompactionSpent` so `recordInjury` is reached
   // via the LADDER-EXHAUSTION arm, where a trim genuinely did run on the turn before. This test
   // is the one that reaches `recordInjury` on a genuine FIRST occurrence with NO prior trim at
-  // all: the agent's model is the `'auto'` sentinel, so `tryDeclaredPatienceCompactOnceRecovery`
-  // bails BEFORE attempting any compaction. The old, unconditional wording ("even after I
-  // trimmed it once and tried again") would have been a lie here.
-  it('I2: a FIRST occurrence that never got to trim (model is the \'auto\' sentinel) tells the truth — no false "trimmed it once" claim', async () => {
-    mockDb.current!.prepare("UPDATE agents SET model_id = 'auto' WHERE id = ?").run(AGENT);
+  // all: the compaction pass itself threw, so `tryDeclaredPatienceCompactOnceRecovery` gives up
+  // BEFORE any trim lands. The old, unconditional wording ("even after I trimmed it once and tried
+  // again") would have been a lie here. (t211: the agent's model being the `'auto'` sentinel used to be
+  // this case's trigger; the pass no longer bails on the auto-router, so the pass throwing is.)
+  it('I2: a FIRST occurrence that never got to trim (the compaction pass threw) tells the truth — no false "trimmed it once" claim', async () => {
+    const compaction = await import('../../../../../memory/compaction.js');
+    vi.spyOn(compaction, 'checkAndCompact').mockRejectedValueOnce(new Error('the summary writer could not be reached'));
     // Deliberately NOT pre-spending doomedPrefillCompactionSpent — this is the FIRST occurrence.
 
     const err = new AgentError(
