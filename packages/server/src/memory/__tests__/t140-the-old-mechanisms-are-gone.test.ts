@@ -75,7 +75,7 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
     ]);
     // And the gate APPLIES it: the routine condense is handed the leaving span, not a count.
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
-    expect(gate).toMatch(/const leaving = leavingFromView\(agentId, contextWindow, view\);/);
+    expect(gate).toMatch(/const leaving = leavingFromView\(view\);/);
     expect(gate).toMatch(/condenseLeavingInBackground\(\{ agentId, writerModelId, dialedModelId, contextWindow, leaving \}\);/);
     expect(gate).toMatch(/checkAndCompact\(agentId, writerModelId, contextWindow, \{\s*leaving,/);
   });

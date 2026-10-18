@@ -98,7 +98,7 @@ async function drive(turns: number, largeEvery: number): Promise<RunLog> {
     appendTurn(t % largeEvery === 0);
     // t194: the routine check reads the gauge (the assembler's own dry run), as `context-gates.ts` does.
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-    const leaving = leavingFromView(AGENT, windowNow.value, est.view);
+    const leaving = leavingFromView(est.view);
     if (leaving) {
       const r = await checkAndCompact(AGENT, MODEL, windowNow.value, { leaving });
       if (r.leafCreated > 0) log.folds.push({ turn: t, rows: leaving.rowsLeaving });
@@ -206,7 +206,7 @@ async function driveCounting(turns: number, largeEvery: number, timing: FoldTimi
     appendTurn(t % largeEvery === 0);
     const before = summariser.calls;
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-    const leaving = leavingFromView(AGENT, windowNow.value, est.view);
+    const leaving = leavingFromView(est.view);
     const fold = leaving ? checkAndCompact(AGENT, MODEL, windowNow.value, { leaving }) : null;
     if (fold && timing === 'awaited') await fold;
     const ctx = await turnAssembly();

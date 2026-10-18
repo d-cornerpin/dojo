@@ -197,7 +197,7 @@ const passLog: Array<{ turn: number; leafCreated: number; tokensReclaimed: numbe
 async function runRoutineCompactionGate(): Promise<{ leafCreated: number; tokensReclaimed: number } | null> {
   // t194: the gauge (the assembler's own dry run), and the same two causes production acts on.
   const { view } = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-  const leaving = leavingFromView(AGENT, windowNow.value, view);
+  const leaving = leavingFromView(view);
   if (!leaving && view.summaryRawTokens <= view.summaryTokens) return null;
   try {
     const r = await checkAndCompact(AGENT, MODEL, windowNow.value, {

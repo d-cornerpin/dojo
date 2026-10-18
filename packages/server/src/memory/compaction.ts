@@ -121,7 +121,7 @@ export async function estimateAssembledTokens(
 /** The rows leaving the view, off the gauge: what one more trim block of
  *  growth would cut (t207: there is no row ceiling). Exactly the trim's own cut (whole half-tail blocks), so never "a few rows every
  *  turn" (fix round 1, I4): those rows leave whatever happens, and folding them first is owed. */
-export function leavingFromView(agentId: string, contextWindow: number, view: ContextView): LeavingView | null {
+export function leavingFromView(view: ContextView): LeavingView | null {
   const full = view.leavingThroughSeq > 0 ? { throughSeq: view.leavingThroughSeq, rows: view.leavingRows } : null;
   return rowsLeavingView({ full });
 }
@@ -485,7 +485,7 @@ async function runCheckAndCompact(
   // summary whatever condensation does, so it is never condensation's case.
   const starved = view.budgetTokens === 0;
   const summariesDropped = !starved && view.summaryRawTokens > view.summaryTokens;
-  const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(agentId, contextWindow, view);
+  const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(view);
   // The pressure pass folds only BEFORE the protected recent part, sized in tokens (owner decision 7b).
   const outsideProtected = (): Message[] => {
     const compacted = getCompactedMessageIds(agentId);

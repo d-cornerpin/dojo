@@ -87,7 +87,7 @@ export async function condenseForTheDialedModel(args: {
   try {
     const { view, total } = await estimateAssembledTokens(agentId, contextWindow, dialedModelId,
       { turnContext: args.counterparty ? { latestUserSource: null, counterparty: args.counterparty } : undefined });
-    const leaving = leavingFromView(agentId, contextWindow, view);
+    const leaving = leavingFromView(view);
     if (!args.measureOnly && (leaving || view.summaryRawTokens > view.summaryTokens)) {
       condenseLeavingInBackground({ agentId, writerModelId, dialedModelId, contextWindow, leaving });
     }

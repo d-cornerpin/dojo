@@ -50,10 +50,10 @@
 import { unscheduled } from './unscheduled-task.js';
 import { attemptLedgerFrom, attemptLedgerWorstCaseTokens } from './attempt-ledger.js';
 import { getDb } from '../db/connection.js';
-import { taskScope, revertCountExpr, stampColumns } from '../work/tracker-view.js';
+import { taskScope, stampColumns } from '../work/tracker-view.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
 import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budget.js';
-import { laneLimit, truncateWrappedText, renderTokens, POST_BUDGET_LANES } from './lanes.js';
+import { laneLimit, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { conversationLabel } from './party-label.js';
 import {

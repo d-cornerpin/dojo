@@ -129,7 +129,7 @@ describe('t158 C — the full check reads the rows the assembler will budget', (
     // What the assembler budgets: the tool result capped at 15K. The dry run now agrees.
     expect(est.view.tailTokens, 'the dry run prices the capped row, not the stored one').toBeLessThan(25_000);
     expect(est.view.tailTokens, 'a tail that fits is not full').toBeLessThanOrEqual(est.view.tailRoomTokens);
-    expect(leavingFromView(AGENT, windowNow.value, est.view), 'and nothing is leaving it').toBeNull();
+    expect(leavingFromView(est.view), 'and nothing is leaving it').toBeNull();
     expect(ctx.freshTailDropped ?? 0, 'and the assembler indeed set nothing aside').toBe(0);
   });
 
