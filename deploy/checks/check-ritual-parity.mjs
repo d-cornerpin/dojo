@@ -206,6 +206,12 @@ const TARGETED_IDS = [
   'targeted-probe-04', 'targeted-probe-05',
 ];
 
+/** A re-judge record carrying every decision-22 guard (the shape `behavioral/lib/rejudge.mjs countableAsAttempt` produces). */
+const rejudgedRecord = (over = {}) => ({
+  run: 'fixture-run-0', attempt: 2, scenario: 'targeted-probe-01', recordedPass: false, replayedPass: true, selfReplayAtRecord: true, clausesLost: 0,
+  countable: true, productShaRecorded: SHA, judgeSourceHashRecorded: 'fixture-judge-before', judgeSourceHashNow: 'fixture-judge-after', kitShaRecorded: 'fixture-kit', flipped: ['clause:fixture'], ...over,
+});
+
 const validMarker = () => ({
   green: true,
   gitSha: SHA,
@@ -282,12 +288,23 @@ const MUTANTS = [
   mutant('a scenario carries a known-failing acknowledgment', (m) => { m.verdicts['targeted-probe-01'].knownFailing = 'a booked defect'; }),
   mutant('the marker lists known-failing scenarios', (m) => { m.knownFailing = ['targeted-probe-04']; }),
   mutant('a merged marker with no mergedFrom provenance', (m) => { m.merged = true; }),
+  // ── v3.4 owner decision 22: attempts re-judged from their recording (release.sh: RITUAL_BAD · kit: the rejudged block) ──
+  mutant('rejudged is not an array', (m) => { m.targeted[0].rejudged = 'yes'; }),
+  mutant('more re-judged attempts than attempts recorded', (m) => { m.targeted[0].rejudged = [rejudgedRecord(), rejudgedRecord({ attempt: 3 }), rejudgedRecord({ attempt: 4 }), rejudgedRecord({ attempt: 5 })]; }),
+  mutant('a re-judged attempt whose recording was never proven complete', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ selfReplayAtRecord: false })]; }),
+  mutant('a re-judged attempt that lost a clause the recording held', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ clausesLost: 1 })]; }),
+  mutant('a re-judged attempt recorded against a different product commit', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ productShaRecorded: OTHER_SHA })]; }),
+  mutant('a re-judged attempt whose replay is not green', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ replayedPass: false })]; }),
+  mutant('a re-judged attempt that does not say it is countable', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ countable: false })]; }),
+  mutant('a re-judged attempt that names no source run', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ run: '' })]; }),
+  mutant('a re-judged attempt with no judge-source hash for the judge that re-judged it', (m) => { m.targeted[0].rejudged = [rejudgedRecord({ judgeSourceHashNow: '' })]; }),
+  mutant('the same recording counted twice', (m) => { m.targeted[0].rejudged = [rejudgedRecord(), rejudgedRecord()]; }),
 ];
 
 // Vacuity floor: one mutant per clause is the design, so a corpus that shrank is a
 // corpus that stopped covering the clause list. Not a ratchet — the floor is "the
 // fixtures emptied themselves".
-const MUTANT_FLOOR = 30;
+const MUTANT_FLOOR = 40;
 if (MUTANTS.length < MUTANT_FLOOR) {
   fail(
     `✗ the corpus carries ${MUTANTS.length} mutant(s); the floor is ${MUTANT_FLOOR}.`,
@@ -394,6 +411,7 @@ function compare(tag, clause, marker, expect) {
 }
 
 compare('valid', 'A VALID RELEASE-RITUAL MARKER (both must ACCEPT)', validMarker(), 'accept');
+compare('valid-rejudged', 'A VALID MARKER WITH ONE RE-JUDGED ATTEMPT CARRYING EVERY GUARD (both must ACCEPT)', (() => { const m = validMarker(); m.targeted[0].rejudged = [rejudgedRecord()]; return m; })(), 'accept');
 MUTANTS.forEach((m, i) => compare(`m${String(i).padStart(2, '0')}`, m.clause, m.marker, 'refuse'));
 
 // ════════ verdict ════════

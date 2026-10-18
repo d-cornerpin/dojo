@@ -78,6 +78,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
+import { checkStandIns, describeCollision } from './fixture-names.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const VERBOSE = process.argv.includes('--verbose');
@@ -925,6 +926,19 @@ const handles = derivedIdentities();
 const agentIds = liveAgentIds();
 const files = scannedFiles();
 
+// ── REGISTERED FIXTURE STAND-INS (v3.4 G6) ─────────────────────────────────────────────────────────────────
+// The tests use COINED stand-in names (`deploy/checks/fixture-names.json`). If this box's roster or the owner's name holds one, that is a COLLISION,
+// not a leak: say so, say how many files it is in, and print the one command that repairs it, BEFORE the scan and before the fixture table below
+// trips on the same collision with no way forward. On a box with no database the roster half already fell back to the committed fixture roster,
+// so nothing is compared (`rosterNames: []`) and the line below says the registry was checked against nothing real.
+{
+  const standIns = checkStandIns({ root: ROOT, rosterNames: roster.source === 'fixture' ? [] : roster.names, ownerNames: owner.names, files: null });
+  console.log(`── registered fixture stand-ins: ${standIns.registered} registered stand-ins checked against ${roster.source === 'fixture' ? 'no real roster (no database on this machine)' : `the live roster (${roster.names.length}) and the owner's name`} ──`);
+  if (standIns.collisions.length > 0) {
+    for (const c of standIns.collisions) console.error(describeCollision(c));
+    process.exit(1);
+  }
+}
 const selfTestBad = selfTest();
 if (selfTestBad > 0) {
   console.error(`\n✗ names gate: its OWN fixture table has ${selfTestBad} failure(s). A matcher that `

@@ -800,6 +800,7 @@ const t = m.targeted;
 if (!Array.isArray(t)) bad.push('no targeted[] array - the ritual requires 5 hand-authored scenarios aimed at this cut changes, each run 3 times with unanimity');
 else {
   if (t.length !== 5) bad.push('targeted[] has ' + t.length + ' entries (needs exactly 5 - the owner number is five scenarios against the things being fixed)');
+  var seenRejudged = {};
   var ids = t.map(function (e) { return (e && typeof e === 'object') ? e.id : null; });
   var named = ids.filter(function (x) { return typeof x === 'string' && x.trim(); });
   var distinct = new Set(named).size;
@@ -813,6 +814,26 @@ else {
     if (r.allGreen !== true) bad.push(label + ': allGreen!=true - all 3 attempts of every one of the five must have passed');
     if (typeof r.gitSha !== 'string' || !r.gitSha) bad.push(label + ': gitSha missing - cannot prove this scenario ran at the same commit as the other four');
     else if (m.dojoHead && r.gitSha !== m.dojoHead) bad.push(label + ' ran at ' + String(r.gitSha).slice(0, 8) + ' but the marker dojoHead is ' + String(m.dojoHead).slice(0, 8) + ' - not the same commit (a fix landed between this scenario and the rest, so the five do not certify one build)');
+    // v3.4 (owner decision 22): attempts RE-JUDGED from their recording count only under the decision guards - the recording was proven complete by the self-replay at record time, the attempt ran against THIS product commit, no clause the recording held is gone, and the replay is green. Mirror of the kit validateReleaseRitualMarker block; check-ritual-parity binds them.
+    if (r.rejudged !== undefined) {
+      if (!Array.isArray(r.rejudged)) bad.push(label + ': rejudged is not an array of re-judge records');
+      else {
+        if (r.rejudged.length > (Number.isInteger(r.attempts) ? r.attempts : 0)) bad.push(label + ': ' + r.rejudged.length + ' re-judged attempts but only ' + r.attempts + ' attempts recorded - a re-judge replaces a run, it cannot add one');
+        r.rejudged.forEach(function (j, k) {
+          var where = label + ' rejudged[' + k + ']';
+          if (!j || typeof j !== 'object') { bad.push(where + ' is not an object'); return; }
+          if (typeof j.run !== 'string' || !j.run.trim() || !Number.isInteger(j.attempt)) bad.push(where + ': names no source run and attempt - what the re-judge rests on is not recorded');
+          else { var key = j.run + '/' + j.attempt + '/' + (j.scenario || label); if (seenRejudged[key]) bad.push(where + ': the same recording ' + key + ' is counted twice - re-judged attempts must be distinct'); seenRejudged[key] = true; }
+          if (j.countable !== true) bad.push(where + ': the record does not say it is countable - every decision-22 guard must hold and the re-judge says so itself');
+          if (j.selfReplayAtRecord !== true) bad.push(where + ': the recording was never proven complete - the self-replay at record time did not pass');
+          if (j.clausesLost !== 0) bad.push(where + ': ' + JSON.stringify(j.clausesLost) + ' clause(s) the recording held are no longer judged - a judge that stops asking a question is loosening, not fixing');
+          if (j.replayedPass !== true) bad.push(where + ': the replayed attempt is not green (it did not pass)');
+          if (typeof j.productShaRecorded !== 'string' || !j.productShaRecorded) bad.push(where + ': the recording names no product commit');
+          else if (m.dojoHead && j.productShaRecorded !== m.dojoHead) bad.push(where + ': the product changed since the recording - it ran at ' + String(j.productShaRecorded).slice(0, 8) + ' and the marker certifies ' + String(m.dojoHead).slice(0, 8) + ' - a re-judge may change the test only');
+          if (typeof j.judgeSourceHashNow !== 'string' || !j.judgeSourceHashNow.trim()) bad.push(where + ': no judge-source hash for the judge that re-judged it - which test change this rests on is not recorded');
+        });
+      }
+    }
   });
 }
 if (typeof m.dojoHead !== 'string' || !m.dojoHead) bad.push('dojoHead missing');
