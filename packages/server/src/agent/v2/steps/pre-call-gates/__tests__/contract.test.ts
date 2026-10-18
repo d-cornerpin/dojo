@@ -46,9 +46,16 @@ import {
 // them changes a decision. A unit test must not open the dev database, and the
 // thrash detector and the token estimator are both DB readers.
 const checkAndCompactSpy = vi.fn(async () => ({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
-const estimateAssembledTokensSpy = vi.fn(async () => ({
-  total: 1000, summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
-}));
+/** t194: the gauge — the assembler's own dry run — as the gate reads it: `tail` wanted of a 200,000 room. */
+const gauge = (tail: number) => ({
+  total: Math.min(tail, 200000), summaryTokens: 0, freshTailTokens: Math.min(tail, 200000), freshTailCount: 1, summaryCount: 0, reserveTokens: 0,
+  view: {
+    budgetTokens: 200000, tailRoomTokens: 200000, reserveTokens: 0, summaryTokens: 0, summaryRawTokens: 0, summaryCount: 0,
+    tailTokens: tail, tailKeptTokens: Math.min(tail, 200000), tailKeptRows: 1, outOfViewThroughSeq: 0,
+    leavingThroughSeq: tail > 200000 ? 500 : 0, leavingRows: tail > 200000 ? 160 : 0, leavingTokens: 0, protectedFromSeq: 1,
+  },
+});
+const estimateAssembledTokensSpy = vi.fn(async () => gauge(1000));
 vi.mock('../../../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../../memory/compaction.js')>()),
   checkAndCompact: (...a: unknown[]) => checkAndCompactSpy(...(a as [])),
@@ -163,9 +170,7 @@ beforeEach(() => {
   // this spy was the odd one out.
   checkAndCompactSpy.mockImplementation(async () => ({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }));
   estimateAssembledTokensSpy.mockClear();
-  estimateAssembledTokensSpy.mockImplementation(async () => ({
-    total: 1000, summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
-  }));
+  estimateAssembledTokensSpy.mockImplementation(async () => gauge(1000));
   rowsLeavingViewSpy.mockClear();
   rowsLeavingViewSpy.mockImplementation(() => null);
   insertMessageIfAbsentSpy.mockClear();
@@ -176,12 +181,9 @@ beforeEach(() => {
   getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
 });
 
-/** Drive the step with an assembled-token total at `pct` of the window. */
+/** Drive the step with a view that WANTS `pct` of its room (over 1: the trim is cutting). */
 function atUtilisation(pct: number): void {
-  estimateAssembledTokensSpy.mockImplementation(async () => ({
-    total: Math.round(200000 * pct), summaryTokens: 0, freshTailTokens: Math.round(200000 * pct),
-    briefTokens: 0, freshTailCount: 1, summaryCount: 0,
-  }));
+  estimateAssembledTokensSpy.mockImplementation(async () => gauge(Math.round(200000 * pct)));
 }
 
 describe('inputs and outputs — the shared step contract, reused', () => {
@@ -241,29 +243,26 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
     expect(preemptedAgents.has(AGENT)).toBe(false);
   });
 
-  it('the compaction gate\'s emergency arm exits, forces a rebuild and queues the wakeup', async () => {
-    atUtilisation(0.98);
-    const out = await runPreCallGates(stateInStep(), makeCtx());
-
-    expect(out).toMatchObject({ directive: 'exit', reason: 'context-emergency-compact' satisfies PreCallGatesExitReason });
-    expect(checkAndCompactSpy).toHaveBeenCalledWith(AGENT, expect.any(String), 200000, expect.objectContaining({ force: true }));
-    expect(pendingWakeups.has(AGENT)).toBe(true);
-  });
-
-  it('the compaction gate\'s impossible arm exits, tells the person NOTHING (a park is housekeeping), and still queues the wakeup', async () => {
-    atUtilisation(0.995);
+  // t194 (owner decision 7): the context gate's emergency and impossible arms are DELETED. A full
+  // view is condensed and the turn goes on; it is never surrendered (`t194-context-gauge-…test.ts`).
+  it('a view over its room is NOT a way out: the step proceeds, condenses in the background, and says nothing', async () => {
+    atUtilisation(1.4);
+    rowsLeavingViewSpy.mockImplementation(() => LEAVING);
     const ctx = makeCtx();
     const out = await runPreCallGates(stateInStep(), ctx);
 
-    expect(out).toMatchObject({ directive: 'exit', reason: 'context-full' satisfies PreCallGatesExitReason });
-    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();   // t159 G2: no owner-visible row from a park
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(out.directive).toBe('proceed');
+    expect(checkAndCompactSpy).toHaveBeenCalledWith(AGENT, expect.any(String), 200000, expect.objectContaining({ leaving: LEAVING, inTheBackground: true }));
+    expect(checkAndCompactSpy).not.toHaveBeenCalledWith(AGENT, expect.any(String), 200000, expect.objectContaining({ force: true }));
+    expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
+    expect(ctx.events.some((e) => (e as { code?: string }).code === 'CONTEXT_HIGH')).toBe(false);
+    expect(pendingWakeups.has(AGENT)).toBe(false);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON — every way out of this step carries one', async () => {
-    // A census with a denominator: five exits are reachable without a database
-    // (the two breaker exits need the tracker), and each is asserted by NAME so a
-    // new silent exit cannot appear.
+    // A census with a denominator: three exits are reachable without a database
+    // (the two breaker exits need the tracker; t194 deleted the two context exits), and
+    // each is asserted by NAME so a new silent exit cannot appear.
     const reasons: string[] = [];
 
     stoppedAgents.add(AGENT);
@@ -277,18 +276,15 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
     preemptedAgents.add(AGENT);
     reasons.push((await runPreCallGates(stateInStep(), makeCtx()) as { reason: string }).reason);
 
-    atUtilisation(0.98);
-    reasons.push((await runPreCallGates(stateInStep(), makeCtx()) as { reason: string }).reason);
-
-    atUtilisation(0.995);
-    reasons.push((await runPreCallGates(stateInStep(), makeCtx()) as { reason: string }).reason);
+    atUtilisation(1.4);
+    expect((await runPreCallGates(stateInStep(), makeCtx())).directive, 'a full view is not an exit').toBe('proceed');
 
     atUtilisation(0.005);
     const overBudget = stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) });
     reasons.push((await runPreCallGates(overBudget, makeCtx()) as { reason: string }).reason);
 
     expect(reasons).toEqual([
-      'stopped-by-user', 'preempted', 'context-emergency-compact', 'context-full', 'turn-time-budget',
+      'stopped-by-user', 'preempted', 'turn-time-budget',
     ]);
     expect(reasons.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
   });
@@ -310,34 +306,16 @@ describe('A STEP THAT ASKS TO EXIT STOPS', () => {
     expect(checkAndCompactSpy).not.toHaveBeenCalled();
   });
 
-  it('the compaction gate\'s emergency exit does not fall through to the routine condense', async () => {
-    atUtilisation(0.98);
-    rowsLeavingViewSpy.mockImplementation(() => LEAVING);
-
-    const out = await runPreCallGates(stateInStep(), makeCtx());
-
-    expect(out.directive).toBe('exit');
-    expect(rowsLeavingViewSpy).not.toHaveBeenCalled();
-  });
 });
 
 describe('the numbers this tranche must not move (bounds copied verbatim)', () => {
-  it('the compaction gate\'s four decisions still map to the same four outcomes', async () => {
-    atUtilisation(0.005);
-    expect((await runPreCallGates(stateInStep(), makeCtx())).directive).toBe('proceed');
-
-    atUtilisation(0.92);
-    const warn = makeCtx();
-    const warned = await runPreCallGates(stateInStep(), warn);
-    expect(warned.directive).toBe('proceed');
-    expect(warn.events.some((e) => (e as { code?: string }).code === 'CONTEXT_HIGH')).toBe(true);
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
-
-    atUtilisation(0.98);
-    expect((await runPreCallGates(stateInStep(), makeCtx())).directive).toBe('exit');
-
-    atUtilisation(0.995);
-    expect((await runPreCallGates(stateInStep(), makeCtx())).directive).toBe('exit');
+  it('t194: the context gate has ONE outcome at any fill — proceed — and no "getting full" toast', async () => {
+    for (const pct of [0.005, 0.92, 0.98, 0.995, 1.4]) {
+      const ctx = makeCtx();
+      expect((await runPreCallGates(stateInStep(), ctx)).directive, `at ${pct}`).toBe('proceed');
+      expect(ctx.events.some((e) => (e as { code?: string }).code === 'CONTEXT_HIGH'), `no toast at ${pct}`).toBe(false);
+    }
+    expect(checkAndCompactSpy).not.toHaveBeenCalledWith(AGENT, expect.any(String), 200000, expect.objectContaining({ force: true }));
   });
 
   it('the turn-time budget is still 15 minutes, and there is no continuation cap (t137)', async () => {

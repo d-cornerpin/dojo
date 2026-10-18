@@ -48,6 +48,7 @@ vi.mock('../../config/platform.js', async (importOriginal) => ({
   isSystemServiceAgent: vi.fn(() => false),
 }));
 
+import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { checkAndCompact } from '../compaction.js';
 import { runMigrations } from '../../db/migrations.js';
 
@@ -94,6 +95,9 @@ beforeEach(() => {
   const db = new Database(':memory:');
   mockDb.current = db;
   runMigrations();
+  // t194: the trigger reads the (memoised) gauge, keyed on message facts — two clauses with identical
+  // rows and different provider declarations must not share an answer.
+  __resetEstimateCacheForTests();
   generateSummarySpy.mockReset();
   generateSummarySpy.mockImplementation(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));
 });

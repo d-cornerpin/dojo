@@ -17,7 +17,7 @@ import {
   eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
 } from './row-label.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
-import { freshTailHorizon, groupsToDropForBudget, tailTrimBlockGroups } from './tail-horizon.js';
+import { freshTailHorizon, groupsToDropForBudget, maxTrimUnits, tailTrimBlockGroups } from './tail-horizon.js';
 import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
@@ -43,6 +43,7 @@ import {
 } from './lanes.js';
 import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './message-lane-tag.js';
 import { getContextSummaries } from './dag.js';
+import { cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
 import { buildRecallLaneMessage } from './recall-lane.js';
 // W81: the two WORK-BOARD blocks, moved below the conversation with their own module for the
 // reason `memory/recall-lane.ts` has one — a post-budget lane must be able to DERIVE its
@@ -504,6 +505,8 @@ export interface AssembledContext {
    * quoted verbatim" as an article of faith, and W61 found it false in 6 of 6 recorded grinds.
    */
   compileOrderIntact?: boolean | null;
+  /** t194 (D1): a dry run's answer — the view this fit admitted (`measureView`). */
+  view?: ContextView;
 }
 
 /** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
@@ -945,6 +948,72 @@ function textRender(content: string | null): LaneRender | null {
   return { messages, tokens: renderTokens(messages) };
 }
 
+/** §T0-B E `:1595` — `min(available * 0.7, 6000)`: the summaries lane's ceiling, read by the lane and the gauge. */
+function summariesCeilingFor(contentBudget: number): number {
+  return Math.min(Math.floor(contentBudget * SUMMARY_SHARE), laneLimit('lane.summaries', 'tokens', 'relevanceBudget'));
+}
+
+// ── t194 (v3.4 D1, owner decision 7) — THE GAUGE IS THE VIEW ──────────────────────────────
+// STRIP: `compaction.ts` kept a private model of this fit — summaries counted up to 70% of the room
+// (this lane admits at most `summariesCeilingFor`; a dev-box log: 41-52K counted, 6,000 sent) and the
+// tail priced BEFORE the token trim — so a 65K worker's gate surrendered turns at "99-103%" of a number
+// its model was never sent. requirement preserved: "compaction knows what the assembler will admit" —
+// owned by `measureView`, which IS this fit, stopped before the post-budget lanes (reserved off the top).
+export interface ContextView {
+  /** The content budget, the live conversation's room in it, the tools/output reserve, the system prompt. */
+  budgetTokens: number; tailRoomTokens: number; reserveTokens: number; systemTokens: number;
+  /** Summaries admitted and standing, in their stored units (`condense-until-fits.ts`'s FITS). */
+  summaryTokens: number; summaryRawTokens: number; summaryCount: number;
+  /** The live conversation before the token trim, and what the trim kept (the lane's grant). */
+  tailTokens: number; tailKeptTokens: number; tailKeptRows: number;
+  /** The newest seq the trim took out of view now; the rows one more trim block of growth would take. */
+  outOfViewThroughSeq: number; leavingThroughSeq: number; leavingRows: number; leavingTokens: number;
+  /** THE PROTECTED RECENT PART, in tokens (owner decision 7b): the newest whole groups within half the
+   *  tail's room — the half a trim keeps — and never less than the newest group. */
+  protectedFromSeq: number;
+}
+
+function viewOf(f: {
+  budget: number; cached: number; before: Message[]; kept: Message[]; outOfViewThroughSeq: number;
+  summaries?: Summary[]; summariesAdmitted?: Summary[]; summaryGrantTokens?: number;
+}, policy: { freshTailCount: number; toolAndOutputReserve: number }, systemTokens: number): ContextView {
+  const groups = groupTail(f.before);
+  const costs = groups.map((g) => g.tokens);
+  const tailTokens = costs.reduce((a, b) => a + b, 0);
+  const room = Math.max(0, f.budget - f.cached);
+  const block = tailTrimBlockGroups(policy.freshTailCount);
+  // One trim block of growth ahead, at this tail's average group (t140's lead: the fold needs room to
+  // finish before the cut). When a cut is coming, what leaves ahead of need is the trim's whole-block cut,
+  // the front half. What its minimum-fit fallback takes beyond that (a giant newest row) reaches into the
+  // running turn, so it is the in-turn door's (`out-of-view-fold.ts`): exact, and no race with the turn.
+  const lead = groups.length > 0 ? block * (tailTokens / groups.length) : 0;
+  let from = groups.length - 1;
+  for (let i = groups.length - 2, used = costs[groups.length - 1] ?? 0; i >= 0 && used + costs[i] <= room / 2; i--) { used += costs[i]; from = i; }
+  // …and never into the protected recent part: no fold, routine or pressure, takes it.
+  const next = groupsToDropForBudget(costs, Math.max(0, room - lead), block) > 0 ? Math.min(maxTrimUnits(groups.length, block), from) : 0;
+  const leaving = groups.slice(0, next).flatMap((g) => g.messages);
+  const sum = (xs: Summary[] | undefined): number => (xs ?? []).reduce((n, x) => n + (x.tokenCount ?? 0), 0);
+  return {
+    budgetTokens: f.budget, tailRoomTokens: room, reserveTokens: policy.toolAndOutputReserve, systemTokens,
+    // The selection takes the newest two whole, then the fit cuts the lane's TEXT to its grant: the smaller is sent.
+    summaryTokens: Math.min(sum(f.summariesAdmitted), f.summaryGrantTokens ?? 0), summaryRawTokens: sum(f.summaries), summaryCount: f.summaries?.length ?? 0,
+    tailTokens, tailKeptTokens: rowTokens(f.kept), tailKeptRows: f.kept.length, outOfViewThroughSeq: f.outOfViewThroughSeq,
+    leavingThroughSeq: leaving.length > 0 ? (leaving[leaving.length - 1].rowid ?? 0) : 0,
+    leavingRows: leaving.length, leavingTokens: rowTokens(leaving),
+    protectedFromSeq: groups.length > 0 ? (groups[from].messages[0].rowid ?? 0) : 0,
+  };
+}
+
+/** t194 — THE ASSEMBLER'S OWN DRY RUN of the view it would send now. `contextWindow` overrides the
+ *  model's own (a caller measuring for a window it was handed). Pure: the fit is a read (S3). */
+export async function measureView(
+  agentId: string, modelId: string, opts: { contextWindow?: number; turnContext?: PromptTurnContext } = {},
+): Promise<ContextView> {
+  const sys = assembleSystemFromRegistry(buildAssemblyContext(agentId, modelId, opts.turnContext));
+  const dry = await assembleMessageContext(agentId, modelId, sys.text, opts.turnContext, { contextWindow: opts.contextWindow });
+  return dry.view!;
+}
+
 /**
  * THE LANE TABLE. Priority is data here and nowhere else; `slot` is position and is
  * independent of it (the briefing is emitted FIRST and drops FIRST — see `lanes.ts`).
@@ -964,10 +1033,7 @@ function buildContentLanes(
   // ceiling (it is the same 0.7 `memory/budget.ts` hands the compaction gate, so the gate's
   // model of the assembler cannot drift from it again); the "available" it multiplies is now
   // the declared content budget rather than "whatever two earlier gates happened to leave".
-  const summariesCeiling = Math.min(
-    Math.floor(contentBudget * SUMMARY_SHARE),
-    laneLimit('lane.summaries', 'tokens', 'relevanceBudget'),
-  );
+  const summariesCeiling = summariesCeilingFor(contentBudget);
   return [
     {
       id: 'lane.briefing',
@@ -1237,8 +1303,9 @@ async function assembleMessageContext(
   modelId: string,
   systemPrompt: string,
   turnContext?: PromptTurnContext,
+  dryRun?: { contextWindow?: number },   // t194: stop at the fit and report the view (`measureView`)
 ): Promise<AssembledContext> {
-  const contextWindow = getContextWindow(modelId);
+  const contextWindow = dryRun?.contextWindow ?? getContextWindow(modelId);
   // ONE budget (PHASE-3 T2): threshold, reserve and ceiling from `memory/budget.ts`.
   // PHASE-3 T4: the reserve is MEASURED, not a constant — the tools payload this agent's
   // transport will actually serialise, plus the derived output allowance. The old 15,000
@@ -1249,7 +1316,9 @@ async function assembleMessageContext(
   // missing, which is every provider configured before this task) leaves `assemblyBudgetTokens`
   // exactly what it was before this line existed — R6's byte-preservation control.
   const policy = contextWindowPolicy(contextWindow, {
-    toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+    // t194: a dry run reads the per-surface memo (the freeze fix kept this stringify off the measuring path).
+    toolPayloadTokens: dryRun ? await cachedToolPayloadTokens(agentId, toolSurfaceKey(agentId, modelId), () => measureAgentToolPayloadTokens(agentId))
+      : await measureAgentToolPayloadTokens(agentId),
     maxOutputTokens: getModelOutputCap(modelId),
     providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
@@ -1266,7 +1335,8 @@ async function assembleMessageContext(
   // anything and nothing told them why. `reportStarvedWindow` cards them once per outage;
   // `noteWindowHolds` is the other half of "per outage" — it forgets the note when assembly
   // fits again, so a later outage cards again instead of being swallowed as a duplicate.
-  try {
+  if (dryRun) assertSystemPromptFits(systemTokens, policy);   // t194: a dry run reads the refusal, never cards it
+  else try {
     assertSystemPromptFits(systemTokens, policy);
     noteWindowHolds(agentId);
   } catch (err) {
@@ -1319,6 +1389,8 @@ async function assembleMessageContext(
     // replaces was a strictly weaker copy of its first clause, so it is DELETED, not kept
     // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
     // of the validator.
+    if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
+      view: viewOf({ budget: maxTokens - systemTokens, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq: 0 }, policy, systemTokens) };
     const messages = applyIntegrityPass([...pm.messages], agentId);
     const freshTailDropped = Math.max(0, freshTail.length - budgeted.length);
     // The report the PM path never produced. One lane, its real grant, its reason in words:
@@ -1563,6 +1635,7 @@ async function assembleMessageContext(
     candidates.push({ lane: lane as Lane, render, renderError });
   }
 
+  const tailBefore = (candidates.find((c) => c.lane.id === 'lane.fresh-tail')?.render?.payload as TailPayload | undefined)?.rows ?? [];
   const { emitted, report } = fitLanes(candidates, contentBudget, { offTheTopTokens: offTheTop });
 
   // ── Emit in SLOT order, with the generated ack at its declared position ──
@@ -1607,6 +1680,16 @@ async function assembleMessageContext(
   // persisted and later summarized, so it is live-view loss, not data loss.
   const freshTailDropped = (tailPayload?.dropped ?? 0) + horizonSkippedRows;
   const outOfViewThroughSeq = Math.max(tailPayload?.droppedThroughSeq ?? 0, horizonSkippedThroughSeq);
+  // t194 (D1, owner decision 7a): THE GAUGE IS THIS FIT, not a second model of it. A dry run stops here.
+  if (dryRun) {
+    const summaryGrant = report.grants.find((g) => g.id === 'lane.summaries');
+    return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve, view: viewOf({
+      budget: contentBudget, before: tailBefore, kept: tailPayload?.rows ?? [], outOfViewThroughSeq,
+      cached: report.grants.filter((g) => g.slot < MessageSlot.FreshTail).reduce((n, g) => n + g.granted, 0),
+      summaries: laneCtx.summaries(), summaryGrantTokens: summaryGrant?.granted ?? 0,
+      summariesAdmitted: summaryGrant ? selectSummariesForPrefix(laneCtx.summaries(), summariesCeilingFor(contentBudget)) : [],
+    }, policy, systemTokens) };
+  }
 
   // ── Integrity pass (R6): post-combine repairs, one named stage ──
   let merged = applyIntegrityPass(messages, agentId, endOfHistoryMarker(agentId, tailPayload?.rows ?? []));
@@ -2448,21 +2531,22 @@ function pruneOldImageBlocksInPlace(
   }
 }
 
-function budgetFreshTail(
-  messages: Message[], availableTokens: number, blockGroups: number,
-): Message[] {
-  // Group messages into atomic units: tool_use + tool_result pairs must stay together.
-  // A "group" is either a standalone message or an [assistant(tool_use), tool(tool_result)] pair.
-  interface Group {
-    messages: Message[];
-    tokens: number;
-  }
-
-  const groups: Group[] = [];
+/** The trim's atoms: a standalone message, or an [assistant(tool_use), tool(tool_result)] pair. t194: a row
+ *  that renders nothing (`role='system'`, e.g. the "Memory Compacted" divider) rides with the group before
+ *  it — as its own NEWEST group it took the "newest group always rides" safety, and the real newest row
+ *  (a large result) was cut and folded out of the agent's sight. */
+function groupTail(messages: Message[]): Array<{ messages: Message[]; tokens: number }> {
+  const groups: Array<{ messages: Message[]; tokens: number }> = [];
   let i = 0;
   while (i < messages.length) {
     const msg = messages[i];
     const tokens = storedRowCost(msg);
+    if (msg.role === 'system' && groups.length > 0) {
+      groups[groups.length - 1].messages.push(msg);
+      groups[groups.length - 1].tokens += tokens;
+      i++;
+      continue;
+    }
 
     // Check if this assistant message has tool_use and is followed by a tool message
     let hasToolUse = false;
@@ -2483,6 +2567,13 @@ function budgetFreshTail(
       i++;
     }
   }
+  return groups;
+}
+
+function budgetFreshTail(
+  messages: Message[], availableTokens: number, blockGroups: number,
+): Message[] {
+  const groups = groupTail(messages);
 
   // ── t94: DROP WHOLE BLOCKS OFF THE FRONT, OR NOTHING AT ALL ───────────────────────────
   //

@@ -133,7 +133,9 @@ import path from 'node:path';
 // ── the world ────────────────────────────────────────────────────────────────────────────
 
 const AGENT = 'primary';
-/** A small-window model keeps a short fresh tail (24 rows), so the forced condense has rows to fold. */
+/** A window too small to hold this agent's system prompt admits nothing, so its protected recent part is
+ *  the newest group alone and the forced condense has rows to fold. (t194: this was "a short fresh tail,
+ *  24 rows" — the row rung is no longer what a pressure fold must leave.) */
 const SMALL_WINDOW = 16000;
 let image: Buffer | null = null;
 function freshDb(): Database.Database {

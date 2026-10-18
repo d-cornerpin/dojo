@@ -113,9 +113,11 @@ const PROVIDER = 'prov-under-test';
 /** The reported box's cloud row: a 64K window, whose fresh tail count is 40. */
 const MODEL_64K = 'm-cloud-64k';
 const FRESH_TAIL_ROWS = 40;
-/** 40 × 800 = 32,000 tokens of live conversation, which is what makes the summary budget
- *  small enough that a realistic summary body exceeds it — the incident's own relation. */
-const TAIL_TOKENS_EACH = 800;
+/** 40 × 100 = 4,000 tokens of live conversation. t194: this was 800 each, "which is what makes the
+ *  summary budget small" — the deleted phantom budget's relation. The gauge's summaries lane is capped
+ *  whatever the tail does, so the tail stays inside the protected recent part (as in
+ *  `compaction-has-no-bottom.test.ts`) and these clauses stay about the pass's own bounds. */
+const TAIL_TOKENS_EACH = 100;
 /** The provider's actual words, as the reported log recorded them. */
 const HTTP_402 = 'API error 402: {"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}';
 

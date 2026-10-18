@@ -34,6 +34,12 @@
 // avoid; the gate's job is to get a compaction to run FIRST. So the identity the seam restores
 // is gate-set == assembler-ask, and that identity is what these clauses hold.
 //
+// t194 (v3.4 D1, owner decision 7a): the token trigger (`total > 0.96 × window`) and the gate's
+// rungs are DELETED; the gauge is the assembler's own dry run (`measureView`). The property these
+// clauses hold is unchanged — the whole span is measured, and a heavy tail is folded before the model
+// is sent a trimmed view — and it is re-pinned on its owners: the gauge's ASK (`view.tailTokens`, the
+// span before the trim) and the engine's assembly door, which folds exactly what the trim takes.
+//
 // G1: every fixture body below is fictional depot chatter — no names, no personal data.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -89,6 +95,8 @@ import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { contextWindowPolicy, CONTEXT_THRESHOLD, getFreshTailCount } from '../budget.js';
 import { freshTailHorizon, rowsLeavingView } from '../tail-horizon.js';
+import { assembleContext } from '../assembler.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
 import { insertMessage } from '../message-store.js';
 import { createLeafSummary } from '../dag.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -195,7 +203,7 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
     for (let t = 1; t <= 34; t++) appendTurn(600);
     expect(rowCapViewTokens(cap)).toBeLessThan(TOKEN_TRIGGER);          // 24,000 < 30,720
     // And the row trigger is genuinely shut, so nothing but the token trigger can act.
-    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, { viewFull: false })).toBeNull();
+    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, {})).toBeNull();
   }
 
   it('the gate measures the whole span, and that reading is over the trigger', async () => {
@@ -211,9 +219,11 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
 
     // THE SEAM: the gate's dry run measures the span the assembler will ask for.
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
-    expect(est.freshTailCount).toBe(horizon.rowsSinceBoundary);          // 68, not 40
-    expect(est.freshTailTokens).toBeGreaterThan(TOKEN_TRIGGER);
-    expect(est.total).toBeGreaterThan(TOKEN_TRIGGER);
+    // The ASK is the whole span (68 rows at 600, not a 40-row slice), and it is over the room.
+    expect(est.view.tailTokens).toBe(68 * 600);
+    expect(est.view.tailTokens).toBeGreaterThan(est.view.tailRoomTokens);
+    // What the view holds is what the trim keeps — never more than the room.
+    expect(est.freshTailTokens).toBeLessThanOrEqual(est.view.tailRoomTokens);
   }, 120_000);
 
   // THE SAME FIXTURE, THROUGH THE DECISION THE NUMBER FEEDS. Separated from the measurement
@@ -224,8 +234,12 @@ describe('t100 §1 — a heavy tail past the row cap reaches the token trigger',
     const cap = getFreshTailCount(WINDOW);
     seedHeavyRunPastTheCap(cap);
 
-    const result = await checkAndCompact(AGENT, MODEL, WINDOW, {});
-    expect(result.leafCreated).toBeGreaterThan(0);
+    // A span this far over its room is cut by the trim's minimum fit, which the engine's assembly
+    // door folds on the turn itself, before the call (t194: the background pre-fold takes only the
+    // trim's whole-block cut).
+    await assembleWithNothingOutOfViewUnsummarised(AGENT, WINDOW, () => assembleContext(AGENT, MODEL));
+    const folded = (db().prepare('SELECT COUNT(*) AS n FROM summary_messages sm JOIN messages m ON m.id = sm.message_id WHERE m.agent_id = ?').get(AGENT) as { n: number }).n;
+    expect(folded).toBeGreaterThan(0);
   }, 120_000);
 });
 
@@ -250,9 +264,9 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
     expect(horizon.rowsSinceBoundary).toBe(30);
 
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
-    expect(est.freshTailCount).toBe(30);                                 // every row there is
+    expect(est.view.tailTokens).toBe(30 * 600);                         // every row there is
     expect(est.total).toBeLessThan(TOKEN_TRIGGER);                       // 18,000 < 30,720
-    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, { viewFull: false })).toBeNull();
+    expect(rowsLeavingView(AGENT, { freshTailCount: cap }, {})).toBeNull();
 
     const result = await checkAndCompact(AGENT, MODEL, WINDOW, {});
     expect(result.leafCreated).toBe(0);
@@ -294,5 +308,6 @@ describe('t100 §2 — a young conversation is the pre-seam answer exactly', () 
     // already represents. The count is now the span.
     const est = await estimateAssembledTokens(AGENT, WINDOW, MODEL);
     expect(est.freshTailCount).toBe(10);
+    expect(est.view.tailTokens).toBe(10 * 150);
   }, 120_000);
 });

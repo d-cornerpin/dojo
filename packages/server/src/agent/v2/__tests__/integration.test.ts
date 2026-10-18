@@ -804,71 +804,24 @@ describe('runV2Turn integration', () => {
     expect(stoppedAgents.has('primary')).toBe(true);
   });
 
-  it('PRESERVATION #37: pre-call compaction gate fires WARN at 90%', async () => {
-    // Simulate context at 92% utilization
-    estimateAssembledTokensMock.mockImplementation(() => ({
-      total: 184000, // 92% of 200000
-      summaryTokens: 0,
-      freshTailTokens: 184000,
-      briefTokens: 0,
-      freshTailCount: 1,
-      summaryCount: 0,
-    }));
-
-    callModelSpy.mockResolvedValue({
-      content: 'OK',
-      toolCalls: [],
-      inputTokens: 100,
-      outputTokens: 5,
-      stopReason: 'end_turn',
-    });
-
-    await runV2Turn('primary');
-
-    // chat:error with code CONTEXT_HIGH should fire (warn doesn't block,
-    // turn continues normally)
+  // t194 (v3.4 D1, owner decision 7): PRESERVATION #37's three rungs — WARN + "memory is getting full"
+  // toast at 90%, emergency compact and surrender at 96%, surrender at 99% — are DELETED. They measured
+  // a private model of the view; a full view is now condensed and the turn goes on. The replacement:
+  it('t194: a turn at 92% / 98% / 99.75% of the old gate\'s number proceeds — the model is called, no toast, no forced pass', async () => {
+    for (const total of [184000, 196000, 199500]) {
+      callModelSpy.mockClear(); checkAndCompactSpy.mockClear();
+      estimateAssembledTokensMock.mockImplementation(() => ({
+        total, summaryTokens: 0, freshTailTokens: total, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
+      }));
+      callModelSpy.mockResolvedValue({ content: 'OK', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+      await runV2Turn('primary');
+      expect(callModelSpy, `at ${total}`).toHaveBeenCalledTimes(1);
+      expect(checkAndCompactSpy).not.toHaveBeenCalledWith('primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }));
+    }
     const errors = getBroadcastEventsByType('chat:error') as Array<{ code?: string }>;
-    const contextHigh = errors.find((e) => e.code === 'CONTEXT_HIGH');
-    expect(contextHigh).toBeDefined();
-
-    // checkAndCompact NOT called for warn (only for compact/block)
-    expect(checkAndCompactSpy).not.toHaveBeenCalled();
-
-    // Turn should still complete normally
-    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    expect(errors.find((e) => e.code === 'CONTEXT_HIGH'), 'no "memory is getting full" toast').toBeUndefined();
   });
 
-  it('PRESERVATION #37: pre-call compaction gate triggers emergency compact at 96%', async () => {
-    estimateAssembledTokensMock.mockImplementation(() => ({
-      total: 196000, // 98% of 200000
-      summaryTokens: 0,
-      freshTailTokens: 196000,
-      briefTokens: 0,
-      freshTailCount: 1,
-      summaryCount: 0,
-    }));
-
-    callModelSpy.mockResolvedValue({
-      content: 'OK',
-      toolCalls: [],
-      inputTokens: 100,
-      outputTokens: 5,
-      stopReason: 'end_turn',
-    });
-
-    await runV2Turn('primary');
-
-    // Emergency compaction was forced
-    expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary',
-      expect.any(String),
-      expect.any(Number),
-      expect.objectContaining({ force: true }),
-    );
-
-    // Model NOT called this turn, we surrendered after emergency compact
-    expect(callModelSpy).not.toHaveBeenCalled();
-  });
 
   it('PRESERVATION #14: auto-continuation fires at MAX_TOOL_LOOPS (75) and schedules a fresh turn', async () => {
     // v2/loop.ts:1282-1320, when the inner tool loop hits MAX_TOOL_LOOPS
@@ -923,48 +876,6 @@ describe('runV2Turn integration', () => {
 
     // handleMessage('') was called to continue.
     expect(handleMessageSpy).toHaveBeenCalledWith('primary', '', { job: true });   // t143 r6: the park's own wake
-  });
-
-  it('PRESERVATION #37: pre-call compaction gate surrenders turn at ≥99%', async () => {
-    // The 99% surrender path: force checkAndCompact, queue a wakeup, do NOT call the
-    // model (and, since t159 G2, write nothing to the chat). The recovery cascade re-runs with compacted context next turn.
-    estimateAssembledTokensMock.mockImplementation(() => ({
-      total: 199500, // 99.75% of 200000
-      summaryTokens: 0,
-      freshTailTokens: 199500,
-      briefTokens: 0,
-      freshTailCount: 1,
-      summaryCount: 0,
-    }));
-
-    callModelSpy.mockResolvedValue({
-      content: 'should not be called',
-      toolCalls: [],
-      inputTokens: 100,
-      outputTokens: 5,
-      stopReason: 'end_turn',
-    });
-
-    await runV2Turn('primary');
-
-    // Forced compaction was attempted.
-    expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary',
-      expect.any(String),
-      expect.any(Number),
-      expect.objectContaining({ force: true }),
-    );
-
-    // Model was NOT called this turn, we surrendered.
-    expect(callModelSpy).not.toHaveBeenCalled();
-
-    // t159 G2: the surrender is a park, and a park is invisible housekeeping (t137 R2): NO [System: ...] note
-    // is persisted or broadcast to the chat. The wake it queued is the continuation.
-    const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
-      .all() as Array<{ content: string }>;
-    expect(sysMsgs).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
   });
 
   it('PRESERVATION #7: drainPendingAttachments IS called when persisting assistant message', async () => {

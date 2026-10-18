@@ -56,12 +56,8 @@ describe('contextWindowPolicy — RED: a declared provider ceiling caps the admi
     const q = contextWindowPolicy(200_000, MEASURED_PRIMARY);
     expect(p.contextWindow).toBe(q.contextWindow);
     expect(p.compactionThreshold).toBe(q.compactionThreshold);
-    expect(p.warnThreshold).toBe(q.warnThreshold);
-    expect(p.blockThreshold).toBe(q.blockThreshold);
     expect(p.toolAndOutputReserve).toBe(q.toolAndOutputReserve);
     expect(p.freshTailCount).toBe(q.freshTailCount);
-    expect(p.gateMessageCap).toBe(q.gateMessageCap);
-    expect(p.summaryShare).toBe(q.summaryShare);
   });
 });
 

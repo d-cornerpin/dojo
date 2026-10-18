@@ -93,7 +93,7 @@ vi.mock('../../agent/model.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import {
-  checkAndCompact, estimateAssembledTokens, liveViewIsFull,
+  checkAndCompact, estimateAssembledTokens, leavingFromView,
 } from '../compaction.js';
 // The 15-minute low-yield backoff is MODULE state keyed by agent id, so without this reset
 // one probe's compaction run brakes the next probe's and the second one silently measures a
@@ -192,22 +192,16 @@ function appendTurn(): void {
  *  discontinuities could see the cadence change and not know which number moved it. */
 const passLog: Array<{ turn: number; leafCreated: number; tokensReclaimed: number }> = [];
 
-/** The system prompt the last assembly produced, in tokens — what production's gate reads off
- *  the assembler's measured overhead (`context-gates.ts`). 0 before the first assembly. */
-let lastSystemTokens = 0;
-
 /** The production pre-call gate's ROUTINE arm, as `agent/v2/steps/pre-call-gates/
  *  context-gates.ts` runs it. t140: the row-gap drain is gone; the arm asks the tail horizon
  *  which rows are about to leave the live view (the ceiling lead, or the view full for this
  *  window) and folds exactly those. Awaited here (production fires and forgets) so the run is
  *  deterministic. Returns the pass's own result when it compacted, and null otherwise. */
 async function runRoutineCompactionGate(): Promise<{ leafCreated: number; tokensReclaimed: number } | null> {
-  const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-  const leaving = rowsLeavingView(
-    AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
-    { viewFull: liveViewIsFull(est, lastSystemTokens) },
-  );
-  if (!leaving) return null;
+  // t194: the gauge (the assembler's own dry run), and the same two causes production acts on.
+  const { view } = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
+  const leaving = leavingFromView(AGENT, windowNow.value, view);
+  if (!leaving && view.summaryRawTokens <= view.summaryTokens) return null;
   try {
     const r = await checkAndCompact(AGENT, MODEL, windowNow.value, {
       leaving,
@@ -237,7 +231,6 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
     if (pass) { passLog.push({ turn: t, ...pass }); note = 'compaction ran'; }
     if (opts.between) await opts.between(t);
     const ctx = await assembleContext(AGENT, MODEL);
-    lastSystemTokens = estimateTokens(ctx.systemPrompt);
     snaps.push({
       turn: t,
       messages: JSON.parse(JSON.stringify(ctx.messages)) as unknown[],
@@ -250,7 +243,6 @@ async function driveRun(opts: RunOptions): Promise<TurnSnapshot[]> {
 
 beforeEach(() => {
   turnNo = 0;
-  lastSystemTokens = 0;
   passLog.length = 0;
   __resetBrakesForTests();
   summariser.up = true;
@@ -1028,15 +1020,13 @@ describe('t94 §10 — a compaction with its divider throttled still costs ONE d
 // messages costs the same as dropping 200."*
 describe('t109 §11 — the deep-compaction floor re-anchors instead of trimming per turn', () => {
   it('⚠ E: a mid-session switch to a LARGER window is append-only for every turn after it', async () => {
-    // A boundary to anchor to, left by a DEEP compaction — the state this section is named for.
-    // t140: the routine gate no longer folds a quiet 40-turn run (that was the deleted row-gap
-    // drain), so the deep compaction is the PRESSURE path's, forced as the emergency arm forces
-    // it: everything outside the row floor is folded and `rows_since` lands at the cap.
+    // A boundary to anchor to, left by a DEEP compaction — the state this section is named for:
+    // everything but the newest 40 rows folded, so `rows_since` lands at the old cap. t194: built by
+    // hand (as §9's anchored case is), because a forced pass now folds only before the protected
+    // recent part in TOKENS (owner decision 7b), and this quiet 3K-token view is all inside it.
     await driveRun({ turns: 40, compaction: false });
-    const forced = await checkAndCompact(AGENT, MODEL, windowNow.value, { force: true });
-    passLog.push({ turn: 40, leafCreated: forced.leafCreated, tokensReclaimed: forced.tokensReclaimed });
-    expect(passLog[0].leafCreated, 'precondition: a compaction ran, so a boundary exists')
-      .toBeGreaterThan(0);
+    const deep = db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq ASC LIMIT 40').all(AGENT) as Array<{ id: string }>;
+    createLeafSummary(AGENT, 'The depot inventory run so far, condensed.', 400, deep.map((r) => r.id), '2026-01-01 00:00:00', '2026-01-02 00:00:00');
     // One quiet turn on the old window AFTER the compaction, so the comparison below starts
     // from the post-compaction array and measures the window switch alone.
     const before = await driveRun({ turns: 1, compaction: false });

@@ -412,7 +412,8 @@ import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
 import { a2aRetryBudgetFor } from './a2a-patience.js';
 import { turnContext } from './turn-context.js';
-import { bumpDrainLadder, clearDrainLadder } from './drain-state.js';
+import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
+import { contextOverflowSince } from '../memory/compaction.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
@@ -1030,26 +1031,25 @@ class AgentRuntime {
           const waiting = getWaitingHumanConversations(agentId);
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
-            // PHASE-2 T9: left as the consecutive-pass ladder for the same reason as the
-            // unserved-wake drain above — see that block. A derived count anchored on the
-            // head's ARRIVAL counts turns during which the drain was not looking at it.
-            // PHASE-2 T10 (RULING 5): same ladder, durable storage (`drain_state`, 140).
-            const stuck = bumpDrainLadder(agentId, 'human_conversation', String(head));
-            if (stuck < MAX_DRAIN_STUCK) {
-              // D2: cap self-re-triggers so a multi-row backlog can't spin into
-              // hundreds of full-context turns. A real new inbound still wakes it.
+            // PHASE-2 T9/T10: the consecutive-pass ladder, durable (`drain_state`, 140); see the drain above.
+            // t194 (D4, owner decision 12): a run that needed a FORCED pass failed on its window, not on this message:
+            // not counted. An unreadable ladder used to read as "past the bound" and wrote the ask off on first
+            // sight. Both stand down: no count, no self-wake (an overflow door's park re-drives), no quarantine.
+            const overflowed = contextOverflowSince(agentId, agentStartTimes.get(agentId) ?? Date.now());
+            const stuck = overflowed ? DRAIN_LADDER_UNREADABLE : bumpDrainLadder(agentId, 'human_conversation', String(head));
+            if (stuck === DRAIN_LADDER_UNREADABLE) {
+              logger.warn('drain: standing down; this pass does not count against the waiting message', { agentId, headRowid: head, cause: overflowed ? 'context-overflow' : 'ladder-unreadable' }, agentId);
+            } else if (stuck < MAX_DRAIN_STUCK) {
+              // D2: cap self-re-triggers; a real new inbound still wakes it.
               if (underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain');
             } else {
-              // D9: the head conversation has failed to advance across
-              // MAX_DRAIN_STUCK serves, it's poisoned (bad attachment, per-thread
-              // provider 400, oversized context). Before, the drain simply STOPPED
-              // here, so that one un-servable conversation starved every OTHER
-              // waiting message, and each new inbound re-picked the same poisoned
-              // head (FIFO). Now: quarantine it (skip, never drop, swept_at keeps
-              // its identity), tell the owner, and serve the NEXT conversation.
+              // D9: the head failed MAX_DRAIN_STUCK serves with room in the window — the message itself (bad attachment,
+              // per-thread 400). Quarantine it (never dropped), tell the owner, serve the next; log the serves' exits (t194).
               const poisoned = waiting[0];
               const quarantined = quarantineWaitingConversation(agentId, poisoned.key);
-              logger.error('drain: quarantined a poisoned conversation after repeated failed serves; serving the next instead', { agentId, convKey: poisoned.key, rowsQuarantined: quarantined, headRowid: head }, agentId);
+              const exitReasons = (getDb().prepare('SELECT exit_reason AS r FROM turns WHERE agent_id = ? AND conv_key = ? ORDER BY turn_number DESC LIMIT ?')
+                .all(agentId, poisoned.key, MAX_DRAIN_STUCK + 1) as Array<{ r: string | null }>).map((t) => t.r);
+              logger.error('drain: quarantined a poisoned conversation after repeated failed serves; serving the next instead', { agentId, convKey: poisoned.key, rowsQuarantined: quarantined, headRowid: head, exitReasons }, agentId);
               try {
                 broadcast({ type: 'chat:error', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
               } catch { /* best effort */ }

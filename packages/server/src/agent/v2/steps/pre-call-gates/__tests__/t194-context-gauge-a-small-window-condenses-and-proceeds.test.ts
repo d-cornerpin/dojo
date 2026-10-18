@@ -19,6 +19,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { WsEvent } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -61,6 +64,7 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { assembleContext } from '../../../../../memory/assembler.js';
+import { assembleWithNothingOutOfViewUnsummarised } from '../../../../../memory/out-of-view-fold.js';
 import { estimateAssembledTokens, checkAndCompact } from '../../../../../memory/compaction.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
@@ -186,13 +190,17 @@ describe('t194 D1 — a 65K worker whose newest 40 rows are large tool results',
     expect((out as { reason?: string }).reason, 'the turn is not surrendered').toBeUndefined();
     expect(out.directive).toBe('proceed');
     await settle();
+    // The turn goes on to its assembly through the engine's door, which folds what the trim takes.
+    const sent = await assembleWithNothingOutOfViewUnsummarised(AGENT, WINDOW, () => assembleContext(AGENT, MODEL));
 
     const seqs = allSeqs();
     const folded = summarisedSeqs();
     expect(folded.length, 'the rows the view cannot hold are condensed').toBeGreaterThan(0);
-    // The newest call and its result are what the agent is reading now: never folded.
+    // The newest call and its result are what the agent is reading now: never folded, and in view.
     expect(folded).not.toContain(seqs[seqs.length - 1]);
     expect(folded).not.toContain(seqs[seqs.length - 2]);
+    expect(JSON.stringify(sent.messages)).toContain('call-19');
+    expect(JSON.stringify(sent.messages)).toContain('report 19');
     const toasts = [...events, ...wsEvents].filter((e) => (e as { code?: string }).code === 'CONTEXT_HIGH');
     expect(toasts, 'a full view is routine: no "memory is getting full" toast').toEqual([]);
   });
@@ -223,5 +231,49 @@ describe('t194 D1 — the gauge is the assembler\'s own fit, not a second model 
 
     const tailGrant = real.allocation?.grants.find((g) => g.id === 'lane.fresh-tail');
     expect(gauge.freshTailTokens, 'the live tail counted is the tail the trim kept').toBe(tailGrant?.granted);
+  });
+});
+
+// ── THE CENSUS: the old mechanisms are gone, not bypassed ────────────────────────────────
+describe('t194 D1 — census: one gauge, no surrender ladder, no stale warning, no row floor', () => {
+  const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');   // packages/server/src
+  const shipped = (): Array<{ file: string; text: string }> => {
+    const out: Array<{ file: string; text: string }> = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__') walk(p); }
+        // CODE only: a STRIP note naming what it deleted is the record, not the mechanism.
+        else if (/\.ts$/.test(e.name) && !/\.test\.ts$/.test(e.name)) {
+          out.push({ file: path.relative(SRC, p), text: fs.readFileSync(p, 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n') });
+        }
+      }
+    };
+    walk(SRC);
+    return out;
+  };
+
+  it('the gate classifier and its 0.90 / 0.99 lines, the per-row gate cap and the private estimate model are deleted', () => {
+    expect(fs.existsSync(path.join(SRC, 'agent/v2/classifiers/compaction.ts'))).toBe(false);
+    const hits = shipped().filter((f) => /CONTEXT_WARN_THRESHOLD|CONTEXT_BLOCK_THRESHOLD|GATE_MESSAGE_CAP_TOKENS|gateMessageCap|liveViewIsFull|compactionGate\b|ceilingModelId/.test(f.text)).map((f) => f.file);
+    expect(hits).toEqual([]);
+  });
+
+  it('no shipped line tells the owner the memory is "getting full", or calls a full view something that "should not happen"', () => {
+    const hits = shipped().filter((f) => /Agent's memory is getting full|should not happen in normal/.test(f.text)).map((f) => f.file);
+    expect(hits).toEqual([]);
+  });
+
+  it('the context gate never ends a turn', () => {
+    const gate = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'context-gates.ts'), 'utf8');
+    expect(gate).not.toMatch(/requestExit\(|parkAfterForcedPass|context-full|context-emergency-compact/);
+  });
+
+  it('compaction folds before the TOKEN floor: no production fold is bounded by the row ladder', () => {
+    const compaction = fs.readFileSync(path.join(SRC, 'memory/compaction.ts'), 'utf8');
+    expect(compaction).not.toMatch(/getMessagesOutsideFreshTail\(agentId, getFreshTailCount/);
+    const calls = compaction.split('runLeafCompaction(agentId, writer').slice(1);
+    expect(calls.length, 'non-vacuity: both production folds are found').toBe(2);
+    for (const c of calls) expect(c.slice(0, 220)).toMatch(/floorRows/);
   });
 });

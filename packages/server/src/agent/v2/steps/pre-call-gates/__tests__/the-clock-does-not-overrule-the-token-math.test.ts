@@ -62,6 +62,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { turnContinuationCounts, pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runTurnTimeBudget } from '../turn-budget.js';
+import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
 import { PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 
@@ -191,6 +192,9 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
+  // t194: the trigger's budget now comes from the (memoised) gauge, whose key is the message facts —
+  // two clauses with identical rows and different provider declarations must not share an answer.
+  __resetEstimateCacheForTests();
   turnContinuationCounts.clear();
   pendingWakeups.clear();
   stoppedAgents.clear();

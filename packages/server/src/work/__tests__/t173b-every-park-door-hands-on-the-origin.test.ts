@@ -15,8 +15,9 @@
 // first and from the task the agent is most recently working second, and carried on the job record with
 // the ids and asks (it never shields those tasks from the PM or the close-out gate: t143 round 2).
 //
-// One clause per park door: tool-loop cap, turn budget, both context-gate arms (and the braked-wake
-// variant), both recovery compactions. Every door is driven through the engine's real turn entry.
+// One clause per park door: tool-loop cap, turn budget, both recovery compactions. Every door is driven
+// through the engine's real turn entry. (t194: the context gate's two arms, and so its two park doors,
+// are DELETED — a full view is condensed, never surrendered — and their three clauses with them.)
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -26,7 +27,7 @@ const callModelSpy = vi.fn();
 const handleMessageSpy = vi.fn();
 const loggerErrorSpy = vi.fn();
 /** The size of the world: the model's window and how much a read returns (a clause may shrink the window to force a trim). */
-const world = vi.hoisted(() => ({ window: 200000, pad: 20, estimate: 1000, clockPerTool: 0, clockMs: 0, gateRatio: 0 }));
+const world = vi.hoisted(() => ({ window: 200000, pad: 20, estimate: 1000, clockPerTool: 0, clockMs: 0 }));
 
 vi.mock('../../db/connection.js', async () => {
   const os = await import('node:os');
@@ -101,16 +102,6 @@ vi.mock('../../memory/compaction.js', async () => {
     estimateAssembledTokens: () => ({
       total: world.estimate, summaryTokens: 0, freshTailTokens: world.estimate, briefTokens: 0, freshTailCount: 1, summaryCount: 0,
     }),
-  };
-});
-// The context gate decides on a ratio of the assembled estimate to the compressible budget (the window minus an
-// overhead the assembler measures). A clause names the ratio it wants and the gate is handed the tokens that make it.
-vi.mock('../../agent/v2/classifiers/compaction.js', async () => {
-  const actual = await vi.importActual<typeof import('../../agent/v2/classifiers/compaction.js')>('../../agent/v2/classifiers/compaction.js');
-  return {
-    ...actual,
-    compactionGate: (total: number, window: number, overhead = 0) =>
-      actual.compactionGate(world.gateRatio > 0 ? Math.floor(world.gateRatio * Math.max(1, window - overhead)) : total, window, overhead),
   };
 });
 // Which door parked: the one definition of "park" is recorded as it runs (it still runs, whole).
@@ -198,7 +189,7 @@ import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 import { recordA2AReply } from '../../agent/a2a-replies.js';
 import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
 import { jobOrigin } from '../job-origin.js';
-import { notePassOutcome, __resetBrakesForTests } from '../../memory/compaction-brakes.js';
+import { __resetBrakesForTests } from '../../memory/compaction-brakes.js';
 import { AgentError } from '../../agent/errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../agent/stream-patience.js';
 
@@ -230,7 +221,7 @@ function migratedDb(): Database.Database {
 }
 
 beforeEach(() => {
-  world.window = 200000; world.pad = 20; world.estimate = 1000; world.clockPerTool = 0; world.clockMs = 0; world.gateRatio = 0;
+  world.window = 200000; world.pad = 20; world.estimate = 1000; world.clockPerTool = 0; world.clockMs = 0;
   const db = migratedDb();
   mockDb.current = db;
   db.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('test-provider', 'Test', 'anthropic', 'api_key')").run();
@@ -400,38 +391,6 @@ describe('t173b: EVERY park door hands the job\'s origin to its continuation', (
     script({ reads: 5 });
     try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; world.clockPerTool = 0; }   // the next turn must not look fifteen minutes old
     await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'budget');
-  });
-
-  it('door 3, the context gate\'s emergency arm (96-99%), the wake queued now', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-emergency');
-    world.gateRatio = 0.975;
-    script({ reads: 0 });
-    await runV2Turn(WORKER);
-    world.gateRatio = 0;
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'drain' });
-  });
-
-  it('door 4, the context gate\'s block arm (99%+)', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-block');
-    world.gateRatio = 0.995;
-    script({ reads: 0 });
-    await runV2Turn(WORKER);
-    world.gateRatio = 0;
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'drain' });
-  });
-
-  it('door 3/4, a gate arm while the compaction brake binds: the wake waits for the brake on its own timer', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-braked');
-    // A forced pass that won nothing arms the brake against the next forced pass.
-    notePassOutcome(WORKER, true, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 }, { stage: 'single_summary_at_floor', assembledTokens: 1, budgetTokens: 2 } as never);
-    world.gateRatio = 0.975;
-    script({ reads: 0 });
-    await runV2Turn(WORKER);
-    world.gateRatio = 0;
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'context-gate-rebuild', how: 'timer' });
   });
 
   it('door 5, error recovery\'s forced compaction after a context overflow', async () => {

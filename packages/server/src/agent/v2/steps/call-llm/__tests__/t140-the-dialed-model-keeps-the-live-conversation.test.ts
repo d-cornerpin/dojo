@@ -111,7 +111,7 @@ import { callModel, getContextWindow } from '../../../../model.js';
 import { __resetAssemblyValidationCounters, AssemblyValidationError } from '../../../../../memory/assembly-validation.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
-import { SystemPromptTooLargeError, getFreshTailCount } from '../../../../../memory/budget.js';
+import { SystemPromptTooLargeError } from '../../../../../memory/budget.js';
 
 const AGENT = 'agent-t140-routed';
 /** Two routed models, both far below the 200K stand-in — the reporting box's shape. */
@@ -336,6 +336,22 @@ async function dialStep(firstPick: string): Promise<Awaited<ReturnType<typeof ca
   return callWithRetryAndFallback(state, firstPick, input);
 }
 
+/** t194 (owner decision 7b): the protected recent part is TOKENS — the newest half of the tail's room — not
+ *  the 24-row rung. So what any fold took of the rows a request showed is a PREFIX of its older half, and
+ *  the newer half is never folded (they were "never into the 16K floor", in rows). */
+function expectTheNewerHalfOfTheViewKept(request: unknown): void {
+  const folded = new Set((db().prepare(
+    'SELECT substr(m.content, 1, 14) AS c FROM summary_messages sm JOIN messages m ON m.id = sm.message_id WHERE m.agent_id = ?',
+  ).all(AGENT) as Array<{ c: string }>).map((r) => /\[(ask|reply) \d+\]/.exec(r.c)?.[0]));
+  // Chronological and once each: the served ask may be re-emitted at the front of the live tail.
+  const order = (t: string): number => Number(/\d+/.exec(t)![0]) * 2 + (t.startsWith('[reply') ? 1 : 0);
+  const shown = [...new Set(JSON.stringify(request).match(/\[(ask|reply) \d+\]/g) ?? [])].sort((a, b) => order(a) - order(b));
+  const firstKept = shown.findIndex((t) => !folded.has(t));
+  expect(shown.length, 'non-vacuity: the request showed the conversation').toBeGreaterThan(0);
+  expect(shown.slice(firstKept).filter((t) => folded.has(t)), 'what was folded is a prefix of the view').toEqual([]);
+  expect(firstKept, 'and never its newer half').toBeLessThanOrEqual(Math.floor(shown.length / 2));
+}
+
 function summarisedRowCount(): number {
   return (db().prepare(
     'SELECT COUNT(*) AS n FROM summary_messages sm JOIN summaries s ON s.id = sm.summary_id WHERE s.agent_id = ?',
@@ -357,7 +373,8 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     const { backgroundDrains } = await import('../../../../shared-state.js');
     for (let i = 0; i < 400 && backgroundDrains.has(AGENT); i++) await new Promise((r) => setTimeout(r, 5));
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
-    expect(summarisedRowCount(), 'not the forced full condense').toBeLessThan(total - getFreshTailCount(LIGHT_WINDOW));
+    expect(summarisedRowCount(), 'not the forced full condense').toBeLessThan(total);
+    expectTheNewerHalfOfTheViewKept(provider.requests.filter((r) => shown(r).includes('Runtime Information')).pop());
   });
 
   it('the fallback SELECTION checks each candidate against its own window, and skips one that cannot hold the turn at all', async () => {
@@ -441,7 +458,7 @@ describe('t140 fix round 1 — M1: a pick that cannot hold even the system promp
 describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick folds what its re-fit set aside, for that window', () => {
   it('the 16K pick\'s re-fit sets rows aside, and exactly those are folded before it is dialed (round 2: awaited, through the assembly door)', async () => {
     seedConversation(250);
-    await dialAsRouted(LIGHT);
+    const dialed = await dialAsRouted(LIGHT);
     const summarisedAtDial = summarisedRowCount();
     let folded = 0;
     // Polled with a generous bound: under a loaded full suite the background fold (archive,
@@ -451,7 +468,8 @@ describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick f
     // Round 2: folded BEFORE the dial — the turn's own request already sat behind the summary.
     expect(summarisedAtDial, 'folded before the pick was dialed, not after').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
-    expect(folded, 'and never into the 16K floor').toBeLessThanOrEqual(total - getFreshTailCount(LIGHT_WINDOW));
+    expect(folded, 'and never everything').toBeLessThan(total);
+    expectTheNewerHalfOfTheViewKept(dialed);
   });
 });
 

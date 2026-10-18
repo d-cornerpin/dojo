@@ -438,10 +438,10 @@ export function groupsToDropForBudget(
 // owned here:
 //   'ceiling' — within one trim block of the row ceiling: the rows its next cut would skip
 //               (`ceilingSkipRows`), folded BEFORE the cut, so on a healthy box the cut never fires.
-//   'full'    — the caller measured the view full for the dialed window: the rows the token trim
-//               takes off the front (`maxTrimUnits`). Folding them moves the boundary to where the
-//               trim's front is, so the live tail itself does not move.
-// The newest `freshTailCount` rows never leave (the floor every compaction keeps). The answer is
+//   'full'    — the gauge (`assembler.ts`'s `measureView`, t194) found the trim cutting within one
+//               block of growth: exactly the rows ITS cut takes, named by the trim itself. Folding
+//               them moves the boundary to where the trim's front is, so the live tail does not move.
+// The trim never names the newest group, and the ceiling's step stays below its floor. The answer is
 // a SEQ: compaction folds every unsummarised row of the session with `seq <= throughSeq`, which
 // includes rows an earlier refused chunk stranded before the boundary.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -471,14 +471,14 @@ function seqOfPairedToolResult(agentId: string, seq: number): number | null {
 }
 
 /**
- * The rows about to leave this agent's live view, or null. `viewFull` is the caller's
- * measurement (`compaction.ts`'s `liveViewIsFull`); without it only the ceiling makes rows leave.
+ * The rows about to leave this agent's live view, or null. `full` is the gauge's answer (the trim's
+ * next cut, `compaction.ts`'s `leavingFromView`); without it only the ceiling makes rows leave.
  * Never throws: a failed read answers null — condense nothing — the direction the ruling prefers.
  */
 export function rowsLeavingView(
   agentId: string,
   policy: Pick<ContextWindowPolicy, 'freshTailCount'>,
-  opts: { viewFull: boolean },
+  opts: { full?: { throughSeq: number; rows: number } | null },
 ): LeavingView | null {
   const cap = Math.max(1, policy.freshTailCount);
   let boundary: BoundaryRow;
@@ -488,30 +488,18 @@ export function rowsLeavingView(
     return null;
   }
   const rowsSince = boundary.rows_since;
-  const room = rowsSince - cap;   // the most that may leave without crossing the floor
-  if (room <= 0) return null;
-
+  const room = rowsSince - cap;   // the most the CEILING's cut may take without crossing its floor
   const ceiling = cap * TAIL_HORIZON_CEILING_MULTIPLE;
-  let cause: LeavingCause | null = null;
-  let leaving = 0;
-  if (rowsSince >= ceiling - ceilingLeadRows(cap)) {
-    // The rows the next cut would skip: at the lead point the span has not crossed yet, so ask
-    // the cut what it would take one row past the ceiling — or now, if it already has.
-    cause = 'ceiling';
-    leaving = ceilingSkipRows(Math.max(rowsSince, ceiling + 1), cap);
-  } else if (opts.viewFull && room >= tailTrimBlockGroups(cap)) {
-    // Fix round 1 (review I4): a full view with less than one trim block above the floor is a
-    // view whose pressure sits INSIDE the floor. Folding the 1–5 rows above it bought nothing
-    // and cost a summariser call and a prefix break on every turn; the trim handles it, as it
-    // always has, and the next block of growth makes a real fold possible.
-    cause = 'full';
-    leaving = Math.max(tailTrimBlockGroups(cap), maxTrimUnits(rowsSince, tailTrimBlockGroups(cap)));
+  if (room <= 0 || rowsSince < ceiling - ceilingLeadRows(cap)) {
+    // t194 (D1): 'full' is the trim's own answer, whole groups, never the newest (the gauge). STRIP:
+    // re-deriving it here as "half the span in blocks, above a 40-row floor" — rows, not the trim's tokens.
+    return opts.full && opts.full.throughSeq > 0 ? { cause: 'full', throughSeq: opts.full.throughSeq, rowsLeaving: opts.full.rows } : null;
   }
-  if (cause === null) return null;
-  // No clamp is needed past this point, and it is argued rather than kept "to be safe": the
-  // ceiling's step (4 × cap) is below `room` whenever the lead fires (room ≥ 6.5 × cap), and a
-  // 'full' answer is half the span in whole blocks, below `room` whenever room ≥ one block (the
-  // guard above). The fold's own selection excludes the floor a second time regardless.
+  // The rows the next cut would skip: at the lead point the span has not crossed yet, so ask the
+  // cut what it would take one row past the ceiling — or now, if it already has. The ceiling's step
+  // (4 × cap) is below `room` whenever the lead fires (room ≥ 6.5 × cap), so no clamp is needed.
+  const cause: LeavingCause = 'ceiling';
+  let leaving = ceilingSkipRows(Math.max(rowsSince, ceiling + 1), cap);
 
   let throughSeq = 0;
   try {

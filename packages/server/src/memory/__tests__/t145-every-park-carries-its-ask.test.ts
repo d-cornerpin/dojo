@@ -96,7 +96,9 @@ function firstTurnOfAJob(): void {
   for (let i = 0; i < 5; i++) { say('user', `older question ${i}`); say('assistant', `older answer ${i}`); }
   say('user', ASK, 'ask-row');
   expect(claimAsk('ask:ask-row', AGENT).kind).toBe('applied');
-  for (let i = 0; i < 70; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i}`);
+  // t194: the turn's work is heavy (an overflow is what forces these passes), so the ask lies before the
+  // protected recent part, which is sized in tokens now rather than the 40-row rung.
+  for (let i = 0; i < 70; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i} ${'w'.repeat(1_200)}`);
   const bag = openTurnContext(AGENT);
   bag.root = { kind: 'ask', id: 'ask-row', sourceMessageId: 'ask-row' };
   bag.conversationId = 'conv-dash';
@@ -163,10 +165,10 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
       expect(f, `no engine file contains ${needle}`).not.toBeNull();
       return strip(f!.text);
     };
-    // t168: both gate arms park through `parkAfterForcedPass`, which holds the two parks (now, or at the brake's expiry).
-    const gates = engineCode("parkAfterForcedPass(agentId, 'context-gate-rebuild'");
-    expect(gates).not.toMatch(/queueSelfWake\(agentId, 'context-gate-rebuild'\)/);
-    expect(gates.match(/parkAfterForcedPass\(agentId, 'context-gate-rebuild', brakedBefore\)/g)?.length).toBe(2);
+    // t194: the context gate's two surrender arms (and so its two parks) are DELETED — a full view is
+    // condensed, never parked. The gate parks nothing and queues no wake of its own.
+    const gates = engineCode('export async function runContextGates(');
+    expect(gates).not.toMatch(/parkJob\(|parkAfterForcedPass\(|queueSelfWake\(/);
     const wait = strip(fs.readFileSync(path.join(SRC, 'agent/v2/full-context-wait.ts'), 'utf8'));
     expect(wait).not.toMatch(/queueSelfWake\(/);
     expect(wait.match(/\bparkJob\(agentId, reason\)/g)?.length).toBe(1);

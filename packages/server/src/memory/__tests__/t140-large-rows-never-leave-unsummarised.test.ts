@@ -53,11 +53,11 @@ vi.mock('../../agent/model.js', () => ({
 
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
-import { checkAndCompact, estimateAssembledTokens, liveViewIsFull } from '../compaction.js';
+import { checkAndCompact, estimateAssembledTokens, leavingFromView } from '../compaction.js';
 import { assembleWithNothingOutOfViewUnsummarised } from '../out-of-view-fold.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
-import { getFreshTailCount, estimateTokens } from '../budget.js';
-import { rowsLeavingView, tailTrimBlockGroups } from '../tail-horizon.js';
+import { getFreshTailCount } from '../budget.js';
+import { tailTrimBlockGroups } from '../tail-horizon.js';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-t140-large-rows';
@@ -94,12 +94,11 @@ interface RunLog {
 /** The production pre-call gate's routine arm, then the assembly — once per turn. */
 async function drive(turns: number, largeEvery: number): Promise<RunLog> {
   const log: RunLog = { trimmedTurns: [], folds: [], outOfViewFoldTurns: [] };
-  let lastSystemTokens = 0;
   for (let t = 1; t <= turns; t++) {
     appendTurn(t % largeEvery === 0);
+    // t194: the routine check reads the gauge (the assembler's own dry run), as `context-gates.ts` does.
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-    const leaving = rowsLeavingView(AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
-      { viewFull: liveViewIsFull(est, lastSystemTokens) });
+    const leaving = leavingFromView(AGENT, windowNow.value, est.view);
     if (leaving) {
       const r = await checkAndCompact(AGENT, MODEL, windowNow.value, { leaving });
       if (r.leafCreated > 0) log.folds.push({ turn: t, rows: leaving.rowsLeaving });
@@ -108,13 +107,12 @@ async function drive(turns: number, largeEvery: number): Promise<RunLog> {
     // trim had to take — so the 128K clause keeps meaning "the pressure folds ran ahead of need".
     let firstDropped: number | null = null;
     const before = summariser.calls;
-    const ctx = await assembleWithNothingOutOfViewUnsummarised(AGENT, windowNow.value, async () => {
+    await assembleWithNothingOutOfViewUnsummarised(AGENT, windowNow.value, async () => {
       const a = await assembleContext(AGENT, MODEL);
       if (firstDropped === null) firstDropped = a.freshTailDropped ?? 0;
       return a;
     });
     if (summariser.calls > before) log.outOfViewFoldTurns.push(t);
-    lastSystemTokens = estimateTokens(ctx.systemPrompt);
     if ((firstDropped ?? 0) > 0) log.trimmedTurns.push(t);
   }
   return log;
@@ -204,20 +202,17 @@ function lostRows(view: string): string[] {
 
 async function driveCounting(turns: number, largeEvery: number, timing: FoldTiming): Promise<CountLog> {
   const log: CountLog = { lostRowTurns: 0, turnsWithLoss: 0, worstTurn: null, folds: 0 };
-  let lastSystemTokens = 0;
   for (let t = 1; t <= turns; t++) {
     appendTurn(t % largeEvery === 0);
     const before = summariser.calls;
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-    const leaving = rowsLeavingView(AGENT, { freshTailCount: getFreshTailCount(windowNow.value) },
-      { viewFull: liveViewIsFull(est, lastSystemTokens) });
+    const leaving = leavingFromView(AGENT, windowNow.value, est.view);
     const fold = leaving ? checkAndCompact(AGENT, MODEL, windowNow.value, { leaving }) : null;
     if (fold && timing === 'awaited') await fold;
     const ctx = await turnAssembly();
     const lost = lostRows(JSON.stringify(ctx.messages));
     if (fold && timing === 'after-assembly') await fold;
     if (summariser.calls > before) log.folds++;
-    lastSystemTokens = estimateTokens(ctx.systemPrompt);
     if (lost.length > 0) {
       log.turnsWithLoss++;
       log.lostRowTurns += lost.length;

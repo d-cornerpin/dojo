@@ -4,25 +4,19 @@ import { withLock } from '../db/with-lock.js';
 import { MIN_COMPACTABLE_ROWS, compactionIsBraked, noteLowYield, notePassOutcome,
   summaryWriterUnavailable } from './compaction-brakes.js';  // v3.2.3 L1, re-aimed by OR-COMPACT-1
 import { condenseUntilFits, condensableSummaries, rawContextSummaryTokens, type CondensationOutcome } from './condense-until-fits.js';   // OR-COMPACT-1
-import { cachedAssembledEstimate, cachedToolPayloadTokens, toolSurfaceKey } from './assembled-estimate-cache.js';
+import { cachedAssembledEstimate } from './assembled-estimate-cache.js';
 export { forcedCompactionOptions } from './compaction-brakes.js';   // the emergency path's bounds, published where its callers already look
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
-// t100: the fresh tail's front is the compaction boundary (t94). The gate READS that decision
-// so its dry run measures the span the assembler will actually admit — see the call below.
-import { freshTailHorizon, rowsLeavingView, rowsStrandedBelowBoundary, tailTrimBlockGroups, type LeavingView } from './tail-horizon.js';
-import { estimateTokens, getFreshTailCount, contextWindowPolicy, storedRowCost, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
-import { reserveLadderFor } from './lanes.js';
-// T82a: `agent/stream-patience.ts` is a LEAF (no imports of its own — see its header), so
-// importing its arithmetic here does not create the cycle `agent/model.ts` is dynamically
-// imported below to avoid.
-import { providerAwareBudgetTokens } from '../agent/stream-patience.js';
+import { rowsLeavingView, rowsStrandedBelowBoundary, type LeavingView } from './tail-horizon.js';
+import { estimateTokens, getFreshTailCount, SystemPromptTooLargeError } from './budget.js';
+import type { PromptTurnContext } from '../prompt/assembler.js';
 import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './message-store.js';
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
-import { V2_STUB_AFTER_TURNS, capLargeToolResultStrings } from './assembler.js';
+import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
 import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
@@ -74,239 +68,70 @@ export function isNonConversationForSummary(content: string | null | undefined):
  *  summary rebuild so both paths write the identical minimal placeholder. */
 export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no user conversation in this span)';
 
-// ── Assembled-context token estimate ──
+// ── THE GAUGE: what the next model call will actually be sent ──────────────────────────────
 //
-// This is the right metric to gate compaction on: what the assembler will
-// actually load into the next model call. Pre-2026-04-30 we summed every
-// message ever written to the messages table this session, which never went
-// down after compaction (raw messages are preserved for archive/search even
-// when their content has been folded into summaries). Result: total tokens
-// climbed monotonically into millions and compaction fired every turn,
-// burning the model budget on summaries while the agent's effective context
-// stayed pinned at the fresh-tail size.
-//
-// The assembler loads:
-//   - summaries pinned to context_items (top-level DAG nodes)
-//   - the fresh tail (every row since the compaction boundary — `tail-horizon.ts`)
-//   - vault snippets and tracker tasks (variable, bounded by their own logic)
-//
-// We approximate the compressible portion: summaries + fresh tail. (t140: the continuity brief
-// that used to be the third term is deleted — see the STRIP note where its writer stood.)
-// Vault and active tasks aren't compressible by this engine, so leaving
-// them out of the gating metric is correct.
-// Per-message cap for the compaction gate. A single oversized message
-// (think: file_read of a code file, web_fetch of a long page, list_agents
-// returning tons of metadata) used to count its full token weight here,
-// so one tool-heavy turn could trigger compaction by itself even when
-// the conversation was otherwise quiet. The assembler's own
-// budgetFreshTail already trims what the model actually sees; the gate
-// just needs to know "is the fresh tail genuinely full of conversation",
-// not "did somebody dump a 30K file into a single tool result".
-// STRIP (PHASE-3 T2): `MAX_GATE_MESSAGE_TOKENS` (now `policy.gateMessageCap`) and
-// `TOOL_AND_OUTPUT_RESERVE`, which was ALSO a bare literal in `assembler.ts:670`.
-// STRIP (PHASE-3 T4): the re-export itself. The reserve is no longer a constant anybody can
-// import — it is `toolAndOutputReserve({ measured tools, model output cap })`, computed per
-// agent per call. `loop.ts` used the re-exported constant to describe the overhead the
-// assembler had just produced; it now reads the number the assembler ACTUALLY used, off the
-// dry-run below. requirement preserved: "the loop knows how much of the window the
-// assembler did not control" — owned by `estimateAssembledTokens`'s `reserveTokens`.
+// t194 (v3.4 D1, owner decision 7a, 2026-10-17): the gauge measures exactly what the agent sees.
+// STRIP: this was a private model of the assembly — summaries counted up to 70% of the room (the
+// summaries lane admits at most 6,000), the live tail priced at `min(row, 4000)` BEFORE the token trim,
+// and a 0.90/0.96/0.99 ladder over the result. On a 65K worker that number sat at 99-103% while the array
+// the model received fit, and the gate surrendered the turn. Also STRIP: `liveViewIsFull`, a third
+// model of the same fit (the condense trigger's), and the gate's per-row cap. requirement preserved:
+// "the condense trigger, the pressure pass and condense-until-fits read what the assembler admits" —
+// owned by the assembler's own dry run (`measureView`): its fit, stopped before the post-budget lanes.
 
-/** The compaction gate's view of what the assembler will produce — an ALLOCATOR DRY-RUN
- *  since PHASE-3 T2, not a second model of it. What stood here derived the assembler's
- *  ceiling from THIS module's threshold (0.96) while the assembler used 0.75.
- *
- *  ASYNC since PHASE-3 T4, and for the reason the dry-run exists: the assembler's reserve
- *  is now MEASURED from this agent's real tools payload, and a gate that modelled it with a
- *  constant while the assembler measured it would be a second model of the budget again —
- *  the exact defect T2 deleted. Measuring needs the tool hub, which is loaded dynamically
- *  to avoid a cycle, so the dry run is async. All three call sites were already inside
- *  async functions. */
+/** Where the newest group starts — what the trim keeps whatever happens (a tool result with its call). */
+function newestGroupSeq(agentId: string): number {
+  const rows = getDb().prepare('SELECT seq, role FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 2').all(agentId) as Array<{ seq: number; role: string }>;
+  return rows[0]?.role === 'tool' && rows[1] ? rows[1].seq : rows[0]?.seq ?? 0;
+}
+
+const EMPTY_VIEW: ContextView = {
+  budgetTokens: 0, tailRoomTokens: 0, reserveTokens: 0, systemTokens: 0, summaryTokens: 0, summaryRawTokens: 0, summaryCount: 0, tailTokens: 0,
+  tailKeptTokens: 0, tailKeptRows: 0, outOfViewThroughSeq: 0, leavingThroughSeq: 0, leavingRows: 0, leavingTokens: 0, protectedFromSeq: 0,
+};
+
+/** The assembler's own dry run, for `modelId` (the model whose call the measurement is for), on
+ *  `contextWindow`. `summaryTokens`/`freshTailTokens` are what the view ADMITS (the summaries sent, the
+ *  tail the trim keeps); `total` is what it WANTS to hold — the summaries the agent has plus the live
+ *  tail before the trim — so `total > view.budgetTokens` means the view is cutting something. Absent
+ *  `modelId`, the agent's configured model. */
 export async function estimateAssembledTokens(
   agentId: string,
   contextWindow: number,
-  /** The model the turn will actually call, when the caller knows it. Absent means the
-   *  output cap is unknown and the reserve uses its own floor rather than inventing one. */
   modelId?: string,
-  opts?: {
-    /**
-     * T82 FIX WAVE, Important I1 — the model whose declared box-speed decides the provider-aware
-     * CEILING, when it differs from `modelId` (which stays the output-cap source, unchanged).
-     * `runCheckAndCompact` (below) is the one caller that needs this split: it resolves
-     * `modelId` to the SUMMARY-WRITER model (`resolveSummaryWriterModel`, which may pick a
-     * cheaper/different-provider model than the one serving the turn) before calling here, but
-     * the compaction TRIGGER must key on the box actually producing the pressure — the same
-     * `turnModelId` its own external threshold already uses (see that function's own comment).
-     * Before this, an undeclared turn model paired with a declared-ceiling writer model shrank
-     * this dry run's `assemblyBudgetTokens` (and therefore `summaryTokens`/`total`) against a
-     * ceiling that has nothing to do with the model actually serving the turn, while the
-     * EXTERNAL threshold this total is compared against stayed unceilinged (turn model
-     * undeclared) — an asymmetric mismatch that made the trigger fire LATER than the R6
-     * byte-preservation control promises for a genuinely undeclared row. Absent, defaults to
-     * `modelId` — every existing caller (the two OTHER call sites in this file, and
-     * `context-gates.ts`'s pre-call gate) passes one model for both roles and is byte-identical.
-     */
-    ceilingModelId?: string;
-  },
+  opts?: { turnContext?: PromptTurnContext },
 ): Promise<{
-  total: number;
-  summaryTokens: number;
-  freshTailTokens: number;
-  /**
-   * t140 fix round 1 (C1): the live tail at the TOKEN TRIM's own per-row cost — `storedRowCost`,
-   * the function `budgetFreshTail` spends, uncapped. `freshTailTokens` above keeps the gate's
-   * 4K-per-row cap for the 96% emergency numerator, which is a different question.
-   */
-  liveTailTokens: number;
-  freshTailCount: number;
-  summaryCount: number;
-  /** What the assembler set aside for tool schemas + output on this agent, measured. */
-  reserveTokens: number;
-  /** t140: the assembler's own admission budget on this window (system prompt + messages). */
-  assemblyBudgetTokens: number;
-  /** t140: the window's row floor — the newest rows no condense may fold. */
-  policyFreshTailCount: number;
+  total: number; summaryTokens: number; freshTailTokens: number; freshTailCount: number; summaryCount: number;
+  reserveTokens: number; view: ContextView;
 }> {
-  const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
-  const { getModelOutputCap, getProviderCeilingTokens } = await import('../agent/model.js');
-  const ceilingModelId = opts?.ceilingModelId ?? modelId;
-  // T82a fix wave: thread the SAME provider-aware ceiling through this dry run's own
-  // `contextWindowPolicy` call, so `policy.assemblyBudgetTokens` — and therefore the
-  // `summaryBudget` cap below — matches what a REAL assembly of this agent, on this
-  // model, will actually admit. Before this, the dry run modelled a bigger budget than
-  // the assembler would honour, so this estimate could UNDER-report what the compaction
-  // trigger is comparing against. `modelId` absent (the caller does not yet know it, e.g.
-  // an auto-routed turn's pre-call gate reading the `'__auto__'` sentinel) resolves to
-  // `null` the same way `getModelOutputCap` already does for that case — the honest
-  // "unknown" answer, which leaves this exactly as it was (the over-trigger direction is
-  // the safe one where the real ceiling cannot yet be named, and NULL never narrows
-  // anything, only a genuine ceiling does).
-  const policy = contextWindowPolicy(contextWindow, {
-    toolPayloadTokens: await cachedToolPayloadTokens(agentId, toolSurfaceKey(agentId, modelId), () => measureAgentToolPayloadTokens(agentId)),
-    maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
-    // T82 FIX WAVE, I1: the ceiling reads off `ceilingModelId`, NOT `modelId` — see this
-    // parameter's own doc above for why the two may legitimately differ.
-    providerCeilingTokens: ceilingModelId ? getProviderCeilingTokens(ceilingModelId) : null,
+  const model = modelId ?? (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? '';
+  const { measureView } = await import('./assembler.js');
+  // A window that cannot hold the system prompt admits nothing: an empty view (the real assembly
+  // refuses that state by name and cards the owner — `window-starvation-card.ts`).
+  const view = await measureView(agentId, model, { contextWindow, turnContext: opts?.turnContext }).catch((err: unknown) => {
+    if (err instanceof SystemPromptTooLargeError) return { ...EMPTY_VIEW, summaryRawTokens: rawContextSummaryTokens(agentId), protectedFromSeq: newestGroupSeq(agentId) };
+    throw err;
   });
-  const summaries = getContextSummaries(agentId);
-  const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
-
-  // ── t100: THE GATE MEASURES THE TAIL THE ASSEMBLER ACTUALLY SENDS ──────────────────────
-  //
-  // This read was `getRecentMessages(agentId, policy.freshTailCount)` — the ROW CAP. Before
-  // t94 that was the same set the assembler admitted, so the dry run and the real assembly
-  // agreed by construction. t94 made the assembler's tail HORIZON-BOUNDED (every row since
-  // the compaction boundary — `memory/tail-horizon.ts` carries the whole derivation), which
-  // is MORE, so this estimate under-reported the assembly it is gating: measured at 68 rows
-  // admitted against 40 seen, blind to 28 of them. Both readers of this number — the token
-  // trigger in `runCheckAndCompact` below and `context-gates.ts`'s warn / compact / block
-  // rungs — therefore read LOW, and preemptive compaction fired later than the real pressure
-  // warranted. (Not a correctness hole while it stood: the assembler's own
-  // `assemblyBudgetTokens` still bounds what is SENT, and the ROW-GAP trigger below is not
-  // token-based and kept firing on schedule, which is what held the healthy path honest.)
-  //
-  // THE HORIZON IS READ HERE, NEVER RE-DERIVED. One module decides where the live
-  // conversation starts; this is a dry run of that decision, not a second model of it — the
-  // same rule that made this whole function an allocator dry run at PHASE-3 T2.
-  //
-  // AND THE ASK CARRIES NO SLACK, deliberately. The assembler pads its own ask by one row cap
-  // in the FILTERED case only, and for one reason: its read excludes the newest user rows
-  // with a `turnCutoff`, so a `LIMIT` sized to the span reaches that many rows further back
-  // and the seq filter trims them off again. This function has no `turnCutoff` and excludes
-  // nothing, so slack here would be pure over-ask — and in the FLOOR case (`keepFromSeq: 0`,
-  // nothing filtered) it would measure up to 2×cap rows the assembler will never send. That
-  // is t94 review I1's defect, removed from the assembler in its own fix round; the handed-up
-  // diff reintroduced it on this side and it is not reproduced here.
-  // `__tests__/the-tail-trims-only-at-a-boundary.test.ts` §9 holds both halves.
-  const horizon = freshTailHorizon(agentId, policy);
-  const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
-  const freshTail = horizon.keepFromSeq > 0
-    ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
-    : freshTailRows;
-  // T56 leg (a): `storedRowCost` is the assembler's own unit, now shared (it used to be
-  // re-spelled here as `?? estimateTokens(…)`, which billed a stored `token_count` of 0 as
-  // free). It includes the `reasoning_content` the replay site will actually send, so
-  // "should this agent summarise" stops being decided against a number that omitted, on the
-  // dev body, an average of 3,981 tokens per 40-row window. The per-row cap is unchanged and
-  // still applies to the whole row, exactly as it does to an oversized tool result.
-  // t158 C: priced on the rows the assembler will budget. It caps every tool result at 15K tokens
-  // (`capLargeToolResultStrings`) before `budgetFreshTail` spends; pricing the stored 61K file read
-  // called a 53K prompt on a 128K window "full" and folded 64 rows for nothing (run 6, S4).
-  const budgeted = capLargeToolResultStrings(freshTail);
-  const freshTailTokens = budgeted.reduce(
-    (sum, m) => sum + Math.min(storedRowCost(m), policy.gateMessageCap),
-    0,
-  );
-  const liveTailTokens = budgeted.reduce((sum, m) => sum + storedRowCost(m), 0);
-
-  // Cap summary tokens at the same budget the assembler applies (assembler.ts:
-  // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
-  // dropping oldest first to fit). Without this cap, a long-lived agent, or
-  // anyone upgrading from v1 with a deep summary DAG, sees the gate trip at
-  // >100% on its first turn, force-compaction can't reduce already-condensed
-  // depth-N summaries any further, and the loop wedges firing the same
-  // "memory is too full" message forever. The assembler will trim summaries
-  // to fit; the gate must reflect that, not the unbounded raw total.
-  const maxAssemblerTokens = policy.assemblyBudgetTokens;
-  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - freshTailTokens) * policy.summaryShare));
-  const summaryTokens = Math.min(rawSummaryTokens, summaryBudget);
-
   return {
-    total: summaryTokens + freshTailTokens,
-    summaryTokens,
-    freshTailTokens,
-    liveTailTokens,
-    freshTailCount: freshTail.length,
-    summaryCount: summaries.length,
-    reserveTokens: policy.toolAndOutputReserve,
-    assemblyBudgetTokens: policy.assemblyBudgetTokens,
-    policyFreshTailCount: policy.freshTailCount,
+    total: view.summaryRawTokens + view.tailTokens, summaryTokens: view.summaryTokens, freshTailTokens: view.tailKeptTokens,
+    freshTailCount: view.tailKeptRows, summaryCount: view.summaryCount, reserveTokens: view.reserveTokens, view,
   };
 }
 
-/**
- * t140 — IS THE LIVE VIEW FULL FOR THIS WINDOW? The "getting full for the model actually used"
- * half of the condense trigger (OR-V333-SET (1)); `memory/tail-horizon.ts`'s `rowsLeavingView`
- * owns the other half and decides WHICH rows leave.
- *
- * Read off the same dry run the pre-call gate reads, against the ADMISSION budget the assembler
- * will actually spend — not the gate's 96%-of-window emergency line, which only fires after the
- * assembler has already been trimming the live conversation for a while. The content the
- * assembler can hold is its budget, minus the system prompt, minus the post-budget reserve
- * ladder it takes off the top (`lanes.ts`'s `reserveLadderFor`, the same function). Full means
- * the summaries plus the live tail no longer fit in that.
- *
- * THE TAIL IS PRICED BY THE TRIM'S OWN FUNCTION (fix round 1, review C1): `liveTailTokens`, each
- * row at `storedRowCost` — what `budgetFreshTail` spends before it takes rows off the front.
- * The first cut used the gate's 4K-per-row cap here, on the theory that one large row is "the
- * trim's to handle"; the trim handles it by setting the OLDEST rows aside unsummarised, so a
- * file-reading agent on a 128K window lost rows for 131 turns with no fold (measured). The rows
- * are the ones the assembler budgets — the tool results already cut to its 15K cap, by the same
- * function (t158 C) — so a big file read is priced at what the trim will spend, no higher.
- * `systemPromptTokens` is the caller's measurement of the system prompt last assembled
- * for this agent; 0 makes the check more lenient, never stricter.
- *
- * AND IT LEADS BY ONE TRIM BLOCK. The token trim moves the view's front in whole blocks
- * (`tail-horizon.ts`'s `tailTrimBlockGroups`), so "about to leave" is "one more block of growth
- * and the trim cuts". The lead is that block priced at this tail's own average row: the condense
- * runs in the background and needs room to finish before the cut, the same reason the ceiling
- * trigger leads by a block of rows. It also absorbs what the dry run cannot see exactly — a
- * summary's rendered header, the scaffolding ack — which MEASURED (t140 probe, 32K window)
- * put the trim three turns ahead of an unled check: 11,740 rendered against 11,496 estimated.
- */
-export function liveViewIsFull(
-  est: {
-    summaryTokens: number; freshTailTokens: number; liveTailTokens?: number; freshTailCount?: number;
-    assemblyBudgetTokens?: number; policyFreshTailCount?: number;
-  },
-  systemPromptTokens: number,
-): boolean {
-  if (typeof est.assemblyBudgetTokens !== 'number') return false;
-  const available = Math.max(0, est.assemblyBudgetTokens - Math.max(0, systemPromptTokens));
-  const content = Math.max(0, available - reserveLadderFor(available).offTheTop);
-  const rows = Math.max(1, est.freshTailCount ?? 1);
-  const tail = est.liveTailTokens ?? est.freshTailTokens;
-  const lead = tailTrimBlockGroups(est.policyFreshTailCount ?? 0) * (tail / rows);
-  return est.summaryTokens + tail + lead > content;
+/** The rows leaving the view, off the gauge: the row ceiling's next cut, or what one more trim block of
+ *  growth would cut. Exactly the trim's own cut (whole half-tail blocks), so never "a few rows every
+ *  turn" (fix round 1, I4): those rows leave whatever happens, and folding them first is owed. */
+export function leavingFromView(agentId: string, contextWindow: number, view: ContextView): LeavingView | null {
+  const full = view.leavingThroughSeq > 0 ? { throughSeq: view.leavingThroughSeq, rows: view.leavingRows } : null;
+  return rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { full });
+}
+
+/** t194 (D4, owner decision 12): when each agent last needed a FORCED pass. Every context-overflow door
+ *  forces one (the provider's "too long" recovery, the doomed-request retry, the live-conversation
+ *  refusal), so a run that saw one failed on its window, not on the message it served (`runtime.ts`). */
+const forcedPassAt = new Map<string, number>();
+export function contextOverflowSince(agentId: string, sinceMs: number): boolean {
+  return (forcedPassAt.get(agentId) ?? Number.NEGATIVE_INFINITY) >= sinceMs;
 }
 
 const logger = createLogger('memory-compaction');
@@ -368,18 +193,10 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
   }
 }
 
-// ── Defaults ──
-//
-// v1: contextThreshold 0.75, fires at 75% utilization (the "compaction is
-// load-bearing" architecture). v2 raises this to 0.96 emergency-only with
-// a 0.90 WARN line per Part V, compaction becomes a debug signal, not a
-// routine event. Threshold lookup is runtime-version-aware so v1 agents
-// keep their original behavior while v2 agents see the new architecture.
+// ── Defaults ── summary SHAPES, not budget. (t194: the threshold ladder that stood beside them is
+// gone; the view's own fit is the only measure — see the gauge above.)
 
 const DEFAULTS = {
-  // PHASE-3 T2: `contextThreshold` moved to `memory/budget.ts` as CONTEXT_THRESHOLD.
-  // It was one of five declarations of the same number and the assembler's copy said 0.75
-  // (§T0-C). The remaining entries here are summary SHAPES, not budget, and stay.
   leafChunkTokens: 30000,
   leafTargetTokens: 5000,
   condensedTargetTokens: 6000,
@@ -399,10 +216,6 @@ export const SUMMARY_TARGET_TOKENS = {
   condensed: DEFAULTS.condensedTargetTokens,
 } as const;
 
-function getContextThreshold(): number {
-  return CONTEXT_THRESHOLD;
-}
-
 export function getLeafChunkTokens(): number {
   return DEFAULTS.leafChunkTokens;
 }
@@ -412,8 +225,8 @@ export function getLeafTargetTokens(): number {
   return DEFAULTS.leafTargetTokens;
 }
 
-// Model-aware row floor for compaction: getFreshTailCount (memory/budget.ts). No compaction
-// folds the newest floor rows; the live view above the floor is `memory/tail-horizon.ts`'s.
+// t194 (owner decision 7b): the protected recent part is TOKENS — the view's `protectedFromSeq`
+// (`assembler.ts`'s `ContextView`). STRIP: the 24/40/64/80 row floor as what compaction may not fold.
 
 // ── STRIP (t140): THE ROW-GAP TRIGGER IS GONE ──────────────────────────────────────────────
 // `UNCOMPACTED_GAP_THRESHOLD` (30) and `getUncompactedGapCount` lived here and drove the pre-call
@@ -613,6 +426,7 @@ export async function checkAndCompact(
   contextWindow: number,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
+  if (options?.force) forcedPassAt.set(agentId, Date.now());
   const result = await withLock(
     `compact:${agentId}`,
     () => runCheckAndCompact(agentId, modelId, contextWindow, options),
@@ -646,7 +460,7 @@ async function runCheckAndCompact(
     }
     if (!resolved) {
       // OR-COMPACT-1 part 3 (review I3): under pressure this is a repairable reason, not a shrug.
-      // `force` IS the pressure signal — the gate only forces at ≥96% — so no reorder is needed.
+      // `force` IS the pressure signal — the overflow doors and compact-now force — so no reorder is needed.
       // ⚠ NOT the brake (t91 M-b): it returns before `compactionIsBraked`; see compaction-defect.
       if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unresolvable', modelId: turnModelId });
       logger.warn('No text-capable model available for compaction, skipping', {}, agentId);
@@ -655,129 +469,68 @@ async function runCheckAndCompact(
     modelId = resolved;
   }
 
-  // T82 FIX WAVE, I1: `modelId` here is the (possibly reassigned) summary-WRITER model — the
-  // output-cap side of the dry run correctly still reads it, unchanged. The CEILING side must
-  // read `turnModelId` (the box actually serving this agent's turns, captured above before the
-  // reassignment), the SAME model the external `threshold` below keys on — otherwise the two
-  // halves of one comparison silently disagree about whose declared speed they are honouring.
-  // See `estimateAssembledTokens`'s own `ceilingModelId` doc for the full incident this closes.
-  const assembled = await cachedAssembledEstimate(agentId, contextWindow, modelId, () => estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId }));
+  // t194 (D1): measured for the box serving the turn — the view its next call will be sent. The
+  // writer resolved above never enters it: the view is the dialed model's, output cap and ceiling
+  // both (STRIP: T82's `ceilingModelId` split, which existed only because the writer's id leaked in).
+  const assembled = await measured(agentId, contextWindow, turnModelId);
+  const { view } = assembled;
   const totalTokens = assembled.total;
-  const activeThreshold = getContextThreshold();
-  const rawThreshold = activeThreshold * contextWindow;
-  // T82a: the SAME provider-aware ceiling `memory/budget.ts`'s admission budget keys on
-  // (`agent/model.ts`'s `getProviderCeilingTokens`, off the same `getModelInfo` join
-  // `refuseIfDoomed` already trusts), applied to the compaction trigger's own threshold so a
-  // slow box compacts early and continuously instead of waiting on a percentage of a window it
-  // cannot serve at speed. `null` (either half of the provider's declaration is missing —
-  // every provider configured before this task) leaves `threshold` exactly
-  // `activeThreshold * contextWindow`, byte-identical to today (R6).
-  const { getProviderCeilingTokens } = await import('../agent/model.js');
-  const providerCeilingTokens = getProviderCeilingTokens(turnModelId);
-  const threshold = providerCeilingTokens != null
-    ? providerAwareBudgetTokens(rawThreshold, providerCeilingTokens)
-    : rawThreshold;
-
+  const budget = view.budgetTokens;
   const force = options?.force ?? false;
+  // THE TRIGGERS. Forced: an overflow door or the owner's compact-now. Rows leaving the view
+  // (`rowsLeavingView`, off the same measurement). And the view dropping summaries the agent holds,
+  // which is condensation's own case (OR-COMPACT-1). STRIP (t194): the 0.96 x window token trigger,
+  // which the compressible total could never cross, and the 90% "should not happen" warn and its toast.
+  // A STARVED window (it cannot hold the system prompt; the owner is carded by the assembler) admits no
+  // summary whatever condensation does, so it is never condensation's case.
+  const starved = view.budgetTokens === 0;
+  const summariesDropped = !starved && view.summaryRawTokens > view.summaryTokens;
+  const leaving = force ? null : options?.leaving !== undefined ? options.leaving : leavingFromView(agentId, contextWindow, view);
+  // The pressure pass folds only BEFORE the protected recent part, sized in tokens (owner decision 7b).
+  const outsideProtected = (): Message[] => {
+    const compacted = getCompactedMessageIds(agentId);
+    return getMessagesOutsideFreshTail(agentId, 1).filter(m => !compacted.has(m.id) && (m.rowid ?? Infinity) < view.protectedFromSeq);
+  };
+  const uncompactedOutsideFloor = force ? outsideProtected().length : 0;
 
-  // t140: the row-gap trigger that stood here is deleted (see the STRIP note above
-  // `checkAndCompact`'s options). Two triggers remain, and they are the ruling's two: PRESSURE
-  // (forced by the gate, or the assembled total over this window's threshold) and ROWS LEAVING
-  // THE VIEW (`rowsLeavingView`). The count below is no longer a trigger: it is the size of the
-  // pressure path's leaf input (rows outside the floor), which its yield guards read.
-  const needsCompactionByTokens = totalTokens > threshold;
-  const pressure = force || needsCompactionByTokens;
-  const uncompactedOutsideFloor = pressure
-    ? (() => {
-      const outside = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
-      const compacted = getCompactedMessageIds(agentId);
-      return outside.filter(m => !compacted.has(m.id)).length;
-    })()
-    : 0;
-  const leaving = pressure ? null
-    : options?.leaving !== undefined
-      ? options.leaving
-      : rowsLeavingView(agentId, { freshTailCount: getFreshTailCount(contextWindow) }, { viewFull: false });
-
-  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow})${leaving ? `, leaving=${leaving.rowsLeaving} rows (${leaving.cause}) through seq ${leaving.throughSeq}` : ''}${force ? ' [FORCED]' : ''}`, {
-    assembledTokens: totalTokens,
-    summaryTokens: assembled.summaryTokens,
-    freshTailTokens: assembled.freshTailTokens,
-    freshTailCount: assembled.freshTailCount,
-    summaryCount: assembled.summaryCount,
-    threshold: Math.round(threshold),
-    contextWindow,
-    uncompactedOutsideFloor,
-    needsCompactionByTokens,
-    leavingCause: leaving?.cause ?? null,
-    leavingRows: leaving?.rowsLeaving ?? 0,
-    leavingThroughSeq: leaving?.throughSeq ?? null,
-    force,
+  logger.info(`Compaction check: view=${totalTokens} (summaries=${view.summaryTokens} of ${view.summaryRawTokens}, tail=${view.tailKeptTokens} of ${view.tailTokens}), budget=${budget}${leaving ? `, leaving=${leaving.rowsLeaving} rows (${leaving.cause}) through seq ${leaving.throughSeq}` : ''}${force ? ' [FORCED]' : ''}`, {
+    assembledTokens: totalTokens, summaryTokens: view.summaryTokens, summaryRawTokens: view.summaryRawTokens,
+    freshTailTokens: view.tailKeptTokens, liveTailTokens: view.tailTokens, freshTailCount: view.tailKeptRows,
+    summaryCount: view.summaryCount, budgetTokens: budget, contextWindow, uncompactedOutsideFloor,
+    protectedFromSeq: view.protectedFromSeq, leavingCause: leaving?.cause ?? null, leavingRows: leaving?.rowsLeaving ?? 0,
+    leavingThroughSeq: leaving?.throughSeq ?? null, force,
   }, agentId);
 
-  // 90% WARN line (Part V), if under threshold but past 90%, log loudly +
-  // broadcast a chat:error severity=warning. Each WARN is an architecture
-  // bug to fix in tools/scaffolding/prompts. Fires once per checkAndCompact
-  // invocation, not per loop iteration.
-  if (!force) {
-    const warnRatio = totalTokens / contextWindow;
-    if (warnRatio >= CONTEXT_WARN_THRESHOLD && warnRatio < CONTEXT_THRESHOLD) {
-      const reason = `Context utilization at ${(warnRatio * 100).toFixed(1)}% (${totalTokens}/${contextWindow}). This should not happen in normal v2 operation, investigate tool result sizes, scaffolding injection, system prompt cost.`;
-      logger.warn(reason, { agentId, ratio: warnRatio }, agentId);
-      // User-facing toast: plain language, no internal jargon. The technical
-      // detail goes to the log where developers can see it.
-      const userMsg = `Agent's memory is getting full (${(warnRatio * 100).toFixed(0)}%). Working normally for now.`;
-      try {
-        broadcast({
-          type: 'chat:error',
-          agentId,
-          error: userMsg,
-          code: 'CONTEXT_HIGH',
-          severity: 'warning',
-          retryable: false,
-        });
-      } catch { /* best effort */ }
-    }
+  if (!force && leaving) {
+    const folded = await leavingViewPass(agentId, modelId, contextWindow, leaving, options);
+    if (leaving.cause === 'out-of-view' || compactionIsBraked(agentId, false)) return folded;
+    const condensed = await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, false, 0, options);
+    return { ...folded, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
+  }
+  if (!force && summariesDropped) {
+    if (compactionIsBraked(agentId, false)) return NO_COMPACTION;
+    return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, false, 0, options);
   }
 
-  if (pressure) {
-    // No-op guard: if the gate metric is over threshold but there's
-    // nothing outside the fresh tail to compact, the bloat IS the fresh
-    // tail and compaction can't help. Pre-2026-05-01 we still ran the
-    // whole reactive path (continuity brief LLM call, condensation,
-    // rebuild, divider broadcast) even when leafCreated would be 0, 
-    // and the next turn's gate check tripped again, looping. Now we
-    // detect the no-op case and log out cleanly.
-    // t140: the pressure path's own leaf-input count (computed above only when pressured).
+  if (force) {
     const guardUncompactedCount = uncompactedOutsideFloor;
-    // Minimum-yield floor (owner report 2026-07-23: "compaction SO much,
-    // saving like 16 tokens"). A handful of rows outside the tail passes the
-    // zero-guard below, runs the FULL reactive cycle (continuity-brief LLM
-    // call, condensation, rebuild, divider), reclaims peanuts, and the
-    // still-crossed threshold refires next turn: a compaction treadmill. A
-    // tiny outside-tail region cannot reclaim meaningfully; skip it, and
-    // after any low-yield run back off for a while. Emergency (force) always
-    // bypasses, pressure at 96%+ must act regardless of yield.
+    // Minimum-yield floor (owner report 2026-07-23: "compaction SO much, saving like 16 tokens"):
+    // after a low-yield run, back off for a while (`compaction-brakes.ts`).
     if (compactionIsBraked(agentId, force)) return NO_COMPACTION;
     // ── OR-COMPACT-1: NOTHING LEFT AT THE LEAF IS THE CASE FOR CONDENSATION ──
-    // Three things stood here and all three said "no pass can help": t87's pre-work latch
-    // `latchIfSummariesExceedBudget` (premise: summaries already over budget ⇒ terminal) and
-    // the two `!force` no-op guards that returned zero while the assembly was over budget.
-    // That trio IS the incident's state — ~86K of summaries with nothing raw left to fold —
-    // and the owner ruled that state is more condensation, not a dead end.
-    // ⚠ THE ANTI-THRASH PROPERTY IS NOT LOST, which is what those guards were really for: the
-    // pass below runs NO continuity brief, NO archive and NO leaf chunking (so the treadmill
-    // of re-summarising a handful of rows cannot happen), it returns early when the assembly
-    // is in fact within budget, and a pass that reclaims nothing arms the same 15-minute
-    // backoff through `notePassOutcome`.
+    // Three things stood here and all three said "no pass can help" (t87's latch and two no-op
+    // guards). That state — ~86K of summaries with nothing raw left to fold — is more condensation,
+    // not a dead end. The anti-thrash property is kept: the pass below runs no archive and no leaf
+    // chunking, returns early when every summary fits, and a pass that reclaims nothing arms the
+    // 15-minute backoff through `notePassOutcome`.
     if (guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
-      return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, threshold, force, guardUncompactedCount, options);
+      return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options);
     }
 
     // Full reactive compaction
     logger.info('Running full reactive compaction', {
       assembledTokens: totalTokens,
-      threshold,
+      budgetTokens: budget,
       uncompactedOutsideTail: guardUncompactedCount,
     }, agentId);
 
@@ -800,7 +553,7 @@ async function runCheckAndCompact(
     // If archival fails, ABORT compaction, better to have a bloated context than lost data.
     // Exception: if the agent is on the Dreamer ignore list, the archive is
     // intentionally skipped (returns null). Don't abort compaction in that case.
-    const messagesForArchive = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
+    const messagesForArchive = outsideProtected();
     const archiveCompactedIds = getCompactedMessageIds(agentId);
     // D1: never re-archive messages already copied to the vault. A reset archives
     // messages without marking them compacted, so without the high-water bound a
@@ -828,15 +581,19 @@ async function runCheckAndCompact(
       }
     }
 
-    const tokensBefore = totalTokens;
+    // Reclaimed is measured on what the view WANTS to show (admitted summaries + the live tail before
+    // the trim): the trim already caps what it is sent, so a fold's yield is the demand it removes.
+    const demand = (v: ContextView): number => v.summaryRawTokens + v.tailTokens;
+    const tokensBefore = demand(view);
     const leaf = await withCompactionActivity(agentId, () => leafWithWriterFallback(agentId, modelId,
-      (writer, left) => runLeafCompaction(agentId, writer, contextWindow, { abortSignal: options?.abortSignal, left }), options?.abortSignal,
+      (writer, left) => runLeafCompaction(agentId, writer, contextWindow,
+        { abortSignal: options?.abortSignal, left, throughSeq: view.protectedFromSeq - 1, floorRows: 1 }), options?.abortSignal,
       (left) => coverRowsStrandedBelowBoundary(agentId, left.fromSeq ?? 0)));
     const leafCreated = leaf.leafCreated;
     modelId = leaf.writer;   // the writer that wrote (or the last one tried) writes the condensation too
     // The pressure path condenses until the assembly fits (OR-COMPACT-1). The routine fold of
     // rows leaving the view never reaches here (`leavingViewPass`), so nothing needs skipping.
-    const condensation = await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
+    const condensation = starved ? null : await condenseUntilFits(condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal));
     const condensedCreated = condensation?.condensedCreated ?? 0;
     rebuildContextItems(agentId);
     // T56 leg (b): the prefix has just been rewritten, so this is the one instant at which
@@ -844,10 +601,7 @@ async function runCheckAndCompact(
     // created — see the header above `ageOutReplayedReasoning`.
     if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
-    // T82 FIX WAVE, I1: same `ceilingModelId` threading as the dry run above — `tokensBefore`
-    // (captured from that dry run) and `tokensAfter` must be measured on the SAME ceiling basis
-    // or the subtraction below compares two different budgets, not the same budget before/after.
-    const tokensAfter = (await cachedAssembledEstimate(agentId, contextWindow, modelId, () => estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId }))).total;
+    const tokensAfter = demand((await measured(agentId, contextWindow, turnModelId)).view);
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
@@ -855,7 +609,7 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, threshold, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore }, options?.abortSignal);
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore }, options?.abortSignal);
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -885,8 +639,7 @@ async function runCheckAndCompact(
     }
 
     if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId) && !options?.abortSignal?.aborted) {   // t168: a cancelled pass bought nothing because it was cut
-      // The run happened and bought almost nothing; the threshold will still
-      // be crossed next turn. Back off instead of treadmilling.
+      // The run happened and bought almost nothing. Back off instead of treadmilling.
       noteLowYield(agentId);
     }
     logger.info('Compaction complete', result, agentId);
@@ -894,13 +647,11 @@ async function runCheckAndCompact(
   }
 
   // ── STRIP (t140): THE "PROACTIVE LEAF COMPACTION" ARM IS GONE ──────────────────────────
-  // It folded every unsummarised row outside the newest row cap once they held 30,000 tokens,
-  // with no pressure at all — a second non-pressure trigger, and after t94 those rows were IN
-  // the live view. requirement preserved: "rows do not accumulate unsummarised past the view"
-  // — owned by `rowsLeavingView` (ceiling cause) and `leavingViewPass` below.
-  if (leaving) return leavingViewPass(agentId, modelId, contextWindow, leaving, options);
-  logger.info('Compaction skipped: no pressure on this window and nothing is leaving the live view', {
-    assembledTokens: totalTokens, threshold: Math.round(threshold),
+  // It folded every unsummarised row outside the newest row cap once they held 30,000 tokens, with
+  // no pressure at all. requirement preserved: "rows do not accumulate unsummarised past the view"
+  // — owned by `rowsLeavingView` and `leavingViewPass` (the first arm above).
+  logger.info('Compaction skipped: the view holds every summary and nothing is leaving it', {
+    assembledTokens: totalTokens, budgetTokens: budget,
   }, agentId);
   return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 }
@@ -912,6 +663,12 @@ async function runCheckAndCompact(
 // because the SINGLE assembled estimate and `rebuildContextItems` are this module's, and the
 // condenser takes both as arguments precisely so there is never a second estimator.
 
+/** THE single estimate, memoised on the facts that move it (`assembled-estimate-cache.ts`). */
+async function measured(agentId: string, contextWindow: number, turnModelId: string): Promise<Awaited<ReturnType<typeof estimateAssembledTokens>>> {
+  return await cachedAssembledEstimate(agentId, contextWindow, turnModelId,
+    () => estimateAssembledTokens(agentId, contextWindow, turnModelId)) as Awaited<ReturnType<typeof estimateAssembledTokens>>;
+}
+
 /** The condenser's arguments, with THE single estimate wired in as its `measure`. */
 function condenseArgs(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
@@ -922,8 +679,7 @@ function condenseArgs(
     minFanout: DEFAULTS.condensedMinFanout,
     targetTokens: DEFAULTS.condensedTargetTokens,
     abortSignal,
-    measure: () => cachedAssembledEstimate(agentId, contextWindow, modelId, () =>
-      estimateAssembledTokens(agentId, contextWindow, modelId, { ceilingModelId: turnModelId })),
+    measure: () => measured(agentId, contextWindow, turnModelId),
     rebuild: () => rebuildContextItems(agentId),
   };
 }
@@ -947,20 +703,20 @@ function passFacts(
  *
  * It runs condensation and nothing else: no archive (there
  * is nothing to archive), no leaf chunking (the handful of rows outside the tail is below the
- * floor that makes folding them worth a model call). An assembly that is in fact within this
- * module's own threshold returns before spending anything at all.
+ * floor that makes folding them worth a model call). A view that already holds every summary
+ * returns before spending anything at all.
  */
 async function condenseOnlyPass(
   agentId: string, modelId: string, turnModelId: string, contextWindow: number,
-  threshold: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
+  budget: number, force: boolean, compactableRows: number, options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
   const args = condenseArgs(agentId, modelId, turnModelId, contextWindow, options?.abortSignal);
   // Asked BEFORE the activity broadcast, so a tail-bloated agent does not flicker
   // "Compacting memory" on the dashboard every turn for work nobody is going to do.
-  const est = await args.measure();
-  if (rawContextSummaryTokens(agentId) <= est.summaryTokens && est.total <= threshold) {
-    logger.info('Compaction skipped: nothing outside the fresh tail, and every summary already fits', {
-      assembledTokens: est.total, threshold, uncompactedOutsideTail: compactableRows,
+  const est = await args.measure() as Awaited<ReturnType<typeof estimateAssembledTokens>>;
+  if (rawContextSummaryTokens(agentId) <= est.summaryTokens || est.view.budgetTokens === 0) {
+    logger.info('Compaction skipped: nothing outside the protected recent part, and every summary already fits', {
+      assembledTokens: est.total, budgetTokens: budget, uncompactedOutsideTail: compactableRows,
     }, agentId);
     return NO_COMPACTION;
   }
@@ -972,13 +728,13 @@ async function condenseOnlyPass(
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
     tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
   };
-  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, threshold, compactableRows, agentId, modelId), options?.abortSignal);
+  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, budget, compactableRows, agentId, modelId), options?.abortSignal);
   broadcast({ type: 'memory:compaction', agentId, ...result });
   logger.info('Condensation-only compaction complete', {
     ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
     deepestDepth: condensation.deepestDepth, fits: condensation.fits,
     summaryTokens: condensation.summaryTokensAfter, admittedSummaryTokens: condensation.admittedSummaryTokens,
-    assembledTokens: condensation.assembledTotalAfter, threshold,
+    assembledTokens: condensation.assembledTotalAfter, budgetTokens: budget,
   }, agentId);
   return result;
 }
@@ -1003,9 +759,10 @@ export function archiveBeforeCovering(agentId: string, rows: readonly Message[])
  *
  * The leaf machinery is the pressure path's own (archive first, abort if the archive fails,
  * chunk, summarise, rebuild, age out at the boundary), pointed at one bounded span: every
- * unsummarised row of this session with `seq <= leaving.throughSeq`. No condensation of older
- * summaries here: that is pressure's job (OR-COMPACT-1's recursion, on the forced path), and a
- * fold of leaving rows is not pressure. No backoff is ARMED by a small yield either — the span
+ * unsummarised row of this session with `seq <= leaving.throughSeq`. The span is the bound: the
+ * trim and the row ceiling never name the newest group (t194: no row floor besides). Condensing
+ * older summaries is the caller's (`runCheckAndCompact`, in the same background pass, so the
+ * prefix moves once). No backoff is ARMED by a small yield either — the span
  * is leaving the view whatever it reclaims — but an existing brake is honoured, so a summary
  * writer that keeps failing is not dialed again every turn.
  *
@@ -1024,7 +781,7 @@ export async function leavingViewPass(
   }, agentId);
 
   const compactedIds = getCompactedMessageIds(agentId);
-  const floorRows = outOfView ? 1 : getFreshTailCount(contextWindow);
+  const floorRows = 1;
   const span = getMessagesOutsideFreshTail(agentId, floorRows)
     .filter(m => !compactedIds.has(m.id) && (m.rowid ?? Number.POSITIVE_INFINITY) <= leaving.throughSeq);
   if (!archiveBeforeCovering(agentId, span)) return NO_COMPACTION;

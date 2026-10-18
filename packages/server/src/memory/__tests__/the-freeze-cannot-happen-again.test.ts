@@ -498,10 +498,12 @@ describe('§2 the forced path has a brake and NO terminal state', () => {
       .not.toMatch(/latchIfSummariesExceedBudget|latchIncompressible|isIncompressible/);
     // AND THE REPLACEMENT, asserted as a call SHAPE with its application (G4): the leaf-less
     // branch must RETURN the condensation pass, or it is prose above a dead end.
-    const call = code.match(/^\s*return condenseOnlyPass\(.*$/m)?.[0];
+    // t194: the forced pass's route (the routine "summaries dropped" route sits beside it), and the
+    // budget is the view's own (`budget`) — the 0.96 threshold it was named for is deleted.
+    const call = code.match(/^\s*return condenseOnlyPass\(.*guardUncompactedCount.*$/m)?.[0];
     expect(call, '`compaction.ts` must route the leaf-less over-budget state to the condenser').toBeTruthy();
     expect(call, 'with the summary-writer model it must dial').toContain('modelId');
-    expect(call, 'with the budget it is trying to get under').toContain('threshold');
+    expect(call, 'with the budget it is trying to get under').toContain('budget');
     expect(call, 'and the compactable-row count the branch was chosen on').toContain('guardUncompactedCount');
     const guard = code.match(/^\s*if \(guardUncompactedCount < MIN_COMPACTABLE_ROWS\) \{$/m);
     expect(guard, 'the branch must be chosen by the row floor, not by force').toBeTruthy();
@@ -674,9 +676,10 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
   it('the entry point keys the tool payload on that surface, not on the model id', () => {
     // The review's finding was a CALL SITE passing the wrong ingredients, so the call site is what
     // this pins — the same reason the M3 wiring clause reads source.
+    // t194: the measurement is the assembler's own dry run now, so the call site moved with it.
     const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '..', 'compaction.ts'), 'utf8');
-    const call = src.match(/^\s*toolPayloadTokens: .*$/m)?.[0];
+    const src = readFileSync(join(here, '..', 'assembler.ts'), 'utf8');
+    const call = src.match(/^\s*toolPayloadTokens: dryRun .*$/m)?.[0];
     expect(call, 'the tool payload must be keyed by `toolSurfaceKey`').toContain('toolSurfaceKey(agentId, modelId)');
     expect(call, 'and never again by an invented agent:model string').not.toMatch(/\$\{agentId\}:\$\{modelId/);
   });
@@ -731,18 +734,10 @@ describe('§3 the CPU: three estimates become one, and the loop stays responsive
 // ── §4 — the two control arms ────────────────────────────────────────────────────────────
 
 describe('§4 the controls: the same body that freezes on 64K is quiet on 131K', () => {
-  it('the 131K window arm never reaches the emergency gate at all', async () => {
-    // compactionGate's own arithmetic: 114K assembled against each window's compressible budget.
-    const { compactionGate } = await import('../../agent/v2/classifiers/compaction.js');
-    const overhead = 12_000;
-    const cloud = compactionGate(114_000, 65_536, overhead);
-    const local = compactionGate(114_000, 131_072, overhead);
-    expect(cloud.decision, 'the reported cloud row is over the block line — forced compaction every prompt').toBe('block');
-    expect(local.decision, 'the same history on a 131K window is not an emergency').not.toBe('block');
-    expect(local.decision).not.toBe('compact');
-    // Which is the whole cloud/local asymmetry the report describes, in one assertion.
-    expect(cloud.ratio).toBeGreaterThan(local.ratio);
-  });
+  // t194: "the 131K window arm never reaches the emergency gate" stood here, on `compactionGate`'s
+  // arithmetic. The gate's emergency and block arms are DELETED on every window (owner decision 7):
+  // a full view is condensed, never surrendered — `t194-context-gauge-a-small-window-condenses-and-
+  // proceeds.test.ts` drives the 64K body that used to be blocked, and its census pins the deletion.
 
   it('a provider that answers properly is never broken, and compaction proceeds', () => {
     noteProviderFailure(LIVE_PROVIDER, 'API error 503: overloaded', AGENT);

@@ -44,8 +44,6 @@ import {
   assertSystemPromptFits,
   SystemPromptTooLargeError,
   CONTEXT_THRESHOLD,
-  CONTEXT_WARN_THRESHOLD,
-  CONTEXT_BLOCK_THRESHOLD,
   OUTPUT_RESERVE_TOKENS,
   toolAndOutputReserve,
 } from '../budget.js';
@@ -80,15 +78,11 @@ describe('the ONE estimator', () => {
 });
 
 describe('the ONE threshold (owner ruling, PHASE-3 T0b, 2026-07-26)', () => {
-  it('is 0.96 with the 0.90 warn line and the 0.99 block line', () => {
+  it('is 0.96 — the admission fill. (t194, owner decision 7: the 0.90 warn and 0.99 block lines are deleted)', async () => {
     expect(CONTEXT_THRESHOLD).toBe(0.96);
-    expect(CONTEXT_WARN_THRESHOLD).toBe(0.90);
-    expect(CONTEXT_BLOCK_THRESHOLD).toBe(0.99);
-  });
-
-  it('orders warn < compact < block, so no window can skip a rung', () => {
-    expect(CONTEXT_WARN_THRESHOLD).toBeLessThan(CONTEXT_THRESHOLD);
-    expect(CONTEXT_THRESHOLD).toBeLessThan(CONTEXT_BLOCK_THRESHOLD);
+    const budget = await import('../budget.js') as Record<string, unknown>;
+    expect(budget.CONTEXT_WARN_THRESHOLD).toBeUndefined();
+    expect(budget.CONTEXT_BLOCK_THRESHOLD).toBeUndefined();
   });
 });
 
@@ -150,8 +144,8 @@ describe('ContextWindowPolicy — the numbers, in one place, clamped', () => {
     expect(p.toolAndOutputReserve).toBe(RESERVE_PRIMARY);
     expect(p.assemblyBudgetTokens).toBe(Math.floor(0.96 * 200_000) - RESERVE_PRIMARY);
     expect(p.freshTailCount).toBe(getFreshTailCount(200_000));
-    expect(p.gateMessageCap).toBe(4000);
-    expect(p.summaryShare).toBe(0.7);
+    // t194: the gate's per-row cap and its private summary share left the policy with the gate's model.
+    expect((p as unknown as Record<string, unknown>).gateMessageCap).toBeUndefined();
   });
 
   it('CLAMPS every number at zero — the cw<=20K negative-budget class becomes representable', () => {

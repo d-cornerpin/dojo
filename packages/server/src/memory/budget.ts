@@ -21,8 +21,9 @@
 //
 // ── THE THRESHOLD IS DECIDED, NOT DERIVED ───────────────────────────────────────────────
 // PHASE-3 T0b, owner, 2026-07-26, asked with the current value in hand: **0.96 — keep
-// current behaviour.** Fuller context, dearer turns, rarer compaction, with the existing
-// 0.90 WARN line. It is THE constant here and no task re-asks it.
+// current behaviour.** Fuller context, dearer turns, rarer compaction. It is THE constant here
+// and no task re-asks it. (t194: it is the ADMISSION fill. The 0.90 warn and 0.99 block lines
+// that stood beside it measured a private model of the view and are gone — owner decision 7.)
 //
 // A real product change, stated out loud: the assembler used to stop filling at 0.75 while
 // compaction only fired at 0.96, so it dropped history 21 points of window before anything
@@ -453,12 +454,6 @@ export function imagePixelDimensions(bytes: Buffer): { width: number; height: nu
  */
 export const CONTEXT_THRESHOLD = 0.96;
 
-/** The WARN line that has always sat below it (Part V). Every WARN is an architecture bug. */
-export const CONTEXT_WARN_THRESHOLD = 0.90;
-
-/** Above this the turn is surrendered rather than sent (v2 Part V's `block` rung). */
-export const CONTEXT_BLOCK_THRESHOLD = 0.99;
-
 /**
  * THE OUTPUT HALF OF THE RESERVE. **DERIVED, and here is the derivation** (PHASE-3 T4).
  *
@@ -537,18 +532,9 @@ export function toolAndOutputReserve(measured: {
 }
 
 /**
- * Per-message cap the compaction GATE applies before summing the fresh tail, so one
- * 30K-token file_read cannot trigger compaction by itself while the assembler's own
- * `budgetFreshTail` would have trimmed it anyway. (Was `MAX_GATE_MESSAGE_TOKENS`,
- * `memory/compaction.ts:76`.)
- */
-export const GATE_MESSAGE_CAP_TOKENS = 4000;
-
-/**
- * The share of what remains after scaffolding that summaries may take. Declared here
- * because BOTH the assembler (`budgetSummaries`) and the compaction gate's model of it
- * used the same 0.7 and neither could see the other's copy. PHASE-3 T3 turns this into a
- * lane declaration; until then it is one number with one owner.
+ * The share of what remains after scaffolding that summaries may take (the summaries lane's
+ * ceiling with its 6,000 cap, `assembler.ts`'s `summariesCeilingFor`). t194: STRIP the gate's
+ * `GATE_MESSAGE_CAP_TOKENS` (4,000 per row) beside it — the gauge prices rows as the trim does.
  */
 export const SUMMARY_SHARE = 0.7;
 
@@ -579,11 +565,10 @@ export const SUMMARY_SHARE = 0.7;
 export const CACHED_REGION_SHARE = 0.7;
 
 /**
- * Canonical model-aware fresh-tail window size (FA-M3). Moved here from `memory/store.ts`
- * unchanged, byte for byte: the assembler's tail-shown count and compaction's inside-tail
- * count MUST be the same number or the tail-to-summary handoff drops or duplicates
- * messages. It lives with the budget because it IS a budget — a row budget rather than a
- * token one — and because leaving it in `store.ts` would have made this module cyclic.
+ * The window's row RUNG (FA-M3, moved from `memory/store.ts`): it sizes the tail horizon's row
+ * ceiling and the token trim's block (`tail-horizon.ts`) — the cadence of a cut, for the cache.
+ * t194 (owner decision 7b): it is NOT the protected recent part any more; that is tokens, the
+ * view's `protectedFromSeq` (`assembler.ts`'s `ContextView`).
  */
 export function getFreshTailCount(contextWindow: number): number {
   const cw = clampWindow(contextWindow);
@@ -598,22 +583,15 @@ export function getFreshTailCount(contextWindow: number): number {
 export interface ContextWindowPolicy {
   /** The model's full context window, clamped finite and >= 0. */
   contextWindow: number;
-  /** 0.96 — the compaction gate and the assembler's fill fraction, one number. */
+  /** 0.96 — the assembler's fill fraction. */
   compactionThreshold: number;
-  /** 0.90 — log loudly + toast, do not compact. */
-  warnThreshold: number;
-  /** 0.99 — surrender the turn. */
-  blockThreshold: number;
   /** Tokens the assembler does not control (tool schemas + output). */
   toolAndOutputReserve: number;
   /** What the assembler may spend on system prompt + messages. Never negative. */
   assemblyBudgetTokens: number;
-  /** Rows of raw conversation kept live for this window. */
+  /** The window's row rung: the horizon ceiling and the trim block (`getFreshTailCount`). */
   freshTailCount: number;
-  /** Per-message cap the compaction gate applies before summing. */
-  gateMessageCap: number;
-  /** Share of the remainder summaries may take. */
-  summaryShare: number;
+
 }
 
 function clampWindow(contextWindow: number): number {
@@ -659,13 +637,9 @@ export function contextWindowPolicy(
   return {
     contextWindow: cw,
     compactionThreshold: CONTEXT_THRESHOLD,
-    warnThreshold: CONTEXT_WARN_THRESHOLD,
-    blockThreshold: CONTEXT_BLOCK_THRESHOLD,
     toolAndOutputReserve: reserve,
     assemblyBudgetTokens,
     freshTailCount: getFreshTailCount(cw),
-    gateMessageCap: GATE_MESSAGE_CAP_TOKENS,
-    summaryShare: SUMMARY_SHARE,
   };
 }
 

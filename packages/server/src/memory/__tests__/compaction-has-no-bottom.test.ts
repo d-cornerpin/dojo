@@ -150,9 +150,12 @@ const PROVIDER = 'prov-under-test';
 /** The reported box's cloud row: a 64K window, whose fresh tail count is 40. */
 const MODEL_64K = 'm-cloud-64k';
 const FRESH_TAIL_ROWS = 40;
-/** 40 × 800 = 32,000 tokens of live conversation, which is what makes the summary budget
- *  small enough that a realistic summary body exceeds it — the incident's own relation. */
-const TAIL_TOKENS_EACH = 800;
+/** 40 × 100 = 4,000 tokens of live conversation. t194: this was 800 each, "which is what makes the
+ *  summary budget small" — a relation of the deleted phantom budget (0.7 × what the tail left). The
+ *  gauge is the assembler's own fit, whose summaries lane is capped at its ceiling whatever the tail
+ *  does (the cached phase is granted first), so the tail is kept inside the protected recent part and
+ *  these clauses stay about condensation alone. */
+const TAIL_TOKENS_EACH = 100;
 /** The provider's actual words, as the reported log recorded them. */
 const HTTP_402 = 'API error 402: {"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}';
 
@@ -467,14 +470,20 @@ describe('§1 condensation recurses until the assembler will admit every summary
 
   it('a lone summary already AT the floor is a defect report, not a card and not a loop', async () => {
     seedSummaries(1, 0, CONDENSE_MIN_TARGET_TOKENS);
-    // Force the admitted budget below the floor so "every summary is at the floor" is real.
-    const db = mockDb.current!;
-    db.prepare('UPDATE messages SET token_count = 4000 WHERE agent_id = ?').run(AGENT);
+    // Force the admitted budget below the floor so "every summary is at the floor" is real. t194: the
+    // tail no longer squeezes the summaries lane (that was the phantom budget; the cached phase is
+    // granted first), so the squeeze is a window whose content room, after its own system prompt and
+    // reserve, gives the summaries lane less than one floor-sized summary.
+    // The tail is made weightless so that, in so tight a window, it is not itself the bloat (a
+    // forced pass would rightly fold it): the lone summary is the clause's only subject.
+    mockDb.current!.prepare('UPDATE messages SET token_count = 1 WHERE agent_id = ?').run(AGENT);
+    const { view } = await estimateAssembledTokens(AGENT, 65_536, MODEL_64K);
+    const tight = Math.ceil((view.systemTokens + view.reserveTokens + 1_000) / 0.96);
     __resetEstimateCacheForTests();
     expect(held(), 'non-vacuity: a floor-sized summary that still will not be admitted')
-      .toBeGreaterThan(await admitted());
+      .toBeGreaterThan((await estimateAssembledTokens(AGENT, tight, MODEL_64K)).summaryTokens);
 
-    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    await checkAndCompact(AGENT, MODEL_64K, tight, { force: true });
 
     expect(calls.length, 'the engine must not dial a model to shrink what cannot shrink').toBe(0);
     expect(compactionFailureReason(AGENT)).toBe('single_summary_at_floor');
@@ -653,22 +662,21 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
     expect(permanentFailureReason('402 Payment Required')).toBe('no_balance');
   });
 
-  it('the defect line carries the numbers that say WHICH side the bloat is on', async () => {
-    // Summaries inside their budget, the gate's total over its threshold: nothing left for
-    // compaction to do, and the report must say so rather than claiming a memory is full.
+  it('when the TAIL is the bloat, a forced pass folds it — the token floor, not a 40-row dead end', async () => {
+    // Summaries inside their budget, the live tail far over its room. t194 (owner decision 7b): this
+    // clause pinned "nothing left for compaction to do — no_yield" because the 40 rows were all inside
+    // the row floor. That IS the v3.3.3 surrender loop on a 65K worker; the floor is tokens now.
     const db = mockDb.current!;
     db.prepare('UPDATE messages SET token_count = 4000 WHERE agent_id = ?').run(AGENT);
     __resetEstimateCacheForTests();
     const est = await estimateAssembledTokens(AGENT, 65_536, MODEL_64K);
-    expect(est.total, 'non-vacuity: the fresh tail alone is over the trigger threshold')
-      .toBeGreaterThan(0.96 * 65_536);
+    expect(est.view.tailTokens, 'non-vacuity: the live tail is far over its room').toBeGreaterThan(est.view.tailRoomTokens);
     expect(held(), 'and the summaries are not the problem — there are none').toBe(0);
 
     const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(result).toEqual({ leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
-    expect(calls.length, 'and not one model call was spent discovering it').toBe(0);
-    expect(compactionFailureReason(AGENT), 'reported as a yield failure, with the numbers in the log').toBe('no_yield');
+    expect(result.leafCreated, 'the rows before the protected recent part are folded').toBeGreaterThan(0);
+    expect(compactionFailureReason(AGENT), 'and it is not a failing compaction').not.toBe('no_yield');
     expect(frames.filter(f => f.type === 'chat:error'), 'the owner is not blamed for a tail the platform grew').toEqual([]);
   });
 });

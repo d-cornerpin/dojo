@@ -6,7 +6,8 @@
 // tokens of a 128,000 window and nothing was leaving the view. The assembler caps every tool
 // result at 15,000 tokens BEFORE `budgetFreshTail` spends (`capLargeToolResultStrings`); the dry
 // run now applies the same cap, so the trigger and the trim read the same rows. A tail that is
-// really full is still full.
+// really full is still full. t194: `liveViewIsFull` is deleted — the gauge (`est.view`) IS the
+// assembler's fit, so "full" is its ask over its room; the clauses below read it there.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -43,7 +44,7 @@ vi.mock('../../agent/model.js', () => ({
 
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
-import { estimateAssembledTokens, liveViewIsFull } from '../compaction.js';
+import { estimateAssembledTokens, leavingFromView } from '../compaction.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { estimateTokens } from '../budget.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -114,18 +115,17 @@ describe('t158 C — the full check reads the rows the assembler will budget', (
     for (let i = 0; i < 6; i++) smallTurn();
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
     const ctx = await assembleContext(AGENT, MODEL);
-    const systemTokens = estimateTokens(ctx.systemPrompt);
 
     // What the old pricing said (stored cost, uncapped): the incident's "full".
     const storedCost = (db().prepare("SELECT SUM(COALESCE(token_count, 0)) AS t FROM messages WHERE role = 'tool'").get() as { t: number }).t
       || estimateTokens(HUGE);
     expect(storedCost, 'the stored row really is far over the 15K cap').toBeGreaterThan(50_000);
-    expect(liveViewIsFull({ ...est, liveTailTokens: est.liveTailTokens + storedCost }, systemTokens),
-      'control: priced at the stored cost the view reads full').toBe(true);
+    // (The old control priced `liveViewIsFull` at the stored cost and read "full"; that check is gone.)
 
     // What the assembler budgets: the tool result capped at 15K. The dry run now agrees.
-    expect(est.liveTailTokens, 'the dry run prices the capped row, not the stored one').toBeLessThan(25_000);
-    expect(liveViewIsFull(est, systemTokens), 'a tail that fits is not full').toBe(false);
+    expect(est.view.tailTokens, 'the dry run prices the capped row, not the stored one').toBeLessThan(25_000);
+    expect(est.view.tailTokens, 'a tail that fits is not full').toBeLessThanOrEqual(est.view.tailRoomTokens);
+    expect(leavingFromView(AGENT, windowNow.value, est.view), 'and nothing is leaving it').toBeNull();
     expect(ctx.freshTailDropped ?? 0, 'and the assembler indeed set nothing aside').toBe(0);
   });
 
@@ -133,8 +133,7 @@ describe('t158 C — the full check reads the rows the assembler will budget', (
     seed(128_000);
     for (let i = 0; i < 10; i++) { smallTurn(); toolResultTurn(LARGE); }
     const est = await estimateAssembledTokens(AGENT, windowNow.value, MODEL);
-    const ctx = await assembleContext(AGENT, MODEL);
-    expect(est.liveTailTokens).toBeGreaterThan(100_000);
-    expect(liveViewIsFull(est, estimateTokens(ctx.systemPrompt))).toBe(true);
+    expect(est.view.tailTokens).toBeGreaterThan(100_000);
+    expect(est.view.tailTokens).toBeGreaterThan(est.view.tailRoomTokens);
   });
 });

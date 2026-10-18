@@ -232,7 +232,9 @@ function seedHistoryAcrossTurns(): { old: string; active: string } {
   for (let turn = 1; turn <= 4; turn++) {
     seedTurn(turn);
     for (let i = 0; i < 8; i++) {
-      row('user', `question ${turn}.${i} about the work in hand`, turn);
+      // t194: the finished turns' questions are long, so the view is heavier than half its room and a
+      // forced pass has rows BEFORE the protected recent part (sized in tokens now, not the 40-row rung).
+      row('user', `question ${turn}.${i} about the work in hand${turn < 4 ? ` ${'q'.repeat(400 * 4)}` : ''}`, turn);
       const call = row('assistant', toolUse(`tu-${turn}-${i}`), turn, reasoningOf(40));
       row('tool', toolResult(`tu-${turn}-${i}`), turn);
       row('assistant', `answer ${turn}.${i}`, turn);

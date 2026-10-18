@@ -671,57 +671,7 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
   });
 });
 
-// ════════════════════════════════════════════════════════════════════════════════
-// EVERY DOOR, SAME ANSWER — on a turn NOBODY IS WAITING ON (no C3 stash: the stash is written for a
-// human conversation only), so the only thing that can tell finalize the job parked is parkJob's record.
-// ════════════════════════════════════════════════════════════════════════════════
-describe('t159 G2: each park door, on a non-human turn, says nothing and holds the queued file', () => {
-  /** A background wake: the owner's ask is withdrawn, so no human conversation is served and nothing is stashed. */
-  function withdrawTheAsk(): void {
-    const ask = mockDb.current!.prepare(`SELECT id FROM work WHERE kind = 'ask'`).get() as { id: string };
-    expect(transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'open', reason: 'withdrawn' }).kind).toBe('applied');
-  }
-  const gateRatio = (ratio: number) => {
-    let call = 0;
-    estimateAssembledTokensMock.mockImplementation(() => {
-      call++;
-      return { total: call < 4 ? 1000 : Math.floor(200000 * ratio), summaryTokens: 0, freshTailTokens: 1000, briefTokens: 0, freshTailCount: 1, summaryCount: 0 };
-    });
-  };
-  const contextSystemRows = () => messageRows().filter((m) => m.role === 'system');
-
-  async function parkedByAGate(ratio: number): Promise<void> {
-    withdrawTheAsk();
-    gateRatio(ratio);
-    scriptTheJob({ rounds: 5, after: { content: '' } });
-    await runV2Turn('primary');
-    // Positive controls: nobody was waiting (no stash), the file was queued, and the gate really parked the turn.
-    expect(continuationContext.has('primary')).toBe(false);
-    expect(artifactRows()).toEqual([expect.objectContaining({ kind: 'canvas', path: FILE })]);
-    expect(pendingWakeups.has('primary')).toBe(true);
-    expect(checkAndCompactSpy).toHaveBeenCalled();
-    // The defect, on records.
-    expectTheOwnerHeardNothing();
-    expect(contextSystemRows(), 'no owner-visible row from the gate').toEqual([]);
-    expect(broadcastSpy.mock.calls.map((c) => c[0] as { type?: string; message?: { role?: string } })
-      .filter((e) => e.type === 'chat:message' && e.message?.role === 'system')).toEqual([]);
-    expect(artifactRows().map((a) => a.delivered_at)).toEqual([null]);
-    expect(turnRows()[0].answered).toBe(0);
-  }
-
-  it('emergency compaction (96-99%): context-emergency-compact', async () => { await parkedByAGate(0.975); });
-  it('context full (>= 99%): context-full writes no "Memory is too full" row and broadcasts nothing', async () => {
-    await parkedByAGate(0.995);
-    expect(messageRows().filter((m) => m.content.includes('too full'))).toEqual([]);
-  });
-
-  it('the same two arms on a turn that IS human (stashed): still no system row, and the file waits for the real reply', async () => {
-    gateRatio(0.995);
-    scriptTheJob({ rounds: 5, after: { content: '' } });
-    await runV2Turn('primary');
-    expect(continuationContext.has('primary')).toBe(true);
-    expect(contextSystemRows()).toEqual([]);
-    expectTheOwnerHeardNothing();
-    expect(artifactRows().map((a) => a.delivered_at)).toEqual([null]);
-  });
-});
+// t194 (v3.4 D1, owner decision 7): "EACH PARK DOOR, ON A NON-HUMAN TURN, SAYS NOTHING" drove the context
+// gate's two arms (emergency compact at 96-99%, context-full at 99%+). Both are DELETED — a full view is
+// condensed and the turn goes on, never parked by the gate — so their three clauses went with them. The
+// other park doors are driven above (G (i), G (i-b)); the parkJob caller census above still holds.

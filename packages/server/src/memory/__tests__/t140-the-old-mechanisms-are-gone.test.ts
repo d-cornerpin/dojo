@@ -69,23 +69,27 @@ describe('t140 census — the row-gap drain and the proactive arm are gone', () 
     expect(filesWith(/\browsLeavingView\(/)).toEqual([
       // (round 2: the re-fit no longer predicts its leaving rows; it folds what its assembly
       // actually took out of view, through `assembleWithNothingOutOfViewUnsummarised`)
-      GATE_REL,
+      // (t194: the gate reaches it through `leavingFromView`, which hands it the gauge's answer)
       'memory/compaction.ts',
       'memory/tail-horizon.ts',   // its own declaration
     ]);
     // And the gate APPLIES it: the routine condense is handed the leaving span, not a count.
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
-    expect(gate).toMatch(/const leaving = rowsLeavingView\(agentId, \{ freshTailCount: getFreshTailCount\(contextWindow\) \}, \{ viewFull \}\);/);
-    expect(gate).toMatch(/return leaving \? condenseLeavingInBackground\(\{ agentId, writerModelId, dialedModelId, contextWindow, leaving \}\) : false;/);
+    expect(gate).toMatch(/const leaving = leavingFromView\(agentId, contextWindow, view\);/);
+    expect(gate).toMatch(/condenseLeavingInBackground\(\{ agentId, writerModelId, dialedModelId, contextWindow, leaving \}\);/);
     expect(gate).toMatch(/checkAndCompact\(agentId, writerModelId, contextWindow, \{\s*leaving,/);
   });
 
   it('the ceiling and the trim bound each have ONE owner, read by the cut AND by the trigger', () => {
     expect(filesWith(/\bceilingSkipRows\(/)).toEqual(['memory/tail-horizon.ts']);
-    expect(filesWith(/\bmaxTrimUnits\(/)).toEqual(['memory/tail-horizon.ts']);
+    // t194: the "full" trigger is the gauge (`assembler.ts`'s dry run), so the trim bound's readers are
+    // its declaration and the trim (tail-horizon) and the gauge's trigger (assembler) — still ONE law.
+    expect(filesWith(/\bmaxTrimUnits\(/)).toEqual(['memory/assembler.ts', 'memory/tail-horizon.ts']);
     const horizon = FILES.find((f) => f.rel === 'memory/tail-horizon.ts')!.code;
     expect(horizon.match(/ceilingSkipRows\(/g)?.length, 'declaration + the cut + the trigger').toBe(3);
-    expect(horizon.match(/maxTrimUnits\(/g)?.length, 'declaration + the trim + the trigger').toBe(3);
+    expect(horizon.match(/maxTrimUnits\(/g)?.length, 'declaration + the trim').toBe(2);
+    const assembler = FILES.find((f) => f.rel === 'memory/assembler.ts')!.code;
+    expect(assembler.match(/maxTrimUnits\(/g)?.length, 'the gauge\'s trigger').toBe(1);
   });
 });
 
@@ -140,18 +144,15 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
   it('C1: "view full" prices the live tail with the token trim\'s own function, uncapped', () => {
     const compaction = FILES.find((f) => f.rel === 'memory/compaction.ts')!.code;
     const assembler = FILES.find((f) => f.rel === 'memory/assembler.ts')!.code;
-    // The trim (budgetFreshTail) costs each row with storedRowCost …
+    // The trim (budgetFreshTail) costs each row with storedRowCost, in its atoms …
     expect(assembler).toMatch(/const tokens = storedRowCost\(msg\);/);
-    // … and so does the view-full measure, with no per-row cap.
-    // t158 C: … over the rows the assembler budgets (its own pre-budget cap applied, by the same function).
-    expect(compaction).toMatch(/const budgeted = capLargeToolResultStrings\(freshTail\);/);
-    expect(compaction).toMatch(/const liveTailTokens = budgeted\.reduce\(\(sum, m\) => sum \+ storedRowCost\(m\), 0\);/);
-    const fn = compaction.slice(compaction.indexOf('export function liveViewIsFull('));
-    const body = fn.slice(0, fn.indexOf('\n}\n'));
-    expect(body).toMatch(/est\.liveTailTokens/);
-    expect(body).not.toMatch(/gateMessageCap|GATE_MESSAGE_CAP_TOKENS/);
-    // Exactly the files that own a tail cost call it: the owner, the trim, the dry run.
-    expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts', 'memory/compaction.ts']);
+    expect(assembler).toMatch(/function budgetFreshTail\([\s\S]*?const groups = groupTail\(messages\);/);
+    // … and t194: the view-full measure IS that code — the gauge groups the very rows the lane budgets
+    // (its pre-budget cap applied) with the trim's own function. `liveViewIsFull` and its copy are gone.
+    expect(assembler).toMatch(/const groups = groupTail\(f\.before\);/);
+    expect(compaction).not.toMatch(/liveViewIsFull|gateMessageCap|GATE_MESSAGE_CAP_TOKENS|storedRowCost/);
+    // Exactly the files that own a tail cost call it: the owner and the trim (the dry run is the trim's).
+    expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts']);
   });
 
   it('M3/I3 (round 2): ONE background PRESSURE-fold launcher, the gate\'s; ONE out-of-view door, used by the turn\'s assembly and the re-fit', () => {
@@ -198,7 +199,7 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     expect(filesWith(/\bcondenseForTheDialedModel\(/)).toEqual([REFIT_REL, GATE_REL]);
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     // The gate does not run it on an auto-routed iteration with nothing locked …
-    expect(gate).toMatch(/if \(isAutoRouted && !lockedModelId\) \{\s*routineMeasuredAtGate\.delete\(agentId\);\s*\} else \{\s*routineMeasuredAtGate\.set\(agentId, dialModelId\);/);
+    expect(gate).toMatch(/if \(isAutoRouted && !lockedModelId\) \{\s*routineMeasuredAtGate\.delete\(agentId\);\s*return proceed\(state\);\s*\}\s*routineMeasuredAtGate\.set\(agentId, dialModelId\);/);
     // … and the call step runs it for the pick it is about to dial, unless the gate already did.
     const fit = FILES.find((f) => f.rel === REFIT_REL)!.code;
     expect(fit).toMatch(/if \(!gates\.routineCheckMeasuredAtGate\(input\.agentId, input\.modelId\)\) \{/);
@@ -249,13 +250,12 @@ describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, 
   });
 
   it('every forced pass is given the turn\'s patience for the model it is condensing for', () => {
-    expect(filesWith(/\bforcedCompactionOptions\(/)).toEqual([GATE_REL, 'memory/assembly-validation.ts', 'memory/compaction-brakes.ts']);
-    const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
-    expect(gate.match(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(agentId, dialModelId\)\), dialedModelId: dialModelId \}/g)?.length,
-      'both emergency arms').toBe(2);
+    // t194: the gate's two emergency arms are DELETED (a full view is condensed, never surrendered), so
+    // the boundary's live-conversation refusal is the one engine door that forces a pass on the turn.
+    expect(filesWith(/\bforcedCompactionOptions\(/)).toEqual(['memory/assembly-validation.ts', 'memory/compaction-brakes.ts']);
     const val = FILES.find((f) => f.rel === 'memory/assembly-validation.ts')!.code;
     expect(val).toMatch(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(input\.agentId, input\.modelId\)\), dialedModelId: input\.modelId \}/);
-    expect(filesWith(/\bturnPatienceMs\(/)).toEqual([GATE_REL, 'memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
+    expect(filesWith(/\bturnPatienceMs\(/)).toEqual(['memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
   });
 });
 
