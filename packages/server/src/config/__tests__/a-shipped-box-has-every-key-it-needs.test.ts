@@ -286,6 +286,7 @@ const PROVIDED_WITHOUT_A_MIGRATION: Readonly<Record<string, string>> = {
 
   // ── spend alerting: thresholds and their one-shot "already alerted" latches ──
   openrouter_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',
+  shipped_souls_version: 'WRITTEN — the once-per-version soul refresh stamps it at boot; absent means "never refreshed", so the first boot of an updated build refreshes once',
   openrouter_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',
   deepseek_warning_threshold: 'OPTIONAL — absent means no warning threshold is armed for this box',
   deepseek_threshold_alerted: 'WRITTEN — the one-shot latch the alert sets so it fires once; absent means not yet alerted',

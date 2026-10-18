@@ -24,7 +24,6 @@ import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/mess
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import type { PermissionManifest, Agent, Message } from '@dojo/shared';
-import { refuseSmallMainModel } from './main-model-floor.js';
 
 const logger = createLogger('spawner');
 
@@ -235,7 +234,8 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   // Resolve model: "auto" means use the router
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
-  const tooSmall = refuseSmallMainModel(modelId, parent.model_id);   // 32K floor (dec 13): a NAMED model only
+  // 32K floor (dec 13): a NAMED model only. Loaded on demand: the floor reads model windows via agent/model.ts, a heavy graph.
+  const tooSmall = modelId && modelId !== 'auto' ? (await import('./main-model-floor.js')).refuseSmallMainModel(modelId, parent.model_id) : null;
   if (tooSmall) throw new Error(tooSmall);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');

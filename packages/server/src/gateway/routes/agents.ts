@@ -35,7 +35,8 @@ import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
 import { SilentWindowMinutesSchema } from '../../config/schema.js';
-import { refuseSmallMainModel, noteSmallMainModelOnce } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { noteSmallMainModelOnce } from '../../agent/main-model-notice.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
