@@ -269,6 +269,9 @@ export interface TurnContext {
    *  by a reason that stopped being true is how the next reader inherits a false one. */
   deferredUserReplyWithTools: string | null;
 
+  /** t202 (A2): id of the note row written for the held text; recovery retires it (one live copy). */
+  deferredNoteId: string | null;
+
   /** Remediation Phase 5 (5a): the technique injected into THIS turn, so the turn's
    *  outcome is written back to its usage row — success at the clean end, failure on
    *  the recovery arm.
@@ -525,6 +528,7 @@ export function openTurnContext(agentId: string): TurnContext {
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
+    deferredNoteId: null,
     turnInjectedTechniqueId: null,
     lastAssembledAtIso: null,
     pickupSeq: null,

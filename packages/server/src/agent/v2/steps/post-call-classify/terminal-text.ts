@@ -231,6 +231,7 @@ export async function runTerminalText(
     });
     if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
       turnCtx.deferredUserReplyWithTools = persistedContent;
+      turnCtx.deferredNoteId = null;   // t202: set below if a note is written for THIS text
       // ── T52's PROMOTION, AND IT IS DELIBERATELY NOT THE ACK LANE ──
       //
       // It runs FIRST and the ack arm is its `else`, because the two deliver different KINDS
@@ -428,6 +429,8 @@ export async function runTerminalText(
           content: persistedContent,
           ...(agentOnly ? { internal: true } : {}),
         });
+        // t202 (A2): which row is the note for the held text, for recovery to retire.
+        if (turnCtx.deferredUserReplyWithTools === persistedContent) turnCtx.deferredNoteId = noteId;
       } catch { /* cosmetic; never block the turn */ }
     }
     persistedContent = null;

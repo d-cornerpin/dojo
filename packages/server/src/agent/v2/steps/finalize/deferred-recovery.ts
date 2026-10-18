@@ -14,7 +14,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { stripMoodMarker } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
-import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, retireById } from '../../../../memory/message-store.js';
 import { decideClaimedDelivery } from '../../claimed-delivery.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed } from '../../outbound-ledger.js';
 import { advance, type AgentTurnState } from '../../state.js';
@@ -85,6 +85,8 @@ export function recoverDeferredReply(state: AgentTurnState, ctx: FinalizeContext
         id: recoveredId, agentId, role: 'assistant',
         content: turnCtx.deferredUserReplyWithTools, turnNumber,
       });
+      // t202 (A2): both writers stay, one live copy. Retire the note the seam recorded by id (never by text).
+      if (turnCtx.deferredNoteId) { try { retireById(turnCtx.deferredNoteId); } catch { /* answer already stored */ } }
       broadcast({
         type: 'chat:message',
         agentId,

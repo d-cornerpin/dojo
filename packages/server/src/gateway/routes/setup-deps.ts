@@ -16,6 +16,8 @@ import { homeDir } from '../../home.js';
 import { idleStreamDeadline } from '../../services/idle-stream-deadline.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
+// t202 D10: the owner's 32K floor for an agent's MAIN model.
+import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('setup-deps');
 
@@ -554,7 +556,13 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   const db = getDb();
 
   // Check if agent already exists with this ID
-  const existing = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
+
+  // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
+  // Re-running setup on the model an existing agent already has is not a change and never refused.
+  const tooSmall = refuseSmallMainModel(modelId, existing?.model_id ?? null);
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+
   if (existing) {
     // Update name and model
     const updates: string[] = ['name = ?', "updated_at = datetime('now')"];

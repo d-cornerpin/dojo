@@ -35,6 +35,7 @@ import { writeGrants } from '../../agent/access/materialize.js';
 import { auditLog } from '../../agent/tools/util.js';
 import { parkedCauseOf } from '../../agent/v2/honest-stop-lock.js';
 import { SilentWindowMinutesSchema } from '../../config/schema.js';
+import { refuseSmallMainModel, noteSmallMainModelOnce } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -58,6 +59,7 @@ agentsRouter.get('/:id', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
+  noteSmallMainModelOnce(id, row.model_id as string | null);   // t202 D10: told once, never stopped
   const agent = rowToAgentDetail(row);
   // ── THE EFFECTIVE SCOPE, READABLE ANY TIME (PHASE-5 T5 Step 2) ──
   // `permissions` is the STORED blob and it is not the answer to "what can this
@@ -86,7 +88,7 @@ agentsRouter.patch('/:id/model', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  const agent = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
   if (!agent) {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
@@ -97,6 +99,9 @@ agentsRouter.patch('/:id/model', async (c) => {
   }
 
   const { modelId } = body;
+
+  const tooSmall = refuseSmallMainModel(modelId, agent.model_id);   // t202 D10: 32K main-model floor
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
 
   if (modelId === 'auto') {
     db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(id);
@@ -142,6 +147,8 @@ agentsRouter.post('/', async (c) => {
     return c.json({ ok: false, error: 'name (string) and systemPrompt (string) are required' }, 400);
   }
 
+  const tooSmall = refuseSmallMainModel(typeof body.modelId === 'string' ? body.modelId : null);   // t202 D10, before any write
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
   try {
     const db = getDb();
     const agentId = uuidv4();
@@ -332,7 +339,7 @@ agentsRouter.put('/:id', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  const agent = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
   if (!agent) {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
@@ -341,6 +348,9 @@ agentsRouter.put('/:id', async (c) => {
   if (!body) {
     return c.json({ ok: false, error: 'Request body required' }, 400);
   }
+
+  const tooSmall = typeof body.modelId === 'string' ? refuseSmallMainModel(body.modelId, agent.model_id) : null;   // t202 D10, before the rename
+  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
 
   const updates: string[] = [];
   const params: unknown[] = [];

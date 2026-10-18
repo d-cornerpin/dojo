@@ -148,10 +148,10 @@ describe('PATCH /agents/:id/model — the model picker on the agent card', () =>
   });
 });
 
-describe('PATCH /agents/:id — the agent edit form', () => {
+describe('PUT /agents/:id — the agent edit form', () => {
   it('refuses a small model chosen in the edit form', async () => {
     seedAgent('a1', 'big');
-    const res = await agentsRouter.request('/a1', json('PATCH', { modelId: 'tiny' }));
+    const res = await agentsRouter.request('/a1', json('PUT', { modelId: 'tiny' }));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(PLAIN);
     expect(modelOf('a1')).toBe('big');
@@ -159,7 +159,7 @@ describe('PATCH /agents/:id — the agent edit form', () => {
 
   it('an agent already on a small model can still be edited, model field and all', async () => {
     seedAgent('a1', 'tiny');
-    const res = await agentsRouter.request('/a1', json('PATCH', { modelId: 'tiny', classification: 'ronin' }));
+    const res = await agentsRouter.request('/a1', json('PUT', { modelId: 'tiny', classification: 'ronin' }));
     expect(res.status).toBe(200);
     expect(modelOf('a1')).toBe('tiny');
   });

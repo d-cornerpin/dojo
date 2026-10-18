@@ -365,7 +365,10 @@ export interface ChatErrorEvent {
     // nothing said why. `retryable: false` and `severity: 'error'` are both deliberate: unlike
     // a provider outage this does NOT clear itself, somebody has to shorten the tool list or
     // move the agent to a bigger-window model, and the card must stay until they do.
-    | 'WINDOW_TOO_SMALL';
+    | 'WINDOW_TOO_SMALL'
+    // t202 D10. An agent that was ALREADY on a model under the 32K main-model floor when the
+    // floor was introduced. Nothing is stopped or changed; the person is told once.
+    | 'MAIN_MODEL_SMALL';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }

@@ -1042,6 +1042,14 @@ export function sweepById(id: string): number {
     .run(id).changes;
 }
 
+/** Take one row off the chat feed without deleting it (`retired_at`: display suppression only).
+ *  Idempotent. t202 (A2): the first runtime writer; its one caller is the deferred-reply recovery. */
+export function retireById(id: string): number {
+  const db = getDb();
+  return db.prepare(`UPDATE messages SET retired_at = ${NOW_MS} WHERE id = ? AND retired_at IS NULL`)
+    .run(id).changes;
+}
+
 /** Bookkeep a failed delivery: attempt counter + backoff window (mig 084). */
 export function recordDeliveryAttempt(
   p: { agentId: string; rowid: number; attempts: number; backoffMinutes: number },

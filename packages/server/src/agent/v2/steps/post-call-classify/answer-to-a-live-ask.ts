@@ -71,8 +71,8 @@
 // only knowable at turn end — `teardown/draft-reclassify.ts` says so in its own bold text
 // (*"THE ANSWER'S IDENTITY IS ONLY KNOWN AT TURN END"*) — and A's correct home is therefore the
 // turn boundary, where the note would have to be promoted after the fact. That needs a runtime
-// writer for the display-suppression axis (`messages.retired_at`, whose only writers today are
-// two migrations) or a new WS frame to un-dim a rendered note. Both are owner-visible design
+// writer for the display-suppression axis (`messages.retired_at`; its first runtime writer is t202's
+// `retireById`, used only by the deferred-reply recovery) or a new WS frame to un-dim a rendered note. Both are owner-visible design
 // decisions, recorded in the lane report rather than taken in passing.
 //
 // ── WHAT KEEPS GENUINE MID-WORK NARRATION A NOTE ──

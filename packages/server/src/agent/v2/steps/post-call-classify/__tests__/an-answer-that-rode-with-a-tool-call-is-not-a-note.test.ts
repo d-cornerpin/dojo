@@ -412,7 +412,7 @@ describe('an ordinary waiting-human turn keeps the 2026-07-23 ruling, byte for b
   //      owner's word ("becoming the first runtime writer of `messages.retired_at`" against "a
   //      Chat.tsx `promoted:true` mirror").
   // Neither is a worker's call (G14), so t113 measured it, pinned it, and handed it back.
-  it('⚠ OPEN DEFECT, PINNED: this seam leaves the finalize recovery able to deliver the same text again', async () => {
+  it('t202: this seam still leaves the finalize recovery able to deliver the same text — and recovery now retires this note (see t202-note-once-small-models-one-live-copy)', async () => {
     const turnCtx = turnCtxFor();
     await runTerminalText(state, ctxFor(turnCtx, { hasUnansweredUser: true }), scratchFor());
 
@@ -429,10 +429,11 @@ describe('an ordinary waiting-human turn keeps the 2026-07-23 ruling, byte for b
     // Stated as the implication, so this clause says what WILL happen rather than only what is:
     const recoveryWillFire = Boolean(turnCtx.deferredUserReplyWithTools) && !state.lastAssistantTextForIM;
     expect(recoveryWillFire,
-      'BACKLOG line 35 is still open: the same text is about to be stored a second time as an '
-      + 'assistant row. When it is closed — by ruling, one of the two mechanisms in the comment '
-      + 'above — this expectation is the one to invert, and the five control clauses beside it '
-      + 'are the ones to re-state honestly.').toBe(true);
+      't202 CLOSED the double copy by owner ruling (mechanism 2): both writers stay, so this '
+      + 'guard is still satisfied and recovery still speaks — what changed is that recovery '
+      + 'retires the note this seam wrote (turnCtx.deferredNoteId) when it does. The one-live-copy '
+      + 'clauses are in t202-note-once-small-models-one-live-copy.test.ts.').toBe(true);
+    expect(turnCtx.deferredNoteId, 'the seam records WHICH row is the note, for recovery to retire').toEqual(expect.any(String));
   });
 });
 

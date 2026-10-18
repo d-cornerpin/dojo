@@ -86,6 +86,9 @@ const THE_DRIVER_CARRIES = [
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',
+  // t202 (A2) — the id of the note the seam wrote for the text above; written in the post-call
+  // seam, read once by finalize's recovery. Same crossing, same rule as its sibling.
+  'deferredNoteId',
   'turnInjectedTechniqueId',
   // PHASE-6 T4 (CUT 6) — the `assemble` tranche's crossings. The assembler-bookkeeping
   // trio is the family whose by-value alternative is measurably WRONG in three
