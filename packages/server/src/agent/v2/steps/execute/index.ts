@@ -57,6 +57,7 @@ export interface PendingToolResult {
   content: string;
   isError: boolean;
   contentBlocks?: Array<{ type: string; [key: string]: unknown }>;
+  keptWhole?: string;   // t200: the whole of a result whose `content` is its pointer; the recorder keeps it
 }
 export type TurnToolResult = PendingToolResult;
 

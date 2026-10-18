@@ -69,7 +69,7 @@ import { runMigrations } from '../../db/migrations.js';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
-import { applyMaxResultTokensCap } from '../../agent/tools/index.js';
+import { admitToolResult } from '../../agent/tools/index.js';
 import { toolDefinitions } from '../../agent/tools/definitions.js';
 import { buildWorkBoardLane } from '../../memory/work-board-lane.js';
 import { TOOL_RESULT_VIEW_CHARS } from '../../memory/tool-result-view.js';
@@ -83,7 +83,7 @@ const call = async (op: string, agentId: string, args: Record<string, unknown>):
   const h = (trackerHandlers as unknown as Record<string, Handler>)[op];
   const out = await h({ agentId, args });
   // The same cap the engine applies to every result of this tool before the model sees it.
-  return out.isError ? out.content : applyMaxResultTokensCap(op.split(':')[0], out.content);
+  return out.isError ? out.content : admitToolResult(op.split(':')[0], 'call-t169', out.content).content;
 };
 const note = (agentId: string, text: string): Promise<string> => call('work_note', agentId, { task_id: TASK, notes: text });
 const get = (agentId: string, extra: Record<string, unknown> = {}): Promise<string> =>

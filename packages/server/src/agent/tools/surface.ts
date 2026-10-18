@@ -67,6 +67,7 @@ import { credentialsToolDefinitions } from '../../credentials/tools.js';
 import { EMAIL_SEARCH_TOOL } from '../../tools/unified-read.js';
 import { getEffectiveAudioGenModel } from '../../services/audio-gen-model.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../../services/voice-catalog.js';
+import { RESULT_READ_TOOL } from '../../memory/tool-result-view.js';
 
 // ── Filtered tools per agent (based on permissions + tools policy) ──
 
@@ -268,6 +269,9 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
       if (def) filtered.push(def);
     }
   }
+  // 2c. t200: a long result's pointer names this reader of the agent's OWN results; every agent holds it, allow list or not (deny wins).
+  const reader = toolDefinitions.find((t) => t.name === RESULT_READ_TOOL);
+  if (reader && !filtered.includes(reader) && !toolsPolicy.deny.includes(RESULT_READ_TOOL)) filtered.push(reader);
 
   // 3. Permission-based filtering
   const hasFileRead = manifest.file_read === '*' || (Array.isArray(manifest.file_read) && manifest.file_read.length > 0);

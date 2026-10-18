@@ -22,7 +22,7 @@ import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
-import { capToolResultView } from './tool-result-view.js';
+import { toolResultView } from './tool-result-view.js';
 // t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
@@ -2419,7 +2419,8 @@ export function capLargeToolResultStrings(messages: Message[]): Message[] {
       if (blk.type !== 'tool_result') return block;
       const c = blk.content;
       if (typeof c !== 'string') return block;
-      const truncated = capToolResultView(c, 'Call the same tool again with narrower arguments (e.g. file_read with offset/limit) to see more.');
+      // t200: a result stored whole on its row (recorded before t200) is shown as its pointer.
+      const truncated = toolResultView(c, String(blk.tool_use_id ?? ''));
       if (truncated === c) return block;
       mutated = true;
       return { ...blk, content: truncated };
@@ -2450,7 +2451,7 @@ function capLargeToolResultsInPlace(
       const content = blk.content;
       if (typeof content !== 'string') return block;
 
-      const truncated = capToolResultView(content, 'Call the same tool again with narrower arguments (e.g. file_read with offset/limit, or grep with a more specific pattern) to see more.');
+      const truncated = toolResultView(content, String(blk.tool_use_id ?? ''));
       if (truncated === content) return block;
 
       cappedCount++;

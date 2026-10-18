@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { hasHandedCredentialValues, redactDeclaredSecretArgs, redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { insertToolRowKeepingWhole, type KeptWhole } from '../../../../memory/kept-results.js';
 import { ownOutputBroadcast } from '../../../interagent-broadcast.js';
 import { createLogger } from '../../../../logger.js';
 
@@ -100,6 +101,8 @@ export function persistXmlFallbackCollapse(ctx: ExecuteContext, turnToolResults:
     // (e.g. file_read on an image), use those instead of plain string, 
     // the model sees the image via vision capabilities.
     const toolMessageId = uuidv4();
+    // t200: the whole of each result too long for the view, written with the row in one unit.
+    const kept: KeptWhole[] = [];
     const toolResultContent = turnToolResults.map((tr) => {
       const blocks = (tr as { contentBlocks?: Array<{ type: string; [key: string]: unknown }> }).contentBlocks;
       // PHASE-5 T6B (P5-R11 obligation 4 / PHASE-4 exit §8 item 3):
@@ -111,9 +114,10 @@ export function persistXmlFallbackCollapse(ctx: ExecuteContext, turnToolResults:
       // alone is a defect. `blocks` is deliberately not scrubbed — those are
       // the provider content blocks `file_read` attaches for images and PDFs
       // (T4B's vision side channel), never a credential result.
-      const storedContent = hasHandedCredentialValues(agentId)
-        ? redactHandedCredentials(agentId, tr.content)
-        : tr.content;
+      const redact = (text: string): string =>
+        (hasHandedCredentialValues(agentId) ? redactHandedCredentials(agentId, text) : text);
+      const storedContent = redact(tr.content);
+      if (tr.keptWhole !== undefined) kept.push({ toolUseId: tr.toolCallId, toolName: tr.name, content: redact(tr.keptWhole) });
       return {
         type: 'tool_result' as const,
         tool_use_id: tr.toolCallId,
@@ -131,16 +135,9 @@ export function persistXmlFallbackCollapse(ctx: ExecuteContext, turnToolResults:
       // never bury or leak into the owner's chat. The merged tail UNIONs them
       // back with role='tool', so the tool_use/tool_result pairing the model
       // sees on its next turn is byte-identical.
-      insertMessageIfAbsent({
-        id: toolMessageId,
-        agentId,
-        role: 'tool',
-        lane: 'a2a',
-        content: toolResultJson,
-        turnNumber,
-      });
+      insertToolRowKeepingWhole({ id: toolMessageId, agentId, role: 'tool', lane: 'a2a', content: toolResultJson, turnNumber }, kept);
     } else {
-      insertMessageIfAbsent({ id: toolMessageId, agentId, role: 'tool', content: toolResultJson, turnNumber });
+      insertToolRowKeepingWhole({ id: toolMessageId, agentId, role: 'tool', content: toolResultJson, turnNumber }, kept);
     }
     broadcast(ownOutputBroadcast({
       interAgentTurn,

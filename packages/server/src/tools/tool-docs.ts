@@ -39,6 +39,7 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'get_current_time',
   'convert_time',
   'channel_inspect',
+  'tool_result_read',   // t200: a long result's pointer names it, so it is one call away for every agent
 ];
 
 // Primary agent: needs file/exec + tracker + vault + communication basics.

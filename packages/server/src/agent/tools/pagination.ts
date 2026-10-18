@@ -52,9 +52,9 @@ export function coerceNumberArg(v: unknown): number | null {
  * stride. Default limit = 20K chars (~5K tokens), well under the engine
  * maxResultTokens cap and leaves room for the trailer.
  *
- * The trailer format ("[Read chars X-Y of Z…]") is recognized by
- * applyMaxResultTokensCap's carve-out so the engine cap doesn't strip
- * the friendly per-tool guidance.
+ * The trailer format ("[Read chars X-Y of Z…]") is recognized by the
+ * executor's own-page carve-out (`resultViewChars`), so a page that slightly
+ * overshoots its tool's size is still shown whole.
  */
 export function applyTextPagination(
   content: string,

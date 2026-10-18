@@ -80,7 +80,10 @@ vi.mock('../../logger.js', () => {
 import { getDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
 import { reportHandlers } from '../../agent/tools/cat/report.js';
-import { applyMaxResultTokensCap } from '../../agent/tools/index.js';
+import { admitToolResult } from '../../agent/tools/index.js';
+// t200: the executor no longer cuts a result; one over the size is kept whole and shown as its
+// pointer (head, labelled gap, tail). What the agent SEES is still the head-first property's subject.
+const engineView = (tool: string, content: string): string => admitToolResult(tool, 'call-report', content).content;
 import { toolDefinitions } from '../../agent/tools/definitions.js';
 import { registryToolDefinitions } from '../../agent/tools/registry.js';
 import { gatherEvidence } from '../gather.js';
@@ -257,7 +260,7 @@ describe('the truth and the instruction ride at the head, where truncation canno
     const gathered = await call({ phase: 'gather' });
 
     // The real production function, at the real registered cap for this tool.
-    expect(applyMaxResultTokensCap('dojo_report', gathered.content),
+    expect(engineView('dojo_report', gathered.content),
       'the engine truncated a bounded gather result — the budgets no longer fit the cap')
       .toBe(gathered.content);
 
@@ -266,8 +269,8 @@ describe('the truth and the instruction ride at the head, where truncation canno
     // condition of the round-1 red — and the assertion is read off the first 2,000 characters
     // of what came back, because "somewhere in 48,000 characters" is not what the model reads
     // first and is not what the red destroyed.
-    const cut = applyMaxResultTokensCap('dojo_report', `${gathered.content}\n${'y'.repeat(200_000)}`);
-    expect(cut, 'the engine trailer never appeared — nothing was truncated').toContain('[Truncated by engine');
+    const cut = engineView('dojo_report', `${gathered.content}\n${'y'.repeat(200_000)}`);
+    expect(cut, 'the pointer never appeared — the result was shown whole').toContain('KEPT WHOLE, NOT ALL SHOWN');
     const cutHead = cut.slice(0, HEAD_CHARS);
     expect(cutHead, 'a truncated result lost the not-yet-filed truth').toContain('NOTHING IS FILED');
     expect(cutHead, 'a truncated result lost the hand-off — this is the round-1 red').toContain('phase="draft"');
@@ -526,7 +529,7 @@ describe('the draft phase obeys the same two laws — order AND size', () => {
     const tokens = Math.ceil(drafted.content.length / 4);
     expect(tokens, `the draft result is ${tokens} tokens against a ${REPORT_RESULT_TARGET_TOKENS} target`)
       .toBeLessThanOrEqual(REPORT_RESULT_TARGET_TOKENS);
-    expect(applyMaxResultTokensCap('dojo_report', drafted.content),
+    expect(engineView('dojo_report', drafted.content),
       'the engine truncated the draft result — the echo budgets no longer fit the cap')
       .toBe(drafted.content);
     // Non-vacuity: there really was a maximal attachment to trim.
@@ -748,7 +751,7 @@ describe('a brief big enough to fire the cap still cannot cost the hand-off', ()
     expect(drafted.isError, drafted.content).toBe(false);
 
     // NON-VACUITY, AND IT IS THE POINT: the engine really does truncate this one.
-    const cut = applyMaxResultTokensCap('dojo_report', drafted.content);
+    const cut = engineView('dojo_report', drafted.content);
     const tokens = Math.ceil(drafted.content.length / 4);
     expect(cut, `a ${tokens}-token draft result was NOT truncated — this clause is vacuous and the `
       + 'brief can no longer reach the cap, so the head-first property is untested')

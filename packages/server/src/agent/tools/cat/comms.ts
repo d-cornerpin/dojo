@@ -9,7 +9,7 @@
 // RELOCATION, NOT REWRITE. Every body is the body that stood in the switch,
 // byte for byte; the only edit a move requires is that `content = …; break;`
 // became `return { content, isError }`, so the executor's tail (the per-tool
-// `maxResultTokens` cap, the unknown-args warning, the crash-to-message catch,
+// result admission (t200), the unknown-args warning, the crash-to-message catch,
 // the audit row) still applies to every one of them identically.
 //
 // ── THE HANDLER-BODY `checkPermission` THAT MOVED WITH ITS HANDLER ──

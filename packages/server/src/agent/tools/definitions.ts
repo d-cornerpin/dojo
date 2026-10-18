@@ -204,12 +204,6 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['argv'],
     },
     concurrency: 'serial',
-    // v2.7.2, was 4000. Logs, grep output, and JSON dumps frequently
-    // exceed that, forcing the agent to re-run with `| head -N` workarounds
-    // that mask real signal. Modern models have 100K+ context; a 32K cap
-    // is "let the LLM see what actually came out of the command" without
-    // letting a pathological 10MB log dump nuke the context.
-    maxResultTokens: 32000,
   },
   {
     name: 'shell',
@@ -234,7 +228,23 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['script'],
     },
     concurrency: 'serial',
-    maxResultTokens: 32000,
+  },
+  {
+    name: 'tool_result_read',
+    description: 'Read part of an earlier tool result too long to show whole (its note names the id). One page per call; the page says how to read on.',
+    effects: [],
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The id in the note.' },
+        from_line: { type: 'number', description: 'First line (from 1).' },
+        to_line: { type: 'number', description: 'Last line.' },
+        offset: { type: 'number', description: 'Character offset, for a very long line.' },
+        search: { type: 'string', description: 'Text to find; lists matching lines with their numbers.' },
+      },
+      required: ['id'],
+    },
+    concurrency: 'safe',
   },
   {
     name: 'file_read',
@@ -2897,8 +2907,8 @@ export const toolDefinitions: ToolDefinition[] = [
 //
 // Phase 3.5 (2026-05-04), also register `maxResultTokens` so the cross-file
 // registry covers tools beyond agent/tools.ts (Google, MS, Slides, Office).
-// `applyMaxResultTokensCap` consults the registry first, then this file's
-// `toolDefinitions` array as a backup.
+// `resultViewChars` (agent/tools/index.ts) consults the registry first, then
+// this file's `toolDefinitions` array as a backup.
 import { registerConcurrency, registerMaxResultTokens } from '../v2/classifiers/concurrency.js';
 for (const def of toolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);

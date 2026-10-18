@@ -15,7 +15,7 @@
 // made here, and it is what makes the relocation faithful: a moved body's last
 // statement becomes `return { content, isError }` where it used to be
 // `content = …; break;`, and everything the executor does AFTER the switch —
-// the per-tool `maxResultTokens` cap, the unknown-args warning, the try/catch
+// the result admission (t200), the unknown-args warning, the try/catch
 // that turns a throw into `Tool execution failed: …`, the audit row — still
 // happens in exactly the same place to exactly the same value.
 //

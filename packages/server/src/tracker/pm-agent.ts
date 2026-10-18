@@ -216,7 +216,7 @@ const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
   // refused by this gate — the prompt described a door that did not exist. Read-only, and the
   // alignment is to the prompt: no prompt text changed (it is the PM's prefix; cache tenet).
   'vault_search', 'vault_get', 'vault_remember', 'history_search', 'history_get',
-  'load_tool_docs', 'get_current_time',
+  'load_tool_docs', 'get_current_time', 'tool_result_read',
   // Read-only artifact verification for close-out validation (C2 sub-finding):
   // confirm the actual deliverable instead of trusting the agent's claim.
   // Read only, never file_write / file_delete / exec / network.

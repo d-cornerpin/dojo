@@ -16,9 +16,9 @@
 //    result does not read as broken, it reads as FINISHED, so the model invents the
 //    only story that fits.
 //
-//  · AND IT SAYS THAT A TRIMMED PAYLOAD IS NOT A FAILURE. The engine's own trailer
-//    advises "narrow your query, ask for less", which for this tool is advice to
-//    re-gather or re-draft in a loop. Both heads contradict it in plain words.
+//  · AND IT SAYS THAT A TRIMMED PAYLOAD IS NOT A FAILURE. The engine's old trailer
+//    advised "narrow your query, ask for less" (t200 replaced it with a read-the-rest
+//    pointer), which for this tool was advice to re-gather in a loop. Both heads say so.
 //
 // Split out of `report.ts` at the growth gate's 240-line line, on the seam that
 // file's own fix report named in advance. `the-report-tool-cannot-post.test.ts`

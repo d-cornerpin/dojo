@@ -70,6 +70,7 @@ export const TRIVIAL_TOOLS = new Set([
   'history_get',
   'history_expand',
   'recall_recent_thread',
+  'tool_result_read',
   // Read-only view surface
   'canvas_read',
   // Contacts / texts lookups

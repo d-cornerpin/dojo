@@ -65,8 +65,9 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // UX-REPAIR T77b: 438 → 442. Two new draft definitions and their two `user_` twins.
     // DOJO-REPORT T3: 442 → 443. `dojo_report`, one core tool, no `user_` twin — it reaches
     // no person on an owner channel, so the parity loop does not mint one for it.
-    expect(cov.total).toBe(443);
-    expect(cov.declared).toBe(443);
+    // t200: 443 → 444. `tool_result_read`, one core tool (`effects: []`, it reads the agent's own rows).
+    expect(cov.total).toBe(444);
+    expect(cov.declared).toBe(444);
     // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
     // performed, when the recall door converted to the facade and the missing
     // declaration refused it (RULING P5-R14, corrected at the site).

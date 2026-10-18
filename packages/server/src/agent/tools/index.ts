@@ -81,8 +81,10 @@ import { describeNameFailure } from '../../tools/name-help.js';
 import { handlerFor } from './handlers.js';
 // The registration LOOP over `toolDefinitions` travelled to the definitions
 // leaf with the array it projects; this file keeps only the cap's READER,
-// which `applyMaxResultTokensCap` below is the sole caller of.
+// which `resultViewChars` below is the sole caller of.
 import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
+import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
+import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
@@ -535,7 +537,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     // `default:` arm, which is what "no case matched" always meant.
     //
     // The handler answers with the same two values the case bodies assigned, so
-    // everything below — the per-tool `maxResultTokens` cap, the unknown-args
+    // everything below — the result admission (t200), the unknown-args
     // warning, the try/catch that turns a throw into `Tool execution failed: …`
     // — still applies to it identically. That is why a handler CANNOT return
     // early, and why the three interceptors above are not handlers.
@@ -604,28 +606,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     auditLog(agentId, 'tool_call', name, 'error', content);
   }
 
-  // Phase 3.5 (2026-05-04), large-files interception path REMOVED.
-  // The v1 pattern (`shouldIntercept` + `interceptLargeFile`) replaced
-  // oversized content with an "exploration summary" stub that had no path
-  // back to the actual content, agents trying to read a 35K-token HTML
-  // file got stuck because the recovery tools (history_get / history_expand)
-  // returned metadata, not the real content. The new model is per-tool
-  // `maxResultTokens` (Phase 3) + offset/limit pagination on `file_read`
-  // (Phase 3.5). The `large_files` table stays for backfill of pre-existing
-  // intercepted files in production agent histories.
-
-  // Phase 3 (2026-05-04), per-tool result cap enforcement. If the tool's
-  // definition declares maxResultTokens and the content exceeds it, truncate
-  // here and append a trailer telling the agent how to paginate. Approximate
-  // 1 token ≈ 4 chars (conservative; real ratios are 3-4 for English text).
-  // Successful results only, error messages stay intact regardless of size.
-  if (!isError) {
-    content = applyMaxResultTokensCap(name, content);
-  }
+  // t200 (D12): admission. A result longer than its view is kept WHOLE (`keptWhole`, written by
+  // the loop's recorder) and the agent sees its pointer; nothing is cut away and running the tool
+  // again is never the advice. It replaced the Phase-3 cap here, which threw the rest away.
+  const admitted = admitToolResult(name, id, content, isError);
+  content = admitted.content;
+  const keptWhole = admitted.keptWhole;
 
   // v2.3.19, prepend the unknown-args warning if one was raised at
-  // the top of executeTool. Goes BEFORE the cap so it survives any
-  // result truncation. Applied to both success and error results so the
+  // the top of executeTool. Goes AFTER the admission so a pointer never
+  // hides it. Applied to both success and error results so the
   // agent always sees it.
   if (unknownArgsWarning) {
     content = `${unknownArgsWarning}\n\n${content}`;
@@ -637,75 +627,35 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     content,
     isError,
     ...(isError && errorCode ? { errorCode } : {}),
+    ...(keptWhole !== undefined ? { keptWhole } : {}),
   };
 }
 
+/** The executor's admission (t200): the result as the agent sees it, plus the whole when that
+ *  view is the result's pointer. The recorder keeps the whole with the row (`memory/kept-results.ts`). */
+export function admitToolResult(toolName: string, callId: string, content: string, isError = false): { content: string; keptWhole?: string } {
+  const size = resultViewChars(toolName, content, isError);
+  return callId && content.length > size ? { content: toolResultView(content, callId, size), keptWhole: content } : { content };
+}
+
 /**
- * Truncate `content` to the tool's `maxResultTokens` cap if exceeded.
- * Adds a generic trailer so the agent knows it was truncated and can
- * paginate via the tool's own offset/limit/filter parameters.
- *
- * Phase 3 (2026-05-04). Used by `executeTool` for every tool whose
- * definition declares `maxResultTokens`. Char/token conversion is
- * approximate (4 chars ≈ 1 token, conservative); the goal is to keep
- * single tool results from blowing context, not exact metering.
+ * How many characters of this result the agent is shown whole (t200). Every tool's view is
+ * `TOOL_RESULT_VIEW_CHARS`; a tool that declares `maxResultTokens` is shown whole only up to that
+ * size, or up to twice it when the result is one of its OWN pages (it ends with the tool's paging
+ * trailer: a page that slightly overshoots keeps its "continue" line in sight). Never past the view.
+ * An error is held to the view alone, as it always was. Beyond this size the result is its pointer.
  */
-
-export function applyMaxResultTokensCap(toolName: string, content: string): string {
-  // Phase 3.5 (2026-05-04), check the cross-file registry first so tools
-  // defined outside agent/tools.ts (Google, Microsoft, Slides, Office) can
-  // declare caps too. Falls back to the local toolDefinitions array.
-  const registered = getRegisteredMaxResultTokens(toolName);
-  const local = toolDefinitions.find((t) => t.name === toolName)?.maxResultTokens;
-  const cap = registered ?? local;
-  if (!cap) return content;
-
-  const charBudget = cap * 4;
-  if (content.length <= charBudget) return content;
-
-  // If the tool already appended its own friendly trailer (file_read's
-  // pagination stub, end-of-file marker, etc.), don't re-truncate, that
-  // would eat the more-helpful per-tool guidance. The tool already capped
-  // itself; the engine just slightly overshot the char budget.
-  //
-  // EXCEPTION: if the content is way over budget (more than 2x), the tool's
-  // self-cap is broken, apply the generic truncation regardless of the
-  // trailer. Pre-2026-05-06 fix: file_read's per-line cap was missing, so a
-  // single-line 5.9MB HTML file appended a "[End of file]" trailer and then
-  // bypassed this entire safety net, blowing the model's context window.
-  const HARD_OVERSHOOT_RATIO = 2;
-  const isHardOvershoot = content.length > charBudget * HARD_OVERSHOOT_RATIO;
-  if (!isHardOvershoot) {
-    const TOOL_TRAILER_PATTERNS = [
-      /\[Read lines \d+-\d+ of \d+ total\./,
-      /\[End of file\. Read lines \d+-\d+ of \d+ total\.\]$/,
-      /\[Read chars \d+-\d+ of \d+ total\./,
-      /\[End of content\. Read chars \d+-\d+ of \d+ total\.\]$/,
-      /\[End of content\. Total: \d+ chars\. Requested offset/,
-    ];
-    const tail = content.slice(-400);
-    if (TOOL_TRAILER_PATTERNS.some((re) => re.test(tail))) {
-      return content;
-    }
-  }
-
-  const approxOriginalTokens = Math.round(content.length / 4);
-  // Phase 3.5 fix, tool-aware trailer guidance. Tools that have offset/limit
-  // pagination get guided toward it; tools that don't get guided toward
-  // narrowing their query/scope. Avoids the "use pagination" advice on tools
-  // like web_search / vault_search that don't actually support it.
-  const TOOLS_WITH_PAGINATION = new Set([
-    'file_read',
-    'gmail_read', 'outlook_read',
-    'drive_read', 'docs_read', 'sheets_read', 'onedrive_read',
-  ]);
-  const guidance = TOOLS_WITH_PAGINATION.has(toolName)
-    ? "Re-call with offset/limit to read more, or use a more specific query."
-    : "Narrow your query, ask for less, or use a more specific tool to fit under the cap.";
-  const trailer =
-    `\n\n[Truncated by engine: returned ~${cap} tokens of ` +
-    `~${approxOriginalTokens} total. ${guidance}]`;
-  // Reserve room for the trailer so the final string fits the budget.
-  const truncatedBody = content.slice(0, Math.max(0, charBudget - trailer.length));
-  return truncatedBody + trailer;
+export function resultViewChars(toolName: string, content: string, isError = false): number {
+  const declared = getRegisteredMaxResultTokens(toolName) ?? toolDefinitions.find((t) => t.name === toolName)?.maxResultTokens;
+  if (!declared || isError) return TOOL_RESULT_VIEW_CHARS;
+  const OWN_PAGE_TRAILERS = [
+    /\[Read lines \d+-\d+ of \d+ total\./,
+    /\[End of file\. Read lines \d+-\d+ of \d+ total\.\]$/,
+    /\[Read chars \d+-\d+ of \d+ total\./,
+    /\[End of content\. Read chars \d+-\d+ of \d+ total\.\]$/,
+    /\[End of content\. Total: \d+ chars\. Requested offset/,
+  ];
+  const tail = content.slice(-400);
+  const ownPage = OWN_PAGE_TRAILERS.some((re) => re.test(tail));
+  return Math.min(declared * CHARS_PER_TOKEN * (ownPage ? 2 : 1), TOOL_RESULT_VIEW_CHARS);
 }

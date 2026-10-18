@@ -1,127 +1,105 @@
-// Phase 3 (2026-05-04), per-tool result cap enforcement tests.
+// Phase 3 (2026-05-04) per-tool result caps, as t200 (D12) re-made them.
 //
-// `applyMaxResultTokensCap` is the post-processing step that runs at the
-// end of executeTool for any tool whose definition declares
-// `maxResultTokens`. When the content exceeds the cap (using a 4 char/token
-// approximation), the result is truncated and a trailer appended telling
-// the agent how to paginate.
-//
-// These tests cover the cap behavior in isolation. Live verification of
-// the integration with executeTool happens via dev-test-tools.
+// Until t200 `applyMaxResultTokensCap` CUT a result over its tool's declared `maxResultTokens`
+// and told the agent to narrow its query. It is gone. `resultViewChars` now says how much of a
+// result is shown whole, and a longer one is kept whole and shown as its pointer
+// (`toolResultView`), with the read call for the rest. What these clauses keep from the old file is
+// every SIZE rule: which tools are held to which size, the own-page carve-out and its 2x limit.
+// The executor's whole path (admit, record, read) is driven in
+// `agent/tools/__tests__/t200-result-store-a-long-result-is-kept-whole.test.ts`.
 
 import { describe, it, expect } from 'vitest';
-import { applyMaxResultTokensCap } from '../tools/index.js';
+import { resultViewChars } from '../tools/index.js';
 import { applyTextPagination } from '../tools/pagination.js';
-import { V2_MAX_TOOL_RESULT_TOKENS, TOOL_RESULT_VIEW_CHARS } from '../../memory/tool-result-view.js';
+import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 
-describe('applyMaxResultTokensCap', () => {
-  it('returns content unchanged when under the cap', () => {
+/** What the executor hands the recorder for this result: its view, and whether the whole is kept. */
+function admit(tool: string, content: string): { view: string; kept: boolean } {
+  const size = resultViewChars(tool, content);
+  return content.length > size ? { view: toolResultView(content, 'call-1', size), kept: true } : { view: content, kept: false };
+}
+
+describe('resultViewChars + toolResultView (t200: kept whole, never cut away)', () => {
+  it('returns content unchanged when under the size', () => {
     const small = 'just a small result';
-    expect(applyMaxResultTokensCap('file_read', small)).toBe(small);
+    expect(admit('file_read', small)).toEqual({ view: small, kept: false });
   });
 
-  it('returns content unchanged for tools without maxResultTokens set', () => {
-    // file_write has no maxResultTokens, should never truncate.
+  it('a tool without maxResultTokens is held to the shared view, and a longer result is kept whole', () => {
+    expect(resultViewChars('file_write', 'x')).toBe(TOOL_RESULT_VIEW_CHARS);
     const huge = 'x'.repeat(100_000);
-    expect(applyMaxResultTokensCap('file_write', huge)).toBe(huge);
+    const out = admit('file_write', huge);
+    expect(out.kept).toBe(true);
+    expect(out.view.length).toBeLessThan(TOOL_RESULT_VIEW_CHARS);
+    expect(out.view).toContain('tool_result_read');
   });
 
-  it('truncates file_read output above the model\'s per-result view (V2_MAX_TOOL_RESULT_TOKENS)', () => {
-    // t159 H: the cap is the SAME number the assembler's view applies (it was 60000 tokens, four times
-    // what the model could see, so the page's footer was cut away unseen).
-    const huge = 'x'.repeat(TOOL_RESULT_VIEW_CHARS + 10_000);
-    const out = applyMaxResultTokensCap('file_read', huge);
-    expect(out.length).toBeLessThanOrEqual(TOOL_RESULT_VIEW_CHARS);
-    expect(out).toMatch(new RegExp(`\\[Truncated by engine: returned ~${V2_MAX_TOOL_RESULT_TOKENS} tokens of`));
-    // file_read has pagination, so the trailer suggests offset/limit (not the
-    // generic "narrow your query" message).
-    expect(out).toMatch(/Re-call with offset\/limit/);
+  it('file_read is held to the model\'s per-result view (V2_MAX_TOOL_RESULT_TOKENS)', () => {
+    expect(resultViewChars('file_read', 'x')).toBe(TOOL_RESULT_VIEW_CHARS);
   });
 
-  it('uses narrow-your-query guidance for tools without pagination', () => {
-    // web_search has a cap but no offset/limit, trailer should NOT suggest it.
-    const huge = 'w'.repeat(20_000);
-    const out = applyMaxResultTokensCap('web_search', huge);
-    expect(out).toMatch(/Narrow your query/);
-    expect(out).not.toMatch(/offset\/limit/);
+  it('no tool is advised to run again or to narrow its query', () => {
+    for (const tool of ['web_search', 'file_read', 'exec', 'made_up_tool']) {
+      const out = admit(tool, 'w\n'.repeat(100_000));
+      expect(out.kept).toBe(true);
+      expect(out.view).not.toMatch(/Narrow your query|Re-call|Truncated by engine|same tool again/);
+    }
   });
 
-  it('truncates exec output above 32000 tokens', () => {
-    // e465cf2 (2026-05-22, v2.7.2): exec cap raised 4000 → 32000 tokens so
-    // logs/grep/JSON dumps stop forcing `| head -N` workarounds.
-    const huge = 'a'.repeat(150_000);
-    const out = applyMaxResultTokensCap('exec', huge);
-    expect(out.length).toBeLessThanOrEqual(32000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~32000 tokens/);
+  it('exec and shell declare no size of their own: the shared view is theirs (ctx 13)', () => {
+    expect(resultViewChars('exec', 'x')).toBe(TOOL_RESULT_VIEW_CHARS);
+    expect(resultViewChars('shell', 'x')).toBe(TOOL_RESULT_VIEW_CHARS);
   });
 
-  it('truncates web_fetch output above 2000 tokens (Phase 3.5: tightened from 6K → 2K when prompt extraction returns)', () => {
-    const huge = 'b'.repeat(30_000);
-    const out = applyMaxResultTokensCap('web_fetch', huge);
-    expect(out.length).toBeLessThanOrEqual(2000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~2000 tokens/);
+  it('web_fetch is shown whole up to 2000 tokens (Phase 3.5: tightened from 6K → 2K when prompt extraction returns)', () => {
+    expect(resultViewChars('web_fetch', 'x')).toBe(2000 * 4);
+    expect(admit('web_fetch', 'b'.repeat(30_000)).kept).toBe(true);
   });
 
-  it('truncates web_search output above 3000 tokens', () => {
-    const huge = 'c'.repeat(15_000);
-    const out = applyMaxResultTokensCap('web_search', huge);
-    expect(out.length).toBeLessThanOrEqual(3000 * 4);
+  it('web_search is shown whole up to 3000 tokens', () => {
+    expect(resultViewChars('web_search', 'x')).toBe(3000 * 4);
   });
 
-  it('truncates history_search output above 4000 tokens', () => {
-    const huge = 'd'.repeat(20_000);
-    const out = applyMaxResultTokensCap('history_search', huge);
-    expect(out.length).toBeLessThanOrEqual(4000 * 4);
+  it('history_search is shown whole up to 4000 tokens', () => {
+    expect(resultViewChars('history_search', 'x')).toBe(4000 * 4);
   });
 
-  it('does not touch unknown tools', () => {
-    const huge = 'e'.repeat(50_000);
-    expect(applyMaxResultTokensCap('made_up_tool', huge)).toBe(huge);
+  it('an unknown tool is held to the shared view', () => {
+    expect(resultViewChars('made_up_tool', 'x')).toBe(TOOL_RESULT_VIEW_CHARS);
   });
 
-  it('reports an approximate original token count in the trailer', () => {
-    const huge = 'x'.repeat(400_000); // ~100K tokens, over file_read's cap
-    const out = applyMaxResultTokensCap('file_read', huge);
-    expect(out).toMatch(/of ~100000 total/);
+  it('an error is held to the shared view alone, whatever the tool declares', () => {
+    expect(resultViewChars('web_search', 'x', true)).toBe(TOOL_RESULT_VIEW_CHARS);
   });
 
-  it('Phase 3.5, does not re-truncate content that already has a friendly file_read trailer', () => {
-    // The v2 file_read path appends its own pagination trailer
-    // ("[Read lines 0-2000 of 4280 total. To continue: file_read(...)]")
-    // when it returns less than the full file. The generic engine cap
-    // must NOT re-truncate that output and replace the friendly trailer
-    // with a generic one, the per-tool guidance is more useful.
-    // Exceeds file_read's per-result budget on its own, but stays under the 2x
-    // hard-overshoot cutoff so the carve-out actually executes.
-    const body = 'x'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 1.5));
+  it('the pointer reports the whole size', () => {
+    const out = admit('file_read', 'x'.repeat(400_000));
+    expect(out.view).toMatch(/400,000 characters \(~100,000 tokens\)/);
+  });
+
+  it('Phase 3.5, content that ends in a friendly file_read trailer keeps it (shown whole within the view)', () => {
+    const body = 'x'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 0.9));
     const friendly =
       body +
       '\n\n[Read lines 0-2000 of 4280 total. 2280 more lines remain.\n' +
       ' To continue: file_read(path="/x", offset=2000, limit=2000).\n' +
       ' To search for specific content: use grep instead.]';
-    const out = applyMaxResultTokensCap('file_read', friendly);
-    // Output unchanged, the friendly trailer was preserved.
-    expect(out).toBe(friendly);
-    expect(out).not.toMatch(/\[Truncated by engine/);
+    expect(admit('file_read', friendly)).toEqual({ view: friendly, kept: false });
   });
 
-  it('Phase 3.5, does not re-truncate content with end-of-file trailer', () => {
-    // Over the per-result budget, under the 2x cutoff (see above).
-    const body = 'y'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 1.5));
-    const friendly = body + '\n\n[End of file. Read lines 100-180 of 180 total.]';
-    const out = applyMaxResultTokensCap('file_read', friendly);
-    expect(out).toBe(friendly);
+  it('Phase 3.5, content with an end-of-file trailer is shown whole within the view', () => {
+    const friendly = 'y'.repeat(Math.floor(TOOL_RESULT_VIEW_CHARS * 0.9)) + '\n\n[End of file. Read lines 100-180 of 180 total.]';
+    expect(admit('file_read', friendly)).toEqual({ view: friendly, kept: false });
   });
 
-  it('Phase 3.5, registered cross-file caps work (Google/MS tools)', async () => {
-    // Importing google/tools-read.ts triggers its registerMaxResultTokens
-    // calls. After import, gmail_read should have a registered cap (4K)
-    // even though it's not in agent/tools.ts toolDefinitions.
+  it('Phase 3.5, registered cross-file sizes work (Google/MS tools)', async () => {
+    // Importing google/tools-read.ts triggers its registerMaxResultTokens calls.
     await import('../../google/tools-read.js');
-    const huge = 'g'.repeat(20_000); // ~5K tokens, exceeds 4K cap
-    const out = applyMaxResultTokensCap('gmail_read', huge);
-    expect(out.length).toBeLessThanOrEqual(4000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~4000 tokens/);
+    const size = resultViewChars('gmail_read', 'x');
+    expect(size).toBeLessThan(TOOL_RESULT_VIEW_CHARS);
+    const out = admit('gmail_read', 'g'.repeat(size + 4_000));
+    expect(out.kept).toBe(true);
+    expect(out.view.length).toBeLessThanOrEqual(size);
   });
 });
 
@@ -194,27 +172,23 @@ describe('applyTextPagination (Phase 3.5)', () => {
     expect(out.length).toBeLessThan(500);
   });
 
-  it('engine cap carve-out preserves the pagination trailer on minor overshoots', () => {
-    // applyMaxResultTokensCap should NOT re-truncate content with the new
-    // pagination trailer pattern when overshoot is minor (≤ 2x budget).
-    // gmail_read cap is 4000 tokens ≈ 16K char budget, body of 18K chars
-    // is a 1.13x overshoot, well under the 2x hard-overshoot cutoff.
-    const body = 'q'.repeat(18_000) + '\n\n[Read chars 0-18000 of 100000 total. 82000 more chars remain.\n To continue: gmail_read(message_id="x", offset=18000, limit=18000).]';
-    const out = applyMaxResultTokensCap('gmail_read', body);
-    expect(out).toBe(body);
-    expect(out).not.toMatch(/Truncated by engine/);
+  it('the own-page carve-out shows a page that slightly overshoots its tool\'s size whole', async () => {
+    // A page within twice its tool's declared size keeps its trailer in sight, as before t200.
+    await import('../../google/tools-read.js');
+    const size = resultViewChars('gmail_read', 'x');
+    const body = 'q'.repeat(Math.floor(size * 1.1)) + '\n\n[Read chars 0-18000 of 100000 total. 82000 more chars remain.\n To continue: gmail_read(message_id="x", offset=18000, limit=18000).]';
+    expect(admit('gmail_read', body)).toEqual({ view: body, kept: false });
   });
 
-  it('engine cap overrides the trailer carve-out on hard overshoot (>2x budget)', () => {
-    // Pre-2026-05-06 a tool that appended a pagination trailer could ship
-    // arbitrarily-large content and bypass the engine cap entirely. file_read
-    // hit this path with a single-line 5.9MB HTML file: per-line cap missing,
-    // self-cap bypassed, trailer appended, generic cap skipped, model context
-    // blown. New behavior: when content is >2x the budget, the trailer
-    // carve-out doesn't save it.
-    const body = 'q'.repeat(50_000) + '\n\n[Read chars 0-50000 of 100000 total. 50000 more chars remain.\n To continue: gmail_read(message_id="x", offset=50000, limit=50000).]';
-    const out = applyMaxResultTokensCap('gmail_read', body);
-    expect(out.length).toBeLessThan(body.length);
-    expect(out).toMatch(/Truncated by engine/);
+  it('past twice its tool\'s size a page is kept whole and shown as its pointer, not cut', async () => {
+    // Pre-2026-05-06 a tool that appended a pagination trailer could ship arbitrarily-large
+    // content and bypass the engine cap entirely (a single-line 5.9MB HTML file). The 2x limit stays.
+    await import('../../google/tools-read.js');
+    const size = resultViewChars('gmail_read', 'x');
+    const body = 'q'.repeat(size * 3) + '\n\n[Read chars 0-50000 of 100000 total. 50000 more chars remain.\n To continue: gmail_read(message_id="x", offset=50000, limit=50000).]';
+    const out = admit('gmail_read', body);
+    expect(out.kept).toBe(true);
+    expect(out.view.length).toBeLessThan(body.length);
+    expect(out.view).toContain('tool_result_read');
   });
 });

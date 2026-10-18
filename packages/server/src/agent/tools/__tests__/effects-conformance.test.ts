@@ -282,14 +282,16 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // twin — it reaches no person on an owner channel, so the full-parity loop does not mint
   // one. TWINS.length holding at 119 IS the check that it did not accidentally acquire one,
   // the same check T3's `shell` earned.
-  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report`, 119 user_ twins, 443 at runtime', () => {
-    expect(BASE.length).toBe(324);
+  // t200 moves both by ONE the same way: `tool_result_read`, a core definition with no twin.
+  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read`, 119 user_ twins, 444 at runtime', () => {
+    expect(BASE.length).toBe(325);
+    expect(BASE.filter((d) => d.name === 'tool_result_read')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'gmail_draft' || d.name === 'outlook_draft')).toHaveLength(2);
     expect(BASE.filter((d) => d.name === 'dojo_report')).toHaveLength(1);
     expect(TWINS.length).toBe(119);
-    expect(ALL.length).toBe(443);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(443);
+    expect(ALL.length).toBe(444);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(444);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -562,8 +564,9 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // DOJO-REPORT T3: core 112 → 113 and runtime 442 → 443. `dojo_report` is declared in
     // `definitions.ts`, so it lands INSIDE the core array — which is why `outsideCore`
     // below does not move. Both numbers moving together is the check on that claim.
-    expect(toolDefinitions.length).toBe(113);
-    expect(ALL.length).toBe(443);
+    // t200: core 113 → 114 and runtime 443 → 444, `tool_result_read`, the same shape.
+    expect(toolDefinitions.length).toBe(114);
+    expect(ALL.length).toBe(444);
 
     const core = new Set(toolDefinitions.map((d) => d.name));
     const outsideCore = ALL.filter((d) => !core.has(d.name));

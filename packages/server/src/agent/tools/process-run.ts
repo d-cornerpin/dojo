@@ -3,10 +3,9 @@
 //
 // WHY THIS IS A MODULE AND NOT 120 MORE LINES OF `agent/tools.ts`. T3 turns one
 // exec entry point into two, and two doors that format their output differently
-// is how a scenario asserting on `stdout_truncated: true` starts passing on one
+// is how a scenario asserting on one door's output starts passing on one
 // and failing on the other. Everything below is the SAME code the deleted
-// string-exec handler ran — the per-stream 16K caps, the `stdout_truncated`
-// flags, the `command_failed: <reason>` header, the ENOENT/SIGTERM
+// string-exec handler ran — the `command_failed: <reason>` header, the ENOENT/SIGTERM
 // translations — lifted verbatim so both doors share it by construction rather
 // than by anybody remembering to keep them in step.
 //
@@ -69,16 +68,9 @@ export const EXEC_TIMEOUT_MAX_MS = 120000;
  */
 export const EXEC_ABSOLUTE_CEILING_MS = 60 * 60 * 1000;
 
-/** Phase 3.5 (2026-05-04), per-stream caps. Each of stdout/stderr gets its own
- *  ~4K-token cap (16K chars), tagged with `stdout_truncated:true` /
- *  `stderr_truncated:true` flags so the agent sees structurally that output was
- *  cut. Combined output also hits the engine-level applyMaxResultTokensCap. */
-const STREAM_CHAR_CAP = 16_000;
-
-function capStream(raw: string): { text: string; truncated: boolean } {
-  const truncated = raw.length > STREAM_CHAR_CAP;
-  return { text: truncated ? raw.slice(0, STREAM_CHAR_CAP) : raw, truncated };
-}
+// t200 (D12): the output is returned WHOLE. It used to keep 16,000 characters of each stream and
+// drop the rest before anything was stored; a long output is now kept whole by the executor and the
+// agent reads any part of it (`memory/tool-result-view.ts`).
 
 /** Phase 3.5 fix, defensive coerce. DeepSeek emits numeric args as strings
  *  despite the schema; without coerce a string timeout silently falls back to
@@ -145,16 +137,12 @@ function formatProcessResult(
   outcome: { stdout: string; stderr: string; reason: string | null; messageFallback: string },
   note: string | null,
 ): string {
-  const out = capStream(outcome.stdout ?? '');
-  const err = capStream(outcome.stderr ?? '');
+  const out = (outcome.stdout ?? '').trim();
+  const err = (outcome.stderr ?? '').trim();
   const parts: string[] = [];
   if (outcome.reason) parts.push(`command_failed: ${outcome.reason}`);
-  if (out.text.trim() || out.truncated) {
-    parts.push(`stdout${out.truncated ? ' (truncated, stdout_truncated: true)' : ''}:\n${out.text.trim() || '(empty)'}`);
-  }
-  if (err.text.trim() || err.truncated) {
-    parts.push(`stderr${err.truncated ? ' (truncated, stderr_truncated: true)' : ''}:\n${err.text.trim() || '(empty)'}`);
-  }
+  if (out) parts.push(`stdout:\n${out}`);
+  if (err) parts.push(`stderr:\n${err}`);
   if (outcome.reason && outcome.messageFallback) parts.push(`node_error:\n${outcome.messageFallback}`);
   if (note) parts.push(note);
   if (parts.length === 0) return '(command completed with no output)';
@@ -196,20 +184,18 @@ export async function runProcess(input: {
       ceilingMs: EXEC_ABSOLUTE_CEILING_MS,
       ...(cwd ? { cwd } : {}),
     });
-    const out = capStream(stdout ?? '');
-    const err = capStream(stderr ?? '');
+    const out = (stdout ?? '').trim();
+    const err = (stderr ?? '').trim();
     audit(auditTarget, 'success',
-      err.text.trim()
-        ? `stdout: ${out.text.trim().slice(0, 250)} | stderr: ${err.text.trim().slice(0, 250)}`
-        : out.text.trim().slice(0, 500));
+      err ? `stdout: ${out.slice(0, 250)} | stderr: ${err.slice(0, 250)}` : out.slice(0, 500));
     return formatProcessResult({ stdout: stdout ?? '', stderr: stderr ?? '', reason: null, messageFallback: '' }, note);
   } catch (err: unknown) {
     const error = err as { stderr?: string; stdout?: string };
     const { reason, messageFallback } = processFailureReason(err, timeout);
-    const out = capStream(error.stdout ?? '');
-    const errStream = capStream(error.stderr ?? '');
+    const out = (error.stdout ?? '').trim();
+    const errStream = (error.stderr ?? '').trim();
     audit(auditTarget, 'error',
-      `${reason} | stderr: ${errStream.text.trim().slice(0, 250) || '(empty)'} | stdout: ${out.text.trim().slice(0, 250) || '(empty)'}`);
+      `${reason} | stderr: ${errStream.slice(0, 250) || '(empty)'} | stdout: ${out.slice(0, 250) || '(empty)'}`);
     return formatProcessResult(
       { stdout: error.stdout ?? '', stderr: error.stderr ?? '', reason, messageFallback },
       note,

@@ -148,3 +148,142 @@ describe('t200 — a 60K-token exec result is kept whole and read in parts', () 
     expect(hits.content).toMatch(/\b3501\b/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// BEYOND THE RED: every tool, a batch, the rows recorded before t200, the lifetime, the reach.
+// ════════════════════════════════════════════════════════════════════════════════════════
+import { insertMessage } from '../../../memory/message-store.js';
+import { getFilteredTools } from '../surface.js';
+import { getAgentAlwaysLoadedTools } from '../../../tools/tool-docs.js';
+import { pmMayCall } from '../../../tracker/pm-agent.js';
+import { noteHandedCredentialValues, forgetHandedCredentialValues } from '../../../credentials/secret-values.js';
+import { toolResultView, TOOL_RESULT_VIEW_CHARS, RESULT_READ_TOOL } from '../../../memory/tool-result-view.js';
+
+const keptRows = (): Array<{ tool_use_id: string; message_id: string; content: string }> =>
+  mockDb.current!.prepare('SELECT tool_use_id, message_id, content FROM kept_tool_results').all() as never;
+
+/** Follow the reader's own "Continue" lines from line 1 to the end; return every line number seen. */
+async function readToTheEnd(id: string): Promise<{ seen: number[]; pages: number }> {
+  const seen: number[] = [];
+  let from: number | null = 1;
+  let pages = 0;
+  while (from !== null) {
+    const page = await run(`read-${pages}`, RESULT_READ_TOOL, { id, from_line: from });
+    expect(page.content.length).toBeLessThanOrEqual(TOOL_RESULT_VIEW_CHARS);
+    for (const r of page.content.split('\n')) {
+      const m = r.match(/^\s*(\d+)\t/);
+      if (m) seen.push(Number(m[1]));
+    }
+    const next = page.content.match(/"from_line":(\d+)\}\)\]$/);
+    from = next ? Number(next[1]) : null;
+    pages++;
+    expect(pages).toBeLessThan(20);
+  }
+  return { seen, pages };
+}
+
+describe('t200 — any tool, not only exec', () => {
+  it('a tool with no paging of its own (history_get of a long message) is kept whole and readable to its last line', async () => {
+    const body = Array.from({ length: 3000 }, (_, i) => `paragraph ${i + 1} of a long pasted document, kept for the record`).join('\n');
+    const msg = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: body, turnNumber: 1 });
+    const result = await run('call-t200-hget', 'history_get', { id: msg.id });
+    expect(result.isError, result.content.slice(0, 300)).toBe(false);
+    expect(result.content).toMatch(/KEPT WHOLE, NOT ALL SHOWN/);
+    record([result]);
+    const { seen, pages } = await readToTheEnd('call-t200-hget');
+    expect(pages).toBeGreaterThan(1);
+    const lines = (result.keptWhole ?? '').split('\n').length;
+    expect(seen).toEqual(Array.from({ length: lines }, (_, i) => i + 1));
+  });
+});
+
+describe('t200 — a batch of long results fits where one cut result used to (ctx 11)', () => {
+  it('six 40K-token results in one response: the row the model sees stays under ONE view, and each is whole in the store', async () => {
+    const results: TurnToolResult[] = [];
+    for (let k = 1; k <= 6; k++) {
+      const out = await run(`call-batch-${k}`, 'exec', {
+        argv: ['/usr/bin/awk', `BEGIN { for (i = 1; i <= 2600; i++) printf "batch ${k} line %04d padding padding padding padding\\n", i; }`],
+      });
+      expect(out.content.length).toBeLessThan(TOOL_RESULT_VIEW_CHARS / 4);
+      results.push(out);
+    }
+    record(results);
+    const blocks = modelView();
+    expect(blocks).toHaveLength(6);
+    const viewTokens = estimateTokens(JSON.stringify(blocks));
+    expect(viewTokens, 'six long results cost less than the one 15K-token view a single cut result used to take')
+      .toBeLessThan(V2_MAX_TOOL_RESULT_TOKENS);
+    expect(keptRows().map((r) => r.tool_use_id).sort()).toEqual(results.map((r) => r.toolCallId).sort());
+    const tail = await run('read-batch', RESULT_READ_TOOL, { id: 'call-batch-4', search: 'line 2600' });
+    expect(tail.content).toContain('batch 4 line 2600');
+  });
+});
+
+describe('t200 — results recorded before t200 are read where they are, never copied', () => {
+  it('a row stored whole the old way: its view is the pointer, the reader reads the row, the store stays empty', async () => {
+    const old = Array.from({ length: 5000 }, (_, i) => `legacy line ${i + 1} padding padding padding padding padding`).join('\n');
+    insertMessage({
+      agentId: AGENT, role: 'tool', lane: 'owner', turnNumber: 1,
+      content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-legacy', content: old }]),
+    });
+    const [block] = modelView();
+    expect(block.content).toBe(toolResultView(old, 'call-legacy'));
+    expect(block.content).toContain('tool_result_read({"id":"call-legacy"');
+    const page = await run('read-legacy', RESULT_READ_TOOL, { id: 'call-legacy', from_line: 4999 });
+    expect(page.content).toContain('legacy line 5000');
+    expect(keptRows()).toHaveLength(0);
+  });
+
+  it('the view is the same bytes every time it is rendered (the cached prefix does not move)', () => {
+    const text = 'z\n'.repeat(80_000);
+    expect(toolResultView(text, 'call-same')).toBe(toolResultView(text, 'call-same'));
+  });
+});
+
+describe('t200 — a kept result lives exactly as long as its message row', () => {
+  it('deleting the row removes it; deleting the agent removes it', async () => {
+    record([await run('call-life-1', 'exec', { argv: LONG_OUTPUT_PROGRAM })]);
+    expect(keptRows()).toHaveLength(1);
+    mockDb.current!.prepare('DELETE FROM messages WHERE id = ?').run(keptRows()[0].message_id);
+    expect(keptRows()).toHaveLength(0);
+    expect((await run('read-gone', RESULT_READ_TOOL, { id: 'call-life-1' })).isError).toBe(true);
+
+    record([await run('call-life-2', 'exec', { argv: LONG_OUTPUT_PROGRAM })], 2);
+    expect(keptRows()).toHaveLength(1);
+    mockDb.current!.prepare('DELETE FROM agents WHERE id = ?').run(AGENT);
+    expect(keptRows()).toHaveLength(0);
+  });
+
+  it('one agent cannot read another agent\'s result by its id', async () => {
+    record([await run('call-mine', 'exec', { argv: LONG_OUTPUT_PROGRAM })]);
+    mockDb.current!.prepare("INSERT INTO agents (id, name, status, config) VALUES ('agent-other', 'Other', 'idle', '{}')").run();
+    const theirs = toolResultOf(await executeTool('agent-other', { id: 'r-x', name: RESULT_READ_TOOL, arguments: { id: 'call-mine' } }));
+    expect(theirs.isError).toBe(true);
+    expect(theirs.content).toMatch(/No tool result with id "call-mine" is stored for you/);
+  });
+
+  it('a credential value the agent was handed is redacted in the kept whole, as on the row', async () => {
+    const SECRET = 'sk-live-t200selftest-77c0e1';
+    noteHandedCredentialValues(AGENT, [SECRET]);
+    try {
+      record([await run('call-secret', 'exec', {
+        argv: ['/usr/bin/awk', `BEGIN { for (i = 1; i <= 4000; i++) printf "row %04d %s\\n", i, (i == 3000 ? "${SECRET}" : "padding padding padding padding padding padding"); }`],
+      })]);
+      expect(keptRows()[0].content).not.toContain(SECRET);
+      expect(keptRows()[0].content).toContain('row 3000');
+    } finally {
+      forgetHandedCredentialValues(AGENT);
+    }
+  });
+});
+
+describe('t200 — every agent can act on the pointer it is shown', () => {
+  it('the reader is always loaded, survives a curated allow list, and the PM may call it', () => {
+    mockDb.current!.prepare(
+      `INSERT INTO agents (id, name, status, config, tools_policy) VALUES ('agent-curated', 'Curated', 'idle', '{}', ?)`,
+    ).run(JSON.stringify({ allow: ['get_current_time'], deny: [] }));
+    expect(getFilteredTools('agent-curated').map((t) => t.name)).toContain(RESULT_READ_TOOL);
+    expect(getAgentAlwaysLoadedTools(AGENT)).toContain(RESULT_READ_TOOL);
+    expect(pmMayCall(RESULT_READ_TOOL)).toBe(true);
+  });
+});

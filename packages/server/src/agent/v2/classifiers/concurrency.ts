@@ -210,7 +210,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
  * Phase 3.5 (2026-05-04): also stores `maxResultTokens` so cross-file tool
  * registries (Google, Microsoft, Slides, Office) can declare their per-tool
  * caps without all of them having to be in the agent/tools.ts toolDefinitions
- * array. Looked up by `applyMaxResultTokensCap` in agent/tools.ts.
+ * array. Looked up by `resultViewChars` in agent/tools/index.ts.
  */
 const REGISTRY_OVERRIDES = new Map<string, ToolCategory>();
 const REGISTRY_MAX_RESULT_TOKENS = new Map<string, number>();

@@ -32,9 +32,9 @@ import { runWithToolCallId } from '../../turn-state.js';
 import { attachCallCapability, mintCallCapability } from '../../effects/capability.js';
 import { grantsForCall } from '../../effects/scopes.js';
 import { effectsFor } from '../registry.js';
-import { applyMaxResultTokensCap } from '../index.js';
+import { resultViewChars } from '../index.js';
 import { capLargeToolResultStrings } from '../../../memory/assembler.js';
-import { V2_MAX_TOOL_RESULT_TOKENS, TOOL_RESULT_VIEW_CHARS, capToolResultView } from '../../../memory/tool-result-view.js';
+import { V2_MAX_TOOL_RESULT_TOKENS, TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../../memory/tool-result-view.js';
 import { estimateTokens } from '../../../memory/budget.js';
 import { toolDefinitions } from '../definitions.js';
 import type { ToolCall } from '@dojo/shared';
@@ -94,7 +94,7 @@ describe('t159 H: file_read sizes its page to what the view will show', () => {
     expect(page).toMatch(/more lines remain\.\n To continue: file_read\(path="[^"]+", offset=\d+, limit=\d+\)/);
     // The view shows it whole: the footer is the end of what the agent sees, and nothing was cut.
     expect(throughTheView(page)).toBe(page);
-    expect(applyMaxResultTokensCap('file_read', page)).toBe(page);
+    expect(page.length).toBeLessThanOrEqual(resultViewChars('file_read', page));   // t200: the executor admits it whole
   });
 
   it('paging to the end visits every line exactly once, and the needle is found', async () => {
@@ -138,19 +138,21 @@ describe('t159 H: file_read sizes its page to what the view will show', () => {
 });
 
 describe('t159 H: the backstop for unpaged output says what it kept', () => {
-  it('an oversized result keeps its head and names the kept size and the whole size', () => {
+  // t200: what the backstop keeps is now the WHOLE (on the row, read by `tool_result_read`); the
+  // view says how big the whole is and what of it is shown, and never offers a cut result as whole.
+  it('an oversized result keeps its head in view and names the whole size and how to read the rest', () => {
     const big = 'q'.repeat(TOOL_RESULT_VIEW_CHARS * 3);
     const viewed = throughTheView(big);
     expect(viewed.startsWith('q'.repeat(1000))).toBe(true);
-    expect(viewed).toMatch(/only the first ~\d+ chars \(~15000 tokens\) of this 180000-char \(~45000-token\) result were kept/);
-    expect(viewed).toContain('the rest is NOT shown');
+    expect(viewed).toMatch(/KEPT WHOLE, NOT ALL SHOWN: this tool result is 180,000 characters \(~45,000 tokens\)/);
+    expect(viewed).toContain('tool_result_read({"id":"tc1"');
     expect(viewed).not.toMatch(/tokens truncated/);   // the old wording said how much was LOST, never what was kept
   });
 
-  it('the shared cap is the identity within the view, and the same note comes from the in-place door', () => {
+  it('the shared view is the identity within the view, and the same note comes from the in-place door', () => {
     const fits = 'w'.repeat(TOOL_RESULT_VIEW_CHARS);
-    expect(capToolResultView(fits, 'hint')).toBe(fits);
-    expect(capToolResultView(fits + 'w', 'hint')).toMatch(/only the first ~\d+ chars/);
+    expect(toolResultView(fits, 'tc1')).toBe(fits);
+    expect(toolResultView(fits + 'w', 'tc1')).toMatch(/KEPT WHOLE, NOT ALL SHOWN/);
   });
 });
 
@@ -181,7 +183,7 @@ describe('t159 H: the per-result view size has one source, and every site reads 
     expect(declarations).toEqual(['memory/tool-result-view.ts']);
 
     const assembler = files.find((f) => f.rel === 'memory/assembler.ts')!.code;
-    expect(assembler.match(/\bcapToolResultView\(/g)?.length).toBe(2);
+    expect(assembler.match(/\btoolResultView\(/g)?.length).toBe(2);
     expect(assembler).not.toMatch(/tokens truncated/);
 
     const fsCode = files.find((f) => f.rel === 'agent/tools/cat/fs.ts')!.code;
