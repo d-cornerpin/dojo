@@ -395,9 +395,14 @@ describe('§5 the lane rides the tail, provably', () => {
       }
     };
     walk(SRC);
-    expect(importers).toEqual(['agent/v2/steps/call-llm/pre-call-injections.ts']);
-    // …so nothing on the PREFIX path can even see it: a prefix entry would have to import it.
-    expect(assembler).not.toContain('other-threads-lane');
+    // t211: and the assembler, for ONE number: the size of the block, to set the loop tail's room aside
+    // (`otherThreadsReserveExtra`). It never builds, renders or tags the block, so no prefix entry can carry it.
+    expect(importers.sort()).toEqual(['agent/v2/steps/call-llm/pre-call-injections.ts', 'memory/assembler.ts']);
+    const assemblerImport = /import \{([^}]*)\} from '\.\/other-threads-lane\.js'/.exec(assembler);
+    expect(assemblerImport?.[1].trim(), 'the assembler takes the reserve size and nothing else').toBe('otherThreadsReserveExtra');
+    for (const name of ['buildOtherThreadsInjection', 'renderOtherThreads', 'readOtherThreads', 'engine.other-threads']) {
+      expect(assembler, name).not.toContain(name);
+    }
   });
 
   it('it is DECLARED in the lane table, which is what protects it from the priority repair', () => {

@@ -117,3 +117,26 @@ describe('t211 hand-up 2 — many waiting people do not overflow the reserve', (
     expect(assemblyTokens(whole as never), 'within the budget the repair enforces').toBeLessThanOrEqual(budget);
   });
 });
+
+describe('t211 hand-up 2 — a box with a small block sets aside what it always did', () => {
+  it('three people waiting: the reserve taken off the top is the same as with nobody waiting', async () => {
+    seed();
+    const bag = openTurnContext(AGENT);
+    bag.conversationId = SERVED;
+    const none = (await assembleContext(AGENT, MODEL)).allocation!.offTheTopTokens;
+    waitingPeople(3);
+    const three = (await assembleContext(AGENT, MODEL)).allocation!.offTheTopTokens;
+    expect(three).toBe(none);
+  });
+
+  it('the extra is the size of the block beyond what the literal covers, and it grows with the block', async () => {
+    seed();
+    const bag = openTurnContext(AGENT);
+    bag.conversationId = SERVED;
+    const base = (await assembleContext(AGENT, MODEL)).allocation!.offTheTopTokens;
+    waitingPeople(100);
+    const hundred = (await assembleContext(AGENT, MODEL)).allocation!;
+    expect(hundred.loopTailExtraTokens).toBeGreaterThan(1000);
+    expect(hundred.offTheTopTokens - base).toBe(hundred.loopTailExtraTokens);
+  });
+});

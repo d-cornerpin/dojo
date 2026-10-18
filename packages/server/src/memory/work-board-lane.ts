@@ -329,6 +329,8 @@ export interface TaskListView {
   blocks: ReadonlyArray<string | null | undefined>;
   /** The live-conversation rows this assembly included (the fresh tail the fit kept). */
   liveRows: ReadonlyArray<{ id: string }>;
+  /** t211: this turn's other-threads block beyond the loop-tail literal, already reserved off the top. */
+  loopTailExtraTokens?: number;
 }
 
 /** The lane's declared reserve: what the budget took off the top for it. */
@@ -382,7 +384,7 @@ async function activeTasksRoomTokens(agentId: string, view: TaskListView | undef
   const onTheArray = renderTokens(view.emitted as never)
     + view.blocks.reduce((t, b) => t + (b ? estimateTokens(b) : 0), 0)
     + (ledger ? estimateTokens(ledger) : 0);
-  const loopAppends = reserveOf('lane.loop-tail') + reserveOf('lane.deliveries') + await techniqueAllowanceTokens(agentId);
+  const loopAppends = reserveOf('lane.loop-tail') + (view.loopTailExtraTokens ?? 0) + reserveOf('lane.deliveries') + await techniqueAllowanceTokens(agentId);
   return Math.max(0, view.availableTokens - onTheArray - loopAppends);
 }
 

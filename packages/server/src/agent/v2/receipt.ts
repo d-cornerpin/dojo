@@ -397,7 +397,8 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
     label: string,
   ) => {
     const tokens = assemblyTokens(msgs);
-    const reserve = POST_BUDGET_LANES.find((l) => l.id === id)?.reserveTokens ?? 0;
+    const reserve = (POST_BUDGET_LANES.find((l) => l.id === id)?.reserveTokens ?? 0)
+      + (id === 'lane.loop-tail' ? (input.allocation?.loopTailExtraTokens ?? 0) : 0);
     const names = [...new Set(ids.map((x) => x ?? '(untagged)'))];
     return {
       requested: tokens,

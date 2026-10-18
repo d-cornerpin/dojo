@@ -319,7 +319,7 @@ describe('§4 the assembler may not go back to the flat sum', () => {
     expect(src, 'the flat sum is gone from the assembler')
       .not.toMatch(/const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS \+ POST_BUDGET_RESERVE_TOKENS/);
     expect(src, 'the ladder is asked for, against what is left after the system prompt')
-      .toMatch(/reserveLadderFor\(maxTokens - systemTokens\)/);
+      .toMatch(/reserveLadderFor\(maxTokens - systemTokens, loopTailExtra\)/);   // t211: plus this turn's other-threads share of the loop tail
     expect(src, 'and its answer is what is taken off the top')
       .toMatch(/const offTheTop = ladder\.offTheTop;/);
     // And the squeeze is reported, which is the only report this change adds.

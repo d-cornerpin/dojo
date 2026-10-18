@@ -112,6 +112,8 @@ export interface AllocationReport {
   spentTokens: number;
   /** Reservations taken off the top before the fit ran (ack + post-budget + loop tail). */
   offTheTopTokens: number;
+  /** t211: tokens of this turn's other-threads block beyond what `lane.loop-tail`'s literal covers, already inside `offTheTopTokens`. */
+  loopTailExtraTokens?: number;
   grants: LaneGrant[];
   /** Ids of the lanes that reached the model, in EMISSION (slot) order. */
   admittedIds: string[];
@@ -504,7 +506,10 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'for a lane that rare is a permanent tax on history; a strong technique match is ' +
       'therefore a RECORDED over-budget event at the validator, not a silent one, which ' +
       'is the same disposition requirement B8 gives the forced last group. Narrowing the ' +
-      '25,000 cap is a product-behaviour change and is enumerated for T9, not taken here.',
+      '25,000 cap is a product-behaviour change and is enumerated for T9, not taken here. ' +
+      't211: THE OTHER-THREADS BLOCK IS NO LONGER BOUNDED BY THIS LITERAL. Its 292-token maximum is inside the ' +
+      '1,650 (`LOOP_TAIL_OTHER_THREADS_COVERED_TOKENS`); the part of the block this turn would render beyond that is ' +
+      'added to the reserve each assembly (`loopTailExtraTokens`, `reserveLadderFor`), so many people waiting cannot overflow it.',
   },
   // ── W81: THE FOUR LANES THE OWNER'S FINDING 2 MOVED OUT OF THE CACHED REGION ──────────
   // Each reserve is DERIVED BY CALLING THE RENDERER with every declared cap flooded at once
@@ -751,6 +756,25 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
 
 export const POST_BUDGET_RESERVE_TOKENS = POST_BUDGET_LANES.reduce((t, l) => t + l.reserveTokens, 0);
 
+/**
+ * t211 (t207 hand-up 2): THE LOOP TAIL'S RESERVE FOLLOWS WHAT THE LOOP WILL APPEND. `lane.loop-tail` above is a
+ * measured literal, taken when the other-threads block held at most three rows (its measured maximum then was
+ * 292 tokens, and that figure is inside the 1,650). The block has no declared maximum now (t207: it names every
+ * waiting thread), so a box with many people waiting would append far more than the room set aside. This is the
+ * part of THIS turn's block beyond what the literal already covers; the assembler adds it to the reserve it
+ * takes off the top (`reserveLadderFor`), so a box whose block is no larger than before sets aside exactly what
+ * it did before.
+ */
+export const LOOP_TAIL_OTHER_THREADS_COVERED_TOKENS = 292;
+/** The extra is rounded UP to whole steps (an over-reserve is harmless, and it is not a cap): the reserve comes off
+ *  the content budget, which sets where the conversation is trimmed and folded, so it must move in steps rather
+ *  than at every thread that arrives (the cache tenet; the same reason the tail trims in whole blocks). */
+export const LOOP_TAIL_EXTRA_STEP_TOKENS = 512;
+export const loopTailExtraTokens = (otherThreadsBlockTokens: number): number => {
+  const beyond = Math.max(0, otherThreadsBlockTokens - LOOP_TAIL_OTHER_THREADS_COVERED_TOKENS);
+  return Math.ceil(beyond / LOOP_TAIL_EXTRA_STEP_TOKENS) * LOOP_TAIL_EXTRA_STEP_TOKENS;
+};
+
 // ── WHICH POST-BUDGET LANE EACH TAGGED ENTRY RIDES (PHASE-6 T13) ────────────────────────
 //
 // `lane.loop-tail` and `lane.deliveries` are DECLARED by the assembler and FILLED by the
@@ -971,8 +995,8 @@ export interface ReserveLadder {
 }
 
 /** The ladder, against the budget actually left after the system prompt. Pure: the caller logs. */
-export function reserveLadderFor(availableTokens: number): ReserveLadder {
-  const declared = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS;
+export function reserveLadderFor(availableTokens: number, loopTailExtra = 0): ReserveLadder {
+  const declared = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS + loopTailExtra;
   const ceiling = Math.floor(Math.max(0, availableTokens) / RESERVE_LADDER_SHARE_DENOMINATOR);
   if (declared <= ceiling) return { offTheTop: declared, scaled: false, declared };
   return { offTheTop: Math.max(RESERVE_LADDER_FLOOR_TOKENS, ceiling), scaled: true, declared };

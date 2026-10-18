@@ -50,6 +50,7 @@ import { buildRecallLaneMessage } from './recall-lane.js';
 // reason `memory/recall-lane.ts` has one — a post-budget lane must be able to DERIVE its
 // reserve by calling its own renderer, and a render buried inside a lane literal cannot be.
 import { buildWorkBoardLane } from './work-board-lane.js';
+import { otherThreadsReserveExtra } from './other-threads-lane.js';
 import { buildIntegrationStatusLane } from './integration-status-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
@@ -1592,7 +1593,8 @@ async function assembleMessageContext(
   // had left after its system prompt, so the content budget clamped to ZERO and the array
   // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
   // and the G2 argument are all at `reserveLadderFor`.
-  const ladder = reserveLadderFor(maxTokens - systemTokens);
+  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null);
+  const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
   // The line's "told plainly" half needs nothing here: `assertSystemPromptFits` above already
@@ -1627,6 +1629,7 @@ async function assembleMessageContext(
 
   const tailBefore = (candidates.find((c) => c.lane.id === 'lane.fresh-tail')?.render?.payload as TailPayload | undefined)?.rows ?? [];
   const { emitted, report } = fitLanes(candidates, contentBudget, { offTheTopTokens: offTheTop });
+  report.loopTailExtraTokens = loopTailExtra;
 
   // ── Emit in SLOT order, with the generated ack at its declared position ──
   const ackText = renderScaffoldingAck(report.admittedIds);
@@ -1959,7 +1962,7 @@ async function assembleMessageContext(
   let activeTasksLane: string | null = null;
   try {
     const board = await buildWorkBoardLane(agentId, {
-      availableTokens: maxTokens - systemTokens, emitted: merged, liveRows: tailPayload?.rows ?? [],
+      availableTokens: maxTokens - systemTokens, emitted: merged, liveRows: tailPayload?.rows ?? [], loopTailExtraTokens: loopTailExtra,
       blocks: [recallLane, openCommitmentsLane, scratchpadLane, eventsLane, integrationStatusLane],
     });
     attemptLedgerLane = board.attemptLedger;

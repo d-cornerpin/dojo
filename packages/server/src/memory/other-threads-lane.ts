@@ -60,6 +60,7 @@ import { conversationLabel } from './party-label.js';
 import { recordedInstant } from './message-stamp.js';
 import { listChannelStatuses } from '../services/capability-registry.js';
 import { toolCategoryGranted } from '../agent/access/read.js';
+import { renderTokens, loopTailExtraTokens } from './lanes.js';
 
 const logger = createLogger('other-threads-lane');
 
@@ -251,4 +252,12 @@ export function buildOtherThreadsInjection(agentId: string, currentConversationI
     }, agentId);
     return null;
   }
+}
+
+/** t211: the room to add to the loop-tail reserve for this turn's block: its rendered size beyond what the
+ *  reserve's literal already covers. Zero when the loop will not append the block (no human conversation). */
+export function otherThreadsReserveExtra(agentId: string, currentConversationId: string | null): number {
+  if (!currentConversationId) return 0;
+  const block = buildOtherThreadsInjection(agentId, currentConversationId);
+  return block ? loopTailExtraTokens(renderTokens([{ role: 'user', content: block }])) : 0;
 }
