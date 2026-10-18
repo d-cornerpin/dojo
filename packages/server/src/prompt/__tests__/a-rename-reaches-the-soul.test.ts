@@ -160,7 +160,7 @@ beforeEach(async () => {
   setConfig('healer_agent_name', 'Healer');
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
-  setConfig('owner_name', 'Glimmerton');
+  setConfig('owner_name', 'Yorvak');
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   seedAgent(PRIMARY, 'Zargo');

@@ -114,7 +114,7 @@ function agentOrigin(threadId: string): MessageOrigin {
 function humanOrigin(): MessageOrigin {
   return {
     kind: 'user', relation: 'owner', channel: 'dashboard',
-    senderName: 'Glimmerton', senderId: 'glimmerton', threadId: null, intent: null, authorized: true,
+    senderName: 'Yorvak', senderId: 'yorvak', threadId: null, intent: null, authorized: true,
   };
 }
 

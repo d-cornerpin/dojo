@@ -144,7 +144,7 @@ beforeEach(async () => {
   setConfig('pm_agent_name', 'Quilba');
   setConfig('trainer_agent_id', TRAINER);
   setConfig('trainer_agent_name', 'Trainer');
-  setConfig('owner_name', 'Glimmerton');
+  setConfig('owner_name', 'Yorvak');
   // platform.ts caches config; re-read it against this database.
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();

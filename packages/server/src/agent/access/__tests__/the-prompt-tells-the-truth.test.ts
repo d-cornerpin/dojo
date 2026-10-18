@@ -65,7 +65,7 @@ vi.mock('../../../config/platform.js', async () => {
     isImaginerAgent: () => false,
     getPrimaryAgentId: () => 'primary',
     getPrimaryAgentName: () => 'Primary',
-    getOwnerName: () => 'Glimmerton',
+    getOwnerName: () => 'Yorvak',
   };
 });
 
@@ -279,7 +279,7 @@ describe('the strip removes advertisement and never capability', () => {
   it('the two ladder-gated names are DRIVEN to a refusal, not merely asserted about', async () => {
     agent('nogrant', { grants: (g) => { g.channels.master = false; } });
     for (const tool of ['imessage_send', 'imessage_list_contacts']) {
-      const args = { to: 'Glimmerton', message: 'hi' };
+      const args = { to: 'Yorvak', message: 'hi' };
       const channelGate = gatesForCall(tool, args).find((g) => g.kind === 'channel');
       expect(channelGate, `${tool} carries a channel gate`).toBeDefined();
       const outcome = await evaluateGate(channelGate!, {
@@ -300,7 +300,7 @@ describe('the tool guidance stops claiming the capability', () => {
     agent('nogrant', { grants: (g) => { g.channels.master = false; } });
     const guidance = generateToolsGuidance_v2('nogrant');
     expect(guidance).not.toContain('## iMessage');
-    expect(guidance).not.toContain('texts Glimmerton via iMessage');
+    expect(guidance).not.toContain('texts Yorvak via iMessage');
   });
 
   it('and it is BACK the moment the channel is granted', () => {

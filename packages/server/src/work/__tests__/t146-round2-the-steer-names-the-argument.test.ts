@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { ownerVerdictNudgeText } from '../validation-drive.js';
 
 const TASK = '77cba094-e823-4c22-88d4-bea9645b3191';
-const nudge = (agentName = 'HarnessBot', ownerName = 'Glimmerton'): string => ownerVerdictNudgeText({
+const nudge = (agentName = 'HarnessBot', ownerName = 'Yorvak'): string => ownerVerdictNudgeText({
   taskId: TASK, title: 'Synthesize the Squarespace and WordPress research into one rundown',
   status: 'in_progress', agentName, ownerName, boundMin: 5,
 });
