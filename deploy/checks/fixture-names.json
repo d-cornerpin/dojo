@@ -1,5 +1,24 @@
 {
   "note": "The coined stand-in names the tests and shipped examples use instead of real names. REGISTERED so a collision (an owner naming an agent after one) is a one-command event: node deploy/checks/rename-fixture-name.mjs <old> <new>. Coined words only; the names gate scans this file like any other.",
-  "standIns": ["Vexworth", "Plimbrey", "Thassick", "Zargo", "Quilba", "Tyndo", "Zarnak", "Zorbik", "Zubel", "Zergblatt", "Marcus"],
-  "spare": ["Glimmerton", "Brandlewick", "Oxtorvane", "Quellmarsh", "Zumbelrow", "Thorpelin", "Wexlomby"]
+  "standIns": [
+    "Vexworth",
+    "Plimbrey",
+    "Thassick",
+    "Zargo",
+    "Quilba",
+    "Tyndo",
+    "Zarnak",
+    "Zorbik",
+    "Zubel",
+    "Zergblatt",
+    "Glimmerton"
+  ],
+  "spare": [
+    "Brandlewick",
+    "Oxtorvane",
+    "Quellmarsh",
+    "Zumbelrow",
+    "Thorpelin",
+    "Wexlomby"
+  ]
 }
