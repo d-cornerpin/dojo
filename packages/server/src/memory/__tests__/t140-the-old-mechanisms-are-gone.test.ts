@@ -269,13 +269,13 @@ describe('t140 census, round 6 (H2) — the router\'s own pick is passed over li
 });
 
 describe('t140 census, round 7 — the change signals that re-arm a failed writer', () => {
-  it('a person\'s fresh message re-arms for THAT agent; a provider answering re-arms it; nothing else does', () => {
+  it('a person\'s fresh message re-arms for THAT agent; a SUMMARY answer re-arms it (t207: no chat answer does); nothing else does', () => {
     const gate = FILES.find((f) => f.rel === GATE_REL)!.code;
     expect(gate).toMatch(/if \(state\.loopCount === 1 && state\.lastUserMessageId\) noteAPersonSpoke\(agentId\);/);
     expect(filesWith(/\bnoteAPersonSpoke\(/)).toEqual([GATE_REL, 'memory/summary-writer-health.ts']);
-    expect(filesWith(/\bnoteProviderAnswered\(/)).toEqual([`${ENGINE_STEPS_REL}/call-llm/index.ts`, 'memory/summary-writer-health.ts']);
+    expect(filesWith(/\bnoteProviderAnswered\b/), 'no "any call answered" door is left').toEqual([]);
     const health = FILES.find((f) => f.rel === 'memory/summary-writer-health.ts')!.code;
-    expect(health, 'no global clear of the writers left').not.toMatch(/notAnsweringSince\.clear\(\);\s*logger/);
+    expect(health, 't207: the in-process map of marks is gone; the mark is a persisted row').not.toMatch(/notAnsweringSince/);
   });
 });
 

@@ -200,9 +200,10 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     expect(dialed).toEqual([]);
   });
 
-  // Round 7 (re-review I1'): a model's provider answering a turn's call is one of the three changes
-  // that re-arm a summary writer on that provider that had failed.
-  it('the turn\'s call answers: a summary writer on that provider that had failed is used again', async () => {
+  // Round 7 (re-review I1') made a model's provider answering a turn's call one of the changes that re-arm a
+  // summary writer on that provider that had failed. t207 (D9) reverses it: only a SUMMARY answer, a person's
+  // fresh message or the Settings writer changing does. A chat answer says nothing about summaries.
+  it('t207: the turn\'s call answers: a summary writer on that provider that had failed is STILL passed over', async () => {
     seed(false);
     const health = await import('../../../../../memory/summary-writer-health.js');
     health.__resetSummaryWriterHealthForTests();
@@ -211,6 +212,6 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
     const out = await callStep();
     expect(out.directive).toBe('proceed');
     expect(dialed).toEqual([ROOMY]);
-    expect(health.eligibleSummaryWriters(ROOMY), 'its provider answered: it is used again').toContain(ROOMY);
+    expect(health.eligibleSummaryWriters(ROOMY), 'a chat answer does not re-arm a summary writer').not.toContain(ROOMY);
   });
 });

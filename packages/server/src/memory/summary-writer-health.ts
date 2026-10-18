@@ -10,9 +10,13 @@
 //     hard limits). Round 6 (final review I1, R-V333-15): it is not dialled again — by a turn OR by
 //     the background — until something has CHANGED. Round 7 (re-review I1') named the changes
 //     exactly: a person's FRESH message to an agent re-arms it for THAT agent only
-//     (`noteAPersonSpoke`); its provider answering any call re-arms it for everyone
-//     (`noteProviderAnswered`); the owner changing the Settings writer re-arms it. Not a scheduled
+//     (`noteAPersonSpoke`); a SUMMARY call its provider answers re-arms it for everyone
+//     (`noteSummaryWriterOutcome`); the owner changing the Settings writer re-arms it. Not a scheduled
 //     turn, a self-wake, a continuation — round 6 re-armed on those, and for every agent at once.
+// t207 (D9): the mark is PERSISTED (`healer_state`, scope below), so a restart does not forget an
+// unreachable writer and dial it again on the first fold; and "answered" means a summary call. Round 7
+// also re-armed a writer when its provider answered ANY call (a chat turn); a model that answers chat
+// and times out on summaries was re-armed, and re-dialled, after every turn. That door is gone.
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
 // no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
 // are that order without broken or not-answering ones; when none is left, nothing is dialled and
@@ -39,13 +43,19 @@ export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
 /** Abort reasons that say nothing about the writer. */
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
 
-/** Providers whose writer has not answered since it last failed or ran past a turn's patience. */
-/** Providers not answering: the moment (an ordinal) they failed, and the Settings writer then. */
-const notAnsweringSince = new Map<string, { at: number; settingsWriter: string | null }>();
-/** Per agent: the moment (same ordinal) a person last wrote to it. */
+/** Per agent: the moment (same ordinal as the marks) a person last wrote to it. */
 const personSpokeAt = new Map<string, number>();
-/** An ordinal, not a clock: "a person spoke after the writer failed" must be exact, never a tie. */
+/** An ordinal that never repeats, never goes backwards and never expires anything: "a person spoke after the
+ *  writer failed" must be exact, never a tie. It starts from the wall clock so an ordinal minted before a
+ *  restart is still smaller than one minted after it; it is never read as a duration. */
 let moment = 0;
+const nextMoment = (): number => (moment = Math.max(moment + 1, Date.now()));
+
+/** Providers whose writer has not answered since it last failed or ran past a turn's patience: one row each,
+ *  `key` = the provider, a separator and the Settings writer at the time (so the owner changing the Settings
+ *  writer makes the row stop matching), `at_ms` = the ordinal. The row is the memory; there is no copy. */
+const MARK_SCOPE = 'summary_writer_not_answering';
+const MARK_SEP = '|';
 
 function settingsWriter(): string | null {
   try {
@@ -54,8 +64,40 @@ function settingsWriter(): string | null {
     return null;
   }
 }
-function markNotAnswering(key: string): void {
-  notAnsweringSince.set(key, { at: ++moment, settingsWriter: settingsWriter() });
+const markKey = (provider: string, settings: string | null): string => `${provider}${MARK_SEP}${settings ?? ''}`;
+
+/** The writer's provider is not answering from now on. Best effort: a failed write leaves it dialled. */
+function markNotAnswering(provider: string): void {
+  try {
+    const db = getDb();
+    clearMark(provider);
+    db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)')
+      .run(MARK_SCOPE, markKey(provider, settingsWriter()), nextMoment());
+  } catch (err) {
+    logger.warn('could not record that a summary writer is not answering', { providerKey: provider, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+/** Forget the provider's marks (under whatever Settings writer they were made). True when there was one. */
+function clearMark(provider: string): boolean {
+  try {
+    const db = getDb();
+    const rows = (db.prepare('SELECT key FROM healer_state WHERE scope = ?').all(MARK_SCOPE) as Array<{ key: string }>)
+      .filter((r) => r.key.startsWith(`${provider}${MARK_SEP}`));
+    for (const r of rows) db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(MARK_SCOPE, r.key);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+/** The ordinal of the provider's live mark (made under the CURRENT Settings writer), or null. */
+function markOf(provider: string): number | null {
+  try {
+    const row = getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?')
+      .get(MARK_SCOPE, markKey(provider, settingsWriter())) as { at_ms: number } | undefined;
+    return row ? row.at_ms : null;
+  } catch {
+    return null;
+  }
 }
 
 function providerKey(modelId: string): string {
@@ -131,7 +173,7 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
   if (!ok && !abortBlamesWriter(abortSignal)) return;
   const key = providerKey(modelId);
   if (ok) {
-    if (notAnsweringSince.delete(key)) logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key });
+    if (clearMark(key)) logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key });
     return;
   }
   markNotAnswering(key);
@@ -142,23 +184,16 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
  *  until it has answered (the background keeps trying it). */
 export function noteDidNotAnswerInTurn(modelId: string): void {
   const key = providerKey(modelId);
-  if (!notAnsweringSince.has(key)) markNotAnswering(key);
+  if (markOf(key) === null) markNotAnswering(key);
   logger.info('Summary writer did not answer within the turn\'s patience; turns pass it over until it answers', { modelId, providerKey: key });
 }
 
 /** Not answering, and nothing has changed since — for this agent, when one is named. */
 function notAnswering(modelId: string, agentId?: string): boolean {
-  const mark = notAnsweringSince.get(providerKey(modelId));
-  if (!mark) return false;
-  if (mark.settingsWriter !== settingsWriter()) return false;                        // Settings changed
-  if (agentId !== undefined && (personSpokeAt.get(agentId) ?? 0) > mark.at) return false;   // a person wrote to it since
+  const at = markOf(providerKey(modelId));       // a mark made under another Settings writer is not found: Settings changed
+  if (at === null) return false;
+  if (agentId !== undefined && (personSpokeAt.get(agentId) ?? 0) > at) return false;   // a person wrote to it since
   return true;
-}
-
-/** The writer's provider answered a call (any call): it is back, for every agent. */
-export function noteProviderAnswered(modelId: string): void {
-  const key = providerKey(modelId);
-  if (notAnsweringSince.delete(key)) logger.info('A summary writer\'s provider answered a call; it is used again', { modelId, providerKey: key });
 }
 
 /**
@@ -205,11 +240,11 @@ export function writerPassedOver(modelId: string, agentId?: string): boolean {
 
 /** A person's fresh message started this agent's turn: its failed writers get one more try, for it. */
 export function noteAPersonSpoke(agentId: string): void {
-  personSpokeAt.set(agentId, ++moment);
+  personSpokeAt.set(agentId, nextMoment());
 }
 
-/** Test-only reset; the map is per-process. */
+/** Test-only reset of the in-process half (who was last written to). The marks are rows in the test's own database. */
 export function __resetSummaryWriterHealthForTests(): void {
-  notAnsweringSince.clear();
   personSpokeAt.clear();
+  try { getDb().prepare('DELETE FROM healer_state WHERE scope = ?').run(MARK_SCOPE); } catch { /* no database in this test */ }
 }

@@ -156,12 +156,14 @@ describe('t140 round 7 — only a person\'s fresh message to this agent re-arms 
     expect(summariser.calls, 'nothing was dialled for an agent nobody wrote to').toEqual([]);
   });
 
-  it('the writer answering any call re-arms it (its provider is back)', async () => {
+  it('t207: a SUMMARY answer from the writer\'s provider re-arms it (its provider is back); a chat answer does not', async () => {
     await gate(AGENT, 800, 1, true);                         // both writers fail and are passed over
     summariser.answering = true;
     summariser.calls = [];
-    (health as unknown as { noteProviderAnswered: (m: string) => void }).noteProviderAnswered(OWN);   // a turn call on its provider answered
-    await gate(AGENT, 800, 2, false);   // the next iteration of the same turn: no person in between
+    await gate(AGENT, 800, 2, false);                        // the next iteration, no person in between: still passed over
+    expect(summariser.calls, 'nothing is dialled until a summary call is answered').toEqual([]);
+    noteSummaryWriterOutcome(OWN, true);                     // a summary call on its provider answered
+    await gate(AGENT, 800, 3, false);
     expect(summariser.calls[0], 'the writer whose provider answered is tried again').toBe(OWN);
     expect(hasUncondensedPlaceholders(AGENT)).toBe(false);
   });
