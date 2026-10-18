@@ -28,6 +28,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../../db/connection.js';
 import { A2A_INBOUND_RE, NEW_SESSION_BRACKET_RE, SOURCE_ENVELOPE_OPENER } from '@dojo/shared';
 import { PART_JOINER } from '../../prompt/registry/types.js';
+import { getFilteredTools } from '../tools/surface.js';
+import { filterToolsForApiCall, getAgentAlwaysLoadedTools } from '../../tools/tool-docs.js';
 import { assemblyTokens } from '../../memory/assembly-validation.js';
 import { POST_BUDGET_LANES, type AllocationReport } from '../../memory/lanes.js';
 import { createLogger } from '../../logger.js';
@@ -348,19 +350,26 @@ const DELIVERIES_ENTRY_ID = 'msg.deliveries';
  *  so BOTH entry ids are the recall lane's, and the measurement below sums them. Reading only
  *  the first would price a 2,179-token reserve against half its content. */
 const RECALL_ENTRY_IDS = new Set(['msg.relevant-memory', 'engine.open-commitments']);
+const HISTORY_IDS = new Set(['lane.fresh-tail', 'lane.pm-tail']);
+
+/** t210 (t206 hand-up): the tools this call was built with, BY NAME, so a `sys.tools` or tool-head
+ *  change can be explained: `permitted` feeds the system prompt's tool section, `sent` the definitions. */
+function toolNameLists(agentId: string): Record<string, string | number> | null {
+  try {
+    const permitted = getFilteredTools(agentId);
+    const sent = filterToolsForApiCall(agentId, permitted, getAgentAlwaysLoadedTools(agentId)).map((t) => t.name);
+    const names = permitted.map((t) => t.name);
+    return { permittedSha256: sha256(names.join('\n')), permittedCount: names.length, sentSha256: sha256(sent.join('\n')), sentCount: sent.length };
+  } catch { return null; }
+}
 
 /**
  * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
- * own report can only ever say "did not fire on this turn" about it — which the lane table
- * printed while three loop-tail entries sat in the same receipt. The receipt is written
+ * own report can only ever say "did not fire on this turn" about it. The receipt is written
  * after the tail-append and knows where it starts (`volatileFrom`), so it is the one place
  * that can state the truth. Measured, never estimated; the grants array is COPIED rather
  * than mutated, because the report belongs to the assembly and recording must not change it.
- *
- * The one thing this cannot see is the settled hint when it FOLDS into an existing string
- * tail instead of pushing its own message: those characters are below `volatileFrom` and
- * count against the lane that owns that message. Stated because it is a real edge, not
- * because it is large (65 tokens at its measured maximum).
+ * (A hint that FOLDS into an existing string tail counts against that message's lane.)
  */
 function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   const grants = input.allocation?.grants ?? [];
@@ -376,7 +385,8 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   // the number that happened.
   const isDeliveries = (i: number) => tailIds[i] === DELIVERIES_ENTRY_ID;
   const isRecall = (i: number) => RECALL_ENTRY_IDS.has(tailIds[i] ?? '');
-  const isOwnReserve = (i: number) => isDeliveries(i) || isRecall(i);
+  // t210: an appended call's tail holds the turn's own conversation rows too; they are not loop tail.
+  const isOwnReserve = (i: number) => isDeliveries(i) || isRecall(i) || HISTORY_IDS.has(tailIds[i] ?? '');
   const deliveries = tail.filter((_, i) => isDeliveries(i));
   const recall = tail.filter((_, i) => isRecall(i));
   const rest = tail.filter((_, i) => !isOwnReserve(i));
@@ -431,6 +441,7 @@ export function writeContextReceipt(input: ReceiptInput): void {
       turnNumber: input.turnNumber,
       loopCount: input.loopCount,
       useTools: input.useTools,
+      tools: input.useTools ? toolNameLists(input.agentId) : null,
       systemPrompt: {
         chars: input.systemPrompt.length,
         estTokens: estTokens(input.systemPrompt.length),
@@ -438,20 +449,14 @@ export function writeContextReceipt(input: ReceiptInput): void {
         parts: summarizeSystemPrompt(input.systemPrompt, input.systemEntryIds),
         ...(mode === 'full' ? { content: input.systemPrompt } : {}),
       },
-      // ── THE ALLOCATOR RECEIPT (F20/F22) ────────────────────────────────────────────────
-      // Every lane's `{requested, granted, status, reason}`, THREADED from the allocator's
-      // own `AllocationReport` (`memory/lanes.ts`) — never recomputed here. A second
-      // derivation of the same decision is how a receipt comes to disagree with the
-      // assembly it is supposed to be evidence of.
+      // ── THE ALLOCATOR RECEIPT (F20/F22): every lane's grant, THREADED from the allocator's own
+      // `AllocationReport` — never recomputed here, so the receipt cannot disagree with the assembly.
       assembly: {
         freshTailDropped: input.freshTailDropped ?? null,
         systemVolatileChars: input.systemVolatileChars ?? null,
         reserveTokens: input.reserveTokens ?? null,
-        // The array's cost by the ONE estimator, measured through the VALIDATOR's own
-        // function at the last point before the provider call. Between here and the wire
-        // sits only the pairing repair, which never adds a block and logs whenever it
-        // removes one — so this is the post-validation total in `detect` mode, and when
-        // Step 2b flips to `repair` the validator logs its own before → after beside it.
+        // The array's cost by the ONE estimator, through the VALIDATOR's own function, at the last
+        // point before the provider call (only the logged pairing repair sits between it and the wire).
         tokenTotalAtBoundary: assemblyTokens(input.messages),
         ...(input.allocation
           ? {
@@ -474,18 +479,11 @@ export function writeContextReceipt(input: ReceiptInput): void {
         items: input.messages.map((m, i) => {
           const laneId = input.messageEntryIds?.[i] ?? null;
           const summary = summarizeMessage(m, mode, laneId);
-          // KIT-HARDENING K10(a). The whole-array hash above says THAT the
-          // array changed; it cannot say WHERE. A hash per message lets the kit
-          // diff two consecutive receipts and report the longest identical
-          // prefix plus the first entry that diverged — which is the only
-          // direct evidence of whether the cached prefix survived the turn.
-          // Read-only: this observes the array, it never reorders or edits it,
-          // so it cannot itself move the prefix it exists to watch.
+          // KIT-HARDENING K10(a): a hash per message says WHERE two consecutive receipts first
+          // diverge — the direct evidence of whether the cached prefix survived. Read-only.
           summary.sha256 = sha256(JSON.stringify(m));
-          // The length guard is GONE, and its removal is the point of T6: the ids are now
-          // read off the same array in the same statement (`collectMessageLaneIds`), so a
-          // count disagreement is no longer expressible and dropping the ids on one would
-          // only hide a bug. `null` is a real answer — no lane claimed this message.
+          // T6: the ids are read off the same array (`collectMessageLaneIds`), so no length guard;
+          // `null` is a real answer — no lane claimed this message.
           summary.entryId = laneId;
           return summary;
         }),

@@ -63,6 +63,8 @@ import {
 import { pushEngineMessage } from '../../engine-message.js';
 import { markSteerAttempted, markSteerDelivered } from '../../steer-queue.js';
 import { writeContextReceipt } from '../../receipt.js';
+import { appendOnlyTurn } from './append-only-turn.js';
+import { dialedPolicy, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -89,7 +91,7 @@ export interface PreCallInjectionInputs {
 export async function injectAndRecord(
   stateIn: AgentTurnState,
   input: PreCallInjectionInputs,
-): Promise<{ state: AgentTurnState; useTools: boolean }> {
+): Promise<{ state: AgentTurnState; useTools: boolean; messages: ModelMessage[] }> {
   const { agentId, turnNumber, modelId, messages, systemPrompt, ctx, mctx, volatileFrom, counterparty, steerAwaitingConfirm, turnCtx } = input;
   let state = stateIn;
   // ── Pre-flight capability enforcement (matches v1 runtime.ts:995) ──
@@ -118,6 +120,7 @@ export async function injectAndRecord(
   // moves when the CONVERSATION does. The assembler computes all four (one tracker read for
   // the first two); they enter the array HERE, past `volatileFrom`, where a block that
   // changes costs its own bytes instead of every byte behind it.
+  const blocksFrom = messages.length; // t210: the state blocks start here; above it, this call's one-shot steers
   mctx.attemptLedgerLane = ctx.attemptLedgerLane ?? null;
   injectRegistryMessage('msg.attempt-ledger', messages, mctx);
   mctx.activeTasksLane = ctx.activeTasksLane ?? null;
@@ -127,11 +130,9 @@ export async function injectAndRecord(
   mctx.eventsLane = ctx.eventsLane ?? null;
   injectRegistryMessage('msg.events', messages, mctx);
 
-  // Precise clock time as the FINAL message, after every other engine
-  // injection, so its per-minute churn falls past the entire cached
-  // prefix (system + tools + conversation history + other injections)
-  // instead of breaking it. The system prompt carries date-only; this is
-  // the live time. Always injected.
+  // Precise clock time as the FINAL message, after every other engine injection, so its
+  // per-minute churn falls past the entire cached prefix. The system prompt carries date-only;
+  // this is the live time. Always injected.
   // C28 Part 1: the per-turn routing/presence block (reply destination, the
   // sole routing authority C5, channel landscape, phone conduct, counterparty
   // header, bridge state, waiting/conversational hints) injects HERE, right
@@ -302,13 +303,8 @@ export async function injectAndRecord(
   // answer stamps (mig 113), so answered-ness survives compaction structurally and the model
   // never re-answers a settled question. Bounded: 3 lines; human turns; volatile lane.
   //
-  // ⚠ SWEEP CORE-2 item 4 — THIS BLOCK WAS DEAD, AND IT IS THE OWNER'S 2026-08-09 INCIDENT.
-  // The read was a hand-written join right here, typed `created_at: string`, handed to
-  // `relativeTimeAgo` — and `messages.created_at` became an epoch-ms INTEGER at migration
-  // 131. Every render threw `sqliteUtc.replace is not a function` on its FIRST row, into a
-  // `catch { /* best effort */ }`. Measured on the owner's own body at `d07c2aa`: 3,181
-  // answered-stamped rows, block built for none of them. The read moved to
-  // `answered-edge.ts` and the timestamp shape is that module's problem now, once.
+  // ⚠ SWEEP CORE-2 item 4 (the 2026-08-09 incident): a hand-written join here threw on every row once
+  // `created_at` became epoch-ms (mig 131), into a silent catch. The read lives in `answered-edge.ts` now.
   //
   // ── T69b MOVED IT HERE, AND MOVED ITS RENDER OUT ─────────────────────────────────────
   // POSITION. It used to be pushed inside the human-turn block above — ahead of peer-status,
@@ -353,12 +349,16 @@ export async function injectAndRecord(
 
   injectRegistryMessage('msg.current-time', messages, mctx);
 
-  // ── Context receipt (debug-gated, fire-and-forget) ──
-  // Last touch point before the provider call: every injector and
-  // post-assembly mutation has run, so this records exactly what the
-  // model receives this iteration.
-  // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — the lane ids are read off the
-  // array the provider is handed, so a steer pushed and then dropped is NOT delivered.
+  // ── t210 (decision 37): a later call of the turn APPENDS to what the previous call sent ──
+  // (`append-only-turn.ts`). Every block of `messages` is in `sent`, appended or unchanged above.
+  const sent = await appendOnlyTurn({
+    turn: turnCtx, loopCount: state.loopCount, fresh: messages, volatileFrom: volatileFrom ?? messages.length, blocksFrom,
+    fits: async (arr) => estimateAssembledArrayTokens(systemPrompt, arr) <= (await dialedPolicy(agentId, modelId)).policy.assemblyBudgetTokens,
+  });
+
+  // ── Context receipt (debug-gated, fire-and-forget): what the provider is handed. ──
+  // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — read off THIS call's blocks, all of
+  // which are in `sent`; a steer pushed and then dropped is NOT delivered.
   const laneIdsForThisCall = collectMessageLaneIds(messages);
   // ── UX-REPAIR ROUND 13 T61(b) — "RECALLED MEMORY REACHED THE MODEL", RECORDED HERE ──
   // Off the SAME array read the steer-delivery latch below takes, and for the same reason:
@@ -382,13 +382,12 @@ export async function injectAndRecord(
     turnNumber,
     loopCount: state.loopCount,
     systemPrompt,
-    messages,
+    messages: sent.messages,
     useTools,
     systemEntryIds: ctx.systemEntryIds,
-    // PHASE-3 T6 (F21): read OFF THIS ARRAY, not off `ctx.messageEntryIds` — the
-    // assembler's copy stops at `volatileFrom` and would miss every tail-append below.
-    messageEntryIds: laneIdsForThisCall,
-    volatileFrom,
+    // PHASE-3 T6 (F21): read OFF THE SENT ARRAY, not off `ctx.messageEntryIds` (it stops at `volatileFrom`).
+    messageEntryIds: collectMessageLaneIds(sent.messages),
+    volatileFrom: sent.volatileFrom,
     // F20/F22: the allocator's own record, and the assembly's own numbers.
     allocation: ctx.allocation,
     freshTailDropped: ctx.freshTailDropped,
@@ -396,5 +395,5 @@ export async function injectAndRecord(
     reserveTokens: ctx.reserveTokens,
   });
 
-  return { state, useTools };
+  return { state, useTools, messages: sent.messages };
 }

@@ -37,6 +37,7 @@ import type { TurnCounterparty } from '../../counterparty.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { reassembleForFitIfNeeded, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
+import { forgetTurnArray } from './append-only-turn.js';
 import { SystemPromptTooLargeError } from '../../../../memory/budget.js';
 import { freeFallbackDown } from './free-fallback-down.js';
 import { createLogger } from '../../../../logger.js';
@@ -66,6 +67,8 @@ export interface ModelCallInputs {
    */
   readonly volatileFrom: number | undefined;
   readonly assemblyTurnContext: PromptTurnContext;
+  /** t210: the FIRST attempt sends this (append-only); a retry, fallback or re-fit sends `messages`. */
+  readonly firstSend?: ModelMessage[];
 }
 
 /** Either the turn is abandoned, or the call produced a result and a (possibly
@@ -85,10 +88,8 @@ export async function callWithRetryAndFallback(
   } = input;
   let state = stateIn;
   let modelId = modelIdIn;
-  // Mutable locals: a FALLBACK pick below can be a model the array in hand was never sized
-  // for (the round-1 hole, one layer deeper) — `reassembleForFitIfNeeded` may replace all
-  // four, and every attempt after that point (including this same one, on `continue`) reads
-  // these, never `input`'s originals.
+  // Mutable locals: a FALLBACK pick can be a model this array was never sized for, so
+  // `reassembleForFitIfNeeded` may replace all four; later attempts read these, never `input`'s.
   let messages = input.messages;
   let systemPrompt = input.systemPrompt;
   let ctx = input.assembled;
@@ -108,11 +109,8 @@ export async function callWithRetryAndFallback(
   /** UX-REPAIR T37 — the turn's ONE stop-abandon, said twice with two truthful
    *  reasons. Kept as one call so the step's abandon census (its contract test
    *  counts `abandonTurn` in this file) still reads TWO: this and the preempt. */
-  //  T83 FIX ROUND (review IMPORTANT A-3): the `setAgentStatus(agentId, 'idle')` that stood
-  //  here is gone. Abandoning the TURN is not the run going down — finalize and teardown still
-  //  have to run, and `activeRuns` still holds the agent through `handleMessage`'s whole awaited
-  //  tail. Writing idle at this instant is the same untruth `stopAgent` stopped telling, just
-  //  seconds wide instead of minutes, and the same busy-guards believe it.
+  //  T83 FIX ROUND (A-3): no idle write here — abandoning the TURN is not the run going down
+  //  (finalize and teardown still run; `activeRuns` still holds the agent).
   //  t93: AND THE TURN RECORD NOW SAYS `stop`. An abandon still runs the `finally`, so the
   //  recorder DOES see this turn — it simply had no fact to see, and derived
   //  `no_reply_intended` from the absence of a reply. That is the BACKLOG's headline shape:
@@ -161,6 +159,7 @@ export async function callWithRetryAndFallback(
     // round 1 sends a re-fitted array down the budget redirect too, and it must be hydrated at
     // this same point rather than at a second one.
     const forTheWire = (arr: ModelMessage[]): ModelMessage[] => hydrateCredentialsInMessages(agentId, arr);
+    if (attempt > 0) forgetTurnArray(turnCtx);
 
     try {
       // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
@@ -179,12 +178,13 @@ export async function callWithRetryAndFallback(
         // this very array when no placeholder is present, hence no effect on
         // the cached prefix (OR7/#10). Full rationale + the three properties
         // that make it safe: `credentials/secret-values.ts`.
-        messages: forTheWire(messages),
+        messages: forTheWire(attempt === 0 && input.firstSend ? input.firstSend : messages),
         systemPrompt,
         // t140 fix round 1 (review I1): the budget redirect inside `callModel` dials a free model
         // this array was never sized for; this re-fits it there, from this turn's own assembly.
         refitFor: async (pick) => {
           const r = await reassembleForFitIfNeeded({ agentId, modelId: pick, messages, systemPrompt, volatileFrom, assemblyTurnContext });
+          if (r) forgetTurnArray(turnCtx);
           return r ? { messages: forTheWire(r.messages), systemPrompt: r.systemPrompt } : null;
         },
         // t195: the extra room the engine gave this retry (0 = everyday). It was written and never read.

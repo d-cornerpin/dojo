@@ -398,6 +398,7 @@ import { initState } from '../state.js';
 import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { UPDATE_LABEL, EMPTIED_LABEL } from '../steps/call-llm/append-only-turn.js';
 import {
   claimAsk, askIdForMessage, openAsk, stampClaimingTurn, openDelegationJoin, landPiece,
 } from '../../../work/store.js';
@@ -2610,9 +2611,16 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
     await runV2Turn('primary');
 
     expect(seenByModel.length).toBeGreaterThanOrEqual(4);
-    const carrying = seenByModel.filter((msgs) => indexOfEntry(msgs, EMPTY_RESPONSE_NUDGE) >= 0);
-    expect(carrying).toHaveLength(1);
-    expect(seenByModel.indexOf(carrying[0])).toBe(2);
+    // t210 (decision 37): a later call of a turn APPENDS to what the previous call sent, so call 4
+    // still SHOWS call 3's steer where it was. "Never repeats" means never SENT AGAIN: the steer is
+    // new in exactly one call (call 3), and every later array holds that one copy at the same index.
+    const firstAt = seenByModel.findIndex((msgs) => indexOfEntry(msgs, EMPTY_RESPONSE_NUDGE) >= 0);
+    expect(firstAt).toBe(2);
+    const at = indexOfEntry(seenByModel[2], EMPTY_RESPONSE_NUDGE);
+    for (const later of seenByModel.slice(3)) {
+      expect(later.filter((m) => m.content === EMPTY_RESPONSE_NUDGE), 'one copy, never re-sent').toHaveLength(1);
+      expect(indexOfEntry(later, EMPTY_RESPONSE_NUDGE), 'where it was').toBe(at);
+    }
   });
 
   // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — two clauses die with the SETTLED_HINT. ──
@@ -2729,7 +2737,10 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
     const undecidable: string[] = [];
     for (const call of seenByModel) {
       call.slice(prefixLen).forEach((m, i) => {
-        const c = m.content;
+        // t210 (decision 37): a block re-sent in a turn carries a label line above the SAME lane's
+        // render; the census reads what is under the label.
+        const raw = m.content;
+        const c = typeof raw === 'string' && (raw.startsWith(UPDATE_LABEL) || raw.startsWith(EMPTIED_LABEL)) ? raw.slice(raw.indexOf('\n') + 1) : raw;
         if (typeof c !== 'string') return;           // tool-block carriers ride the prefix
         if (logged.has(c)) return;                   // a durable row holds it verbatim
         if (DERIVED_LANE_OPENERS.some((o) => c.trimStart().startsWith(o))) return;

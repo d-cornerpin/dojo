@@ -382,10 +382,14 @@ describe('T1: the steer drain is not gated on the assembled tail shape', () => {
     expect(src).toMatch(
       /markSteerDelivered[\s\S]{0,200}?laneIdsForThisCall\.includes\('msg\.pending-nudge'\)|laneIdsForThisCall\.includes\('msg\.pending-nudge'\)[\s\S]{0,200}?markSteerDelivered/,
     );
-    // …and the lane ids are read off the SAME array, in the same statement that feeds the
-    // receipt — not off a copy that could disagree with what was sent.
+    // …and the lane ids are read off THIS call's own array, after every mutation. t210
+    // (decision 37): the receipt records the SENT array, which on a later call of a turn also
+    // holds earlier calls' blocks (an earlier steer among them). Every block of this call is in
+    // the sent array by construction (`t210-post-tail-append-the-append-rules.test.ts`), so this
+    // call's array is the one that says what THIS call delivered; the sent array would let an
+    // earlier steer confirm a new one that was dropped.
     expect(src).toMatch(/const laneIdsForThisCall = collectMessageLaneIds\(messages\);/);
-    expect(src).toMatch(/messageEntryIds: laneIdsForThisCall,/);
+    expect(src).toMatch(/messageEntryIds: collectMessageLaneIds\(sent\.messages\),/);
   });
 });
 

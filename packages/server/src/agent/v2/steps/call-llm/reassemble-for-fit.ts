@@ -109,20 +109,27 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   return refit;
 }
 
-async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
-  const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow } = input;
+/** The budget of the model about to be dialed: ITS window, ITS output cap, its provider ceiling.
+ *  One derivation, read by the re-fit below and by the append-only turn's room check (t210). */
+export async function dialedPolicy(agentId: string, modelId: string) {
   const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
     import('../../../../memory/budget.js'),
     import('../../../../tools/tool-docs.js'),
   ]);
-  const assembledEstimate = estimateAssembledArrayTokens(systemPrompt, messages);
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
   const policy = contextWindowPolicy(getContextWindow(modelId), {
     toolPayloadTokens,
     maxOutputTokens: getModelOutputCap(modelId),
     providerCeilingTokens: getProviderCeilingTokens(modelId),
   });
+  return { policy, toolPayloadTokens };
+}
+
+async function refitToThePick(input: ReassembleForFitInput): Promise<ReassembleForFitResult | null> {
+  const { agentId, modelId, messages, systemPrompt, volatileFrom, assemblyTurnContext, anotherPickMayFollow } = input;
+  const assembledEstimate = estimateAssembledArrayTokens(systemPrompt, messages);
+  const { policy, toolPayloadTokens } = await dialedPolicy(agentId, modelId);
   if (assembledEstimate <= policy.assemblyBudgetTokens) return null;
   // t140 round 2 (re-review N1): whether this pick can hold the system prompt and tools at all is
   // answered HERE, from the policy above — the same numbers the assembler's own check reads — and

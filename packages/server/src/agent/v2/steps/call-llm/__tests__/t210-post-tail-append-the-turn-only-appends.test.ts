@@ -103,7 +103,7 @@ vi.mock('../../../../../logger.js', () => ({
 import { runV2Turn } from '../../../loop.js';
 import { runMigrations } from '../../../../../db/migrations.js';
 import { submitUserMessage } from '../../../../../gateway/routes/chat.js';
-import { createTask } from '../../../../../tracker/schema.js';
+import { createTask, setTaskStatus } from '../../../../../tracker/schema.js';
 
 const AGENT = 'primary';
 const TASKS_HEAD = '═══ YOUR ACTIVE TASKS';
@@ -165,7 +165,7 @@ function task(title: string): string {
   return createTask({
     title, assignedTo: AGENT, createdBy: AGENT,
     origin: { kind: 'model', sourceMessageId: null, turn: null, convKey: null },
-  } as Parameters<typeof createTask>[0]).id;
+  } as Parameters<typeof createTask>[0]);
 }
 
 /** Indexes of the messages carrying the task list, in array order. */
@@ -239,7 +239,8 @@ describe('decision 37 — within one turn, the array only grows', () => {
     const id = task('Reconcile the PELICAN manifests');
     await submitUserMessage(AGENT, 'Finish the PELICAN reconciliation.');
     onTool = () => {
-      mockDb.current!.prepare("UPDATE work SET state = 'done', closed_at = ? WHERE id = ?").run(Date.now(), id);
+      // Through the tracker's own status door, the way a cancel reaches the board.
+      expect(setTaskStatus(id, 'cancelled', { by: 'owner', actorId: 'owner', reason: 'no longer needed' })).not.toBeNull();
     };
     const [a, b] = await turn(
       { tool: { name: 'web_search', arguments: { query: 'PELICAN totals' } } },

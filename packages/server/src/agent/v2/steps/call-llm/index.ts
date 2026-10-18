@@ -182,7 +182,7 @@ export async function runCallLLM(stateIn: AgentTurnState, ctxIn: CallLLMContext)
     agentId, turnCtx, turnNumber, messageId, messages, systemPrompt,
     useTools: injected.useTools, isAutoRouted, isA2ATurn, excludedModels,
     revertTriggerStampOnAbort, assembled: ctx, routerTier, counterparty,
-    volatileFrom, assemblyTurnContext,
+    volatileFrom, assemblyTurnContext, firstSend: injected.messages,
   });
   if (called.abandoned) return called.abandoned as CallLLMOutcome;
   state = called.state;
