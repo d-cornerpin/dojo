@@ -19,6 +19,9 @@ type Mod = {
   attributeCall: (receipt: unknown, cost: unknown, opts?: unknown) => AttributedCall;
   matchReceiptsToCosts: (receipts: unknown[], costs: unknown[], opts?: unknown) => Array<{ receipt: any; cost: any }>;
   rollupByDay: (costs: unknown[]) => Array<{ day: string; calls: number; costUsd: number; hitRatio: number }>;
+  fitToolHead: (pairs: unknown[]) => { toolTokens: number; tokensPerChar: number; n: number; r: number } | null;
+  toolResultSizes: (rows: Array<{ role: string; content: string }>) => Array<{ tool: string; count: number; totalChars: number; meanChars: number; maxChars: number }>;
+  laneStability: (receipts: unknown[]) => Array<{ id: string; pairs: number; unchanged: number }>;
   summarizeLanes: (calls: AttributedCall[]) => Array<{ id: string; meanTokens: number; meanMissTokens: number; share: number }>;
 };
 type AttributedCall = {
@@ -59,7 +62,7 @@ const receipt = {
     volatileFrom: 3,
     items: [
       { role: 'user', kind: 'text', entryId: 'lane.vault', chars: 4_000 },
-      { role: 'assistant', kind: 'blocks', entryId: 'lane.scaffolding-ack', chars: 0, textChars: 100 },
+      { role: 'assistant', kind: 'blocks', entryId: 'lane.scaffolding-ack', textChars: 100 },
       { role: 'user', kind: 'blocks', entryId: 'lane.fresh-tail', textChars: 500 },
       { role: 'user', kind: 'text', entryId: 'msg.active-tasks', chars: 1_000 },
       { role: 'user', kind: 'text', entryId: 'msg.current-time', chars: 400 },
@@ -165,5 +168,59 @@ describe('t204 cost-measure: the per-day roll-up', () => {
     expect(days[0]).toMatchObject({ day: '2026-10-01', calls: 2, costUsd: 0.75 });
     expect(days[0].hitRatio).toBeCloseTo(400 / 600, 6);
     expect(days[1]).toMatchObject({ day: '2026-10-02', calls: 1, costUsd: 1 });
+  });
+});
+
+describe('t204 cost-measure: the fitted tool head', () => {
+  // real = 18,000 + 0.3 x (system + message chars), exactly
+  const pair = (chars: number) => ({
+    receipt: { systemPrompt: { chars: 10_000 }, messages: { chars } },
+    cost: { input_tokens: 1_000, cache_read_tokens: 18_000 + 0.3 * (10_000 + chars) - 1_000 },
+  });
+  it('recovers the intercept as the tool definitions and the slope as tokens per char', async () => {
+    const { fitToolHead } = await load();
+    const fit = fitToolHead([20_000, 40_000, 60_000, 80_000, 100_000, 120_000, 140_000, 160_000, 180_000].map(pair));
+    expect(fit).not.toBeNull();
+    expect(fit!.toolTokens).toBeCloseTo(18_000, 3);
+    expect(fit!.tokensPerChar).toBeCloseTo(0.3, 6);
+    expect(fit!.r).toBeCloseTo(1, 6);
+  });
+  it('refuses to guess from too few calls', async () => {
+    const { fitToolHead } = await load();
+    expect(fitToolHead([20_000, 40_000, 60_000].map(pair))).toBeNull();
+  });
+  it('with a fitted head the tool lane IS the head and the other lanes share the rest', async () => {
+    const { attributeCall } = await load();
+    const a = attributeCall(receipt, cost, { ...opts, toolTokens: 5_000 });
+    expect(a.ok).toBe(true);
+    const byId = Object.fromEntries(a.lanes.map((l) => [l.id, l]));
+    expect(byId['tools'].tokens).toBe(5_000);
+    expect(Math.round(a.lanes.reduce((s, l) => s + l.tokens, 0))).toBe(25_000);
+  });
+});
+
+describe('t204 cost-measure: what the tail is made of, and what changes between calls', () => {
+  it('sizes each tool result under the name of the call that made it', async () => {
+    const { toolResultSizes } = await load();
+    const rows = [
+      { role: 'assistant', content: JSON.stringify([{ type: 'tool_use', id: 'a', name: 'exec' }, { type: 'tool_use', id: 'b', name: 'file_read' }]) },
+      { role: 'tool', content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'a', content: 'x'.repeat(100) }, { type: 'tool_result', tool_use_id: 'b', content: 'y'.repeat(30) }]) },
+      { role: 'assistant', content: JSON.stringify([{ type: 'tool_use', id: 'c', name: 'exec' }]) },
+      { role: 'tool', content: JSON.stringify([{ type: 'tool_result', tool_use_id: 'c', content: 'z'.repeat(300) }]) },
+    ];
+    const sizes = await toolResultSizes(rows);
+    expect(sizes[0]).toMatchObject({ tool: 'exec', count: 2, totalChars: 400, maxChars: 300 });
+    expect(sizes[1]).toMatchObject({ tool: 'file_read', count: 1, totalChars: 30 });
+  });
+  it('counts a lane unchanged only between consecutive calls of one turn', async () => {
+    const { laneStability } = await load();
+    const r = (at: string, turn: number, loop: number, sha: string) => ({ at, turnNumber: turn, loopCount: loop, messages: { items: [{ entryId: 'msg.events', sha256: sha }, { entryId: 'lane.fresh-tail', sha256: 'tail' }] } });
+    const out = await laneStability([
+      r('2026-10-01T10:00:00Z', 1, 1, 'A'),
+      r('2026-10-01T10:00:05Z', 1, 2, 'A'), // same turn, next loop, identical
+      r('2026-10-01T10:00:10Z', 1, 3, 'B'), // same turn, next loop, changed
+      r('2026-10-01T10:05:00Z', 2, 1, 'B'), // a new turn: not a pair
+    ]);
+    expect(out).toEqual([{ id: 'msg.events', pairs: 2, unchanged: 1, unchangedShare: 0.5 }] as never);
   });
 });
