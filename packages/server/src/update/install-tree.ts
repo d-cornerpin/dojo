@@ -8,8 +8,7 @@
 // gap is the instant between them, when `~/.dojo/platform` does not exist. The swap is
 // recorded first (`markPendingUpdate` with the staged path), so the repairs can finish it:
 // `rollback.sh --heal` (run by the watchdog when the folder is missing) and the boot sentinel
-// (`settlePendingInstall`, which names what is actually live). The old tree IS the backup, so
-// the whole-tree `cp -R` copy is gone too.
+// (`settlePendingInstall`, which names what is actually live). The old tree IS the backup: no `cp -R`.
 //
 // Every caller uses this: the in-app update, the rollback route and `deploy/install.sh` (via
 // `install-tree-cli.ts`, from the unpacked release: so Node built-ins only, no node_modules).
@@ -195,9 +194,9 @@ export async function installPlatformTree(a: InstallTreeArgs): Promise<InstallTr
       await a.runInstall(a.stagedDir);
       step('deps-installed');
     } catch (err) {
-      const why = childFailureText(err);
-      if (isOutOfSpaceError(err)) return fail(`${outOfSpaceFailureMessage(why.slice(0, 300))} ${kept}`);
-      return fail(`The update could not finish preparing ${a.targetVersion}: its add-ons did not install (${why.slice(0, 300)}). ${kept} Check the internet connection and run the update again.`);
+      const why = childFailureText(err).slice(0, 300);
+      if (isOutOfSpaceError(err)) return fail(`${outOfSpaceFailureMessage(why)} ${kept}`);
+      return fail(`The update could not finish preparing ${a.targetVersion}: its add-ons did not install (${why}). ${kept} Check the internet connection and run the update again.`);
     }
     const bad = await verifyStagedTree(a.stagedDir, a.targetVersion);
     if (bad) return fail(`The downloaded ${a.targetVersion} did not pass its safety check (${bad}), so it was not installed. ${kept}`);
