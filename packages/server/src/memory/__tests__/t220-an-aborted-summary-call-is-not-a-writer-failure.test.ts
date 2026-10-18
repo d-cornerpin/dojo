@@ -107,12 +107,14 @@ afterEach(() => {
 });
 
 describe('t220 a summary call its caller aborted', () => {
-  for (const [label, reason] of [
-    ['the turn ran out of patience', FOLD_IN_TURN_LIMIT],
-    ['the owner pressed Stop', FOLD_STOPPED_BY_OWNER],
-    ['the caller aborted without saying why', undefined],
+  // The third column: a reasonless abort (the forced pass cut by the turn's patience) still marks the writer "not answering",
+  // so the next turn does not wait on it again; only the fold's two named reasons say nothing about the writer.
+  for (const [label, reason, marksWriter] of [
+    ['the turn ran out of patience', FOLD_IN_TURN_LIMIT, 0],
+    ['the owner pressed Stop', FOLD_STOPPED_BY_OWNER, 0],
+    ['the caller aborted without saying why', undefined, 1],
   ] as const) {
-    it(`${label}: no error-level line, no breaker note, no mark on the writer`, async () => {
+    it(`${label}: no error-level line, no breaker note; the writer marked ${marksWriter ? '"not answering"' : 'nothing'}`, async () => {
       const ctl = new AbortController();
       script = (s) => { expect(s).toBe(ctl.signal); return cutBy(ctl, reason)(); };
 
@@ -121,7 +123,7 @@ describe('t220 a summary call its caller aborted', () => {
       expect(result.ok, 'non-vacuity: the call really was cut and returned a refusal').toBe(false);
       expect(errorLines(), 'a stop the caller chose is not an error').toEqual([]);
       expect(breakerNotes.calls, 'the billing breaker is told nothing').toBe(0);
-      expect(marks(), 'and the writer is not marked "not answering"').toBe(0);
+      expect(marks(), 'the writer is marked "not answering" only for an abort that names no fold reason').toBe(marksWriter);
     });
   }
 
