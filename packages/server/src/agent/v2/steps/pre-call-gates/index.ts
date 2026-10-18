@@ -27,27 +27,11 @@
 // operators grep by has changed behaviour it did not admit to.
 //
 // ── THE INPUTS, MEASURED RATHER THAN GUESSED ──
-// Twelve declarations of `runV2TurnBody` cross into this span. Eleven are below;
-// the twelfth is `state`, which arrives as the first parameter.
-//
-// THREE OF THEM ARE MUTABLE DRIVER LOCALS THAT THIS SPAN ONLY READS, and they ride
-// by VALUE rather than migrating to the turn's bag. That is a decision with positive
-// evidence behind it, not an omission: `assemblerOverheadTokens`,
-// `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` have exactly one
-// write site each (`loop.ts:3273`, `:4648`, `:4652`), all three in the straight-line
-// body of `runV2TurnBody` and NONE inside a timer or callback — so nothing can write
-// them while the driver is suspended awaiting this step, and a value read at the call
-// site is the same value the lexical block would have read. The tranches that WRITE
-// them (`assemble`, `postCallClassify`) are the ones that will owe the migration.
-//
-// ⚠ BOTH TRANCHES HAVE NOW PAID, AND THIS STEP'S SIDE OF IT DID NOT CHANGE.
-// `assemblerOverheadTokens` moved to the bag at CUT 6 and the ack-delivery pair at CUT 8,
-// each because the span that WRITES it became a module and a module cannot write a caller's
-// local. The reading half above still stands and is still the reason this interface keeps
-// three plain booleans/numbers: the driver's context closure reads them off the bag once per
-// iteration and hands the VALUE down, which is what the "nothing can write them while this
-// step is awaited" evidence licenses. Nothing here reads a stale copy, because nothing here
-// outlives the iteration that built it.
+// Twelve declarations of `runV2TurnBody` crossed into this span; the twelfth is `state`, which
+// arrives as the first parameter. The mutable driver locals this span only READS ride by VALUE
+// (nothing can write them while the driver is suspended awaiting this step), and the ones whose
+// writer became a module of its own moved to the turn's bag. The context closure reads them once
+// per iteration and hands the VALUE down, so nothing here reads a stale copy.
 //
 // TWO ARE FUNCTIONS THE DRIVER OWNS, passed rather than imported — CUT 2's precedent
 // for `stopStatusHeartbeat`, and for the same reason: importing them from `loop.ts`
@@ -75,7 +59,7 @@ export const PRE_CALL_GATES_PHASE: TurnPhase = 'preCallGates';
 /**
  * Why this step asked the driver to leave the loop.
  *
- * Six of the `while` body's exits live in this step — it is the loop's first, so it
+ * Four of the `while` body's exits live in this step — it is the loop's first, so it
  * is the only one that can refuse an iteration outright — and every one of them is a
  * guard with an incident behind it. (t137: the seventh, `turn-continuation-cap`, went with
  * the total-time cap — OR-LONG-JOBS.)
@@ -84,9 +68,7 @@ export type PreCallGatesExitReason =
   | 'stopped-by-user'
   | 'preempted'
   | 'thrash-auto-block'
-  | 'turn-time-budget'
-  | 'context-emergency-compact'
-  | 'context-full';
+  | 'turn-time-budget';
 
 export interface PreCallGatesContext {
   readonly agentId: string;
@@ -97,12 +79,6 @@ export interface PreCallGatesContext {
   readonly isAutoRouted: boolean;
   /** Who this turn is for. Read once, by the terminal block's F1 user-origin test. */
   readonly counterparty: TurnCounterparty;
-  /**
-   * The non-compressible overhead the LAST assemble produced, which the compaction
-   * gate subtracts from the window (FA-M1). A mutable driver local this span only
-   * reads; see the header for why it rides by value.
-   */
-  readonly assemblerOverheadTokens: number;
   // HL4 STEP 2 (2d): `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` are
   // REMOVED. Their one reader here was the retired `compaction-recap` steer's ack clause
   // (tombstone in `turn-budget.ts`); the bag still carries them for `assemble`/`execute`.

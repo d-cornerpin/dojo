@@ -169,10 +169,6 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     // condensed, never parked. The gate parks nothing and queues no wake of its own.
     const gates = engineCode('export async function runContextGates(');
     expect(gates).not.toMatch(/parkJob\(|parkAfterForcedPass\(|queueSelfWake\(/);
-    const wait = strip(fs.readFileSync(path.join(SRC, 'agent/v2/full-context-wait.ts'), 'utf8'));
-    expect(wait).not.toMatch(/queueSelfWake\(/);
-    expect(wait.match(/\bparkJob\(agentId, reason\)/g)?.length).toBe(1);
-    expect(wait.match(/\bparkJob\(agentId, reason, 'timer', msLeft\)/g)?.length).toBe(1);
     const recovery = strip(fs.readFileSync(path.join(SRC, 'agent/v2/recovery.ts'), 'utf8'));
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-forced-compaction'\)/);
     expect(recovery).not.toMatch(/queueSelfWake\(agentId, 'recovery-doomed-prefill-compaction'\)/);

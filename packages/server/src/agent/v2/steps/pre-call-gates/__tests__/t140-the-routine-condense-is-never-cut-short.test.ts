@@ -111,7 +111,7 @@ function gate(window: number): Promise<unknown> {
   const ctx = {
     agentId: AGENT, turnNumber: 400, contextWindow: window, contextModelId: MODEL,
     configuredModelId: MODEL, isAutoRouted: false, counterparty: OWNER,
-    assemblerOverheadTokens: 0, engineBlockEscapeHatch: '[escape hatch]',
+    engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => { /* not the subject */ },
     stashContinuationIfHuman: vi.fn(),
     detectTaskThrashing: vi.fn(() => ({ thrashing: false })),

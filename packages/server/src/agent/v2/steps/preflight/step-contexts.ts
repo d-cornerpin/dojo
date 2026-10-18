@@ -114,10 +114,8 @@ export function runStepContexts(
   });
 
   // PHASE-6 T3: what the preCallGates step reads from this driver. A CLOSURE for the
-  // same reason as the one above, and here it is load-bearing on three specific
-  // fields: `assemblerOverheadTokens` is rewritten by every assemble,
-  // `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` by the post-call
-  // classifier, and this step runs once per ITERATION — so a snapshot taken before
+  // same reason as the one above, and here it is load-bearing: the per-iteration fields it reads are
+  // rewritten as the turn goes, and this step runs once per ITERATION — so a snapshot taken before
   // the `try` would hand iteration nine the picture iteration one had.
   // PHASE-6 T6 (CUT 8): the latter two now live on the turn's bag, so the closure reads
   // THEM off the bag. The per-iteration property this note is about is unchanged — the
@@ -127,7 +125,7 @@ export function runStepContexts(
   // driver (CUT 2's precedent). `setAgentStatus` went with A-3 — this gate writes no status.
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
-    counterparty, assemblerOverheadTokens: turnCtx.assemblerOverheadTokens,
+    counterparty,
     // HL4 step 2 (2d): the ack-delivery pair is GONE from this closure — see the
     // removal note on `PreCallGatesContext`, whose reader was the retired recap.
     engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,

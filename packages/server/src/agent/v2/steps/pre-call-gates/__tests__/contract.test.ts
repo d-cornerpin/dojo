@@ -141,7 +141,6 @@ function makeCtx(overrides: Partial<PreCallGatesContext> = {}): PreCallGatesCont
     configuredModelId: 'deepseek-v4-flash',
     isAutoRouted: false,
     counterparty: OWNER,
-    assemblerOverheadTokens: 0,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     engineBlockEscapeHatch: '[escape hatch]',

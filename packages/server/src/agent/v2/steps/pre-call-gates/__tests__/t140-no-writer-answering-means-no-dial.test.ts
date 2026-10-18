@@ -94,7 +94,7 @@ async function gate(turnNumber: number, loopCount: number): Promise<void> {
   }), { phase: PRE_CALL_GATES_PHASE, loopCount });
   const ctx = {
     agentId: AGENT, turnNumber, contextWindow: 200_000, contextModelId: OWN, configuredModelId: OWN, isAutoRouted: false,
-    counterparty: PERSON, assemblerOverheadTokens: 0, engineBlockEscapeHatch: '[escape hatch]',
+    counterparty: PERSON, engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => {}, stashContinuationIfHuman: vi.fn(), detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
   } as unknown as PreCallGatesContext;
   await runPreCallGates(s, ctx);

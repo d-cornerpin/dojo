@@ -98,7 +98,6 @@ function turnCtxFor(): AssembleContext['turnCtx'] {
     agentId: 'zargo',
     conversationId: 'conv-1',
     lastAssembledAtIso: null,
-    assemblerOverheadTokens: 0,
     freshTailDropWarned: false,
     startAckSteerRequested: false,
     startAckSteerArmedThisTurn: false,
@@ -308,7 +307,6 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
 
     await runAssemble(freshState(), ctx);
 
-    expect(ctx.turnCtx.assemblerOverheadTokens).toBeGreaterThan(0);
     expect(ctx.turnCtx.freshTailDropWarned).toBe(true);
     expect(ctx.turnCtx.lastAssembledAtIso).toBeTruthy();
     // Second round, same bag: the banner does NOT fire again.

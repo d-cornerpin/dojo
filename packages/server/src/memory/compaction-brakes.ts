@@ -179,13 +179,6 @@ function liveBrake(agentId: string): Backoff | null {
   return b;
 }
 
-/** t168: ms until a FORCED pass can run again (the brake that binds an emergency), else null. The clock
- *  a surrendered turn's wake waits for (`full-context-wait.ts`); asked without the skip log line. */
-export function compactionBrakeMsLeft(agentId: string): number | null {
-  const b = liveBrake(agentId);
-  return b && b.bindsUnderForce ? Math.max(1, b.until - Date.now()) : null;
-}
-
 function armBackoff(agentId: string, bindsUnderForce: boolean, writerModelId: string | null): void {
   const facts = brakeFacts(agentId);
   const existing = backoffs.get(agentId);

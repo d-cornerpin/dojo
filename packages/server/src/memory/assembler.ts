@@ -22,7 +22,7 @@ import {
   estimateTokens, contextWindowPolicy, assertSystemPromptFits, SystemPromptTooLargeError,
   SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
-import { toolResultView } from './tool-result-view.js';
+import { readCall, toolResultView } from './tool-result-view.js';
 // t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
@@ -2356,9 +2356,12 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
       const len = contentStr.length;
       const turnLabel = msg.turnNumber !== null && msg.turnNumber !== undefined ? `turn ${msg.turnNumber}` : 'pre-v2 history';
       messageChanged = true;
+      // t207 (t200): the whole result is kept (the row, or the store), so the stub points to the reader
+      // and never advises running the tool again.
+      const readBack = b.tool_use_id ? `; ${readCall(b.tool_use_id)} reads it back` : '';
       return {
         ...b,
-        content: `[Tool result from ${turnLabel}, ${len} chars, cleared from context. Re-call the tool or check vault for findings.]`,
+        content: `[Tool result from ${turnLabel}, ${len} chars, cleared from context${readBack}.]`,
       };
     });
 

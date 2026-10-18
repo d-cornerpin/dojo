@@ -40,7 +40,7 @@ vi.mock('../../../../../prompt/registry/assembler.js', async (importOriginal) =>
 
 function turnCtxFor(): AssembleContext['turnCtx'] {
   return {
-    agentId: 'zargo', conversationId: 'conv-1', lastAssembledAtIso: null, assemblerOverheadTokens: 0,
+    agentId: 'zargo', conversationId: 'conv-1', lastAssembledAtIso: null, 
     freshTailDropWarned: false, startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
     startAckSteersInjected: 0, startAckSteerInjectedAtLoop: 0, inboundClassifiedAsWork: false,
   } as unknown as AssembleContext['turnCtx'];

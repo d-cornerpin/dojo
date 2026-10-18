@@ -299,21 +299,13 @@ export interface TurnContext {
    *      are claimed at turn end) and by the owed-mid-turn-arrivals check. Handed by
    *      value the stamp would die at the module boundary and every turn would claim
    *      nothing, silently, because `null` is a legal value there.
-   *    * `assemblerOverheadTokens` is the non-compressible overhead the assembler just
-   *      produced, read by the NEXT ITERATION's pre-call gate — a step that was
-   *      already extracted at CUT 3, which named this tranche as the owner of the
-   *      migration in its own AS-BUILT. Lost, the gate measures the compressible total
-   *      against the full window instead of the real compressible budget.
-   *    * `freshTailDropWarned` is a ONE-SHOT LATCH ACROSS ITERATIONS: the CONTEXT_HIGH
-   *      banner that tells the user the agent set its oldest messages aside fires once
-   *      per TURN. Reset every iteration, a long turn shows the same banner on every
-   *      round. That is a user-visible regression, and the clause that catches it
-   *      (`integration.test.ts`, "fires ONCE PER TURN, not once per iteration") landed
-   *      GREEN on the unmoved tree before this field existed. */
+   *    * `freshTailDropWarned` is a ONE-SHOT LATCH ACROSS ITERATIONS: the operator log line
+   *      for the assembler setting its oldest messages aside fires once per TURN (t207: the
+   *      owner-facing toast it used to ride with is gone). Reset every iteration, a long turn
+   *      logs the same line on every round (`integration.test.ts`, "fires ONCE PER TURN"). */
   lastAssembledAtIso: string | null;
   /** t145: `MAX(messages.seq)` for the agent at turn pickup; a row above it arrived after the turn began. */
   pickupSeq: number | null;
-  assemblerOverheadTokens: number;
   freshTailDropWarned: boolean;
 
   /** F10 START-ACK STEER — four locals of ONE mechanism (owner ruling 2026-07-22,
@@ -532,7 +524,6 @@ export function openTurnContext(agentId: string): TurnContext {
     turnInjectedTechniqueId: null,
     lastAssembledAtIso: null,
     pickupSeq: null,
-    assemblerOverheadTokens: 0,
     freshTailDropWarned: false,
     startAckSteerRequested: false,
     startAckSteerArmedThisTurn: false,

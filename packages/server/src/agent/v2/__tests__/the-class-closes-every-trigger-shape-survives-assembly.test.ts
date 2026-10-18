@@ -161,7 +161,6 @@ function turnCtxFor(): AssembleContext['turnCtx'] {
     agentId: AGENT,
     conversationId: null,
     lastAssembledAtIso: null,
-    assemblerOverheadTokens: 0,
     freshTailDropWarned: false,
     startAckSteerRequested: false,
     startAckSteerArmedThisTurn: false,

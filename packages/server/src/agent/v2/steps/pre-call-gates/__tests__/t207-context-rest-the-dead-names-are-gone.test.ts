@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-const SRC = path.resolve(__dirname, '../../../..');
+const SRC = path.resolve(__dirname, '../../../../..');
 
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];

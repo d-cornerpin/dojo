@@ -183,7 +183,7 @@ async function oneRoutedCall(): Promise<{ turnWindow: number; dialedModelId: str
   const gateCtx = {
     agentId: AGENT, turnNumber: 201, contextWindow: turnWindow, contextModelId: '__auto__',
     configuredModelId: 'auto', isAutoRouted: true, counterparty: OWNER,
-    assemblerOverheadTokens: 0, engineBlockEscapeHatch: '[escape hatch]',
+    engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => { /* not the subject */ },
     stashContinuationIfHuman: vi.fn(),
     detectTaskThrashing: vi.fn(() => ({ thrashing: false })),

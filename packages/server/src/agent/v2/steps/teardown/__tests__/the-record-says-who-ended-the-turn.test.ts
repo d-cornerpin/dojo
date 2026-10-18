@@ -63,7 +63,7 @@ const bagFor = (over: Record<string, unknown> = {}): Bag => ({
   startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
   anyToolStartedThisTurn: false, toolPhaseEndedBySpinBrake: false,
-  turnInjectedTechniqueId: null, lastAssembledAtIso: null, assemblerOverheadTokens: 0,
+  turnInjectedTechniqueId: null, lastAssembledAtIso: null, 
   ...over,
 });
 

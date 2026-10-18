@@ -126,7 +126,7 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
   const ctx = {
     agentId: AGENT, turnNumber: 99, contextWindow: WINDOW, contextModelId: MODEL,
     configuredModelId: MODEL, isAutoRouted: false, counterparty: OWNER,
-    assemblerOverheadTokens: 0, engineBlockEscapeHatch: '[escape hatch]',
+    engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
     stashContinuationIfHuman: vi.fn(),
     detectTaskThrashing: vi.fn(() => ({ thrashing: false })),

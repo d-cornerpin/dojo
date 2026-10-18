@@ -180,7 +180,6 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
     configuredModelId: MODEL,
     isAutoRouted: false,
     counterparty: OWNER,
-    assemblerOverheadTokens: 0,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
     stashContinuationIfHuman: vi.fn(),

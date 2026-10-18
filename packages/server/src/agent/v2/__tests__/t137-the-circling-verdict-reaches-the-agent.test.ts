@@ -96,7 +96,7 @@ function ctx(): PreCallGatesContext & { events: WsEvent[] } {
   const c = {
     agentId: AGENT, turnNumber: 2, contextWindow: 200000, contextModelId: MODEL, configuredModelId: MODEL,
     isAutoRouted: false, counterparty: { kind: 'user', displayName: 'Owner', id: 'owner' } as TurnCounterparty,
-    assemblerOverheadTokens: 0, engineBlockEscapeHatch: '[escape hatch]',
+    engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (e: WsEvent) => { events.push(e); broadcastSpy(e); },
     stashContinuationIfHuman: vi.fn(), detectTaskThrashing: vi.fn(() => ({ thrashing: false })),
   } as unknown as PreCallGatesContext;

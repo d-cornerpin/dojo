@@ -3915,7 +3915,7 @@ describe('PHASE-6 CUT 6: the assemble span kept two guards nobody tested', () =>
   const evictionWarns = (): unknown[] =>
     loggerWarnSpy.mock.calls.filter((c) => String(c[0]).includes('assembler evicted oldest fresh-tail messages'));
 
-  it('FA-M1: the fresh-tail eviction warning fires ONCE PER TURN, not once per iteration', async () => {
+  it('FA-M1: the fresh-tail eviction log line fires ONCE PER TURN, not once per iteration', async () => {
     // Every assembly of this turn reports an eviction — which is the real shape:
     // the window is still full on the next round, so the assembler drops again.
     assembleContextMock.mockImplementation(async () => ({
@@ -3942,10 +3942,10 @@ describe('PHASE-6 CUT 6: the assemble span kept two guards nobody tested', () =>
     // POSITIVE CONTROL for the latch: the turn really did assemble more than once,
     // so "fired once" is a latch and not an artefact of a single-pass turn.
     expect(assembleContextMock.mock.calls.length).toBeGreaterThan(1);
-    expect(contextHighErrors()).toHaveLength(1);
+    // t207 (owner decision 34): setting messages aside is routine; the owner gets no toast for it. The
+    // operator log line stays, once per turn (the latch).
+    expect(contextHighErrors()).toHaveLength(0);
     expect(evictionWarns()).toHaveLength(1);
-    // The banner names the count it set aside, pluralised — the user-facing half.
-    expect(contextHighErrors()[0].error).toContain('3 oldest recent messages');
   });
 
   it('FA-M1 control: an assembly that dropped nothing says nothing', async () => {

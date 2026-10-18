@@ -475,7 +475,8 @@ describe('§2 the sites that end a turn carry their reason, and the recorder rea
     const union = /export type PreCallGatesExitReason =([\s\S]*?);/.exec(read('agent/v2/steps/pre-call-gates/index.ts'))?.[1] ?? '';
     expect(union).toContain("'turn-time-budget'");
     expect(union).not.toContain("'turn-continuation-cap'");
-    expect([...union.matchAll(/'[a-z-]+'/g)].length).toBe(6);
+    // t207: the two dead context-gate members are gone too; four live reasons are left.
+    expect([...union.matchAll(/'[a-z-]+'/g)].length).toBe(4);
   });
 
   it('BOTH `terminated` CALL SITES are wired, and the statement stays in one module', () => {

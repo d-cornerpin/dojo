@@ -90,7 +90,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   // The S1 shape: the turn ran ONE model call and no tools at all.
   anyToolStartedThisTurn: false,
   toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-  lastAssembledAtIso: null, assemblerOverheadTokens: 0,
+  lastAssembledAtIso: null, 
   ...over,
 });
 

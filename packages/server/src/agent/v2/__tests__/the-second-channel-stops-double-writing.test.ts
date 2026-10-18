@@ -133,7 +133,6 @@ function gatesCtx(over: Partial<PreCallGatesContext> = {}): PreCallGatesContext 
     configuredModelId: MODEL,
     isAutoRouted: false,
     counterparty: { kind: 'user' } as PreCallGatesContext['counterparty'],
-    assemblerOverheadTokens: 0,
     engineBlockEscapeHatch: 'If this looks wrong, say so.',
     broadcast: broadcastSpy,
     stashContinuationIfHuman: () => {},

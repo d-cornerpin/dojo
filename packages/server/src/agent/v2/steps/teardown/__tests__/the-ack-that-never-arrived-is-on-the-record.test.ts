@@ -58,7 +58,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   // The incident's own shape: the turn was WORK. The F10 gate's condition, carried here.
   anyToolStartedThisTurn: true,
   toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-  lastAssembledAtIso: null, assemblerOverheadTokens: 0,
+  lastAssembledAtIso: null, 
   ...over,
 });
 

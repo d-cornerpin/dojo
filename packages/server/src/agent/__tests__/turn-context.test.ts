@@ -95,7 +95,6 @@ const THE_DRIVER_CARRIES = [
   // different ways: the stamp dies at the boundary, the overhead never reaches the next
   // iteration's gate, and the once-per-TURN banner latch resets every round.
   'lastAssembledAtIso',
-  'assemblerOverheadTokens',
   'freshTailDropWarned',
   // The F10 start-ack steer's four locals are ONE mechanism split across FOUR spans,
   // and the request flag is written from the wall-clock TIMER — the by-value test's

@@ -35,7 +35,6 @@
 // ════════════════════════════════════════
 
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
-import { estimateTokens } from '../../../../memory/budget.js';
 import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/out-of-view-fold.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../../../prompt/registry/types.js';
@@ -306,37 +305,15 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // Savings: -65 tokens on the fresh tail of every turn, measured (T7 sitting 1; T6's
   // 234-receipt distribution recorded `engine.settled-hint 65/65`).
 
-  // FA-M1: record the non-compressible overhead the assembler just produced
-  // (system prompt + the tool-schema/output reserve it also reserves) so the
-  // NEXT iteration's pre-call gate measures the compressible total against the
-  // real compressible budget instead of the full window.
-  // PHASE-3 T4: this used to add the imported `TOOL_AND_OUTPUT_RESERVE` constant, which
-  // is now measured per agent and no longer importable. `ctx.reserveTokens` is the
-  // number the assembler ACTUALLY set aside on the assembly that just ran — the loop
-  // reads the decision instead of re-deriving it, which is the same one-owner move.
-  turnCtx.assemblerOverheadTokens = estimateTokens(systemPrompt) + (ctx.reserveTokens ?? 0);
-
-  // FA-M1: surface the assembler's oldest-fresh-tail eviction. budgetFreshTail
-  // silently dropped older fresh-tail groups to fit the window (live-view loss
-  // where the weakest model needs it most). Emit the existing CONTEXT_HIGH
-  // warning once per turn so the dashboard shows it instead of it being
-  // log-only. The dropped rows are persisted and later summarized (not lost).
+  // The assembler's oldest-fresh-tail eviction: it dropped older fresh-tail groups to fit the window.
+  // t207 (owner decision 34): setting old messages aside is routine and nothing is lost (the rows are
+  // saved and folded into a summary), so the owner is told nothing; this log line is for the operator.
+  // Once per turn (the bag carries the latch across iterations).
   if (!turnCtx.freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
     turnCtx.freshTailDropWarned = true;
-    const dropped = ctx.freshTailDropped ?? 0;
     logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
-      agentId, dropped, contextWindow,
+      agentId, dropped: ctx.freshTailDropped ?? 0, contextWindow,
     }, agentId);
-    try {
-      broadcast({
-        type: 'chat:error',
-        agentId,
-        error: `Agent's memory is full, so it set aside its ${dropped} oldest recent message${dropped === 1 ? '' : 's'} to keep working. Older context is still saved.`,
-        code: 'CONTEXT_HIGH',
-        severity: 'warning',
-        retryable: false,
-      });
-    } catch { /* best effort */ }
   }
 
   // One message-injection context for this iteration's §3c entries

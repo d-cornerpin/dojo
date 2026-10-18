@@ -141,7 +141,7 @@ function makeCtx(events: WsEvent[]): PreCallGatesContext {
     agentId: AGENT, turnNumber: 7, contextWindow: WINDOW, contextModelId: MODEL,
     configuredModelId: MODEL, isAutoRouted: false, counterparty: OWNER,
     // A realistic overhead from the last assembly: the system prompt plus the tools/output reserve.
-    assemblerOverheadTokens: 18_000, engineBlockEscapeHatch: '[escape hatch]',
+    engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
     stashContinuationIfHuman: vi.fn(),
     detectTaskThrashing: vi.fn(() => ({ thrashing: false })),

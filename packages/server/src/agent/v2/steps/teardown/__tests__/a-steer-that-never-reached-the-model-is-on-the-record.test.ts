@@ -70,7 +70,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
   anyToolStartedThisTurn: false,
   toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-  lastAssembledAtIso: null, assemblerOverheadTokens: 0,
+  lastAssembledAtIso: null, 
   ...over,
 });
 
