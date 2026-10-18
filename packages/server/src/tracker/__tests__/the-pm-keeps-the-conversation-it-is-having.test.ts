@@ -52,7 +52,6 @@ vi.mock('../../db/connection.js', () => ({
 import { assembleContext } from '../../memory/assembler.js';
 import { deleteAgentDebrisBefore } from '../../memory/message-store.js';
 import { runMigrations } from '../../db/migrations.js';
-import { laneLimit } from '../../memory/lanes.js';
 
 const PM = 'pm';                 // config/platform.ts: `pm_agent_id` defaults to 'pm'
 const MODEL = 'pm-wipe-model';
@@ -293,7 +292,10 @@ describe('§A the conversation survives the sweep that used to erase it', () => 
     // talking. Seeding them as the OLDEST rows (the obvious way to write this) puts them
     // outside the window entirely and the clause passes with the fix removed, proving nothing.
     // Found by planting that defect — M2 — and watching this clause stay green.
-    const cap = laneLimit('lane.pm-tail', 'rows', 'tail');
+    // t206: the PM tail is no longer a row count (every row since the newest fold), so the slot
+    // this clause guards cannot be spent by construction. 40 is the deleted cap's last value:
+    // the clause still proves no real message is evicted by two rows that render to nothing.
+    const cap = 40;
     for (let i = 0; i < cap - 1; i += 1) row('user', `exchange line ${i}`, 4 + i);
     seedSessionResetRows();
 
@@ -334,11 +336,16 @@ describe('§A the conversation survives the sweep that used to erase it', () => 
   it('A4 — the pruner cannot delete a row the window would have shown', () => {
     // The two numbers were set years apart and nothing made them agree: a pruner that keeps
     // the newest N while the lane asks for M > N can delete rows the assembly was about to
-    // render. This clause is what keeps them agreeing.
-    const pmAgent = readSrc('tracker/pm-agent.ts');
+    // render. t206: the window is every row since the newest fold now, so no row count can
+    // agree with it; the pruner stops at the fold boundary instead. Driven behaviourally in
+    // `memory/__tests__/t206-cache-cost-the-pm-tail-holds-still.test.ts` §1d; this is the
+    // structural half: the cut is bounded by the boundary the view starts at.
+    const pmAgent = stripComments(readSrc('tracker/pm-agent.ts'));
     const max = /const PM_MAX_MESSAGES = (\d+)/.exec(pmAgent);
     expect(max, 'PM_MAX_MESSAGES is no longer declared where this clause can read it').not.toBeNull();
-    expect(Number(max![1])).toBeGreaterThanOrEqual(laneLimit('lane.pm-tail', 'rows', 'tail'));
+    const body = pmAgent.slice(pmAgent.indexOf('export function pruneOldPMMessages('));
+    expect(body.slice(0, body.indexOf('\n}\n')), 'the pruner no longer stops at the fold boundary')
+      .toMatch(/Math\.min\([^)]*horizon\.anchorSeq\)/);
   });
 });
 

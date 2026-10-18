@@ -1344,38 +1344,34 @@ async function assembleMessageContext(
     throw err;
   }
 
-  // PM agent gets a lightweight context: system prompt + recent messages only.
-  // No briefing, no vault, no summaries. The tracker is its memory. Its row cap is a lane
-  // declaration like every other (§T0-B C `:681`).
+  // PM agent gets a lightweight context: system prompt + its live conversation only.
+  // No briefing, no vault, no summaries. The tracker is its memory.
   if (isPMAgent(agentId)) {
-    // ── t123: ROWS THAT RENDER TO NOTHING MUST NOT SPEND A TAIL SLOT ────────────────────────
-    // The row cap is a budget on what the MODEL SEES, but `getRecentMessages` has no role
-    // filter, so `role='system'` rows spent slots and then rendered to nothing. The two rows a
-    // session reset inserts are the case that bit the owner: immediately after the reset he
-    // complained about, his PM's window was a 10-row cap holding 8 renderable rows — and he was
-    // the one who had just pressed reset, so the eviction was worst exactly when he most needed
-    // the conversation carried.
-    //
-    // The ask is RAISED by the number of unrenderable rows it came back holding, rather than a
-    // role predicate being pushed into `getRecentMessages`. Two reasons, and the second is the
-    // load-bearing one: `memory/store.ts` is outside this lane's fence, and more importantly
-    // `getRecentMessages` must stay exactly complementary with `getOlderMessages` (FA-M3 —
-    // their partition is what keeps the tail-to-summary handoff from dropping or duplicating a
-    // message), so a role filter on one of the pair is a correctness change to BOTH readers,
-    // which is a far wider blast radius than the PM's own tail needs.
-    //
-    // ONE re-ask, deliberately bounded. It is not a loop: the re-ask can itself surface further
-    // system rows in the widened window, so the guarantee is "strictly more renderable rows
-    // than before, never fewer", not "exactly the cap". A loop here would be an unbounded query
-    // ladder for a cosmetic last row, and the budgeter below is the real cap on what fits.
-    const pmTailCap = laneLimit('lane.pm-tail', 'rows', 'tail');
-    const firstAsk = getRecentMessages(agentId, pmTailCap);
-    const unrenderable = firstAsk.filter((m) => m.role === 'system').length;
-    const freshTail = unrenderable > 0
-      ? getRecentMessages(agentId, pmTailCap + unrenderable)
-      : firstAsk;
+    // ── t206 (v3.4 D3, owner decision 11): THE PM'S TAIL GROWS AND FOLDS, LIKE EVERY TAIL ────
+    // STRIP: `lane.pm-tail`'s 40-row cap, read as "the newest 40 rows" (`getRecentMessages(cap)`),
+    // and t123's one re-ask for the `role='system'` rows that spent its slots. A window measured
+    // from the BACK scrolls by construction: each new row pushed the oldest off the front, so the
+    // first message moved on every call and the provider re-read the whole tail. Measured on the
+    // dev box (`scripts/cost-measure.mjs --agent <the PM>`, 220 calls): the tail was 89% of the
+    // PM's input cost at a 61% hit rate, and the prefix broke at the tail's head on 49% of turn
+    // starts and 70% of the calls inside a turn. requirement preserved: "the PM's prompt stays
+    // bounded" — by the same two owners every other agent's tail answers to: the compaction
+    // boundary (`freshTailHorizon`: every row since the newest folded one, with its quantised row
+    // ceiling) and the token trim below. Between folds the tail is a pure append; at a fold the
+    // front moves once. t123's slot problem cannot recur: the read is no longer a row count, so a
+    // row that renders to nothing spends no one else's place.
+    const horizon = freshTailHorizon(agentId, policy);
+    const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
+    const freshTail = horizon.keepFromSeq > 0
+      ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
+      : freshTailRows;
     const budgeted = budgetFreshTail(
       freshTail, maxTokens - systemTokens, tailTrimBlockGroups(policy.freshTailCount),
+    );
+    const trimmed = freshTail.length - budgeted.length;
+    const outOfViewThroughSeq = Math.max(
+      trimmed > 0 ? (freshTail[trimmed - 1].rowid ?? 0) : 0,
+      horizon.ceilingBound && horizon.keepFromSeq > 0 ? horizon.keepFromSeq - 1 : 0,
     );
     const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
     tagMessageLanes(pm.messages, 'lane.pm-tail');
@@ -1390,9 +1386,10 @@ async function assembleMessageContext(
     // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
     // of the validator.
     if (dryRun) return { systemPrompt, systemVolatile: '', messages: [], reserveTokens: policy.toolAndOutputReserve,
-      view: viewOf({ budget: maxTokens - systemTokens, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq: 0 }, policy, systemTokens) };
+      view: viewOf({ budget: maxTokens - systemTokens, cached: 0, before: freshTail, kept: budgeted, outOfViewThroughSeq }, policy, systemTokens) };
     const messages = applyIntegrityPass([...pm.messages], agentId);
-    const freshTailDropped = Math.max(0, freshTail.length - budgeted.length);
+    // FA-M1: live-view loss, as the main path counts it — the trim's drop plus the ceiling's skip.
+    const freshTailDropped = trimmed + horizon.skippedRows;
     // The report the PM path never produced. One lane, its real grant, its reason in words:
     // a receipt that simply lacked the PM's assembly could not tell "the PM has no lanes"
     // from "nobody wrote this down" (research 06 §8's own complaint about this return).
@@ -1411,8 +1408,7 @@ async function assembleMessageContext(
         // swallowed catch, so a failure throws the assembly rather than reading as silence.
         status: messages.length > 0 ? 'admitted' : 'empty',
         reason: `PM lightweight context: the tracker is its memory, so the tail is its only ` +
-          `lane (row cap ${laneLimit('lane.pm-tail', 'rows', 'tail')}, ` +
-          `${freshTailDropped} row(s) dropped to fit)`,
+          `lane (every row since the newest fold, ${freshTailDropped} row(s) out of view)`,
       }],
       admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [],
       overBudget: [],
@@ -1426,6 +1422,7 @@ async function assembleMessageContext(
       messages,
       messageEntryIds: collectMessageLaneIds(messages),
       freshTailDropped,
+      outOfViewThroughSeq,
       reserveTokens: policy.toolAndOutputReserve,
       allocation: report,
       consumedOneShotFlags: {},

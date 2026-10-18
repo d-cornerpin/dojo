@@ -40,6 +40,9 @@ import {
   deleteAgentDebrisBefore,
   insertEngineEventIfAbsent,
 } from '../memory/message-store.js';
+import { freshTailHorizon } from '../memory/tail-horizon.js';
+import { contextWindowPolicy } from '../memory/budget.js';
+import { getContextWindow } from '../agent/model.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
@@ -1002,33 +1005,43 @@ function recordValidatorUnavailable(pmId: string, pmStatus: string): void {
 // window small. PM is still stateless conceptually (tracker is its
 // memory), this is just enough scratch space.
 // t123 RAISED THIS FROM 30 TO 60, for coherence with the lane rather than as a tuning nudge.
-// `lane.pm-tail` now asks the assembler for 40 rows. A pruner that keeps only the newest 30 can
-// therefore DELETE rows the window was about to render — the two numbers were set years apart
-// and nothing made them agree. 60 keeps the pruner strictly behind the tail: it can only ever
-// remove rows the assembly would not have shown anyway. It still bounds the table, and the rows
-// it removes are the ones with the volume (the per-minute `events`-lane situation reports),
-// because `deleteAgentDebrisBefore` spares the owner lane.
+// t206: it is a FLOOR now, not the pruner's whole rule. The PM's tail is every row since its
+// newest fold (`memory/assembler.ts`, PM branch), which can be far more than 60 rows, so a
+// pruner that kept "the newest 60" deleted rows the view was showing and moved the prompt's
+// first message under the provider's cache. The pruner now stops at the fold boundary as well:
+// it removes only rows a fold has already taken out of the view for good.
 const PM_MAX_MESSAGES = 60;
 
 /**
- * Prune old PM messages to keep the context window small.
- * The PM doesn't need history, the tracker is its memory.
+ * Prune old PM engine rows to bound the table. Exported for the cache-stability test
+ * (`memory/__tests__/t206-cache-cost-the-pm-tail-holds-still.test.ts` §1d).
+ *
+ * t206: NEVER AT OR PAST THE FOLD BOUNDARY. Rows from the newest folded row onward are the PM's
+ * live view (or the row the boundary is anchored on), so the cut is the older of the two:
+ * the newest `PM_MAX_MESSAGES` rows, and the boundary. Nothing folded yet means nothing is out of
+ * view for good, so nothing is pruned (the token trim bounds the prompt meanwhile).
  */
-function pruneOldPMMessages(pmId: string): void {
+export function pruneOldPMMessages(pmId: string): void {
   const db = getDb();
   try {
     // Count total messages
     const countRow = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id = ?').get(pmId) as { c: number };
     if (countRow.c <= PM_MAX_MESSAGES) return;
 
-    // Get the ID of the Nth most recent message (our initial cutoff candidate)
-    const initialCutoff = db.prepare(`
-      SELECT id FROM messages WHERE agent_id = ?
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1 OFFSET ?
-    `).get(pmId, PM_MAX_MESSAGES) as { id: string } | undefined;
+    // The fold boundary (`freshTailHorizon`, the one owner of where a tail starts). `keepFromSeq`
+    // is 0 on the floor, where the view is "the newest rows" and nothing is out of view for good.
+    const modelId = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined)?.model_id ?? '';
+    const horizon = freshTailHorizon(pmId, contextWindowPolicy(getContextWindow(modelId), { toolPayloadTokens: 0 }));
+    if (horizon.keepFromSeq <= 0 || horizon.anchorSeq <= 0) return;
 
-    if (!initialCutoff) return;
+    // The Nth most recent message, then the older of it and the boundary: the cut candidate.
+    const floorRow = db.prepare(`
+      SELECT seq FROM messages WHERE agent_id = ?
+      ORDER BY seq DESC
+      LIMIT 1 OFFSET ?
+    `).get(pmId, PM_MAX_MESSAGES) as { seq: number } | undefined;
+    if (!floorRow) return;
+    const cutSeq = Math.min(floorRow.seq, horizon.anchorSeq);
 
     // v2.7.27: tool_call_pair-aware cutoff. If the initial cutoff lands on a
     // 'tool' role message, the resulting kept window starts with an orphaned
@@ -1039,14 +1052,16 @@ function pruneOldPMMessages(pmId: string): void {
     // forward from the initial cutoff to find the first non-tool message,
     // using that as the safe cutoff. We may keep fewer than PM_MAX_MESSAGES
     // when this fires; that's fine, PM is stateless and tracker is its memory.
+    // t206: the walk never passes the boundary row, so it cannot reach into the view.
     const cutoff = db.prepare(`
       SELECT id FROM messages
       WHERE agent_id = ?
-        AND rowid >= (SELECT rowid FROM messages WHERE id = ?)
+        AND seq >= ?
+        AND seq <= ?
         AND role != 'tool'
-      ORDER BY rowid ASC
+      ORDER BY seq ASC
       LIMIT 1
-    `).get(pmId, initialCutoff.id) as { id: string } | undefined;
+    `).get(pmId, cutSeq, horizon.anchorSeq) as { id: string } | undefined;
 
     if (!cutoff) return;
 

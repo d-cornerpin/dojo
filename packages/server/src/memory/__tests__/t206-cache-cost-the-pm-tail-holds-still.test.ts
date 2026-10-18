@@ -124,6 +124,9 @@ describe('t206 §1 — the PM tail grows between folds instead of sliding', () =
 
   it('1b — a later call INSIDE a turn appends too (the call after a tool result)', async () => {
     for (let i = 0; i < 30; i += 1) reviewTurn();
+    // The turn this call serves opens on its trigger, as a real one does.
+    turn += 1;
+    row('user', `Tracker review ${turn} -- 4 active tasks: a new task is on deck.`, 'events', 'agent-only');
     const first = await snap('turn start');
     toolRoundInSameTurn(1);
     const second = await snap('after one tool round');
