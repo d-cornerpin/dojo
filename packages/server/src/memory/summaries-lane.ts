@@ -13,7 +13,7 @@
 //   - the NEWEST summary is always in, whole;
 //   - then older ones, newest-first, while the RENDERED block fits; the first that does not
 //     fit ends the run, so what yields is always the OLDEST and the shown history has no gaps;
-//   - what is left out is SAID (one line with the count and where to find them), never hidden;
+//   - what is left out is SAID (one line with the count; they are still stored), never hidden;
 //   - the fit's truncate re-selects under the grant the ROOM gave, so a small window drops older
 //     summaries whole. Only a newest summary that alone exceeds the room is cut as text, with
 //     the shared truncation marker; nothing smaller is left.
@@ -54,7 +54,7 @@ ${summary.content}
 
 /** The line that says older summaries were left out. Empty when none were. */
 function omittedLine(n: number): string {
-  return n > 0 ? `(${n} older ${n === 1 ? 'summary is' : 'summaries are'} not shown here, to fit; history_search reaches them.)${JOIN}` : '';
+  return n > 0 ? `(${n} older ${n === 1 ? 'summary is' : 'summaries are'} not shown here, to fit; they are still stored.)${JOIN}` : '';
 }
 
 function blockText(xmls: string[], omitted: number): string {
