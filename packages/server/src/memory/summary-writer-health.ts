@@ -13,10 +13,8 @@
 //     (`noteAPersonSpoke`); a SUMMARY call its provider answers re-arms it for everyone
 //     (`noteSummaryWriterOutcome`); the owner changing the Settings writer re-arms it. Not a scheduled
 //     turn, a self-wake, a continuation — round 6 re-armed on those, and for every agent at once.
-// t207 (D9): the mark is PERSISTED (`healer_state`, scope below), so a restart does not forget an
-// unreachable writer and dial it again on the first fold; and "answered" means a summary call. Round 7
-// also re-armed a writer when its provider answered ANY call (a chat turn); a model that answers chat
-// and times out on summaries was re-armed, and re-dialled, after every turn. That door is gone.
+// t207 (D9): the mark is PERSISTED (`healer_state`), so a restart does not forget an unreachable writer;
+// and "answered" means a SUMMARY call: round 7's re-arm on any call (a chat turn) is gone.
 // The order: the owner's Settings choice, then the agent's own model and provider, then (only with
 // no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
 // are that order without broken or not-answering ones; when none is left, nothing is dialled and
@@ -45,15 +43,13 @@ const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN
 
 /** Per agent: the moment (same ordinal as the marks) a person last wrote to it. */
 const personSpokeAt = new Map<string, number>();
-/** An ordinal that never repeats, never goes backwards and never expires anything: "a person spoke after the
- *  writer failed" must be exact, never a tie. It starts from the wall clock so an ordinal minted before a
- *  restart is still smaller than one minted after it; it is never read as a duration. */
+/** An ordinal, not a duration: never repeats, never goes backwards, expires nothing. It starts from the wall
+ *  clock so one minted before a restart is smaller than one minted after it. */
 let moment = 0;
 const nextMoment = (): number => (moment = Math.max(moment + 1, Date.now()));
 
-/** Providers whose writer has not answered since it last failed or ran past a turn's patience: one row each,
- *  `key` = the provider, a separator and the Settings writer at the time (so the owner changing the Settings
- *  writer makes the row stop matching), `at_ms` = the ordinal. The row is the memory; there is no copy. */
+/** Providers whose writer has not answered since it failed or ran past a turn's patience: one `healer_state`
+ *  row each, `key` = provider + separator + the Settings writer then (so a Settings change stops it matching). */
 const MARK_SCOPE = 'summary_writer_not_answering';
 const MARK_SEP = '|';
 
@@ -66,38 +62,31 @@ function settingsWriter(): string | null {
 }
 const markKey = (provider: string, settings: string | null): string => `${provider}${MARK_SEP}${settings ?? ''}`;
 
-/** The writer's provider is not answering from now on. Best effort: a failed write leaves it dialled. */
+/** Best effort: a failed write leaves the writer dialled. */
 function markNotAnswering(provider: string): void {
   try {
-    const db = getDb();
     clearMark(provider);
-    db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)')
+    getDb().prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)')
       .run(MARK_SCOPE, markKey(provider, settingsWriter()), nextMoment());
   } catch (err) {
     logger.warn('could not record that a summary writer is not answering', { providerKey: provider, error: err instanceof Error ? err.message : String(err) });
   }
 }
-/** Forget the provider's marks (under whatever Settings writer they were made). True when there was one. */
+/** Forget the provider's marks, whatever Settings writer they were made under. True when there was one. */
 function clearMark(provider: string): boolean {
   try {
-    const db = getDb();
-    const rows = (db.prepare('SELECT key FROM healer_state WHERE scope = ?').all(MARK_SCOPE) as Array<{ key: string }>)
-      .filter((r) => r.key.startsWith(`${provider}${MARK_SEP}`));
-    for (const r of rows) db.prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(MARK_SCOPE, r.key);
-    return rows.length > 0;
-  } catch {
-    return false;
-  }
+    const prefix = `${provider}${MARK_SEP}`;
+    return getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND substr(key, 1, ?) = ?')
+      .run(MARK_SCOPE, prefix.length, prefix).changes > 0;
+  } catch { return false; }
 }
-/** The ordinal of the provider's live mark (made under the CURRENT Settings writer), or null. */
+/** The ordinal of the provider's live mark (under the CURRENT Settings writer), or null. */
 function markOf(provider: string): number | null {
   try {
     const row = getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?')
       .get(MARK_SCOPE, markKey(provider, settingsWriter())) as { at_ms: number } | undefined;
     return row ? row.at_ms : null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function providerKey(modelId: string): string {
@@ -243,7 +232,7 @@ export function noteAPersonSpoke(agentId: string): void {
   personSpokeAt.set(agentId, nextMoment());
 }
 
-/** Test-only reset of the in-process half (who was last written to). The marks are rows in the test's own database. */
+/** Test-only reset: who was last written to, and the marks in the test's own database. */
 export function __resetSummaryWriterHealthForTests(): void {
   personSpokeAt.clear();
   try { getDb().prepare('DELETE FROM healer_state WHERE scope = ?').run(MARK_SCOPE); } catch { /* no database in this test */ }
