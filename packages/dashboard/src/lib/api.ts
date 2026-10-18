@@ -588,7 +588,7 @@ export interface StartCleanupResponse {
   kept: number;
   message: string;
 }
-export const cleanupPlatformBackups = async (keep: number = 1): Promise<ApiResponse<StartCleanupResponse>> => {
+export const cleanupPlatformBackups = async (keep: number): Promise<ApiResponse<StartCleanupResponse>> => {   // t201: no default; the caller passes the server's keepDefault
   return request<StartCleanupResponse>('/update/backups/cleanup', {
     method: 'POST',
     body: JSON.stringify({ keep }),

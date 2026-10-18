@@ -882,9 +882,10 @@ function getUpdateCheckHealthItems(): DiagnosticItem[] {
 // (code only, owner decision 2026-07-06). The PRIMARY owner signal is the
 // watchdog's iMessage at the moment it acts; THIS is the durable, dashboard-
 // visible signal so the state is not lost if that text was missed. It reads the
-// same ~/.dojo/update-state.json marker the watchdog writes. Two phases matter:
+// same ~/.dojo/update-state.json marker the watchdog writes. Three phases matter:
 //   rolled-back        -> the box undid a bad update and is on the previous build
 //   failed-permanently -> a failed update could NOT be safely undone; needs a person
+//   interrupted        -> the installer was cut off before it changed anything (t197); info only
 // (A healthy/idle/pending marker produces no item; this is notify-only, the
 // Healer must NOT try to force an update from it.)
 function getUpdateRollbackItems(): DiagnosticItem[] {
@@ -905,6 +906,18 @@ function getUpdateRollbackItems(): DiagnosticItem[] {
           `the dojo dashboard and restore a previous version from the update screen, or get help. Let the owner know ` +
           `in plain language that a dojo update failed and the box needs manual attention. Do NOT try to force ` +
           `another update.`,
+      });
+    } else if (marker.phase === 'interrupted') {
+      // t197: cut off before anything switched; info only (the watchdog texts the owner once, then idles the marker).
+      items.push({
+        severity: 'info',
+        code: 'UPDATE_INTERRUPTED',
+        title: 'A dojo update was interrupted before it changed anything',
+        detail:
+          `A recent dojo update was cut off before it switched anything over. Nothing was changed: the box is still ` +
+          `running its previous version${marker.previousVersion ? ` (version ${marker.previousVersion})` : ''}, exactly as it ` +
+          `was. Nothing needs fixing; if it comes up, tell the owner they can run the update again whenever they like. ` +
+          `Do NOT force an update and do NOT try to roll anything back.`,
       });
     } else if (marker.phase === 'rolled-back') {
       const toVer = marker.previousVersion ? ` (version ${marker.previousVersion})` : '';

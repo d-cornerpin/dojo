@@ -56,6 +56,7 @@ import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { recordMove } from '../work/move-record.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 // t114 (census row 30): the liveness fact every other reaper in the tree guards on. Until
 // now `scheduler/` imported it nowhere, which is why this was the only reaper that could
@@ -1057,7 +1058,11 @@ export async function checkScheduledTasks(): Promise<void> {
     const agentStatus = db.prepare('SELECT status FROM agents WHERE id = ?').get(assignedAgent) as { status: string } | undefined;
     if (!agentStatus || agentStatus.status === 'terminated') {
       logger.warn('Scheduler: assigned agent is terminated, reassigning to primary', { taskId, assignedAgent });
+      const goneAgent = assignedAgent;
       assignedAgent = getPrimaryAgentId();
+      try {
+        recordMove({ taskId, actor: 'scheduler', from: goneAgent, to: { agentId: assignedAgent }, cause: 'assignee_gone', door: `scheduler fire #${runNumber}` });
+      } catch (err) { logger.warn('scheduler: could not record the move off a gone assignee', { taskId, error: err instanceof Error ? err.message : String(err) }); }
     }
 
     // Phase B.0: audit trail of scheduler-driven transition.

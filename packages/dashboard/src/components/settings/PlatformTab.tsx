@@ -52,6 +52,7 @@ const ServerControlSettings = () => {
   const [backupsLoading, setBackupsLoading] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const toast = useToast();
+  const keepCount = backups?.keepDefault ?? 2;   // the server's number; the label and the request share it
 
   useEffect(() => {
     const load = async () => {
@@ -85,7 +86,7 @@ const ServerControlSettings = () => {
 
   const doCleanup = async () => {
     setCleaning(true);
-    const result = await api.cleanupPlatformBackups(1);
+    const result = await api.cleanupPlatformBackups(keepCount);
     if (!result.ok) {
       toast.error(`Cleanup failed to start: ${result.error}`);
       setCleaning(false);
@@ -195,14 +196,14 @@ const ServerControlSettings = () => {
                 ? 'No backups on disk.'
                 : `${backups.count} backup(s) on disk.`}
             </p>
-            {backups.count > 1 && (
+            {backups.count > keepCount && (
               <button
                 type="button"
                 onClick={doCleanup}
                 disabled={cleaning}
                 className="btn btn--sm"
               >
-                {cleaning ? 'Cleaning up…' : 'Clean up old backups (keep most recent 1)'}
+                {cleaning ? 'Cleaning up…' : `Clean up old backups (keep most recent ${keepCount})`}
               </button>
             )}
           </>

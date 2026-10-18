@@ -40,7 +40,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPMAgent, isPrimaryAgent, getOwnerName, getPrimaryAgentId } from '../config/platform.js';
 import { turnContext } from '../agent/turn-context.js';
-import { recordReassignment } from '../tracker/assignee-patience.js';
+import { recordMove } from './move-record.js';
 import { isTerminal, type Actor, type WorkState } from './store.js';
 import { pieceIdsExpr } from './validation-drive.js';
 
@@ -314,18 +314,12 @@ export function writeAssignee(workId: string, to: MoveTarget | { clear: true }):
 
 export type MoveOutcome = { ok: true; from: string; to: MoveTarget; cause: MoveCause } | { ok: false; text: string };
 
-/** Check, write, and record cause, who, from and to on the row's own event log
- *  (`recordReassignment`, which also re-arms the patience ladder against the new holder). */
+/** Check, write, and record the move (`recordMove`). */
 export function moveAssignee(req: MoveRequest & { to: MoveTarget; door: string }): MoveOutcome {
   const c = checkMove(req);
   if (!c.ok) return c;
   if (writeAssignee(req.taskId, req.to) === 0) return { ok: false, text: `Error: task ${req.taskId} was deleted before the move landed.` };
-  recordReassignment({
-    taskId: req.taskId, actor: req.actorId, fromAgentId: c.facts.holder,
-    toAgentId: 'agentId' in req.to ? req.to.agentId : null,
-    toGroupId: 'groupId' in req.to ? req.to.groupId : null,
-    reason: `cause=${c.cause} via ${req.door}`,
-  });
+  recordMove({ taskId: req.taskId, actor: req.actorId, from: c.facts.holder, to: req.to, cause: c.cause, door: req.door });
   return { ok: true, from: c.facts.holder, to: req.to, cause: c.cause };
 }
 

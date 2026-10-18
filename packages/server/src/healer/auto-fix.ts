@@ -24,8 +24,10 @@ import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { ORPHANED_PROJECT_WHERE } from '../tracker/version-gap-reconcile.js';
-import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
-import { workSettled, noteUnsettled } from '../work/store.js';
+import { setTrackerStatus, deliveryForCompletedChildren } from '../work/tracker-store.js';
+import { workSettled } from '../work/store.js';
+import { writeAssignee } from '../work/row-authority.js';
+import { recordMove } from '../work/move-record.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../agent/stream-patience.js';
 
 const logger = createLogger('healer-autofix');
@@ -327,9 +329,7 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // the nullable column that carries it … a null CLEARS the assignee and leaves the holder."*
   // This is that protocol, applied here. The holder survives (it is the row's history, and
   // NOT NULL means it must be someone); the ASSIGNEE is what gets cleared, which is what
-  // "unassign" means on this spine. `assigned_to_group` goes with it so the row cannot come
-  // back pointing at a group nobody chose — the `work_update:reassign` door clears the same
-  // trio.
+  // "unassign" means on this spine.
   //
   // t129 FIX ROUND — AND THE SELECTION IS NOT THIS FILE'S TO WRITE ANY MORE.
   // The first cut keyed this query on the ASSIGNEE (correctly) while `healer/diagnostic.ts`
@@ -342,10 +342,10 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // also what makes this pass idempotent: a row it has cleared is no longer selected.
   const db = getDb();
   const orphans = db.prepare(`
-    SELECT w.id AS id, w.state AS state
+    SELECT w.id AS id, w.state AS state, w.assignee_agent AS assignee
       FROM work w ${ORPHANED_TASK_JOIN('w', 'a')}
      WHERE ${ORPHANED_TASK_WHERE('w', 'a')}
-  `).all() as Array<{ id: string; state: string }>;
+  `).all() as Array<{ id: string; state: string; assignee: string }>;
   let changed = 0;
   for (const o of orphans) {
     // ONE ROW CANNOT TAKE THE PASS DOWN ANY MORE. The write above is fixed, so the known
@@ -360,10 +360,10 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
         });
         if (!workSettled(r)) continue;
       }
-      noteUnsettled(
-        patchWork(o.id, { assignee_agent: null, assigned_to_group: null }),
-        'healer: orphaned task unassigned', { taskId: o.id },
-      );
+      // t201: the gate's one writer clears the assignee and the move is recorded like every move. An agent
+      // assignee and a group assignee exclude each other, so a selected row has no group to clear.
+      if (writeAssignee(o.id, { clear: true }) === 0) continue;
+      recordMove({ taskId: o.id, actor: 'healer', from: o.assignee, to: null, cause: 'assignee_gone', door: 'healer orphan sweep' });
       changed++;
     } catch (err) {
       logger.warn('healer: could not unassign one orphaned task; the rest of the sweep continues', {

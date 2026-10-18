@@ -264,8 +264,8 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   }
 
   // ── PM overseer verb enforcement (demolition Phase 1.7) ──
-  // The PM is an OVERSEER, not a worker: it validates, overrides, retasks,
-  // reassigns, and inspects; it never executes or edits the work itself, and
+  // The PM is an OVERSEER, not a worker: it validates, overrides, retasks
+  // (the SAME holder; it never moves a task) and inspects; it never executes or edits the work itself, and
   // never flips a worker's status directly. computeFilteredTools already strips
   // non-allow-list tools from the PM's advertised surface, but per Architecture
   // Rule 1 that strip is advice only: the floor model can emit a worker verb
@@ -280,7 +280,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     return {
       toolCallId: id,
       name,
-      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: work_validate (bless or reject a close-out with action="validate", send work back with action="retask", adjudicate with action="override" / "apply_user_verdict"), work_update(action="reassign") to hand work to another agent, work_schedule (pause / resume), plus read-only inspection (work_update with action="get" or "list", file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or work_validate(action="retask").`,
+      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: work_validate (bless or reject a close-out with action="validate", send work back with action="retask", adjudicate with action="override" / "apply_user_verdict"), work_schedule (pause / resume), plus read-only inspection (work_update with action="get" or "list", file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or work_validate(action="retask").`,
       isError: true,
     };
   }
