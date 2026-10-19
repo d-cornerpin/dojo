@@ -37,12 +37,24 @@ bash deploy/release.sh 3.0.4 --dry-run
 Runs every local step (bump, build, verify the embedded version) then reverts
 the bump without committing/pushing/releasing. Proves the release will go clean.
 
-### Custom release notes (optional)
+### Release notes (required, owner rule)
 
-By default the notes are the commit subjects since the previous tag. To curate:
+The notes are what a user reads in Settings → Update before updating, so they
+are written for the user, not for developers:
+
+- List EVERY fix and change a user could notice, one plain sentence each.
+- Group them under short everyday headings (for example: Messages and helpers,
+  Tasks, Tools and connections, Dashboard, Updates).
+- No technical words: no file, function, table or tool names, no code terms, no
+  internal ticket ids. A GitHub issue number may follow a sentence in brackets.
+- Say what changed for the user ("Stop now ends a turn even when a tool is
+  stuck"), not how it was built.
+- Leave out work a user never sees (tests, build tooling).
+
+Never release with the default commit-subject notes. Write the file and pass it:
 
 ```bash
-bash deploy/release.sh 3.0.4 --notes-file /tmp/notes.md
+bash deploy/release.sh 3.0.4 --notes-file <path>
 ```
 
 You can also edit the notes on the GitHub release page afterward — that does not
