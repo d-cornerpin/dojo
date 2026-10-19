@@ -155,3 +155,14 @@ describe('t239 (c) — ONE stop-reason rule for every transport that reads a pro
     expect(resolveProviderStopReason(undefined, 3)).toBe('tool_use');
   });
 });
+
+describe('t239 (c) — the census: the synthesis is DELETED, not left beside the shared rule', () => {
+  it('model.ts has no site that turns a tool-call count into tool_use itself', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../model.ts'), 'utf8');
+    const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    expect(code).not.toMatch(/\?\s*'tool_use'\s*:/);                 // no `n > 0 ? 'tool_use' : ...` anywhere
+    expect(code.match(/resolveProviderStopReason\(/g)?.length).toBe(2);   // exactly the OpenAI and the Ollama transport
+    expect(src).not.toMatch(/function resolveOpenAIStopReason/);       // and the rule has ONE home
+  });
+});
+

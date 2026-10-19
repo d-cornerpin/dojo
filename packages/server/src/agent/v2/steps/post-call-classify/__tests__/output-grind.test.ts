@@ -59,7 +59,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runEmptyResponse } from '../empty-response.js';
 import { steerFired, nextSteer, STEER_PRECEDENCE } from '../../../steer-queue.js';
 import { outputTruncationClassifier } from '../../../classifiers/output.js';
-import { resolveOpenAIStopReason } from '../../../../model.js';
+import { resolveProviderStopReason } from '../../../classifiers/output.js';   // t239: the one shared rule lives beside the classifier that reads it
 import type { PostCallClassifyContext } from '../index.js';
 
 const reArmSpy = vi.fn();
@@ -114,19 +114,19 @@ beforeEach(() => { vi.clearAllMocks(); });
 describe('TB8 JOB 1 — the provider’s own terminal reason reaches the engine', () => {
   it('a truncation is reported, and it is the ONLY thing the synthesis could not say', () => {
     // The bound, arriving as a fact from the provider rather than a threshold we picked.
-    expect(resolveOpenAIStopReason('length', 0)).toBe('length');
+    expect(resolveProviderStopReason('length', 0)).toBe('length');
     // …and a truncation that still managed a tool call is not hidden behind 'tool_use'.
-    expect(resolveOpenAIStopReason('length', 3)).toBe('length');
+    expect(resolveProviderStopReason('length', 3)).toBe('length');
   });
 
   it('the ordinary reasons keep EXACTLY the shape every reader has seen', () => {
     // 'stop' and 'tool_calls' say only what the synthesis already said, so they are left
     // to it — this change adds a signal, it does not re-spell the existing ones.
-    expect(resolveOpenAIStopReason('stop', 0)).toBe('end_turn');
-    expect(resolveOpenAIStopReason('tool_calls', 2)).toBe('tool_use');
-    expect(resolveOpenAIStopReason(null, 0)).toBe('end_turn');
-    expect(resolveOpenAIStopReason(undefined, 1)).toBe('tool_use');
-    expect(resolveOpenAIStopReason('', 0)).toBe('end_turn');
+    expect(resolveProviderStopReason('stop', 0)).toBe('end_turn');
+    expect(resolveProviderStopReason('tool_calls', 2)).toBe('tool_use');
+    expect(resolveProviderStopReason(null, 0)).toBe('end_turn');
+    expect(resolveProviderStopReason(undefined, 1)).toBe('tool_use');
+    expect(resolveProviderStopReason('', 0)).toBe('end_turn');
   });
 
   it('the classifier that was waiting for it accepts it unchanged', () => {
@@ -140,7 +140,7 @@ describe('TB8 JOB 1 — the provider’s own terminal reason reaches the engine'
     expect(src).not.toMatch(/stopReason:\s*toolCalls\.length > 0 \? 'tool_use' : 'end_turn',/);
     // The provider's field is now READ off the stream.
     expect(src).toMatch(/finish_reason/);
-    expect(src).toMatch(/resolveOpenAIStopReason\(/);
+    expect(src).toMatch(/resolveProviderStopReason\(/);
   });
 });
 
@@ -223,18 +223,20 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
     expect(second.state.steerQueue.pending).toHaveLength(0);
   });
 
-  it('NEGATIVE CONTROL — a truncation that DID call a tool is not the measured class', () => {
-    // 0 of the 17 recorded instances made a tool call. A truncated tail after real work is
-    // a different question and this rung does not claim it.
+  it('t239 — a truncation that DID call a tool is NOT run: the same rung sends the model back', () => {
+    // This clause used to say the opposite ("0 of the 17 recorded instances made a tool call, so
+    // this rung does not claim it") and expect `proceed`, i.e. the cut call RAN. t239's incident
+    // is exactly that shape: a deliverable cut mid-sentence, its call already parsed, was sent as if
+    // whole. A cut response is not whole whatever it carries; the call does not run.
     const out = runEmptyResponse(freshState(), ctxFor({
       result: modelResult({
         stopReason: 'length', content: 'checking',
         toolCalls: [{ id: 'tc-1', name: 'file_read', arguments: {} } as ToolCall],
       }),
     }));
-    expect(out.directive).toBe('proceed');
-    if (out.directive !== 'proceed') throw new Error('unreachable');
-    expect(steerFired(out.state.steerQueue, 'output-grind')).toBe(false);
+    expect(out.directive).toBe('continue');
+    if (out.directive !== 'continue') throw new Error('unreachable');
+    expect(steerFired(out.state.steerQueue, 'output-grind')).toBe(true);
   });
 
   it('NEGATIVE CONTROL — the plain empty response still takes its OWN ladder, unchanged', () => {
@@ -298,7 +300,7 @@ describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () =>
 
   it("a PM validation turn that burns its whole output budget with no tool call is STEERED", () => {
     const out = runEmptyResponse(freshState(), pmCtx({
-      result: modelResult({ stopReason: resolveOpenAIStopReason('length', 0), content: '', toolCalls: [] }),
+      result: modelResult({ stopReason: resolveProviderStopReason('length', 0), content: '', toolCalls: [] }),
     }));
     expect(out.directive).toBe('continue');
     if (out.directive !== 'continue') throw new Error('unreachable');
@@ -310,9 +312,12 @@ describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () =>
   });
 
   it('NEGATIVE CONTROL — a PM turn that actually called a validation verb is untouched', () => {
+    // t239: a WHOLE response (the provider said tool_calls, not length) runs its call. The
+    // control used to pass `length` with the call and expect it to run; a cut call no longer runs
+    // (see t239-a-cut-response-never-runs-its-calls.test.ts), so the control is the whole one.
     const out = runEmptyResponse(freshState(), pmCtx({
       result: modelResult({
-        stopReason: resolveOpenAIStopReason('length', 1),
+        stopReason: resolveProviderStopReason('tool_calls', 1),
         toolCalls: [{ id: 'c1', name: 'work_validate', arguments: {} }] as unknown as ToolCall[],
       }),
     }));

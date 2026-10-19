@@ -82,7 +82,11 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     ceiling: result.outputRoom?.ceiling,
     alreadyEscalated: state.outputTokensEscalated > 0,
   });
-  if (grindTrunc.truncated && result.toolCalls.length === 0) {
+  // t239: ANY cut response takes this rung, with or without a parsed tool call. A call whose reply was
+  // cut mid-sentence is not whole, so it does not run (this returns before the assistant row is
+  // persisted and long before the execute step); the model is told so and gets the same extra room.
+  const cutWithCalls = grindTrunc.truncated && result.toolCalls.length > 0;
+  if (grindTrunc.truncated) {
     if (!steerFired(state.steerQueue, 'output-grind')) {
       // t195: THE FIRST GRIND GETS REAL EXTRA ROOM, not only a steer. The ask is read by the call step
       // (`call-llm/model-call.ts`) and sized against the model and the window by `resolveOutputBudget`.
@@ -91,19 +95,24 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       if (grindTrunc.escalateTo !== null) {
         state = advance(state, { outputTokensEscalated: grindTrunc.escalateTo });
       }
-      logger.warn('v2: the model spent its whole output budget with no tool call — steering, not re-running', {
+      logger.warn(cutWithCalls
+        ? 'v2: the model\'s reply was cut off with a tool call in it — the call is NOT run; steering, not re-running'
+        : 'v2: the model spent its whole output budget with no tool call — steering, not re-running', {
         loopCount: state.loopCount, stopReason: result.stopReason,
-        contentChars: result.content?.length ?? 0,
+        contentChars: result.content?.length ?? 0, cutToolCalls: result.toolCalls.length,
       }, agentId);
       // HL3: the RC-19 door — an unrecorded steer diagnosing an invisible failure class
       // repeats the defect one level up.
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'output-grind', atLoop: state.loopCount,
-        content:
-          '[System: Your last response used your ENTIRE output budget thinking and produced '
-          + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
-          + 'Take the single next concrete step now: make ONE tool call, or give the short '
-          + 'answer you already have. Keep it brief.]',
+        content: cutWithCalls
+          ? '[System: Your last response was CUT OFF by the output limit before it finished, so the '
+            + 'tool call in it did NOT run and nothing was sent. Make the call again as ONE complete '
+            + 'message, short enough to fit.]'
+          : '[System: Your last response used your ENTIRE output budget thinking and produced '
+            + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
+            + 'Take the single next concrete step now: make ONE tool call, or give the short '
+            + 'answer you already have. Keep it brief.]',
       }, { broadcast });
       return continueLoop(state);
     }

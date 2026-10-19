@@ -21,6 +21,7 @@ import type { ToolDefinition } from './tools/types.js';
 import { estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
+import { resolveProviderStopReason } from './v2/classifiers/output.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
 import { recordCost } from '../costs/tracker.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
@@ -396,41 +397,6 @@ export function streamWasCutByWatchdog(
   external: AbortSignal | undefined,
 ): boolean {
   return watchdog.timedOut() && !external?.aborted;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// SWEEP-A TB8 JOB 1 — THE STOP REASON STOPS BEING FABRICATED.
-//
-// This path used to report `stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn'` and
-// discard the provider's `finish_reason` entirely. Every OpenAI-compatible call — which is
-// the whole floor-model path — therefore told the engine "the model finished normally" even
-// when the provider had TRUNCATED it at the output cap. `v2/classifiers/output.ts` has had
-// `'length'` in `TRUNCATION_STOP_REASONS` since it was written and could never once fire on
-// this path; the ladder that reads it was unreachable for its whole life.
-//
-// THE BOUND THAT MATTERS IS THE CAP THE PRODUCT ALREADY CONFIGURES, and it was derived from
-// the durable sink rather than chosen: over 19,124 completed calls carrying a known cap
-// (2026-07-27 → 2026-08-06, all four batteries), exactly 17 reached their model's own
-// `max_output_tokens` — 0.089% — and every recorded runaway is one of them, across two
-// different models and two different caps. Both alternatives the brief named were tested
-// against that corpus and both are refused, with their numbers, in
-// `steps/post-call-classify/__tests__/output-grind.test.ts`: a DURATION bound orders the two
-// populations wrong (legitimate calls at 216.3 s against runaways at 129.95 s), and any
-// sub-cap OUTPUT-TOKEN threshold sits 133 tokens (0.8%) from a legitimate call that ended in
-// a tool call. The provider reporting its own truncation is the only signal that separates
-// them categorically — 17 of 17 caught, 0 of 19,107 false.
-//
-// `'stop'` and `'tool_calls'` are deliberately left to the synthesis: they say only what it
-// already said, and this change adds a signal rather than re-spelling the existing ones.
-// The agent-SDK path at :791 has done the same thing since it was written; this makes the
-// two paths agree.
-// ════════════════════════════════════════════════════════════════════════════════════════
-export function resolveOpenAIStopReason(
-  finishReason: string | null | undefined,
-  toolCallCount: number,
-): string {
-  if (finishReason && finishReason !== 'stop' && finishReason !== 'tool_calls') return finishReason;
-  return toolCallCount > 0 ? 'tool_use' : 'end_turn';
 }
 
 export interface ModelCallParams {
@@ -1622,9 +1588,7 @@ async function callOllamaModel(
       toolCalls: accumulatedToolCalls,
       inputTokens,
       outputTokens,
-      stopReason: accumulatedToolCalls.length > 0
-        ? 'tool_use'
-        : (doneReason === 'stop' ? 'end_turn' : (doneReason ?? 'end_turn')),
+      stopReason: resolveProviderStopReason(doneReason, accumulatedToolCalls.length),   // t239: the provider's cut wins over a parsed tool call
     };
   } catch (err) {
     watchdog.finish();
@@ -2777,7 +2741,7 @@ async function callOpenAIModel(
     // this line is what makes the recorded runaway class countable from the log for the
     // first time — the 17 at-cap calls in the durable sink were only ever identifiable by
     // joining `cost_records` to `models`, after the fact.
-    const stopReason = resolveOpenAIStopReason(providerFinishReason, toolCalls.length);
+    const stopReason = resolveProviderStopReason(providerFinishReason, toolCalls.length);
     logger.info('OpenAI call completed', {
       model: modelInfo.apiModelId,
       inputTokens, outputTokens, latencyMs,

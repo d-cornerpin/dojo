@@ -386,7 +386,7 @@ describe('T64b — CONTROL: a provider that declares nothing is untouched', () =
     seedProvider(null, null);
     const result = await call();
     expect(result.content).toBe('It is done.');
-    // The provider says `stop`; `resolveOpenAIStopReason` synthesises that one to `end_turn`
+    // The provider says `stop`; `resolveProviderStopReason` synthesises that one to `end_turn`
     // (TB8 job 1 keeps only the reasons the synthesis could not already say). Asserted as it
     // is, not as I first assumed it was.
     expect(result.stopReason).toBe('end_turn');
