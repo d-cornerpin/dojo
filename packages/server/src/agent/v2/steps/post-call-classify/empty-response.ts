@@ -100,7 +100,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         agentId, turnNumber, floor: 'output-grind', atLoop: state.loopCount,
         content: result.toolCalls.length > 0
           ? '[System: Your last response was CUT OFF by the output limit, so the tool call in it did NOT run '
-            + 'and nothing was sent. Make the call again as ONE complete message, short enough to fit.]'
+            + 'and nothing was sent. Do not shorten the work to make it fit. If what you were sending is long, write '
+            + 'the whole of it to a file first, then make the call again with a short message that gives the file path.]'
           : '[System: Your last response used your ENTIRE output budget thinking and produced '
             + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
             + 'Take the single next concrete step now: make ONE tool call, or give the short '
