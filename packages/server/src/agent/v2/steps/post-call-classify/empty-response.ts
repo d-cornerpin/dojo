@@ -99,8 +99,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'output-grind', atLoop: state.loopCount,
         content: result.toolCalls.length > 0
-          ? '[System: Your last response was CUT OFF by the output limit, so its tool call did NOT run and nothing was sent. '
-            + 'Do not shorten the work to fit: if it is long, write all of it to a file, then send a short message giving the path.]'
+          ? '[System: Your last response was CUT OFF by the output limit, so its tool call did NOT run and nothing was sent. Do not shorten the work. '
+            + 'Build it in a file one part per step (file_write the first part, file_append each next part), then send a short message giving the path.]'
           : '[System: Your last response used your ENTIRE output budget thinking and produced '
             + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
             + 'Take the single next concrete step now: make ONE tool call, or give the short '
