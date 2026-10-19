@@ -157,6 +157,37 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
 }
 
 /**
+ * t239 — every request (QUESTION / ASSIGN / BLOCK) this agent holds FROM ONE SENDER that is still
+ * unreplied, newest first, one entry per thread. The same facts `findUnrepliedAssignForAgent` reads
+ * (the structural columns, the session floor, `a2a_replies` as the record of a reply), widened from
+ * "the newest one" to "all of them from this sender" so a threadless reply to that sender can be put
+ * on the request it answers. A thread is judged by its NEWEST request, as the reply recorder does.
+ */
+export function findUnrepliedRequestsFrom(agentId: string, fromAgentId: string): Array<{ messageId: string; threadId: string }> {
+  const db = getDb();
+  const floor = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?')
+    .get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? null;
+  const rows = db.prepare(`
+    SELECT m.id AS id, m.a2a_thread_id AS threadId,
+           EXISTS (SELECT 1 FROM a2a_replies r WHERE r.assign_message_id = m.id) AS replied
+      FROM messages m
+     WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane != 'events'
+       AND m.source_agent_id = @fromAgentId AND m.a2a_thread_id IS NOT NULL
+       AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+       ${floor ? `AND m.created_at >= (unixepoch(@floor) * 1000)` : ''}
+     ORDER BY m.rowid DESC LIMIT 20`)
+    .all({ agentId, fromAgentId, ...(floor ? { floor } : {}) }) as Array<{ id: string; threadId: string; replied: number }>;
+  const seen = new Set<string>();
+  const out: Array<{ messageId: string; threadId: string }> = [];
+  for (const r of rows) {
+    if (seen.has(r.threadId)) continue;
+    seen.add(r.threadId);
+    if (!r.replied) out.push({ messageId: r.id, threadId: r.threadId });
+  }
+  return out;
+}
+
+/**
  * Find the inbound A2A message id that corresponds to a thread the agent
  * is now sending on. Used by the send_to_agent dispatcher to mark the
  * inbound ASSIGN as replied. Returns null if there's no open inbound

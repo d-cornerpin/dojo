@@ -56,11 +56,9 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
   // separates them categorically — 17/17 caught, 0 of 19,107 false — and the PROVIDER
   // reports the crossing, so this is a fact rather than a threshold.
   //
-  // WHY IT WAS NEVER SEEN: `agent/model.ts` fabricated `stopReason` from
-  // `toolCalls.length` and threw the provider's `finish_reason` away, so this classifier —
-  // whose `TRUNCATION_STOP_REASONS` has held `'length'` since it was written — could never
-  // fire on the floor-model path. TB8 fixes that at the source; this rung is what the
-  // signal now reaches.
+  // WHY IT WAS NEVER SEEN: the transports fabricated `stopReason` from `toolCalls.length` and
+  // threw the provider's own word away (the one shared rule in `classifiers/output.ts` replaced
+  // both; t239 deleted the last copy). A cut that carries a tool call takes this rung too.
   //
   // WHY IT IS ITS OWN RUNG, ABOVE THE LADDER BELOW: without it a grind is diagnosed as a
   // plain empty response and answered with a SILENT RETRY, then a nudge that says "you
@@ -82,10 +80,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     ceiling: result.outputRoom?.ceiling,
     alreadyEscalated: state.outputTokensEscalated > 0,
   });
-  // t239: ANY cut response takes this rung, with or without a parsed tool call. A call whose reply was
-  // cut mid-sentence is not whole, so it does not run (this returns before the assistant row is
-  // persisted and long before the execute step); the model is told so and gets the same extra room.
-  const cutWithCalls = grindTrunc.truncated && result.toolCalls.length > 0;
+  // t239: ANY cut response takes this rung, tool call or not: a reply cut mid-sentence is not whole, so its call never runs (this returns before the row is persisted or the execute step).
   if (grindTrunc.truncated) {
     if (!steerFired(state.steerQueue, 'output-grind')) {
       // t195: THE FIRST GRIND GETS REAL EXTRA ROOM, not only a steer. The ask is read by the call step
@@ -95,9 +90,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       if (grindTrunc.escalateTo !== null) {
         state = advance(state, { outputTokensEscalated: grindTrunc.escalateTo });
       }
-      logger.warn(cutWithCalls
-        ? 'v2: the model\'s reply was cut off with a tool call in it — the call is NOT run; steering, not re-running'
-        : 'v2: the model spent its whole output budget with no tool call — steering, not re-running', {
+      logger.warn('v2: the model spent its whole output budget (cut off) — steering, not re-running', {
         loopCount: state.loopCount, stopReason: result.stopReason,
         contentChars: result.content?.length ?? 0, cutToolCalls: result.toolCalls.length,
       }, agentId);
@@ -105,10 +98,9 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       // repeats the defect one level up.
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'output-grind', atLoop: state.loopCount,
-        content: cutWithCalls
-          ? '[System: Your last response was CUT OFF by the output limit before it finished, so the '
-            + 'tool call in it did NOT run and nothing was sent. Make the call again as ONE complete '
-            + 'message, short enough to fit.]'
+        content: result.toolCalls.length > 0
+          ? '[System: Your last response was CUT OFF by the output limit, so the tool call in it did NOT run '
+            + 'and nothing was sent. Make the call again as ONE complete message, short enough to fit.]'
           : '[System: Your last response used your ENTIRE output budget thinking and produced '
             + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
             + 'Take the single next concrete step now: make ONE tool call, or give the short '

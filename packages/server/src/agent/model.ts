@@ -21,7 +21,7 @@ import type { ToolDefinition } from './tools/types.js';
 import { estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
-import { resolveProviderStopReason } from './v2/classifiers/output.js';
+import { resolveProviderStopReason } from './provider-stop-reason.js';
 import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
 import { recordCost } from '../costs/tracker.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';

@@ -20,7 +20,7 @@
 
 import { A2A_THREAD_SHORT_LENGTH, a2aThreadTokenMatches } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { findUnrepliedAssignForAgent, type UnrepliedAssign } from './a2a-replies.js';
+import { findUnrepliedAssignForAgent, findUnrepliedRequestsFrom, type UnrepliedAssign } from './a2a-replies.js';
 import { turnContext } from './turn-context.js';
 
 /** The request this agent owes a reply to — the one the runtime will give its own turn. */
@@ -40,7 +40,7 @@ export function requestAwaitingItsOwnTurn(agentId: string): UnrepliedAssign | nu
  * comparison of thread names: two named threads can share their first eight characters, and
  * a turn must not be taken for another thread's owner on a prefix.
  */
-export function liveTurnServes(agentId: string, owed: UnrepliedAssign): boolean | null {
+export function liveTurnServes(agentId: string, owed: Pick<UnrepliedAssign, 'messageId'>): boolean | null {
   const bag = turnContext(agentId);
   if (!bag) return null;
   if (bag.kind !== 'a2a') return false;
@@ -72,3 +72,27 @@ export function requestOnThreadForAnotherTurn(agentId: string, threadId: string 
       + `It is not part of this conversation, so do not work on it or answer it here. Nothing was sent to "${owed.fromName}" and the request stays waiting for its turn.`,
   };
 }
+
+/**
+ * t239 — THE THREAD A THREADLESS REPLY BELONGS ON. A reply-intent send (ANSWER / DELIVERABLE /
+ * COMPLETE / FAIL) that names no thread, to an agent that sent `agentId` a QUESTION / ASSIGN / BLOCK
+ * still unreplied, is a reply to THAT request: to the owner, an agent answering the one who gave it
+ * the work is answering the work. Returns that request's thread, or null (today's behaviour: the
+ * transport starts a thread) when there is none or it cannot be said which.
+ *   * one unreplied request from the target: its thread;
+ *   * several: the one this turn was picked up for (preflight takes the newest unreplied request),
+ *     and only when the live turn really serves it;
+ *   * a request the live turn does NOT serve (it awaits its own turn, t165) is never answered from here.
+ * Read from rows and the reply table, never from text; no second join key: the join still matches
+ * the exact thread the reply now carries.
+ */
+export function servedRequestThreadFrom(agentId: string, targetId: string): string | null {
+  try {
+    const open = findUnrepliedRequestsFrom(agentId, targetId).filter((r) => liveTurnServes(agentId, r) !== false);
+    if (open.length <= 1) return open[0]?.threadId ?? null;
+    const picked = requestAwaitingItsOwnTurn(agentId);
+    const mine = open.find((r) => r.messageId === picked?.messageId);
+    return mine && liveTurnServes(agentId, mine) === true ? mine.threadId : null;
+  } catch { return null; }
+}
+

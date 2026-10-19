@@ -71,11 +71,13 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shared';
 import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
+import { servedRequestThreadFrom } from './a2a-own-turn.js';   // t239
 
 // Terminal intents CLOSE the thread (prevent acknowledgement replies).
 // But closing the thread and waking the receiver are INDEPENDENT concepts.
 const TERMINAL_INTENTS = new Set<A2AIntent>(['DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER']);
 const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
+const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);   // the answer-class intents
 
 // "No-wake" intents: terminal AND the receiver doesn't need to see it now.
 // ANSWER and DELIVERABLE are terminal but DO wake, the receiver is waiting
@@ -523,6 +525,7 @@ export interface A2ADeliveryResult {
    * silence. A refusal is never a hold — the reply still lands and settles as it would have.
    */
   handOff?: { applied: boolean; message: string };
+  answeredRequestOnThread?: boolean;   // t239: the sender named no thread and the reply went on the request it answers
 }
 
 /**
@@ -634,7 +637,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       }, envelope.fromAgent);
     }
   }
-  const threadId = envelope.threadId || reusedAssignThreadId || uuidv4();
+  const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && REPLY_INTENTS.has(effectiveIntent)
+    ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // t239: a threadless reply goes on the request it answers
+  const threadId = envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps
   // `datetime('now')` when no row exists, so a later read would report a delivery that never
   // happened and a `work` row carrying the cap with no thread row would look permanently fresh.
@@ -737,9 +742,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // injury for the same agent kept getting dropped as "duplicate"
   // because the payload phrasing was similar, and the Healer never
   // saw any of them.
-  const COMPLETION_INTENTS_SKIP_DEDUP = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);
   const senderIsSystem = envelope.fromAgent === 'system';
-  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(effectiveIntent) && !senderIsSystem) {
+  if (!REPLY_INTENTS.has(effectiveIntent) && !senderIsSystem) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');
@@ -912,8 +916,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // the intent label left delegated questions open forever. (A rare interim STATUS on a
   // delegated thread now closes it early; that is strictly better than never closing, and the
   // payload is still relayed to the owner.)
-  const isReplyIntent =
-    effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL';
+  const isReplyIntent = REPLY_INTENTS.has(effectiveIntent);
   // ROUND-11 T43 leg (c): the sender's declared hand-off outcome, surfaced to their tool
   // result. Undefined unless they passed the argument.
   let handOffReport: { applied: boolean; message: string } | undefined;
@@ -1293,6 +1296,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     autoTaskIsNew: autoTask?.isNew,
     autoPromotedFromFyi,
     handOff: handOffReport,
+    answeredRequestOnThread: servedThreadId !== null,
   };
 }
 
@@ -2474,9 +2478,12 @@ function liveAssigneeForJoin(join: JoinState): { agentId: string; grantMs: numbe
   return null;
 }
 
-async function resolveOpenJoin(
-  join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
-): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
+/**
+ * Both timeout arms start the same way: LAND a reply that is sitting stranded on a piece's thread
+ * before judging the join, because telling the owner "no answer" while the answer sits unlanded on the
+ * child is the failure this exists to prevent. Returns the join as it stands afterwards (null if gone).
+ */
+function landStrandedReplies(join: JoinState): JoinState | null {
   const ask = askRowForJoin(join);
   let state: JoinState | null = join;
   for (const piece of joinPieces(join.id)) {
@@ -2493,7 +2500,13 @@ async function resolveOpenJoin(
     });
     state = settled.result.kind === 'applied' ? settled.join : joinState(join.id);
   }
-  state = state ?? joinState(join.id);
+  return state ?? joinState(join.id);
+}
+
+async function resolveOpenJoin(
+  join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
+): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
+  const state = landStrandedReplies(join);
   if (!state) return 'already-settled';
   if (state.complete) {
     await resolveCompletedJoin(state, opts.askedNameHint ?? undefined);
@@ -2531,6 +2544,7 @@ async function resolveOpenJoin(
     });
   }
 
+  const snapshot = joinPieces(state.id);   // before the settle: the notice names what landed and what did not
   const claimed = failJoinClosed(state.id, {
     reason: alive
       ? 'the delegated answer never came back, and the wait reached its hard ceiling'
@@ -2538,15 +2552,17 @@ async function resolveOpenJoin(
     expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
-  await deliverJoinResultToOwner(state, failClosedNotice(state, opts.askedNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
+  await deliverJoinResultToOwner(state, landedContentNotice(state, snapshot, false, opts.askedNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
   tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.');
   return 'failed-closed';
 }
 
 /**
- * The notice for a join whose PARENT already closed (issues-log #19). Built from a snapshot of
- * the pieces taken BEFORE they are settled, because after the settle nothing is outstanding and
- * the sentence would have nobody to name.
+ * THE ONE NOTICE FOR A FAN-OUT THAT RAN OUT OF TIME WITH SOMETHING ALREADY BACK. Built from a snapshot
+ * of the pieces taken BEFORE they are settled, because after the settle nothing is outstanding and the
+ * sentence would have nobody to name. Both timeout arms use it: the parent already answered
+ * (issues-log #19) and the parent still open (t239; it used to relay none of what had landed and call
+ * a piece with real content "replied with nothing usable").
  *
  * Two shapes, and the split is the honesty requirement, not decoration:
  *   * nothing came back  -> the existing `failClosedNotice`, verbatim. One composer for "I could
@@ -2555,20 +2571,21 @@ async function resolveOpenJoin(
  *     complete answer" while a real piece sits recorded on the child is the same class of lie
  *     requirement 3e refuses when it forbids compiling an answer out of nothing.
  */
-function closedParentNotice(
-  join: JoinState, snapshot: JoinPiece[], askedNameHint?: string | null,
+function arrivedLine(p: JoinPiece): string {
+  return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${p.state === 'failed' ? ' (it reported a failure)' : ''}: ${
+    (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`;
+}
+
+function landedContentNotice(
+  join: JoinState, snapshot: JoinPiece[], parentAnswered: boolean, askedNameHint?: string | null,
 ): string {
-  const landed = snapshot.filter((p) => p.state === 'done' && (p.content ?? '').trim().length > 0);
+  const landed = snapshot.filter((p) => (p.state === 'done' || p.state === 'failed') && (p.content ?? '').trim().length > 0);
   if (landed.length === 0) return failClosedNotice(join, askedNameHint);
   const missing = snapshot.filter((p) => !isTerminal(p.state));
   const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? askedNameHint ?? 'another agent');
   const who = names.length === 1 ? names[0] : `${names.length} of the agents it asked`;
-  const back = landed
-    .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}: ${
-      (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`)
-    .join('\n');
-  return `following up on something your agent answered earlier: ${who} never came back inside the `
-    + `deadline. Here is what did arrive:\n${back}`;
+  return `${parentAnswered ? 'following up on something your agent answered earlier' : 'your agent delegated this'}: ${who} never came back `
+    + `inside the deadline. Here is what did arrive:\n${landed.map(arrivedLine).join('\n')}`;
 }
 
 /**
@@ -2592,23 +2609,7 @@ function closedParentNotice(
 async function resolveJoinUnderClosedParent(
   join: JoinState, opts: { askedNameHint?: string | null } = {},
 ): Promise<'relayed' | 'noticed' | 'already-settled'> {
-  const ask = askRowForJoin(join);
-  let state: JoinState | null = join;
-  for (const piece of joinPieces(join.id)) {
-    if (isTerminal(piece.state)) continue;
-    const stranded = findUnlandedInboundReply(join.agentId, piece.threadId, ask?.created_at ?? Date.now());
-    if (!stranded) continue;
-    const deliveryId = recordPieceDelivery({
-      fromAgent: stranded.senderId ?? 'unknown', toAgent: join.agentId,
-      messageId: stranded.messageId, intent: 'DELIVERABLE',
-    });
-    if (!deliveryId) continue;
-    const settled = landPiece(piece.childId, {
-      deliveryId, content: stranded.payload, messageId: stranded.messageId, actorId: stranded.senderId,
-    });
-    state = settled.result.kind === 'applied' ? settled.join : joinState(join.id);
-  }
-  state = state ?? joinState(join.id);
+  const state = landStrandedReplies(join);
   if (!state) return 'already-settled';
 
   const snapshot = joinPieces(state.id);
@@ -2620,9 +2621,7 @@ async function resolveJoinUnderClosedParent(
     // ordinary drain cannot relay a second time if the parent is ever reopened.
     const withContent = snapshot.filter((p) => (p.content ?? '').trim().length > 0);
     if (withContent.length === 0) return 'already-settled';
-    const text = `All the delegated pieces are back; here they are directly:\n${
-      withContent.map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}: ${
-        (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`).join('\n')}`;
+    const text = `All the delegated pieces are back; here they are directly:\n${withContent.map(arrivedLine).join('\n')}`;
     await deliverJoinResultToOwner(state, text, { tool: 'a2a-join-relay' });
     if (state.compilePending) {
       clearJoinCompilePending(state.id, 'relayed the recorded pieces under a closed parent');
@@ -2649,7 +2648,7 @@ async function resolveJoinUnderClosedParent(
   // bite-proven (`fanout-join.test.ts`, the double-settle clause).
   if (claimed === 0) return 'already-settled';
   await deliverJoinResultToOwner(
-    state, closedParentNotice(state, snapshot, opts.askedNameHint),
+    state, landedContentNotice(state, snapshot, true, opts.askedNameHint),
     { tool: 'a2a-join-failed', voice: 'platform' },
   );
   tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.');

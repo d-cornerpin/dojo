@@ -59,7 +59,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runEmptyResponse } from '../empty-response.js';
 import { steerFired, nextSteer, STEER_PRECEDENCE } from '../../../steer-queue.js';
 import { outputTruncationClassifier } from '../../../classifiers/output.js';
-import { resolveProviderStopReason } from '../../../classifiers/output.js';   // t239: the one shared rule lives beside the classifier that reads it
+import { resolveProviderStopReason } from '../../../../provider-stop-reason.js';   // t239: the one shared rule, for every transport
 import type { PostCallClassifyContext } from '../index.js';
 
 const reArmSpy = vi.fn();

@@ -752,7 +752,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 }), 'send_to_agent: hand-off to a peer', {
                   from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
                 });
-                content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
+                content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}${result.answeredRequestOnThread ? ' (you gave no thread_id, so it went on the request you were answering, your assignment)' : ''}.` +
                   (requiresResponse || result.autoPromotedFromFyi
                     ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
                       `If someone is waiting on that answer (e.g. the owner asked you to find it out), tell them you have ASKED ` +

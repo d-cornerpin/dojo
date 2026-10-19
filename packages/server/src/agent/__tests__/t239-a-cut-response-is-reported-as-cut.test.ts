@@ -55,7 +55,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
-import { resolveProviderStopReason } from '../v2/classifiers/output.js';
+import { resolveProviderStopReason } from '../provider-stop-reason.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
