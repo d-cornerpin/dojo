@@ -61,6 +61,7 @@ import { recordedInstant } from './message-stamp.js';
 import { listChannelStatuses } from '../services/capability-registry.js';
 import { toolCategoryGranted } from '../agent/access/read.js';
 import { renderTokens, loopTailExtraTokens } from './lanes.js';
+import { layOutInRoom, unlistedThreadsLine } from './other-threads-room.js';
 
 const logger = createLogger('other-threads-lane');
 
@@ -231,21 +232,22 @@ function threadLine(t: OtherThread, n: number): string {
  * turn with no other thread is capability trivia, and this lane's licence to spend tail tokens on
  * every human turn comes from contradicting a false inference, not from being informative.
  */
-export function renderOtherThreads(read: OtherThreadsRead): string | null {
+export function renderOtherThreads(read: OtherThreadsRead, roomTokens?: number): string | null {
   if (read.rows.length === 0) return null;
-  const lines = read.rows.map((t, i) => threadLine(t, i + 1));
   const tail = read.hidden > 0
     ? `\n… and ${read.hidden} more thread${read.hidden === 1 ? '' : 's'} with nothing waiting and nothing new since your last turn here, not listed`
     : '';
   const channels = read.channels.length > 0 ? `\n${CHANNELS_LINE(read.channels)}` : '';
-  return `${OTHER_THREADS_HEAD}\n${OTHER_THREADS_HEADLINE}${read.route}\n${lines.join('\n')}${tail}${channels}\n${OTHER_THREADS_TAIL}`;
+  return layOutInRoom(read.rows.length, roomTokens, (shown) => `${OTHER_THREADS_HEAD}\n${OTHER_THREADS_HEADLINE}${read.route}`
+    + (shown > 0 ? `\n${read.rows.slice(0, shown).map((t, i) => threadLine(t, i + 1)).join('\n')}` : '')
+    + `${unlistedThreadsLine(read.rows.slice(shown))}${tail}${channels}\n${OTHER_THREADS_TAIL}`);
 }
 
 /** The injection, read + render, never throwing: a lane that cannot build must not cost the turn
  *  its other lanes (`engine.open-work`'s rule, and `engine.report-state` follows it too). */
-export function buildOtherThreadsInjection(agentId: string, currentConversationId: string | null): string | null {
+export function buildOtherThreadsInjection(agentId: string, currentConversationId: string | null, roomTokens?: number): string | null {
   try {
-    return renderOtherThreads(readOtherThreads(agentId, currentConversationId));
+    return renderOtherThreads(readOtherThreads(agentId, currentConversationId), roomTokens);
   } catch (err) {
     logger.warn('OTHER THREADS lane FAILED — the agent is not told its other live threads exist', {
       agentId, error: err instanceof Error ? err.message : String(err),
@@ -256,8 +258,8 @@ export function buildOtherThreadsInjection(agentId: string, currentConversationI
 
 /** t211: the room to add to the loop-tail reserve for this turn's block: its rendered size beyond what the
  *  reserve's literal already covers. Zero when the loop will not append the block (no human conversation). */
-export function otherThreadsReserveExtra(agentId: string, currentConversationId: string | null): number {
+export function otherThreadsReserveExtra(agentId: string, currentConversationId: string | null, roomTokens?: number): number {
   if (!currentConversationId) return 0;
-  const block = buildOtherThreadsInjection(agentId, currentConversationId);
+  const block = buildOtherThreadsInjection(agentId, currentConversationId, roomTokens);
   return block ? loopTailExtraTokens(renderTokens([{ role: 'user', content: block }])) : 0;
 }

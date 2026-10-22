@@ -56,6 +56,7 @@ import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
 import { buildReportStateInjection } from '../../../../report/state-lane.js';
 import { buildOtherThreadsInjection } from '../../../../memory/other-threads-lane.js';
+import { otherThreadsRoomTokens } from '../../../../memory/other-threads-room.js';
 import { getRecentOutbound, renderRecentOutboundBlock } from '../../outbound-ledger.js';
 import {
   recentlyAnsweredAsks, renderRecentlyAnsweredBlock, RECENTLY_ANSWERED_LIMIT,
@@ -320,10 +321,10 @@ export async function injectAndRecord(
   // bucket boundary as well; it states the recorded instant now.
   if (counterparty.kind === 'user' && turnCtx.conversationId) {
     // HEAD 2 — THE OTHER-THREADS LANE: same gate as the ledger below; it says the thread above is ONE
-    // thread (the owner's 2026-09-24 false denial). AHEAD of that ledger on most-stable-first —
-    // `the-tail-holds-still.test.ts` §4 caught it placed the other way: this moves only when ANOTHER
-    // thread moves. EMPTY IS ABSENT; no try/catch, the builder owns its own and WARNs.
-    const otherThreads = buildOtherThreadsInjection(agentId, turnCtx.conversationId);
+    // thread (the owner's 2026-09-24 false denial). AHEAD of that ledger on most-stable-first — `the-tail-holds-still.test.ts`
+    // §4 caught it placed the other way: this moves only when ANOTHER thread moves. EMPTY IS ABSENT; the builder WARNs. tracker #24:
+    // laid out in the same room the assembler reserved for it (`other-threads-room.ts`), never the whole list.
+    const otherThreads = buildOtherThreadsInjection(agentId, turnCtx.conversationId, otherThreadsRoomTokens((await dialedPolicy(agentId, modelId)).policy.assemblyBudgetTokens, systemPrompt));
     if (otherThreads) pushEngineMessage(messages, otherThreads, 'engine.other-threads'); // registry-exempt(2026-09-26): per-turn cross-conversation state read mid-iteration, like engine.open-work; migrate with the volatile-injection registry refactor
     try {
       const answeredBlock = renderRecentlyAnsweredBlock(

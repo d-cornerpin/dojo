@@ -39,6 +39,7 @@ import { insertMessage } from '../message-store.js';
 import { assembleContext } from '../assembler.js';
 import { buildOtherThreadsInjection } from '../other-threads-lane.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';
+import { otherThreadsRoomTokens } from '../other-threads-room.js';
 import { assemblyTokens } from '../assembly-validation.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
@@ -100,9 +101,12 @@ describe('t211 hand-up 2 — many waiting people do not overflow the reserve', (
       ctx.activeTasksLane, ctx.scratchpadLane, ctx.eventsLane, ctx.integrationStatusLane]) {
       if (block) whole.push({ role: 'user', content: block });
     }
-    const block = buildOtherThreadsInjection(AGENT, SERVED);
+    const policy0 = contextWindowPolicy(WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 2048 });
+    expect(estimateTokens(buildOtherThreadsInjection(AGENT, SERVED)!), 'the premise: the whole list is far larger than the old three-row block').toBeGreaterThan(8000);
+    // tracker #24: the loop appends the block laid out in its room, exactly as the injection site builds it.
+    const block = buildOtherThreadsInjection(AGENT, SERVED,
+      otherThreadsRoomTokens(policy0.assemblyBudgetTokens, ctx.systemPrompt));
     expect(block, 'the premise: the lane fires').toBeTruthy();
-    expect(estimateTokens(block!), 'the premise: it is far larger than the old three-row block').toBeGreaterThan(8000);
     whole.push({ role: 'user', content: block! });
     // The rest of the loop's tail at a typical turn (the measured p90 is 536 tokens; the old figure for the
     // block itself, 292, is not part of this).

@@ -51,6 +51,7 @@ import { buildRecallLaneMessage } from './recall-lane.js';
 // reserve by calling its own renderer, and a render buried inside a lane literal cannot be.
 import { buildWorkBoardLane } from './work-board-lane.js';
 import { otherThreadsReserveExtra } from './other-threads-lane.js';
+import { otherThreadsRoomTokens } from './other-threads-room.js';
 import { buildIntegrationStatusLane } from './integration-status-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
@@ -1593,7 +1594,8 @@ async function assembleMessageContext(
   // had left after its system prompt, so the content budget clamped to ZERO and the array
   // collapsed to `lane.empty-context-fallback` every turn. The bound, its derivation, the floor
   // and the G2 argument are all at `reserveLadderFor`.
-  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null);
+  // tracker #24: reserved for the block as it will be LAID OUT, in its share of the room.
+  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
   const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
   const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
