@@ -9404,6 +9404,13 @@
       "to": 773,
       "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
       "why": "+2: `dojo_inspect` joins the main agent's and the Healer's always-loaded lists (one line each): the plan's one definition on the wire, so the tool is one call away where the shell redirect points. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/assembler.ts",
+      "from": 1957,
+      "to": 1959,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C2)",
+      "why": "+2: the plan's one standing line (\"use dojo_inspect first; the shell is for the outside world\"), pushed only for an agent that holds the tool, and its one-line comment. It sits with the other per-tool notes in generateToolsGuidance_v2, which is where the plan places it (Tools guidance). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9642,7 +9649,7 @@
     "packages/server/src/microsoft/tools-write.ts": 2221,
     "packages/server/src/migration/checks.ts": 531,
     "packages/server/src/migration/import.ts": 406,
-    "packages/server/src/prompt/assembler.ts": 1957,
+    "packages/server/src/prompt/assembler.ts": 1959,
     "packages/server/src/prompt/registry/entries.ts": 611,
     "packages/server/src/prompt/registry/types.ts": 473,
     "packages/server/src/providers/anthropic-sdk.ts": 595,
