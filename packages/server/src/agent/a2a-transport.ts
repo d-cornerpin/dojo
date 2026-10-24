@@ -1558,7 +1558,7 @@ async function deliverJoinResultToOwnerInner(
       // it did for every other unhandled channel, and the owner is TOLD which door stayed shut.
     } else if (meta.channel === 'imessage' && meta.sender) {
       const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
-      delivered = !!sendResponseViaIMessage(deliveryBody, join.agentId, meta.sender);
+      delivered = !!(await sendResponseViaIMessage(deliveryBody, join.agentId, meta.sender));
       channel = 'imessage'; recipientId = meta.sender;
       if (!delivered) noteRelayRefusal('imessage', 'imessage-bridge', 'the iMessage bridge did not send it');
     } else if (

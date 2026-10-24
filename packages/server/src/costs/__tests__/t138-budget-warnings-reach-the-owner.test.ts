@@ -75,6 +75,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 
@@ -155,6 +166,11 @@ function spend(recordCost: typeof import('../tracker.js').recordCost, dollars: n
 }
 
 /** What reached the owner's phone: the platform's own outbound rows at the iMessage door. */
+// v3.5 E19b: an owner text is sent asynchronously now, so its ledger row lands once the send
+// settles. The stand-in runner resolves at once, so one turn of the event loop (the REAL
+// setImmediate, captured before any fake timers) drains the whole chain; then the read runs.
+const realSetImmediate = setImmediate;
+const settled = async <T>(read: () => T): Promise<T> => { await new Promise((r) => realSetImmediate(r)); return read(); };
 function ownerTexts(): Array<{ recipient_id: string; outcome: string; channel: string }> {
   return db().prepare(
     "SELECT recipient_id, outcome, channel FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' ORDER BY rowid",
@@ -174,7 +190,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
 
-    const rows = ownerTexts();
+    const rows = (await settled(ownerTexts));
     expect(rows, 'one owner outbound under the platform sender').toHaveLength(1);
     expect(rows[0]).toMatchObject({ recipient_id: OWNER, outcome: 'delivered', channel: 'imessage' });
     const sent = sentTexts();
@@ -187,30 +203,30 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 5.1);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('51%');
     spend(recordCost, 0.2); // 53%: no new crossing
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     spend(recordCost, 2.5); // 78%
-    expect(ownerTexts()).toHaveLength(2);
+    expect((await settled(ownerTexts))).toHaveLength(2);
     expect(sentTexts()[1]).toContain('78%');
     spend(recordCost, 1.5); // 93%
-    expect(ownerTexts()).toHaveLength(3);
+    expect((await settled(ownerTexts))).toHaveLength(3);
     expect(sentTexts()[2]).toContain('93%');
     spend(recordCost, 0.3); // still over: no repeat
-    expect(ownerTexts()).toHaveLength(3);
+    expect((await settled(ownerTexts))).toHaveLength(3);
   });
 
   it('one call that jumps past several thresholds at once is ONE text, naming the true share (95%, not the highest line passed)', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.5);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('95%');
     expect(sentTexts()[0]).not.toContain('50%');
     // and all three are latched: nothing more for 50/75 on the next call
     spend(recordCost, 0.1);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(budgetCards().map((a) => a.percentage)).toEqual([95]);
   });
 
@@ -219,7 +235,7 @@ describe('the RED witness (#8): a daily-budget crossing reaches the owner', () =
     budget.setGlobalBudget(1000);
     budget.setAgentBudget('ag', 4, 'daily');
     spend(recordCost, 3.7);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('Helper');
     expect(sentTexts()[0]).toContain('92%');
     expect(sentTexts()[0]).toMatch(/daily/);
@@ -231,26 +247,26 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     let mods = await boot();
     mods.budget.setGlobalBudget(10);
     spend(mods.recordCost, 9.2);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     mods = await boot(); // a fresh process over the same database
     spend(mods.recordCost, 0.1);
     mods.budget.checkBudget('ag', 0.01);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
   });
 
   it('a full drop INSIDE the window does not re-arm; once the window has turned over, a new crossing texts again', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     // All of today's spend leaves the rolling day, and spend climbs back over the line — but
     // the owner was told about this line less than a day ago (fix round 1, I1).
     db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run();
     spend(recordCost, 0.1);
     spend(recordCost, 9.0);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     // A day later (the told-at stamps age with everything else), the next crossing is new.
     db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run();
@@ -258,7 +274,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
     db().prepare(`UPDATE budgets SET alert_75_sent = alert_75_sent - 2 * 86400 WHERE alert_75_sent > 0`).run();
     db().prepare(`UPDATE budgets SET alert_90_sent = alert_90_sent - 2 * 86400 WHERE alert_90_sent > 0`).run();
     spend(recordCost, 9.1);
-    expect(ownerTexts()).toHaveLength(2);
+    expect((await settled(ownerTexts))).toHaveLength(2);
     expect(sentTexts()[1]).toContain('91%');
   });
 
@@ -276,7 +292,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
       spend(recordCost, 1);
     }
     expect(budgetCards(), 'no budget event at 30% of the week').toEqual([]);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
   });
 
   it('a monthly agent budget is a rolling month, not all time', async () => {
@@ -287,7 +303,7 @@ describe('once per REAL crossing: restart-safe, re-arms only after a genuine dro
                                             cost_usd, created_at)
                   VALUES ('old-1', 'ag', 'mdl', 'prov', 0, 0, 50, datetime('now', '-90 days'))`).run();
     expect(budget.checkBudget('ag', 0.01).allowed, 'last quarter does not spend this month').toBe(true);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
   });
 });
 
@@ -305,7 +321,7 @@ describe('fix round 1 (I1): at most ONE text per threshold per budget window', (
     // 35 x $0.25 = $8.75 already spent today, oldest first.
     for (let i = 0; i < 35; i++) seedRow.run(`seed-${i}`, `-${23 * 60 - i} minutes`);
     spend(recordCost, 0.25); // $9.00: 90% (and 50/75) crossed in one check
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     for (let turn = 0; turn < 8; turn++) {
       // The oldest record leaves the rolling day: $8.75, 87.5%.
@@ -317,7 +333,7 @@ describe('fix round 1 (I1): at most ONE text per threshold per budget window', (
       expect(budget.checkBudget('ag', 0.01).allowed).toBe(true); // the next turn's pre-call check
       spend(recordCost, 0.25); // back to $9.00
     }
-    expect(ownerTexts(), 'one text for the 90% line in this window').toHaveLength(1);
+    expect((await settled(ownerTexts)), 'one text for the 90% line in this window').toHaveLength(1);
   });
 
   it('saving the SAME limit again is not a change: no re-arm, no second text', async () => {
@@ -327,7 +343,7 @@ describe('fix round 1 (I1): at most ONE text per threshold per budget window', (
     budget.setGlobalBudget(10);
     budget.checkBudget('ag', 0.01);
     spend(recordCost, 0.1);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
   });
 });
 
@@ -336,26 +352,26 @@ describe('backwards lifecycle', () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     budget.setGlobalBudget(100); // 9.2% of the new limit
     expect(budget.checkBudget('ag', 0.01).allowed).toBe(true);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
 
     budget.setGlobalBudget(10); // the owner puts it back: spend is over 90% again — a real crossing
     expect(budget.checkBudget('ag', 0.01).allowed).toBe(true);
-    expect(ownerTexts()).toHaveLength(2);
+    expect((await settled(ownerTexts))).toHaveLength(2);
   });
 
   it('limit lowered under current spend: the next check tells the owner once', async () => {
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(100);
     spend(recordCost, 6);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
     budget.setGlobalBudget(10);
     budget.checkBudget('ag', 0.01);
     budget.checkBudget('ag', 0.01);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('60%');
   });
 });
@@ -368,7 +384,7 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
     spend(recordCost, 9.2);
 
     expect(sentTexts()).toHaveLength(0);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
     expect(budgetCards().map((a) => a.percentage)).toEqual([92]);
     const notice = logs.filter((l) => l.component === 'owner-notice');
     expect(notice, 'one dashboard-visible owner notice').toHaveLength(1);
@@ -381,7 +397,7 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
     budget.setGlobalBudget(10);
     transportFails.on = true;
     spend(recordCost, 9.2);
-    const rows = ownerTexts();
+    const rows = (await settled(ownerTexts));
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe('failed');
     const notice = logs.filter((l) => l.component === 'owner-notice');
@@ -393,9 +409,9 @@ describe('no phone channel: the notice still lands on the dashboard', () => {
 describe('the filter is NOT loosened: a class that was never granted the phone still cannot reach it', () => {
   it("'warning' and 'info' stay off the phone", async () => {
     const { bridge } = await boot();
-    bridge.sendAlert('an ungranted class of message', 'warning');
-    bridge.sendAlert('another ungranted class of message', 'info');
+    await bridge.sendAlert('an ungranted class of message', 'warning');
+    await bridge.sendAlert('another ungranted class of message', 'info');
     expect(sentTexts()).toHaveLength(0);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
   });
 });

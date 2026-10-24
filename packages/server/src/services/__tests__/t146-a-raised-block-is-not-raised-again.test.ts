@@ -66,6 +66,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
@@ -92,8 +103,9 @@ const db = (): Database.Database => mockDb.current!;
 
 /** The door call with the work id as data. Typed loosely so the file also runs at 4cb9ed61,
  *  where the door has no such option: the RED is the ladder's behaviour, not a missing type. */
-const noticeAbout = (words: string, workId: string): void =>
-  (sendAlert as unknown as (m: string, u: 'notice', o: { aboutWorkId: string }) => void)(words, 'notice', { aboutWorkId: workId });
+// v3.5 E19b: the door is async now (its send is); the clauses await it before reading the ledger.
+const noticeAbout = (words: string, workId: string): Promise<void> =>
+  (sendAlert as unknown as (m: string, u: 'notice', o: { aboutWorkId: string }) => Promise<void>)(words, 'notice', { aboutWorkId: workId });
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
   const row: Record<string, unknown> = {
@@ -193,7 +205,7 @@ afterEach(() => { stopIMBridge(); });
 describe('§1 the owner-notice door records that the owner was told about the row', () => {
   it('RED at 4cb9ed61: a notice about the blocked task reaches the owner, then the ladder raises it again', async () => {
     seedBlocked('t-door');
-    noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-door');
+    await noticeAbout('The greenhouse firmware task is blocked: the controller rejects every upload.', 't-door');
 
     expect(deliveriesTo(OWNER_PHONE).map((d) => d.agent_id), 'the notice reached the owner as the platform').toEqual(['platform']);
 
@@ -205,7 +217,7 @@ describe('§1 the owner-notice door records that the owner was told about the ro
 
   it('control: the same notice WITHOUT a work id records nothing, and the ladder still runs', async () => {
     seedBlocked('t-door-untold');
-    sendAlert('A budget line was crossed.', 'notice');
+    await sendAlert('A budget line was crossed.', 'notice');
     expect(toldEvents('t-door-untold')).toHaveLength(0);
     await driveLadderToTheEnd();
     expect(steersOn('t-door-untold')).toBeGreaterThanOrEqual(1);
@@ -215,7 +227,7 @@ describe('§1 the owner-notice door records that the owner was told about the ro
     seedBlocked('t-door-nested');
     await withOutboundAsync(
       { agentId: PRIMARY, tool: 'imessage_send', channel: 'imessage', recipientId: NEIGHBOUR_PHONE },
-      async () => { noticeAbout('The greenhouse firmware task is blocked.', 't-door-nested'); },
+      async () => { await noticeAbout('The greenhouse firmware task is blocked.', 't-door-nested'); },
     );
     expect(deliveriesTo(OWNER_PHONE).map((d) => d.agent_id), 'the notice is the platform\'s own row').toEqual(['platform']);
     expect(toldEvents('t-door-nested')).toEqual([{ actor: 'platform', via: 'owner_notice' }]);
@@ -320,10 +332,10 @@ describe('§3 the record refuses what is not a tell to the owner or the requeste
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('§4 the owner-notice record says whether a dashboard card was raised', () => {
-  const ownerNoticeEntries = async (fire: () => void): Promise<Array<Record<string, unknown> | undefined>> => {
+  const ownerNoticeEntries = async (fire: () => Promise<void>): Promise<Array<Record<string, unknown> | undefined>> => {
     const seen: Array<{ component: string; meta?: Record<string, unknown> }> = [];
     (await import('../../logger.js')).setLogBroadcast((e) => { seen.push(e); });
-    try { fire(); } finally { (await import('../../logger.js')).setLogBroadcast(() => { /* off */ }); }
+    try { await fire(); } finally { (await import('../../logger.js')).setLogBroadcast(() => { /* off */ }); }
     return seen.filter((e) => e.component === 'owner-notice').map((e) => e.meta);
   };
   const noPhone = (): void => { db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run(); };
@@ -362,7 +374,7 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     seedBlocked('t-card');
     noPhone();
     await standing([CARD_WORDS]);
-    noticeAbout(CARD_WORDS, 't-card');
+    await noticeAbout(CARD_WORDS, 't-card');
     await driveLadderToTheEnd();
     expect(steersOn('t-card'), 'the card told him; nobody is steered to tell him again').toBe(0);
     expect(toldEvents('t-card')).toEqual([{ actor: 'platform', via: 'owner_card' }]);
@@ -379,7 +391,7 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     seedBlocked('t-live-only');
     noPhone();
     await standing(['Some other standing card.']);
-    noticeAbout(CARD_WORDS, 't-live-only');
+    await noticeAbout(CARD_WORDS, 't-live-only');
     expect(toldEvents('t-live-only'), 'a frame lost with the dashboard closed is not the owner told').toEqual([]);
     await driveLadderToTheEnd();
     expect(steersOn('t-live-only')).toBeGreaterThanOrEqual(1);
@@ -390,11 +402,11 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     expect(route).toMatch(/registerStandingOwnerCards\(ownerCards\)/);
   });
 
-  it('a status line or an all-clear about the row raises no card and records nothing', () => {
+  it('a status line or an all-clear about the row raises no card and records nothing', async () => {
     seedBlocked('t-nocard');
     noPhone();
-    (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('A status line.', 'notice', { card: false, aboutWorkId: 't-nocard' });
-    (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => void)('It cleared.', 'notice', { clears: 'A status line.', aboutWorkId: 't-nocard' });
+    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('A status line.', 'notice', { card: false, aboutWorkId: 't-nocard' });
+    await (sendAlert as unknown as (m: string, u: 'notice', o: Record<string, unknown>) => Promise<void>)('It cleared.', 'notice', { clears: 'A status line.', aboutWorkId: 't-nocard' });
     expect(toldEvents('t-nocard')).toEqual([]);
   });
 
@@ -411,9 +423,9 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
     expect(viaCard('platform', 'dashboard', 'owner').kind, 'the platform\'s dashboard card is').toBe('applied');
   });
 
-  it('the phone carried it: ONE record, the phone delivery — not a second one for the card', () => {
+  it('the phone carried it: ONE record, the phone delivery — not a second one for the card', async () => {
     seedBlocked('t-phone');
-    noticeAbout('The greenhouse firmware task is blocked.', 't-phone');
+    await noticeAbout('The greenhouse firmware task is blocked.', 't-phone');
     expect(toldEvents('t-phone')).toEqual([{ actor: 'platform', via: 'owner_notice' }]);
   });
 });

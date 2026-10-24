@@ -197,7 +197,7 @@ export async function pushReplyToChannel(
         conversationId: turnCtx.root?.conversationId ?? null,
       },
       async () => {
-        const d = sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound);
+        const d = await sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound);
         // C26 tier 3: the engine iMessage auto-route is honestly
         // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
         // exit-code receipt so PM/the user story never pretend delivery

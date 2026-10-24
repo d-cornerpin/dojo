@@ -71,6 +71,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 
@@ -151,6 +162,11 @@ function spend(recordCost: typeof import('../tracker.js').recordCost, dollars: n
 }
 
 /** What reached the owner's phone: the platform's own outbound rows at the iMessage door. */
+// v3.5 E19b: an owner text is sent asynchronously now, so its ledger row lands once the send
+// settles. The stand-in runner resolves at once, so one turn of the event loop (the REAL
+// setImmediate, captured before any fake timers) drains the whole chain; then the read runs.
+const realSetImmediate = setImmediate;
+const settled = async <T>(read: () => T): Promise<T> => { await new Promise((r) => realSetImmediate(r)); return read(); };
 function ownerTexts(): Array<{ recipient_id: string; outcome: string; channel: string }> {
   return db().prepare(
     "SELECT recipient_id, outcome, channel FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' ORDER BY rowid",
@@ -175,11 +191,11 @@ describe('t167 (i): a limit set UNDER what is already spent says the limit is re
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(1000);                // a roomy limit: nothing to cross
     spend(recordCost, 33.08);
-    expect(ownerTexts()).toHaveLength(0);
+    expect((await settled(ownerTexts))).toHaveLength(0);
     budget.setGlobalBudget(16.54);               // the owner moves the line under the spend
     budget.checkBudget('ag', 0.01);              // the next call's own pre-check sees it
 
-    expect(ownerTexts(), 'one owner outbound').toHaveLength(1);
+    expect((await settled(ownerTexts)), 'one owner outbound').toHaveLength(1);
     const [text] = sentTexts();
     expect(text).toContain('$33.08');
     expect(text).toContain('$16.54');
@@ -196,7 +212,7 @@ describe('t167 (i): a limit set UNDER what is already spent says the limit is re
     expect(text).toContain(budgetCardWords()[0]);
     budget.checkBudget('ag', 0.01);
     spend(recordCost, 1);
-    expect(ownerTexts(), 'once per window').toHaveLength(1);
+    expect((await settled(ownerTexts)), 'once per window').toHaveLength(1);
   });
 
   it('an agent budget set under that agent\'s spend says the same, for that agent and its period (no free-model claim: the agent budget has none)', async () => {
@@ -205,7 +221,7 @@ describe('t167 (i): a limit set UNDER what is already spent says the limit is re
     spend(recordCost, 6);
     budget.setAgentBudget('ag', 4, 'weekly');
     budget.checkBudget('ag', 0.01);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     const [text] = sentTexts();
     expect(text).toContain('Helper');
     expect(text).toContain('$6.00');
@@ -223,7 +239,7 @@ describe('t167 (ii): a gradual crossing still gets today\'s warning, with the TR
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('Budget alert: 92% of your daily budget is used ($9.20 of $10.00 in the last 24 hours).');
     expect(sentTexts()[0]).not.toMatch(/reached/i);
   });
@@ -232,7 +248,7 @@ describe('t167 (ii): a gradual crossing still gets today\'s warning, with the TR
     const a = await boot();
     a.budget.setGlobalBudget(10);
     spend(a.recordCost, 9.5);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('95%');
     expect(sentTexts()[0]).not.toContain('90%');
 
@@ -240,7 +256,7 @@ describe('t167 (ii): a gradual crossing still gets today\'s warning, with the TR
     db().prepare('DELETE FROM cost_records').run();
     b.budget.setGlobalBudget(20);                // a new line: re-armed
     spend(b.recordCost, 10.2);
-    expect(ownerTexts()).toHaveLength(2);
+    expect((await settled(ownerTexts))).toHaveLength(2);
     expect(sentTexts()[1]).toContain('51%');
     expect(sentTexts()[1]).not.toContain('50%');
   });
@@ -249,7 +265,7 @@ describe('t167 (ii): a gradual crossing still gets today\'s warning, with the TR
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.96);
-    expect(ownerTexts()).toHaveLength(1);
+    expect((await settled(ownerTexts))).toHaveLength(1);
     expect(sentTexts()[0]).toContain('99%');
     expect(sentTexts()[0]).not.toMatch(/reached/i);
   });

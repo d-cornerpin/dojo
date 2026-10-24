@@ -338,8 +338,8 @@ function isOwnerRecipient(recipientId: string): boolean {
  *
  * THE CONTRACT, for every caller:
  *   · call it AFTER the send, with the id of the `deliveries` row YOUR OWN door wrote. The
- *     owner-notice door opens its OWN scope for a work-carrying notice (`withOutbound`, never
- *     `withOutboundIfAbsent`, which would fold the notice into an enclosing agent send) and
+ *     owner-notice door opens its OWN scope for a work-carrying notice (`withOutboundAsync`,
+ *     never an `IfAbsent` form, which would fold the notice into an enclosing agent send) and
  *     reads `currentOutboundDeliveryId()` inside that scope; the send-tool dispatch door reads
  *     it inside the scope it opened for that one call. An ambient id from somebody else's
  *     scope is refused structurally (below), not merely discouraged;

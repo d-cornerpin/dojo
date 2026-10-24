@@ -56,6 +56,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 import { runWithToolCallId } from '../../agent/turn-state.js';
@@ -128,6 +139,9 @@ describe('t224: a sub-agent wedged on a command that never exits is SILENT, and 
     const { sweepSilentAgents } = await import('../liveness.js');
     sweepSilentAgents();
     sweepSilentAgents();   // the next sweep of the same incident: still one
+    // v3.5 E19b: the owner text is sent asynchronously; let it settle (the stand-in runner
+    // resolves at once, so one turn of the event loop drains it) before reading the ledger.
+    await new Promise((r) => setImmediate(r));
 
     const texts = (db().prepare(
       "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",

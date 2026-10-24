@@ -234,7 +234,7 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   broadcast({ type: 'chat:error', agentId, error: stop.kind === 'no_model_fits' ? noFitOwnerWords(agentId) : stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
   // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
   // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.
-  if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) sendAlert(wordsOf(`nofit:${agentId}`), 'notice', { cardKey: `nofit:${agentId}` });
-  if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => sendAlert(words, 'notice'));   // t167: once per budget window, however many agents stop
+  if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) void sendAlert(wordsOf(`nofit:${agentId}`), 'notice', { cardKey: `nofit:${agentId}` });
+  if (stop.kind === 'budget_stop') budgetStopToTell(stop.budget, (words) => void sendAlert(words, 'notice'));   // t167: once per budget window, however many agents stop
   return true;
 }

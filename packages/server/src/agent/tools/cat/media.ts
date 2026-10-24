@@ -475,7 +475,7 @@ const handlers = {
                 // silently failed on a broken imsg, so the requester got nothing
                 // and could not see the dashboard). sendIMessageWithAttachment
                 // returns true only when the file actually went out.
-                const iMessageDelivered = sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
+                const iMessageDelivered = await sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
                 const deliveryOutcome = iMessageDelivered
                   ? 'the finished image was texted to the requester over iMessage'
                   : 'texting the image to the requester failed (the iMessage attachment channel is unavailable), it is available in the dashboard only';

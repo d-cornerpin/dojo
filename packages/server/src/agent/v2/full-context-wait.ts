@@ -91,7 +91,7 @@ function tellStuckOnce(agentId: string): void {
   if (!tellOwnerOnce(key)) return;
   told.add(agentId);
   try {
-    sendAlert(wordsOf(key), 'notice');
+    void sendAlert(wordsOf(key), 'notice');
   } catch (err) {
     logger.warn('could not text the owner that a full agent is stuck', { error: err instanceof Error ? err.message : String(err) }, agentId);
   }

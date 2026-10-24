@@ -190,16 +190,11 @@ export function withOutbound<T>(intent: OutboundIntent, fn: () => T): T {
  * file and then calls `sendIMessage` for the caption) need a scope so their own crossings
  * fold into one row — but when the caller ALREADY declared who is sending, that identity is
  * the true one and must not be shadowed by the door's generic fallback. One send, one row,
- * attributed to whoever really sent it.
+ * attributed to whoever really sent it. The tool-dispatch door uses it the same way: it declares
+ * an identity only when the engine lane above it (an auto-route reply, a join relay) has not
+ * already declared a truer one. (v3.5 E19b: every iMessage send is asynchronous now, so the
+ * synchronous twin of this function had no caller left and is gone.)
  */
-export function withOutboundIfAbsent<T>(intent: OutboundIntent, fn: () => T): T {
-  if (outboundContext.getStore()) return fn();
-  return withOutbound(intent, fn);
-}
-
-/** Async counterpart of `withOutboundIfAbsent`: the tool-dispatch door declares an identity
- *  only when the engine lane above it (an auto-route reply, a join relay) has not already
- *  declared a truer one. */
 export function withOutboundAsyncIfAbsent<T>(intent: OutboundIntent, fn: () => Promise<T>): Promise<T> {
   if (outboundContext.getStore()) return fn();
   return withOutboundAsync(intent, fn);

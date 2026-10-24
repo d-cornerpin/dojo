@@ -40,7 +40,8 @@ const count = (file: string, re: RegExp): number => (files.get(file)!.match(new 
 /** The body of `export function <name>(` up to its closing brace at column 0. */
 const fnBody = (file: string, name: string): string => {
   const s = files.get(file)!;
-  const i = s.indexOf(`export function ${name}(`);
+  // E19b: the sends are async now; a door may be `export async function`.
+  const i = s.search(new RegExp(`export (async )?function ${name}\\(`));
   expect(i, `${name} in ${file}`).toBeGreaterThanOrEqual(0);
   return s.slice(i, s.indexOf('\n}\n', i));
 };
@@ -82,9 +83,9 @@ describe('§2 the told record is written by exactly the two doors, each in its o
   it('the notice door writes it as owner_notice, from its OWN scope (withOutbound, never IfAbsent)', () => {
     const door = fnBody('services/imessage-bridge.ts', 'sendAlert');
     expect(door).toMatch(/withOutbound\(\s*\{\s*agentId: PLATFORM_SENDER/);
-    expect(door).not.toMatch(/withOutboundIfAbsent/);
+    expect(door).not.toMatch(/withOutbound(Async)?IfAbsent/);
     // The text's scope tells from its own row; with no phone, the card's own scope does (round 2).
-    expect(door).toMatch(/withOutbound\(\s*\{ agentId: PLATFORM_SENDER, tool: 'alert'[\s\S]*?toldAbout\(opts\.aboutWorkId, 'owner_notice'\)/);
+    expect(door).toMatch(/withOutboundAsync\(\s*\{ agentId: PLATFORM_SENDER, tool: 'alert'[\s\S]*?toldAbout\(opts\.aboutWorkId, 'owner_notice'\)/);
     expect(door).toMatch(/if \(!sent && card === 'raised' && opts\.aboutWorkId && ownerCardStands\(scrubbed\)\)[\s\S]*?withOutbound\(\{ agentId: PLATFORM_SENDER, tool: 'owner-card', channel: 'dashboard', recipientId: 'owner' \}[\s\S]*?toldAbout\(workId, 'owner_card'\)/);
     const helper = files.get('services/imessage-bridge.ts')!;
     const h = helper.slice(helper.indexOf('function toldAbout('), helper.indexOf('\n}\n', helper.indexOf('function toldAbout(')));

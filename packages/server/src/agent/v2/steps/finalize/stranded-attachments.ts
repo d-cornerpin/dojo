@@ -110,7 +110,7 @@ export async function surfaceStrandedAttachments(
           const captionOut = redactHandedCredentials(agentId, captionText);
           let first = true;
           for (const att of stranded.attachments as Array<{ path?: string }>) {
-            if (att.path) { sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionOut : ''); first = false; }
+            if (att.path) { await sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionOut : ''); first = false; }
           }
         } catch (err) {
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);

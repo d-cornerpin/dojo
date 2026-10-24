@@ -51,6 +51,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   const record = (...a: unknown[]): string => { transport.push(JSON.stringify(a)); return ''; };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../../services/imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 
@@ -82,17 +93,22 @@ afterEach(() => {
   mockDb.current = null;
 });
 
+// v3.5 E19b: an owner text is sent asynchronously now, so its ledger row lands once the send
+// settles. The stand-in runner resolves at once, so one turn of the event loop (the REAL
+// setImmediate, captured before any fake timers) drains the whole chain; then the read runs.
+const realSetImmediate = setImmediate;
+const settled = async <T>(read: () => T): Promise<T> => { await new Promise((r) => realSetImmediate(r)); return read(); };
 const ownerOutbounds = (): number => (db().prepare(
   "SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = 'platform' AND tool = 'alert' AND recipient_id = ?",
 ).get(OWNER) as { n: number }).n;
 const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 
 describe('BROKEN: an agent paused after repeated errors', () => {
-  it('the trip that pauses the agent texts the owner once, naming the agent', () => {
+  it('the trip that pauses the agent texts the owner once, naming the agent', async () => {
     let paused = false;
     for (let i = 0; i < 10 && !paused; i++) paused = recordError('ag');
     expect(paused).toBe(true);
-    expect(ownerOutbounds()).toBe(1);
+    expect((await settled(ownerOutbounds))).toBe(1);
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toContain('Helper');
     expect(sent()[0]).toContain('paused');
@@ -104,9 +120,9 @@ describe('NOT A BLOCKER: the strike-3 rate-limit notice (fix round 1, ruling R-V
   // owner's v2.3.19 request: true blockers only). The dashboard already shows the agent as
   // rate-limited (rate-limit-retry.ts writes the status and broadcasts it); "retries exhausted"
   // stays on the phone at `critical`.
-  it('never reaches the phone', () => {
+  it('never reaches the phone', async () => {
     notifyRateLimitHit('ag', 'rate_limit');
-    expect(ownerOutbounds()).toBe(0);
+    expect((await settled(ownerOutbounds))).toBe(0);
     expect(sent()).toHaveLength(0);
   });
 });

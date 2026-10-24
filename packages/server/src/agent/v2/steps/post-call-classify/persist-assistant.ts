@@ -379,7 +379,7 @@ export async function runPersistAssistant(
     try {
       const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
       for (const att of queuedAttachments as Array<{ path?: string }>) {
-        if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
+        if (att.path) await sendIMessageWithAttachment(counterparty.senderId, att.path, '');
       }
     } catch (err) {
       logger.warn('A-1: reply-attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);

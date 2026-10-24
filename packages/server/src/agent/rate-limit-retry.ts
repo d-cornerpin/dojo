@@ -165,7 +165,7 @@ function scheduleNextAttempt(
         // Exhausted the entire schedule
         // t138 r4: the words wait on the owner's dashboard until he dismisses them or it gets through.
         const words = `${agentName} has been rate-limited for ${formatDuration(Math.round(elapsedMs / 1000))}. The window should have reset by now. Check your API account.`;
-        sendAlert(noteRateLimitExhausted(agentId, words), 'critical');
+        void sendAlert(noteRateLimitExhausted(agentId, words), 'critical');
         logger.error('Rate limit retry fully exhausted', { agentId, elapsedHours: elapsedHours.toFixed(1) });
         cleanupRetry(agentId);
         return;

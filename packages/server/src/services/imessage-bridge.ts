@@ -2,7 +2,6 @@
 // iMessage Bridge: Polling + Sending
 // ════════════════════════════════════════
 
-import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
@@ -22,7 +21,8 @@ import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/mes
 import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
-import { recordAtDoor, withOutbound, withOutboundIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { recordAtDoor, withOutbound, withOutboundAsync, withOutboundAsyncIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
+import { runMessagesProgram, wasCutByTheStop, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
 import { recordPersonTold } from '../work/validation-drive.js';
 import { ownerCardFrame, ownerCardEnded, ownerCardStands } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
@@ -259,10 +259,7 @@ function fetchImessageAttachments(
         const jpegBase = safeFilenamePart(displayName).replace(/\.(heic|heif)$/i, '.jpg');
         const jpegName = `imessage_${timestamp}_${jpegBase}`;
         const destPath = path.join(dir, jpegName);
-        execSync(
-          `sips -s format jpeg ${JSON.stringify(srcPath)} --out ${JSON.stringify(destPath)}`,
-          { stdio: 'pipe', timeout: 30_000 },
-        );
+        convertHeicToJpeg(srcPath, destPath);
         if (!fs.existsSync(destPath)) {
           logger.warn('HEIC conversion produced no output, mentioning instead', {
             srcPath, destPath,
@@ -554,7 +551,7 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
   // PHASE-2 T5: the busy-ack is an outbound to a real person and recorded nothing. It is
   // the AGENT's lane (this agent is why the person is waiting), so it is attributed to the
   // agent rather than to the platform.
-  withOutboundIfAbsent(
+  void withOutboundAsyncIfAbsent(
     { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
     () => sendIMessage(sender, BUSY_ACK_TEXT),
   );
@@ -643,12 +640,12 @@ export function stripSystemTags(text: string): string {
  * The badge must never be derived from a hardcoded default, it has to
  * reflect who the message really went to.
  */
-export function sendResponseViaIMessage(
+export async function sendResponseViaIMessage(
   text: string,
   agentId?: string,
   recipientOverride?: string | null,
   ownerBound?: boolean,
-): { address: string; name: string } | null {
+): Promise<{ address: string; name: string } | null> {
   if (!agentId) agentId = getPrimaryAgentId();
   // C8: an OWNER-BOUND send (the away-override promoted a dashboard/proactive reply to
   // iMessage precisely to reach the owner who stepped away) must go to the owner/primary,
@@ -659,7 +656,7 @@ export function sendResponseViaIMessage(
     if (!owner) return null;
     const cleanedOwner = stripSystemTags(text);
     if (!cleanedOwner) return null;
-    sendIMessage(owner, cleanedOwner);
+    await sendIMessage(owner, cleanedOwner);
     return { address: owner, name: findSafeSenderByAddress(getSafeSenders(), owner)?.name ?? owner };
   }
   // Two safety rails on the fallback path:
@@ -686,7 +683,7 @@ export function sendResponseViaIMessage(
     }
     const cleanedOverride = stripSystemTags(text);
     if (!cleanedOverride) return null;
-    sendIMessage(sender, cleanedOverride);
+    await sendIMessage(sender, cleanedOverride);
     return { address: sender, name: recipientName ?? sender };
   }
   // P5c: no recipient override and not owner-bound -> the starred default
@@ -699,7 +696,7 @@ export function sendResponseViaIMessage(
   if (!sender) return null;
   const cleaned = stripSystemTags(text);
   if (!cleaned) return null;
-  sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
+  await sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
   return { address: sender, name: recipientName ?? sender };
 }
 const CHAT_DB_PATH = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
@@ -839,7 +836,7 @@ export async function processInboundIMessage(
   if (cleanedText && !input.staleSentAtIso) {
     const commandResponse = await handleIMCommand(cleanedText, sender);
     if (commandResponse) {
-      sendIMessage(sender, commandResponse);
+      await sendIMessage(sender, commandResponse);
       return { outcome: 'command', reply: commandResponse, messageId: null };
     }
   }
@@ -1624,58 +1621,25 @@ export function reloadApprovedSenders(): void {
 // attachments require imsg, AppleScript's POSIX file handling is
 // broken on newer macOS.
 
-const IMSG_CANDIDATE_PATHS = ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${homeDir()}/.dojo/bin/imsg`];
+// The candidate list and the runnability probe live with the runner (`./imessage-run.ts`).
 
-function findImsg(): string | null {
-  // Select the first candidate that actually RUNS, not the first that exists.
-  // Production 2026-07-18: a root-owned broken install at /opt/homebrew/bin
-  // (resource bundle missing, crashes at launch) shadowed the healthy copy the
-  // boot self-heal had planted lower in this list, because the unprivileged
-  // repair cannot overwrite a sudo-installed file and existence-first selection
-  // kept choosing the crasher. Any invocation loads the PhoneNumberKit bundle,
-  // so a --help probe discriminates broken from healthy; the result is cached
-  // by getImsgPath, so the probe cost is paid once per process.
-  for (const p of IMSG_CANDIDATE_PATHS) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      execFileSync(p, ['--help'], { timeout: 10000, encoding: 'utf-8', stdio: 'pipe' });
-      return p;
-    } catch { /* exists but broken, or probe failed: try the next candidate */ }
-  }
-  try {
-    execSync('which imsg', { encoding: 'utf-8', stdio: 'pipe' });
-    execFileSync('imsg', ['--help'], { timeout: 10000, encoding: 'utf-8', stdio: 'pipe' });
-    return 'imsg';
-  } catch {
-    return null;
-  }
-}
-
-let imsgPathCached: string | null | undefined = undefined;
-function getImsgPath(): string | null {
-  if (imsgPathCached === undefined) imsgPathCached = findImsg();
-  return imsgPathCached;
-}
-
-// AppleScript fallback for text-only, used only when imsg isn't installed
-function sendIMessageViaAppleScript(recipient: string, text: string): void {
-  const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-
-  // Escape for AppleScript double-quoted strings: backslashes and double quotes.
-  // Newlines can't appear inside AppleScript string literals, so we break the
-  // literal and concatenate using the linefeed character constant instead.
-  const escapedText = text
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '" & (ASCII character 10) & "');
-
-  // Select the iMessage service POSITIONALLY, not via `1st service whose
-  // service type = iMessage`. That filtered ("whose") reference throws
-  // AppleScript error -10002 ("Invalid key form") on macOS 26/Sequoia, breaking
-  // the engine's text fallback. Iterating `services` element-by-element and
-  // checking each one's type avoids the bad key form; if none reports the
-  // iMessage type, fall back to `item 1 of services` (the generic positional
-  // reference confirmed working on Sequoia).
+// AppleScript fallback, used when imsg isn't installed or failed. `sendClause` is the script's own
+// send line: `send "<text>"` for text, `send POSIX file "<path>"` for a file (Messages.app can send
+// a file by script, so a missing or broken imsg does not mean attachments cannot be delivered at
+// all; production 2026-07-18). Two-bubble limitation vs imsg: a file goes alone, and any caption
+// is sent as its own text bubble by the caller.
+//
+// Select the iMessage service POSITIONALLY, not via `1st service whose
+// service type = iMessage`. That filtered ("whose") reference throws
+// AppleScript error -10002 ("Invalid key form") on macOS 26/Sequoia, breaking
+// the engine's text fallback. Iterating `services` element-by-element and
+// checking each one's type avoids the bad key form; if none reports the
+// iMessage type, fall back to `item 1 of services` (the generic positional
+// reference confirmed working on Sequoia).
+//
+// v3.5 E19b: the script is osascript's own `-e` argument (no shell line, so no shell quoting), run
+// by the async runner and bound to the sending agent's Stop. Rejects on failure.
+function sendViaAppleScript(recipient: string, sendClause: string, timeout: number, opts: SendOpts): Promise<string> {
   const script = `
     tell application "Messages"
       set targetService to missing value
@@ -1688,15 +1652,19 @@ function sendIMessageViaAppleScript(recipient: string, text: string): void {
         end try
       end repeat
       if targetService is missing value then set targetService to item 1 of services
-      set targetBuddy to buddy "${escapedRecipient}" of targetService
-      send "${escapedText}" to targetBuddy
+      set targetBuddy to buddy ${appleScriptString(recipient)} of targetService
+      ${sendClause} to targetBuddy
     end tell
   `;
-  execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
-    timeout: 10000,
-    encoding: 'utf-8',
-  });
+  return runMessagesProgram('osascript', ['-e', script], { timeout, agentId: opts.agentId });
 }
+
+// An AppleScript double-quoted literal: backslashes and double quotes escaped. Newlines can't
+// appear inside a literal, so (for text) the literal is broken and joined with the linefeed constant.
+const appleScriptString = (s: string, lines = false): string => {
+  const escaped = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${lines ? escaped.replace(/\n/g, '" & (ASCII character 10) & "') : escaped}"`;
+};
 
 // The corrected imsg install command, shown wherever imsg is missing/broken.
 // The PhoneNumberKit resource bundle MUST sit next to the binary: a bare
@@ -1708,40 +1676,6 @@ const IMSG_INSTALL_HINT =
   'sudo cp bin/imsg /opt/homebrew/bin/ && ' +
   'sudo cp .build/*/release/PhoneNumberKit_PhoneNumberKit.bundle /opt/homebrew/bin/ ' +
   '(the bundle must sit NEXT TO the binary or imsg crashes at launch)';
-
-/**
- * AppleScript file send: Messages.app can send a POSIX file by script, so a
- * missing or broken imsg no longer means attachments cannot be delivered at
- * all (production 2026-07-18: a crashed imsg silently killed the finished-
- * image auto-text while plain text sailed through on the AppleScript path).
- * Two-bubble limitation vs imsg: the file goes alone; any caption is sent as
- * its own text bubble by the caller. Same Sequoia-safe positional service
- * selection as sendIMessageViaAppleScript. Throws on failure.
- */
-function sendIMessageFileViaAppleScript(recipient: string, filePath: string): void {
-  const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const script = `
-    tell application "Messages"
-      set targetService to missing value
-      repeat with s in services
-        try
-          if (service type of s) is iMessage then
-            set targetService to s
-            exit repeat
-          end if
-        end try
-      end repeat
-      if targetService is missing value then set targetService to item 1 of services
-      set targetBuddy to buddy "${escapedRecipient}" of targetService
-      send POSIX file "${escapedPath}" to targetBuddy
-    end tell
-  `;
-  execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
-    timeout: 15000,
-    encoding: 'utf-8',
-  });
-}
 
 /**
  * Boot-time imsg health probe. A broken imsg (binary present, resource bundle
@@ -1774,29 +1708,40 @@ export function checkImsgHealth(): void {
   }
 }
 
+/** What one send came to. `cut`: the owner's Stop ended it, and it may already have gone out. */
+type SendResult = 'sent' | 'failed' | 'cut';
+const CUT_DETAIL = "cut off by the owner's Stop (it may already have gone out)";
+/** An agent's own send (the `imessage_send` tool) names the agent, and is bound to that agent's Stop.
+ *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
+export interface SendOpts { agentId?: string }
+
 // v2.3.19, returns true if the send actually succeeded, false if every
 // path failed (imsg CLI errored, AppleScript denied, etc.). Pre-spec
 // this returned void and silently swallowed failures, which left
 // imessage_send callers reporting "sent" to the agent (and thus to the
 // user) when nothing actually went through.
-export function sendIMessage(recipient: string, rawText: string): boolean {
-  const ok = sendIMessageInner(recipient, rawText);
+export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {
+  return (await textDoor(recipient, rawText, opts)) === 'sent';
+}
+
+async function textDoor(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
+  const result = await sendIMessageInner(recipient, rawText, opts);
   // PHASE-2 T5: THE DOOR RECORDS. Every iMessage the platform sends physically passes
   // through here — the auto-route, the imessage_send tool, alerts, the busy-ack, the
   // first-run welcome, the healer's approval prompt, the A2A relay's owner hand-back — and
   // before this, only the first two produced a ledger row and only when the caller had
   // already decided it worked. The outcome comes from what the transport actually returned.
   recordedId(recordAtDoor({
-    outcome: ok ? 'delivered' : 'failed',
+    outcome: result === 'sent' ? 'delivered' : 'failed',
     channel: 'imessage',
     tool: 'imessage-door',
     recipientId: recipient,
-    detail: ok ? null : 'every iMessage path failed (imsg CLI and AppleScript)',
-  }), 'imessage: door crossing', { recipient, ok });
-  return ok;
+    detail: result === 'sent' ? null : result === 'cut' ? CUT_DETAIL : 'every iMessage path failed (imsg CLI and AppleScript)',
+  }), 'imessage: door crossing', { recipient, ok: result === 'sent' });
+  return result;
 }
 
-function sendIMessageInner(recipient: string, rawText: string): boolean {
+async function sendIMessageInner(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
   // Sanitize for iMessage, strip markdown, literal \n, excessive whitespace.
   // This runs on ALL iMessage paths so nothing gets through unsanitized.
   let text = rawText;
@@ -1815,17 +1760,13 @@ function sendIMessageInner(recipient: string, rawText: string): boolean {
     let via: 'imsg' | 'applescript' = 'applescript';
     if (imsg) {
       try {
-        // Use execFileSync (not execSync) so the text is passed as a raw argument,
-        // bypassing the shell entirely. execSync builds a shell command string where
-        // $100 becomes a variable expansion (→ "00") and JSON-escaped \n sequences
-        // are passed literally instead of as real newlines.
-        execFileSync(
-          imsg,
-          ['send', '--to', recipient, '--text', text, '--service', 'imessage'],
-          { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
-        );
+        // The text is a raw argument (argv, never a shell line): a shell would expand $100 into
+        // a variable ("00") and pass JSON-escaped \n sequences literally instead of as newlines.
+        await runMessagesProgram(imsg, ['send', '--to', recipient, '--text', text, '--service', 'imessage'], { timeout: 15000, agentId: opts.agentId });
         via = 'imsg';
       } catch (imsgErr) {
+        // A Stop is not a broken imsg: nothing is retried another way (E19b).
+        if (wasCutByTheStop(imsgErr)) throw imsgErr;
         // imsg is present but FAILED, e.g. imsg v0.11.1 installed as a raw
         // binary crashes with SIGTRAP because its compiled
         // PhoneNumberKit_PhoneNumberKit.bundle didn't ship alongside it. Text
@@ -1836,24 +1777,25 @@ function sendIMessageInner(recipient: string, rawText: string): boolean {
           recipient,
           error: imsgErr instanceof Error ? imsgErr.message : String(imsgErr),
         });
-        sendIMessageViaAppleScript(recipient, text);
+        await sendViaAppleScript(recipient, `send ${appleScriptString(text, true)}`, 10000, opts);
         via = 'applescript';
       }
     } else {
-      sendIMessageViaAppleScript(recipient, text);
+      await sendViaAppleScript(recipient, `send ${appleScriptString(text, true)}`, 10000, opts);
     }
 
     logger.info('iMessage sent', { recipient, textLength: text.length, via });
     // (v2.3.16) Dropped dedicated `imessage:sent` WS broadcast, the
     // dashboard sees outbound delivery via the [SENT VIA IMESSAGE to <owner>]
     // system marker that the loop persists in the chat stream.
-    return true;
+    return 'sent';
   } catch (err) {
+    if (wasCutByTheStop(err)) { logger.info('iMessage send cut off by the owner\'s Stop', { recipient }); return 'cut'; }
     logger.error('Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
       recipient,
     });
-    return false;
+    return 'failed';
   }
 }
 
@@ -1863,37 +1805,39 @@ function sendIMessageInner(recipient: string, rawText: string): boolean {
  * (caller can decide how to report, internal helpers use this directly,
  * the agent-facing imessage_send tool uses sendIMessageWithAttachments).
  */
-export function sendIMessageWithAttachment(
-  recipient: string,
-  filePath: string,
-  caption?: string,
-): boolean {
+export async function sendIMessageWithAttachment(recipient: string, filePath: string, caption?: string, opts: SendOpts = {}): Promise<boolean> {
+  return (await attachmentDoor(recipient, filePath, caption, opts)) === 'sent';
+}
+
+function attachmentDoor(recipient: string, filePath: string, caption: string | undefined, opts: SendOpts): Promise<SendResult> {
   // PHASE-2 T5: the attachment siblings are doors too, and they are the reason the hole
   // would have reopened on files. Each opens a scope when the caller declared none, so the
   // file send and the caption's nested `sendIMessage` fold into ONE row — one thing the
   // person received — instead of two, and a caption that fails after a delivered file makes
   // that row honestly `failed`.
-  return withOutboundIfAbsent(
+  return withOutboundAsyncIfAbsent(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
-    () => {
-      const ok = sendIMessageWithAttachmentInner(recipient, filePath, caption);
+    async () => {
+      const result = await sendIMessageWithAttachmentInner(recipient, filePath, caption, opts);
+      const file = `attachment ${path.basename(filePath)}`;
       recordedId(recordAtDoor({
-        outcome: ok ? 'delivered' : 'failed',
+        outcome: result === 'sent' ? 'delivered' : 'failed',
         channel: 'imessage',
         tool: 'imessage-attachment-door',
         recipientId: recipient,
-        detail: ok ? `attachment ${path.basename(filePath)}` : `attachment ${path.basename(filePath)} failed on every path`,
-      }), 'imessage: attachment door crossing', { recipient, ok });
-      return ok;
+        detail: result === 'sent' ? file : result === 'cut' ? `${file} ${CUT_DETAIL}` : `${file} failed on every path`,
+      }), 'imessage: attachment door crossing', { recipient, ok: result === 'sent' });
+      return result;
     },
   );
 }
 
-function sendIMessageWithAttachmentInner(
+async function sendIMessageWithAttachmentInner(
   recipient: string,
   filePath: string,
-  caption?: string,
-): boolean {
+  caption: string | undefined,
+  opts: SendOpts,
+): Promise<SendResult> {
   // C14: safe-sender revalidation, a sender removed from the allowlist mid-conversation
   // must not still receive FILES while their text reply is correctly suppressed (inv-5
   // asymmetry). Mirrors sendResponseViaIMessage's recipient check. (Capturing attachment
@@ -1902,7 +1846,7 @@ function sendIMessageWithAttachmentInner(
   // file ships with no harness dependency.)
   if (!findSafeSenderByAddress(getSafeSenders(), recipient)) {
     logger.warn('Attachment send suppressed: recipient not on safe-sender list', { recipient });
-    return false;
+    return 'failed';
   }
   const imsg = getImsgPath();
 
@@ -1912,10 +1856,11 @@ function sendIMessageWithAttachmentInner(
       const args = ['send', '--to', recipient];
       if (caption) args.push('--text', caption);
       args.push('--file', filePath, '--service', 'imessage');
-      execFileSync(imsg, args, { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+      await runMessagesProgram(imsg, args, { timeout: 30000, agentId: opts.agentId });
       logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(caption) });
-      return true;
+      return 'sent';
     } catch (err) {
+      if (wasCutByTheStop(err)) return 'cut';   // the owner stopped it: no AppleScript retry (E19b)
       logger.warn('imsg attachment send failed, falling back to AppleScript file send. Repair imsg: ' + IMSG_INSTALL_HINT, {
         error: err instanceof Error ? err.message.slice(0, 300) : String(err),
         recipient,
@@ -1933,22 +1878,23 @@ function sendIMessageWithAttachmentInner(
   // rides as its own bubble via sendIMessage (which sanitizes markdown and has
   // its own delivery chain).
   try {
-    sendIMessageFileViaAppleScript(recipient, filePath);
+    await sendViaAppleScript(recipient, `send POSIX file ${appleScriptString(filePath)}`, 15000, opts);
     logger.info('iMessage attachment sent', { recipient, filePath, via: 'applescript', hasCaption: Boolean(caption) });
     if (caption && caption.trim()) {
-      const captionOk = sendIMessage(recipient, caption);
+      const captionOk = await sendIMessage(recipient, caption, opts);
       if (!captionOk) {
         logger.warn('attachment caption send failed (the file itself was delivered)', { recipient, filePath });
       }
     }
-    return true;
+    return 'sent';
   } catch (err) {
+    if (wasCutByTheStop(err)) return 'cut';
     logger.error('iMessage attachment send failed on every path (imsg and AppleScript)', {
       error: err instanceof Error ? err.message.slice(0, 300) : String(err),
       recipient,
       filePath,
     });
-    return false;
+    return 'failed';
   }
 }
 
@@ -1964,23 +1910,25 @@ export function sendIMessageWithAttachments(
   recipient: string,
   text: string,
   filePaths: readonly string[],
-): { ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean } {
+  opts: SendOpts = {},
+): Promise<{ ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean }> {
   // PHASE-2 T5: one scope for the whole batch. A message with three files that partly failed
   // is ONE delivery the person half-received, recorded once and honestly as `failed` — not
   // three rows, and not a green row per file that happened to go through.
-  return withOutboundIfAbsent(
+  return withOutboundAsyncIfAbsent(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
-    () => sendIMessageWithAttachmentsInner(recipient, text, filePaths),
+    () => sendIMessageWithAttachmentsInner(recipient, text, filePaths, opts),
   );
 }
 
-function sendIMessageWithAttachmentsInner(
+async function sendIMessageWithAttachmentsInner(
   recipient: string,
   text: string,
   filePaths: readonly string[],
-): { ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean } {
+  opts: SendOpts,
+): Promise<{ ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean }> {
   if (filePaths.length === 0) {
-    const ok = sendIMessage(recipient, text);
+    const ok = await sendIMessage(recipient, text, opts);
     return { ok, sentFiles: [], failedFiles: [], textSent: ok };
   }
 
@@ -2000,10 +1948,13 @@ function sendIMessageWithAttachmentsInner(
 
   for (let i = 0; i < filePaths.length; i++) {
     const caption = i === 0 && text.trim() ? text : undefined;
-    const ok = sendIMessageWithAttachment(recipient, filePaths[i], caption);
-    if (ok) {
+    const result = await attachmentDoor(recipient, filePaths[i], caption, opts);
+    if (result === 'sent') {
       sentFiles.push(filePaths[i]);
       if (i === 0 && caption) textSent = true;
+    } else if (result === 'cut') {
+      // The owner pressed Stop: nothing more goes out, not the next file and not the text alone.
+      return { ok: false, sentFiles, failedFiles: [...failedFiles, ...filePaths.slice(i)], textSent };
     } else {
       failedFiles.push(filePaths[i]);
     }
@@ -2013,7 +1964,7 @@ function sendIMessageWithAttachmentsInner(
   // make one more attempt to deliver the text on its own so the recipient at
   // least gets the message body even though attachments didn't.
   if (!textSent && text.trim()) {
-    const ok = sendIMessage(recipient, text);
+    const ok = await sendIMessage(recipient, text, opts);
     if (ok) textSent = true;
   }
 
@@ -2079,7 +2030,7 @@ const ownerNoticeLog = createLogger('owner-notice');
  * escalation ladder does not raise the same row with him again. The id is data the caller holds,
  * never read from the words.
  */
-export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string } = {}): void {
+export async function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string } = {}): Promise<void> {
   try {
     const scrubbed = scrubTechnicalDetail(message);
 
@@ -2106,10 +2057,10 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     // trigger it would put watchdog-class traffic inside that agent's own ledger. So the door
     // opens its OWN scope (t146: never the `IfAbsent` form, which folded a notice fired inside an
     // agent's send into that send's row), and a told record reads this scope's row and no other.
-    const sent = recipient !== null && withOutbound(
+    const sent = recipient !== null && await withOutboundAsync(
       { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
-      () => {
-        const ok = sendIMessage(recipient, fullMessage);
+      async () => {
+        const ok = await sendIMessage(recipient, fullMessage);
         if (ok && opts.aboutWorkId) toldAbout(opts.aboutWorkId, 'owner_notice');
         return ok;
       },

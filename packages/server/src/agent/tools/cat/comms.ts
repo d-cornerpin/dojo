@@ -691,8 +691,8 @@ export const commsHandlers: ToolHandlerMap = {
       if (isError) return { content, isError };
     }
 
-    // ── Send ─────────────────────────────────────────────────────
-    const result = sendIMessageWithAttachments(recipient, message, attachmentPaths);
+    // ── Send (v3.5 E19b: the agent's own send, bound to its Stop) ──
+    const result = await sendIMessageWithAttachments(recipient, message, attachmentPaths, { agentId });
     if (!result.ok && result.sentFiles.length === 0 && !result.textSent) {
       content =
         'iMessage delivery failed at the system level - neither the imsg CLI nor AppleScript could deliver. ' +

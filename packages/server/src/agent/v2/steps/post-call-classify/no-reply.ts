@@ -334,7 +334,7 @@ export async function runNoReply(
             try {
               const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
               for (const att of noReplyAttachments as Array<{ path?: string }>) {
-                if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
+                if (att.path) await sendIMessageWithAttachment(counterparty.senderId, att.path, '');
               }
             } catch (err) {
               logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);

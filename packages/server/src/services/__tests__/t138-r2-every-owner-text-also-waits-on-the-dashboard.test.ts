@@ -84,6 +84,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
   return { ...orig, default: { ...orig, execSync: record, execFileSync: record }, execSync: record, execFileSync: record };
 });
+// v3.5 E19b: the bridge runs imsg/osascript through its async runner now; it hands each run to
+// the recorder above, so the same lines are recorded and the same failures thrown (the real
+// programs are refused suite-wide by the iMessage net). Its probe and HEIC conversion stay real.
+vi.mock('../imessage-run.js', async (importOriginal) => {
+  const cp = await import('node:child_process');
+  return {
+    ...(await importOriginal<Record<string, unknown>>()),
+    runMessagesProgram: async (program: string, argv: readonly string[], opts: object) => String(cp.execFileSync(program, [...argv], opts)),
+    wasCutByTheStop: () => false,
+  };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 
@@ -254,7 +265,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
 
   it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
     const { bridge } = await boot();
-    bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
+    await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
     expectPaired(1);
     expect(texts()[0]).toContain('[CRITICAL]');
     expect(cards()[0]).toMatchObject({ error: 'The box is nearly out of memory. Close something.', severity: 'error' });
@@ -332,7 +343,7 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
   it('what never reaches the phone makes no card either (the "will retry" rate-limit notice)', async () => {
     const { errors, bridge } = await boot();
     errors.notifyRateLimitHit('ag', 'rate_limit');
-    bridge.sendAlert('An informational line.', 'info');
+    await bridge.sendAlert('An informational line.', 'info');
     expect(texts()).toHaveLength(0);
     expect(cards()).toHaveLength(0);
   });

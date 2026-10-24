@@ -430,13 +430,13 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
       // in logs only (logged at line ~135 above). No JSON, no field paths,
       // no "Error: ..." dump.
       const userMsg = told.HEALER_BROKEN_WORDS;
-      if (told.tellOwnerOnce('healer-broken')) sendAlert(userMsg, 'critical'); // until it recovers
+      if (told.tellOwnerOnce('healer-broken')) void sendAlert(userMsg, 'critical'); // until it recovers
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_SELF_INJURED');
       return;
     }
   } catch { /* config not available */ }
   const broken = brokenWords(agentId, errorMessage); // t143: only the owner can fix it — told at once, once per incident
-  if (broken && noteNoticeOnce(agentId, 'broken_notice', broken)) sendAlert(broken, 'notice');
+  if (broken && noteNoticeOnce(agentId, 'broken_notice', broken)) void sendAlert(broken, 'notice');
 
   // v2.3.19 (error-handling-spec Phase 3), per-agent Healer backoff.
   //
@@ -480,7 +480,7 @@ export function onAgentInjured(agentId: string, errorMessage: string, code?: str
         const db = getDb();
         const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         const userMsg = told.stuckWords(agent?.name ?? agentId);
-        if (!readNotice(agentId, 'broken_notice') && told.tellOwnerOnce(`stuck:${agentId}`)) sendAlert(userMsg, 'notice'); // once per incident (t143: not on top of BROKEN)
+        if (!readNotice(agentId, 'broken_notice') && told.tellOwnerOnce(`stuck:${agentId}`)) void sendAlert(userMsg, 'notice'); // once per incident (t143: not on top of BROKEN)
         broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
       } catch { /* best effort */ }
     } else {
@@ -836,7 +836,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       const userMsg = told.healerMissingWords(agent.name);
       // v2.3.19, Healer missing is a true blocker (auto-recovery
       // entirely off until restored). Critical. Once until an injury finds it present (t138 r3).
-      if (told.tellOwnerOnce(`healer-missing:${agentId}`, 'healer-missing:')) sendAlert(userMsg, 'critical');
+      if (told.tellOwnerOnce(`healer-missing:${agentId}`, 'healer-missing:')) void sendAlert(userMsg, 'critical');
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_MISSING');
       return;
     }
