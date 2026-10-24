@@ -9,21 +9,9 @@ import { applyTextPagination } from '../agent/tools/pagination.js';
 import { googleRead } from './client.js';
 import { driveSearchQuery } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
+import { executeGmailSearch, fmtEmailDate, GMAIL_BASE } from './gmail-search.js';
+export { searchMailForAccount, type GoogleMailFetchItem } from './gmail-search.js';
 
-/**
- * Format an email Date header for agent consumption. RFC 2822 headers
- * like "Wed, 20 May 2026 19:00:00 +0000" have an offset, so parsing is
- * unambiguous — but the format differs from every other tool. Route
- * through formatTimeForAgent so the agent sees the same dual-format
- * string everywhere. Empty input passes through as empty.
- */
-function fmtEmailDate(rfc2822: string): string {
-  if (!rfc2822) return '';
-  const parsed = parseFlexibleTime(rfc2822);
-  return parsed ? formatTimeForAgent(parsed) : rfc2822;
-}
-
-const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';
@@ -40,7 +28,8 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         query: { type: 'string', description: "Gmail search query (e.g., 'from:john@example.com after:2026/03/01')" },
-        max_results: { type: 'number', description: 'Maximum number of results (default: 10)' },
+        max_results: { type: 'number', description: 'Maximum number of results (default: 10; 500 is the most Gmail returns in one page)' },
+        page_token: { type: 'string', description: 'The next_page_token from a previous result, to get the next page of the same query' },
         verbose: { type: 'boolean', description: 'If true, include To/CC and the full snippet per result. Default false (one line per result).' },
       },
       required: ['query'],
@@ -349,19 +338,6 @@ export interface GoogleAgendaFetchItem {
   notes?: string;
 }
 
-/** Normalized email row (metadata only) for search rendering. */
-export interface GoogleMailFetchItem {
-  id: string;
-  from: string;
-  to: string;
-  subject: string;
-  dateDisplay: string;
-  dateSortMs: number;
-  snippet: string;
-  /** Read-state is not fetched by Gmail search; left undefined (unknown). */
-  read: boolean | undefined;
-}
-
 /** Fetch + normalize one account's events for a window. `accountId` is the row id (slot). */
 export async function fetchAgendaItemsForAccount(
   accountId: string,
@@ -402,40 +378,6 @@ export async function fetchAgendaItemsForAccount(
   return { ok: true, items };
 }
 
-/** Search one account's Gmail. `total` is the raw match count (pre-detail-fetch). */
-export async function searchMailForAccount(
-  accountId: string,
-  query: string,
-  maxResults: number,
-  agentId: string,
-  agentName: string,
-): Promise<{ ok: true; total: number; items: GoogleMailFetchItem[] } | { ok: false; error: string }> {
-  const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-  const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults }, accountId);
-  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
-
-  const data = result.data as { messages?: Array<{ id: string; threadId: string }> };
-  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [] };
-
-  const items: GoogleMailFetchItem[] = [];
-  for (const msg of data.messages.slice(0, maxResults)) {
-    const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
-    const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, accountId);
-    if (detail.ok) {
-      const msgData = detail.data as { id: string; snippet: string; payload?: { headers?: Array<{ name: string; value: string }> } };
-      const headers = msgData?.payload?.headers ?? [];
-      const from = headers.find(h => h.name === 'From')?.value ?? '';
-      const to = headers.find(h => h.name === 'To')?.value ?? '';
-      const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
-      const date = headers.find(h => h.name === 'Date')?.value ?? '';
-      const snippet = msgData?.snippet ?? '';
-      const parsed = date ? parseFlexibleTime(date) : null;
-      items.push({ id: msg.id, from, to, subject, dateDisplay: fmtEmailDate(date), dateSortMs: parsed ? parsed.getTime() : 0, snippet, read: undefined });
-    }
-  }
-  return { ok: true, total: data.messages.length, items };
-}
-
 // F4 data floor: the narrow read cases below no longer nudge with an advice
 // note (a weak model ignored it and answered from one surface). They now append
 // the ACTUAL other-surface data via otherCalendarsAgendaSection /
@@ -473,36 +415,8 @@ export async function executeGoogleReadTool(
   const acctLabel = resolved.labelAccount ? (resolved.account.email ?? slot) : null;
 
   switch (canonicalName) {
-    case 'gmail_search': {
-      const query = args.query as string;
-      const maxResults = (args.max_results as number) ?? 10;
-      const verbose = args.verbose as boolean | undefined;
-
-      const fetched = await searchMailForAccount(slot, query, maxResults, agentId, agentName);
-      if (!fetched.ok) return `Error searching Gmail: ${fetched.error}`;
-
-      // F4 data floor: the SAME query run against every OTHER connected mailbox,
-      // counts only, so a single-mailbox search never reads as the whole picture.
-      const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
-      const others = await otherMailboxesCountSection({ provider: 'google', accountId: slot }, query, 0, agentId, agentName);
-
-      const inAcct = acctLabel ? ` in ${acctLabel}` : '';
-      if (fetched.total === 0) return `No emails found matching that query${inAcct}.` + others;
-
-      const details: string[] = fetched.items.map(it => {
-        if (verbose) {
-          return `ID: ${it.id}\nFrom: ${it.from}\nTo: ${it.to}\nSubject: ${it.subject}\nDate: ${it.dateDisplay}\nSnippet: ${it.snippet}\n`;
-        }
-        // Compact: one line per email — drop To, keep snippet capped to 200ch.
-        const shortSnippet = it.snippet.length > 200 ? it.snippet.slice(0, 200) + '…' : it.snippet;
-        return `- ${it.dateDisplay} | ${it.from} — ${it.subject}\n  ID: ${it.id} | ${shortSnippet}`;
-      });
-
-      if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
-      const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
-      if (verbose) return header + others;
-      return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
-    }
+    case 'gmail_search':
+      return executeGmailSearch(args, slot, acctLabel, agentId, agentName);
 
     case 'gmail_read': {
       const messageId = args.message_id as string;

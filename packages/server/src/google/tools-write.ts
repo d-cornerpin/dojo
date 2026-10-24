@@ -140,7 +140,9 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID' },
+        message_ids: { type: 'array', items: { type: 'string' }, description: 'Several message IDs in one call (labelled one message each, in batches)' },
         thread_id: { type: 'string', description: 'Conversation (thread) ID, instead of message_id' },
+        thread_ids: { type: 'array', items: { type: 'string' }, description: 'Several conversation (thread) IDs in one call' },
         this_message_only: { type: 'boolean', description: 'Archive only the one message, not its conversation' },
         add_labels: { type: 'array', items: { type: 'string' }, description: "Labels to add (e.g., 'IMPORTANT', 'STARRED', or a custom label name from gmail_list_labels)" },
         remove_labels: { type: 'array', items: { type: 'string' }, description: "Labels to remove (e.g., 'INBOX' to archive)" },

@@ -30,7 +30,7 @@ export async function resolveGmailLabelTarget(
 ): Promise<LabelTarget> {
   const messageId = typeof args.message_id === 'string' && args.message_id ? args.message_id : undefined;
   const threadId = typeof args.thread_id === 'string' && args.thread_id ? args.thread_id : undefined;
-  if (!messageId && !threadId) return { ok: false, error: 'Error: pass message_id (one email) or thread_id (a whole conversation).' };
+  if (!messageId && !threadId) return { ok: false, error: 'Error: pass message_id (one email) or thread_id (a whole conversation), or message_ids / thread_ids for several.' };
   if (messageId && threadId) return { ok: false, error: 'Error: pass message_id or thread_id, not both.' };
   const modify = (kind: 'threads' | 'messages', id: string) => `${gmailBase}/${kind}/${encodeURIComponent(id)}/modify`;
   if (threadId) return { ok: true, url: modify('threads', threadId), conversation: true, threadId };
