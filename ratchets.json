@@ -9131,6 +9131,13 @@
       "to": 466,
       "by": "t252 A3 (v3.5, 2026-10-23): the Dojo's two standard models take no lock slot",
       "why": "+6: one import (STANDARD_TAGS), a four-line early return at the top of acquire (three comment lines saying why: the pair is resident and sized beside an agent's model, so a decision or writer call must never wait behind an agent's turn or swap its model out) and a one-line mirror in release. ALTERNATIVE REFUSED: wrapping acquire/release at the one call site in agent/model.ts would move the rule out of the module that owns slot accounting, so a second caller of the lock would not inherit it."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/CapabilityModelCards.tsx",
+      "from": 604,
+      "to": 606,
+      "by": "t252 A6 (v3.5, 2026-10-23): the model cards show the server's refusal instead of 'Saved!'",
+      "why": "+2: the generic CapabilityModelCard gains its toast hook line and one guard line that shows the server's refusal and returns before 'Saved!' (the HealerCard's existing if gains an else on the same line count). The owner ruled 'Pop up an error letting them know why' for a local model that will not fit; before this the card discarded the PUT's answer and said Saved over a 400 (the t88 class). It uses the existing toast; no new UX. ALTERNATIVE REFUSED: a wrapper component in a new file would still need the same hook and guard inside the card's own save handler."
     }
   ],
   "maxNewFileLines": 400,
@@ -9152,7 +9159,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 502,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 604,
+    "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 606,
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
     "packages/dashboard/src/components/settings/ModelRows.tsx": 1261,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
