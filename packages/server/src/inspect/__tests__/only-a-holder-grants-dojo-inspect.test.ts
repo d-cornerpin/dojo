@@ -80,18 +80,45 @@ describe('an agent that does not hold dojo_inspect cannot grant it', () => {
     await expect(spawn(MGR, { toolsPolicy: { allow: ['dojo_inspect', 'file_read'], deny: [] } })).rejects.toThrow(/cannot grant dojo_inspect/);
   });
 
-  it('update_agent: a main agent whose own deny withholds the tool cannot hand it on', async () => {
+  it('fix round 2: a main agent the owner withheld it from cannot lift the deny, nor hand the tool on', async () => {
     const db = mod.connection.getDb();
-    db.prepare('UPDATE agents SET tools_policy = ? WHERE id = ?').run(JSON.stringify({ allow: [], deny: ['dojo_inspect'] }), PRIMARY);
+    // The owner's withholding, stored the way the dashboard stores it: a grants object with the deny.
+    const owned = structuredClone(mod.access.getAccessGrants(PRIMARY));
+    owned.tools.deny = ['dojo_inspect'];
+    db.prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify({ grants: owned }), PRIMARY);
     mod.access.forgetAccessGrants();
+    const upd = async (args: Record<string, unknown>) => mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: `call-upd-${Math.random()}`, name: 'update_agent', arguments: args }));
     try {
-      const r = mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: 'call-upd-1', name: 'update_agent', arguments: { agent_id: WORKER, tools: { allow: ['dojo_inspect'] } } }));
-      expect(r.isError).toBe(true);
-      expect(r.content).toMatch(/cannot grant dojo_inspect/);
+      expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(false);
+      for (const args of [{ agent_id: PRIMARY, tools: { deny: [] } }, { agent_id: PRIMARY, grants: { tools: { deny: [] } } }]) {
+        const r = await upd(args);
+        expect(r.isError, JSON.stringify(args)).toBe(true);
+        expect(r.content).toMatch(/cannot lift the deny on dojo_inspect/);
+        mod.access.forgetAccessGrants();
+        expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(false);
+      }
+      const handOn = await upd({ agent_id: WORKER, tools: { allow: ['dojo_inspect'] } });
+      expect(handOn.isError).toBe(true);
+      expect(handOn.content).toMatch(/cannot grant dojo_inspect/);
+      await expect(spawn(PRIMARY, { toolsPolicy: { allow: ['dojo_inspect'], deny: [] } })).rejects.toThrow(/cannot grant dojo_inspect/);
     } finally {
-      db.prepare('UPDATE agents SET tools_policy = NULL WHERE id = ?').run(PRIMARY);
+      db.prepare('UPDATE agents SET permissions = NULL WHERE id = ?').run(PRIMARY);
       mod.access.forgetAccessGrants();
     }
+  });
+
+  it('fix round 2 RULING: a delegate that holds it cannot re-delegate — not by name, not by inheritance', async () => {
+    const db = mod.connection.getDb();
+    db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions, tools_policy, spawn_depth, created_by) VALUES ('agent-delegate', 'delegate', 'idle', '{}', 'apprentice', ?, ?, 1, ?)")
+      .run(JSON.stringify(SPAWNER_MANIFEST), JSON.stringify({ allow: ['dojo_inspect', 'spawn_agent', 'file_read', 'send_to_agent'], deny: [] }), PRIMARY);
+    mod.access.forgetAccessGrants();
+    expect(mod.grant.holdsDojoInspect('agent-delegate')).toBe(true);
+    await expect(spawn('agent-delegate', { toolsPolicy: { allow: ['dojo_inspect', 'file_read'], deny: [] } })).rejects.toThrow(/cannot grant dojo_inspect/);
+    // Naming nothing, the grandchild inherits the delegate's list — without dojo_inspect.
+    const grandchild = await spawn('agent-delegate', {});
+    mod.access.forgetAccessGrants();
+    expect(mod.access.toolGrantsFor(grandchild.agentId).allow).toEqual(['spawn_agent', 'file_read', 'send_to_agent']);
+    expect(mod.grant.holdsDojoInspect(grandchild.agentId)).toBe(false);
   });
 
   it('a spawn that does not name it is unaffected', async () => {

@@ -8,7 +8,7 @@ import { runIsLive } from './ended-mid-run.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
 import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
-import { inspectGrantRefusal } from '../inspect/grant.js';
+import { inspectGrantRefusal, withoutInheritedInspect } from '../inspect/grant.js';
 import { getAccessGrants } from './access/read.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
@@ -323,8 +323,11 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   if (!grantResolution.ok) {
     throw new GrantRefusedError(grantResolution.reason);
   }
-  const inspectRefused = inspectGrantRefusal(parentId, grantResolution.grants.tools.allow, toolsPolicy?.allow);   // v3.5: a positive grant
-  if (inspectRefused) throw new GrantRefusedError(inspectRefused);
+  // v3.5: dojo_inspect is granted by the owner or the main agent only, never inherited (`inspect/grant.ts`).
+  const inspectRefused = inspectGrantRefusal(parentId, (grants as { tools?: { allow?: unknown } } | undefined)?.tools?.allow, toolsPolicy?.allow);
+  const childAllow = withoutInheritedInspect(parentId, grantResolution.grants.tools.allow);
+  if (inspectRefused || !childAllow) throw new GrantRefusedError(inspectRefused ?? 'tools.allow: this child would inherit only dojo_inspect, which only the owner or the main agent can grant; name the tools it needs.');
+  grantResolution.grants.tools.allow = childAllow;
 
   const permissionsJson = JSON.stringify({ ...scope.manifest, grants: grantResolution.grants });
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});

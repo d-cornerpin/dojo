@@ -24,15 +24,38 @@ export function holdsDojoInspect(agentId: string): boolean {
 }
 
 /**
- * THE GRANT DOORS (t267 review, Critical 1). Everywhere else `tools.allow` RESTRICTS, so the
- * no-escalation rule never judges a name in it; here a name in it GRANTS. So an agent that does
- * not hold dojo_inspect may not write it into another agent's allow list (spawn, update_agent).
- * The owner's dashboard routes do not ask: the owner grants it. Each `allows` is any allow list
- * the call would store (grants.tools.allow, the older tools argument).
+ * THE GRANT DOORS (t267 review, Critical 1; fix round 2 rulings). Everywhere else `tools.allow`
+ * RESTRICTS, so the no-escalation rule never judges a name in it; here a name in it GRANTS.
+ * GRANT AUTHORITY IS THE OWNER (the dashboard/API routes, which do not ask) AND THE MAIN AGENT
+ * while it holds the tool. A delegate that holds it may not re-delegate it, by name or by a child
+ * inheriting its allow list; and lifting a deny that withholds it is a grant too, so no agent may.
  */
+export function mayGrantDojoInspect(granterId: string): boolean {
+  return isPrimaryAgent(granterId) && holdsDojoInspect(granterId);
+}
+
+const names = (list: unknown): boolean => Array.isArray(list) && list.includes(DOJO_INSPECT);
+
+/** The refusal when an agent would NAME dojo_inspect in another agent's allow list; else null. */
 export function inspectGrantRefusal(granterId: string, ...allows: unknown[]): string | null {
-  if (!allows.some((a) => Array.isArray(a) && a.includes(DOJO_INSPECT)) || holdsDojoInspect(granterId)) return null;
-  return 'tools.allow: cannot grant dojo_inspect — only an agent that holds it (the main agent, the Healer) or the owner can grant it.';
+  if (!allows.some(names) || mayGrantDojoInspect(granterId)) return null;
+  return 'tools.allow: cannot grant dojo_inspect — only the owner or the main agent can grant it.';
+}
+
+/** A spawned child's allow list with an INHERITED dojo_inspect dropped when its parent may not
+ *  grant it; null when dropping would empty the list (an empty allow list means every tool). */
+export function withoutInheritedInspect(granterId: string, allow: string[]): string[] | null {
+  if (!allow.includes(DOJO_INSPECT) || mayGrantDojoInspect(granterId)) return allow;
+  const kept = allow.filter((t) => t !== DOJO_INSPECT);
+  return kept.length > 0 ? kept : null;
+}
+
+/** The refusal when an agent's edit would drop a deny that withholds dojo_inspect from `targetId`;
+ *  only the owner lifts it. Each `denies` is a deny list the edit would store (undefined: untouched). */
+export function inspectDenyLiftRefusal(targetId: string, ...denies: unknown[]): string | null {
+  if (!toolGrantsFor(targetId).deny.includes(DOJO_INSPECT)) return null;
+  if (!denies.some((d) => Array.isArray(d) && !d.includes(DOJO_INSPECT))) return null;
+  return 'tools.deny: cannot lift the deny on dojo_inspect — the owner withheld it, and only the owner can give it back (from the dashboard).';
 }
 
 /** The refusal a non-holder reads at the executor. */

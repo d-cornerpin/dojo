@@ -76,7 +76,7 @@ import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 // no-escalation rule and the one write; this module owns the wording a model
 // reads and the audit row ruling 4 requires.
 import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../access/authorize.js';
-import { inspectGrantRefusal } from '../../../inspect/grant.js';
+import { inspectGrantRefusal, inspectDenyLiftRefusal } from '../../../inspect/grant.js';
 import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
 import { writeGrants } from '../../access/materialize.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
@@ -1153,7 +1153,8 @@ export const agentsHandlers: ToolHandlerMap = {
       // against a boolean — which is the whole content of ruling 4. A caller
       // holding `can_assign_permissions` still cannot grant a channel it does not
       // hold, and a caller without it can still be refused for the same reason.
-      const inspectRefused = inspectGrantRefusal(agentId, (newGrants as { tools?: { allow?: unknown } } | undefined)?.tools?.allow, newTools?.allow, (newPerms?.grants as { tools?: { allow?: unknown } } | undefined)?.tools?.allow);
+      const g = (v: unknown) => (v as { tools?: { allow?: unknown; deny?: unknown } } | undefined)?.tools;
+      const inspectRefused = inspectGrantRefusal(agentId, g(newGrants)?.allow, newTools?.allow, g(newPerms?.grants)?.allow) ?? inspectDenyLiftRefusal(target.id, g(newGrants)?.deny, newTools?.deny, g(newPerms?.grants)?.deny);
       if (inspectRefused) return { content: inspectRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const };
       if (newGrants !== undefined) {
         const targetGrants = getAccessGrants(target.id);
