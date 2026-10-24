@@ -38,6 +38,7 @@ import { outputPersistenceClassifier, stripLeadingTimeStamp } from '../../classi
 // The THIRD carve-out of the promotion family, whole — both predicates, the delivery, and the
 // argument for all of it. Its header is the statement of the defect this file's premise causes.
 import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
+import { continuedJobStillGoing, readJobAtPassEnd } from './job-turn-end.js';
 // T19 (D1): the closed, declared inventory of scheduled work that owes a person a message.
 // Asked, never re-typed — a fifth copy of "is this a reminder" is what the declaration exists
 // to prevent.
@@ -60,6 +61,7 @@ export async function runTerminalText(
     messageId, noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
   } = ctx;
   const { interAgentTurn } = sc;
+  const jobStillGoing = (await readJobAtPassEnd(state, ctx), continuedJobStillGoing(state, ctx));   // v3.5 D1: read once per pass
   const persistenceDecision = outputPersistenceClassifier({
     responseText: result.content ?? null,
     toolCallsThisTurn: result.toolCalls,
@@ -226,7 +228,7 @@ export async function runTerminalText(
     // predicate here: `answer-to-a-live-ask.ts` records why keying on it was refused (it would
     // overturn the 2026-07-23 ruling and five reviewed controls).
     const answersLiveAsk = answersALiveAsk({
-      interAgentTurn, isHumanContinuation,
+      interAgentTurn, isHumanContinuation, jobStillGoing,
       surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
     });
     if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
@@ -373,7 +375,7 @@ export async function runTerminalText(
         turnCtx.deferredUserReplyWithTools = null;
         deliveredAsAnswerToLiveAsk = true;
         state = (await deliverAsAnswerToLiveAsk(state, {
-          interAgentTurn, isHumanContinuation,
+          interAgentTurn, isHumanContinuation, jobStillGoing,
           surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
           agentId, turnNumber, answer, deliverEngineUserAck, noteTerminalAnswer,
         })).state;

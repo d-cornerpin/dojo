@@ -23,7 +23,7 @@ import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
-import { recordCallsTouched, type RoundResult } from '../../../../work/ledger-store.js';
+import { recordCallsTouched, succeededIn, type RoundResult } from '../../../../work/ledger-store.js';
 
 /**
  * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
@@ -178,7 +178,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
     if (claimedTaskId) {
-      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, state.turnStartMs); // t172: the calls, so a repeat can be told from a new one; v3.5 D1: and this turn's new ones
+      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, { startMs: state.turnStartMs, succeeded: succeededIn(roundResults) }); // t172: repeat vs new; v3.5 D1: this turn's new SUCCESSFUL ones
       recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults); // v3.5: the items THIS round's successes touched
     }
   }

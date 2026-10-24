@@ -128,6 +128,9 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
   // double-counted or double-touched.
   const targets = [...inProgress, ...stranded];
   const touch = db.prepare('UPDATE work SET updated_at = ? WHERE id = ?');
+  // v3.5 D1 (fix round 1): a job-continues park is NOT movement. Only real progress moves a task, so the
+  // PM's ladder (`taskMovedAtSql`) still sees a job that stops moving; the carry above keeps it off the gate.
+  const moves = reason !== 'job-continues';
   for (const { id } of targets) {
     writeTaskLog({
       taskId: id,
@@ -137,7 +140,7 @@ export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointRe
       actionTaken: REASON_TEXT[reason],
       note: 'turn parked for a continuation; this task is still in flight, not abandoned.',
     });
-    touch.run(now, id);
+    if (moves) touch.run(now, id);
   }
 
   return targets.length;

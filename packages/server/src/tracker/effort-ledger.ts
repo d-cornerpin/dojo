@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { writeEffortCharge } from '../work/effort-meter.js';
 
 /** A tool call as the charge site sees it. */
-export interface ChargeableCall { name: string; arguments?: unknown }
+export interface ChargeableCall { id?: string; name: string; arguments?: unknown }
 
 /** The arguments in a form that does not depend on key order: objects with sorted keys, arrays in
  *  order, `undefined` dropped. Two calls that differ only in how the model ordered its argument
@@ -54,7 +54,8 @@ interface TaskCallLedger {
 }
 const ledgers = new Map<string, TaskCallLedger>();
 
-/** v3.5 D1: how many NEW calls (by the same rule as above) each task was charged in ONE turn, keyed by
+/** v3.5 D1: how many NEW calls (by the same rule as above) that SUCCEEDED each task was charged in ONE turn
+ *  (a new failing call is not progress: orchestrator ruling, fix round 1), keyed by
  *  that turn's start (`AgentTurnState.turnStartMs`), so the turn's end can ask "did this turn do
  *  anything the task had not done before" (`novelCallsInTurn`). Kept apart from `ledgers` because a
  *  task that advances mid-turn has still done what it did this turn. One entry per task, replaced by
@@ -78,15 +79,16 @@ const turnNovelty = new Map<string, { turnStartMs: number; novel: number }>();
  * call read as new that was a repeat — so a restart can delay a review, never invent one. Putting
  * it in storage would be a migration for a fact that is cheap to relearn within a few calls.
  */
-export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall[], turnStartMs?: number): void {
+export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall[], turn?: { startMs: number; succeeded: (c: ChargeableCall) => boolean }): void {
   if (calls.length === 0) return;
   const ledger = ledgers.get(taskId) ?? { seen: new Set<string>(), repeats: new Map(), novel: 0, repeated: 0 };
   const newlySeen = new Set<string>();
+  let newAndSucceeded = 0;
   const repeatHits: Array<{ sig: string; label: string }> = [];
   for (const call of calls) {
     const sig = callSignature(call);
     if (ledger.seen.has(sig) || newlySeen.has(sig)) repeatHits.push({ sig, label: callLabel(call) });
-    else newlySeen.add(sig);
+    else { newlySeen.add(sig); if (turn?.succeeded(call)) newAndSucceeded += 1; }
   }
   writeEffortCharge(taskId, calls.length, newlySeen.size);
   // The write landed; only now does the in-memory picture move with it.
@@ -98,13 +100,13 @@ export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall
     if (prev) prev.n += 1; else ledger.repeats.set(sig, { label, n: 1 });
   }
   ledgers.set(taskId, ledger);
-  if (turnStartMs !== undefined) {
+  if (turn) {
     const t = turnNovelty.get(taskId);
-    turnNovelty.set(taskId, { turnStartMs, novel: (t?.turnStartMs === turnStartMs ? t.novel : 0) + newlySeen.size });
+    turnNovelty.set(taskId, { turnStartMs: turn.startMs, novel: (t?.turnStartMs === turn.startMs ? t.novel : 0) + newAndSucceeded });
   }
 }
 
-/** The new calls charged to this task by the turn that started at `turnStartMs` (0 when none). */
+/** The new, successful calls charged to this task by the turn that started at `turnStartMs` (0 when none). */
 export function novelCallsInTurn(taskId: string, turnStartMs: number): number {
   const t = turnNovelty.get(taskId);
   return t && t.turnStartMs === turnStartMs ? t.novel : 0;

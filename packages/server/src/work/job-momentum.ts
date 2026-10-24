@@ -1,6 +1,7 @@
 // v3.5 DONE IS MEASURED, Task D1 — the two records a turn end leaves on a job's task, and the one
 // read of them. Written by the engine (`'engine'`), so neither reads as the task moving
-// (`taskMovedAtSql`): a continuation is not progress, and a stall is the absence of it.
+// (`taskMovedAtSql`), and the park that writes `continued` does not touch the task's last-moved time
+// either (`engine-checkpoint-note.ts`): a continuation is not progress, and a stall is its absence.
 //
 //   `continued` — the turn ended mid-job WITH momentum and the engine continued it
 //                 (`agent/v2/steps/post-call-classify/job-continues.ts`);

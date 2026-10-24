@@ -78,7 +78,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     let state: AgentTurnState = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber: 3, lastUserMessageContent: 'please sort my inbox' } as unknown as Parameters<typeof initState>[0]),
       { loopCount: 1, modelId: 'test-model' });
     const label = { id: 'tc-1', name: 'gmail_label', arguments: { message_ids: ['a', 'b'], add: ['Done'] } } as ToolCall;
-    chargeEffortCalls(id, [label], state.turnStartMs);
+    chargeEffortCalls(id, [label], { startMs: state.turnStartMs, succeeded: () => true });
     recordTouched(id, 'gmail_label', ['gmail:msg:a', 'gmail:msg:b'], state.turnStartMs + 1);
     state = advance(state, { toolCalls: [label], toolResults: [{ toolCallId: 'tc-1', name: 'gmail_label', isError: false, content: '[OK]' } as AgentTurnState['toolResults'][number]] });
 
@@ -90,7 +90,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
       turnCtx: { agentId: AGENT, goingIdleDetectorRanThisTurn: false, conversationId: 'conv-owner' } as never,
       triggerRow: { rowid: 1, content: 'please sort my inbox' }, isA2ATurn: false, mostRecentInbound: undefined,
       lastUserMessageContent: 'please sort my inbox', chosenConvKey: 'dashboard:owner',
-      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' }, stashContinuationIfHuman: stash,
+      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' }, stashContinuationIfHuman: stash, result: { content: REPLY, toolCalls: [] },
     } as unknown as PostCallClassifyContext, sc);
 
     // The owner's reply stands, and nothing was said in its place.
@@ -100,7 +100,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     const continued = db().prepare(`SELECT payload FROM work_events WHERE work_id = ? AND kind = 'continued'`).all(id) as Array<{ payload: string }>;
     expect(continued.map((r) => JSON.parse(r.payload))).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 2 })]);
     expect(handleMessage).not.toHaveBeenCalled();   // the continuation never runs before the turn is over
-    expect(stash).not.toHaveBeenCalled();            // not a human continuation: its progress lines are not answers to him
+    expect(stash).toHaveBeenCalledTimes(1);          // the C3 stash: the continuation keeps his conversation (and channel)
 
     // The park's own timer starts the next turn, from the wake, carrying the job.
     await vi.advanceTimersByTimeAsync(1000);

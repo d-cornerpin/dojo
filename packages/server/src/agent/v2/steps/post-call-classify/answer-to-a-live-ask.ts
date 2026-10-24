@@ -130,6 +130,8 @@ export interface LiveAskPromotionInputs {
   readonly interAgentTurn: boolean;
   /** The never-silent backstop's one predicate: a human task the engine auto-continued. */
   readonly isHumanContinuation: boolean;
+  /** v3.5 D1 (R4): a continued measured job with items left speaks only its result, a stall or a question. */
+  readonly jobStillGoing?: boolean;
   /** Has anything user-visible shipped this turn? */
   readonly surfacedReplyThisTurn: boolean;
   /** The ledger-backed "have they heard the model this turn" question the ack family owns. */
@@ -145,7 +147,7 @@ export interface LiveAskPromotionInputs {
  * things at once.
  */
 export function answersALiveAsk(p: LiveAskPromotionInputs): boolean {
-  if (p.interAgentTurn) return false;
+  if (p.interAgentTurn || p.jobStillGoing) return false;
   // The turn has already spoken: whatever this line is, it is not the person's only utterance.
   if (p.surfacedReplyThisTurn || p.startAckRepliedNow()) return false;
   return p.isHumanContinuation;

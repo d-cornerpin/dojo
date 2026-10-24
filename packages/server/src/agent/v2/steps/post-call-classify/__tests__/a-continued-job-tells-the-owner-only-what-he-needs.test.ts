@@ -31,7 +31,7 @@ vi.mock('../../../../../db/connection.js', async () => {
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: (s: string) => s }));
 vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => 'active' }));
-const { countMeasure, parkJob } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true) }));
+const { countMeasure, parkJob, stash } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn() }));
 vi.mock('../../../../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/measure.js')>()), countMeasure }));
 vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/job-continuation.js')>()), parkJob }));
 
@@ -62,7 +62,14 @@ let lastStart = 0;
 let msg = 0;
 
 /** One continued turn: the park's own wake starts the run, the agent works, then ends with `text`. */
-async function continuedTurn(taskId: string, text: string, work: { from: number; n: number } | null): Promise<void> {
+/** The C3 restoration of an owner who asked over iMessage (`preflight/turn-trigger.ts`). */
+const OVER_IMESSAGE = {
+  isHumanContinuation: true, chosenConvKey: 'imessage:owner',
+  counterparty: { kind: 'user', relation: 'owner', channel: 'imessage', senderId: 'owner-handle', senderIsAgent: false },
+} as const;
+
+async function continuedTurn(taskId: string, text: string, work: { from: number; n: number } | null,
+  over: Partial<Record<string, unknown>> = {}): Promise<AgentTurnState> {
   turnNumber += 1;
   lastStart = Math.max(Date.now(), lastStart + 1000);
   armTimerWake(AGENT);
@@ -71,7 +78,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastStart });
   if (work) {
     const label = { id: `tc-${work.from}`, name: 'gmail_label', arguments: { message_ids: Array.from({ length: work.n }, (_, i) => `m${work.from + i}`), add: ['Done'] } } as ToolCall;
-    chargeEffortCalls(taskId, [label], lastStart);
+    chargeEffortCalls(taskId, [label], { startMs: lastStart, succeeded: () => true });
     recordTouched(taskId, 'gmail_label', Array.from({ length: work.n }, (_, i) => `gmail:msg:m${work.from + i}`), lastStart + 1);
     state = advance(state, { toolCalls: [label], toolResults: [{ toolCallId: label.id, name: 'gmail_label', isError: false, content: '[OK]' } as AgentTurnState['toolResults'][number]] });
   }
@@ -89,9 +96,11 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
     result: { content: text, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' },
     maxToolLoops: 75, reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
+    stashContinuationIfHuman: stash, ...over,
   } as unknown as PostCallClassifyContext;
-  await runPostCallClassify(state, ctx);
+  const out = await runPostCallClassify(state, ctx);
   endJobRun(AGENT);
+  return out.state;
 }
 
 async function aContinuedMeasuredJob(): Promise<string> {
@@ -124,8 +133,7 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
   it('a 3-continuation job sends the owner nothing until it finishes, then one result', async () => {
     const id = await aContinuedMeasuredJob();
     for (const [i, left] of [[0, 10051], [500, 9551], [1000, 9051]] as const) {
-      countMeasure.mockResolvedValue({ ok: true, count: left });
-      recordMeasured(id, { ok: true, count: left }, Date.now());
+      countMeasure.mockResolvedValue({ ok: true, count: left });   // the turn-end re-count reads it
       // eslint-disable-next-line no-await-in-loop
       await continuedTurn(id, `Labelled 500 more; ${left} to go.`, { from: i, n: 500 });
     }
@@ -133,9 +141,10 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect(workingNotes(), 'and it is kept on the record, not discarded').toBe(3);
     expect(parkJob).toHaveBeenCalledTimes(3);
 
-    // The last continuation empties the measure: that turn's closing text is the result.
+    // The last continuation empties the measure. The STORED reading still says 9,051 (the last turn's);
+    // the turn's own re-count, taken once before its text is judged, reads 0: its text is the result.
+    expect((db().prepare('SELECT measure_remaining AS r FROM work WHERE id = ?').get(id) as { r: number }).r).toBe(9051);
     countMeasure.mockResolvedValue({ ok: true, count: 0 });
-    recordMeasured(id, { ok: true, count: 0 }, Date.now());
     await continuedTurn(id, 'Done: every inbox message is labelled.', { from: 1500, n: 9051 });
     expect(ownerLaneReplies()).toHaveLength(1);
     expect(ownerLaneReplies()[0]).toContain('every inbox message is labelled');
@@ -152,5 +161,23 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     await continuedTurn(id, text, null);
     expect(ownerLaneReplies()).toEqual([expect.stringContaining(text.slice(0, 20))]);
     expect(workingNotes()).toBe(0);
+  });
+
+  it('an owner who asked over iMessage: progress reaches him as nothing; the result goes out on his own channel, once', async () => {
+    const id = await aContinuedMeasuredJob();
+    const routed: Array<string | null | undefined> = [];
+    for (const [i, left] of [[0, 10051], [500, 9551]] as const) {
+      countMeasure.mockResolvedValue({ ok: true, count: left });
+      // eslint-disable-next-line no-await-in-loop
+      routed.push((await continuedTurn(id, `Labelled 500 more; ${left} to go.`, { from: i, n: 500 }, OVER_IMESSAGE)).lastAssistantTextForIM);
+    }
+    countMeasure.mockResolvedValue({ ok: true, count: 0 });
+    routed.push((await continuedTurn(id, 'Done: every inbox message is labelled.', { from: 1000, n: 9551 }, OVER_IMESSAGE)).lastAssistantTextForIM);
+    // `lastAssistantTextForIM` is what the end-of-turn router pushes to the restored counterparty's
+    // channel (`finalize/channel-push.ts`), here iMessage: nothing for progress, the result once.
+    expect(routed.slice(0, 2).every((r) => !r)).toBe(true);
+    expect(routed[2]).toContain('every inbox message is labelled');
+    expect(ownerLaneReplies()).toHaveLength(1);
+    expect(workingNotes()).toBe(2);
   });
 });

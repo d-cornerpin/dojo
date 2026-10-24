@@ -96,9 +96,8 @@ export async function runGoingIdle(
     }
   }
 
-  // v3.5 D1: a turn ending mid-job is parked and continued while it makes progress, whatever it said (`job-continues.ts`).
-  const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
-  const job = transitionedThisTurn ? null : await continueTheJob(state, ctx, sc);
+  // v3.5 D1: a turn ending mid-job is parked and continued while it makes progress, whatever it said or tried (`job-continues.ts`).
+  const job = await continueTheJob(state, ctx, sc);
   if (job) return requestExit(state, `job-${job}`);
 
   // ── v2.7.17: "going idle with in_progress task" detector ──
@@ -136,7 +135,8 @@ export async function runGoingIdle(
     // Also skip if the agent ALREADY transitioned a task this turn (any
     // status flip / step completion / project close), since that signals
     // they DID make a deliberate state choice and just happened to leave
-    // another task in_progress for legitimate reasons (`transitionedThisTurn`, above).
+    // another task in_progress for legitimate reasons.
+    const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
 
     // ── Channel-awareness: enforce task bookkeeping only on a TASK-EXECUTION
     // turn, never on a CONVERSATION turn (attribution redesign §4.5). ──

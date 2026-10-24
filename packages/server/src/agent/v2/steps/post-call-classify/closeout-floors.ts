@@ -22,7 +22,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
-import { continuedJobStillGoing } from './continued-job-progress.js';
+import { continuedJobStillGoing } from './job-turn-end.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');

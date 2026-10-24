@@ -39,6 +39,7 @@ import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
 import { armTimerWake, beginJobRun, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
+import { taskMovedAtSql } from '../../../../../work/task-freshness.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
 const AGENT = 'agent-d1';
@@ -54,10 +55,10 @@ const taskIdFrom = (out: Out): string => {
   return m[1];
 };
 
-async function openTask(measured: boolean): Promise<string> {
+async function openTask(measured: boolean, title = 'Sort the inbox'): Promise<string> {
   if (measured) countMeasure.mockResolvedValueOnce({ ok: true, count: 10551 });
   const out = await call('work_open:task', {
-    title: 'Sort the inbox', goal: 'every inbox message labelled', ...(measured ? { measure: MEASURE } : {}),
+    title, goal: 'every inbox message labelled', ...(measured ? { measure: MEASURE } : {}),
   });
   const id = taskIdFrom(out);
   await call('work_update:status', { task_id: id, status: 'in_progress' });
@@ -85,14 +86,17 @@ function freshTurn(): AgentTurnState {
 
 /** This turn's calls and their results, as the loop records them, and what the execute step's charge
  *  site does with them: the effort meter's novel-vs-repeat charge and the ledger's touched items. */
-function ranCalls(state: AgentTurnState, taskId: string, calls: ToolCall[], touched: string[] = []): AgentTurnState {
-  chargeEffortCalls(taskId, calls, state.turnStartMs);
-  if (touched.length > 0) recordTouched(taskId, 'gmail_label', touched, state.turnStartMs + 1);
+function ranCalls(state: AgentTurnState, taskId: string, calls: ToolCall[], touched: string[] = [], failed = false): AgentTurnState {
+  chargeEffortCalls(taskId, calls, { startMs: state.turnStartMs, succeeded: () => !failed });
+  if (touched.length > 0 && !failed) recordTouched(taskId, 'gmail_label', touched, state.turnStartMs + 1);
   return advance(state, {
     toolCalls: [...state.toolCalls, ...calls],
-    toolResults: [...state.toolResults, ...calls.map((c) => ({ toolCallId: c.id, name: c.name, isError: false, content: '[OK]' }) as AgentTurnState['toolResults'][number])],
+    toolResults: [...state.toolResults, ...calls.map((c) => ({ toolCallId: c.id, name: c.name, isError: failed, content: failed ? 'Error: failed' : '[OK]' }) as AgentTurnState['toolResults'][number])],
   });
 }
+/** The task's last-moved time as the PM's ladder reads it. */
+const movedAt = (id: string): number =>
+  (db().prepare(`SELECT ${taskMovedAtSql('w')} AS t FROM work w WHERE w.id = ?`).get(id) as { t: number }).t;
 const labelCall = (n: number, from = 0): ToolCall => ({
   id: `tc-label-${from}`, name: 'gmail_label',
   arguments: { message_ids: Array.from({ length: n }, (_, i) => `m${from + i}`), add: ['Done'] },
@@ -104,7 +108,7 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     agentId: AGENT, db: db(), turnNumber, agent: { id: AGENT, name: 'Worker' },
     turnCtx: { agentId: AGENT, goingIdleDetectorRanThisTurn: false } as never,
     triggerRow: null, isA2ATurn: false, mostRecentInbound: undefined, lastUserMessageContent: null,
-    stashContinuationIfHuman: stash,
+    stashContinuationIfHuman: stash, result: { content: '', toolCalls: [] },
     ...over,
   } as unknown as PostCallClassifyContext;
 }
@@ -300,10 +304,9 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139 })]);
-    // RULING 2 (pre-review): the continuation is NOT a human continuation (no C3 stash), so its
-    // progress lines are never promoted to the owner as answers; he hears the result, the stall
-    // (through the PM) or a question/blocker (`continued-job-progress.ts`).
-    expect(stash).not.toHaveBeenCalled();
+    // The continuation keeps the owner's conversation (the driver's C3 stash, the one writer of that
+    // record), so his result lands on his own channel; progress lines stay notes (`job-turn-end.ts`).
+    expect(stash).toHaveBeenCalledTimes(1);
   });
 
   it('no measure, nothing touched, no reply: the menu (today\'s text until the text wave), no park', async () => {
@@ -333,5 +336,90 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10551 })]);
     expect(events(id, 'measured').at(-1)).toMatchObject({ remaining: null, ok: false });
+  });
+});
+
+describe('D1 fix round 1: the stop is the job task\'s own successful effects; momentum is new SUCCESSFUL work', () => {
+  it('I1 (probe P1): the measured close is REFUSED ("still returns N"), then the agent replies — still parked, no menu', async () => {
+    const id = await openTask(true);
+    let state = ranCalls(freshTurn(), id, [labelCall(139)], ids(139));
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    const refused = await call('work_update:status', { task_id: id, status: 'complete', result: 'done', evidence: [{ kind: 'claim', claim: 'labelled' }] });
+    expect(refused.content).toMatch(/^Refused: .*still returns 10412/);
+    const close = { id: 'tc-close', name: 'work_update', arguments: { action: 'status', task_id: id, status: 'complete' } } as ToolCall;
+    state = advance(state, {
+      toolCalls: [...state.toolCalls, close],
+      toolResults: [...state.toolResults, { toolCallId: 'tc-close', name: 'work_update', isError: true, content: refused.content } as AgentTurnState['toolResults'][number]],
+      trackerStatusUpdatedThisTurn: true,
+    });
+    const out = await runGoingIdle(state, ctxFor(), scratch('Labelled 139 so far; 10,412 still to go.'));
+    expect(out.directive).toBe('exit');
+    expect(parkJob).toHaveBeenCalledTimes(1);
+    expect(events(id, 'continued')).toHaveLength(1);
+    expect(menuSteers(out.state)).toHaveLength(0);
+  });
+
+  it('I1 (probe P2): a failed status call on ANOTHER task mid-job does not stop the job', async () => {
+    const other = await openTask(false, 'File the receipts');
+    const id = await openTask(true);
+    let state = ranCalls(freshTurn(), id, [labelCall(50)], ids(50));
+    const move = { id: 'tc-other', name: 'work_update', arguments: { action: 'status', task_id: other, status: 'blocked' } } as ToolCall;
+    state = advance(state, {
+      toolCalls: [...state.toolCalls, move],
+      toolResults: [...state.toolResults, { toolCallId: 'tc-other', name: 'work_update', isError: true, content: 'Error: no' } as AgentTurnState['toolResults'][number]],
+      trackerStatusUpdatedThisTurn: true,
+    });
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    const out = await runGoingIdle(state, ctxFor(), scratch('50 more done.'));
+    expect(out.directive).toBe('exit');
+    expect(parkJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('a SUCCESSFUL pause of the job\'s own task ends the job: no park', async () => {
+    const id = await openTask(true);
+    const state = ranCalls(freshTurn(), id, [labelCall(50)], ids(50));
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    await call('work_update:status', { task_id: id, status: 'paused', notes: 'waiting for the owner' });
+    await runGoingIdle(state, ctxFor(), scratch('Paused: waiting for you.'));
+    expect(parkJob).not.toHaveBeenCalled();
+    expect(events(id, 'continued')).toHaveLength(0);
+  });
+
+  it('I3: a job that only ever makes NEW calls that FAIL is stalled after its first no-progress continuation', async () => {
+    const id = await openTask(true);
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
+    parkJob.mockClear();
+    theContinuationStarts();
+    const newButFailing = { id: 'tc-new', name: 'gmail_search', arguments: { query: 'a wording never tried' } } as ToolCall;
+    await runGoingIdle(ranCalls(freshTurn(), id, [newButFailing], [], true), ctxFor(), scratch());
+    expect(parkJob).not.toHaveBeenCalled();
+    expect(events(id, 'stalled')).toEqual([expect.objectContaining({ remaining: 10412 })]);
+  });
+
+  it('I3: a park does not move the task for the PM\'s ladder — only real progress does', async () => {
+    const id = await openTask(true);
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    // Its last real movement an hour ago, so any touch the park made would show.
+    db().prepare('UPDATE work SET updated_at = updated_at - 3600000 WHERE id = ?').run(id);
+    db().prepare('UPDATE work_events SET created_at = created_at - 3600000 WHERE work_id = ?').run(id);
+    const before = movedAt(id);
+    // A new, successful read: momentum, so it is parked; but it touched no item, so nothing moved.
+    const page = { id: 'tc-page', name: 'gmail_search', arguments: { query: 'in:inbox -label:Done', page_token: 'p9' } } as ToolCall;
+    const state = advance(ranCalls(freshTurn(), id, [page]), { turnStartMs: lastTurnStartMs });
+    await runGoingIdle(state, ctxFor(), scratch());
+    expect(parkJob).toHaveBeenCalledTimes(1);
+    expect(movedAt(id)).toBe(before);
+  });
+
+  it('I4: an owner turn that only OPENS the measured task and says "on it" has started the job: parked', async () => {
+    const state = advance(freshTurn(), { turnStartMs: Date.now() - 5 });
+    countMeasure.mockResolvedValue({ ok: true, count: 10551 });
+    const id = await openTask(true);
+    const out = await runGoingIdle(state, ctxFor({ triggerRow: { rowid: 1, content: 'please sort my inbox' } }), scratch('On it.'));
+    expect(out.directive).toBe('exit');
+    expect(parkJob).toHaveBeenCalledTimes(1);
+    expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10551, touchedThisTurn: 0, novelCallsThisTurn: 0 })]);
+    expect(stash).toHaveBeenCalledTimes(1);
   });
 });
