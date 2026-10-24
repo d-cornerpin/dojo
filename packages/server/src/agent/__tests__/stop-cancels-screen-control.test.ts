@@ -115,12 +115,10 @@ describe('E19: Stop cancels an in-flight screen-control call', () => {
       expect(await until(() => !alive(pids()[0]), 2_000), 'the child is gone').toBe(true);
       if (raced.stopped) expect(raced.result.content, 'the model is told it may have acted').toContain('may already have happened');
       // The owner's "cut off" notice follows the tool's display class (stop-race.ts `followAbandoned`).
-      // `applescript_run` is an effectful action; `keyboard_type` is classed bookkeeping in
-      // shared/visibility.ts, so it draws no notice — handed up in the lane report, not changed here.
-      if (name === 'applescript_run') {
-        expect(await until(() => cutOffNotices().length === 1, 2_000), 'the owner is told it was cut off').toBe(true);
-        expect(cutOffNotices()[0]).toContain(name);
-      }
+      // Both are effectful actions: `keyboard_type` (and `mouse_click`) became one in E19b, so a
+      // keystroke the Stop cut is told to the owner like every other action.
+      expect(await until(() => cutOffNotices().length === 1, 2_000), 'the owner is told it was cut off').toBe(true);
+      expect(cutOffNotices()[0]).toContain(name);
       expect(stopWaiterCount(AGENT), 'no wait is left open').toBe(0);
     });
   }

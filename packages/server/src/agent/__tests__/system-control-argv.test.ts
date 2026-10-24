@@ -69,11 +69,12 @@ describe('§1 — no string-to-shell site survives in system-control.ts', () => 
     // `keyboard_type` quotes the line it replaced, and that record is worth more
     // than a cleaner grep.
     expect(source).not.toMatch(/execSync\(/);
-    // v3.5 E19 fix round 1: the programs run in the runner beside this file (argv form, no shell).
-    const runner = fs.readFileSync(path.join(SRC, 'system-control-run.ts'), 'utf8');
+    // v3.5 E19 fix round 1: the programs run in the one Stop-bound runner (argv form, no shell),
+    // which the iMessage sends share (agent/stop-bound-run.ts).
+    const runner = fs.readFileSync(path.join(SRC, 'stop-bound-run.ts'), 'utf8');
     expect(runner).not.toMatch(/execSync\(/);
     expect(runner).toMatch(/execFileSync\('which', \[program\]/);
-    expect(runner).toMatch(/spawn\(program, argv, \{ detached: true/);
+    expect(runner).toMatch(/spawn\(program, \[\.\.\.argv\], \{ detached: true/);
     expect(source).not.toMatch(/from 'node:child_process'/);
   });
 

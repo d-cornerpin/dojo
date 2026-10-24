@@ -29,7 +29,7 @@ import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
 } from './system-control-argv.js';
-import { runBoundToTheStop as run, programOnPath } from './system-control-run.js';
+import { runBoundToTheStop as run, programOnPath } from './stop-bound-run.js';   // the one runner (E19 + E19b)
 
 const logger = createLogger('system-control');
 
@@ -58,7 +58,7 @@ export async function mouseClick(
   logger.info('Mouse click', { x, y, click_type }, agentId);
 
   try {
-    await run(agentId, 'cliclick', clickArgv(x, y, click_type), { timeout: 5000 });
+    await run('cliclick', clickArgv(x, y, click_type), { agentId, timeout: 5000 });
     return `Clicked ${click_type} at (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -82,7 +82,7 @@ export async function mouseMove(
   logger.info('Mouse move', { x, y }, agentId);
 
   try {
-    await run(agentId, 'cliclick', moveArgv(x, y), { timeout: 5000 });
+    await run('cliclick', moveArgv(x, y), { agentId, timeout: 5000 });
     return `Mouse moved to (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -118,7 +118,7 @@ export async function keyboardType(
     if (key_combo) {
       const argv = keyComboArgv(key_combo);
       if (!argv) return `Error: Unknown key combo: ${key_combo}`;
-      await run(agentId, 'cliclick', argv, { timeout: 5000 });
+      await run('cliclick', argv, { agentId, timeout: 5000 });
       return `Key combo pressed: ${key_combo}`;
     }
 
@@ -129,7 +129,7 @@ export async function keyboardType(
       // — a hand-rolled quote escape in front of /bin/sh, on model-authored
       // text. As one argv element the text is bytes cliclick receives; there is
       // no quote to close and no shell to close it into.
-      await run(agentId, 'cliclick', typeTextArgv(text), { timeout: 10000 });
+      await run('cliclick', typeTextArgv(text), { agentId, timeout: 10000 });
       return `Typed: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`;
     }
 
@@ -170,7 +170,7 @@ export async function screenRead(
     // Capture screenshot. The output path is ONE argv element, so a directory
     // with a space in it works by construction rather than by the quoting the
     // string form got right only by accident.
-    await run(agentId, 'screencapture', screencaptureArgv(screenshotPath, region ?? null), { timeout: 10000 });
+    await run('screencapture', screencaptureArgv(screenshotPath, region ?? null), { agentId, timeout: 10000 });
 
     if (!fs.existsSync(screenshotPath)) {
       return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
@@ -302,7 +302,7 @@ export async function applescriptRun(
     // name stops going through /bin/sh either, and (b) the AUTHORIZATION —
     // `brokers/applescript.ts` now reads this script before the dispatcher lets
     // the call reach here, including any `do shell script` payload inside it.
-    const result = await run(agentId, 'osascript', ['-'], {
+    const result = await run('osascript', ['-'], { agentId,
       // ── t114 (census U21) — A BOUND RAISE, ARGUED, BECAUSE THERE IS NO LIVENESS FACT HERE ──
       //
       // THE DEFECT: 30 seconds, and on expiry SIGTERM mid-action with side effects ALREADY

@@ -11,74 +11,24 @@
 // (`agent/effects/proc-tree.ts`): the Stop ends the whole process group. A platform send (an owner
 // notice, the auto-route) passes none and is bound to nobody's Stop.
 //
-// Same argv and the same bounds as before. `spawn`, not `execFile`: execFile cannot make the child
-// a group leader, and without `detached` the Stop's group kill would miss what the program started.
-// The bound and the output cap keep execFile's own semantics: SIGTERM to the tree at `timeout`, and
-// Node's documented 1 MiB `maxBuffer` default per stream.
-//
-// A run the Stop cut rejects with `cutByTheStop: true`, so the bridge does not mistake it for a
-// broken program and retry the send another way.
+// Same argv and the same bounds as before. The runner itself (spawn detached, the Stop door, the
+// bound's SIGTERM then SIGKILL, never-started and cut-by-the-Stop rejections) is the ONE runner in
+// `agent/stop-bound-run.ts`, which the screen-control tools use too.
 //
 // The bridge's two other process calls moved here with it, unchanged, so the bridge itself holds
 // no `child_process`: the imsg runnability probe (once per process, at first use) and the HEIC to
 // JPEG conversion of an inbound photo (macOS's own `sips`).
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFileSync, execSync, spawn, type ChildProcessByStdio } from 'node:child_process';
-import type { Readable } from 'node:stream';
+import { execFileSync, execSync } from 'node:child_process';
 import { homeDir } from '../home.js';
-import { endsWithTheStop, signalProcessTree, KILL_GRACE_MS } from '../agent/effects/proc-tree.js';
-import { untilUserStop } from '../agent/stop-waiters.js';
+import { runBoundToTheStop } from '../agent/stop-bound-run.js';
 
-/** The rejection of a run the owner's Stop ended. */
-export type CutByTheStop = Error & { readonly cutByTheStop: true };
+export { wasCutByTheStop, wasNeverStarted, type CutByTheStop } from '../agent/stop-bound-run.js';
 
-export function wasCutByTheStop(err: unknown): err is CutByTheStop {
-  return err instanceof Error && (err as Partial<CutByTheStop>).cutByTheStop === true;
-}
-
-/** The rejection of a run that never started, because the owner's Stop was already standing. */
-export function wasNeverStarted(err: unknown): boolean {
-  return err instanceof Error && (err as { neverStarted?: boolean }).neverStarted === true;
-}
-
+/** A send's program (imsg or osascript), through the one runner the screen-control tools use too. */
 export function runMessagesProgram(program: string, argv: readonly string[], opts: { timeout: number; agentId?: string }): Promise<string> {
-  const maxBuffer = 1024 * 1024;   // Node's documented execFile default, made explicit
-  return new Promise((resolve, reject) => {
-    const stop = opts.agentId === undefined ? null : untilUserStop(opts.agentId);
-    let cut = false;
-    // Fix round 1: a run the standing Stop kept from starting is NOT a cut send — nothing went out.
-    if (stop?.already === true) { stop.dispose(); reject(Object.assign(new Error(`${program}: not started, the agent was stopped`), { neverStarted: true })); return; }
-    let child: ChildProcessByStdio<null, Readable, Readable>;
-    try {
-      child = spawn(program, [...argv], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (err) { stop?.dispose(); reject(err); return; }   // fix round 1: the waiter is not left behind
-    if (opts.agentId !== undefined) endsWithTheStop(opts.agentId, child);
-    void stop?.stopped.then(() => { cut = true; });
-    let stdout = '';
-    let stderr = '';
-    let fault: string | null = null;
-    let closed = false;
-    // Fix round 1: the bound escalates like the Stop does (proc-tree.ts): SIGTERM to the group, then
-    // SIGKILL after the same grace, so a program that ignores SIGTERM cannot leave the send pending.
-    const end = (why: string): void => {
-      fault ??= why;
-      signalProcessTree(child, 'SIGTERM');
-      setTimeout(() => { if (!closed) signalProcessTree(child, 'SIGKILL'); }, KILL_GRACE_MS).unref();
-    };
-    const bound = setTimeout(() => end(`timed out after ${opts.timeout} ms`), opts.timeout);
-    const done = (): void => { closed = true; clearTimeout(bound); stop?.dispose(); };
-    child.stdout.setEncoding('utf-8').on('data', (d: string) => { stdout += d; if (stdout.length > maxBuffer) end('stdout maxBuffer exceeded'); });
-    child.stderr.setEncoding('utf-8').on('data', (d: string) => { stderr += d; if (stderr.length > maxBuffer) end('stderr maxBuffer exceeded'); });
-    child.once('error', (err) => { done(); reject(Object.assign(err, { stderr })); });
-    child.once('close', (code, signal) => {
-      done();
-      // An exit 0 sent, even if the Stop landed at that instant: the owner then hears it went out.
-      if (code === 0 && fault === null) { resolve(stdout); return; }
-      const why = cut ? 'ended by the owner\'s Stop' : fault ?? (signal ? `ended by ${signal}` : `exited with code ${code}`);
-      reject(Object.assign(new Error(`${program} ${argv[0] ?? ''} failed (${why})${stderr ? `\n${stderr}` : ''}`), { stderr, status: code, ...(cut ? { cutByTheStop: true as const } : {}) }));
-    });
-  });
+  return runBoundToTheStop(program, argv, opts);
 }
 
 export const IMSG_CANDIDATE_PATHS = ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${homeDir()}/.dojo/bin/imsg`];
