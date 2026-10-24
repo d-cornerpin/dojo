@@ -647,7 +647,7 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
     expect(body).not.toMatch(/continuationContext|toolLoopCapReached|engineCutExit/);
   });
 
-  it('every park door sets it: the callers of parkJob are exactly the four known doors', () => {
+  it('every park door sets it: the callers of parkJob are exactly the five known doors', () => {
     const walk = (dir: string, out: string[] = []): string[] => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, e.name);
@@ -669,6 +669,8 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
       // t211: the two recovery forced compactions park through the same door (`forcedPassThenPark`), so
       // `recovery.ts` no longer calls `parkJob` itself.
       'agent/v2/loop.ts',
+      // v3.5 D1: a turn that ends mid-job while making progress is parked on the timer (`job-continues.ts`).
+      'agent/v2/steps/post-call-classify/job-continues.ts',
       'agent/v2/steps/pre-call-gates/turn-budget.ts',
     ]);
   });
