@@ -275,7 +275,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_write',
-    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. Returns a download URL that works from anywhere (including remote access). Share the download URL with the user so they can access the file from any device. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
+    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. For long content, write the first part here and add each next part with file_append. Returns a download URL that works from anywhere (including remote access). Share the download URL with the user so they can access the file from any device. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
     effects: [{ kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',

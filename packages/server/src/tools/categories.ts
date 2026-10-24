@@ -273,8 +273,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const alwaysLoadedSet = new Set(alwaysLoaded);
 
   const lines: string[] = [];
-  lines.push('## Available Tools');
-  lines.push('');
+  lines.push('## Available Tools', '');
   // v2.5.42, primary-class agents (the primary agent and equivalents) get the structured
   // 5-bullet reflex block even in compact mode. Field test showed DeepSeek V4
   // Pro skimming past the one-paragraph version: the primary agent had file_append,
@@ -302,6 +301,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC, and getting every downstream time wrong by 7+ hours.');
     lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only, the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own**, when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely, those stay open to every agent.');
   }
+  if (toolMap.has('file_append')) lines.push('**When an answer deserves to be long** (a report, a document, a story), build it in a file from the start: `file_write` the first part, `file_append` each next part, then hand over the file with a short message. Never attempt one huge reply.');
   lines.push('');
   // T85 — THIS LINE NAMES WHAT THE CALL CARRIES, AND `alwaysLoaded` IS THAT, NOT THE DECLARATION.
   // Measured on the release golden (`cache-prefix.primary.txt`): it named 30 always-loaded tools

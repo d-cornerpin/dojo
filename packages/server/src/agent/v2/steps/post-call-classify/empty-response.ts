@@ -101,10 +101,10 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
         content: result.toolCalls.length > 0
           ? '[System: Your last response was CUT OFF by the output limit, so its tool call did NOT run and nothing was sent. Do not shorten the work. '
             + 'Build it in a file one part per step (file_write the first part, file_append each next part), then send a short message giving the path.]'
-          : '[System: Your last response used your ENTIRE output budget thinking and produced '
-            + 'no tool call and no answer, so none of it reached anyone. Do not plan further. '
-            + 'Take the single next concrete step now: make ONE tool call, or give the short '
-            + 'answer you already have. Keep it brief.]',
+          : (result.content ?? '').trim() ? '[System: Your last reply was CUT OFF by the output limit; what you wrote so far did not reach anyone. '   // B13: a cut with content
+            + 'Put it in a file: file_write what you have, file_append the rest a part at a time, then send the path.]'
+          : '[System: Your last response used your ENTIRE output budget thinking and produced no tool call and no answer, so none of it reached anyone. '
+            + 'Do not plan further. Take the single next concrete step now: make ONE tool call, or give the short answer you already have. Keep it brief.]',
       }, { broadcast });
       return continueLoop(state);
     }
