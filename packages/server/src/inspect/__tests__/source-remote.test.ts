@@ -132,6 +132,22 @@ describe('searchSource', () => {
     expect(out).toContain(pointerLine());
   });
 
+  it('fix round 1: the hit files are read one at a time, never as an unbounded burst', async () => {
+    token.current = 'synthetic-connection-value';
+    let inFlight = 0; let most = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).startsWith('https://api.github.com/')) return json({ total_count: 3, items: [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }] });
+      inFlight++; most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return text('const taskMovedAtSql = 1;\n');
+    });
+    const out = await searchSource('taskMovedAtSql');
+    expect(out).toContain('a.ts\n  1:');
+    expect(out).toContain('c.ts\n  1:');
+    expect(most).toBe(1);
+  });
+
   it('REVIEW FOCUS 5: with the connection but GitHub unreachable, a plain sentence and the link', async () => {
     token.current = 'synthetic-connection-value';
     fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));

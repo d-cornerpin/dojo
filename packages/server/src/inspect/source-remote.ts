@@ -124,6 +124,17 @@ export async function readSourceFile(path: string, from?: number, to?: number, a
   return `${p} — ${range}\n\n${numbered(lines, a, b)}\n\n${pointerLine(ref)}`;
 }
 
+/** One searched file at the running commit: its matching lines, numbered, or why there are none. */
+function hitLines(p: string, got: Got, terms: string[]): string {
+  if (!got.ok) return `${p}\n  (named by the search; not readable at this commit: ${!got.down && got.status === 404 ? 'the file is not in it' : 'GitHub did not answer'})`;
+  const hits = splitLines(redactText(got.body))
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => terms.every((t) => l.toLowerCase().includes(t)));
+  return hits.length === 0
+    ? `${p}\n  (named by the search, which reads the default branch; no line at this commit contains it)`
+    : `${p}\n${hits.map(({ l, n }) => `  ${n}: ${l}`).join('\n')}`;
+}
+
 /** GitHub's own documented page size ceiling for search results. */
 const SEARCH_PER_PAGE = 100;
 
@@ -166,16 +177,15 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
   if (paths.length === 0 && stopped) return `${stopped} Browse the source at ${ref.url}.\n\n${pointerLine(ref)}`;
   if (paths.length === 0) return `No match for "${pattern}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
   const terms = pattern.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
-  const files = await Promise.all([...new Set(paths)].map(async (p) => {
+  // One file at a time: no helper in this tree bounds a fan-out, and a broad pattern names up to
+  // a thousand files, which must not become a thousand simultaneous reads. Sequential is the
+  // bound that needs no number, and a stop pressed part-way ends the search there.
+  const files: string[] = [];
+  for (const p of new Set(paths)) {
     const got = await get(rawUrl(ref, p), agentId);
-    if (!got.ok) return `${p}\n  (named by the search; not readable at this commit: ${!got.down && got.status === 404 ? 'the file is not in it' : 'GitHub did not answer'})`;
-    const hits = splitLines(redactText(got.body))
-      .map((l, i) => ({ l, n: i + 1 }))
-      .filter(({ l }) => terms.every((t) => l.toLowerCase().includes(t)));
-    return hits.length === 0
-      ? `${p}\n  (named by the search, which reads the default branch; no line at this commit contains it)`
-      : `${p}\n${hits.map(({ l, n }) => `  ${n}: ${l}`).join('\n')}`;
-  }));
+    if (!got.ok && got.down && got.stopped) return STOPPED_BY_USER;
+    files.push(hitLines(p, got, terms));
+  }
   const head = `${total} file${total === 1 ? '' : 's'} match "${pattern}"${prefix ? ` under ${prefix}` : ''}; lines are from the commit this box runs.`;
   return `${head}\n\n${files.join('\n\n')}${stopped ? `\n\n${stopped}` : ''}\n\n${pointerLine(ref)}`;
 }
