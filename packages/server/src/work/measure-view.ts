@@ -8,7 +8,7 @@
 // view). The two model-authored terms (the query and the unit) are cut at the board's title width
 // when the view cannot hold them whole, like every other term the board does not author.
 import { getDb } from '../db/connection.js';
-import { parseMeasure, type Measure } from './measure.js';
+import { parseMeasure, describeMeasure, type Measure } from './measure.js';
 import { ledgerTotals } from './ledger-store.js';
 import { recordedInstant } from '../memory/message-stamp.js';
 
@@ -46,4 +46,14 @@ export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string
   const start = f.initial === null ? '?' : n(f.initial);
   if (f.remaining === null) return `${head} could not be read at ${recordedInstant(f.at)} (${start} at start)`;
   return `${head} returned ${n(f.remaining)} remaining (of ${start} at start), measured ${recordedInstant(f.at)}`;
+}
+
+/** v3.5 Part C1 (the assignment notice, `tracker/notify.ts`): a measured task states its count and the continuation; an unmeasured one is told how to get one. */
+export function assignmentMeasureLine(taskId: string): string {
+  const f = readMeasureFacts(taskId);
+  if (!f?.measure) {
+    return `Work it through. If it covers a set of items, set its measure (work_update(action="edit", task_id="${taskId}", measure={tool:"gmail_search", args:{query:"<what is still to do>"}})) so the engine counts for you.`;
+  }
+  const now = f.remaining === null ? 'could not be read yet' : `returns ${f.remaining} ${f.measure.unit} now`;
+  return `This task is measured: ${describeMeasure(f.measure)} ${now}. It is done when that reads 0; the engine keeps the count of items you touch and re-counts the measure at the end of each turn that makes progress. When such a turn ends with items left, the engine continues you on the next turn.`;
 }
