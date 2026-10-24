@@ -129,7 +129,7 @@ export function toolWasBlocked(o: ToolOutcome): boolean {
  *   PERMISSION_DENIED        -> refused / blocked      (the platform said no)
  *   RATE_LIMITED             -> refused / blocked      (the provider said no, for now)
  *   TIMEOUT                  -> failed  / cancelled    (abandoned before an answer)
- *   INVALID_ARGS             -> refused / invalid_args (the door refused a malformed call)
+ *   INVALID_ARGS, UNKNOWN_ARGS -> refused / invalid_args (the door refused a malformed call)
  *   anything else, or none   -> failed  / crashed
  *
  * `no_change` is STILL deliberately NOT populated, and PHASE-4 T5 re-derived why rather
@@ -170,7 +170,9 @@ export function classifyToolResult(result: ToolResult): ToolOutcome {
   // refusal, and a distinct one: `blocked` says retrying is a spin, whereas the
   // right answer to this is to retry with the arguments corrected, which is
   // exactly what the four messages tell the model to do.
-  if (code === 'INVALID_ARGS') {
+  // B11 (#22): a call made only of arguments the tool does not have is the same kind of
+  // refusal: nothing ran, and the answer is to retry with the declared names.
+  if (code === 'INVALID_ARGS' || code === 'UNKNOWN_ARGS') {
     return { kind: 'refused', reason: 'invalid_args', result, detail: `${result.name}: invalid arguments` };
   }
   return { kind: 'failed', reason: 'crashed', result, detail: `${result.name}: ${code ?? 'unclassified error'}` };

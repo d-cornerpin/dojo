@@ -440,7 +440,7 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-export type ToolErrorCode = 'PERMISSION_DENIED' | 'NOT_FOUND' | 'TIMEOUT' | 'INVALID_ARGS' | 'NETWORK_ERROR' | 'PARSE_ERROR' | 'RATE_LIMITED';
+export type ToolErrorCode = 'PERMISSION_DENIED' | 'NOT_FOUND' | 'TIMEOUT' | 'INVALID_ARGS' | 'NETWORK_ERROR' | 'PARSE_ERROR' | 'RATE_LIMITED' | 'UNKNOWN_ARGS';
 
 export interface ToolResult {
   toolCallId: string;

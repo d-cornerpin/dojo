@@ -77,7 +77,7 @@ import { gatesForCall, ungatedEffectKinds } from './gates.js';
 import { validateToolArgs } from './validate-args.js';
 import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated, getAllToolDefinitions } from './definitions.js';
 import { getFilteredTools, getAgentDenySet } from './surface.js';
-import { describeNameFailure } from '../../tools/name-help.js';
+import { describeNameFailure, suggestArgNames } from '../../tools/name-help.js';
 import { handlerFor } from './handlers.js';
 // The registration LOOP over `toolDefinitions` travelled to the definitions
 // leaf with the array it projects; this file keeps only the cap's READER,
@@ -316,6 +316,30 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const refusalWillSpeak = name === 'complete_task' && !agentCanSelfCompleteById(agentId);
         if (!refusalWillSpeak) {
           const declaredList = [...declared].join(', ') || '(none)';
+          // B11 (#22): when NOT ONE argument the call carried is declared, the call is
+          // not "a call with a stray extra", it is a call to a different shape of the
+          // tool, and running it empty just lets the model read past the warning to
+          // "done". Refuse it, before any gate, with what the tool does take. When some
+          // declared argument IS present the warning below stays (the tools' own
+          // empty-change guards own "an id but no action"). A call with no arguments at
+          // all has no extras and never gets here: the required-field door owns it.
+          // A tool that declares no arguments at all is exempt: it runs the same way whatever
+          // was passed, so there is no "different shape of the tool" to have meant.
+          const carriesDeclared = Object.keys(args ?? {}).some((k) => !k.startsWith('__') && declared.has(k));
+          if (declared.size > 0 && !carriesDeclared) {
+            const meant = suggestArgNames(extras, [...declared]);
+            const byGiven = new Map<string, string[]>();
+            for (const { given, meant: m } of meant) byGiven.set(given, [...(byGiven.get(given) ?? []), m]);
+            const did = [...byGiven].map(([g, ms]) => `${g} → ${ms.join(' or ')}`).join(', ');
+            logger.warn('Tool call refused: every argument is unknown', { tool: name, extras, declared: [...declared] }, agentId);
+            return {
+              toolCallId: id,
+              name,
+              content: `Refused: none of the arguments you passed exist on "${name}" (${extras.map((e) => `"${e}"`).join(', ')}). Declared arguments: ${declaredList}. ${did ? `Did you mean: ${did}. ` : ''}Call load_tool_docs(tools=["${name}"]) and retry with the declared names. Nothing was done.`,
+              isError: true,
+              errorCode: 'UNKNOWN_ARGS',
+            };
+          }
           unknownArgsWarning =
             `[Engine warning: "${name}" was called with arg(s) not in its schema, ${extras.map((e) => `"${e}"`).join(', ')}. These were silently ignored. Declared args: ${declaredList}. If you meant a different param, check the spelling with load_tool_docs(tools=["${name}"]).]`;
         }

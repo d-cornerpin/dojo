@@ -1423,6 +1423,11 @@ export async function executeGoogleWriteTool(
       if (times.start) patch.start = times.start;
       if (times.end) patch.end = times.end;
       if (args.description) patch.description = args.description;
+      // B11: a patch with nothing in it changes nothing; it must not be sent, and above all must
+      // not leave a verified receipt for a change that never happened.
+      if (Object.keys(patch).length === 0) {
+        return 'Error: nothing to change — pass at least one of title, start, end, description. Nothing was sent to the calendar.';
+      }
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
       const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch }, undefined, slot);
