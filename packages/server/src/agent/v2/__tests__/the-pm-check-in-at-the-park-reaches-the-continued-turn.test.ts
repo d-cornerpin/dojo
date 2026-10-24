@@ -75,7 +75,7 @@ import { runPostCallClassify, type PostCallClassifyContext } from '../steps/post
 
 const AGENT = 'helper';
 const MODEL = 'm-a';
-const JOB = 'task-sweep';
+let JOB = 'task-sweep';
 const MIN = 60_000;
 const FACT = /Continued 4 times since it last touched an item; 12 left on its measure\./;
 const db = (): Database.Database => mockDb.current!;
@@ -110,8 +110,8 @@ afterEach(() => {
 /** A measured job opened 6 minutes ago, continued 3 times without touching an item, with its agent's
  *  continuation running: the park's own wake started the run, and the runtime holds it in `activeRuns`
  *  until the turn's `finally` (`agent/runtime.ts`). */
-function aRunningContinuationOfAJobTouchingNothing(now: number): void {
-  seedTrackerTask(db(), { id: JOB, agentId: AGENT, status: 'in_progress', title: 'the mailbox sweep',
+function aRunningContinuationOfAJobTouchingNothing(now: number, title = 'the mailbox sweep'): void {
+  seedTrackerTask(db(), { id: JOB, agentId: AGENT, status: 'in_progress', title,
     opened_at: now - 6 * MIN, updated_at: now - 6 * MIN, origin_conv_key: 'c-1', priority: 'normal' } as never);
   db().prepare(`UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = ? WHERE id = ?`)
     .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), now - 6 * MIN, JOB);
@@ -189,6 +189,27 @@ describe('fix round 4: the PM\'s check-in at the park reaches the continued turn
     expect(line, 'the check-in is in what the continued turn receives first, fact and all').toBeTruthy();
     expect(line).toMatch(/\[TO YOU, from [^\]]+: agent_notice\]/);
     expect(line).toContain('the mailbox sweep');
+  });
+
+  // Re-review 3, Minor 1: the title is printed twice ahead of the task info, so a long one pushed the
+  // fact past the events lane's 400-character gist. The rider at the park leads with the fact.
+  it('a 130-character title and a real 36-character id: the fact is still inside the gist the continued turn reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    JOB = '0f8e6c2a-4b1d-4e7a-9c3f-5a2b8d1e6f40';
+    const title = 'Sort every message in the shared inbox into the right project folder and label it Done once it is filed, oldest first, skip drafts';
+    expect(title).toHaveLength(130);
+    try {
+      aRunningContinuationOfAJobTouchingNothing(now, title);
+      await theTurnEnds(now);
+      expect(rungs()).toEqual([1]);
+      const bullet = (await whatTheNextTurnSeesFirst()).split('\n').find((l) => l.startsWith('• NEW') && l.includes('agent_notice'));
+      expect(bullet, 'the rider is in what the continued turn receives first').toBeTruthy();
+      expect(bullet).toMatch(FACT);
+      const row = db().prepare("SELECT content FROM messages WHERE lane = 'events' AND origin_intent = 'agent_notice'").get() as { content: string };
+      expect(row.content.match(/Continued \d+ times/g), 'the fact leads, and is said once').toHaveLength(1);
+      expect(row.content).toContain(title);
+    } finally { JOB = 'task-sweep'; }
   });
 
   it('with the run active, the sweep injects nothing mid-turn: no check-in row, no wake, no latch', async () => {

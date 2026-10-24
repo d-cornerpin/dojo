@@ -2777,7 +2777,10 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // assignee there travels as the PM rider the circling verdict uses: read at the start of its NEXT turn (the
     // continuation the park queued), never injected into the running one, and latched only once the row exists.
     if (atThePark && recipient === task.assignedTo) {
-      if (!(await import('../work/engine-checkpoint-note.js')).handToTheNextTurn(recipient, pokeMessage, now)) continue;
+      // The rider is read as the events lane's 400-char gist: the fact leads, ahead of the title (re-review 3).
+      const fact = continuedJobFact(task.id);
+      const brief = fact ? `${fact} ${pokeMessage.replace(`\n${fact}`, '')}` : pokeMessage;
+      if (!(await import('../work/engine-checkpoint-note.js')).handToTheNextTurn(recipient, brief, now)) continue;
       recordPoke(task.id, pmId, pokeNumber, pokeType, recipient);
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType } });
       logger.info('PM check-in handed to the continuation at the park', { taskId: task.id, recipient, pokeType, pokeNumber });
