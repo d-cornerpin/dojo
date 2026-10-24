@@ -17,7 +17,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { decide, type Answer, type Question } from '../agent/decide.js';
-import { scoreQuestion, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
+import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
+import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-check');
@@ -38,13 +39,33 @@ const FEEDBACK: Record<keyof typeof QUESTIONS, string> = {
 };
 
 /**
- * Where a probability starts to mean "yes" for this question: the bottom of the band the shadow score
- * measured as the model's least reliable (B2), and until there is a measured band, 0.5 — the model's
- * own yes/no line, the same line the score reads a verdict at.
+ * THE PASS MARK (fix round 1, I-B4-3): a summary fails a question when the model's probability is at or
+ * above it. With no recorded data it is 0.5, the binary decision boundary: a noul answer is P(yes), so
+ * p ≥ 0.5 is exactly "the model holds yes at least as likely as no" — the same line the shadow score
+ * reads a verdict at. With recorded summary_check rows whose truth is known, it is the cut that agrees
+ * with the most of them: the candidates are the midpoints between neighbouring recorded probabilities,
+ * 0.5, and the midpoint above the highest; a cut at or below the lowest recorded probability (one that
+ * fails every summary) is never a candidate; a tie goes to the cut nearest 0.5.
  */
-function failsAt(question: string): number {
-  return scoreQuestion(PURPOSE, question)?.band[0] ?? 0.5;
+export function passMark(question: string): number {
+  let rows: Array<{ model_said: string; truth: string }> = [];
+  try {
+    rows = getDb().prepare(`SELECT model_said, truth FROM decision_shadow WHERE purpose = ? AND question = ?
+      AND truth IS NOT NULL AND model_said IS NOT NULL`).all(PURPOSE, question) as typeof rows;
+  } catch { return 0.5; }
+  const points = rows.flatMap((r) => {
+    try { const a = JSON.parse(r.model_said) as Answer; return a.type === 'noul' ? [{ p: a.noul, bad: r.truth === 'true' }] : []; } catch { return []; }
+  });
+  if (points.length === 0) return 0.5;
+  const ps = [...new Set(points.map((x) => x.p))].sort((a, b) => a - b);
+  const candidates = [0.5, (ps[ps.length - 1] + 1) / 2, ...ps.slice(1).map((p, i) => (ps[i] + p) / 2)].filter((t) => t > ps[0]);
+  const agree = (t: number): number => points.filter((x) => (x.p >= t) === x.bad).length;
+  return candidates.reduce((best, t) => {
+    const d = agree(t) - agree(best);
+    return d > 0 || (d === 0 && Math.abs(t - 0.5) < Math.abs(best - 0.5)) ? t : best;
+  });
 }
+const failsAt = passMark;
 
 /**
  * Three noul questions over { source_rows, summary }. `ok` when every probability is below its
@@ -55,6 +76,12 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
   const p = (q: keyof typeof QUESTIONS): number => (answers?.[q]?.type === 'noul' ? (answers[q] as { noul: number }).noul : 0);
   const [invented, dropped, statedCurrent] = [p('invented'), p('dropped'), p('stated_current')];
   const ok = !answers || (invented < failsAt('invented') && dropped < failsAt('dropped') && statedCurrent < failsAt('stated_current'));
+  // Every answered check joins the shadow log (the rule today keeps every summary: `false`), under a check
+  // id a later truth source can join to, so the pass mark can be calibrated from what really happened.
+  if (answers) {
+    const checkId = `summary-check:${randomUUID()}`;
+    for (const q of Object.keys(QUESTIONS)) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: checkId, ruleSaid: false, modelSaid: answers[q] ?? null });
+  }
   return { ok, invented, dropped, statedCurrent, answers };
 }
 
@@ -82,7 +109,8 @@ function record(agentId: string, writer: string, outcome: Outcome, c: SummaryChe
 }
 
 export const SUMMARY_CHECK_NOTICE_CODE = 'SUMMARY_CHECK_FAILING';
-const NOTICED_KEY = 'summary_check_noticed_writer';
+/** One latch PER WRITER MODEL (fix round 1, I-B4-2): `summary_check_noticed.<writer id>`. */
+const noticedKey = (writer: string): string => `summary_check_noticed.${writer}`;
 
 /**
  * The owner is told once per writer model, by the existing `chat:error` card, when a summary this
@@ -96,14 +124,14 @@ function noticeIfFailing(agentId: string, writer: string): void {
     const row = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
       .get(writer) as { failed: number | null; total: number };
     const failed = row.failed ?? 0;
-    const noticed = (db.prepare('SELECT value FROM config WHERE key = ?').get(NOTICED_KEY) as { value: string } | undefined)?.value;
+    const noticed = !!db.prepare('SELECT 1 FROM config WHERE key = ?').get(noticedKey(writer));
     if (failed === 0) {
-      if (noticed === writer) db.prepare('DELETE FROM config WHERE key = ?').run(NOTICED_KEY);
+      if (noticed) db.prepare('DELETE FROM config WHERE key = ?').run(noticedKey(writer));
       return;
     }
-    if (noticed === writer) return;
+    if (noticed) return;
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(NOTICED_KEY, writer);
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(noticedKey(writer), writer);
     broadcast({
       type: 'chat:error',
       agentId,
@@ -140,7 +168,16 @@ export async function keepOnlyIfChecked(
     writer, invented: second.invented, dropped: second.dropped, statedCurrent: second.statedCurrent,
   }, agentId);
   noticeIfFailing(agentId, writer);
-  return { ok: false, reason: 'the summary failed the accuracy check twice; the rows stay whole' };
+  // `checkFailed`: a verdict on this span, not a writer that stopped answering — no caller walks it on to
+  // another writer (never the agent's own paid model); the span is left as it is this time (I-B4-1).
+  return { ok: false, reason: 'the summary failed the accuracy check twice; the rows stay whole', checkFailed: true };
+}
+
+/** Did a summary of this agent's fail its check (and stay unwritten) since `sinceMs`? The fold's writer walk asks. */
+export function summaryCheckRefusedSince(agentId: string, sinceMs: number): boolean {
+  try {
+    return !!getDb().prepare("SELECT 1 FROM summary_checks WHERE agent_id = ? AND outcome = 'not_kept' AND created_at >= ?").get(agentId, sinceMs);
+  } catch { return false; }
 }
 
 type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string };

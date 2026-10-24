@@ -203,7 +203,7 @@ export function truncateDeterministic(text: string, targetTokens: number): strin
  */
 export type SummaryResult =
   | { ok: true; text: string; tokenCount: number }
-  | { ok: false; reason: string; stopped?: true; tooBig?: true };   // see summary-writer-health.ts
+  | { ok: false; reason: string; stopped?: true; tooBig?: true; checkFailed?: true };   // see summary-writer-health.ts, summary-check.ts
 
 /**
  * UX-REPAIR ROUND 6 T24 — AN EMPTY BODY IS A REFUSAL, and so is an aborted one.

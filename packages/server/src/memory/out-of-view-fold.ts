@@ -37,6 +37,7 @@ import { getDb } from '../db/connection.js';
 import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { leavingViewPass } from './compaction.js';
+import { summaryCheckRefusedSince } from './summary-check.js';
 import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
 import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
@@ -130,8 +131,10 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
         if (!writer) break;
         budget.tried.add(writer);
         // As much as is leaving, ended only by the turn's patience, Stop, or the writer's transport.
+        const passStart = Date.now();
         const r = await leavingViewPass(agentId, writer, contextWindow,
           { cause: 'out-of-view', throughSeq, rowsLeaving: owed }, { abortSignal: bound.signal });
+        if (r.leafCreated === 0 && summaryCheckRefusedSince(agentId, passStart)) break;   // v3.5: a failed check goes to no other writer
         if (r.leafCreated === 0 && bound.signal.reason === FOLD_IN_TURN_LIMIT) noteDidNotAnswerInTurn(writer);
         else if (r.leafCreated === 0 && abortBlamesWriter(bound.signal)) failedWriter = writer;
       }

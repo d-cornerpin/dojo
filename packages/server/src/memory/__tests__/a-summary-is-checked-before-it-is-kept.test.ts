@@ -32,7 +32,8 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { summaryCheckLine, SUMMARY_CHECK_NOTICE_CODE } from '../summary-check.js';
+import { summaryCheckLine, SUMMARY_CHECK_NOTICE_CODE, passMark } from '../summary-check.js';
+import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
@@ -120,10 +121,61 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(notices()).toHaveLength(2);
   });
 
+  it('I-B4-2: the latch is per writer — two writers that fail in turn do not trade cards back and forth', async () => {
+    const notices = () => cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE);
+    writer.outputs = ['INVENTED a.', 'INVENTED b.'];
+    await write('writer-small');
+    writer.outputs = ['INVENTED c.', 'INVENTED d.'];
+    await write('writer-large');
+    writer.outputs = ['INVENTED e.', 'INVENTED f.'];
+    await write('writer-small');
+    expect(notices()).toHaveLength(2);
+  });
+
+  it('I-B4-1: a summary that failed twice says so on its result, so no caller walks it to another writer', async () => {
+    writer.outputs = ['INVENTED one.', 'INVENTED two.'];
+    const r = await write();
+    expect(r.ok === false && r.checkFailed).toBe(true);
+  });
+
   it('the Healer section carries the running numbers', async () => {
     writer.outputs = ['fine', 'INVENTED x.', 'better', 'INVENTED y.', 'INVENTED z.'];
     await write(); await write(); await write();
     expect(summaryCheckLine()).toBe('Summary check (kept window): 3 checked, 1 kept as written, 1 kept after one rewrite, 1 left the rows whole, 0 unchecked (decision model unavailable).');
     expect(getDecisionScoreItems()[0].detail).toContain('Summary check (kept window): 3 checked');
+  });
+});
+
+describe('I-B4-3: the pass mark', () => {
+  it('with no recorded data it is the binary decision boundary, 0.5', () => {
+    expect(passMark('invented')).toBe(0.5);
+  });
+
+  it('calibrated from recorded summary_check rows, and never a mark that fails everything', () => {
+    // Every recorded summary was in truth FINE, and the model's least-right decile is [0.0, 0.1]: the old
+    // "bottom of the weakest band" would have made the mark 0, failing every summary for ever.
+    for (const [i, p] of [0.02, 0.03, 0.05, 0.08, 0.6].entries()) {
+      recordShadow({ purpose: 'summary_check', question: 'invented', turnId: `c${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });
+      recordTruth(`c${i}`, 'invented', false, 'test');
+    }
+    const mark = passMark('invented');
+    expect(mark).toBeGreaterThan(0.08);   // every truly fine one passes
+    expect(mark).toBeLessThanOrEqual(1);
+  });
+
+  it('with a clear separation in the record, the mark sits between the fine and the wrong', () => {
+    for (const [i, [p, bad]] of ([[0.1, false], [0.2, false], [0.35, true], [0.4, true]] as const).entries()) {
+      recordShadow({ purpose: 'summary_check', question: 'dropped', turnId: `d${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });
+      recordTruth(`d${i}`, 'dropped', bad, 'test');
+    }
+    const mark = passMark('dropped');
+    expect(mark).toBeGreaterThan(0.2);
+    expect(mark).toBeLessThanOrEqual(0.35);
+  });
+
+  it('every check is recorded in the shadow log, so the record can grow', async () => {
+    writer.outputs = ['The owner asked for the offsite budget.'];
+    await write();
+    expect(db().prepare("SELECT COUNT(*) AS n FROM decision_shadow WHERE purpose = 'summary_check'").get()).toEqual({ n: 3 });
   });
 });
