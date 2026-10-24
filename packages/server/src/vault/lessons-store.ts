@@ -40,6 +40,23 @@ export interface LessonRow {
   created_at: number; expires_at: number; renewed_count: number;
 }
 
+// ── One lesson per task per cycle ──
+// The ROUGH TASKS batch stamps the instant it was built; that instant starts the cycle. A task that
+// already has a lesson written or renewed since then is done for this cycle.
+const CYCLE_KEY = 'dreamer.lessons_batch_ms';
+
+export function markLessonCycleStart(now: number = Date.now()): void {
+  getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
+    .run(CYCLE_KEY, String(now));
+}
+
+function lessonCycleStart(): number {
+  const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(CYCLE_KEY) as { value: string } | undefined;
+  const at = Number(row?.value);
+  return Number.isFinite(at) ? at : 0;
+}
+
 const normalize = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
 async function findMatch(cue: string, component: string, now: number): Promise<LessonRow | undefined> {
@@ -89,13 +106,20 @@ export async function recordLesson(input: LessonInput, now: number = Date.now())
     throw new LessonRefused(`Error: event id${foreign.length === 1 ? '' : 's'} ${foreign.join(', ')} ${foreign.length === 1 ? 'is' : 'are'} not in task ${input.taskId}'s timeline. Cite only ids shown in that task's timeline.`);
   }
 
+  const done = db.prepare('SELECT id FROM lessons WHERE task_id = ? AND expires_at - ? >= ? LIMIT 1')
+    .get(input.taskId, LESSON_LIFETIME_MS, lessonCycleStart()) as { id: string } | undefined;
+  if (done) {
+    throw new LessonRefused(`Task ${input.taskId} already has a lesson from this cycle (${done.id}). One lesson per task: go on to the next task, or write NO_ENTRY.`);
+  }
+
   const match = await findMatch(cue, input.component, now);
   if (match) {
     const merged = [...new Set([...(JSON.parse(match.evidence_event_ids) as number[]), ...ids])];
     db.prepare(
-      `UPDATE lessons SET lesson = ?, evidence_event_ids = ?, confidence = ?, expires_at = ?, renewed_count = renewed_count + 1
+      `UPDATE lessons SET lesson = ?, evidence_event_ids = ?, confidence = ?, expires_at = ?, renewed_count = renewed_count + 1,
+              task_id = ?, agent_id = ?
         WHERE id = ?`,
-    ).run(lesson, JSON.stringify(merged), input.confidence, now + LESSON_LIFETIME_MS, match.id);
+    ).run(lesson, JSON.stringify(merged), input.confidence, now + LESSON_LIFETIME_MS, input.taskId, task.agent_id, match.id);
     return { id: match.id, renewed: true };
   }
   const id = uuidv4();

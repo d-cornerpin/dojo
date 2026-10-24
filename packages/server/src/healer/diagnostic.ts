@@ -972,7 +972,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health'),
     ...capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health'),
     ...capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health'),
-    ...capItemsByText(getHarnessSections(), 3000, 'harness_sections'),
+    ...getHarnessSections(),
     ...capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health'),
     ...capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats'),
     ...capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage'),

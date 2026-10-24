@@ -9,6 +9,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
+import { markLessonCycleStart } from './lessons-store.js';
 import { frictionCensus, type FrictionTask } from './friction-census.js';
 
 export interface RoughTasksBatch { ids: string[]; text: string; verbatim: true }
@@ -59,6 +60,7 @@ export function buildRoughTasksBatch(sinceMs: number, budgetTokens: number): Rou
 function buildBatch(sinceMs: number, budgetTokens: number): RoughTasksBatch | null {
   const rough = frictionCensus(sinceMs);
   if (rough.length === 0) return null;
+  markLessonCycleStart();   // the batch starts the cycle the one-lesson-per-task rule counts in
   const db = getDb();
   const allowance = Math.floor(budgetTokens / rough.length);
   const sections = rough.map((t) => {

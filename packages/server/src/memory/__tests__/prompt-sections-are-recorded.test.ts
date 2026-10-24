@@ -13,7 +13,7 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 
-import { assembleContext } from '../assembler.js';
+import { assembleContext, measureView } from '../assembler.js';
 import { recordPromptSections } from '../prompt-sections.js';
 import { estimateTokens } from '../budget.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -93,6 +93,17 @@ describe('K36 — prompt_sections is written at every assembly', () => {
     expect(rows()[0]).toMatchObject({ tokens: 200, baseline_tokens: 100 });
     recordPromptSections(AGENT, 'x'.repeat(1200), ['sys.grow'], undefined, t0 + 8 * DAY);
     expect(rows()[0]).toMatchObject({ tokens: 300, baseline_tokens: 200 });
+  });
+
+  it('a dry-run assembly (measureView) writes nothing to the table', async () => {
+    await measureView(AGENT, MODEL);
+    expect(rows()).toHaveLength(0);
+    await assembleContext(AGENT, MODEL);
+    const after = rows();
+    expect(after.length).toBeGreaterThan(0);
+    mockDb.current!.prepare('DELETE FROM prompt_sections').run();
+    await measureView(AGENT, MODEL);
+    expect(rows()).toHaveLength(0);
   });
 
   it('a recording fault never reaches the assembly', () => {

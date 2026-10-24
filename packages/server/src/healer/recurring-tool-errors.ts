@@ -30,6 +30,6 @@ export function getRecurringToolErrors(): DiagnosticItem[] {
     severity: 'info',
     code: 'RECURRING_TOOL_ERRORS',
     title: `${rows.length} tool error${rows.length === 1 ? '' : 's'} recurred this week`,
-    detail: `Recurring tool errors this week (tool, hits, agents, remedy):\n${lines.join('\n')}`,
+    detail: `Recurring tool errors this week (tool, hits, agents, remedy):\n${lines.join('\n')}\nAll of them, with first/last seen: the tool_error_signatures table.`,
   }];
 }

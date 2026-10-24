@@ -38,7 +38,8 @@ const REMEDIES: readonly ErrorRemedy[] = [
   {
     // Graph answers 403 for a personal Microsoft account asked to do Teams work.
     appliesTo: /^teams_/,
-    pattern: /access denied/,
+    // Exactly the text microsoft/client.ts gives a Graph 403 'Forbidden' (the status survives masking).
+    pattern: /access denied \(http 403 forbidden\)/,
     remedy: () =>
       'Teams requires a Microsoft work/school account (Entra ID). Personal Microsoft accounts ' +
       '(outlook.com, hotmail.com, live.com) do not support Teams.',

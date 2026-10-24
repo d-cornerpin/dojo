@@ -21,7 +21,7 @@ describe('fingerprint(toolName, errorText)', () => {
   });
 
   it('keeps only the first 200 characters', () => {
-    expect(fingerprint('x_tool', 'a'.repeat(500)).length).toBe(200);
+    expect(fingerprint('x_tool', 'word '.repeat(100)).length).toBe(200);
   });
 
   it('the base and the user_ variant of a tool fingerprint the same, whichever name the text echoes', () => {
@@ -29,5 +29,26 @@ describe('fingerprint(toolName, errorText)', () => {
       .toBe(fingerprint('gmail_label', 'gmail_label failed: Invalid label: X'));
     expect(canonicalToolName('user_gmail_label')).toBe('gmail_label');
     expect(canonicalToolName('gmail_label')).toBe('gmail_label');
+  });
+
+  it('different HTTP status codes stay different; the same code with different ids stays the same', () => {
+    expect(fingerprint('t', 'Request failed: HTTP 403 Forbidden')).not.toBe(fingerprint('t', 'Request failed: HTTP 500 Forbidden'));
+    expect(fingerprint('t', 'failed with status 404 for item 18f3a9c2d4e5b601')).not.toBe(fingerprint('t', 'failed with status 429 for item 18f3a9c2d4e5b601'));
+    expect(fingerprint('t', 'failed with status 404 for item 18f3a9c2d4e5b601')).toBe(fingerprint('t', 'failed with status 404 for item 77aa88bb99cc0011'));
+    expect(fingerprint('t', 'HTTP 403 Forbidden')).toContain('403');
+  });
+
+  it('content types and slashed phrases are not paths: text/html stays apart from application/json', () => {
+    expect(fingerprint('t', 'Expected application/json but got text/html')).toContain('text/html');
+    expect(fingerprint('t', 'got text/html')).not.toBe(fingerprint('t', 'got application/json'));
+    expect(fingerprint('t', 'needs a work/school account')).toContain('work/school');
+  });
+
+  it('a real path is still masked, Windows paths included', () => {
+    const a = fingerprint('t', 'cannot open /var/data/a.pdf now');
+    expect(a).toBe(fingerprint('t', 'cannot open /opt/other/b.pdf now'));
+    const w = fingerprint('t', 'cannot open C:\\Users\\someone\\Docs\\a.pdf now');
+    expect(w).toBe(fingerprint('t', 'cannot open D:\\Work\\b.pdf now'));
+    expect(w).not.toMatch(/someone|docs/);
   });
 });

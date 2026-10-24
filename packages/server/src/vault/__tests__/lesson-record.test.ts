@@ -113,7 +113,34 @@ describe('lesson_record', () => {
   it('a different cue is a second lesson', async () => {
     const d = getDreamerAgentId();
     await call(d, base());
-    await call(d, base({ cue: 'a timeout while waiting', evidence_event_ids: [eventA] }));
+    await call(d, base({ task_id: 'task-2', cue: 'a timeout while waiting', evidence_event_ids: [eventB] }));
+    expect(lessons()).toHaveLength(2);
+  });
+
+  it('at most one lesson per task per cycle: a second record for the same task is refused plainly', async () => {
+    const d = getDreamerAgentId();
+    expect((await call(d, base())).isError).toBe(false);
+    const again = await call(d, base({ cue: 'a timeout while waiting' }));
+    expect(again.isError).toBe(true);
+    expect(again.content).toMatch(/already has a lesson/i);
+    expect(lessons()).toHaveLength(1);
+  });
+
+  it('the one-per-task rule holds when the first lesson renewed another task\'s row', async () => {
+    const d = getDreamerAgentId();
+    await call(d, base());
+    await call(d, base({ task_id: 'task-2', evidence_event_ids: [eventB], cue: 'invalid label on a mail move, worded differently' }));
+    expect(lessons()).toHaveLength(1);
+    const again = await call(d, base({ task_id: 'task-2', evidence_event_ids: [eventB], cue: 'a timeout while waiting' }));
+    expect(again.isError).toBe(true);
+  });
+
+  it('the next cycle may record for the same task again', async () => {
+    const d = getDreamerAgentId();
+    await call(d, base());
+    // A new ROUGH TASKS batch is built: that is the start of the next cycle.
+    mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('dreamer.lessons_batch_ms', ?)").run(String(Date.now() + 1000));
+    expect((await call(d, base({ cue: 'a timeout while waiting' }))).isError).toBe(false);
     expect(lessons()).toHaveLength(2);
   });
 });

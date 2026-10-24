@@ -17,6 +17,6 @@ export function getLessonItems(now: number = Date.now()): DiagnosticItem[] {
     severity: 'info',
     code: 'LESSONS_FROM_ROUGH_TASKS',
     title: `${lessons.length} lesson${lessons.length === 1 ? '' : 's'} from rough tasks this week`,
-    detail: `Lessons the Dreamer wrote from tasks that went badly:\n${lines.join('\n')}`,
+    detail: `Lessons the Dreamer wrote from tasks that went badly:\n${lines.join('\n')}\nAll lessons, with expiry: the lessons table.`,
   }];
 }

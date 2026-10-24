@@ -80,11 +80,16 @@ describe('recurring tool errors are counted across agents and carry their remedy
   });
 
   it('a Teams access-denied failure carries the work/school-account remedy; the same text from a non-Teams tool does not', async () => {
-    const text = 'Error sending message: Access denied (HTTP 403).';
+    const text = 'Error sending message: Access denied (HTTP 403 Forbidden).';
     const teams = await fail('agent-a', 'teams_send_message', {}, text);
     const other = await fail('agent-a', 'outlook_search', {}, text);
     expect(teams).toMatch(/work\/school account/i);
     expect(other).toBe(text);
+  });
+
+  it('a Teams failure that is not the personal-account 403 is not blamed on the account type', async () => {
+    const other = await fail('agent-a', 'teams_send_message', {}, 'Error sending message: Access denied: the token has expired (HTTP 401).');
+    expect(other).not.toMatch(/work\/school/i);
   });
 
   it('a success writes nothing to the ledger', async () => {

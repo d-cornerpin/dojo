@@ -29,6 +29,6 @@ export function getPromptCostItems(): DiagnosticItem[] {
     severity: 'info',
     code: 'PROMPT_COST',
     title: 'What each agent\'s standing instruction costs',
-    detail: `Standing instruction, three largest sections per agent:\n${lines.join('\n')}`,
+    detail: `Standing instruction, three largest sections per agent:\n${lines.join('\n')}\nEvery section and lane, for one agent: GET /api/agents/<id>/prompt-cost.`,
   }];
 }
