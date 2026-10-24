@@ -1,0 +1,26 @@
+// v3.5 text wave — the work_update doc stops coaching closure (done-is-measured Part C3). Keeping
+// on is the first status listed and "finished" the last; a task left in progress is described as
+// what it is (it stays yours), never as a fault to be fixed before the turn ends.
+import { describe, it, expect } from 'vitest';
+import { toolDefinitions } from '../definitions.js';
+
+const doc = (): string => toolDefinitions.find((t) => t.name === 'work_update')!.description;
+
+describe('the work_update doc', () => {
+  it('carries none of the closure coaching', () => {
+    for (const s of ['NEVER leave a task in_progress', 'poke you after', 'DECISION MATRIX', 'pick exactly one', 'Do not end the turn']) {
+      expect(doc()).not.toContain(s);
+    }
+  });
+
+  it('lists keeping on first and finishing last, and says a task left in progress stays yours', () => {
+    const d = doc();
+    const head = d.indexOf('**action="status" — when each status applies:**');
+    expect(head).toBeGreaterThan(-1);
+    const keepOn = d.indexOf('1. **You will take the next action on this work**');
+    const finished = d.indexOf('5. **You finished the task**');
+    expect(keepOn).toBeGreaterThan(head);
+    expect(finished).toBeGreaterThan(d.indexOf('4. **The whole project is no longer relevant**'));
+    expect(d).toContain('**A task left in_progress at the end of a turn stays yours.**');
+  });
+});
