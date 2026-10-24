@@ -19,7 +19,7 @@ import { getBudgets } from '../costs/budget.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
-import { getRecurringToolErrors } from './recurring-tool-errors.js';
+import { getHarnessSections } from './harness-sections.js';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
@@ -972,7 +972,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health'),
     ...capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health'),
     ...capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health'),
-    ...capItemsByText(getRecurringToolErrors(), 2000, 'recurring_tool_errors'),
+    ...capItemsByText(getHarnessSections(), 3000, 'harness_sections'),
     ...capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health'),
     ...capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats'),
     ...capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage'),
