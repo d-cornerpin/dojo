@@ -21,7 +21,7 @@ import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.
 import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
-import { CHARS_PER_TOKEN } from './budget.js';
+import { sourceParts, combineParts } from './summary-check-parts.js';
 
 const logger = createLogger('summary-check');
 
@@ -75,7 +75,7 @@ const failsAt = passMark;
  * question's line. When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
 export async function checkSummary(sourceRows: string, summary: string, agentId: string, timeoutMs?: number): Promise<SummaryCheck> {
-  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens());
+  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), JSON.stringify(QUESTIONS).length);
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
@@ -96,47 +96,6 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
     for (const q of Object.keys(QUESTIONS)) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: checkId, ruleSaid: false, modelSaid: answers[q] ?? null });
   }
   return { ok, invented, dropped, statedCurrent, answers };
-}
-
-// ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
-// The window is `decisionWindowTokens()` — the same number `decide()` sends as `num_ctx` and the memory fit sets
-// aside. A part is as many whole rows (the `---` lines the callers join rows with) as fit beside the summary and
-// the questions; a single row larger than that is split by characters. Joined back with the same separator, the
-// parts are exactly the source.
-const ROW_SEPARATOR = '\n---\n';
-function sourceParts(source: string, summary: string, windowTokens: number): string[] | null {
-  const room = windowTokens * CHARS_PER_TOKEN - summary.length - JSON.stringify(QUESTIONS).length - JSON.stringify({ source_rows: '', summary: '', source_part: '' }).length;
-  if (room <= 0) return null;
-  if (source.length <= room) return [source];
-  const parts: string[] = [];
-  let current: string | null = null;
-  for (const piece of source.split(ROW_SEPARATOR)) {
-    const joined: string = current === null ? piece : current + ROW_SEPARATOR + piece;
-    if (joined.length <= room) { current = joined; continue; }
-    if (current !== null) parts.push(current);
-    if (piece.length <= room) { current = piece; continue; }
-    // One row larger than the room: split by characters, the last slice carried on.
-    let rest = piece;
-    while (rest.length > room) { parts.push(rest.slice(0, room)); rest = rest.slice(room); }
-    current = rest;
-  }
-  if (current !== null) parts.push(current);
-  return parts;
-}
-
-/** The parts' verdicts as one. "dropped" and "stated_current" are true of the summary if true of ANY part (a
- *  request any part holds and the summary left out was left out). "invented" — the summary states what the
- *  source does not say — only if NO part says it, so the lowest part's probability; a summary drawing on several
- *  parts may read as invented to each, which fails it (the rows stay whole: never a wrong record). Any part
- *  unanswered → the whole check unanswered. */
-function combineParts(answers: Array<Record<string, Answer> | null>): Record<string, Answer> | null {
-  if (answers.some((a) => a === null)) return null;
-  const noul = (q: keyof typeof QUESTIONS): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
-  return {
-    invented: { type: 'noul', noul: Math.min(...noul('invented')) },
-    dropped: { type: 'noul', noul: Math.max(...noul('dropped')) },
-    stated_current: { type: 'noul', noul: Math.max(...noul('stated_current')) },
-  };
 }
 
 function failedFeedback(c: SummaryCheck): string {
