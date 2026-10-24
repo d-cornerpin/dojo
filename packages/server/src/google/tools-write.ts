@@ -136,7 +136,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_label',
-    description: 'Add or remove labels on an email. Archiving (removing INBOX) acts on the WHOLE conversation by default, because Gmail keeps a conversation in the inbox while any message in it is there; pass this_message_only=true to change just that one message. Pass thread_id instead of message_id to act on a conversation directly. Call gmail_list_labels first if you do not know what custom labels exist on the account.',
+    description: 'Add or remove labels on an email. Archiving (removing INBOX) acts on the WHOLE conversation by default, because Gmail keeps a conversation in the inbox while any message in it is there; pass this_message_only=true to change just that one message. Pass thread_id instead of message_id to act on a conversation directly. To change many at once, pass message_ids (any number; each message is changed on its own, with no widening to its conversation) and/or thread_ids (whole conversations) in ONE call instead of one call per item. A call with no add_labels and no remove_labels changes nothing and is refused. Call gmail_list_labels first if you do not know what custom labels exist on the account.',
     effects: [],
     input_schema: {
       type: 'object',

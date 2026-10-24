@@ -13,4 +13,10 @@ describe('parked tool descriptions', () => {
     expect(d).toContain('unless you pass conversation_id');
     expect(d).not.toContain('The original email ID becomes invalid');
   });
+
+  it('t251: gmail_label names the batch form and the empty-change refusal; gmail_search names paging', () => {
+    expect(desc('gmail_label')).toContain('To change many at once, pass message_ids (any number; each message is changed on its own, with no widening to its conversation) and/or thread_ids (whole conversations) in ONE call');
+    expect(desc('gmail_label')).toContain('A call with no add_labels and no remove_labels changes nothing and is refused.');
+    expect(desc('gmail_search')).toContain('pass it back as page_token (same query) to get the next page; keep paging until no next_page_token is printed.');
+  });
 });

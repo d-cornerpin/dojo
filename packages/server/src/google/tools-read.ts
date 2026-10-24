@@ -23,7 +23,7 @@ const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_search',
-    description: 'Search Gmail. Default returns one compact line per email (date | sender — subject + 200-char snippet + ID). For To/CC + full snippet on every result, pass verbose=true; for the full body of ONE email, use gmail_read(message_id).',
+    description: 'Search Gmail. Default returns one compact line per email (date | sender — subject + 200-char snippet + ID). For To/CC + full snippet on every result, pass verbose=true; for the full body of ONE email, use gmail_read(message_id). When more results exist the reply ends with next_page_token: pass it back as page_token (same query) to get the next page; keep paging until no next_page_token is printed.',
     effects: [],
     input_schema: {
       type: 'object',
