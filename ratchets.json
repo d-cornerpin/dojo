@@ -9362,6 +9362,48 @@
       "to": 1632,
       "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
       "why": "+1: the import of the span mark; every registered read wraps its item list inline, its re-call hints left outside. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gate-eval.ts",
+      "from": 370,
+      "to": 377,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+7: the `inspect_grant` row's answer (one case, four lines: a holder skips, anyone else gets the PERMISSION_DENIED refusal from inspect/grant.ts), its import, and a blank line between cases like its siblings. The predicate and the refusal text live in the new inspect/grant.ts so this file only answers the row; the surface strip asks the same predicate. Security requirement of the plan: the executor is the wall, the strip is advice. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 349,
+      "to": 352,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+3: the second CARRIED_PROGRAMS member, `[process.execPath]`, with its reason (argv is the fixed inline child source; the query is stdin data) and a two-line note naming its one call site. Without it the derived program grant is silently dropped (scopes.ts derived branch) and every dojo_inspect sql call is refused (t253 re-review). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gates.ts",
+      "from": 286,
+      "to": 289,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+3: the `inspect_grant` gate kind (doc line + union member) and the one push for `dojo_inspect`. A new kind rather than reusing `primary_or_healer`, whose refusal names reset_session and which cannot express 'or an agent whose grant names it'. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2941,
+      "to": 2943,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+2: one import and one array entry. The dojo_inspect definition itself lives in the new leaf inspect/definition.ts so this file grows only by the reference, not by the schema. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/surface.ts",
+      "from": 735,
+      "to": 737,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+2: one import and one strip line (`if (!holdsDojoInspect(agentId)) removeTools.push(DOJO_INSPECT)`), the advice half of the grant whose wall is gate row 10i. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 771,
+      "to": 773,
+      "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C1)",
+      "why": "+2: `dojo_inspect` joins the main agent's and the Healer's always-loaded lists (one line each): the plan's one definition on the wire, so the tool is one call away where the shell redirect points. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9422,7 +9464,7 @@
     "packages/server/src/agent/destructive-gate.ts": 496,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
-    "packages/server/src/agent/effects/scopes.ts": 349,
+    "packages/server/src/agent/effects/scopes.ts": 352,
     "packages/server/src/agent/error-loop-state.ts": 141,
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 300,
@@ -9444,12 +9486,12 @@
     "packages/server/src/agent/tools/cat/media.ts": 911,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 998,
-    "packages/server/src/agent/tools/definitions.ts": 2941,
+    "packages/server/src/agent/tools/definitions.ts": 2943,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
-    "packages/server/src/agent/tools/gate-eval.ts": 370,
-    "packages/server/src/agent/tools/gates.ts": 286,
+    "packages/server/src/agent/tools/gate-eval.ts": 377,
+    "packages/server/src/agent/tools/gates.ts": 289,
     "packages/server/src/agent/tools/index.ts": 668,
-    "packages/server/src/agent/tools/surface.ts": 735,
+    "packages/server/src/agent/tools/surface.ts": 737,
     "packages/server/src/agent/tools/types.ts": 340,
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 650,
@@ -9638,7 +9680,7 @@
     "packages/server/src/techniques/store.ts": 546,
     "packages/server/src/techniques/tools.ts": 914,
     "packages/server/src/tools/name-help.ts": 355,
-    "packages/server/src/tools/tool-docs.ts": 771,
+    "packages/server/src/tools/tool-docs.ts": 773,
     "packages/server/src/tools/unified-read.ts": 763,
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
