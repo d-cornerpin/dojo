@@ -8,14 +8,13 @@
 //
 // Driven with a fake `query()` async iterable shaped like the SDK's real messages.
 // ════════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 type Msg = Record<string, unknown>;
 const stream = { messages: [] as Msg[] };
-
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: () => (async function* () { for (const m of stream.messages) yield m; })(),
-}));
+// The suite's ONE scripted SDK mock (vitest.setup.ts): a file whose subject is the transport sets
+// `globalThis.__scriptedAgentSdk` and clears it after, never a per-file `vi.mock` of the package.
+const script = globalThis as { __scriptedAgentSdk?: unknown };
 
 import { callAnthropicViaSdk } from '../anthropic-sdk.js';
 import { isOutputCut } from '../../agent/v2/classifiers/output.js';
@@ -33,7 +32,11 @@ const run = () => callAnthropicViaSdk({
   messages: [{ role: 'user', content: 'go' }],
 });
 
-beforeEach(() => { stream.messages = []; });
+beforeEach(() => {
+  stream.messages = [];
+  script.__scriptedAgentSdk = { query: () => (async function* () { for (const m of stream.messages) yield m; })() };
+});
+afterEach(() => { script.__scriptedAgentSdk = undefined; });
 
 describe('B14 — the SDK transport reads the provider\'s stop reason', () => {
   it('a cut (max_tokens) with a parsed tool call is reported as max_tokens, never tool_use', async () => {
