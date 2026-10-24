@@ -254,7 +254,7 @@ describe('t140 census, round 6 (H3) — the forced pass is bounded by the turn, 
     // the boundary's live-conversation refusal is the one engine door that forces a pass on the turn.
     expect(filesWith(/\bforcedCompactionOptions\(/)).toEqual(['memory/assembly-validation.ts', 'memory/compaction-brakes.ts']);
     const val = FILES.find((f) => f.rel === 'memory/assembly-validation.ts')!.code;
-    expect(val).toMatch(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(input\.agentId, input\.modelId\)\), dialedModelId: input\.modelId[, }]/);   // v3.5 D18 r2: + waitIfBusy, untilItFits
+    expect(val).toMatch(/\{ \.\.\.forcedCompactionOptions\(turnPatienceMs\(input\.agentId, input\.modelId\)\), dialedModelId: input\.modelId[, }]/);   // v3.5 D18 r2: + untilItFits (r4: waitIfBusy is gone; every forced pass waits)
     expect(filesWith(/\bturnPatienceMs\(/)).toEqual(['memory/assembly-validation.ts', 'memory/out-of-view-fold.ts', 'memory/turn-patience.ts']);
   });
 });

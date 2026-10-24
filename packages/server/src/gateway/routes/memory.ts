@@ -339,7 +339,7 @@ memoryRouter.post('/:agentId/compact', async (c) => {
     }
 
     const contextWindow = agentTurnWindow(agentId, agent.model_id);
-    const result = await checkAndCompact(agentId, agent.model_id, contextWindow, { force: true, waitIfBusy: true });
+    const result = await checkAndCompact(agentId, agent.model_id, contextWindow, { force: true });
 
     return c.json({
       ok: true,

@@ -21,7 +21,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
-import { recordingForcedPass, __resetForcedPassProgressForTests } from '../forced-pass-progress.js';
+import { recordingForcedPass, lastForcedPassThrew, finishedUnderTheLock, passesFinished, afterTheRunningPass, __resetForcedPassProgressForTests } from '../forced-pass-progress.js';
 import { compactionBrakeMsLeft, notePassOutcome, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
 
@@ -45,7 +45,7 @@ beforeEach(() => { __resetBrakesForTests(); __resetForcedPassProgressForTests();
 describe('§1 the census', () => {
   it('the forced run of checkAndCompact goes through recordingForcedPass, and the pass itself is not exported', () => {
     const compaction = read('memory/compaction.ts');
-    expect(compaction).toMatch(/options\?\.force \? recordingForcedPass\(agentId, \(\) => runCheckAndCompact\(/);
+    expect(compaction).toMatch(/if \(options\?\.force\) \{\n\s+forcedPassAt\.set\(agentId, Date\.now\(\)\);\n\s+return forcedPassDoor\(agentId, \(\) => runCheckAndCompact\(/);   // v3.5 D18 r4: the one door
     expect(compaction).not.toMatch(/export async function runCheckAndCompact/);
   });
 
@@ -56,6 +56,53 @@ describe('§1 the census', () => {
     }).map((f) => path.relative(SRC, f)).sort();
     expect(forcing).toEqual(['agent/v2/recovery.ts', 'gateway/routes/memory.ts', 'memory/assembly-validation.ts']);
     expect(productionFiles(SRC).filter((f) => /runCheckAndCompact\(/.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(SRC, f))).toEqual(['memory/compaction.ts']);
+  });
+});
+
+describe('§1b fix round 4: a busy lock is handled inside the door, and no caller can opt out', () => {
+  const code = (rel: string): string => read(rel).split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+  it('the forced run always waits for the lock; only an unforced run can skip', () => {
+    const progress = code('memory/forced-pass-progress.ts');
+    const door = progress.slice(progress.indexOf('export async function forcedPassDoor('), progress.indexOf('/** Test-only reset'));
+    expect(door, 'the door waits').toMatch(/\{ ifBusy: 'wait' \}\);/);
+    expect(door).not.toMatch(/skip/);
+    expect(door, 'the running pass\'s progress, else this pass records').toMatch(/afterTheRunningPass\(agentId, queuedAfter\)\s*\?\? recordingForcedPass\(agentId, run, opts\)/);
+    const compaction = code('memory/compaction.ts');
+    const entry = compaction.slice(compaction.indexOf('export async function checkAndCompact('), compaction.indexOf('async function runCheckAndCompact('));
+    expect(entry.match(/withLock\(/g), 'one lock call in the entry, after the forced branch returned').toHaveLength(1);
+    expect(entry.indexOf('return forcedPassDoor(')).toBeLessThan(entry.indexOf('withLock('));
+    expect(entry, 'the unforced run skips').toMatch(/withLock\([^\n]*\{ ifBusy: 'skip' \}\);/);
+  });
+
+  it('no production file carries a way to skip a forced pass (`waitIfBusy` is gone)', () => {
+    expect(productionFiles(SRC).filter((f) => /waitIfBusy/.test(code(path.relative(SRC, f)))).map((f) => path.relative(SRC, f))).toEqual([]);
+  });
+
+  it('after the running pass: its progress is the answer; no progress, or no pass finished, and this pass runs', async () => {
+    const queued = passesFinished(AGENT);
+    expect(afterTheRunningPass(AGENT, queued), 'nothing finished while it waited').toBeNull();
+    await finishedUnderTheLock(AGENT, async () => NOTHING);
+    expect(afterTheRunningPass(AGENT, queued), 'the running pass bought nothing').toBeNull();
+    const won = { leafCreated: 1, condensedCreated: 0, tokensReclaimed: 3_000 };
+    await finishedUnderTheLock(AGENT, async () => won);
+    expect(afterTheRunningPass(AGENT, queued)).toEqual(won);
+    expect(afterTheRunningPass(AGENT, passesFinished(AGENT)), 'a pass that finished before it queued is not the answer').toBeNull();
+  });
+});
+
+describe('§3 fix round 4: the throw flag is per pass', () => {
+  it('throw, then a pass that runs and returns: the flag is clear, so a later stall is reported', async () => {
+    await expect(recordingForcedPass(AGENT, async () => { throw new Error('boom'); }, { measure: over })).rejects.toThrow('boom');
+    expect(lastForcedPassThrew(AGENT)).toBe(true);
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
+    try { await recordingForcedPass(AGENT, async () => NOTHING, { measure: over }); } finally { vi.useRealTimers(); }
+    expect(lastForcedPassThrew(AGENT), 'the last pass that ran did not throw').toBe(false);
+  });
+
+  it('a braked skip did not run, so it leaves the flag as it was (two throws a brake apart are still "again")', async () => {
+    await expect(recordingForcedPass(AGENT, async () => { throw new Error('boom'); }, { measure: over })).rejects.toThrow();
+    await recordingForcedPass(AGENT, async () => NOTHING, { measure: over });   // the brake is on: a skip
+    expect(lastForcedPassThrew(AGENT)).toBe(true);
   });
 });
 

@@ -291,12 +291,12 @@ describe('t140 round 7 — a turn never cancels a background summary it is not g
 // (above); the owner's explicit request queues behind the running pass and then runs.
 import { checkAndCompact } from '../compaction.js';
 describe('t178 — the owner\'s compact-now waits its turn instead of reporting nothing', () => {
-  it('with the lock held, a waitIfBusy pass does not settle; once released it takes the lock itself', async () => {
+  it('with the lock held, a forced pass does not settle; once released it takes the lock itself', async () => {
     seedACut();
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
     let settled = false;
-    const p = checkAndCompact(AGENT, OWN, writers.windowNow, { force: true, waitIfBusy: true }).then((r) => { settled = true; return r; }, () => { settled = true; });
+    const p = checkAndCompact(AGENT, OWN, writers.windowNow, { force: true }).then((r) => { settled = true; return r; }, () => { settled = true; });
     for (let i = 0; i < 5; i++) { await realTurn(); await vi.advanceTimersByTimeAsync(1_000); }
     expect(settled, 'it waits behind the running pass').toBe(false);
     release();
@@ -307,11 +307,13 @@ describe('t178 — the owner\'s compact-now waits its turn instead of reporting 
     expect(settled || probe === undefined, 'the queued pass ran after the release').toBe(true);
     void p;
   });
-  it('CONTROL: a pass without waitIfBusy still skips at once while the lock is held', async () => {
+  // v3.5 D18 r4: every forced pass waits now (the skip recorded nothing and woke the agent into the same
+  // refusal); the control is an UNFORCED pass, which still skips, so a turn never waits on the lock (t140 r6).
+  it('CONTROL: an unforced pass still skips at once while the lock is held', async () => {
     seedACut();
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
-    const result = await onTheClock(checkAndCompact(AGENT, OWN, writers.windowNow, { force: true }));
+    const result = await onTheClock(checkAndCompact(AGENT, OWN, writers.windowNow, {}));
     expect(result.leafCreated + result.condensedCreated).toBe(0);
     release();
     await held;

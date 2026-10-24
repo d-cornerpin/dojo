@@ -19,7 +19,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
 import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
-import { foldOldestProtectedGroup, recordingForcedPass } from './forced-pass-progress.js';
+import { foldOldestProtectedGroup, forcedPassDoor, finishedUnderTheLock } from './forced-pass-progress.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -364,7 +364,7 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 export interface CheckAndCompactOptions {
   force?: boolean;
-  waitIfBusy?: boolean;   // t178: the OWNER's compact-now queues behind a running pass
+  // STRIP (v3.5 D18 r4): `waitIfBusy` — every forced pass queues behind a running one; an unforced pass skips.
   untilItFits?: boolean;   // v3.5 D18 r2: a boundary refusal's pass; nothing else to fold folds the protected part's oldest exchange
   // STRIP (t140 r6, H3): `maxChunksPerRun` (bounded by what is leaving and by the turn's patience now).
   // v2.5.14, Optional abort signal for cancellation. Used by the
@@ -413,7 +413,8 @@ const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, t
  * do, after holding the caller's turn open for a full summarizer round-trip.
  * Skipping returns the same zero result those callers already handle — every
  * caller reads the counts and none treats zero as an error — and the work is
- * not lost: the next turn's gate re-checks and compacts if pressure remains.
+ * not lost: the next turn's gate re-checks and compacts if pressure remains. v3.5 D18 r4: for an UNFORCED
+ * pass only; a forced pass waits, then the running pass's progress or its own recorded run (`forcedPassDoor`).
  *
  * Scope: `withLock` is IN-PROCESS. One dojo server owns its box, which is the
  * shape of the observed race; it is not a cross-process lock and must not be
@@ -425,17 +426,13 @@ export async function checkAndCompact(
   contextWindow: number,
   options?: CheckAndCompactOptions,
 ): Promise<CompactionResult> {
-  if (options?.force) forcedPassAt.set(agentId, Date.now());
-  const result = await withLock(
-    `compact:${agentId}`,
-    () => (options?.force ? recordingForcedPass(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } }) : runCheckAndCompact(agentId, modelId, contextWindow, options)),
-    { ifBusy: options?.waitIfBusy ? 'wait' : 'skip' },
-  );
-  if (result === undefined) {
-    logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);
-    return NO_COMPACTION;
+  if (options?.force) {
+    forcedPassAt.set(agentId, Date.now());
+    return forcedPassDoor(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } });
   }
-  return result;
+  const result = await withLock(`compact:${agentId}`, () => finishedUnderTheLock(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options)), { ifBusy: 'skip' });
+  if (result === undefined) logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);
+  return result ?? NO_COMPACTION;
 }
 
 async function runCheckAndCompact(

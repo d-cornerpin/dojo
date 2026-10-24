@@ -66,7 +66,8 @@ export async function tryOverBudgetAssemblyRecovery(state: AgentTurnState, error
     const { lastForcedPassThrew, lastForcedPassWasBraked } = await import('../../memory/forced-pass-progress.js');
     const brakedBefore = condensed ? (lastForcedPassWasBraked(agentId) ?? brakedNow) : brakedNow;
     // Fix round 3: the pass bought nothing (the brake is on) and did not throw: nothing left can shrink this
-    // assembly. That is a genuine stall: reported once, with the refusal's own numbers, as a compaction defect
+    // assembly. Fix round 4: "did not throw" is THIS pass's fact (the flag is per pass), so a throw on an
+    // earlier round can never silence the stall. That is a genuine stall: reported once, with the refusal's own numbers, as a compaction defect
     // (`compaction-defect.ts`), and the park below keeps the existing "stuck" notice for it.
     if (compactionBrakeMsLeft(agentId) !== null && !lastForcedPassThrew(agentId)) {
       (await import('../../memory/compaction-defect.js')).reportCompactionDefect(agentId, 'nothing_left_to_shrink',

@@ -61,6 +61,34 @@ export function readCall(id: string, args: Record<string, string | number> = {})
 
 const n = (x: number): string => x.toLocaleString('en-US');
 
+// ── v3.5 D18 fix round 4: A CUT NEVER SPLITS A CHARACTER ──
+// The indexes below are UTF-16 units, and an emoji (or any character beyond the common plane) is two of them:
+// a cut between the two left a lone surrogate in the view, the same malformed string on every assembly. A cut
+// lands on a whole grapheme where one is near (an emoji with its joiners, a letter with its combining marks),
+// and never inside a surrogate pair. Only a short window around the cut is segmented.
+const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const GRAPHEME_WINDOW = 64;
+const isLow = (c: number): boolean => c >= 0xdc00 && c <= 0xdfff;
+
+/** The character boundary at or before `at` (`toward: 'back'`) or at or after it (`'forward'`). */
+export function charBoundary(text: string, at: number, toward: 'back' | 'forward'): number {
+  if (at <= 0) return 0;
+  if (at >= text.length) return text.length;
+  if (graphemes) {
+    const from = Math.max(0, at - GRAPHEME_WINDOW);
+    let best = -1;
+    for (const { index } of graphemes.segment(text.slice(from, Math.min(text.length, at + GRAPHEME_WINDOW)))) {
+      const b = from + index;
+      if (b === at) return at;
+      if (b < at) best = b; else { if (toward === 'forward' && b > from) return b; break; }
+    }
+    // The window's first boundary is only trusted past its own start (a window may open mid-character).
+    if (toward === 'back' && best >= 0 && (best > from || from === 0)) return best;
+  }
+  // No grapheme boundary near (or no segmenter): never inside a surrogate pair.
+  return isLow(text.charCodeAt(at)) ? (toward === 'back' ? at - 1 : at + 1) : at;
+}
+
 /** 1-based number of the line holding character `at`. */
 function lineAt(text: string, at: number): number {
   let line = 1;
@@ -80,11 +108,11 @@ export function toolResultView(text: string, id: string, viewChars: number = TOO
   const headBudget = Math.floor(excerpt * 3 / 4);
   // Cut at a line end when one falls in the second half of the budget; otherwise mid-line.
   const nl = text.lastIndexOf('\n', headBudget);
-  const headEnd = nl > headBudget / 2 ? nl : headBudget;
+  const headEnd = nl > headBudget / 2 ? nl : charBoundary(text, headBudget, 'back');
   const tailBudget = excerpt - headBudget;
   const tailFrom = text.length - tailBudget;
   const tnl = text.indexOf('\n', tailFrom);
-  const tailStart = Math.max(headEnd, tnl !== -1 && tnl < tailFrom + tailBudget / 2 ? tnl + 1 : tailFrom);
+  const tailStart = Math.max(headEnd, tnl !== -1 && tnl < tailFrom + tailBudget / 2 ? tnl + 1 : charBoundary(text, tailFrom, 'forward'));
   const lines = resultLines(text).length;
   const headLast = lineAt(text, headEnd);
   const headWhole = text[headEnd] === '\n';

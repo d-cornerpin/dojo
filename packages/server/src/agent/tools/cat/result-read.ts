@@ -13,7 +13,7 @@
 
 import { coerceNumberArg } from '../pagination.js';
 import { findToolResult } from '../../../memory/kept-results.js';
-import { RESULT_READ_TOOL, TOOL_RESULT_VIEW_CHARS, readCall, resultLines } from '../../../memory/tool-result-view.js';
+import { RESULT_READ_TOOL, TOOL_RESULT_VIEW_CHARS, charBoundary, readCall, resultLines } from '../../../memory/tool-result-view.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 /** One page of an answer. The room left under the view is for the header, the footer and the
@@ -56,8 +56,8 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
       const at = lower[i].indexOf(needle);
       if (at === -1) continue;
       const line = lines[i];
-      const start = Math.max(0, at - SEARCH_CONTEXT_CHARS);
-      const end = Math.min(line.length, at + needle.length + SEARCH_CONTEXT_CHARS);
+      const start = charBoundary(line, Math.max(0, at - SEARCH_CONTEXT_CHARS), 'back');   // D18 r4: never half a character
+      const end = charBoundary(line, Math.min(line.length, at + needle.length + SEARCH_CONTEXT_CHARS), 'forward');
       const shown = `${start > 0 ? '…' : ''}${line.slice(start, end)}${end < line.length ? '…' : ''}`;
       const r = row(i + 1, shown);
       if (used + r.length + 1 > PAGE_CHARS) { more = true; break; }
@@ -78,9 +78,12 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
 
   const offsetArg = coerceNumberArg(args.offset);
   if (offsetArg !== null) {
-    const start = Math.max(0, Math.floor(offsetArg));
-    if (start >= text.length) return `[Tool result ${id} has ${n(text.length)} characters; offset ${n(start)} is past its end.]`;
-    const end = Math.min(text.length, start + PAGE_CHARS);
+    const asked = Math.max(0, Math.floor(offsetArg));
+    if (asked >= text.length) return `[Tool result ${id} has ${n(text.length)} characters; offset ${n(asked)} is past its end.]`;
+    // D18 r4: a page opens and ends on a character boundary, never inside an emoji's surrogate pair.
+    const start = charBoundary(text, asked, 'back');
+    const cut = charBoundary(text, Math.min(text.length, start + PAGE_CHARS), 'back');
+    const end = cut > start ? cut : charBoundary(text, start + 1, 'forward');
     const foot = end < text.length
       ? `[Characters ${n(start)}–${n(end)} of ${n(text.length)}. Continue: ${readCall(id, { offset: end })}]`
       : `[Characters ${n(start)}–${n(end)} of ${n(text.length)}; end of result.]`;
@@ -103,7 +106,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
     }
     if (out.length === 0) {
       // One line longer than a page: its start, and the offset that reads on inside it.
-      const take = PAGE_CHARS - width - 1;
+      const take = charBoundary(lines[i - 1], PAGE_CHARS - width - 1, 'back');   // D18 r4: never half a character
       let lineStart = 0;
       for (let k = 0; k < i - 1; k++) lineStart += lines[k].length + 1;
       return `${row(i, lines[i - 1].slice(0, take))}\n[Line ${n(i)} is longer than one page; this is its first `

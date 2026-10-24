@@ -12,7 +12,11 @@
 //      nothing (the leaf-less early return, say, reached by the recovery door) is recorded here, WITH
 //      its facts, so a pass that bought nothing arms the brake and the park waits for it, and a genuine
 //      stall (over budget with nothing left that can shrink) is reported once as a compaction defect.
-//      (A pass skipped because another holds the lock never ran; the running pass records its own.)
+//      Fix round 4: A BUSY LOCK IS HANDLED HERE TOO, for every caller. A forced pass never skips because
+//      another pass holds the agent's lock (the skip recorded nothing and woke the agent at once into the
+//      same wall, a provider dial each time): it waits for the running pass, and then either that pass
+//      made progress (the next assembly is the one re-assembly) or this one runs and records
+//      (`afterTheRunningPass`). `checkAndCompact` takes no option to skip a forced pass.
 //   2. NOTHING LEFT OUTSIDE THE PROTECTED RECENT PART IS NOT THE END. The next forced pass folds the
 //      OLDEST whole group of the protected part itself — summarised, never dropped: the live
 //      conversation is kept as a summary — one group per pass, until the assembly fits. Every round
@@ -30,6 +34,7 @@ import { getCompactedMessageIds } from './dag.js';
 import { groupTail } from './assembler.js';
 import { notePassOutcome, compactionBrakeMsLeft, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 import { isStopFenced } from '../agent/shared-state.js';
+import { withLock } from '../db/with-lock.js';
 
 const logger = createLogger('forced-pass-progress');
 
@@ -37,10 +42,12 @@ interface PassResult { leafCreated: number; condensedCreated: number; tokensRecl
 
 const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreated > 0 || r.tokensReclaimed >= FORCED_YIELD_FLOOR_TOKENS;
 
-/** Agents whose last forced pass threw, so a second throw (after the brake's bound) is the one the owner hears of. */
+/** Agents whose last forced pass that RAN threw, so a second throw (after the brake's bound) is the one the owner
+ *  hears of. Per pass (fix round 4): any pass that runs and returns clears it, so a throw never silences a later
+ *  stall; a braked skip did not run, so it leaves it as it was. */
 const threw = new Set<string>();
 
-/** Did this agent's last forced pass throw? (Its park is then told through the compaction card, never "stuck".) */
+/** Did this agent's last forced pass that ran throw? (Its park is then told through the compaction card, never "stuck".) */
 export const lastForcedPassThrew = (agentId: string): boolean => threw.has(agentId);
 
 /** Was this agent's last forced pass skipped by the brake (rather than run)? Read by a park that awaited it. */
@@ -59,7 +66,8 @@ export async function recordingForcedPass(agentId: string, run: () => Promise<Pa
   skippedByBrake.set(agentId, brakedBefore);
   try {
     const result = await run();
-    if (progressed(result)) { threw.delete(agentId); return result; }
+    if (!brakedBefore) threw.delete(agentId);   // this pass ran and returned: whatever came before, it did not throw
+    if (progressed(result)) return result;
     if (!brakedBefore && compactionBrakeMsLeft(agentId) === null && !opts.abortSignal?.aborted && !isStopFenced(agentId)) {
       const facts = await opts.measure().catch(() => undefined);
       const stalled = facts !== undefined && facts.assembledTokens > facts.budgetTokens;
@@ -108,8 +116,44 @@ export async function foldOldestProtectedGroup(args: {
   return result;
 }
 
-/** Test-only reset; the set is per-process. */
+/** Every pass that finished under an agent's compaction lock: how many, and what the last one bought. */
+const finished = new Map<string, { count: number; last: PassResult }>();
+
+/** Run `run` (already holding the agent's lock) and count it as a pass that finished under the lock. */
+export async function finishedUnderTheLock<T extends PassResult>(agentId: string, run: () => Promise<T>): Promise<T> {
+  const result = await run();
+  finished.set(agentId, { count: (finished.get(agentId)?.count ?? 0) + 1, last: result });
+  return result;
+}
+
+/** How many passes have finished under this agent's lock (read before a forced pass queues for it). */
+export const passesFinished = (agentId: string): number => finished.get(agentId)?.count ?? 0;
+
+/**
+ * Ruling 2 (fix round 4), inside the lock a forced pass waited for: the pass that was running when it queued
+ * made progress, so the next assembly re-measures (its result is returned and nothing is dialed again); else
+ * null, and the forced pass runs itself and records its own outcome.
+ */
+export function afterTheRunningPass(agentId: string, finishedWhenQueued: number): PassResult | null {
+  const f = finished.get(agentId);
+  return f && f.count > finishedWhenQueued && progressed(f.last) ? f.last : null;
+}
+
+/**
+ * THE ONE FORCED-PASS DOOR (`checkAndCompact` runs every forced pass through it). It waits for a pass that
+ * holds the agent's lock, never skips: then the running pass's progress is the answer, or this pass runs and
+ * records its outcome (`recordingForcedPass`).
+ */
+export async function forcedPassDoor(agentId: string, run: () => Promise<PassResult>, opts: Parameters<typeof recordingForcedPass>[2]): Promise<PassResult> {
+  const queuedAfter = passesFinished(agentId);
+  const result = await withLock(`compact:${agentId}`, () => finishedUnderTheLock(agentId, async () => afterTheRunningPass(agentId, queuedAfter)
+    ?? recordingForcedPass(agentId, run, opts)), { ifBusy: 'wait' });
+  return result ?? { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };   // 'wait' always runs it: for the type only
+}
+
+/** Test-only reset; the sets are per-process. */
 export function __resetForcedPassProgressForTests(): void {
   threw.clear();
   skippedByBrake.clear();
+  finished.clear();
 }

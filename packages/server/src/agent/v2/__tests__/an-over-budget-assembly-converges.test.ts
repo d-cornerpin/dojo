@@ -81,7 +81,10 @@ const db = (): Database.Database => mockDb.current!;
 /** How far over the witness's first dial is: more than one fold of the oldest groups can win back. */
 const OVER_BY = 4_000;
 
-beforeEach(async () => {
+beforeEach(async () => { await seed(); });
+/** A fresh world: the store, the 120 exchanges, and every per-process record a round reads. */
+async function seed(): Promise<void> {
+  mockDb.current?.close();
   mockDb.current = new Database(':memory:');
   runMigrations();
   seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.wakes = 0; seen.throwIn = null;
@@ -102,7 +105,9 @@ beforeEach(async () => {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] Keep counting the crates.`, turnNumber: t });
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
   }
-});
+  (await import('../full-context-wait.js')).__resetFullContextWaitForTests();
+  (await import('../../../memory/forced-pass-progress.js')).__resetForcedPassProgressForTests();
+}
 afterEach(async () => {
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 15_000))]);
   mockDb.current?.close();
@@ -335,5 +340,139 @@ describe('D18 fix round 3: a forced pass with nothing to condense records its ou
       expect(compactionBrakeMsLeft(AGENT), `round ${turn}: the no-progress pass armed the brake`).not.toBeNull();
       expect(pendingWakeups.has(AGENT), `round ${turn}: no wake at once`).toBe(false);
     }
+  });
+});
+
+// ── Fix round 4 (re-review t257-rereview-3.md) ──────────────────────────────────────────────────────
+/** Rounds through the real park and wake (fake timers advance the brake's clock) until the dial fits. */
+async function answersThroughThePark(maxRounds: number, size = 0): Promise<{ fitted: boolean; rounds: number }> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  let rounds = 0;
+  try {
+    for (let round = 1; round <= maxRounds; round++) {
+      rounds = round;
+      const { refusal } = await dial(size);
+      if (!refusal) return { fitted: true, rounds };
+      await recover(refusal, 900 + round);
+      if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+      const woke = seen.wakes;
+      await vi.advanceTimersByTimeAsync(16 * 60_000);
+      for (let i = 0; i < 50 && seen.wakes === woke; i++) await new Promise((r) => setImmediate(r));
+    }
+  } finally { vi.useRealTimers(); }
+  return { fitted: false, rounds };
+}
+
+async function readWhole(id: string, search: string): Promise<{ isError: boolean; content: string }> {
+  const { resultReadHandlers } = await import('../../tools/cat/result-read.js');
+  return resultReadHandlers.tool_result_read({ agentId: AGENT, name: 'tool_result_read', args: { id, search }, callId: 'c', toolCall: {} as never });
+}
+
+describe('D18 fix round 4, finding 1: a structured or JSON-looking owner message over the room is never forced in whole', () => {
+  it('the re-reviewer\'s shape: the owner pastes a ~99K-character JSON array export; it is pointered like any row and the agent answers', async () => {
+    const id = 'msg-the-json-export';
+    const rows = Array.from({ length: 1_400 }, (_, i) => ({ crate: 4000 + i, dock: 'north', sealed: true, kg: 40, inspected: 'yes' }));
+    const content = `${JSON.stringify(rows).slice(0, -1)},{"crate":"END OF EXPORT"}]`;
+    expect(content.length, 'precondition: the re-reviewer\'s size').toBeGreaterThan(95_000);
+    insertMessage({ id, agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content, turnNumber: 121 });
+    const { fitted, rounds } = await answersThroughThePark(6);
+    expect(fitted, `the agent answers (after ${rounds} rounds)`).toBe(true);
+    expect(rounds).toBeLessThanOrEqual(3);
+    const shown = JSON.stringify((await assembleContext(AGENT, MODEL)).messages);
+    expect(shown, 'with the kept-result pointer naming the row').toContain(`msg:${id}`);
+    const read = await readWhole(`msg:${id}`, 'END OF EXPORT');
+    expect(read.isError, read.content.slice(0, 200)).toBe(false);
+    expect(read.content).toContain('END OF EXPORT');
+    expect(seen.texts, 'no stall, so no text').toEqual([]);
+  });
+
+  it('a real content-block row: the over-room TEXT block is head + tail + pointer, the image block keeps its own representation, and the agent answers', async () => {
+    const id = 'msg-manifest-with-photo';
+    const text = `Here is the whole manifest and a photo of the dock:\n${'crate 0412, north dock, sealed, 40 kg, inspected\n'.repeat(3_200)}END OF MANIFEST`;
+    const photo = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' } };
+    insertMessage({ id, agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: JSON.stringify([{ type: 'text', text }, photo]), turnNumber: 121 });
+    const { fitted, rounds } = await answersThroughThePark(6);
+    expect(fitted, `the agent answers (after ${rounds} rounds)`).toBe(true);
+    expect(rounds).toBeLessThanOrEqual(3);
+    const messages = (await assembleContext(AGENT, MODEL)).messages as Array<{ role: string; content: unknown }>;
+    const row = messages.find((m) => JSON.stringify(m.content).includes('Here is the whole manifest'));
+    expect(row, 'the row is in view').toBeDefined();
+    const blocks = row!.content as Array<{ type: string; text?: string }>;
+    expect(blocks.some((b) => b.type === 'image'), 'the image block is still a block').toBe(true);
+    const shownText = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    expect(shownText, 'the head').toContain('Here is the whole manifest');
+    expect(shownText, 'the tail').toContain('END OF MANIFEST');
+    expect(shownText, 'the pointer names the block').toContain(`msg:${id}#0`);
+    expect(shownText.length, 'never the whole').toBeLessThan(text.length / 4);
+    const read = await readWhole(`msg:${id}#0`, 'END OF MANIFEST');
+    expect(read.isError, read.content.slice(0, 200)).toBe(false);
+    expect(read.content).toContain('END OF MANIFEST');
+    expect(seen.texts).toEqual([]);
+  });
+});
+
+describe('D18 fix round 4, finding 2: the busy lock is handled inside the one forced-pass door', () => {
+  it('three consecutive rounds while a background condense holds the lock: each waits for it, then its own pass records; no immediate wake, no extra dial', async () => {
+    db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'Is the north dock open?', turnNumber: 1 });
+    let now = Date.now();
+    try {
+      for (const turn of [611, 612, 613]) {
+        pendingWakeups.clear();
+        const wakes = seen.wakes;
+        let release!: () => void;
+        const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
+        let done = false;
+        const recovering = recover(new Error('prompt is too long: 40000 tokens > 32768 maximum'), turn).then(() => { done = true; });
+        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+        expect(done, `round ${turn}: the door waits for the running pass`).toBe(false);
+        expect(pendingWakeups.has(AGENT), `round ${turn}: no wake while it waits`).toBe(false);
+        release();
+        await held;
+        await recovering;
+        expect(compactionBrakeMsLeft(AGENT), `round ${turn}: its own pass ran and recorded (the brake is on)`).not.toBeNull();
+        expect(pendingWakeups.has(AGENT), `round ${turn}: no immediate wake`).toBe(false);
+        expect(seen.wakes, `round ${turn}: no extra dial`).toBe(wakes);
+        now += 16 * 60_000;   // the brake lets go, so the next round's pass runs again
+        vi.useFakeTimers({ toFake: ['Date'], now });
+      }
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe('D18 fix round 4, finding 3: a stall whose first no-progress pass threw is still reported once', () => {
+  /** The genuine-stall shape through the timer park; the round of its first timer park, and what was said. */
+  async function stall(throwAtRound: number | null): Promise<{ firstPark: number; braked: number }> {
+    const size = await witnessSize(30_000);
+    let firstPark = 0;
+    let braked = 0;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      for (let round = 1; round <= 70 && braked < 4; round++) {
+        if (round === throwAtRound) seen.throwIn = () => { seen.throwIn = null; throw new Error('the summary store could not be read'); };
+        const { refusal } = await dial(size);
+        expect(refusal, `round ${round}: still over`).not.toBeNull();
+        await recover(refusal, 1_000 + round);
+        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        if (firstPark === 0) firstPark = round;
+        braked++;
+        await vi.advanceTimersByTimeAsync(16 * 60_000);
+        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      }
+    } finally { vi.useRealTimers(); }
+    return { firstPark, braked };
+  }
+
+  it('throw then stall: the defect is recorded and the owner is told exactly once', async () => {
+    const plain = await stall(null);
+    expect(plain.firstPark, 'precondition: the plain stall reaches its first no-progress pass').toBeGreaterThan(1);
+    await seed();
+    seen.cards.length = 0; seen.texts.length = 0;
+    const thrown = await stall(plain.firstPark);
+    expect(thrown.firstPark, 'the throw landed on the first no-progress pass').toBe(plain.firstPark);
+    expect(thrown.braked).toBe(4);
+    const { compactionFailureReason } = await import('../../../memory/compaction-defect.js');
+    expect(compactionFailureReason(AGENT), 'the stall is a recorded defect').toBe('nothing_left_to_shrink');
+    expect(seen.texts.filter((t) => /stuck/i.test(t)), 'the owner is told once').toHaveLength(1);
   });
 });

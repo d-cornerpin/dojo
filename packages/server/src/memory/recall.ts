@@ -198,6 +198,68 @@ function parseToolContent(content: string): string {
   return content;
 }
 
+/** The clauses bounding a history read (the session, the conversation); `msg:` reads apply them too (v3.5 D18 r4). */
+export function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turnConversationId'>): { clauses: string[]; params: (string | number)[]; sessionBoundary: string | null } {
+  const db = getDb();
+  // Respect session boundary so a recent reset doesn't bleed pre-reset content into the recall.
+  const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
+  const sessionBoundary = sessionRow?.session_started_at ?? null;
+
+  const clauses: string[] = ['agent_id = ?'];
+  const params: (string | number)[] = [agentId];
+  if (sessionBoundary) {
+    clauses.push('created_at >= (unixepoch(?) * 1000)');
+    params.push(sessionBoundary);
+  }
+  // Conversation scoping (OPEN-15). The current turn's trigger inbound carries its `conversation_id` — resolved by
+  // the producer at ingest and re-stamped at pickup if the producer could not (loop.ts) — so the most recently
+  // stamped conversation in this session identifies the conversation we're in. Limit recall to that conversation
+  // plus untagged rows (current-turn, not-yet-stamped work and legacy rows), which keeps the live thread while
+  // dropping OTHER conversations' tagged output, the cross-task bleed that surfaced unrelated `apt`/package output
+  // during a flight-info question.
+  if (opts.scope !== 'all') {
+    // E-C1: prefer the LIVE turn's conversation over re-deriving "most recently stamped", which on an engine/A2A
+    // turn latched the last HUMAN conversation and bled it into the recall. An id = that conversation; explicit
+    // null = engine/A2A turn (untagged rows only, no human-conv bleed); undefined = called outside a turn, use the
+    // legacy heuristic.
+    //
+    // PHASE-2 T10I: the scope is `conversations.id`, not a `conversationKey()` string. The fallback query below
+    // cannot latch a SENTINEL any more, and that was a real hazard in the string form: `engine`, `engine-steer` and
+    // `engine-notice` were valid `conv_key` values on events-lane rows, so "the most recently stamped key in this
+    // session" could scope a human recall to a rider. An events-lane rider has no conversation, so it can no longer
+    // be picked up here at all.
+    let scopeConversationId: string | null | undefined;
+    if (opts.turnConversationId !== undefined) {
+      scopeConversationId = opts.turnConversationId;
+    } else {
+      const cur = db
+        .prepare(
+          `SELECT conversation_id FROM messages
+             WHERE agent_id = ? AND conversation_id IS NOT NULL${sessionBoundary ? ' AND created_at >= (unixepoch(?) * 1000)' : ''}
+             ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conversation_id: string } | undefined;
+      scopeConversationId = cur?.conversation_id;
+    }
+    // t141 round 2 — the scopers' rule, not a missing stamp: an OWN row stays unless POSITIVELY a person's reply in
+    // another conversation (`subject_kind='conv'`; unlabelled = judged by its stamp); the live turn's rows are the
+    // turn fact. C17 stands: never ANOTHER human's inbound.
+    const ownKept = "(role IN ('assistant','tool') AND (turn_number = ? OR IFNULL(subject_kind, "
+      + "CASE WHEN conversation_id IS NULL THEN '' ELSE 'conv' END) <> 'conv'))";
+    const peerUnfiled = '(source_agent_id IS NOT NULL AND conversation_id IS NULL)';
+    const inFlight = liveTurnContext(agentId)?.turnNumber ?? -1;
+    if (scopeConversationId) {
+      clauses.push(`(conversation_id = ? OR ${ownKept} OR ${peerUnfiled})`);
+      params.push(scopeConversationId, inFlight);
+    } else if (opts.turnConversationId === null) {
+      // Engine/A2A turn: no human conversation, so no person's reply and no person's inbound.
+      clauses.push(`(${ownKept} OR ${peerUnfiled})`);
+      params.push(inFlight);
+    }
+  }
+  return { clauses, params, sessionBoundary };
+}
+
 export function recallRecentThread(agentId: string, opts: RecallOptions): string {
   const db = getDb();
   try {
@@ -208,13 +270,6 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // truncation marker, so messages got silently cut and the agent had no
     // way to know or fetch the rest. Max 8000.
     const messageChars = Math.min(8000, Math.max(200, opts.truncateMessageChars ?? 1500));
-
-    // Respect session boundary so a recent reset doesn't bleed pre-reset
-    // content into the recall.
-    const sessionRow = db
-      .prepare('SELECT session_started_at FROM agents WHERE id = ?')
-      .get(agentId) as { session_started_at: string | null } | undefined;
-    const sessionBoundary = sessionRow?.session_started_at ?? null;
 
     // Resolve before_id → insertion-key cursor. If invalid, fall back to "newest first".
     // T5: the cursor is `seq`, not `created_at`. Pagination has to be strictly monotonic or
@@ -238,62 +293,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // Pull more than we need, then trim to N user→assistant exchanges.
     const fetchLimit = Math.max(opts.turnCount * 8, 60);
 
-    const clauses: string[] = ['agent_id = ?'];
-    const params: (string | number)[] = [agentId];
-    if (sessionBoundary) {
-      clauses.push('created_at >= (unixepoch(?) * 1000)');
-      params.push(sessionBoundary);
-    }
-    // Conversation scoping (OPEN-15). The current turn's trigger inbound carries its
-    // `conversation_id` — resolved by the producer at ingest and re-stamped at pickup if the
-    // producer could not (loop.ts) — so the most recently stamped conversation in this
-    // session identifies the conversation we're in.
-    // Limit recall to that conversation plus untagged rows (current-turn,
-    // not-yet-stamped work and legacy rows), which keeps the live thread while
-    // dropping OTHER conversations' tagged output, the cross-task bleed that
-    // surfaced unrelated `apt`/package output during a flight-info question.
-    if (opts.scope !== 'all') {
-      // E-C1: prefer the LIVE turn's conversation over re-deriving "most recently
-      // stamped", which on an engine/A2A turn latched the last HUMAN conversation
-      // and bled it into the recall. An id = that conversation; explicit null =
-      // engine/A2A turn (untagged rows only, no human-conv bleed); undefined =
-      // called outside a turn, use the legacy heuristic.
-      //
-      // PHASE-2 T10I: the scope is `conversations.id`, not a `conversationKey()` string. The
-      // fallback query below cannot latch a SENTINEL any more, and that was a real hazard in
-      // the string form: `engine`, `engine-steer` and `engine-notice` were valid `conv_key`
-      // values on events-lane rows, so "the most recently stamped key in this session" could
-      // scope a human recall to a rider. An events-lane rider has no conversation, so it can
-      // no longer be picked up here at all.
-      let scopeConversationId: string | null | undefined;
-      if (opts.turnConversationId !== undefined) {
-        scopeConversationId = opts.turnConversationId;
-      } else {
-        const cur = db
-          .prepare(
-            `SELECT conversation_id FROM messages
-               WHERE agent_id = ? AND conversation_id IS NOT NULL${sessionBoundary ? ' AND created_at >= (unixepoch(?) * 1000)' : ''}
-               ORDER BY seq DESC LIMIT 1`,
-          )
-          .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conversation_id: string } | undefined;
-        scopeConversationId = cur?.conversation_id;
-      }
-      // t141 round 2 — the scopers' rule, not a missing stamp: an OWN row stays unless POSITIVELY a
-      // person's reply in another conversation (`subject_kind='conv'`; unlabelled = judged by its
-      // stamp); the live turn's rows are the turn fact. C17 stands: never ANOTHER human's inbound.
-      const ownKept = "(role IN ('assistant','tool') AND (turn_number = ? OR IFNULL(subject_kind, "
-        + "CASE WHEN conversation_id IS NULL THEN '' ELSE 'conv' END) <> 'conv'))";
-      const peerUnfiled = '(source_agent_id IS NOT NULL AND conversation_id IS NULL)';
-      const inFlight = liveTurnContext(agentId)?.turnNumber ?? -1;
-      if (scopeConversationId) {
-        clauses.push(`(conversation_id = ? OR ${ownKept} OR ${peerUnfiled})`);
-        params.push(scopeConversationId, inFlight);
-      } else if (opts.turnConversationId === null) {
-        // Engine/A2A turn: no human conversation, so no person's reply and no person's inbound.
-        clauses.push(`(${ownKept} OR ${peerUnfiled})`);
-        params.push(inFlight);
-      }
-    }
+    const { clauses, params, sessionBoundary } = historyScope(agentId, opts);
     if (opts.since) {
       clauses.push('created_at >= (unixepoch(?) * 1000)');
       params.push(normalizeTimestampForSqlite(opts.since));

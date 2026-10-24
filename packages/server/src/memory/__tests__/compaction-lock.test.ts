@@ -150,10 +150,11 @@ describe('checkAndCompact concurrency (PHASE-1 T2)', () => {
     // That is precisely the corruption class research 22 measured at 11.4%.
     expect(doubled).toEqual([]);
 
-    // And the second runner did no summarising work at all: with ifBusy:'skip'
-    // it returns the zero result rather than duplicating the first run.
-    expect(a.leafCreated + b.leafCreated).toBeGreaterThan(0);
-    expect(Math.min(a.leafCreated, b.leafCreated)).toBe(0);
+    // And the second runner did no summarising work of its own. v3.5 D18 r4: a forced pass no longer skips
+    // (the skip recorded nothing and woke the agent into the same wall); it waits, and the running pass's
+    // progress is its answer — the same result, reported twice, summarised once.
+    expect(a.leafCreated).toBeGreaterThan(0);
+    expect(b).toEqual(a);
 
     // Every summarised message is covered exactly once; summaries exist.
     expect(summaries.length).toBeGreaterThan(0);
