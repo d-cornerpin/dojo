@@ -8,7 +8,7 @@
 // nothing but `system_control`, so an agent granted *"control the mouse and
 // keyboard"* held a shell. §T0-PINS P7 records `osascript -` as the same class.
 //
-// `execFile(program, argv)` is what stands here now (async since v3.5 E19, see
+// `spawn(program, argv)` is what stands here now (async since v3.5 E19, see
 // `run`): a program and an argument VECTOR, so the bytes never reach a parser. The vectors are built by
 // `system-control-argv.ts`, which is PURE — the splitting that `/bin/sh` used to
 // do (a key combo is FOUR arguments, not one string) is explicit there, where a
@@ -16,7 +16,7 @@
 // payload comes back as one inert element.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,7 +30,7 @@ import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
 } from './system-control-argv.js';
-import { endsWithTheStop } from './effects/proc-tree.js';
+import { endsWithTheStop, signalProcessTree } from './effects/proc-tree.js';
 
 const logger = createLogger('system-control');
 
@@ -41,14 +41,30 @@ const logger = createLogger('system-control');
  * child returned or hit its bound, and nothing ended the child. Same argv, same bound as before.
  */
 function run(agentId: string, program: string, argv: string[], opts: { timeout: number; input?: string; maxBuffer?: number }): Promise<string> {
+  // `spawn`, not `execFile`: execFile cannot make the child a group leader, and without `detached` the
+  // Stop's group kill fails and anything the program started (an AppleScript's `do shell script` job)
+  // survives it — and holds the pipes open. The bound and the output cap are execFile's own semantics:
+  // SIGTERM to the tree at `timeout`, and `maxBuffer` (Node's documented 1 MiB default) per stream.
+  const maxBuffer = opts.maxBuffer ?? 1024 * 1024;
   return new Promise((resolve, reject) => {
-    const child = execFile(program, argv, { timeout: opts.timeout, maxBuffer: opts.maxBuffer, encoding: 'utf-8' }, (err, stdout, stderr) => {
-      if (err) reject(Object.assign(err, { stderr }));
-      else resolve(stdout);
-    });
+    const child = spawn(program, argv, { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     endsWithTheStop(agentId, child);
-    child.stdin?.on('error', () => undefined);   // a child cut by the Stop closes its stdin: EPIPE is that, not a fault
-    child.stdin?.end(opts.input ?? '');
+    let stdout = '';
+    let stderr = '';
+    let fault: string | null = null;
+    const end = (why: string): void => { fault ??= why; signalProcessTree(child, 'SIGTERM'); };
+    const bound = setTimeout(() => end(`timed out after ${opts.timeout} ms`), opts.timeout);
+    child.stdout.setEncoding('utf-8').on('data', (d: string) => { stdout += d; if (stdout.length > maxBuffer) end('stdout maxBuffer exceeded'); });
+    child.stderr.setEncoding('utf-8').on('data', (d: string) => { stderr += d; if (stderr.length > maxBuffer) end('stderr maxBuffer exceeded'); });
+    child.once('error', (err) => { clearTimeout(bound); reject(Object.assign(err, { stderr })); });
+    child.once('close', (code, signal) => {
+      clearTimeout(bound);
+      if (code === 0 && fault === null) { resolve(stdout); return; }
+      const why = fault ?? (signal ? `ended by ${signal}` : `exited with code ${code}`);
+      reject(Object.assign(new Error(`Command failed: ${program} ${argv.join(' ')} (${why})${stderr ? `\n${stderr}` : ''}`), { stderr, status: code }));
+    });
+    child.stdin.on('error', () => undefined);   // a child cut by the Stop closes its stdin: EPIPE is that, not a fault
+    child.stdin.end(opts.input ?? '');
   });
 }
 
