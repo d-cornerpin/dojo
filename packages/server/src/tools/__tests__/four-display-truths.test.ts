@@ -249,6 +249,9 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     // text and decides — three chat chips for gather/draft/submit would be precisely the
     // chip noise T54 removed, sitting next to the card that is the actual decision.
     'dojo_report',
+    // K34: `lesson_record` is the Dreamer's background bookkeeping door, like `vault_discard_archives`
+    // beside it: no person reads its result, so a chat chip for it would be exactly the noise T54 removed.
+    'lesson_record',
   ];
 
   // NAMES THAT LEFT THE HIDDEN SET AFTER T54, each one argued here (same history rule as above:

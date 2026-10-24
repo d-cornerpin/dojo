@@ -24,6 +24,7 @@ import {
 } from '../../../vault/tools.js';
 import { getPinnedEntries, getSessionContextEntries, deleteConversation } from '../../../vault/store.js';
 import { isDreamerAgent } from '../../../config/platform.js';
+import { recordLesson, LessonRefused } from '../../../vault/lessons-store.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -125,5 +126,22 @@ export const vaultHandlers: ToolHandlerMap = {
     const content = `Discarded ${deleted} archive${deleted === 1 ? '' : 's'}` +
       (skipped.length > 0 ? `. ${skipped.length} archive ID${skipped.length === 1 ? '' : 's'} could not be deleted (already gone or invalid): ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}` : '.');
     return { content, isError: false };
+  },
+
+  async lesson_record({ agentId, args }) {
+    // Dreamer-only; the one door into the lessons table (vault/lessons-store.ts validates).
+    if (!isDreamerAgent(agentId)) return { content: 'Error: lesson_record is Dreamer-only.', isError: true };
+    try {
+      const { id, renewed } = await recordLesson({
+        taskId: String(args.task_id ?? ''), cue: String(args.cue ?? ''), lesson: String(args.lesson ?? ''),
+        evidenceEventIds: Array.isArray(args.evidence_event_ids) ? (args.evidence_event_ids as unknown[]).map(Number) : [],
+        confidence: Number(args.confidence), component: String(args.component ?? ''),
+      });
+      auditLog(agentId, 'tool_call', 'lesson_record', 'success', `lesson=${id} renewed=${renewed}`);
+      return { content: renewed ? `Lesson ${id} renewed (this cue was already held).` : `Lesson ${id} recorded.`, isError: false };
+    } catch (err) {
+      if (err instanceof LessonRefused) return { content: err.message, isError: true };
+      return { content: `Error recording lesson: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
   },
 };

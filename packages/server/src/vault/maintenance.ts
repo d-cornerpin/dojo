@@ -36,6 +36,8 @@ import {
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
+import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from './rough-tasks-batch.js';
+import { announceLessons, lessonReportLines } from './lessons-announce.js';
 import { homeDir } from '../home.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -633,11 +635,16 @@ function splitArchive(conv: VaultConversation, perBatchBudget: number): Array<{ 
  * For a 200K-token model: raw=150K → growth=60K → cap=70K → final=60K per batch.
  * For a  32K-token model: raw=−18K (clamped) → cap=11K → final=~10K per batch.
  */
-function batchArchives(unprocessed: VaultConversation[], contextWindow: number): Array<{ ids: string[]; text: string }> {
+function batchBudgetTokens(contextWindow: number): number {
   const rawBudget = Math.max(contextWindow - CONTEXT_OVERHEAD_TOKENS, Math.floor(contextWindow * 0.2));
-  const growthBudget = Math.floor(rawBudget / (1 + PROCESSING_GROWTH_FACTOR));
-  const cap = Math.floor(contextWindow * BATCH_BUDGET_CAP_RATIO);
-  const budgetTokens = Math.max(2000, Math.min(growthBudget, cap));
+  return Math.max(2000, Math.min(Math.floor(rawBudget / (1 + PROCESSING_GROWTH_FACTOR)), Math.floor(contextWindow * BATCH_BUDGET_CAP_RATIO)));
+}
+
+/** One unit of Dreamer work. `verbatim` text is sent as written (the ROUGH TASKS batch), not wrapped as archives. */
+type DreamBatch = { ids: string[]; text: string; verbatim?: boolean };
+
+function batchArchives(unprocessed: VaultConversation[], contextWindow: number): DreamBatch[] {
+  const budgetTokens = batchBudgetTokens(contextWindow);
 
   logger.info('Dreamer batch budget computed', {
     contextWindow,
@@ -789,7 +796,7 @@ ${batchText}`;
 const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
-    'vault_discard_archives',
+    'vault_discard_archives', 'lesson_record',
     'history_search', 'history_get',
     // Person-as-entity records: the SOUL routes "who someone is" facts here
     // (role/company, relationships, channel prefs, a new email/phone) instead
@@ -1107,6 +1114,8 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
 
   // Batch archives to fit within the model's context window
   const batches = batchArchives(unprocessed, contextWindow);
+  const rough = buildRoughTasksBatch(lessonsCensusSince(), batchBudgetTokens(contextWindow));   // K34: after the archives
+  if (rough) batches.push(rough);
 
   logger.info(`Waking Dreamer to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
     mode: config.dreamMode,
@@ -1203,7 +1212,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
 // ── Batch Processing State ──
 
 interface PendingBatchState {
-  batches: Array<{ ids: string[]; text: string }>;
+  batches: DreamBatch[];
   currentIndex: number;
   config: ReturnType<typeof getDreamingConfig>;
   primaryId: string;
@@ -1257,6 +1266,7 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
       `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
       `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
       `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
+      ...lessonReportLines(state.cycleStartedAtMs),
       `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s. Mode: ${state.config.dreamMode}.`,
     ].join('\n');
 
@@ -1316,6 +1326,7 @@ async function finalizeDreamCycle(primaryId: string, state: PendingBatchState | 
   // primary. Distilled memories reached the vault during the cycle via the Dreamer's
   // own tools; that IS the injection path the primary reads.
 
+  if (state) { announceLessons(state.cycleStartedAtMs); advanceLessonsCensus(state.cycleStartedAtMs); }   // K34: the owner hears once, by card
   pendingBatches.delete(primaryId);
   // P2a: the drain is finished, close the cycle-in-flight marker. Reached from
   // both the in-memory-state path and the resumed-after-restart (state === null)
@@ -1504,7 +1515,7 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
         WHERE id = ?
       `).run(JSON.stringify(batch.ids), dreamerId);
 
-      const nextCycleMessage = buildDreamerCycleMessage(
+      const nextCycleMessage = batch.verbatim ? batch.text : buildDreamerCycleMessage(
         batch.text,
         nextIndex,
         state.batches.length,

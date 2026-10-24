@@ -55,7 +55,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Vault (Long-Term Memory)',
-    tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_get', 'vault_update', 'vault_refresh', 'vault_discard_archives'],
+    tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_get', 'vault_update', 'vault_refresh', 'vault_discard_archives', 'lesson_record'],
   },
   {
     label: 'Conversation Recall',

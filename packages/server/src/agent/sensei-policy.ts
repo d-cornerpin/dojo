@@ -127,6 +127,7 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'contacts_*': 'Microsoft directory reads/writes, sends nothing',
   'credential_*': 'encrypted credential store',
   'vault_*': 'long-term memory store',
+  'lesson_record': 'the Dreamer\'s lessons store; sends nothing',
   'recall_*': 'conversation recall (own history)',
   'history_*': 'conversation history reads',
   'squad_*': 'agent-to-agent shared memory (not an owner channel)',

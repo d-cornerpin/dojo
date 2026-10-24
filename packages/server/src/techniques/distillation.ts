@@ -27,6 +27,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getTrainerAgentId, isTrainerEnabled } from '../config/platform.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { taskScope } from '../work/tracker-view.js';
+import { lessonsTouchedSince, LESSON_LIFETIME_MS, type LessonRow } from '../vault/lessons-store.js';
 
 const logger = createLogger('technique-distillation');
 
@@ -150,6 +151,24 @@ function persistRetirementFlags(candidates: RetireCandidate[]): void {
   }
 }
 
+// ── K34: the Dreamer's lessons about techniques are candidates too ──
+// A lesson is fed to the Trainer once per write: the cursor is the latest write time already fed.
+const LESSONS_FED_KEY = 'trainer.lessons_fed_ms';
+const touchedAt = (l: LessonRow): number => l.expires_at - LESSON_LIFETIME_MS;
+
+function unfedTechniqueLessons(): LessonRow[] {
+  const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(LESSONS_FED_KEY) as { value: string } | undefined;
+  const fed = Number(row?.value);
+  return lessonsTouchedSince(Number.isFinite(fed) ? fed + 1 : 0, 'technique');
+}
+
+function markLessonsFed(lessons: LessonRow[]): void {
+  const latest = Math.max(...lessons.map(touchedAt));
+  getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`)
+    .run(LESSONS_FED_KEY, String(latest));
+}
+
 /**
  * One engine pass per dreaming cycle. Never spawns agents itself; it sends
  * at most one batched A2A to the Trainer (draft authoring) and one to the
@@ -182,30 +201,47 @@ export async function runDistillationCycle(): Promise<void> {
   // still un-flags anything that recovered.
   persistRetirementFlags(retireFlags);
 
-  if (candidates.length === 0 && retireFlags.length === 0) {
+  const lessons = unfedTechniqueLessons();
+
+  if (candidates.length === 0 && retireFlags.length === 0 && lessons.length === 0) {
     logger.debug('distillation: nothing to do this cycle');
     return;
   }
 
   const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
 
-  if (candidates.length > 0) {
-    const list = candidates.map((c, i) =>
-      `${i + 1}. "${c.sampleTitle}" — completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
-    ).join('\n');
+  if (candidates.length > 0 || lessons.length > 0) {
+    const bodies: string[] = [];
+    if (candidates.length > 0) {
+      const list = candidates.map((c, i) =>
+        `${i + 1}. "${c.sampleTitle}" — completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
+      ).join('\n');
+      bodies.push(
+        `These task patterns completed repeatedly and no existing technique covers them:\n${list}\n\n` +
+        `For each: read the latest task's tracker entry and ledger, and author a DRAFT technique capturing the repeatable procedure (save_technique with publish: false — DRAFTS ONLY, never publish, never modify an existing technique). ` +
+        `Name it after the procedure, not the specific dates/people.`,
+      );
+    }
+    if (lessons.length > 0) {
+      const list = lessons.map((l, i) => `${i + 1}. When: ${l.cue}\n   Lesson: ${l.lesson} (task ${l.task_id}, confidence ${l.confidence})`).join('\n');
+      bodies.push(
+        `These lessons came from tasks that went badly; each says what a technique should have covered:\n${list}\n\n` +
+        `For each: author a DRAFT technique (save_technique with publish: false) for the better procedure, unless an existing technique already covers it, in which case leave it alone.`,
+      );
+    }
     try {
       await deliverA2ANotice({
         intent: 'ASSIGN',
         threadId: uuidv4(),
         requiresResponse: false,
         payload:
-          `Technique distillation (engine, one batch per dreaming cycle). These task patterns completed repeatedly and no existing technique covers them:\n${list}\n\n` +
-          `For each: read the latest task's tracker entry and ledger, and author a DRAFT technique capturing the repeatable procedure (save_technique with publish: false — DRAFTS ONLY, never publish, never modify an existing technique). ` +
-          `Name it after the procedure, not the specific dates/people. When the drafts exist, you are done; the owner decides promotion.`,
+          `Technique distillation (engine, one batch per dreaming cycle). ${bodies.join('\n\n')} ` +
+          `When the drafts exist, you are done; the owner decides promotion.`,
         toAgent: getTrainerAgentId(),
         fromAgent: 'system',
-      }, 'Technique-distillation draft batch to the Trainer', { count: candidates.length, toAgent: getTrainerAgentId() });
-      logger.info('distillation: sent draft batch to Trainer', { count: candidates.length });
+      }, 'Technique-distillation draft batch to the Trainer', { count: candidates.length, lessons: lessons.length, toAgent: getTrainerAgentId() });
+      if (lessons.length > 0) markLessonsFed(lessons);
+      logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
     } catch (err) {
       logger.error('distillation: Trainer batch failed', {
         error: err instanceof Error ? err.message : String(err),

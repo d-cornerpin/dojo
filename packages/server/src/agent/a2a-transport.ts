@@ -97,7 +97,7 @@ const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', '
 // certain the receiver has nothing to do.
 const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS']);
 
-const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+import { SEMANTIC_DEDUP_THRESHOLD as DEDUP_SIMILARITY_THRESHOLD } from '../memory/dedup-threshold.js';   // the one shared number
 const DEDUP_LOOKBACK = 3;
 
 function isTerminalIntent(intent: A2AIntent): boolean { return TERMINAL_INTENTS.has(intent); }

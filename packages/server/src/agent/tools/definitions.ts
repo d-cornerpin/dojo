@@ -2580,6 +2580,24 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 
+  {
+    name: 'lesson_record',
+    description: 'Record ONE lesson from a rough task listed in your ROUGH TASKS batch. A lesson is a cue (the situation that should bring it to mind), the lesson in one sentence, the ids of that task\'s own timeline events that show it, a confidence from 0 to 1, and which component should change. It is kept for 90 days; a lesson with a cue we already hold renews instead of duplicating. Not a vault entry: never use vault_remember for these. Refuses an event id that is not in the task\'s timeline. Dreamer-only.',
+    effects: [],
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The rough task\'s id, exactly as shown in the batch.' },
+        cue: { type: 'string', description: 'The situation that should bring this lesson to mind, in the task\'s own terms.' },
+        lesson: { type: 'string', description: 'One sentence: what to do differently next time.' },
+        evidence_event_ids: { type: 'array', items: { type: 'number' }, description: 'Event ids (the #numbers in the task\'s timeline) that show it. At least one; each must be in that task\'s timeline.' },
+        confidence: { type: 'number', description: 'From 0 to 1.' },
+        component: { type: 'string', enum: ['technique', 'door_text', 'soul', 'engine'], description: 'What should change: a technique, a tool\'s or refusal\'s wording (door_text), an agent\'s instructions (soul), or the engine.' },
+      },
+      required: ['task_id', 'cue', 'lesson', 'evidence_event_ids', 'confidence', 'component'],
+    },
+  },
+
   // ── DOJO Contacts (v2.9.16) ──
   // DOJO-native person records, separate from Microsoft/Google contact
   // directories. Agents write to this store as they learn about people
