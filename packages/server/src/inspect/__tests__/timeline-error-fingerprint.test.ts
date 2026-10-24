@@ -19,8 +19,8 @@ import { timeline } from '../timeline.js';
 import { fingerprint } from '../../agent/v2/error-fingerprint.js';
 import { seedTaskStory, TASK, at, sqlTime } from './seed.js';
 
-const ERR_A = 'Invalid label: Junk E-mail (message 18c2f0a9d4e7b6a1 in /Users/someone/mail)';
-const ERR_B = 'Invalid label: Junk E-mail (message 77d0e1f2a3b4c5d6 in /Users/other/mail)';
+const ERR_A = 'Invalid label: Junk E-mail (message 18c2f0a9d4e7b6a1 in /srv/archive/mail)';
+const ERR_B = 'Invalid label: Junk E-mail (message 77d0e1f2a3b4c5d6 in /srv/other/mail)';
 
 let db: Database.Database;
 beforeAll(() => {
