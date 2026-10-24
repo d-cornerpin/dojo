@@ -57,6 +57,7 @@ import { laneLimit, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { readMeasureFacts, formatMeasureLine, type MeasureFacts } from '../work/measure-view.js';
 import { MEASURE_TOOLS } from '../work/measure.js';
+import { planStepLineOf } from '../work/plan-store.js';   // v3.5 PLAN BEFORE PROJECT
 import { conversationLabel } from './party-label.js';
 import {
   capLabel, originLabel, spend, laterSection, readLaterMessages,
@@ -144,6 +145,8 @@ interface TaskView {
   inView?: boolean;
   /** v3.5: the task's measure and ledger (`work/measure-view.ts`); null for a waiting task. */
   measure?: MeasureFacts | null;
+  /** v3.5: the line of its project's plan this task is on (`Plan step 2 of 4 — …`), from the records; null for a waiting task or a project with no plan. */
+  planLine?: string | null;
 }
 
 type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other' | 'later';
@@ -223,6 +226,7 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
   if (v.measure && !v.waiting) line += `\n  ${formatMeasureLine(v.measure, caps.title)}`;
+  if (v.planLine && !v.waiting) line += `\n  ${v.planLine.length > caps.note ? `${v.planLine.slice(0, caps.note)}...` : v.planLine}`;   // the plan's words, cut at the note width only when the room is short
   line += v.waiting ? pointerLine(v.origin, caps) : req + newerLine(v) + edited;
   if (t.notes) {
     const lastNote = t.notes.split('\n').filter(Boolean).pop();
@@ -598,7 +602,9 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
       const laters = isWaiting ? [] : readLaterMessages(t.id).map((m) => ({ ...m, inView: inView(m) }));
       let measure: MeasureFacts | null = null;
       try { measure = isWaiting ? null : readMeasureFacts(t.id); } catch { /* progress is best-effort, like the stamps */ }
-      return { t, stamp, steps, origin, waiting, edited, newer, laters, inView: !isWaiting && inView(origin), measure };
+      let planLine: string | null = null;
+      try { planLine = isWaiting ? null : planStepLineOf(t.id); } catch { /* the plan line is best-effort, like the stamps */ }
+      return { t, stamp, steps, origin, waiting, edited, newer, laters, inView: !isWaiting && inView(origin), measure, planLine };
     };
     const seen: TaskView[] = [];
     const viewAt = (i: number): TaskView => (seen[i] ??= read(tasks[i]));
@@ -728,6 +734,7 @@ export function activeTasksWorstCaseTokens(): number {
     })),
     inView: shape === 'inView',
     measure: widestMeasure,
+    planLine: 'p'.repeat(noteCap + 10),   // v3.5: a plan line over the note width, so the cut and its `...` are counted
   });
   let worst = 0;
   // Round 6: three line shapes — current, waiting, and in view (a pointer to the conversation).

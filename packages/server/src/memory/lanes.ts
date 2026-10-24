@@ -557,7 +557,8 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // pool; this is only the framing's worst case. Group B frees the pin's 2,081 reserved tokens.
     // v3.5 (done is measured): 3,980 -> 4,501 (+521), a current row's Progress line (its touched count, the
     // longest countable tool's name, its query and unit at the title width, three 10-digit counts, the instant).
-    reserveTokens: 4501,
+    // v3.5 (plan before project): 4,501 -> 4,759 (+258), a current row's plan line, cut at the last-note width (+ its `...`).
+    reserveTokens: 4759,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
