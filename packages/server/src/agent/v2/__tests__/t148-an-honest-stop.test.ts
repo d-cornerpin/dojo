@@ -583,8 +583,8 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
   it('v3.5 N42: an auto agent whose router models are all over the limit (the free 8K model off the router) tells the owner ONCE, hands nothing back, and the message is answered after the limit is raised', async () => {
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
     db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'light'`).run();
-    toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools; the 200K one can
-    budget(1.00, 0.999);   // under the line, so the free model is still offered; the priced one's call would cross it
+    toolPayload.tokens = 7_000;   // as before; the free 8K model is off the router, so it plays no part here
+    budget(1.00, 0.999);   // under the line, but the priced router model's call would cross it
     await runV2Turn(AGENT);
     expectAnHonestStop(/spending limit/i);
     expect(callModelSpy, 'the stop came from the router: no model was dialed').not.toHaveBeenCalled();
@@ -807,7 +807,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
   it('v3.5 N42: a stop whose causes are the limit AND a rate limit is an honest park (the limit does not clear itself), not a repeat-then-quarantine', async () => {
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
     db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'light'`).run();   // N42: see above
-    toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools
+    toolPayload.tokens = 7_000;   // as before; the free 8K model is off the router
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
       VALUES ('m-b', 'test-provider', 'B', 'b', '["text","tools"]', 200000, 4096, 1, 3, 15)`).run();
     db().prepare(`UPDATE router_tier_models SET model_id = 'm-b' WHERE tier_id = 'heavy'`).run();   // standard: test-model, heavy: m-b

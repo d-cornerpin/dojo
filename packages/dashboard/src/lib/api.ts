@@ -1443,7 +1443,7 @@ export const getRouterConfig = async (): Promise<ApiResponse<{
   }>;
   dimensions: Array<{ id: string; name: string; weight: number; isEnabled: boolean }>;
   /** v3.5 N42: the one window every automatic pick runs at; null with no model on light/standard/heavy. */
-  window: { tokens: number; floorTokens: number; floorModelName: string; minTokens: number; minAgentName: string | null } | null;
+  window: { tokens: number; floorTokens: number; floorModelName: string; minTokens: number; minAgentName: string | null; unmeasuredAgentNames: string[] } | null;
 }>> => {
   return request('/router/config');
 };

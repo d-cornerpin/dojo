@@ -213,7 +213,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
       await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
     }
     const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
-    expect(said, `what the owner was shown:\n${said}`).toMatch(/cannot hold a conversation|can hold its instructions and tools/);
+    expect(said, `what the owner was shown:\n${said}`).toMatch(/router's smallest model, Tiny/);   // N42 fix round 1: the owner's words name it
     expect(said).not.toMatch(/Healer/);
     expect(starvedCards(), 'the card is true: at the router window it cannot hold one').toBe(1);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('error');

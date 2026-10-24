@@ -45,6 +45,8 @@
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import type { ContextWindowPolicy } from './budget.js';
+import { autoRouterContext } from '../router/router-window.js';
+import { autoStarvedCardText } from '../router/router-window-words.js';
 
 const logger = createLogger('window-starvation');
 
@@ -101,7 +103,8 @@ export function reportStarvedWindow(
     broadcast({
       type: 'chat:error',
       agentId,
-      error: starvedWindowCardText(policy),
+      // N42 fix round 1: an auto agent's card names the router's smallest model and the slider.
+      error: ((r) => (r ? autoStarvedCardText(r) : starvedWindowCardText(policy)))(autoRouterContext(agentId)),
       code: 'WINDOW_TOO_SMALL',
       severity: 'error',
       // FALSE, and that is the honest value. Unlike a provider outage or a summary writer

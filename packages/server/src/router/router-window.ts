@@ -14,9 +14,10 @@
 //
 //   floor          the smallest effective window (`getContextWindow`, num_ctx applied) among the
 //                  models assigned to light, standard and heavy. The `system` tier is not counted:
-//                  it dials titles and classifiers, never an agent's conversation. Every assigned
-//                  model counts, one whose provider is down included, so the figure does not jump
-//                  when a provider trips.
+//                  it dials titles and classifiers, never an agent's conversation. Every ENABLED
+//                  assigned model counts, one whose provider is down included, so the figure does not
+//                  jump when a provider trips; a model the owner disabled is never dialled, so it
+//                  does not set the window (fix round 1).
 //   router window  min(setting ?? floor, floor). The floor is the slider's own top — an arithmetic
 //                  consequence (no tier model can run at more than its own window), not a cap.
 //   a turn's window  the router window for an auto-routed agent; `getContextWindow(model)` unchanged
@@ -40,21 +41,21 @@ export const ROUTER_WINDOW_SETTING = 'router.context_window';
 const AGENT_TIERS = ['light', 'standard', 'heavy'] as const;
 
 /** The smallest window among the models on the light, standard and heavy tiers, or null when none is. */
-export function routerWindowFloor(): { tokens: number; modelName: string } | null {
+export function routerWindowFloor(): { tokens: number; modelName: string; modelId: string } | null {
   let rows: Array<{ model_id: string; name: string | null }>;
   try {
     rows = getDb().prepare(
       `SELECT DISTINCT rtm.model_id, m.name FROM router_tier_models rtm LEFT JOIN models m ON m.id = rtm.model_id
-       WHERE rtm.tier_id IN (${AGENT_TIERS.map(() => '?').join(', ')})`,
+       WHERE rtm.tier_id IN (${AGENT_TIERS.map(() => '?').join(', ')}) AND COALESCE(m.is_enabled, 1) = 1`,
     ).all(...AGENT_TIERS) as Array<{ model_id: string; name: string | null }>;
   } catch {
     return null;
   }
-  let floor: { tokens: number; modelName: string } | null = null;
+  let floor: { tokens: number; modelName: string; modelId: string } | null = null;
   for (const r of rows) {
     if (r.model_id === 'auto' || r.model_id === '__auto__') continue;
     const tokens = getContextWindow(r.model_id);
-    if (floor === null || tokens < floor.tokens) floor = { tokens, modelName: r.name ?? r.model_id };
+    if (floor === null || tokens < floor.tokens) floor = { tokens, modelName: r.name ?? r.model_id, modelId: r.model_id };
   }
   return floor;
 }
@@ -76,7 +77,16 @@ export function routerWindowTokens(): number | null {
   return Math.min(routerWindowSetting() ?? floor.tokens, floor.tokens);
 }
 
-function isAutoRouted(agentId: string): boolean {
+/** For an auto-routed agent: the router's smallest model and the window its picks run at (the owner's
+ *  words when that window cannot hold it name these). Null for a fixed-model agent, or with no floor. */
+export function autoRouterContext(agentId: string): { modelName: string; floorTokens: number; windowTokens: number } | null {
+  if (!isAutoRouted(agentId)) return null;
+  const floor = routerWindowFloor();
+  const windowTokens = routerWindowTokens();
+  return floor === null || windowTokens === null ? null : { modelName: floor.modelName, floorTokens: floor.tokens, windowTokens };
+}
+
+export function isAutoRouted(agentId: string): boolean {
   try {
     const modelId = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
     return modelId === 'auto' || modelId === '__auto__';
@@ -99,9 +109,12 @@ export interface RouterWindowReport {
   /** The slider's top: the smallest tier model's window, and that model. */
   floorTokens: number;
   floorModelName: string;
-  /** The slider's low end, MEASURED: below it the named agent's instructions and tools alone overflow. */
+  /** The slider's low end, MEASURED: the smallest window the named agent can run in (instructions, tools
+   *  and the output reserve, over the fill line). Above `floorTokens`, that agent cannot run on automatic. */
   minTokens: number;
   minAgentName: string | null;
+  /** Agents whose measurement failed: left out of the low end and named, never a failed Router tab. */
+  unmeasuredAgentNames: string[];
 }
 
 /** What the Router tab shows. Null when no model is on the three tiers (no slider is shown then). */
@@ -109,18 +122,26 @@ export async function routerWindowReport(): Promise<RouterWindowReport | null> {
   const floor = routerWindowFloor();
   const tokens = routerWindowTokens();
   if (floor === null || tokens === null) return null;
-  const [{ measureAgentToolPayloadTokens }, { buildAssemblyContext, assembleSystemFromRegistry }, { estimateTokens }] = await Promise.all([
-    import('../tools/tool-docs.js'), import('../prompt/registry/assembler.js'), import('../memory/budget.js'),
+  const [{ measureAgentToolPayloadTokens }, { buildAssemblyContext, assembleSystemFromRegistry }, { estimateTokens, toolAndOutputReserve, CONTEXT_THRESHOLD }, { getModelOutputCap }] = await Promise.all([
+    import('../tools/tool-docs.js'), import('../prompt/registry/assembler.js'), import('../memory/budget.js'), import('../agent/model.js'),
   ]);
   const autos = getDb().prepare(
     "SELECT id, name FROM agents WHERE model_id IN ('auto', '__auto__') AND status != 'terminated' ORDER BY name",
   ).all() as Array<{ id: string; name: string }>;
+  const outputCap = getModelOutputCap(floor.modelId);
   let minTokens = 0;
   let minAgentName: string | null = null;
+  const unmeasuredAgentNames: string[] = [];
   for (const a of autos) {
-    const system = estimateTokens(assembleSystemFromRegistry(buildAssemblyContext(a.id, '__auto__')).text);
-    const need = system + await measureAgentToolPayloadTokens(a.id);
-    if (need > minTokens) { minTokens = need; minAgentName = a.name; }
+    try {
+      const system = estimateTokens(assembleSystemFromRegistry(buildAssemblyContext(a.id, '__auto__')).text);
+      const reserve = toolAndOutputReserve({ toolPayloadTokens: await measureAgentToolPayloadTokens(a.id), maxOutputTokens: outputCap });
+      // The inverse of `contextWindowPolicy`: the smallest window whose fill line, less the reserve, holds the prompt.
+      const need = Math.ceil((system + reserve) / CONTEXT_THRESHOLD);
+      if (need > minTokens) { minTokens = need; minAgentName = a.name; }
+    } catch {
+      unmeasuredAgentNames.push(a.name);
+    }
   }
-  return { tokens, floorTokens: floor.tokens, floorModelName: floor.modelName, minTokens, minAgentName };
+  return { tokens, floorTokens: floor.tokens, floorModelName: floor.modelName, minTokens, minAgentName, unmeasuredAgentNames };
 }

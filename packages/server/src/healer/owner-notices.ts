@@ -39,6 +39,10 @@ export const stuckWords = (name: string): string =>
  *  must act on (OR-V333-SET (3)); the condition is `nofit:<agentId>` and ends when the agent is released. */
 export const noFitWords = (name: string): string =>
   `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
+/** N42 fix round 1: an agent on automatic model choice has no model of its own; the router's one window is too
+ *  small. The Router tab names the smallest model (this light module reads no window). */
+export const autoNoFitWords = (name: string): string =>
+  `${name} can't run on automatic model choice: the router's one window is too small for its instructions and tools. On the Router tab in Settings, raise the "Context window for automatic choice" slider, or raise or remove the router's smallest model (the tab names it), or give it fewer tools, and it will answer your message.`;
 /** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
  *  the words never name an agent (the card is re-derived from the key alone). */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
@@ -117,12 +121,17 @@ function recordTold(key: string, family?: string): boolean {
 }
 
 /** The words a condition's card carries, from its key. */
+function isAutoAgent(agentId: string): boolean {
+  const m = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
+  return m === 'auto' || m === '__auto__';
+}
+
 export function wordsOf(key: string): string {
   const [kind, agentId = ''] = key.split(/:(.*)/s);
   const nameOf = (id: string): string =>
     (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? id;
   return kind === 'stuck' ? stuckWords(nameOf(agentId))
-    : kind === 'nofit' ? noFitWords(nameOf(agentId))
+    : kind === 'nofit' ? (isAutoAgent(agentId) ? autoNoFitWords : noFitWords)(nameOf(agentId))
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
 }

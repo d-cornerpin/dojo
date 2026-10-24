@@ -47,10 +47,10 @@ import { routedCandidateCosts } from '../../router/selector.js';
 import { limitTurnsAway } from './limit-turns-away.js';
 import type { PromptTurnContext } from '../../prompt/assembler.js';
 import { honestStopWords, type HonestStopKind } from './error-format.js';
+import { noFitOwnerWords } from '../../router/router-window-words.js';
 import { lockTag, parkedAgents, parkedCauseOf, parkedForFreeDown, BUDGET_STOP_CODE, NO_MODEL_FITS_CODE, FREE_FALLBACK_DOWN_CODE, FREE_DOWN_TAG } from './honest-stop-lock.js';
 
 const logger = createLogger('honest-stop');
-
 
 export interface HonestStop {
   kind: HonestStopKind;
@@ -126,7 +126,7 @@ export async function classifyHonestStop(agentId: string, error: unknown): Promi
     const row = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
     if (!row?.model_id) return null;
     // A routed turn's per-pick refusals have their own exit (call-llm). The bare refusal that reaches
-    // here is the FIRST assembly's, sized for the largest window the router opens a tier on (t149 F5):
+    // here is the FIRST assembly's, sized for the router window (v3.5 N42; t149 F5):
     // when no model of the agent's own holds it, no pick can — the same stop as a pinned agent.
     if (row.model_id === 'auto') return (await agentFits(agentId)) ? null : noFit();
     // The pinned model holds the agent, and the limit sent the call to a free stand-in that cannot.
@@ -231,7 +231,7 @@ export async function tryHonestStopRecovery(state: AgentTurnState, error: unknow
   if (alreadyTold) return true;
 
   noteInChat(agentId, `[System (platform notice): ${stop.words}]`, noticeIdentityFor(agentId, state.lastUserMessageId));   // the notice IS that message's line (its id), so a later message does not re-tell it
-  broadcast({ type: 'chat:error', agentId, error: stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
+  broadcast({ type: 'chat:error', agentId, error: stop.kind === 'no_model_fits' ? noFitOwnerWords(agentId) : stop.words, code: 'NO_MODEL', severity: 'warning', retryable: false });
   // A no-fit agent is a broken agent the owner must act on (OR-V333-SET (3)): ONE text through the
   // owner-notice door, and its lasting card (healer/owner-notices.ts, `nofit:<agent>`), same words.
   if (stop.kind === 'no_model_fits' && tellOwnerOnce(`nofit:${agentId}`)) sendAlert(wordsOf(`nofit:${agentId}`), 'notice');

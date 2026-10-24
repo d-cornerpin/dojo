@@ -16,6 +16,8 @@ export interface RouterWindowData {
   floorModelName: string;
   minTokens: number;
   minAgentName: string | null;
+  /** Agents whose measurement failed on the server (left out of the low end). */
+  unmeasuredAgentNames?: string[];
 }
 
 const k = (tokens: number): string => `${Math.round(tokens / 1000)}k`;
@@ -56,9 +58,19 @@ export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWind
             {saved && <span className="text-xs text-cp-teal">Saved!</span>}
           </div>
           <p className="text-sm font-mono text-ui">{k(value)} — the smallest model on the router is {routerWindow.floorModelName} ({k(routerWindow.floorTokens)})</p>
-          {routerWindow.minAgentName && (
+          {routerWindow.minAgentName && routerWindow.minTokens > routerWindow.floorTokens && (
+            <p className="text-xs text-cp-coral">
+              {routerWindow.minAgentName} needs more room than {routerWindow.floorModelName} has; it cannot run on automatic until that model is raised or taken off the router.
+            </p>
+          )}
+          {routerWindow.minAgentName && routerWindow.minTokens <= routerWindow.floorTokens && (
             <p className="text-xs text-ui/40">
-              The lowest setting, {k(routerWindow.minTokens)}, is what {routerWindow.minAgentName}&apos;s instructions and tools take up on their own.
+              The lowest setting, {k(routerWindow.minTokens)}, is the least {routerWindow.minAgentName} can run in: its instructions, its tools and room to answer.
+            </p>
+          )}
+          {(routerWindow.unmeasuredAgentNames ?? []).length > 0 && (
+            <p className="text-xs text-ui/40">
+              Could not measure {(routerWindow.unmeasuredAgentNames ?? []).join(', ')}; the lowest setting leaves {(routerWindow.unmeasuredAgentNames ?? []).length === 1 ? 'it' : 'them'} out.
             </p>
           )}
         </>

@@ -573,7 +573,7 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     expect(status()).toBe('paused');
     const texts = sendAlertSpy.mock.calls.map((c) => c[0] as string);
     expect(texts, 'one text').toHaveLength(1);
-    expect(texts[0]).toMatch(/Dock Desk.*none of its models can hold/i);
+    expect(texts[0]).toMatch(/Dock Desk can't run on automatic model choice.*Router tab/i);   // N42 fix round 1: the router's words
     expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
     expect(ask(), 'the message is kept, still the owner\'s open ask').toBe('open');
   });

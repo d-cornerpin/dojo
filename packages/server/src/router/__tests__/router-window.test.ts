@@ -19,10 +19,13 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
   closeDb: vi.fn(),
 }));
-const tools = vi.hoisted(() => ({ byAgent: {} as Record<string, number> }));
+const tools = vi.hoisted(() => ({ byAgent: {} as Record<string, number>, throwsFor: new Set<string>() }));
 vi.mock('../../tools/tool-docs.js', async () => {
   const actual = await vi.importActual<typeof import('../../tools/tool-docs.js')>('../../tools/tool-docs.js');
-  return { ...actual, measureAgentToolPayloadTokens: async (agentId: string) => tools.byAgent[agentId] ?? 0 };
+  return { ...actual, measureAgentToolPayloadTokens: async (agentId: string) => {
+    if (tools.throwsFor.has(agentId)) throw new Error('the tool surface could not be read');
+    return tools.byAgent[agentId] ?? 0;
+  } };
 });
 
 import { runMigrations } from '../../db/migrations.js';
@@ -52,6 +55,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   tools.byAgent = {};
+  tools.throwsFor = new Set();
   db().prepare(`INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
     VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now')),
            ('prov-down', 'Down', 'openai-compatible', 'api_key', 0, datetime('now'), datetime('now'))`).run();
@@ -66,7 +70,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('the floor', () => {
   it('is the smallest window among the light, standard and heavy models, with that model\'s name', () => {
-    expect(routerWindowFloor()).toEqual({ tokens: 32_000, modelName: 'Light 32K' });
+    expect(routerWindowFloor()).toMatchObject({ tokens: 32_000, modelName: 'Light 32K' });
   });
 
   it('the system tier is not counted: it dials titles and classifiers, never an agent\'s conversation', () => {
@@ -78,7 +82,14 @@ describe('the floor', () => {
   it('every assigned model counts, a provider that is down included, so the figure does not jump when one trips', () => {
     model('m-down', 'Down 24K', 24_000, 'prov-down');
     assign('standard', 'm-down', 1);
-    expect(routerWindowFloor()).toEqual({ tokens: 24_000, modelName: 'Down 24K' });
+    expect(routerWindowFloor()).toMatchObject({ tokens: 24_000, modelName: 'Down 24K' });
+  });
+
+  it('fix round 1: a model the owner DISABLED on a tier is never dialled, so it does not set the floor', () => {
+    model('m-off', 'Disabled 8K', 8_000);
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run('m-off');
+    assign('light', 'm-off', 1);
+    expect(routerWindowFloor()).toMatchObject({ tokens: 32_000, modelName: 'Light 32K' });
   });
 
   it('with no model on the three tiers there is no floor', () => {
@@ -148,6 +159,31 @@ describe('the Router tab\'s report', () => {
     expect(r!.minTokens, 'instructions plus the 9K tool payload').toBeGreaterThan(9_000);
     expect(r!.minTokens, 'a fixed-model agent does not set the low end').toBeLessThan(50_000);
   });
+  it('fix round 1: the low end is the smallest window the agent can run in — instructions, tools AND the output reserve, over the fill line', async () => {
+    agent('a-big', 'Yard Planner', 'auto');
+    tools.byAgent = { 'a-big': 9_000 };
+    const r = await routerWindowReport();
+    const { contextWindowPolicy } = await import('../../memory/budget.js');
+    // At the low end the agent fits; one thousand tokens below, it does not.
+    const fitsAt = (w: number, sys: number): boolean => contextWindowPolicy(w, { toolPayloadTokens: 9_000, maxOutputTokens: 4096 }).assemblyBudgetTokens >= sys;
+    const sys = r!.minTokens;   // stands in for the bound check below
+    expect(sys).toBeGreaterThan(9_000 + 4096);
+    const { estimateTokens } = await import('../../memory/budget.js');
+    const { buildAssemblyContext, assembleSystemFromRegistry } = await import('../../prompt/registry/assembler.js');
+    const prompt = estimateTokens(assembleSystemFromRegistry(buildAssemblyContext('a-big', '__auto__')).text);
+    expect(fitsAt(r!.minTokens, prompt), 'it runs at the low end').toBe(true);
+    expect(fitsAt(r!.minTokens - 1_000, prompt), 'and not below it').toBe(false);
+  });
+
+  it('fix round 1: one agent that cannot be measured does not take the Router tab down; it is named as not measured', async () => {
+    agent('a-small', 'Dock Desk', 'auto');
+    agent('a-broken', 'Yard Planner', 'auto');
+    tools.byAgent = { 'a-small': 1_000 };
+    tools.throwsFor = new Set(['a-broken']);
+    const r = await routerWindowReport();
+    expect(r).toMatchObject({ minAgentName: 'Dock Desk', unmeasuredAgentNames: ['Yard Planner'] });
+  });
+
   it('no model on the three tiers: no report (the section says so and shows no slider)', async () => {
     db().prepare('DELETE FROM router_tier_models').run();
     expect(await routerWindowReport()).toBeNull();

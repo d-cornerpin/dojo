@@ -66,6 +66,21 @@ describe('the Router tab\'s window slider', () => {
     await waitFor(() => expect(api.setSetting).toHaveBeenCalledWith('router.context_window', '40000'));
   });
 
+  it('fix round 1: an auto agent that needs more room than the smallest model has is named, and the section says it cannot run', async () => {
+    reply.window = { tokens: 8_000, floorTokens: 8_000, floorModelName: 'Dock Small', minTokens: 21_500, minAgentName: 'Dock Desk' };
+    render(<RouterTab />);
+    await waitFor(() => expect(slider()).toBeTruthy());
+    expect(screen.getByText(/Dock Desk needs more room than Dock Small has; it cannot run on automatic until that model is raised or taken off the router/)).toBeTruthy();
+    expect(screen.queryByText(/The lowest setting/), 'no "lowest setting" above the top').toBeNull();
+  });
+
+  it('fix round 1: an agent that could not be measured is named as such', async () => {
+    reply.window = { tokens: 64_000, floorTokens: 128_000, floorModelName: 'Dock Standard', minTokens: 21_500, minAgentName: 'Dock Desk', unmeasuredAgentNames: ['Yard Planner'] };
+    render(<RouterTab />);
+    await waitFor(() => expect(slider()).toBeTruthy());
+    expect(screen.getByText(/Could not measure Yard Planner/)).toBeTruthy();
+  });
+
   it('with no models on the three tiers the section says so and shows no slider', async () => {
     reply.window = null;
     render(<RouterTab />);
