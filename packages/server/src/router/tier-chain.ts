@@ -1,0 +1,40 @@
+// ════════════════════════════════════════════════════════════════════════════
+// THE ROUTER'S TIERS AND THEIR FALLBACK ORDER (moved out of `router/selector.ts` by t268 so the summary writers
+// can read the same order without importing the router's selection graph: one owner of one rule). A leaf: it
+// reads the database and nothing else.
+// ════════════════════════════════════════════════════════════════════════════
+
+import { getDb } from '../db/connection.js';
+
+// Tier fallback order: every tier can fall back downward. A rate-limited
+// Opus (heavy) should fall back to Sonnet (standard), not crash the agent.
+export const TIER_FALLBACK: Record<string, string[]> = {
+  light: ['light', 'standard', 'heavy'],
+  standard: ['standard', 'heavy', 'light'],
+  heavy: ['heavy', 'standard', 'light'],
+};
+
+export interface TierModelRow {
+  model_id: string;
+  provider_id: string;
+  api_model_id: string;
+  priority: number;
+  input_cost_per_m: number | null;
+  output_cost_per_m: number | null;
+}
+
+export function getTierModels(tierId: string): TierModelRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT tm.model_id, m.provider_id, m.api_model_id, tm.priority,
+           m.input_cost_per_m, m.output_cost_per_m
+    FROM router_tier_models tm
+    JOIN models m ON m.id = tm.model_id
+    WHERE tm.tier_id = ? AND m.is_enabled = 1
+    ORDER BY tm.priority ASC
+  `).all(tierId) as TierModelRow[];
+}
+
+/** v3.5 (t268, owner 2026-10-24, "The agents model."): what an auto-routed agent's ordinary (standard-tier) request
+ *  walks, in the router's own order — its "own model" for summaries. */
+export const standardTierChain = (): string[] => [...new Set(TIER_FALLBACK.standard.flatMap((t) => getTierModels(t).map((m) => m.model_id)))];

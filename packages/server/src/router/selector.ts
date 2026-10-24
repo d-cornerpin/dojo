@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';   // t268: the one owner of the tier order
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import { mayDialProvider } from '../providers/billing-breaker.js';
@@ -25,35 +26,6 @@ export interface SelectedModel {
   providerId: string;
   apiModelId: string;
   fallbackUsed: boolean;
-}
-
-// Tier fallback order: every tier can fall back downward. A rate-limited
-// Opus (heavy) should fall back to Sonnet (standard), not crash the agent.
-const TIER_FALLBACK: Record<string, string[]> = {
-  light: ['light', 'standard', 'heavy'],
-  standard: ['standard', 'heavy', 'light'],
-  heavy: ['heavy', 'standard', 'light'],
-};
-
-interface TierModelRow {
-  model_id: string;
-  provider_id: string;
-  api_model_id: string;
-  priority: number;
-  input_cost_per_m: number | null;
-  output_cost_per_m: number | null;
-}
-
-function getTierModels(tierId: string): TierModelRow[] {
-  const db = getDb();
-  return db.prepare(`
-    SELECT tm.model_id, m.provider_id, m.api_model_id, tm.priority,
-           m.input_cost_per_m, m.output_cost_per_m
-    FROM router_tier_models tm
-    JOIN models m ON m.id = tm.model_id
-    WHERE tm.tier_id = ? AND m.is_enabled = 1
-    ORDER BY tm.priority ASC
-  `).all(tierId) as TierModelRow[];
 }
 
 /**
@@ -246,9 +218,6 @@ export function routedFirstPicks(): string[] {
   }
   return [...picks];
 }
-
-/** t268 (owner 2026-10-24, "The agents model."): what an auto-routed agent's ordinary (standard-tier) request walks, in order. */
-export const standardTierChain = (): string[] => [...new Set(TIER_FALLBACK.standard.flatMap((t) => getTierModels(t).map((m) => m.model_id)))];
 
 /** Skips that clear without the agent changing. */
 const PASSING = new Set<RoutedSkip>(['rate_limit', 'provider_down']);

@@ -28,7 +28,7 @@ import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { standardModelRowId } from '../services/local-standard.js';
-import { standardTierChain } from '../router/selector.js';
+import { standardTierChain } from '../router/tier-chain.js';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
