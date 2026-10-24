@@ -205,7 +205,8 @@ describe('TB8 JOB 2 — the review WIRES the law: recorded, said out loud, re-dr
     // T14's recorded assignee-working skip is a DIFFERENT mechanism and this task does not
     // widen, narrow or move it. If it disappears, that is a regression, not a side effect.
     const src = pmSource();
-    expect(src).toMatch(/assigneeStatus === 'working'\) continue;/);
+    // v3.5 D1 fix round 2: narrowed only for a continued measured job touching no item (`looping`).
+    expect(src).toMatch(/assigneeStatus === 'working' && !looping\) continue;/);
     expect(src).toMatch(/PM poke deferred: assignee is mid-run/);
   });
 });

@@ -69,7 +69,8 @@ const OVER_IMESSAGE = {
 } as const;
 
 async function continuedTurn(taskId: string, text: string, work: { from: number; n: number } | null,
-  over: Partial<Record<string, unknown>> = {}): Promise<AgentTurnState> {
+  over: Partial<Record<string, unknown>> = {},
+  more: { earlier?: ToolCall[]; withThisLine?: ToolCall[] } = {}): Promise<AgentTurnState> {
   turnNumber += 1;
   lastStart = Math.max(Date.now(), lastStart + 1000);
   armTimerWake(AGENT);
@@ -82,6 +83,10 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
     recordTouched(taskId, 'gmail_label', Array.from({ length: work.n }, (_, i) => `gmail:msg:m${work.from + i}`), lastStart + 1);
     state = advance(state, { toolCalls: [label], toolResults: [{ toolCallId: label.id, name: 'gmail_label', isError: false, content: '[OK]' } as AgentTurnState['toolResults'][number]] });
   }
+  // Calls an EARLIER pass of this turn made, which succeeded.
+  for (const c of more.earlier ?? []) {
+    state = advance(state, { toolCalls: [...state.toolCalls, c], toolResults: [...state.toolResults, { toolCallId: c.id, name: c.name, isError: false, content: '[OK]' } as AgentTurnState['toolResults'][number]] });
+  }
   msg += 1;
   const ctx = {
     agentId: AGENT, turnCtx: { agentId: AGENT, kind: 'user', convKey: null, conversationId: null, root: undefined, turnNumber, goingIdleDetectorRanThisTurn: false } as never,
@@ -93,7 +98,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
     a2aReplyAssignMessageId: null, settledContextWakeTurn: false, waitingConvs: [], inboundChannel: null,
     latestUserSource: null, lastUserMessageContent: null, configuredModelId: 'test-model',
     turnStartedAt: new Date(lastStart).toISOString(), messageId: `msg-${msg}`,
-    result: { content: text, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' },
+    result: { content: text, toolCalls: more.withThisLine ?? [], inputTokens: 10, outputTokens: 5, stopReason: more.withThisLine ? 'tool_use' : 'end_turn' },
     maxToolLoops: 75, reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
     stashContinuationIfHuman: stash, ...over,
@@ -179,5 +184,51 @@ describe('pre-review ruling 2: a continued job tells the owner only what he need
     expect(routed[2]).toContain('every inbox message is labelled');
     expect(ownerLaneReplies()).toHaveLength(1);
     expect(workingNotes()).toBe(2);
+  });
+
+  // ── FIX ROUND 2 (ruling 1): a question or a blocker always reaches the owner once, whatever task it
+  // concerns; an answer to a question he is waiting on is never a note. Only plain progress is quiet. ──
+
+  it('NP1: a question asked by pausing ANOTHER carried task reaches him once, and the job itself continues', async () => {
+    const id = await aContinuedMeasuredJob();
+    const opened = await call('work_open:task', { title: 'File the receipts', goal: 'receipts filed' });
+    const other = /task_id=([0-9a-f-]{36})/.exec(opened.content)![1];
+    await call('work_update:status', { task_id: other, status: 'in_progress' });
+    carryJobWork(AGENT, [id, other]);
+    await call('work_update:status', { task_id: other, status: 'paused', notes: 'waiting for the owner: which folder?' });
+    const pause = { id: 'tc-pause-b', name: 'work_update', arguments: { action: 'status', task_id: other, status: 'paused' } } as ToolCall;
+    countMeasure.mockResolvedValue({ ok: true, count: 10051 });
+    await continuedTurn(id, 'Which folder should the receipts go in?', { from: 0, n: 500 }, {}, { earlier: [pause] });
+    expect(ownerLaneReplies()).toEqual([expect.stringContaining('Which folder should the receipts go in?')]);
+    expect(workingNotes()).toBe(0);
+    expect(parkJob).toHaveBeenCalledTimes(1);   // the measured job keeps going
+  });
+
+  it('NP3: a question that rides WITH the job task\'s own pause call is judged after it, and reaches him (over iMessage)', async () => {
+    const id = await aContinuedMeasuredJob();
+    countMeasure.mockResolvedValue({ ok: true, count: 10051 });
+    recordMeasured(id, { ok: true, count: 10051 }, Date.now());
+    const pause = { id: 'tc-pause-a', name: 'work_update', arguments: { action: 'status', task_id: id, status: 'paused', notes: 'waiting for the owner' } } as ToolCall;
+    const out = await continuedTurn(id, 'Should newsletters be labelled Done too, or left alone?', null, OVER_IMESSAGE, { withThisLine: [pause] });
+    expect(out.lastAssistantTextForIM).toContain('Should newsletters be labelled Done too');
+    expect(workingNotes()).toBe(0);
+  });
+
+  it('owner-answer: his answer to a question he is waiting on is never a note, even on the job\'s own run', async () => {
+    const id = await aContinuedMeasuredJob();
+    countMeasure.mockResolvedValue({ ok: true, count: 10051 });
+    recordMeasured(id, { ok: true, count: 10051 }, Date.now());
+    await continuedTurn(id, 'About 10,051 are left; I am still going.', { from: 0, n: 500 },
+      { hasUnansweredUser: true, triggerRow: { rowid: 1, content: 'how many are left?' } });
+    expect(ownerLaneReplies()).toEqual([expect.stringContaining('10,051 are left')]);
+    expect(workingNotes()).toBe(0);
+  });
+
+  it('CONTROL: a plain progress line on the same run is still kept quiet', async () => {
+    const id = await aContinuedMeasuredJob();
+    countMeasure.mockResolvedValue({ ok: true, count: 10051 });
+    await continuedTurn(id, 'Labelled 500 more.', { from: 0, n: 500 });
+    expect(ownerLaneReplies()).toEqual([]);
+    expect(workingNotes()).toBe(1);
   });
 });

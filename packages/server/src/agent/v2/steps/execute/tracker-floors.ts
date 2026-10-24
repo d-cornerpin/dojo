@@ -136,8 +136,8 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
     // STALE_TASK_WINDOW_MINUTES) no longer suppresses the tiers. That was
     // the second disarm hole: an agent sitting on a long-dead in_progress
     // task could do unlimited untracked multi-step work and never be
-    // nudged. Any tracker mutation bumps updated_at, so genuinely-active
-    // work stays inside the window. A stale open task (if any) is captured
+    // nudged. Movement is `taskMovedAtSql` (a tracker write, or an item the task's calls
+    // touched), so active work stays inside the window; a parked job touching nothing does not. A stale open task (if any) is captured
     // so the nudge can name it and offer "update it, or open a new one".
     let hasRecentlyTendedTask = false;
     let hasAnyInProgressTask = false;
@@ -145,6 +145,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
     try {
       const { listTasks } = await import('../../../../tracker/schema.js');
       const { normalizeDbTimestamp } = await import('../../../../scheduler/engine.js');
+      const { taskLastMovedAt } = await import('../../../../tracker/liveness.js');
       const cutoffMs = Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000;
       // NEXT-WAVE item 2 (verified misfire): candidates are in_progress ONLY.
       // on_deck (queued / scheduled) tasks are NOT work the agent is
@@ -160,7 +161,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       );
       for (const t of candidates) {
         hasAnyInProgressTask = true;
-        const tendedMs = new Date(normalizeDbTimestamp(t.updatedAt)).getTime();
+        const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // v3.5 D1: REAL movement (ledger included); a park touches nothing
         if (tendedMs >= cutoffMs) {
           hasRecentlyTendedTask = true;
         } else if (!staleOpenTask) {

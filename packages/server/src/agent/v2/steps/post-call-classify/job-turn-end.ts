@@ -30,6 +30,10 @@ import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-sto
 import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
 import { lastTurnEnd } from '../../../../work/job-momentum.js';
 import { novelCallsInTurn } from '../../../../tracker/effort-ledger.js';
+import { succeededIn } from '../../../../work/ledger-store.js';
+import { toolOpKey } from '../../../../tools/work-verbs.js';
+import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
+import type { ToolCall } from '@dojo/shared';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
 
@@ -100,13 +104,31 @@ export function jobAtPassEndNow(state: AgentTurnState, ctx: Pick<PostCallClassif
   return hit?.key === passKey(state) ? hit.facts : storedFacts(state, ctx.agentId, ctx.db);
 }
 
-/** Is this pass the engine's continuation of a measured job that still has items left? (R4) While it
- *  is, the turn's text is progress and stays on the record; the owner hears from the job when it is
- *  finished (the reading is 0), when it stalls (the `stalled` path to the PM), or when the agent asks
- *  him or reports a blocker through the tracker's own doors ("paused" waiting on him, "blocked"): the
- *  task then is no longer the job, and the turn speaks under the existing rules for an engine turn. */
-export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db'>): boolean {
+/** A status call that is a door to the owner: "paused" (waiting on him) or "blocked", on ANY task. */
+const isDoorCall = (tc: Pick<ToolCall, 'name' | 'arguments'>): boolean =>
+  toolOpKey(tc.name, tc.arguments) === 'work_update:status'
+  && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
+
+/** Does this turn speak to the owner whatever the job is doing? (fix round 2, ruling 1): an answer to a
+ *  person who is waiting; a door call riding THIS pass (judged before it runs, so an attempt resolves
+ *  toward answering); or a door call an EARLIER pass of this turn made that succeeded, on any task. */
+function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
+  if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
+  if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
+  const ok = succeededIn(state.toolResults as unknown as Parameters<typeof succeededIn>[0]);
+  return state.toolCalls.some((tc) => isDoorCall(tc) && ok(tc));
+}
+
+/** Is this pass the engine's continuation of a measured job that still has items left, with nothing
+ *  the owner must hear? (R4) While it is, the pass's text is plain progress and stays on the record.
+ *  The owner hears from the job when it is finished (the reading is 0), when it stalls (the `stalled`
+ *  path to the PM), when the agent asks him or reports a blocker through the tracker's doors on any
+ *  task ("paused" waiting on him, "blocked"), or when the turn answers him: those speak under the
+ *  existing rules for an engine turn. The stop rule (`job-continues.ts`) is a different question: the
+ *  job itself keeps continuing unless its own task really leaves `claimed`. */
+export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (!runCarriesJob(ctx.agentId)) return false;   // only the run the park's own wake started
+  if (speaksThisTurn(state, ctx)) return false;
   const job = jobAtPassEndNow(state, ctx);
   if (!job?.measure || job.remaining === null || job.remaining <= 0) return false;
   return lastTurnEnd(job.taskId)?.kind === 'continued';

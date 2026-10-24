@@ -144,7 +144,11 @@ describe('drive boundary (P2)', () => {
 
   it('pokes never fire mid-turn (working-skip), replacing the restart-counter-prompt class', () => {
     const pm = read('tracker/pm-agent.ts');
-    expect(pm).toMatch(/assigneeStatus === 'working'\) continue;/);
+    // v3.5 D1 fix round 2 (orchestrator ruling 3): ONE narrowed exception, `looping` — a continued
+    // measured job that touched no item since the last check-in. Such a chain is mid-turn almost
+    // always, so without it the check-in could never fire; it is not the false positive this skip
+    // exists for (a live turn that IS progressing). Pinned by `a-continued-job-that-touches-nothing-is-checked-in-on.test.ts`.
+    expect(pm).toMatch(/assigneeStatus === 'working' && !looping\) continue;/);
     expect(pm).not.toMatch(/continue from EXACTLY where you stopped/i);
   });
 

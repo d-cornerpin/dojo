@@ -1,4 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
+import { continuedJobTouchingNothing, continuedJobFact } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -2561,14 +2562,17 @@ export async function runPokeCheck(): Promise<void> {
     // recently": an agent that said "on it" and left a task claimed, or a busy agent with a second
     // task it dropped, is still nudged on schedule. (A PM-recorded circling verdict is evidence of
     // what the agent is doing, not an idle clock, and still goes through the fill-in below.)
-    const leftAlone = jobCarriedIds(task.assignedTo).includes(task.id) || agentIsLive(task.assignedTo);
+    // v3.5 D1 (fix round 2): a continued measured job is left alone only while it is touching items, since
+    // the last check-in (or within the first rung's own window); one that touches none is checked in on.
+    const looping = continuedJobTouchingNothing(task.id, lastPokeOf(task.id)?.sentAtMs ?? now - thresholds.first * 1000);
+    const leftAlone = !looping && (jobCarriedIds(task.assignedTo).includes(task.id) || agentIsLive(task.assignedTo));
     // t151 (R-V333-19): while the sweep may not poke, the ladder's clock does not run. A task waiting
     // behind its agent's own running job is not abandoned, and when the job ends its ladder starts at
     // its FIRST rung: the time spent behind the job never counts toward a later one (the walk's items
     // 3 and 10 found the whole job's length as idleness and sent the top rung at once).
-    if (assigneeStatus === 'working' || leftAlone) holdLadder(task.id);
+    if ((assigneeStatus === 'working' && !looping) || leftAlone) holdLadder(task.id);
     else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
-    if (assigneeStatus === 'working') continue;
+    if (assigneeStatus === 'working' && !looping) continue;
     const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
@@ -2830,10 +2834,12 @@ function buildPokeMessage(
       stampLine = `Engine state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`;
     }
   } catch { /* best effort */ }
+  const loopFact = continuedJobFact(task.id);   // v3.5 D1: a continued job that touches nothing says so
   const taskInfo = [
     `Task: ${task.title}`,
     `ID: ${task.id}`,
     ...(stampLine ? [stampLine] : []),
+    ...(loopFact ? [loopFact] : []),
     `Priority: ${task.priority}`,
     `Status: ${task.status}`,
     task.description ? `Description: ${task.description}` : null,
