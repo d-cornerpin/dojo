@@ -27,6 +27,9 @@ import { sourceParts, combineParts } from './summary-check-parts.js';
 import { decisionCharsPerToken } from '../services/token-density.js';
 import { getDecisionProvider } from '../agent/decision-provider.js';
 import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
+import { createHash } from 'node:crypto';
+/** A span no caller named (a direct check): keyed by its source text instead. */
+const contentKey = (t: string): string => createHash('sha256').update(t).digest('hex').slice(0, 32);
 export { passMark };
 
 const logger = createLogger('summary-check');
@@ -53,7 +56,10 @@ const failsAt = passMark;
  * question in `rule` mode never asks the model). `ok` when every probability is below its question's line.
  * When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
-export async function checkSummary(sourceRows: string, summary: string, agentId: string, asked = askedQuestions(), background = false): Promise<SummaryCheck> {
+export async function checkSummary(
+  sourceRows: string, summary: string, agentId: string,
+  { asked = askedQuestions(), background = false, checkId = summaryCheckId(agentId, [`source:${contentKey(sourceRows)}`]) } = {},
+): Promise<SummaryCheck> {
   const questions = Object.fromEntries(asked.map((q) => [q, QUESTIONS[q]]));
   const opts = { purpose: PURPOSE, agentId, background };
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
@@ -77,7 +83,7 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
   const ok = !answers || (invented < failsAt('invented') && dropped < failsAt('dropped') && statedCurrent < failsAt('stated_current'));
   // Every answered check joins the shadow log (the rule today keeps every summary: `false`) under the check's id,
   // derived from the summary's own text (I-4), so a truth source can join it to the summary row it judged.
-  if (answers) for (const q of asked) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: summaryCheckId(summary), ruleSaid: false, modelSaid: answers[q] ?? null });
+  if (answers) for (const q of asked) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: checkId, ruleSaid: false, modelSaid: answers[q] ?? null });
   return { ok, invented, dropped, statedCurrent, answers };
 }
 
@@ -150,7 +156,7 @@ export async function summaryChecksSettled(): Promise<void> { while (lateChecks.
  */
 export async function keepOnlyIfChecked(
   source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
-  rewrite: (feedback: string) => Promise<SummaryResult>,
+  rewrite: (feedback: string) => Promise<SummaryResult>, checkId?: string,
 ): Promise<SummaryResult> {
   // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
   // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
@@ -158,19 +164,19 @@ export async function keepOnlyIfChecked(
   const acting = actingQuestions();
   if (asked.length === 0) return written;   // M-3: every question held to the rule (or no decision model): the model is not asked
   if (acting.length === 0) {   // M-2: a verdict that cannot act never holds the summary up: kept now, checked after
-    const late = checkSummary(source, written.text, agentId, asked, true).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
+    const late = checkSummary(source, written.text, agentId, { asked, background: true, checkId }).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
       .catch(() => undefined).finally(() => { lateChecks.delete(late); });
     lateChecks.add(late);
     return written;
   }
-  const first = await checkSummary(source, written.text, agentId, asked);
+  const first = await checkSummary(source, written.text, agentId, { asked, checkId });
   if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
   const failed = actedFailures(first, acting);
   if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); return written; }
 
   const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
-  const second = await checkSummary(source, again.text, agentId, asked);
+  const second = await checkSummary(source, again.text, agentId, { asked, checkId });
   if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
   if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
 
@@ -203,7 +209,7 @@ export async function writeThenCheck<P extends SummaryParams>(params: P, write: 
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;
   const kept = await keepOnlyIfChecked(params.content, written, params.agentId, params.modelId,
-    (checkFeedback) => write({ ...params, checkFeedback }));
+    (checkFeedback) => write({ ...params, checkFeedback }), params.spanIds?.length ? summaryCheckId(params.agentId, params.spanIds) : undefined);
   if (!kept.ok && kept.checkFailed) recordRefusedSpan(keys);
   else if (kept.ok) clearRefusedSpan(keys);   // NB-9: a span that is summarized now leaves no refusal behind
   return kept;

@@ -253,7 +253,7 @@ type RebuildOutcome =
   | 'skipped';      // cannot rebuild safely (e.g. source messages deleted, summary is the sole copy)
 
 async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise<RebuildOutcome> {
-  let input: string;
+  let input: string; let spanIds: string[];
   let depth: number;
   let targetTokens: number;
 
@@ -268,6 +268,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       return 'skipped';
     }
     input = buildLeafInput(msgs);
+    spanIds = msgs.map((m) => m.id);   // the check's key: this summary's own span (t268 fix round 2)
     if (input.trim().length === 0 || proseChars(input) < MIN_PROSE_CHARS) {
       // Everything in the span is plumbing/tool traffic. Same deterministic
       // placeholder the live path writes for all-noise chunks. The raw rows
@@ -296,6 +297,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       return 'placeholder';
     }
     input = condensedSummaryInput(children);
+    spanIds = children.map((c) => `summary:${c.id}`);
     depth = flag.depth;
     targetTokens = SUMMARY_TARGET_TOKENS.condensed;
   }
@@ -308,7 +310,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     depth,
     targetTokens,
     agentId: flag.agentId,
-    modelId,
+    modelId, spanIds,
   });
 
   // PHASE-3 T5 Step 2: the summariser can now REFUSE, and a refusal is a skip — the row

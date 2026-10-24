@@ -29,7 +29,9 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { summaryChecksSettled, checkSummary } from '../summary-check.js';
-import { summaryCheckId } from '../summary-check-ledger.js';
+import { summaryCheckId, summaryCheckIdOfRow, recordSummaryTruth } from '../summary-check-ledger.js';
+import { insertMessage } from '../message-store.js';
+import { createLeafSummary, updateSummaryContent } from '../dag.js';
 import { sourceParts } from '../summary-check-parts.js';
 import { decideRequestBody } from '../../agent/decide.js';
 import { getOllamaLock } from '../../services/ollama-lock.js';
@@ -107,14 +109,33 @@ describe('M-3: a question held to the rule never asks the model', () => {
   });
 });
 
-describe('I-4: the shadow rows can be joined to the summary they judged', () => {
-  it('their id is derived from the kept summary\'s own text, the join key a future truth source reads off the row', async () => {
-    writer.outputs = ['The owner asked for the offsite budget.'];
-    const r = await write();
+describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + linked rows, read off the summary row', () => {
+  const rowsFor = (n: number, tag: string): string[] => (db().prepare("INSERT OR IGNORE INTO agents (id, name, status, config) VALUES (?, 'A', 'idle', '{}')").run(AGENT), Array.from({ length: n }, (_, i) =>
+    insertMessage({ agentId: AGENT, role: i % 2 ? 'assistant' : 'user', lane: 'owner', senderId: 'owner', content: `[${tag}${i}] the offsite budget`, turnNumber: i + 1 }).id));
+  const keep = async (ids: string[], text: string): Promise<string> => {
+    writer.outputs.push(text);
+    const r = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
     await summaryChecksSettled();
-    const id = summaryCheckId(r.ok ? r.text : '');
-    expect(id).toMatch(/^summary-check:[0-9a-f]{32}$/);
+    return createLeafSummary(AGENT, r.ok ? r.text : '', 10, ids, new Date().toISOString(), new Date().toISOString()).id;
+  };
+
+  it('deterministic, and it survives the stored text being rewritten (obligation notes, the hygiene pass)', async () => {
+    const ids = rowsFor(4, 'a');
+    const summaryId = await keep(ids, 'The owner asked for the offsite budget.');
+    const id = summaryCheckIdOfRow(summaryId);
+    expect(id).toBe(summaryCheckId(AGENT, ids));
     expect(new Set(shadowRows().map((s) => s.turn_id))).toEqual(new Set([id]));
+    updateSummaryContent(summaryId, 'The owner asked for the offsite budget. [obligation noted]', 12);
+    expect(summaryCheckIdOfRow(summaryId)).toBe(id);
+  });
+
+  it('unique per span: two identical summaries of different spans have different ids, and one\'s truth labels only it', async () => {
+    const one = await keep(rowsFor(2, 'b'), 'Checked in; nothing new.');
+    const two = await keep(rowsFor(2, 'c'), 'Checked in; nothing new.');
+    expect(summaryCheckIdOfRow(one)).not.toBe(summaryCheckIdOfRow(two));
+    recordSummaryTruth(one, 'invented', false, 'test');
+    const truths = db().prepare("SELECT turn_id, truth FROM decision_shadow WHERE question = 'invented' ORDER BY id").all() as Array<{ turn_id: string; truth: string | null }>;
+    expect(truths).toEqual([{ turn_id: summaryCheckIdOfRow(one), truth: 'false' }, { turn_id: summaryCheckIdOfRow(two), truth: null }]);
   });
 });
 

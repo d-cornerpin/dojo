@@ -116,7 +116,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
       if (wait) return wait;
       stats.modelCalls++;
       stats.inputTokens += inputTokens;
-      const result = await generateSummary({ content, depth: 0, targetTokens: target, agentId: unit.agentId, modelId: writer });
+      const result = await generateSummary({ content, depth: 0, targetTokens: target, agentId: unit.agentId, modelId: writer, spanIds: chunk.map((m) => m.id) });
       if (!result.ok) return `the summary writer refused (${result.reason})`;
       text = annotateSummaryObligations(result.text, unit.agentId);
     }

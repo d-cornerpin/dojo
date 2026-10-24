@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { modeFor } from '../agent/decision-policy.js';
 import type { Answer } from '../agent/decide.js';
+import { recordTruth } from '../agent/decision-shadow.js';
 
 /** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
 export const SUMMARY_CHECK_PURPOSE = 'summary_check';
@@ -23,12 +24,26 @@ export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
 /** Fix round 1 (M-3): the questions the model is asked at all — every one not held to the rule. */
 export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) !== 'rule');
 /**
- * Fix round 1 (I-4): the check's id — the join key between its `decision_shadow` rows and the summary row it
- * judged. It is derived from the summary's own text, which is what the row stores (no new column), so it reads
- * straight off the row. NO TRUTH SOURCE EXISTS YET (`recordTruth` has no caller): until one joins on this key, no
- * summary-check question can be promoted to `model`, and the check stays in shadow.
+ * The check's id (fix round 2, I-4) — the join key between its `decision_shadow` rows and the summary row it judged:
+ * the agent and the SPAN it summarises (the rows it links: `summary_messages` for a leaf, `summary:<id>` of each
+ * child for a condensed one — the `spanIds` every caller passes). Deterministic, unique per span, and it survives
+ * every rewrite of the stored text (obligation notes, the hygiene pass); read off the row by `summaryCheckIdOfRow`.
+ * NO TRUTH SOURCE EXISTS YET (`recordTruth` has no caller): until one joins on this key (`recordSummaryTruth`),
+ * no summary-check question can be promoted to `model`, and the check stays in shadow.
  */
-export const summaryCheckId = (summaryText: string): string => `summary-check:${createHash('sha256').update(summaryText).digest('hex').slice(0, 32)}`;
+export const summaryCheckId = (agentId: string, spanIds: readonly string[]): string =>
+  `summary-check:${createHash('sha256').update(`${agentId}|${[...spanIds].sort().join('|')}`).digest('hex').slice(0, 32)}`;
+/** The check id of a stored summary, from its own links. */
+export function summaryCheckIdOfRow(summaryId: string): string {
+  const db = getDb();
+  const agentId = (db.prepare('SELECT agent_id FROM summaries WHERE id = ?').get(summaryId) as { agent_id: string } | undefined)?.agent_id ?? '';
+  const rows = (db.prepare('SELECT message_id AS id FROM summary_messages WHERE summary_id = ?').all(summaryId) as Array<{ id: string }>).map((r) => r.id);
+  const kids = (db.prepare('SELECT parent_id AS id FROM summary_parents WHERE summary_id = ?').all(summaryId) as Array<{ id: string }>).map((r) => `summary:${r.id}`);
+  return summaryCheckId(agentId, rows.length > 0 ? rows : kids);
+}
+/** What a truth source records for a stored summary's check (the join `recordTruth` makes, by the span's key). */
+export const recordSummaryTruth = (summaryId: string, question: SummaryCheckQuestion, truth: boolean, src: string): void =>
+  recordTruth(summaryCheckIdOfRow(summaryId), question, truth, src);
 
 
 export type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string; spanIds?: readonly string[] };
