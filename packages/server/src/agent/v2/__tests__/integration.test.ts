@@ -4378,7 +4378,7 @@ describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is wai
 
   const gateRows = (): number => (mockDb.current!.prepare(
     `SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'primary' AND role = 'system'
-       AND content LIKE '[System: REQUIRED close-out%'`,
+       AND content LIKE '[System: tracker check before this turn.%'`,
   ).get() as { n: number }).n;
 
   const refusedCloseOut = (): boolean => executeToolSpy.mock.results.length === 0
@@ -4444,7 +4444,7 @@ describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is wai
     seedDangler();
     mockDb.current!.prepare(
       `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-       VALUES ('msg-gate-recent', 'primary', 'system', '[System: REQUIRED close-out, you have abandoned work on the tracker.]', 1,
+       VALUES ('msg-gate-recent', 'primary', 'system', '[System: tracker check before this turn. Your tracker shows work that has not moved for a while.]', 1,
                (unixepoch('now') * 1000))`,
     ).run();
     callsANonTrackerToolThenAnswers();

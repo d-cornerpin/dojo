@@ -888,9 +888,13 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     ).run(stale, stale);
     callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 1, outputTokens: 1, stopReason: 'end_turn' });
     await runV2Turn('primary');
-    const gate = messageRows().filter((m) => m.content.startsWith('[System: REQUIRED close-out'));
+    const gate = messageRows().filter((m) => m.content.startsWith('[System: tracker check before this turn.'));
     expect(gate).toHaveLength(1);
     expect(gate[0].content).toContain('the abandoned spreadsheet');
+    // v3.5 text wave (orchestrator ruling): the facts and that the job continues; no close-out coaching.
+    expect(gate[0].content).toContain('the job continues');
+    expect(gate[0].content).not.toMatch(/close-out|abandoned work|KEEP GOING|wrap up|never closed/i);
+    expect(gate[0].content.indexOf('work_note(')).toBeLessThan(gate[0].content.indexOf('status="complete"'));
     expect(gate[0].content).not.toContain('summarise the research folder');
   });
 });

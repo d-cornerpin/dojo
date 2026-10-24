@@ -25,11 +25,14 @@ import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, stampColumns } from '../../../../work/tracker-view.js';
 import { taskMovedAtSql, jobCarriedIds } from '../../../../work/task-freshness.js';
+import { readMeasureFacts, formatMeasureLine } from '../../../../work/measure-view.js';
 import { advance } from '../../state.js';
 import type { WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
 
+/** The gate message's first words: the dedupe below finds a recent one by them. */
+export const GATE_MSG_HEAD = '[System: tracker check before this turn.';
 const logger = createLogger('v2-loop');
 
 /** What the sections before this one produced that it reads. */
@@ -125,8 +128,8 @@ export async function runCloseoutGate(
         danglingTaskIds: danglingRows.map((r) => r.id),
         nudgedForCloseOutThisTurn: true,
       });
-      const inProgressList = inProgressDanglers
-        .map((r) => `  - "${r.title}" (${r.id.slice(0, 8)})`)
+      const inProgressList = inProgressDanglers   // v3.5 text wave: each with what its record says was done and is left
+        .map((r) => { const f = readMeasureFacts(r.id); return `  - "${r.title}" (${r.id.slice(0, 8)})${f ? ` — ${formatMeasureLine(f)}` : ''}`; })
         .join('\n');
       const strandedList = strandedRows
         .map((r) => `  - "${r.title}" (${r.id.slice(0, 8)})`)
@@ -135,7 +138,7 @@ export async function runCloseoutGate(
       const sections: string[] = [];
       if (inProgressDanglers.length > 0) {
         sections.push(
-          `${inProgressDanglers.length} in_progress task${inProgressDanglers.length === 1 ? '' : 's'} from a previous turn you never closed:\n${inProgressList}`
+          `${inProgressDanglers.length} in_progress task${inProgressDanglers.length === 1 ? '' : 's'} of yours that ha${inProgressDanglers.length === 1 ? 's' : 've'} not moved for a while:\n${inProgressList}`
         );
       }
       // 2026-07-22 production incident: the neutral menu let the floor model
@@ -169,28 +172,25 @@ export async function runCloseoutGate(
         }
         if (evidenced.length > 0) {
           sections.push(
-            `ENGINE RECORDS show these were already ANSWERED/DELIVERED on their own conversations:\n${evidenced.join('\n')}\n` +
-            `For each of these, the correct call is work_update(action="status", status="complete") with the result (or work_update(action="complete_step")). ` +
-            `Do NOT pause them, do NOT add a "still working" note, and do NOT redo or re-deliver the work.`
+            `The engine's records show a delivery for these, on their own conversations:\n${evidenced.join('\n')}\n` +
+            `If that delivery finished one, close it with work_update(action="status", status="complete", result, evidence); if something remains, say what in a work_note and continue. ` +
+            `Do not pause it in place of either, and do not redo or re-deliver what was already delivered.`
           );
         }
       } catch { /* evidence consult is best-effort; the gate still fires */ }
       if (strandedRows.length > 0) {
         sections.push(
-          `${strandedRows.length} stranded on_deck task${strandedRows.length === 1 ? '' : 's'} (queued steps on a project you created but stopped working on more than 30 minutes ago, with no in_progress sibling):\n${strandedList}`
+          `${strandedRows.length} queued step${strandedRows.length === 1 ? '' : 's'} on a project of yours with no step in progress for more than 30 minutes:\n${strandedList}`
         );
       }
 
       const gateMsg = (
-        `[System: REQUIRED close-out, you have abandoned work on the tracker.\n\n` +
+        `${GATE_MSG_HEAD} Your tracker shows work that has not moved for a while; the job continues, and the tracker should say where it stands.\n\n` +
         `${sections.join('\n\n')}\n\n` +
-        `**This turn must start with a tracker tool call, not a user-facing reply.** ` +
-        `Resolve at least one item before doing anything else - call work_update(action="complete_step") (multi-step projects), ` +
-        `work_update(action="status") (status="complete" | "blocked" | "paused" with resume_at), ` +
-        `work_note (if you are STILL actively working it - then KEEP GOING on this same turn, do not stop after writing the note), ` +
-        `or - if the whole project was abandoned/duplicated/superseded - work_update(action="close_project", project_id, status="cancelled", reason="..."). ` +
-        `The engine will REFUSE every non-tracker tool call until one of those lands; after that the gate releases for the rest of the turn so you can keep resolving the others alongside other work. ` +
-        `Do NOT generate a user-facing response on this turn until the gate is satisfied - the user does not expect a reply yet; they expect the tracker to come back in sync. ` +
+        `**Start this turn with one tracker call, before any reply.** For each item: work_note(task_id, notes="what is next") if you are continuing it (then carry on with the work in this same turn); ` +
+        `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; status="complete" (or action="complete_step") only for one that is done, and a measured task closes when its measure reads 0 or you name what is left; ` +
+        `work_update(action="close_project", project_id, status="cancelled", reason="...") only if the whole project is no longer wanted (a duplicate, or superseded). ` +
+        `Until one tracker call lands the engine refuses other tool calls; after it, the rest of the turn is yours. ` +
         `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`
       );
       // F2.4: dedupe the gate message per wakeup batch. Queued wakeups re-arm this
@@ -201,10 +201,10 @@ export async function runCloseoutGate(
       const recentGateMsg = db.prepare(`
         SELECT 1 FROM messages
         WHERE agent_id = ? AND role = 'system'
-          AND content LIKE '[System: REQUIRED close-out%'
+          AND content LIKE ?
           AND created_at >= (unixepoch('now', '-5 minutes') * 1000)
         LIMIT 1
-      `).get(agentId);
+      `).get(agentId, `${GATE_MSG_HEAD}%`);
       const gateMsgId = uuidv4();
       if (!recentGateMsg) {
         try {
