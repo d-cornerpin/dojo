@@ -23,7 +23,7 @@ const MIN_REMAINDER_REASON_LEN = 15;
 export function applyMeasureToTask(taskId: string, r: MeasureReading): string {
   setMeasure(taskId, r.measure, r.count, r.at);
   return r.count.ok
-    ? `Measure set: ${describeMeasure(r.measure)} returns ${r.count.count} ${r.measure.unit} now. It is done when that reads 0, or when you name what is left.`
+    ? `Measure set: ${describeMeasure(r.measure)} returns ${r.count.count} ${r.measure.unit} now. It is done when that reads 0.`
     : `Measure set: ${describeMeasure(r.measure)} could not be read now (${r.count.error}).`;
 }
 

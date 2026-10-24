@@ -19,4 +19,8 @@ describe('the PM soul', () => {
     expect(soul).not.toContain('Bias toward `validate`');
     expect(soul).not.toContain('make sure tasks get completed');
   });
+
+  it('t250 parked: says the PM\'s own close of a measured task with items left is refused too', () => {
+    expect(soul).toContain('Your own status="complete" on such a task is refused the same way unless you name the remainder.');
+  });
 });

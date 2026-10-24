@@ -19,6 +19,7 @@ import {
   WORK_EDITABLE_TASK_FIELDS,
   workProp,
   WORK_MEASURE_PROP,
+  WORK_MEASURE_REF_PROP,
   WORK_REMAINDER_PROP,
 } from '../work-verb-schema.js';
 import { WORK_PLAN_PROP } from '../work-plan-schema.js';
@@ -54,12 +55,12 @@ function schemaOf(name: string): Record<string, unknown> {
     // N1: the seven collapsed fields interpolate the canonical wording from the module.
     .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT')
     // v3.5 (t250): the measure and remainder objects, shared by both verbs.
-    .replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER')
+    .replace(/\bWORK_MEASURE_REF_PROP\b/g, '__MEASURE_REF').replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER')
     // v3.5 (t262): the project's plan, declared once beside them.
     .replace(/\bWORK_PLAN_PROP\b/g, '__PLAN');
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__REMAINDER', '__PLAN', `return (${body});`);
-  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP, WORK_PLAN_PROP) as Record<string, unknown>;
+  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__MEASURE_REF', '__REMAINDER', '__PLAN', `return (${body});`);
+  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_MEASURE_REF_PROP, WORK_REMAINDER_PROP, WORK_PLAN_PROP) as Record<string, unknown>;
 }
 
 // Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
@@ -198,7 +199,28 @@ const T250_BASELINE_CHARS = { work_open: 7942, work_update: 10075 };
 //   work_open   7,942 → 9,478  (+1,536: the plan object, whose steps carry the measure object again)
 //   work_update 10,075 → 10,075 (+0)
 const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
+// ── v3.5 t266 (THE TEXT WAVE, parked t250 entries) — the measure object's words: the user's mailbox is
+// countable (`user_gmail_search` joins the enum), the turn-end count is true (D1 landed), and the copies
+// inside work_open (each `tasks[]` item and each plan step) carry a pointer to the top-level description
+// instead of repeating it. The guard puts the pre-wave object back in all four places and must land on
+// t262's bytes; every earlier rung is asserted on that view, unchanged.
+//   work_open   9,478 → 8,708  (-770: +118 per full object for the enum and the clause, minus the two repeated descriptions)
+//   work_update 10,075 → 10,193 (+118: the enum and the clause)
+const T266_BASELINE_CHARS = { work_open: 8708, work_update: 10193 };
+const PRE_T266_MEASURE = {
+  ...WORK_MEASURE_PROP,
+  description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it and again when you close; your task board shows the last count.',
+  properties: { ...(WORK_MEASURE_PROP.properties as Record<string, unknown>), tool: { type: 'string', enum: ['gmail_search'] } },
+};
 type Schema = { properties: Record<string, unknown> };
+function withoutT266(schema: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(schema) as Schema;
+  const put = (o: Schema | undefined): void => { if (o?.properties.measure) o.properties.measure = structuredClone(PRE_T266_MEASURE); };
+  put(out);
+  put((out.properties.tasks as { items?: Schema } | undefined)?.items);
+  put(((out.properties.plan as Schema | undefined)?.properties.steps as { items?: Schema } | undefined)?.items);
+  return out;
+}
 function withoutT262(schema: Record<string, unknown>): Record<string, unknown> {
   const out = structuredClone(schema) as Schema;
   delete out.properties.plan;
@@ -214,19 +236,33 @@ function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
-  const openNow = schemaOf('work_open');
-  const updNow = schemaOf('work_update');
+  const openWire = schemaOf('work_open');
+  const updWire = schemaOf('work_update');
+  const openNow = withoutT266(openWire);
+  const updNow = withoutT266(updWire);
   const open = withoutT250(withoutT262(openNow));
   const upd = withoutT250(updNow);
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
+    expect(JSON.stringify(openWire).length).toBe(T266_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(updWire).length).toBe(T266_BASELINE_CHARS.work_update);
+  });
+
+  it('t266 — the measure words are the whole delta, and nothing else moved', () => {
     expect(JSON.stringify(openNow).length).toBe(T262_BASELINE_CHARS.work_open);
     expect(JSON.stringify(updNow).length).toBe(T262_BASELINE_CHARS.work_update);
+    const po = (openWire as Schema).properties;
+    expect(po.measure).toBe(WORK_MEASURE_PROP);
+    expect((updWire as Schema).properties.measure).toBe(WORK_MEASURE_PROP);
+    expect(((po.tasks as { items: Schema }).items.properties.measure)).toBe(WORK_MEASURE_REF_PROP);
+    expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search']);
+    expect(String(WORK_MEASURE_PROP.description)).toContain('at the end of each turn that makes progress');
+    expect(WORK_MEASURE_REF_PROP.properties).toBe(WORK_MEASURE_PROP.properties);
   });
 
   it('t262 — the plan field is the whole delta on work_open, and nothing else moved', () => {
     expect(JSON.stringify(withoutT262(openNow)).length).toBe(T250_BASELINE_CHARS.work_open);
-    expect(((openNow as Schema).properties.plan)).toBe(WORK_PLAN_PROP);
+    expect(((openWire as Schema).properties.plan)).toBe(WORK_PLAN_PROP);
     expect(WORK_PLAN_PROP.required).toEqual(['approach', 'steps']);
   });
 
@@ -235,13 +271,10 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(JSON.stringify(upd).length).toBe(T193_BASELINE_CHARS.work_update);
     const po = (openNow as Schema).properties;
     const pu = (updNow as Schema).properties;
-    expect(po.measure).toBe(WORK_MEASURE_PROP);
-    expect(((po.tasks as { items: Schema }).items.properties.measure)).toBe(WORK_MEASURE_PROP);
-    expect(pu.measure).toBe(WORK_MEASURE_PROP);
-    expect(pu.remainder).toBe(WORK_REMAINDER_PROP);
-    expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search']);
-    // Fix round 1: the wire says only what is true at this head. The turn-end count is Task D1's.
-    expect(String(WORK_MEASURE_PROP.description)).not.toMatch(/end of each of your turns/);
+    expect(po.measure).toEqual(PRE_T266_MEASURE);   // t266 changed its words; the t250 shape is asserted on the pre-wave view
+    expect(((po.tasks as { items: Schema }).items.properties.measure)).toEqual(PRE_T266_MEASURE);
+    expect(pu.measure).toEqual(PRE_T266_MEASURE);
+    expect(pu.remainder).toEqual(WORK_REMAINDER_PROP);
     expect((WORK_REMAINDER_PROP.properties as { disposition: { enum: string[] } }).disposition.enum).toEqual(['skipped', 'blocked']);
   });
 

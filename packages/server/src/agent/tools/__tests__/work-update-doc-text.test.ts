@@ -23,4 +23,9 @@ describe('the work_update doc', () => {
     expect(finished).toBeGreaterThan(d.indexOf('4. **The whole project is no longer relevant**'));
     expect(d).toContain('**A task left in_progress at the end of a turn stays yours.**');
   });
+
+  it('t250 parked: documents measure on edit and remainder on a close', () => {
+    expect(doc()).toContain('Pass `measure` to set or replace a task\'s measure; a new measure is a new scope, counted from now.');
+    expect(doc()).toContain('if some of its items genuinely cannot or should not be done, pass `remainder` naming them and why.');
+  });
 });

@@ -1,4 +1,4 @@
-import { WORK_MEASURE_PROP } from './work-verb-schema.js';
+import { WORK_MEASURE_REF_PROP } from './work-verb-schema.js';
 
 type PropSchema = Record<string, unknown>;
 
@@ -15,7 +15,7 @@ export const WORK_PLAN_PROP: PropSchema = {
       minItems: 1,
       items: {
         type: 'object',
-        properties: { title: { type: 'string' }, how: { type: 'string' }, done: { type: 'string' }, measure: WORK_MEASURE_PROP },
+        properties: { title: { type: 'string' }, how: { type: 'string' }, done: { type: 'string' }, measure: WORK_MEASURE_REF_PROP },
         required: ['title', 'how', 'done'],
       },
     },

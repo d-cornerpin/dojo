@@ -73,4 +73,18 @@ describe('the tracker lines around a close', () => {
     expect(src).not.toContain('to mark steps complete');
     expect(src).not.toContain('as you finish each');
   });
+
+  it('t250 parked: the escalation about a measured task with items left does not invite a close', () => {
+    db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 1 WHERE id = ?')
+      .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), TASK);
+    const text = buildPokeMessage(getTask(TASK)!, 'escalate_primary', 1, 600, 1);
+    expect(text).toContain('For your awareness. Its measure (gmail_search "in:inbox -label:Done") still returns 12 messages (of 50 at the start). It is done when that reads 0. Do not close it for the agent.');
+    expect(text).not.toContain('status="complete"');
+  });
+
+  it('t250 parked: the measure-set line does not offer the remainder exit before any item is touched', () => {
+    const gate = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'measure-gate.ts'), 'utf8');
+    expect(gate).toContain('now. It is done when that reads 0.`');
+    expect(gate).not.toContain('or when you name what is left.`');
+  });
 });
