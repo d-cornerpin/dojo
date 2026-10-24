@@ -90,7 +90,7 @@ function structuredRowView(msg: Message, blocks: StoredBlock[], roomTokens: numb
   const collapse = (view: StoredBlock[]): StoredBlock[] => (text === null || text.length <= POINTER_VIEW_CHARS ? view
     : view.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS, 'message') }] : blocks[i].type === 'text' ? [] : [b])));
   const squeeze = (view: StoredBlock[]): StoredBlock[] => view.map((b, i) => (isMedia(b) ? oversizeMediaNote(b)
-    : b.type === 'tool_use' && inputChars(b.input) > POINTER_LABEL_ROOM_CHARS ? { ...b, input: { input: toolResultView(callInputText(blocks[i].input), keptRowHandle(msg.id, i), POINTER_LABEL_ROOM_CHARS) } } : b));
+    : b.type === 'tool_use' && inputChars(b.input) > POINTER_LABEL_ROOM_CHARS ? { ...b, input: { input: toolResultView(callInputText(blocks[i].input), keptRowHandle(msg.id, i), POINTER_LABEL_ROOM_CHARS, 'call input') } } : b));
   const collapsed = collapse(each);
   return done(fits(collapsed) ? collapsed : collapse(squeeze(each)));
 }
@@ -106,10 +106,10 @@ export const callInputText = (input: unknown): string =>
 
 /** A long call input as the view shows it: its short arguments as they are, each long one as its pointer. */
 function inputView(handle: string, input: unknown): Record<string, unknown> {
-  if (!isObject(input)) return { input: toolResultView(callInputText(input), handle, POINTER_VIEW_CHARS) };
+  if (!isObject(input)) return { input: toolResultView(callInputText(input), handle, POINTER_VIEW_CHARS, 'call input') };
   return Object.fromEntries(Object.entries(input).map(([k, v]) => {
     const whole = argumentText(v);
-    return [k, whole.length > POINTER_VIEW_CHARS ? toolResultView(whole, `${handle}.${k}`, POINTER_VIEW_CHARS) : v];
+    return [k, whole.length > POINTER_VIEW_CHARS ? toolResultView(whole, `${handle}.${k}`, POINTER_VIEW_CHARS, 'argument') : v];
   }));
 }
 

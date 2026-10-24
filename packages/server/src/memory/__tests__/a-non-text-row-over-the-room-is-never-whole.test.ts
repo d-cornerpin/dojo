@@ -79,6 +79,7 @@ describe('a long tool_use input', () => {
     expect(shown).toContain('crate 0412, north dock');
     expect(shown).toContain('END OF FILE');
     expect(shown).toContain('msg:row-write#1.content');
+    expect(shown).toContain('KEPT WHOLE, NOT ALL SHOWN: this argument is ');   // t264 review minor 2: an argument, not a tool result
     expect(cost(blocks), 'the view fits the room').toBeLessThanOrEqual(ROOM);
   });
 
