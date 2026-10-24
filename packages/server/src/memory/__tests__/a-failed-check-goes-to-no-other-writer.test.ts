@@ -35,6 +35,7 @@ import { insertMessage } from '../message-store.js';
 import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncondensedPlaceholders } from '../uncondensed-placeholder.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+import { proveSummaryCheck } from './summary-check-proven.js';
 
 const AGENT = 'agent-check-walk';
 const db = (): Database.Database => mockDb.current!;
@@ -56,6 +57,7 @@ beforeEach(() => {
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: t, content: `[a${t}] Bay ${t}, after inspection.` });
   }
   writers.fine.clear();
+  proveSummaryCheck();   // t268 ruling 1: a failed check acts only once the policy flips it to `model`; this file is that state
   vi.stubGlobal('fetch', vi.fn(async (_u: string, init?: { body?: string }) => {
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
     const bad = state.summary.includes('INVENTED') ? 0.93 : 0.04;

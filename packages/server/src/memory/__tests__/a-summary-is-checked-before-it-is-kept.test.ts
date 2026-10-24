@@ -40,6 +40,7 @@ import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.j
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+import { proveSummaryCheck } from './summary-check-proven.js';
 
 const AGENT = 'agent-summary-check';
 const SOURCE = '[USER · the owner · Oct 1, 2026] please draft the offsite budget\n---\n[ASSISTANT · the agent] drafting it now';
@@ -77,6 +78,9 @@ const checks = (): Array<{ outcome: string; invented: number | null }> =>
   db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
 
 describe('a summary is checked against its source before it is kept', () => {
+  // t268 ruling 1: a verdict acts only once B3's policy has flipped its question to `model` on measured
+  // accuracy (shadow is `the-summary-check-is-shadow-until-it-proves-itself.test.ts`); these clauses are that state.
+  beforeEach(() => proveSummaryCheck());
   it('a summary that invents a closed task fails and is rewritten once; the rewrite that passes is kept', async () => {
     writer.outputs = ['The owner asked for the budget; INVENTED: the budget was sent and the task is closed.', 'The owner asked for the offsite budget; the agent began drafting it.'];
     const r = await write();

@@ -10,6 +10,9 @@
 //   fail again          → NOT kept: the caller leaves the rows whole and a later pass tries again
 //                         (every caller already treats a refusal that way); logged with its numbers;
 //   no answer           → kept, logged `unavailable` — the check never blocks compaction.
+// t268 (orchestrator ruling 1, after B5 measured the check): a failing verdict ACTS only on the questions
+// B3's policy has flipped to `model` on measured accuracy (`actingQuestions`). Until then every summary is
+// checked and its verdict recorded in `decision_shadow`, and the summary is kept as it was before v3.5.
 // A failed check is not the writer being unreachable: nothing here marks the writer passed over.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -22,13 +25,14 @@ import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, combineParts } from './summary-check-parts.js';
+import { SUMMARY_CHECK_PURPOSE, actingQuestions, summaryCheckActs, type SummaryCheckQuestion } from './summary-check-ledger.js';
 
 const logger = createLogger('summary-check');
 
 export interface SummaryCheck { ok: boolean; invented: number; dropped: number; statedCurrent: number; answers: Record<string, Answer> | null }
 
-const PURPOSE = 'summary_check';
-const QUESTIONS: Record<'invented' | 'dropped' | 'stated_current', Question> = {
+const PURPOSE = SUMMARY_CHECK_PURPOSE;
+const QUESTIONS: Record<SummaryCheckQuestion, Question> = {
   invented: { type: 'noul', instructions: 'Does `summary` state anything that `source_rows` does not say?' },
   dropped: { type: 'noul', instructions: 'Does `summary` leave out a request, decision, instruction or name that `source_rows` contains?' },
   stated_current: { type: 'noul', instructions: 'Does `summary` describe anything as currently pending or owed?' },
@@ -103,12 +107,10 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
   return { ok, invented, dropped, statedCurrent, answers };
 }
 
-function failedFeedback(c: SummaryCheck): string {
-  const failed: string[] = [];
-  if (c.invented >= failsAt('invented')) failed.push(FEEDBACK.invented);
-  if (c.dropped >= failsAt('dropped')) failed.push(FEEDBACK.dropped);
-  if (c.statedCurrent >= failsAt('stated_current')) failed.push(FEEDBACK.stated_current);
-  return failed.join('; ');
+/** The questions this check failed that ACT (t268): failed, and flipped to `model` by the policy. */
+function actedFailures(c: SummaryCheck, acting: readonly SummaryCheckQuestion[]): SummaryCheckQuestion[] {
+  const p: Record<SummaryCheckQuestion, number> = { invented: c.invented, dropped: c.dropped, stated_current: c.statedCurrent };
+  return c.answers ? acting.filter((q) => p[q] >= failsAt(q)) : [];
 }
 
 type Outcome = 'ok' | 'rewritten_ok' | 'not_kept' | 'unavailable';
@@ -136,6 +138,7 @@ const noticedKey = (writer: string): string => `summary_check_noticed.${writer}`
  * re-arms when the writer changes, or when this writer's failures have aged out of the kept window (they stopped).
  */
 function noticeIfFailing(agentId: string, writer: string): void {
+  if (!summaryCheckActs()) return;   // t268: a verdict in shadow tells no one
   try {
     const db = getDb();
     const row = writerFailing(writer);
@@ -171,13 +174,17 @@ export async function keepOnlyIfChecked(
 ): Promise<SummaryResult> {
   const first = await checkSummary(source, written.text, agentId, checkTimeoutMs);
   if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
-  if (first.ok) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); return written; }
+  // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
+  // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
+  const acting = actingQuestions();
+  const failed = actedFailures(first, acting);
+  if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); return written; }
 
-  const again = await rewrite(failedFeedback(first));
+  const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
   const second = await checkSummary(source, again.text, agentId, checkTimeoutMs);
   if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
-  if (second.ok) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
+  if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
 
   record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', {
@@ -191,6 +198,7 @@ export async function keepOnlyIfChecked(
 
 /** Did a summary of this agent's fail its check (and stay unwritten) since `sinceMs`? The fold's writer walk asks. */
 export function summaryCheckRefusedSince(agentId: string, sinceMs: number): boolean {
+  if (!summaryCheckActs()) return false;   // t268: no verdict holds anything while the check is in shadow
   try {
     return !!getDb().prepare("SELECT 1 FROM summary_checks WHERE agent_id = ? AND outcome = 'not_kept' AND created_at >= ?").get(agentId, sinceMs);
   } catch { return false; }
@@ -201,7 +209,7 @@ import { spanKeys, spanRefused, recordRefusedSpan, clearRefusedSpan, writerFaili
 /** `generateSummary`'s body: write (settled), then keep only what passes. `write` is the settled writer call. */
 export async function writeThenCheck<P extends SummaryParams>(params: P, write: (p: P) => Promise<SummaryResult>): Promise<SummaryResult> {
   const keys = params.modelId ? spanKeys(params) : [];
-  if (keys.length > 0 && spanRefused(keys)) {
+  if (keys.length > 0 && summaryCheckActs() && spanRefused(keys)) {   // t268: the hold acts only in `model` mode
     return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until the summary writer changes or new rows join it' };
   }
   const started = Date.now();

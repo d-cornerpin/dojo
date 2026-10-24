@@ -7,6 +7,19 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { standardModelRowId } from '../services/local-standard.js';
+import { modeFor } from '../agent/decision-policy.js';
+
+/** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
+export const SUMMARY_CHECK_PURPOSE = 'summary_check';
+export const SUMMARY_CHECK_QUESTIONS = ['invented', 'dropped', 'stated_current'] as const;
+export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
+/**
+ * t268 (orchestrator ruling 1): the check runs in SHADOW under B3's policy, like every other decide() question.
+ * A question's failing verdict ACTS (refusal, the one rewrite, the span hold, the owner's notice) only once the
+ * policy has flipped it to `model` on measured accuracy; in `rule`/`shadow` the summary is kept as before v3.5.
+ */
+export const actingQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) === 'model');
+export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
 
 export type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string; spanIds?: readonly string[] };
 
@@ -67,7 +80,8 @@ export function summaryWriterStatus(): { writer: string | null; failed: number; 
     const writer = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value
       || standardModelRowId('writer');
     if (!writer) return { writer: null, failed: 0, total: 0, failing: false };
-    return { writer, ...writerFailing(writer) };
+    const status = writerFailing(writer);
+    return { writer, ...status, failing: status.failing && summaryCheckActs() };   // t268: a shadow verdict tells no one
   } catch { return { writer: null, failed: 0, total: 0, failing: false }; }
 }
 
