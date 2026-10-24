@@ -55,6 +55,25 @@ describe('setup: the Dojo\'s two models', () => {
   });
 });
 
+describe('setup is not held by the download (fix round 1)', () => {
+  it('Next is ready while the pair is still downloading: it continues in the background', async () => {
+    const ready = vi.fn();
+    render(<SetupDeps onReady={ready} />);
+    await waitFor(() => expect(screen.getByText('Downloading the decision model (decider-tag:1): 40%')).toBeTruthy());
+    await waitFor(() => expect(ready).toHaveBeenLastCalledWith(true));
+  });
+
+  it('after an install that ran and left a model missing, the setup screen offers Repair and stops polling', async () => {
+    standard.current = { ...standard.current, decision: 'missing', writer: 'missing', lines: ['Downloading the writer (writer-tag:1): failed, registry unreachable'], note: 'Not installed yet.' };
+    render(<SetupDeps />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Repair' })).toBeTruthy());
+    const polls = (): number => vi.mocked(api.request).mock.calls.filter((c) => c[0] === '/setup/ollama/standard').length;
+    const before = polls();
+    await new Promise((r) => setTimeout(r, 1_300));
+    expect(polls()).toBe(before);
+  });
+});
+
 describe('Settings → Platform: the Ollama tile', () => {
   it('names the pair from the server, says what is missing, and Repair asks the server to install', async () => {
     standard.current = { ...standard.current, decision: 'installed', writer: 'missing', lines: [], note: 'Not installed yet: the writer (writer-tag:1). Use Repair to install it.' };

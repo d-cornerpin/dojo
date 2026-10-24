@@ -18,9 +18,14 @@
 import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { isLocalOllamaBaseUrl } from './num-ctx-calculator.js';
+import { isLocalOllamaBaseUrl, computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { pullOllamaModel } from './ollama-pull.js';
 import { getOllamaModelInfo } from './ollama.js';
+import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
+import { ownerCardFrame } from './owner-card-frames.js';
+
+export { STANDARD_MODELS_MISSING_WORDS };
+const MISSING_CONDITION = 'standard-models';
 
 const logger = createLogger('local-standard');
 
@@ -165,14 +170,16 @@ function registerModelRow(providerId: string, which: Which, info: { contextWindo
   const tag = TAG[which];
   const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, tag) as { id: string } | undefined;
   if (existing) {
-    db.prepare("UPDATE models SET is_enabled = 1, updated_at = datetime('now') WHERE id = ?").run(existing.id);
+    // A row discovery made first carries no `decision` capability; the pair is hard-wired (owner ruling), so
+    // its capability is repaired and it is re-enabled even if a person disabled it.
+    db.prepare("UPDATE models SET is_enabled = 1, capabilities = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(CAPABILITIES[which]), existing.id);
     return existing.id;
   }
   const id = `ollama-${tag.replace(/[^a-z0-9]/gi, '-')}`;
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 1, datetime('now'), datetime('now'))
-  `).run(id, providerId, tag, tag, JSON.stringify(CAPABILITIES[which]), info?.contextWindow ?? null, info?.maxOutputTokens ?? null);
+  `).run(id, providerId, tag, tag, JSON.stringify(CAPABILITIES[which]), info?.contextWindow ?? 32000, info?.maxOutputTokens ?? 8192);   // discovery's defaults when /api/show is silent
   return id;
 }
 
@@ -194,9 +201,11 @@ function assign(writerId: string | null, decisionId: string | null): void {
 }
 
 async function install(onProgress?: (line: string) => void): Promise<StandardState> {
+  const lines: Partial<Record<Which, string>> = {};
   progressLines = [];
-  const say = (line: string): void => {
-    progressLines = [...progressLines.filter((l) => !l.startsWith(line.split(':')[0])), line];
+  const say = (which: Which, line: string): void => {
+    lines[which] = line;
+    progressLines = (['decision', 'writer'] as const).flatMap((w) => (lines[w] ? [lines[w] as string] : []));
     onProgress?.(line);
   };
   // Ollama must answer before anything is written: a box without it gets no provider row from here.
@@ -214,25 +223,42 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
       try {
         const outcome = await pullOllamaModel(tag, {
           baseUrl: provider.baseUrl,
-          onProgress: (p) => say(`Downloading ${LABEL[which]} (${tag}): ${p.total > 0 ? Math.floor((p.completed / p.total) * 100) : 0}%`),
+          onProgress: (p) => say(which, `Downloading ${LABEL[which]} (${tag}): ${p.total > 0 ? Math.floor((p.completed / p.total) * 100) : 0}%`),
         });
         if (!outcome.ok) {
-          say(`Downloading ${LABEL[which]} (${tag}): failed, ${outcome.error}`);
+          say(which, `Downloading ${LABEL[which]} (${tag}): failed, ${outcome.error}`);
           logger.warn('Standard model pull failed', { tag, error: outcome.error });
           continue;
         }
       } catch (err) {
-        say(`Downloading ${LABEL[which]} (${tag}): failed, ${err instanceof Error ? err.message : String(err)}`);
+        say(which, `Downloading ${LABEL[which]} (${tag}): failed, ${err instanceof Error ? err.message : String(err)}`);
         continue;
       } finally {
         pulling.delete(which);
       }
     }
-    say(`Downloading ${LABEL[which]} (${tag}): installed`);
+    say(which, `Downloading ${LABEL[which]} (${tag}): installed`);
     ids[which] = registerModelRow(provider.id, which, await getOllamaModelInfo(tag, provider.baseUrl));
+    await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);   // sized now, not at the next boot's backfill
   }
   assign(ids.writer, ids.decision);
+  // Fix round 1 (I-2): an attempt Ollama answered but that left a model missing is told to the owner
+  // once, as a dashboard card (the existing owner-notice system); the card ends when both are in.
+  if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
+  else if (tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
   return standardState();
+}
+
+/**
+ * Fix round 1 (I-2): the existing Ollama health check calls this with the names Ollama listed. When it
+ * is the local Ollama answering and a model of the pair is missing, the install runs again (no timer:
+ * Ollama answering IS the signal; `ensureStandardModels` is single-flight).
+ */
+export function retryStandardModelsIfMissing(installedNames: readonly string[], baseUrl: string): void {
+  const provider = localOllamaProvider();
+  if (!provider || inFlight || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;
+  if (STANDARD_TAGS.every((t) => installedNames.includes(t))) return;
+  startStandardInstall();
 }
 
 /**

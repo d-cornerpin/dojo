@@ -32,14 +32,16 @@ export const StandardModels = ({ repair, onState }: { repair?: boolean; onState?
   }, [onState]);
 
   useEffect(() => { void load(); }, [load]);
-  // Poll while an install is running, so the progress lines move. On the setup screen the install is
-  // started by the server a moment after this mounts, so a missing model is polled for too.
-  const missing = !!state && (state.decision === 'missing' || state.writer === 'missing');
+  // Poll while an install is running, so the progress lines move — and while a model is missing that no
+  // install has tried yet (setup starts it a moment after this mounts). Once an attempt has left lines,
+  // polling stops: the server retries by itself whenever Ollama answers, and Repair asks it now.
+  const awaitingFirstAttempt = !!state && state.lines.length === 0 && state.ollama === 'running'
+    && (state.decision === 'missing' || state.writer === 'missing');
   useEffect(() => {
-    if (!isPulling(state) && (repair || !missing)) return;
+    if (!isPulling(state) && !awaitingFirstAttempt) return;
     const t = setInterval(() => { void load(); }, POLL_MS);
     return () => clearInterval(t);
-  }, [state, load, repair, missing]);
+  }, [state, load, awaitingFirstAttempt]);
 
   const startRepair = async () => {
     const r = await request('/setup/ollama/standard', { method: 'POST' });

@@ -2,7 +2,7 @@ import { fullDiskAccessInstructions, FULL_DISK_ACCESS_VERIFY } from '@dojo/share
 import { useState, useEffect, useCallback } from 'react';
 import { request } from '../lib/api';
 import { automationInstructions, AUTOMATION_VERIFY } from '../lib/automation-permission';
-import { StandardModels, type StandardModelsState } from './settings/StandardModels';
+import { StandardModels } from './settings/StandardModels';
 
 // ════════════════════════════════════════
 // Dependencies & Local Models — OOBE Step
@@ -105,14 +105,11 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [configured, setConfigured] = useState(false);
 
   const [pullElapsed, setPullElapsed] = useState(0);
-  // v3.5: the Dojo's own two models install themselves; Next waits while they download.
-  const [standardPulling, setStandardPulling] = useState(false);
-  const onStandardState = useCallback((st: StandardModelsState) => setStandardPulling(st.decision === 'pulling' || st.writer === 'pulling'), []);
-
   // Required deps: all must be installed before proceeding
-  // Also block Next while a model is downloading
+  // Also block Next while a model is downloading. (v3.5: the Dojo's own two models are NOT waited on —
+  // they download in the background and the Ollama tile shows their progress.)
   const requiredReady =
-    !pulling && !standardPulling &&
+    !pulling &&
     deps.node === 'installed' &&
     deps.brew === 'installed' &&
     deps.ollama === 'installed' &&
@@ -422,7 +419,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             titles and memory summaries. They download by themselves; there is nothing to choose.
           </p>
           <div className="glass-nested rounded-xl p-4 mb-5 border border-ui/[0.10]">
-            <StandardModels onState={onStandardState} />
+            <StandardModels repair />
           </div>
 
           <h3 className="card-header mb-1">Models for your agents</h3>

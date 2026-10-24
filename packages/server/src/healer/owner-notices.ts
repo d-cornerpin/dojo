@@ -62,6 +62,10 @@ export const budgetStopWords = (budgetId: string): string => budgetId.startsWith
   : `Your daily spending limit is reached and no free model answered, so agents that need a paid model are waiting. `
     + `Raise the limit on the Ledger page to let them go on now, or they go on by themselves when the window turns over. `
     + `Their messages are kept and answered then.`;
+/** v3.5: the Dojo's own two local models could not be installed (condition `standard-models`; it ends
+ *  when both are in). Platform trouble, so a dashboard card; the install is retried by itself. */
+export const STANDARD_MODELS_MISSING_WORDS = "The Dojo's own two local models could not be installed yet. The Dojo keeps trying "
+  + 'whenever Ollama is running; Settings → Platform → Ollama shows what is missing and why.';
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -143,7 +147,8 @@ export function wordsOf(key: string): string {
   return kind === 'stuck' ? stuckWords(nameOf(agentId))
     : kind === 'nofit' ? (isAutoAgent(agentId) ? autoNoFitWords : noFitWords)(nameOf(agentId))
     : kind === 'budgetstop' ? budgetStopWords(agentId)
-    : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId)) : HEALER_BROKEN_WORDS;
+    : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
+    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : HEALER_BROKEN_WORDS;
 }
 
 /** The condition cleared (its `key`, or every key under `family`): forget he was told and
@@ -207,7 +212,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

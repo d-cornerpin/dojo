@@ -3,6 +3,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
+import { retryStandardModelsIfMissing } from './local-standard.js';
 
 const logger = createLogger('ollama');
 
@@ -40,6 +41,8 @@ export async function checkOllamaHealth(baseUrl?: string): Promise<boolean> {
     if (healthy) {
       const data = await response.json() as { models?: Array<{ name: string }> };
       cachedStatus.models = (data.models ?? []).map(m => m.name);
+      // v3.5 (fix round 1, I-2): Ollama answering is the signal to retry a missing standard model.
+      retryStandardModelsIfMissing(cachedStatus.models, url);
     }
 
     return healthy;

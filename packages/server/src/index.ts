@@ -984,12 +984,12 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j. v3.5: the Dojo's two standard models, once per version (an updating box gets them), then RAM-aware
-  // num_ctx recommendations for Ollama models without one (theirs included). Background: never blocks boot.
+  // 4j. v3.5: the Dojo's two standard models, once per version (an updating box gets them; the install sizes
+  // their rows itself), beside RAM-aware num_ctx recommendations for Ollama models without one. Never blocks boot.
   {
     void (async () => {
       try {
-        await (await import('./services/local-standard.js')).ensureStandardModelsAtBoot();
+        void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot());   // a download must not hold the backfill
         const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
         await backfillRecommendedNumCtx();
       } catch (err) {
