@@ -251,7 +251,7 @@ export async function executeVaultRemember(
       `still owed. Worse, recall keeps it alive: vault hygiene only expires entries nobody reads. ` +
       `Record it as work instead: work_open(kind="commitment", description="...") puts it in your ` +
       `OPEN WORK block until you close it with work_close_request. ` +
-      `If you meant to save a FACT about the situation ("Bob's address is still unknown"), rephrase ` +
+      `If you meant to save a FACT about the situation ("the contractor's address is still unknown"), rephrase ` +
       `it as the fact and try again. ` +
       `Do not report this as saved or stored; nothing was written.`
     );

@@ -936,7 +936,7 @@ export async function processInboundIMessage(
   //    because they don't see the iMessage thread on their end.
   const primary = safeSenders.find(s => s.is_primary);
   const primaryName = primary?.name?.trim() || 'the primary user';
-  const exampleName = senderRecord?.name ?? 'Alex';
+  const exampleName = senderRecord?.name ?? 'This contact';
   const exampleRelationship = senderRecord?.description ? ` (${senderRecord.description})` : '';
   // RC-11: when the sender IS the primary user, the third-party
   // "updating the primary user" paragraph renders self-referential nonsense

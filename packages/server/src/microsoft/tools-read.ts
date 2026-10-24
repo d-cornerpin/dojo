@@ -430,7 +430,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: "Search string (matches name, email, company, job title, notes). E.g., 'Alex', 'acme.com', 'CFO'." },
+        query: { type: 'string', description: "Search string (matches name, email, company, job title, notes). E.g., a first name, 'acme.com', 'CFO'." },
         max_results: { type: 'number', description: 'Maximum results to return (default: 20, max: 100).' },
       },
       required: ['query'],
