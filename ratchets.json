@@ -9138,6 +9138,13 @@
       "to": 606,
       "by": "t252 A6 (v3.5, 2026-10-23): the model cards show the server's refusal instead of 'Saved!'",
       "why": "+2: the generic CapabilityModelCard gains its toast hook line and one guard line that shows the server's refusal and returns before 'Saved!' (the HealerCard's existing if gains an else on the same line count). The owner ruled 'Pop up an error letting them know why' for a local model that will not fit; before this the card discarded the PUT's answer and said Saved over a 400 (the t88 class). It uses the existing toast; no new UX. ALTERNATIVE REFUSED: a wrapper component in a new file would still need the same hook and guard inside the card's own save handler."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1084,
+      "to": 1086,
+      "by": "t252 B3 (v3.5, 2026-10-23): the Healer report carries the decision model's per-question score",
+      "why": "+2: one import and one collector line in compileDiagnosticReport. The section itself (the score per question, the mode and the switching sentence the plan specifies) lives in the NEW agent/decision-policy.ts beside the policy it reports, so the report builder only mounts it, the way it mounts every other collector."
     }
   ],
   "maxNewFileLines": 400,
