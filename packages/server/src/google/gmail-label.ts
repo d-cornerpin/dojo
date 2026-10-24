@@ -21,24 +21,12 @@ export const NOTHING_TO_CHANGE =
   'Any other argument name is not read by this tool.';
 
 /**
- * A bare Gmail 400 ("Invalid label: Junk E-mail") has no remedy: point the agent at the lister and
- * creator with the SAME prefix as the tool as called (`toolName`), so a user_ call is never sent to
- * a base tool it cannot use.
+ * The plain failure text. A bare Gmail 400 ("Invalid label: Junk E-mail") gets its remedy from
+ * `tools/error-remedies.ts`, which the engine appends to the failing result (same-prefix lister and
+ * creator for a `user_` call included).
  */
-export function labelFailureText(error: string | undefined, toolName: string): string {
-  if (/invalid label/i.test(error ?? '')) {
-    const prefix = toolName.startsWith('user_') ? 'user_' : '';
-    const listerTool = `${prefix}gmail_list_labels`;
-    const createTool = `${prefix}gmail_create_label`;
-    return (
-      `Error modifying labels: ${error}. That label does not exist on this Gmail account ` +
-      `(label names are per-account, not shared). Call ${listerTool} to see the account's actual label ` +
-      'names before retrying — do not guess or invent one. Two common cases already have a standard label: ' +
-      'to archive a message, remove_labels: ["INBOX"] (there is no separate "Archive" label to add); to ' +
-      'mark it as junk/spam, add_labels the system label "SPAM". If you intended a genuinely new custom ' +
-      `label, call ${createTool} first, then retry gmail_label with the exact name it returns.`
-    );
-  }
+export function labelFailureText(error: string | undefined, _toolName: string): string {
+  // The remedy for an invalid label lives in tools/error-remedies.ts; the engine appends it to the failing result.
   return `Error modifying labels: ${error}`;
 }
 

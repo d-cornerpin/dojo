@@ -21,7 +21,7 @@ import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.
 import { estimateTokens } from '../../../../memory/budget.js';
 import { getFilteredTools } from '../../../tools/surface.js';
 import { recipientIdsMatch } from '../../../recipient-identity.js';
-import { crossTurnFailureNote, recordToolOutcome } from '../../attempt-record.js';
+import { failureNotes, recordToolOutcome } from '../../attempt-record.js';
 import { LOADING_RESULT_MIN_TOKENS, isLoadCountExemptRead, isStructuringTool } from '../../classifiers/hoarding.js';
 import { canonicalToolSignature } from '../../classifiers/loop.js';
 import { permissionAlternativeFinder } from '../../classifiers/permission.js';
@@ -83,10 +83,10 @@ export async function recordToolResultEffects(
     const crossTurnSig = canonicalToolSignature(tc.name, redactDeclaredSecretArgs(tc.name, tc.arguments));
     const failCount = recordToolOutcome(agentId, tc.name, crossTurnSig, toolResult.isError === true, typeof toolResult.content === 'string' ? toolResult.content : null);
     if (toolResult.isError) {
-      const note = crossTurnFailureNote(tc.name, failCount);
+      const note = typeof toolResult.content === 'string' ? failureNotes(tc.name, failCount, toolResult.content) : null;
       if (note && typeof toolResult.content === 'string') {
         toolResult = { ...toolResult, content: toolResult.content + note };
-        logger.warn('v2: cross-turn repeated failure', {
+        logger.warn('v2: failing result carries an engine note (remedy and/or repeated failure)', {
           tool: tc.name, failCount, signature: crossTurnSig.slice(0, 120),
         }, agentId);
       }

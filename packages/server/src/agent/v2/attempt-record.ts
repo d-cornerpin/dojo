@@ -16,6 +16,8 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../../db/connection.js';
+import { remedyNote } from '../../tools/error-remedies.js';
+import { noteToolError } from './tool-error-ledger.js';
 import { noteToolOutcome } from './tool-outcomes.js';
 
 const CROSS_TURN_FAILURE_NOTE_THRESHOLD = 3;
@@ -35,6 +37,7 @@ export function recordToolOutcome(
   errorText?: string | null,
 ): number {
   noteToolOutcome(agentId, toolName, isError, errorText);
+  if (isError) noteToolError(agentId, toolName, errorText);
   try {
     const db = getDb();
     if (!isError) {
@@ -75,4 +78,13 @@ export function crossTurnFailureNote(toolName: string, hitCount: number): string
     `${hitCount} times across separate turns. Do not retry it as-is. Change the ` +
     `approach, or mark the task blocked and state exactly what is missing.]`
   );
+}
+
+/**
+ * Everything the engine appends to a FAILING result: the registered remedy for this error (K37),
+ * then the cross-turn "do not retry as-is" note once the streak crosses its threshold. `null`
+ * when there is nothing to add.
+ */
+export function failureNotes(toolName: string, hitCount: number, errorText: string): string | null {
+  return (remedyNote(toolName, errorText) + (crossTurnFailureNote(toolName, hitCount) ?? '')) || null;
 }

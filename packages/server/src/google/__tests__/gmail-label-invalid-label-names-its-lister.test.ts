@@ -52,7 +52,15 @@ vi.mock('../accounts.js', () => ({
 }));
 
 import { googleWrite } from '../client.js';
-import { executeGoogleWriteTool } from '../tools-write.js';
+import { executeGoogleWriteTool as executeBare } from '../tools-write.js';
+import { remedyNote } from '../../tools/error-remedies.js';
+
+// K37: the remedy for an invalid label moved out of the executor into the engine's remedy registry,
+// which appends it to the failing result. This helper reads the result the way the model does.
+async function executeGoogleWriteTool(...args: Parameters<typeof executeBare>): Promise<string> {
+  const out = await executeBare(...args);
+  return out + remedyNote(args[0], out);
+}
 
 function mockInvalidLabelFailure(labelName: string): void {
   vi.mocked(googleWrite).mockResolvedValue({

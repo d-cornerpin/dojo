@@ -151,9 +151,9 @@ async function graphFetch(
         const errBody = await resp.json() as { error?: { code?: string; message?: string } };
         errorMsg = errBody?.error?.message ?? `HTTP ${resp.status}`;
 
-        // Teams-specific: detect MSA limitation
+        // A 403 'Forbidden' states the fact plainly; the Teams remedy lives in tools/error-remedies.ts.
         if (resp.status === 403 && errBody?.error?.code === 'Forbidden') {
-          errorMsg = 'Access denied. If this is a Teams operation, Teams requires a Microsoft work/school account (Entra ID). Personal Microsoft accounts (outlook.com, hotmail.com, live.com) do not support Teams.';
+          errorMsg = 'Access denied (HTTP 403 Forbidden).';
         }
       } catch {
         errorMsg = `HTTP ${resp.status}`;
