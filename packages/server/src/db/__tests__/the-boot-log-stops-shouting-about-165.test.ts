@@ -85,8 +85,11 @@ const record = (name: string, checksum: string | null): void => {
 
 /** The body a dev box carries: each hash-adjudicated file at exactly its ledger's
  *  `appliedChecksum`, and 165 at bytes that match nothing. */
+// A box holds ONE applied checksum per file, while the ledger may adjudicate several applied versions
+// of one file (v3.5: 201 carries two). The body records the first entry per file.
+const ONE_PER_FILE = KNOWN_DIVERGENCES.filter((d, i, all) => all.findIndex((e) => e.file === d.file) === i);
 const recordTheRecordedDivergences = (): void => {
-  for (const d of KNOWN_DIVERGENCES) record(d.file, d.appliedChecksum);
+  for (const d of ONE_PER_FILE) record(d.file, d.appliedChecksum);
   record('165_work_effort_meter.sql', FICTIONAL_APPLIED);
 };
 
@@ -106,7 +109,7 @@ describe('1. the body the dev box actually has', () => {
     reportMigrationChecksums(db, read);
     const s = summary();
     expect(s.diverged, 'the count a reader is told to act on').toBe(0);
-    expect(s.divergedExamined, 'the hash-adjudicated ones').toBe(KNOWN_DIVERGENCES.length);
+    expect(s.divergedExamined, 'the hash-adjudicated ones').toBe(ONE_PER_FILE.length);
     expect(s.divergedEffectVerified, '165, by effect').toBe(1);
   });
 
@@ -120,7 +123,7 @@ describe('1. the body the dev box actually has', () => {
   it('the fixture is not vacuous: every recorded divergence IS a finding', () => {
     recordTheRecordedDivergences();
     const audit = reportMigrationChecksums(db, read);
-    expect(audit?.findings.length).toBe(KNOWN_DIVERGENCES.length + 1);
+    expect(audit?.findings.length).toBe(ONE_PER_FILE.length + 1);
   });
 });
 
