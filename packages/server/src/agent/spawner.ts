@@ -8,6 +8,7 @@ import { runIsLive } from './ended-mid-run.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
 import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
+import { inspectGrantRefusal } from '../inspect/grant.js';
 import { getAccessGrants } from './access/read.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
@@ -322,6 +323,8 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   if (!grantResolution.ok) {
     throw new GrantRefusedError(grantResolution.reason);
   }
+  const inspectRefused = inspectGrantRefusal(parentId, grantResolution.grants.tools.allow, toolsPolicy?.allow);   // v3.5: a positive grant
+  if (inspectRefused) throw new GrantRefusedError(inspectRefused);
 
   const permissionsJson = JSON.stringify({ ...scope.manifest, grants: grantResolution.grants });
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});

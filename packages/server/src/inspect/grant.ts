@@ -23,5 +23,17 @@ export function holdsDojoInspect(agentId: string): boolean {
   return isPrimaryAgent(agentId) || isHealerAgent(agentId) || tools.allow.includes(DOJO_INSPECT);
 }
 
+/**
+ * THE GRANT DOORS (t267 review, Critical 1). Everywhere else `tools.allow` RESTRICTS, so the
+ * no-escalation rule never judges a name in it; here a name in it GRANTS. So an agent that does
+ * not hold dojo_inspect may not write it into another agent's allow list (spawn, update_agent).
+ * The owner's dashboard routes do not ask: the owner grants it. Each `allows` is any allow list
+ * the call would store (grants.tools.allow, the older tools argument).
+ */
+export function inspectGrantRefusal(granterId: string, ...allows: unknown[]): string | null {
+  if (!allows.some((a) => Array.isArray(a) && a.includes(DOJO_INSPECT)) || holdsDojoInspect(granterId)) return null;
+  return 'tools.allow: cannot grant dojo_inspect — only an agent that holds it (the main agent, the Healer) or the owner can grant it.';
+}
+
 /** The refusal a non-holder reads at the executor. */
 export const DOJO_INSPECT_REFUSAL = 'Permission denied: dojo_inspect is reserved for the main agent and the Healer, and for an agent whose own tool grant names it. The request was not performed. Ask the main agent if you need something looked up in the Dojo.';
