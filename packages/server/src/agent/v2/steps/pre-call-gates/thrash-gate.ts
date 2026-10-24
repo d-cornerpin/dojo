@@ -139,15 +139,15 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
     // so the block is VISIBLE and recoverable, not a mute dead-end.
     // Third-person reason for the task-log line and the dashboard toast.
     const breakerReason = refusalTrip
-      ? `agent ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
-      : `agent kept varying call signatures for ${drift} iterations to dodge the thrash gate, never wrapping up`;
+      ? `agent repeated refused calls ${state.thrashGateRefusalCount}× without changing course`
+      : `agent kept varying call signatures for ${drift} iterations around the thrash gate without recording progress`;
     // Second-person reason for the agent-facing note. Fixes the old
     // "because you agent ..." double-subject bug: the note prepends "because",
     // and BOTH branches of breakerReason start with "agent ...", so it read
     // "because you agent ...". This string starts with "you ...".
     const breakerReasonSecondPerson = refusalTrip
-      ? `you ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
-      : `you kept varying call signatures for ${drift} iterations to dodge the thrash gate, never wrapping up`;
+      ? `you repeated refused calls ${state.thrashGateRefusalCount}× without changing course`
+      : `you kept varying call signatures for ${drift} iterations around the thrash gate without recording progress`;
     // F1: does this blocked work trace to a user request? A user ask can be
     // continuing on a background (non-user) turn, so the engine-auto marker on
     // the project also counts as user-origin. If so, the engine tells the person
@@ -386,7 +386,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         broadcast({
           type: 'chat:error',
           agentId,
-          error: `Engine refusing further ${thrash.toolName} calls with these args, try different input, mark complete, or block.`,
+          error: `Engine refusing further ${thrash.toolName} calls with these args, continue with different input, or block the task if it cannot proceed.`,
           code: 'TASK_THRASH_PAUSED',
           severity: 'warning',
           retryable: true,

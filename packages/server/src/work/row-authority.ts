@@ -212,8 +212,8 @@ export function takeoverRefusal(
   return {
     kind: 'refused', workId, reason: 'takeover-needs-the-owner',
     detail: `"${f.title}" is held by ${who(f.holder)}, a live agent, and only ${getOwnerName()} may have `
-      + `another agent ${act} it. A slow agent is not a stuck one: leave it with its holder, `
-      + `or close it out with status="complete" if the work is really done. ${escalationPointer(actorId)}`,
+      + `another agent ${act} it. A slow agent is not a stuck one: leave it with its holder. `
+      + `${escalationPointer(actorId)}`,
   };
 }
 

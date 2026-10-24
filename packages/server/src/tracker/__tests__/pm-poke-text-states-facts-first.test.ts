@@ -24,6 +24,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { buildPokeMessage } from '../pm-agent.js';
 import { getTask } from '../schema.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import { engineText } from '../../agent/v2/__tests__/engine-sources.js';
 
 const db = (): Database.Database => mockDb.current!;
 const TASK = 'task-poke-text';
@@ -99,5 +100,16 @@ describe('the tracker lines around a close', () => {
     db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 1 WHERE id = ?')
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), TASK);
     expect(validationRecordLine(TASK)).toBe('\n  Record: Its measure (gmail_search "in:inbox -label:Done") still returns 12 messages (of 50 at the start). 0 items touched by its calls.');
+  });
+
+  it('fix round 2: no closure push in the thrash breaker, the closeout-miss notice or the takeover refusal', () => {
+    const read = (rel: string): string => fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', rel), 'utf8');
+    const thrash = engineText();   // the step packages through the one shared corpus (the thrash gate is one)
+    expect(thrash).not.toMatch(/without wrapping up|never wrapping up|mark complete, or block/);
+    expect(thrash).toContain('repeated refused calls');
+    const pm = read('tracker/pm-agent.ts');
+    expect(pm).not.toMatch(/Non-idempotent tools demand|stays in_progress and continues/);
+    expect(pm).toContain('That one call is not the whole job: judge the task on its record');
+    expect(read('work/row-authority.ts')).not.toContain('close it out with status="complete"');
   });
 });

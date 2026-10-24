@@ -607,7 +607,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     });
   }
 
-  const { closeoutMeasure, stalledRetaskExample } = await import('./closeout-measure.js');   // lazy, like the two doors below: its import graph reaches the mailbox counter
+  const { closeoutMeasure, stalledRetaskExample } = await import('./closeout-measure.js');   // lazy, like the two doors below
   const measured = rows.map((r) => closeoutMeasure(r.id));   // v3.5 D2: the measured record and any stall, per task
   const taskLines = rows
     .map((r, i) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})${measured[i].lines}`)
@@ -629,13 +629,13 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Your verbs:\n` +
     `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"${stalled !== null ? `; for the stalled task, ${stalledRetaskExample(stalled)}` : ''}). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
-    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
-    `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
+    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing: it stays in_progress and your check-ins keep it moving. If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
+    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the goal is met (for a measured task: its measure reads 0, or the agent named the remainder) and the agent just forgot to close the tracker.\n\n` +
+    `**A side effect that already ran is never re-run.** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
-    `or an exec that hit a live external API, the action already happened. Re-running it would duplicate the side effect (double email, ` +
-    `double text, double charge). Accept as complete via work_validate(action="override") / work_validate(action="validate"), citing the audit row as evidence. ` +
-    `Do NOT use work_validate(action="retask") on these; that produces duplicates.\n\n` +
+    `or an exec that hit a live external API, that action already happened; re-running it would duplicate it (double email, ` +
+    `double text, double charge). That one call is not the whole job: judge the task on its record (its measure, the ledger, any remainder named, the receipts). ` +
+    `If the goal is met, accept it via (c), citing the audit row; if work remains, retask naming what is left and saying not to repeat the call that already ran.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
     `Rubber-stamping means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
 

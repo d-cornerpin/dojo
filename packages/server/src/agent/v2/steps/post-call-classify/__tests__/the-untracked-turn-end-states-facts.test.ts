@@ -49,7 +49,8 @@ describe('the untracked turn end', () => {
     const text = nextSteer(out.state.steerQueue)!.content;
     expect(text).toContain('"Sort the inbox"');
     expect(text).not.toMatch(/not closed out|REQUIRED ACTION|continue you on the next user turn/);
-    expect(text).toContain('nothing is closed for you, and the PM checks in on open work');
+    expect(text).toContain('work_note(task_id) and carry on');   // fix round 2 N-1
+    expect(text).toContain('nothing is closed for you; a one-off task stays in progress and the PM checks in on it, and a scheduled run left in progress is recorded as not done while its schedule goes on.');   // N-2
     expect(text.indexOf('Still working on one?')).toBeLessThan(text.indexOf('status="complete"'));
   });
 });

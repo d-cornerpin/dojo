@@ -225,7 +225,7 @@ export async function runTrackerCloseout(
         const nudgeText = (
           `[System: this turn did work and replied, and ${openTasks.length === 1 ? 'this in_progress task of yours has' : `these ${openTasks.length} in_progress tasks of yours have`} no status from it:\n` +
           `${taskList}\n` +
-          `Still working on one? Say what is next with work_note(task_id), or end your turn with no text: it stays as it is, nothing is closed for you, and the PM checks in on open work. Waiting? status="paused" or "blocked" with the reason. Finished? status="complete" with the result and evidence (or action="complete_step"). ` +
+          `Still working on one? Say what is next with work_note(task_id) and carry on, or end your turn with no text: nothing is closed for you; a one-off task stays in progress and the PM checks in on it, and a scheduled run left in progress is recorded as not done while its schedule goes on. Waiting? status="paused" or "blocked" with the reason. Finished? status="complete" with the result and evidence (or action="complete_step"). ` +
           `Make only tool calls now: your reply was already delivered, and a second one is worse than a stale tracker.]`
         );
         // RC-19: via persistEngineSteer so the close-out directive reaches the
