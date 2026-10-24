@@ -8928,6 +8928,48 @@
       "to": 1041,
       "by": "t209 (2026-10-17): split the once-only small-model notice out of the floor module",
       "why": "+1: the floor module's notice (which broadcasts) moved to its own file so the spawn door can use the floor without loading the websocket layer; this route now has two import lines where it had one. Nothing else in the file changed."
+    },
+    {
+          "path": "packages/dashboard/src/components/settings/ModelRows.tsx",
+          "from": 1257,
+          "to": 1261,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+4: the import of the new UnsetWindowNote component, its one use in the card header, and two lines wiring the Context field to the note (an id and the label's htmlFor). The note's own code lives in the new settings/UnsetWindowNote.tsx."
+    },
+    {
+          "path": "packages/server/src/agent/tools/index.ts",
+          "from": 661,
+          "to": 664,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+3: the import of the new unknown-args-refusal module and the two-line door (the refusal text and the suggestion logic live in agent/tools/unknown-args-refusal.ts and tools/arg-name-help.ts). The refusal must sit in this door because it has to run before the gate loop and return the tool result."
+    },
+    {
+          "path": "packages/server/src/microsoft/tools-write.ts",
+          "from": 2218,
+          "to": 2221,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+3: an import of the shared nothing-to-change refusal, the one-line empty-patch guard in calendar_update_ms, and the one-line allowEmpty declaration on outlook_categories_set. Both belong beside the handlers and definition they guard."
+    },
+    {
+          "path": "packages/server/src/providers/anthropic-sdk.ts",
+          "from": 592,
+          "to": 595,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+3: the import of the new sdk-stop-reason tracker, its construction, and the one line that shows it each SDK message; the return line is unchanged in length. The tracker itself lives in providers/sdk-stop-reason.ts."
+    },
+    {
+          "path": "packages/server/src/agent/a2a-transport.ts",
+          "from": 2866,
+          "to": 2868,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+2: the import of the case-insensitive name lookup, and a comment line above its one call; the lookup replaced a two-line exact-name query in place."
+    },
+    {
+          "path": "packages/shared/src/types.ts",
+          "from": 655,
+          "to": 657,
+          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+          "why": "+2: the optional assumedContextWindow field on Model (a comment line and the field) and 'UNKNOWN_ARGS' added to the ToolErrorCode union on its existing line. The dashboard and the server both read these shared types."
     }
   ],
   "maxNewFileLines": 400,
@@ -8951,7 +8993,7 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 604,
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
-    "packages/dashboard/src/components/settings/ModelRows.tsx": 1257,
+    "packages/dashboard/src/components/settings/ModelRows.tsx": 1261,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
     "packages/dashboard/src/components/settings/PlatformTab.tsx": 1043,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 939,
@@ -8974,7 +9016,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2866,
+    "packages/server/src/agent/a2a-transport.ts": 2868,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -9014,7 +9056,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 661,
+    "packages/server/src/agent/tools/index.ts": 664,
     "packages/server/src/agent/tools/surface.ts": 735,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -9162,13 +9204,13 @@
     "packages/server/src/microsoft/client.ts": 257,
     "packages/server/src/microsoft/tools-office.ts": 3538,
     "packages/server/src/microsoft/tools-read.ts": 1631,
-    "packages/server/src/microsoft/tools-write.ts": 2218,
+    "packages/server/src/microsoft/tools-write.ts": 2221,
     "packages/server/src/migration/checks.ts": 531,
     "packages/server/src/migration/import.ts": 406,
     "packages/server/src/prompt/assembler.ts": 1957,
     "packages/server/src/prompt/registry/entries.ts": 611,
     "packages/server/src/prompt/registry/types.ts": 473,
-    "packages/server/src/providers/anthropic-sdk.ts": 592,
+    "packages/server/src/providers/anthropic-sdk.ts": 595,
     "packages/server/src/providers/billing-breaker.ts": 316,
     "packages/server/src/report/bounds.ts": 320,
     "packages/server/src/report/state-lane.ts": 333,
@@ -9245,7 +9287,7 @@
     "packages/shared/src/markers.ts": 358,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
-    "packages/shared/src/types.ts": 655,
+    "packages/shared/src/types.ts": 657,
     "packages/shared/src/visibility.ts": 989,
     "packages/shared/src/ws.ts": 1278,
     "watchdog/src/auto-rollback.ts": 333,
