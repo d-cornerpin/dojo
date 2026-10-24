@@ -106,8 +106,7 @@ export type WorkOutcomeReason =
   // t193: the same layer's second refusal — another live agent's work is cancelled or reopened
   // only on the owner's word (`work/row-authority.ts:takeoverRefusal`).
   | 'takeover-needs-the-owner'
-  // v3.5: a measured task whose last reading shows items left (`work/measure-close-gate.ts`).
-  | 'measure-items-left';
+  | 'measure-items-left';   // v3.5: a measured task's last reading shows items left (`work/measure-close-gate.ts`)
 
 /** The applied proof. `eventId` is the row somebody can go and read. */
 export interface TransitionApplied {
