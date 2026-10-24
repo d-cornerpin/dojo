@@ -31,7 +31,7 @@ import {
   pickDesktopReserve, ENGINE_RESERVE_BYTES, resolveOllamaTotalRamBytes, fetchModelArchInfo,
   isLocalOllamaBaseUrl,
 } from '../services/num-ctx-calculator.js';
-import { dojoWorkingBytes, writerJobWindowTokens } from '../services/dojo-working-memory.js';
+import { dojoWorkingBytes, writerJobWindowTokens, writerReservedWindowTokens } from '../services/dojo-working-memory.js';
 import { kvBytesPerTokenOf } from '../services/kv-bytes.js';
 import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../services/local-standard.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
@@ -128,7 +128,9 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
   // N1 (fix round 2): the Dojo's writer is never charged twice — its weights are counted in the pair and its
   // job's KV is the room set aside below, so its fit is only the KV it would need BEYOND that room.
   const isWriter = dojoBox && row.api_model_id === STANDARD_WRITER_MODEL.tag;
-  const writerJob = isWriter ? await writerJobWindowTokens(resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective ?? null) : 0;
+  // t268 (I-2): as an agent, beyond the room its jobs reserve now; as a job (the Summarization pick), beyond the room that pick reserves.
+  const configured = resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective ?? null;
+  const writerJob = !isWriter ? 0 : use === 'job' ? await writerJobWindowTokens(configured) : await writerReservedWindowTokens(configured);
   const chargedKv = isWriter ? (typeof kv === 'number' ? kv * Math.max(0, contextTokens - writerJob) : 0) : kvBytes;
   const needBytes = (isWriter ? 0 : weights) + chargedKv;
   const openBytes = totalRamBytes - pickDesktopReserve(totalRamBytes) - ENGINE_RESERVE_BYTES

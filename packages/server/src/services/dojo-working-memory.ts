@@ -10,8 +10,9 @@
 import { getDb } from '../db/connection.js';
 import { fetchModelArchInfo } from './num-ctx-calculator.js';
 import { kvBytesPerTokenOf } from './kv-bytes.js';
-import { STANDARD_WRITER_MODEL, STANDARD_DECISION_MODEL } from './local-standard.js';
-import { utilityDial, utilityNumCtx, utilityOutputCap } from '../agent/utility-dial.js';
+import { STANDARD_WRITER_MODEL, STANDARD_DECISION_MODEL, standardModelRowId } from './local-standard.js';
+import { utilityDial, utilityNumCtx, utilityOutputCap, MIN_UTILITY_NUM_CTX } from '../agent/utility-dial.js';
+import { ESTIMATOR_SAMPLE_WINDOW_DAYS } from '../costs/ledger-calibration.js';
 import { CHARS_PER_TOKEN } from '../memory/budget.js';
 import { writerCharsPerToken } from './token-density.js';
 
@@ -45,7 +46,31 @@ export async function decisionWindowTokens(): Promise<number> {
   return decisionTagWindow() ?? BUILTIN_DECISION_WINDOW;
 }
 
-/** The KV bytes the Dojo's writer holds for that job on this Ollama; 0 when no writer is installed or
+/**
+ * THE WRITER'S RESERVED ROOM, in tokens (t268 fix round 1, I-2; orchestrator ruling after the owner's of 2026-10-24,
+ * "The agents model."): the jobs the writer ACTUALLY has on this box. When it is the owner's explicit Summarization
+ * pick, its summary job's window. Otherwise each agent's own model writes the summaries, and the writer has its
+ * system jobs (titles, the voice opener, the summary fallback) at the sizes they really ran at: the largest input
+ * Ollama itself counted for each job in the calibration's window (`cost_records`), with that job's output and slack
+ * (`utilityNumCtx`); never less than the smallest window any job asks for.
+ */
+export async function writerReservedWindowTokens(configuredNumCtx: number | null): Promise<number> {
+  const writerId = standardModelRowId('writer');
+  const pick = (getDb().prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
+  if (writerId && pick === writerId) return writerJobWindowTokens(configuredNumCtx);
+  const { getLeafTargetTokens } = await import('../memory/compaction.js');
+  const ran = writerId ? getDb().prepare(`SELECT call_purpose AS purpose, MAX(input_tokens) AS tokens FROM cost_records
+    WHERE model_id = ? AND call_purpose IS NOT NULL AND created_at >= datetime('now', ?) GROUP BY call_purpose`)
+    .all(writerId, `-${ESTIMATOR_SAMPLE_WINDOW_DAYS} days`) as Array<{ purpose: string; tokens: number }> : [];
+  return ran.reduce((most, r) => {
+    const dial = utilityDial(r.purpose);
+    if (!dial) return most;
+    const outputTokens = utilityOutputCap(dial, r.purpose === 'memory_summarize' ? getLeafTargetTokens() : undefined);
+    return Math.max(most, utilityNumCtx({ inputChars: r.tokens, charsPerToken: 1, outputTokens, configuredNumCtx }));   // Ollama's own token count
+  }, MIN_UTILITY_NUM_CTX);
+}
+
+/** The KV bytes the Dojo's writer holds for its reserved room on this Ollama; 0 when no writer is installed or
  *  its architecture cannot be read (nothing is set aside for what cannot be sized). */
 export async function writerWorkingBytes(baseUrl: string): Promise<number> {
   try {
@@ -53,7 +78,7 @@ export async function writerWorkingBytes(baseUrl: string): Promise<number> {
       WHERE p.type = 'ollama' AND m.api_model_id = ? AND m.is_enabled = 1`).get(STANDARD_WRITER_MODEL.tag) as { o: number | null; r: number | null } | undefined;
     const arch = row ? await fetchModelArchInfo(baseUrl, STANDARD_WRITER_MODEL.tag) : null;
     const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
-    return typeof kv === 'number' ? kv * await writerJobWindowTokens(row?.o ?? row?.r ?? null) : 0;
+    return typeof kv === 'number' ? kv * await writerReservedWindowTokens(row?.o ?? row?.r ?? null) : 0;
   } catch { return 0; }
 }
 

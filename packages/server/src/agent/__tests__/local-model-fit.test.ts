@@ -32,7 +32,8 @@ import { Hono } from 'hono';
 import { routerRouter } from '../../gateway/routes/router.js';
 import { configRouter } from '../../gateway/routes/config.js';
 import { pickDesktopReserve, ENGINE_RESERVE_BYTES } from '../../services/num-ctx-calculator.js';
-import { writerJobWindowTokens, decisionWindowTokens } from '../../services/dojo-working-memory.js';
+import { writerJobWindowTokens, writerReservedWindowTokens, decisionWindowTokens } from '../../services/dojo-working-memory.js';
+import { MIN_UTILITY_NUM_CTX } from '../utility-dial.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
 
@@ -100,16 +101,19 @@ afterEach(() => {
 
 /** Open memory on the Dojo's own box, by the calculator's reserves, the pair and the writer's job window. */
 async function openOn(total: number): Promise<number> {
-  const writerWorking = kvPerToken(36) * await writerJobWindowTokens(null);
+  // t268 fix round 1 (I-2): the writer's room is the jobs it really has on this box (edited: it was always the summary job).
+  const writerWorking = kvPerToken(36) * await writerReservedWindowTokens(null);
   return total - pickDesktopReserve(total) - ENGINE_RESERVE_BYTES - EMBEDDER
     - STANDARD_DECISION_MODEL.bytes - STANDARD_WRITER_MODEL.bytes - writerWorking;
 }
 const AT_32K = 32_000;
 
 describe('the arithmetic (figures for the owner)', () => {
+  // t268 fix round 1 (I-2, edited): the writer reserves only its system jobs unless it is the Summarization pick, so
+  // 16 GB now has ~2.4 GB open (it had none) — still too little for the smallest local agent model here (2.9 GB).
   it('16 GB: the pair and the writer\'s working memory leave no room for a local agent model', async () => {
     const open = await openOn(16 * GIB);
-    expect(open).toBeLessThan(0);
+    expect(open).toBeLessThan(800_000_000 + kvPerToken(16) * AT_32K);
     for (const id of ['m-9b', 'm-2b', 'm-1b']) expect((await localModelFit(id))!.fits).toBe(false);
     const v = await localModelFit('m-9b');
     expect(v!.contextTokens).toBe(AT_32K);
@@ -117,18 +121,20 @@ describe('the arithmetic (figures for the owner)', () => {
     expect(v!.message).toBe(
       'qwen3.5:9b needs about 11.3 GB of memory to run with its 32K-token window (6.6 GB of weights and 4.7 GB of working memory). '
       + "This box has 16 GB; after the desktop, the engine, the embedder, the Dojo's own two models and the working memory they "
-      + 'keep for summaries, about 0.0 GB is open. Choose a smaller local model or a cloud model.',
+      + `keep for summaries, about ${(open / 1e9).toFixed(1)} GB is open. Choose a smaller local model or a cloud model.`,
     );
     expect(await refuseUnfitLocalModel('m-9b')).toBe(v!.message);
   });
 
-  it('32 GB: a 2B model fits at 32K; the 9B does not', async () => {
+  it('32 GB: each agent\'s own model writing summaries, the 9B fits at 32K; with the writer as the Summarization pick only the 2B does', async () => {
     totalRam = 32 * GIB;
     const open = await openOn(32 * GIB);
     const v9 = await localModelFit('m-9b');
     const v2 = await localModelFit('m-2b');
     expect(v9!.openBytes).toBe(open);
-    expect(v9!.fits).toBe(false);
+    expect(v9!.fits).toBe(true);   // t268 fix round 1 (I-2, edited: it was refused while the summary room was always reserved)
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+    expect((await localModelFit('m-9b'))!.fits).toBe(false);
     expect(v2!.fits).toBe(true);
     expect(v2!.needBytes).toBe(2_700_000_000 + kvPerToken(28) * AT_32K);
   });
@@ -156,8 +162,8 @@ describe('N1 (fix round 2): the Dojo\'s writer is never charged twice', () => {
 
   it('as an agent it needs only the KV beyond the room already reserved for its jobs', async () => {
     totalRam = 32 * GIB;
-    const job = await writerJobWindowTokens(null);
-    expect((await localModelFit('m-writer'))!.needBytes).toBe(kvPerToken(36) * Math.max(0, AT_32K - job));
+    const room = await writerReservedWindowTokens(null);   // t268 (I-2, edited): the room its jobs reserve now
+    expect((await localModelFit('m-writer'))!.needBytes).toBe(kvPerToken(36) * Math.max(0, AT_32K - room));
   });
 
   it('a pick of the writer made while Ollama was down never makes its summary calls fail', async () => {
@@ -329,5 +335,41 @@ describe('the setup probe the role steps default from (no marks, no cards)', () 
     ollama.up = false;
     expect(await ask('m-9b')).toBeNull();
     expect(frames.list).toEqual([]);
+  });
+});
+
+// t268 fix round 1 (I-2) + ORCHESTRATOR RULING, after the owner's ruling of 2026-10-24 ("The agents model."): each
+// agent's own model writes its summaries, so the Dojo's writer's reserved room follows the jobs it ACTUALLY has
+// here — its summary job's window only when it is the explicit Summarization pick; otherwise its system jobs
+// (titles, the voice opener, the fallback) at the sizes they really ran at (Ollama's own counts, the cost rows).
+describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
+  const ran = (purpose: string, tokens: number): void => {
+    db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd, latency_ms, request_type, call_purpose, created_at)
+      VALUES (?, 'a', 'm-writer', 'ollama-local', ?, 10, 0, 100, ?, ?, datetime('now'))`).run(`c-${purpose}-${tokens}`, tokens, purpose, purpose);
+  };
+
+  it('not the Summarization pick, no job run yet: the smallest window any job asks for', async () => {
+    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
+  });
+
+  it('not the pick: the largest job it really ran, at its real size — a title, then a fallback summary', async () => {
+    ran('ask_title', 1_500);
+    expect(await writerReservedWindowTokens(null)).toBe(2_048);   // 1,500 + 64 out + 256 slack → one 2,048 block
+    ran('memory_summarize', 40_000);
+    expect(await writerReservedWindowTokens(null)).toBeGreaterThanOrEqual(40_000);
+    expect(await writerReservedWindowTokens(null)).toBeLessThan(await writerJobWindowTokens(null));
+  });
+
+  it('the explicit Summarization pick: its summary job\'s window', async () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
+  });
+
+  it('the fit charges exactly that room', async () => {
+    totalRam = 32 * GIB;
+    const open = await openOn(32 * GIB);
+    expect((await localModelFit('m-2b'))!.openBytes).toBe(open);
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
+    expect(open - (await localModelFit('m-2b'))!.openBytes).toBe(kvPerToken(36) * (await writerJobWindowTokens(null) - MIN_UTILITY_NUM_CTX));
   });
 });
