@@ -109,6 +109,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
   let replaced = 0;
   let failedWriter: string | null = null;
   let stoppedByOwner = false;
+  let checkFailed = false;
   for (const { id } of ids) {
     if (opts.abortSignal?.aborted) break;
     const all = getSummarySourceMessages(id);
@@ -125,10 +126,10 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
     for (const writer of eligibleSummaryWriters(preferred, agentId)) {
       if (done || opts.abortSignal?.aborted) break;
-      const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal });
+      const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal, spanIds: source.map((m) => m.id) });
       if (!summary.ok) {
         if (summary.stopped) { stoppedByOwner = true; break; }   // the owner's Stop: not the writer's failure, and no next writer
-        if (summary.checkFailed) break;                          // v3.5: a verdict on this span — no other writer, left as it is
+        if (summary.checkFailed) { checkFailed = true; break; }  // v3.5: a verdict on this span — no other writer, left as it is
         if (summary.tooBig) continue;                            // t149 F4: not dialled; the next writer may hold it
         if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
         continue;
@@ -138,6 +139,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       refreshEmbedding('summary', id, agentId, text);   // the real text is knowledge; the note never was
       done = true;
     }
+    if (checkFailed) { checkFailed = false; continue; }   // v3.5 ruling: each span is its own — the next placeholder is not held
     if (!done || stoppedByOwner) break;
     replaced++;
   }

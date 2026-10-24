@@ -1128,7 +1128,7 @@ export async function runLeafCompaction(
         targetTokens: DEFAULTS.leafTargetTokens,
         agentId,
         modelId,
-        abortSignal: opts?.abortSignal,
+        abortSignal: opts?.abortSignal, spanIds: messageIds,   // v3.5: a span whose check failed is known by its rows
       });
 
       // PHASE-3 T5 Step 2: a REFUSAL leaves the chunk exactly where it is. `createLeafSummary`

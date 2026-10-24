@@ -307,7 +307,7 @@ async function condenseLevel(
     if (summaryWriterUnavailable(agentId, modelId)) { stage = 'summary_writer_unavailable'; detail = modelId; break; }
     const shape = parentShape(batch);
     try {
-      const args = { content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal };
+      const args = { content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
       // A pair (or more) the writer cannot hold is halved first; a pair that still does not hold goes to a writer that can.
       const summary = await (batch.length > 2 ? generateSummary(args) : generateOnAWriterThatHolds(args));
       calls += 1;

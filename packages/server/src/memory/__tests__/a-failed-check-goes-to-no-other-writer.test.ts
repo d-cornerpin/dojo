@@ -19,11 +19,12 @@ vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: asyn
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'), isDreamerIgnored: vi.fn(() => false), getArchiveHighWaterMark: vi.fn(() => null),
 }));
-const writers = vi.hoisted(() => ({ calls: [] as string[] }));
+const writers = vi.hoisted(() => ({ calls: [] as string[], fine: new Set<string>() }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string }) => {
     writers.calls.push(p.modelId);
-    return { content: 'INVENTED: the crate was shipped and the task is closed.', toolCalls: [], usage: {} };
+    const fine = [...writers.fine].some((marker) => (p as unknown as { messages: Array<{ content: string }> }).messages[0].content.includes(marker));
+    return { content: fine ? 'The owner asked which bay; the agent answered.' : 'INVENTED: the crate was shipped and the task is closed.', toolCalls: [], usage: {} };
   },
   getContextWindow: () => 32_000, getModelOutputCap: () => 4096, getProviderCeilingTokens: () => null,
   effectiveContextWindow: (d: number) => d, resolveNumCtx: () => ({ effective: null }),
@@ -54,7 +55,12 @@ beforeEach(() => {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[u${t}] Which bay is the next crate for?`, turnNumber: t });
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: t, content: `[a${t}] Bay ${t}, after inspection.` });
   }
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ answers: { invented: { noul: 0.93 }, dropped: { noul: 0.05 }, stated_current: { noul: 0.05 } } })));
+  writers.fine.clear();
+  vi.stubGlobal('fetch', vi.fn(async (_u: string, init?: { body?: string }) => {
+    const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
+    const bad = state.summary.includes('INVENTED') ? 0.93 : 0.04;
+    return Response.json({ answers: { invented: { noul: bad }, dropped: { noul: 0.05 }, stated_current: { noul: 0.05 } } });
+  }));
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
@@ -66,5 +72,47 @@ describe('the placeholder replacer and a failed check', () => {
     expect(writers.calls).toEqual(['writer-small', 'writer-small']);   // the write and the one rewrite
     expect(hasUncondensedPlaceholders(AGENT)).toBe(true);              // the span is left as it is
     expect(db().prepare("SELECT writer_model_id, outcome FROM summary_checks").all()).toEqual([{ writer_model_id: 'writer-small', outcome: 'not_kept' }]);
+  });
+});
+
+describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () => {
+  const span = { content: 'SPAN-A rows', depth: 0, targetTokens: 400, agentId: AGENT, spanIds: ['msg-1', 'msg-2'] };
+
+  it('(i)+(ii) is handed to no other writer by any path, and not retried by the same writer, until something changes', async () => {
+    const { generateSummary } = await import('../summarize.js');
+    expect((await generateSummary({ ...span, modelId: 'writer-small' })).ok).toBe(false);
+    expect(writers.calls).toEqual(['writer-small', 'writer-small']);
+    writers.calls.length = 0;
+    const again = await generateSummary({ ...span, modelId: 'writer-small' });
+    const elsewhere = await generateSummary({ ...span, modelId: 'paid-own' });
+    expect(again.ok === false && again.checkFailed).toBe(true);
+    expect(elsewhere.ok === false && elsewhere.checkFailed).toBe(true);
+    expect(writers.calls).toEqual([]);   // nobody was dialled
+  });
+
+  it('(ii) a new row joining the span, or the owner changing the summary writer, lets it be tried again', async () => {
+    const { generateSummary } = await import('../summarize.js');
+    await generateSummary({ ...span, modelId: 'writer-small' });
+    writers.calls.length = 0;
+    await generateSummary({ ...span, spanIds: ['msg-1', 'msg-2', 'msg-3'], modelId: 'writer-small' });
+    expect(writers.calls.length).toBeGreaterThan(0);
+    writers.calls.length = 0;
+    db().prepare("UPDATE config SET value = 'paid-own' WHERE key = 'compaction_model_id'").run();
+    await generateSummary({ ...span, modelId: 'paid-own' });
+    expect(writers.calls.length).toBeGreaterThan(0);
+  });
+
+  it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {
+    const ids = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
+    // Two placeholders: the older one's rows always fail, the newer one's rows summarise fine.
+    writeUncondensedPlaceholders(AGENT, (db().prepare('SELECT seq FROM messages WHERE id = ?').get(ids[5]) as { seq: number }).seq);
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: '[u9] FINE-MARK a later question', turnNumber: 9 });
+    insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', turnNumber: 9, content: '[a9] FINE-MARK a later answer' });
+    writers.fine.add('FINE-MARK');
+    const latest = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
+    writeUncondensedPlaceholders(AGENT, latest);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind = 'uncondensed'").get(AGENT) as { n: number }).n).toBe(2);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect((db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind = 'uncondensed'").get(AGENT) as { n: number }).n).toBe(1);
   });
 });

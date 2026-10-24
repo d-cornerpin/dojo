@@ -7,11 +7,12 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { formatDate } from '../../lib/dates';
+import { SummaryCheckNotice } from './SummaryCheckNotice';
 
 
 // ── Fallback Vision Model Card ──
@@ -127,6 +128,7 @@ export const CapabilityModelCard = ({
   noSelectionMessage,
   models,
   extraOptions = [],
+  notice,
 }: {
   title: string;
   description: string;
@@ -140,6 +142,7 @@ export const CapabilityModelCard = ({
   noSelectionMessage: string;
   models: Model[];
   extraOptions?: ExtraOption[];
+  notice?: ReactNode;   // v3.5: a standing note under the description (the Summarization card's)
 }) => {
   const [selectedId, setSelectedId] = useState('');
   const [loading, setLoading] = useState(true);
@@ -190,6 +193,7 @@ export const CapabilityModelCard = ({
         <div className="scard__title">{title}</div>
         <p className="text-xs text-ui/40 mt-1">{description}</p>
       </div>
+      {notice}
 
       {!hasAnyOption ? (
         <div className="alert-banner alert-warning">{noModelsMessage}</div>
@@ -365,6 +369,7 @@ export const CompactionModelCard = ({ models }: { models: Model[] }) => (
     selectorLabel="Summarization model"
     noModelsMessage="No text-capable models are enabled. Enable a chat model above and come back here to pick it."
     noSelectionMessage="Using the default: the Dojo's small writer. Pick one to set it explicitly."
+    notice={<SummaryCheckNotice />}
     models={models}
   />
 );

@@ -4,6 +4,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
+const summaryCheck = vi.hoisted(() => ({ current: { writer: 'writer-small', failed: 0, total: 0, failing: false } as Record<string, unknown> }));
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
   const stub: Record<string, unknown> = {};
@@ -11,6 +12,9 @@ vi.mock('../lib/api', async () => {
     stub[key] = typeof actual[key] === 'function' ? vi.fn(async () => ({ ok: true, data: [] })) : actual[key];
   }
   stub.getSetting = vi.fn(async () => ({ ok: true, data: { value: '' } }));
+  stub.request = vi.fn(async (path: string) => (path === '/config/summary-check'
+    ? { ok: true, data: summaryCheck.current }
+    : { ok: true, data: [] }));
   return stub;
 });
 
@@ -38,5 +42,20 @@ describe('Settings → Models', () => {
 
   it('the System Model card component no longer exists', () => {
     expect((RouterConfigModule as Record<string, unknown>).SystemModelConfig).toBeUndefined();
+  });
+});
+
+describe('fix round 2 (iv): the Summarization card encourages a larger model when the writer is failing', () => {
+  it('says so while the current writer fails its checks, and says nothing when it does not', async () => {
+    summaryCheck.current = { writer: 'writer-small', failed: 3, total: 10, failing: true };
+    const { unmount } = render(<ModelsTab />);
+    await waitFor(() => expect(screen.getByText(
+      "This box's memory summaries keep failing the accuracy check (3 of the last 10); those parts of the conversation are left as they are. A larger model may do better: pick one here.",
+    )).toBeTruthy());
+    unmount();
+    summaryCheck.current = { writer: 'writer-small', failed: 0, total: 10, failing: false };
+    render(<ModelsTab />);
+    await waitFor(() => expect(screen.getByText('Summarization Model')).toBeTruthy());
+    expect(screen.queryByText(/keep failing the accuracy check/)).toBeNull();
   });
 });

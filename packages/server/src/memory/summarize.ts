@@ -253,6 +253,7 @@ async function writeSummary(params: {
   // continuing in the background.
   abortSignal?: AbortSignal;
   checkFeedback?: string;   // v3.5 B4: the rewrite after a failed accuracy check names what failed
+  spanIds?: readonly string[];   // v3.5: the rows summarised — a span whose check failed is known by them
 }): Promise<SummaryResult> {
   const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
 

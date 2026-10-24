@@ -134,7 +134,7 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
         const passStart = Date.now();
         const r = await leavingViewPass(agentId, writer, contextWindow,
           { cause: 'out-of-view', throughSeq, rowsLeaving: owed }, { abortSignal: bound.signal });
-        if (r.leafCreated === 0 && summaryCheckRefusedSince(agentId, passStart)) break;   // v3.5: a failed check goes to no other writer
+        if (summaryCheckRefusedSince(agentId, passStart)) break;   // v3.5 ruling: a failed span goes to no other writer, whatever else the pass wrote
         if (r.leafCreated === 0 && bound.signal.reason === FOLD_IN_TURN_LIMIT) noteDidNotAnswerInTurn(writer);
         else if (r.leafCreated === 0 && abortBlamesWriter(bound.signal)) failedWriter = writer;
       }

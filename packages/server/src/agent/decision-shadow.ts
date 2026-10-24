@@ -49,7 +49,10 @@ export function recordShadow(row: {
   ).lastInsertRowid);
 }
 
-/** What really happened for `question` on `turnId`, from the ledger record named by `src`. */
+/** What really happened for `question` on `turnId`, from the ledger record named by `src`.
+ *  NO CALLERS YET (fix round 2, stated rather than invented): nothing in this release supplies truth, so no
+ *  question is ever promoted to `model` and the summary check's pass mark stays 0.5 until a truth source
+ *  (Part C's clusters, B5's measurement) calls this. */
 export function recordTruth(turnId: string, question: string, truth: unknown, src: string): void {
   getDb().prepare(`UPDATE decision_shadow SET truth = ?, truth_src = ?, truth_at = ?
     WHERE turn_id = ? AND question = ? AND truth IS NULL`).run(JSON.stringify(truth ?? null), src, Date.now(), turnId, question);

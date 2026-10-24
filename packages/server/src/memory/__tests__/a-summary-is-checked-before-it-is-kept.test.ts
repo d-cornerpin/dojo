@@ -32,7 +32,7 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { summaryCheckLine, SUMMARY_CHECK_NOTICE_CODE, passMark } from '../summary-check.js';
+import { summaryCheckLine, SUMMARY_CHECK_NOTICE_CODE, passMark, summaryWriterStatus } from '../summary-check.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
@@ -67,7 +67,8 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
-const write = (modelId = 'writer-small') => generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId });
+let span = 0;   // each write is its own span (fix round 2: a span that failed is not tried again by anyone)
+const write = (modelId = 'writer-small') => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId });
 const checks = (): Array<{ outcome: string; invented: number | null }> =>
   db().prepare('SELECT outcome, invented FROM summary_checks ORDER BY id').all() as Array<{ outcome: string; invented: number | null }>;
 
@@ -136,6 +137,14 @@ describe('a summary is checked against its source before it is kept', () => {
     writer.outputs = ['INVENTED one.', 'INVENTED two.'];
     const r = await write();
     expect(r.ok === false && r.checkFailed).toBe(true);
+  });
+
+  it('(iv) the Summarization card is told when the current summary writer is failing', async () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'writer-small')").run();
+    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 0, total: 0, failing: false });
+    writer.outputs = ['fine', 'INVENTED x.', 'INVENTED y.'];
+    await write(); await write();
+    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 1, total: 2, failing: true });
   });
 
   it('the Healer section carries the running numbers', async () => {
