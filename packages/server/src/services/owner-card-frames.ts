@@ -20,15 +20,15 @@ import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
  *  t138 round-2 suite (`PLATFORM_SENDER` is 'platform') and read by the dashboard. */
 const PLATFORM_SENDER = 'platform';
 
-export function ownerCardFrame(words: string, severity: 'error' | 'warning' | 'info'): void {
+export function ownerCardFrame(words: string, severity: 'error' | 'warning' | 'info', cardKey?: string): void {
   try {
-    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false });
+    broadcast({ type: 'chat:error', agentId: PLATFORM_SENDER, error: scrubTechnicalDetail(words), severity, retryable: false, ...(cardKey ? { cardKey } : {}) });
   } catch { /* a card is best-effort; the text and the state are what matter */ }
 }
 
-/** A condition ended: its card leaves every open dashboard. */
-export function ownerCardEnded(words: string): void {
-  ownerCardFrame(words, 'info');
+/** A condition ended: its card leaves every open dashboard (by `cardKey` when the card carries one). */
+export function ownerCardEnded(words: string, cardKey?: string): void {
+  ownerCardFrame(words, 'info', cardKey);
 }
 
 // ── LASTING CARDS (t146 round 3) ──

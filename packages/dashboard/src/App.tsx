@@ -277,14 +277,20 @@ export const GlobalAlerts = () => {
   // screen are one card. An all-clear's `info` frame removes the card it names and raises none.
   // On load and on every reconnect the server's cards are asked for again, re-derived from the
   // alert state it keeps, so a card outlives the page (t138 rounds 2-3).
-  const showOwnerCard = useCallback((words: string, critical: boolean) => addActionToast({
-    title: '', message: words, actions: [], dedupeKey: `owner-alert:${words}`, level: critical ? 'error' : 'warning',
-    onDismiss: () => {
-      void api.request('/config/owner-notices/dismiss', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ words }),
-      });
-    },
-  }), [addActionToast]);
+  // v3.5 N42 r2: a card whose words can change while it stands carries `cardKey` (its condition), and is one
+  // card per key: its end frame and its X find it by the key, whatever its words became.
+  const showOwnerCard = useCallback((words: string, critical: boolean, cardKey?: string) => {
+    const dedupeKey = `owner-alert:${cardKey ?? words}`;
+    if (cardKey) removeToastByKey(dedupeKey);   // new words for the same condition replace the card
+    return addActionToast({
+      title: '', message: words, actions: [], dedupeKey, level: critical ? 'error' : 'warning',
+      onDismiss: () => {
+        void api.request('/config/owner-notices/dismiss', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ words, ...(cardKey ? { cardKey } : {}) }),
+        });
+      },
+    });
+  }, [addActionToast, removeToastByKey]);
 
   // Every owner card on screen — from an earlier load OR a live frame whose END this tab missed
   // while away — is reconciled against what the server says still stands (t138 r6, review M2).
@@ -293,13 +299,13 @@ export const GlobalAlerts = () => {
   useEffect(() => {
     if (connectionStatus !== 'connected') return;
     let current = true;
-    void api.request<Array<{ words: string; severity: string }>>('/config/owner-notices').then((r) => {
+    void api.request<Array<{ words: string; severity: string; cardKey?: string }>>('/config/owner-notices').then((r) => {
       if (!current || !r.ok || !Array.isArray(r.data)) return;
-      const standing = new Set(r.data.map((c) => `owner-alert:${c.words}`));
+      const standing = new Set(r.data.map((c) => `owner-alert:${c.cardKey ?? c.words}`));
       for (const t of onScreen.current) {
         if (t.dedupeKey?.startsWith('owner-alert:') && !standing.has(t.dedupeKey)) removeToastByKey(t.dedupeKey);
       }
-      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical');
+      for (const c of r.data) showOwnerCard(c.words, c.severity === 'critical', c.cardKey);
     });
     return () => { current = false; };
   }, [connectionStatus, showOwnerCard, removeToastByKey]);
@@ -308,8 +314,8 @@ export const GlobalAlerts = () => {
     const unsub = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== OWNER_ALERT_SPEAKER) return;
-      if (e.severity === 'info') removeToastByKey(`owner-alert:${e.error}`);
-      else showOwnerCard(e.error, e.severity === 'error');
+      if (e.severity === 'info') removeToastByKey(`owner-alert:${e.cardKey ?? e.error}`);
+      else showOwnerCard(e.error, e.severity === 'error', e.cardKey);
     });
 
     const unsub2 = subscribe('resource:warning', (event: WsEvent) => {

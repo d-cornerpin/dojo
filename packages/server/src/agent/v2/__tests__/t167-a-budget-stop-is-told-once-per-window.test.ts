@@ -642,7 +642,7 @@ describe('t167 (iv): the no-fit stop is byte-unchanged', () => {
     });
     const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
-    expect(sendAlertSpy.mock.calls).toEqual([[NO_FIT_WORDS, 'notice']]);
+    expect(sendAlertSpy.mock.calls).toEqual([[NO_FIT_WORDS, 'notice', { cardKey: `nofit:${AGENT}` }]]);   // v3.5 N42 r2: the card is keyed by its condition
     expect(healerOwnerCards().map((c) => ({ words: c.words, severity: c.severity }))).toEqual([{ words: NO_FIT_WORDS, severity: 'notice' }]);
     const lastError = (db().prepare('SELECT last_error FROM agents WHERE id = ?').get(AGENT) as { last_error: string }).last_error;
     expect(lastError).toBe('[no_model_fits] None of this agent\'s models can hold its instructions and tools, so its turn was not run. '

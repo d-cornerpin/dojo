@@ -2079,7 +2079,7 @@ const ownerNoticeLog = createLogger('owner-notice');
  * escalation ladder does not raise the same row with him again. The id is data the caller holds,
  * never read from the words.
  */
-export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string } = {}): void {
+export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice', opts: { card?: false; clears?: string; aboutWorkId?: string; cardKey?: string } = {}): void {
   try {
     const scrubbed = scrubTechnicalDetail(message);
 
@@ -2098,7 +2098,7 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     // A status line and an all-clear raise none BY DESIGN (R-V333-13); the record below says which.
     const card = opts.clears !== undefined || opts.card === false ? 'none_by_design' : 'raised';
     if (opts.clears !== undefined) ownerCardEnded(opts.clears);
-    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning');
+    else if (opts.card !== false) ownerCardFrame(scrubbed, urgency === 'critical' ? 'error' : 'warning', opts.cardKey);
 
     const recipient = getDefaultSender();
     // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a

@@ -2829,7 +2829,7 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),
   ...accountOwnerCards(), ...watcherOwnerCards(),
-].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words) }));
+].map((card) => ({ ...card, words: scrubTechnicalDetail(card.words), cardKey: (card as { cardKey?: string }).cardKey }));
 
 // The owner-notice door asks this list whether a card LASTS (t146): a card it would not re-derive
 // is a live frame only, and is not the owner told about a work row.
@@ -2837,17 +2837,18 @@ registerStandingOwnerCards(ownerCards);
 
 // GET /api/config/owner-notices — the owner cards still standing (one per distinct words)
 configRouter.get('/owner-notices', (c) => {
-  const seen = new Map(ownerCards().map(({ words, severity }) => [words, { words, severity }] as const));
+  const seen = new Map(ownerCards().map(({ words, severity, cardKey }) => [cardKey ?? words, { words, severity, ...(cardKey ? { cardKey } : {}) }] as const));
   return c.json({ ok: true, data: [...seen.values()] });
 });
 
 // POST /api/config/owner-notices/dismiss — { words }: the card's X
 configRouter.post('/owner-notices/dismiss', async (c) => {
-  const body = await c.req.json().catch(() => null) as { words?: unknown } | null;
+  const body = await c.req.json().catch(() => null) as { words?: unknown; cardKey?: unknown } | null;
   if (typeof body?.words !== 'string') return c.json({ ok: false, error: 'words is required' }, 400);
-  const hits = ownerCards().filter((card) => card.words === body.words);
+  const key = typeof body.cardKey === 'string' ? body.cardKey : undefined;   // N42 r2: a keyed card is found by its key
+  const hits = ownerCards().filter((card) => (key ? card.cardKey === key : card.words === body.words));
   for (const card of hits) card.dismiss();
-  if (hits.length > 0) ownerCardEnded(body.words); // round 5: every other open tab drops it too
+  if (hits.length > 0) ownerCardEnded(body.words, key); // round 5: every other open tab drops it too
   return c.json({ ok: true, data: { dismissed: hits.length } });
 });
 

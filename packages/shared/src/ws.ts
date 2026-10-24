@@ -371,6 +371,9 @@ export interface ChatErrorEvent {
     | 'MAIN_MODEL_SMALL';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
+  /** v3.5 N42 r2: an owner card whose words can change while it stands (the no-fit card names the router's
+   *  smallest model) is matched by its condition key, so its end frame finds it whatever the words became. */
+  cardKey?: string;
 }
 
 export interface LogEntryEvent {

@@ -77,11 +77,25 @@ describe('an auto agent the router window cannot hold', () => {
     expect(words).not.toMatch(/Pick a bigger model for this agent/);
   });
 
-  it('the no-fit text and its lasting card point at the Router tab, never the agent\'s detail page', () => {
+  it('the no-fit text and its lasting card name the router\'s smallest model and the Router tab, never the agent\'s detail page', () => {
     const text = wordsOf('nofit:a-auto');
     expect(text).toMatch(/Dock Desk/);
+    expect(text, 'fix round 2: the model itself, not "the tab names it"').toMatch(/Dock Small/);
     expect(text).toMatch(/Router tab/);
-    expect(text).not.toMatch(/detail page/);
+    expect(text).not.toMatch(/detail page|the tab names it/);
+  });
+
+  it('fix round 2: the no-fit card is ended by its condition, not its words — switching the agent to a fixed model still ends it on open dashboards', async () => {
+    const { tellOwnerOnce, ownerConditionCleared, healerOwnerCards } = await import('../../healer/owner-notices.js');
+    db().prepare("UPDATE agents SET status = 'paused', last_error = '[no_model_fits] parked' WHERE id = 'a-auto'").run();
+    expect(tellOwnerOnce('nofit:a-auto')).toBe(true);
+    const shown = healerOwnerCards().find((c) => c.cardKey === 'nofit:a-auto');
+    expect(shown?.words, 'the card names the router model while the agent is automatic').toMatch(/Dock Small/);
+    db().prepare("UPDATE agents SET model_id = 'm-big' WHERE id = 'a-auto'").run();   // now a fixed model: its words differ
+    cards.length = 0;
+    ownerConditionCleared('nofit:a-auto');
+    const ended = cards.filter((c) => (c as { severity?: string }).severity === 'info');
+    expect(ended.map((c) => (c as { cardKey?: string }).cardKey), 'the end frame names the condition').toEqual(['nofit:a-auto']);
   });
 });
 

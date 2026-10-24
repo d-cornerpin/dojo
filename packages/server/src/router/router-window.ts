@@ -34,6 +34,7 @@
 
 import { getDb } from '../db/connection.js';
 import { getContextWindow } from '../agent/model.js';
+import { registerRouterFloorName } from '../healer/owner-notices.js';
 
 /** The config key the Router tab's slider writes (through the existing settings route). */
 export const ROUTER_WINDOW_SETTING = 'router.context_window';
@@ -59,6 +60,9 @@ export function routerWindowFloor(): { tokens: number; modelName: string; modelI
   }
   return floor;
 }
+
+// The no-fit text names the router's smallest model (`healer/owner-notices.ts`, a light module).
+registerRouterFloorName(() => routerWindowFloor()?.modelName ?? null);
 
 /** The owner's setting, when it is a positive whole number of tokens. */
 function routerWindowSetting(): number | null {

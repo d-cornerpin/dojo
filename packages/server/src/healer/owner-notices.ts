@@ -39,10 +39,20 @@ export const stuckWords = (name: string): string =>
  *  must act on (OR-V333-SET (3)); the condition is `nofit:<agentId>` and ends when the agent is released. */
 export const noFitWords = (name: string): string =>
   `${name} can't run: none of its models can hold its instructions and tools. Pick a bigger model for it on its detail page, or give it fewer tools, and it will answer your message.`;
-/** N42 fix round 1: an agent on automatic model choice has no model of its own; the router's one window is too
- *  small. The Router tab names the smallest model (this light module reads no window). */
-export const autoNoFitWords = (name: string): string =>
-  `${name} can't run on automatic model choice: the router's one window is too small for its instructions and tools. On the Router tab in Settings, raise the "Context window for automatic choice" slider, or raise or remove the router's smallest model (the tab names it), or give it fewer tools, and it will answer your message.`;
+/** N42: an agent on automatic model choice has no model of its own; the router's one window is too small. It
+ *  names the router's smallest model, read through the hook `router/router-window.ts` registers (this light
+ *  module reads no window itself). The card is matched by its key (`cardKeyOf`), so its words may change. */
+export const autoNoFitWords = (name: string): string => {
+  const model = routerFloorName?.() ?? null;
+  const which = model ? `the router's smallest model, ${model},` : 'the router\'s smallest model';
+  return `${name} can't run on automatic model choice: ${which} sets a window too small for its instructions and tools. `
+    + `On the Router tab in Settings, raise the "Context window for automatic choice" slider, or raise ${model ? `${model}'s window` : 'that model\'s window'} or take it off the router, or give it fewer tools, and it will answer your message.`;
+};
+let routerFloorName: (() => string | null) | null = null;
+/** Called once by `router/router-window.ts` at load: the name of the router's smallest model, or null. */
+export function registerRouterFloorName(read: () => string | null): void { routerFloorName = read; }
+/** The owner cards whose words can change while they stand are matched by their condition key (N42 r2). */
+export const cardKeyOf = (key: string): string | undefined => (key.startsWith('nofit:') ? key : undefined);
 /** t167: "the limit is reached" for one budget window. The budget key is `global_daily` or `agent_<id>`;
  *  the words never name an agent (the card is re-derived from the key alone). */
 export const budgetStopKey = (budgetId: string): string => `budgetstop:${budgetId}`;
@@ -144,10 +154,10 @@ export function ownerConditionCleared(key: string, family = false): void {
     const told = db.prepare(`SELECT key FROM healer_state WHERE scope = ? AND (key = ? OR (? AND key LIKE ? || '%'))`)
       .all(TOLD, key, family ? 1 : 0, key) as Array<{ key: string }>;
     if (told.length === 0) return;
-    const words = told.map((t) => wordsOf(t.key));
+    const ends = told.map((t) => [wordsOf(t.key), cardKeyOf(t.key)] as const);
     db.prepare(`DELETE FROM healer_state WHERE scope IN (?, ?) AND (key = ? OR (? AND key LIKE ? || '%'))`)
       .run(TOLD, DISMISSED, key, family ? 1 : 0, key);
-    for (const w of words) ownerCardEnded(w);
+    for (const [w, k] of ends) ownerCardEnded(w, k);
   } catch { /* best-effort, like the Healer's own damping: never block recovery */ }
 }
 
@@ -183,7 +193,7 @@ export function ownerConditionsOnAgentGone(agentId: string): void {
 }
 
 /** The Healer's owner cards a dashboard shows on load: told, still standing, not dismissed. */
-export function healerOwnerCards(): Array<{ words: string; severity: 'critical' | 'notice'; dismiss: () => void }> {
+export function healerOwnerCards(): Array<{ words: string; severity: 'critical' | 'notice'; dismiss: () => void; cardKey?: string }> {
   const db = getDb();
   const rows = db.prepare(`SELECT t.key FROM healer_state t WHERE t.scope = ?
     AND NOT EXISTS (SELECT 1 FROM healer_state d WHERE d.scope = ? AND d.key = t.key)`).all(TOLD, DISMISSED) as Array<{ key: string }>;
@@ -196,6 +206,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
+      cardKey: cardKeyOf(key),
       severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
