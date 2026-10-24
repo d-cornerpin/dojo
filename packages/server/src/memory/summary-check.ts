@@ -26,7 +26,7 @@ import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, combineParts } from './summary-check-parts.js';
 import { decisionCharsPerToken } from '../services/token-density.js';
 import { getDecisionProvider } from '../agent/decision-provider.js';
-import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
+import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, mintSummaryCheckId, noteSummaryKept, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
 import { createHash } from 'node:crypto';
 export { refuseFallbackOverFreeMemory } from './writer-fallback-room.js';   // summarize.ts's one door asks it
 /** A span no caller named (a direct check): keyed by its source text instead. */
@@ -157,29 +157,32 @@ export async function summaryChecksSettled(): Promise<void> { while (lateChecks.
  */
 export async function keepOnlyIfChecked(
   source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
-  rewrite: (feedback: string) => Promise<SummaryResult>, checkId?: string,
+  rewrite: (feedback: string) => Promise<SummaryResult>, newCheckId: () => string | undefined = () => undefined,
 ): Promise<SummaryResult> {
   // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
   // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
   const asked = askedQuestions();
   const acting = actingQuestions();
   if (asked.length === 0) return written;   // M-3: every question held to the rule (or no decision model): the model is not asked
+  const checkId = newCheckId();   // N-D: each text checked is its own version
   if (acting.length === 0) {   // M-2: a verdict that cannot act never holds the summary up: kept now, checked after
+    noteSummaryKept(checkId);
     const late = checkSummary(source, written.text, agentId, { asked, background: true, checkId }).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
       .catch(() => undefined).finally(() => { lateChecks.delete(late); });
     lateChecks.add(late);
     return written;
   }
   const first = await checkSummary(source, written.text, agentId, { asked, checkId });
-  if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
+  if (!first.answers) { record(agentId, writer, 'unavailable', null); noteSummaryKept(checkId); return written; }
   const failed = actedFailures(first, acting);
-  if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); return written; }
+  if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); noteSummaryKept(checkId); return written; }
 
   const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
-  const second = await checkSummary(source, again.text, agentId, { asked, checkId });
-  if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
-  if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
+  const againId = newCheckId();
+  const second = await checkSummary(source, again.text, agentId, { asked, checkId: againId });
+  if (!second.answers) { record(agentId, writer, 'unavailable', null); noteSummaryKept(againId); return again; }
+  if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); noteSummaryKept(againId); return again; }
 
   record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', {
@@ -210,7 +213,7 @@ export async function writeThenCheck<P extends SummaryParams>(params: P, write: 
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;
   const kept = await keepOnlyIfChecked(params.content, written, params.agentId, params.modelId,
-    (checkFeedback) => write({ ...params, checkFeedback }), params.spanIds?.length ? summaryCheckId(params.agentId, params.spanIds) : undefined);
+    (checkFeedback) => write({ ...params, checkFeedback }), () => (params.spanIds?.length ? mintSummaryCheckId(params.agentId, params.spanIds) : undefined));
   if (!kept.ok && kept.checkFailed) recordRefusedSpan(keys);
   else if (kept.ok) clearRefusedSpan(keys);   // NB-9: a span that is summarized now leaves no refusal behind
   return kept;

@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { modeFor } from '../agent/decision-policy.js';
 import type { Answer } from '../agent/decide.js';
-import { recordTruth } from '../agent/decision-shadow.js';
+import { recordTruth, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
 
 /** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
 export const SUMMARY_CHECK_PURPOSE = 'summary_check';
@@ -26,20 +26,54 @@ export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTI
 /**
  * The check's id (fix round 2, I-4) — the join key between its `decision_shadow` rows and the summary row it judged:
  * the agent and the SPAN it summarises (the rows it links: `summary_messages` for a leaf, `summary:<id>` of each
- * child for a condensed one — the `spanIds` every caller passes). Deterministic, unique per span, and it survives
- * every rewrite of the stored text (obligation notes, the hygiene pass); read off the row by `summaryCheckIdOfRow`.
+ * child for a condensed one — the `spanIds` every caller passes), plus the version below. Unique per span and text
+ * checked, and it survives every rewrite of the stored text (obligation notes, the hygiene pass); read off the row by
+ * `summaryCheckIdOfRow`.
  * NO TRUTH SOURCE EXISTS YET (`recordTruth` has no caller): until one joins on this key (`recordSummaryTruth`),
  * no summary-check question can be promoted to `model`, and the check stays in shadow.
  */
 export const summaryCheckId = (agentId: string, spanIds: readonly string[]): string =>
   `summary-check:${createHash('sha256').update(`${agentId}|${[...spanIds].sort().join('|')}`).digest('hex').slice(0, 32)}`;
-/** The check id of a stored summary, from its own links. */
+/**
+ * Fix round 4 (N-D): each text checked for a span is a VERSION of its summary — the check id is the span's key plus
+ * `:v<n>` — so a span summarised twice (the one rewrite in `model` mode, the nightly rebuild, a placeholder replaced
+ * over the same rows) has distinct ids, and a truth label for the stored row lands on the verdict of the text it holds.
+ * Two `healer_state` rows per span, `at_ms` holding a version number: the last version minted, and the version the
+ * span's stored summary keeps. Both go with the decision shadow's own keep (its report window and the one before).
+ */
+const VERSION_SCOPE = 'summary_check_version';
+const KEPT_SCOPE = 'summary_check_kept';
+const versionIn = (scope: string, key: string): number =>
+  (getDb().prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?').get(scope, key) as { at_ms: number } | undefined)?.at_ms ?? 0;
+const setVersion = (scope: string, key: string, version: number): void => {
+  getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
+    ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')`).run(scope, key, version);
+};
+/** A new version's check id for this span (the span's key alone when nothing can be recorded). */
+export function mintSummaryCheckId(agentId: string, spanIds: readonly string[]): string {
+  const key = summaryCheckId(agentId, spanIds);
+  try {
+    getDb().prepare("DELETE FROM healer_state WHERE scope IN (?, ?) AND updated_at < datetime('now', ?)")
+      .run(VERSION_SCOPE, KEPT_SCOPE, `-${Math.round((2 * SHADOW_REPORT_WINDOW_MS) / 1000)} seconds`);
+    const version = versionIn(VERSION_SCOPE, key) + 1;
+    setVersion(VERSION_SCOPE, key, version);
+    return `${key}:v${version}`;
+  } catch { return key; }
+}
+/** The summary checked under `checkId` is the one its span's stored row now keeps. */
+export function noteSummaryKept(checkId: string | undefined): void {
+  const m = /^(.*):v(\d+)$/.exec(checkId ?? '');
+  if (m) try { setVersion(KEPT_SCOPE, m[1], Number(m[2])); } catch { /* best-effort: a truth label then finds no verdict */ }
+}
+/** The check id of a stored summary, from its own links and the version it keeps. */
 export function summaryCheckIdOfRow(summaryId: string): string {
   const db = getDb();
   const agentId = (db.prepare('SELECT agent_id FROM summaries WHERE id = ?').get(summaryId) as { agent_id: string } | undefined)?.agent_id ?? '';
   const rows = (db.prepare('SELECT message_id AS id FROM summary_messages WHERE summary_id = ?').all(summaryId) as Array<{ id: string }>).map((r) => r.id);
   const kids = (db.prepare('SELECT parent_id AS id FROM summary_parents WHERE summary_id = ?').all(summaryId) as Array<{ id: string }>).map((r) => `summary:${r.id}`);
-  return summaryCheckId(agentId, rows.length > 0 ? rows : kids);
+  const key = summaryCheckId(agentId, rows.length > 0 ? rows : kids);
+  const kept = versionIn(KEPT_SCOPE, key);
+  return kept > 0 ? `${key}:v${kept}` : key;
 }
 /** What a truth source records for a stored summary's check (the join `recordTruth` makes, by the span's key). */
 export const recordSummaryTruth = (summaryId: string, question: SummaryCheckQuestion, truth: boolean, src: string): void =>

@@ -36,6 +36,7 @@ import { sourceParts } from '../summary-check-parts.js';
 import { decideRequestBody } from '../../agent/decide.js';
 import { getOllamaLock } from '../../services/ollama-lock.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+import { proveSummaryCheck } from './summary-check-proven.js';
 
 const AGENT = 'agent-shadow-first';
 const SOURCE = '[USER · the owner] please draft the offsite budget\n---\n[ASSISTANT · the agent] drafting it now';
@@ -123,7 +124,7 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
     const ids = rowsFor(4, 'a');
     const summaryId = await keep(ids, 'The owner asked for the offsite budget.');
     const id = summaryCheckIdOfRow(summaryId);
-    expect(id).toBe(summaryCheckId(AGENT, ids));
+    expect(id.startsWith(summaryCheckId(AGENT, ids))).toBe(true);   // fix round 4 (N-D; edited): the span's key, plus its version
     expect(new Set(shadowRows().map((s) => s.turn_id))).toEqual(new Set([id]));
     updateSummaryContent(summaryId, 'The owner asked for the offsite budget. [obligation noted]', 12);
     expect(summaryCheckIdOfRow(summaryId)).toBe(id);
@@ -136,6 +137,37 @@ describe('I-4 (fix round 2): the check\'s id is the span it judged — agent + l
     recordSummaryTruth(one, 'invented', false, 'test');
     const truths = db().prepare("SELECT turn_id, truth FROM decision_shadow WHERE question = 'invented' ORDER BY id").all() as Array<{ turn_id: string; truth: string | null }>;
     expect(truths).toEqual([{ turn_id: summaryCheckIdOfRow(one), truth: 'false' }, { turn_id: summaryCheckIdOfRow(two), truth: null }]);
+  });
+
+  // Fix round 4 (N-D): each text checked for a span is a version of its summary. A span summarised twice — the nightly
+  // rebuild or a placeholder replaced over the same rows, the one rewrite in `model` mode — gets distinct ids, and a
+  // truth label for the stored row lands on the verdict of the text that row holds.
+  it('a span summarised twice: two ids, and truth for the stored row labels only the verdict on its current text', async () => {
+    const ids = rowsFor(3, 'd');
+    const summaryId = await keep(ids, 'The owner asked for the offsite budget.');
+    const firstId = summaryCheckIdOfRow(summaryId);
+    writer.outputs.push('The owner asked for the offsite budget, due Friday.');
+    const again = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
+    await summaryChecksSettled();
+    updateSummaryContent(summaryId, again.ok ? again.text : '', 12);   // the rebuild rewrites the same row in place
+    const secondId = summaryCheckIdOfRow(summaryId);
+    expect(secondId).not.toBe(firstId);
+    recordSummaryTruth(summaryId, 'invented', false, 'test');
+    const truths = db().prepare("SELECT turn_id, truth FROM decision_shadow WHERE question = 'invented' AND turn_id IN (?, ?) ORDER BY id").all(firstId, secondId);
+    expect(truths).toEqual([{ turn_id: firstId, truth: null }, { turn_id: secondId, truth: 'false' }]);
+  });
+
+  it('the one rewrite in model mode: the failed text and the kept rewrite have distinct ids; the row carries the rewrite\'s', async () => {
+    proveSummaryCheck();
+    const ids = rowsFor(3, 'e');
+    writer.outputs.push('INVENTED: the owner approved a venue.', 'The owner asked for the offsite budget.');
+    const r = await generateSummary({ content: SOURCE, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds: ids });
+    expect(r).toMatchObject({ ok: true, text: 'The owner asked for the offsite budget.' });
+    const summaryId = createLeafSummary(AGENT, r.ok ? r.text : '', 10, ids, new Date().toISOString(), new Date().toISOString()).id;
+    const base = summaryCheckId(AGENT, ids);
+    const checked = [...new Set((db().prepare("SELECT turn_id FROM decision_shadow WHERE turn_id LIKE ? ORDER BY id").all(`${base}%`) as Array<{ turn_id: string }>).map((x) => x.turn_id))];
+    expect(checked).toHaveLength(2);
+    expect(summaryCheckIdOfRow(summaryId)).toBe(checked[1]);
   });
 });
 
