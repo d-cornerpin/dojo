@@ -11,12 +11,13 @@
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
+import { promptCostReport, type PromptCostLine } from '../memory/prompt-sections.js';
 import { getOllamaLock } from '../services/ollama-lock.js';
 import { redactRows, redactText } from './redact.js';
 import { agentLabel, agentNames, short, toMs, utc } from './scope.js';
 import { pointerLine, sourceRef } from './source-remote.js';
 
-export const STATE_SECTIONS = ['Version', 'Agents', 'Providers and models', 'Router tiers', 'Models for platform jobs', 'Schedules',
+export const STATE_SECTIONS = ['Version', 'Agents', 'Standing instruction', 'Providers and models', 'Router tiers', 'Models for platform jobs', 'Schedules',
   'Budgets', 'Integrations and switches', 'Settings', 'Ollama', 'Drains', 'Healer diagnostics'] as const;
 
 type Row = Record<string, unknown>;
@@ -39,6 +40,19 @@ function settings(rows: Row[]): string[] {
     shown.add(p);
     return [`- ${p}:* — ${family.get(p)} rows; read them with sql: select key, value from config where key like '${p}:%'`];
   });
+}
+
+const tokensOf = (n: number): string => n.toLocaleString('en-US');
+
+/** K36: per agent, every section of its standing instruction with tokens and share, biggest first. */
+function standingInstruction(db: Database.Database, names: Map<string, string>): string {
+  const ids = (db.prepare('SELECT DISTINCT agent_id FROM prompt_sections').all() as Array<{ agent_id: string }>).map((r) => r.agent_id);
+  if (ids.length === 0) return 'Not measured yet: each agent\'s sections are recorded the next time its prompt is assembled.';
+  const line = (l: PromptCostLine): string => `  · ${l.entryId} · ${tokensOf(l.tokens)} tokens · ${Math.round(l.share * 100)}%${l.growth ? ` · ${l.growth > 0 ? '+' : ''}${l.growth} since the last reference` : ''}`;
+  return ids.map((id) => ({ id, label: agentLabel(names, id) })).sort((a, b) => a.label.localeCompare(b.label)).map(({ id, label }) => {
+    const r = promptCostReport(id, db);
+    return [`- ${label} · ${tokensOf(r.systemTokens)} tokens in the standing instruction`, ...r.sections.map(line), ...r.lanes.map(line)].join('\n');
+  }).join('\n');
 }
 
 function score(min: unknown, max: unknown): string {
@@ -65,6 +79,7 @@ export function state(db: Database.Database = getReadOnlyDb()): string {
       `- ${agentLabel(names, a.id as string)} · ${a.status} · ${a.classification}${a.agent_type ? ` · ${a.agent_type}` : ''}`
       + ` · model ${a.model_id ? modelName.get(a.model_id as string) ?? a.model_id : 'none'}${a.grp ? ` · group ${a.grp}` : ''}`
       + ` · grants ${grants.get(a.id as string) ?? 'none'}`), 'No agents.'),
+    'Standing instruction': standingInstruction(db, names),
     'Providers and models': or(rows(db, 'SELECT id, name, type, base_url, auth_type, is_validated FROM providers ORDER BY name').map((p) => {
       const models = rows(db, 'SELECT name, api_model_id, is_enabled, context_window, thinking_enabled FROM models WHERE provider_id = ? ORDER BY name', p.id)
         .map((m) => `  · ${m.name} (${m.api_model_id}) · ${m.is_enabled ? 'enabled' : 'disabled'}${m.context_window ? ` · window ${Number(m.context_window).toLocaleString('en-US')}` : ''}${m.thinking_enabled ? ' · thinking' : ''}`);

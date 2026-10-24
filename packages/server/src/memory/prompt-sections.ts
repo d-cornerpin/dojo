@@ -8,6 +8,7 @@
 // recording fault never reaches the assembly.
 // ════════════════════════════════════════
 
+import type Database from 'better-sqlite3';
 import { getDb } from '../db/connection.js';
 import { PART_JOINER } from '../prompt/registry/types.js';
 import { estimateTokensFromChars } from './budget.js';
@@ -95,8 +96,9 @@ function lines(rows: DbRow[]): PromptCostLine[] {
     .sort((a, b) => b.tokens - a.tokens || a.entryId.localeCompare(b.entryId));
 }
 
-export function promptCostReport(agentId: string): PromptCostReport {
-  const rows = getDb().prepare(
+/** `db`: a reader may pass the read-only connection (the inspector does); the default is the writer's. */
+export function promptCostReport(agentId: string, db: Database.Database = getDb()): PromptCostReport {
+  const rows = db.prepare(
     'SELECT entry_id, tokens, chars, measured_at, baseline_tokens, baseline_at FROM prompt_sections WHERE agent_id = ?',
   ).all(agentId) as DbRow[];
   const sys = rows.filter((r) => r.entry_id.startsWith('sys.'));
