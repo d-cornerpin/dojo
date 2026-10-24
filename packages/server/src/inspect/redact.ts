@@ -149,7 +149,8 @@ export function redactText(s: string, agentIds: readonly string[] = []): string 
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
       const groups = rest.slice(0, -2).filter((g): g is string => typeof g === 'string' && g.length > 0);
       const value = groups[groups.length - 1];
-      if (!value) return REDACTED_CREDENTIAL;
+      // A URL with inline credentials keeps its scheme, user and host; only the password goes.
+      if (!value) return p.name === 'url-creds' ? match.replace(/^([^:]+:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${REDACTED_CREDENTIAL}@`) : REDACTED_CREDENTIAL;
       const at = match.lastIndexOf(value);
       return `${match.slice(0, at)}${REDACTED_CREDENTIAL}${match.slice(at + value.length)}`;
     });

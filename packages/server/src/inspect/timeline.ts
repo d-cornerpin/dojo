@@ -2,7 +2,8 @@
 // v3.5 inspect B1 — THE TIMELINE OF ANYTHING.
 //
 // Everything that happened to an agent, a task, a project, a turn, a conversation or a time
-// window, merged from every record into one ordered story (`records.ts` reads the sources).
+// window, merged from every record into one ordered story (`records.ts` reads the tables;
+// `logs.ts` adds the platform log's warn and error lines of the same scope).
 //
 // SCOPE RULES (the plan's):
 //   task_id     the task's own events, plus everything its assignee did in the turns that
@@ -17,12 +18,13 @@
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
 import { readRecords, SOURCES, type Rec, type RecordScope, type Source } from './records.js';
+import { logRecords } from './logs.js';
 import { agentLabel, agentNames, latestTurnWindow, resolveAgent, resolveWindow, short, utc, type Window } from './scope.js';
 
 export interface TimelineArgs {
   agent?: string; task_id?: string; project_id?: string; turn?: number; conversation?: string;
   since?: string; until?: string; around?: string;
-  include?: Source[];
+  include?: Array<Source | 'logs'>;
 }
 
 interface Resolved { scope: Omit<RecordScope, 'from' | 'to'>; title: string; agents: string[]; narrow: boolean }
@@ -68,9 +70,11 @@ export function timeline(a: TimelineArgs, db: Database.Database = getReadOnlyDb(
   let w: Window = resolveWindow(db, a, r.agents[0] ?? null);
   if (!r.narrow && w.from === null && w.to === null && !a.around) w = latestTurnWindow(db, r.agents[0] ?? null) ?? w;
   const scope: RecordScope = { ...r.scope, from: w.from, to: w.to };
-  const wanted = SOURCES.filter((s) => !a.include?.length || a.include.includes(s));
-  const recs: Rec[] = readRecords(db, scope, wanted, names, r.agents);
-  const order = new Map<string, number>(SOURCES.map((s, i) => [s, i]));
+  const all = [...SOURCES, 'logs' as const];
+  const wanted = all.filter((s) => !a.include?.length || a.include.includes(s));
+  const recs: Rec[] = readRecords(db, scope, SOURCES.filter((s) => wanted.includes(s)), names, r.agents);
+  if (wanted.includes('logs')) recs.push(...logRecords(db, scope, r.agents));
+  const order = new Map<string, number>(all.map((s, i) => [s, i]));
   recs.sort((x, y) => x.at - y.at || (order.get(x.source) ?? 0) - (order.get(y.source) ?? 0));
   const counts = wanted.map((s) => `${s} ${recs.filter((x) => x.source === s).length}`).join(' · ');
   const head = `Timeline of ${r.title}, ${w.note}: ${recs.length} record${recs.length === 1 ? '' : 's'} (${counts}).`;

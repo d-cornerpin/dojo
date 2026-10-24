@@ -154,6 +154,14 @@ process.on('exit', () => {
   }
 });
 
+/** v3.5 dojo_inspect: the log as it stands, oldest first: the one rotated backup
+ *  (`log-rotation.ts` keeps exactly `dojo.log.1`), then the live file plus the lines this
+ *  process has buffered but not yet written. Reads only; a missing file reads as empty. */
+export function readLogFiles(): string[] {
+  const read = (f: string): string => { try { return fs.readFileSync(f, 'utf-8'); } catch { return ''; } };
+  return [read(`${LOG_FILE}.1`), read(LOG_FILE) + writeBuffer.join('')];
+}
+
 export function readLogEntries(options?: {
   limit?: number;
   level?: LogLevel;

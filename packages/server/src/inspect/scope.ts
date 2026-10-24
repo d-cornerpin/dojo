@@ -42,7 +42,7 @@ export function msExpr(column: string, stored: 'ms' | 'text'): string {
 export const SHORT_ID_CHARS = 8;
 export const short = (id: string | null | undefined): string => (id ? String(id).slice(0, SHORT_ID_CHARS) : '-');
 
-export interface AgentRef { id: string; label: string; deleted: boolean }
+export interface AgentRef { id: string; name: string | null; label: string; deleted: boolean }
 
 /** id → name of every agent that still exists. */
 export function agentNames(db: Database.Database): Map<string, string> {
@@ -58,10 +58,10 @@ export function agentLabel(names: Map<string, string>, id: string | null | undef
 /** An agent named by id or by name; an unknown one is taken as the id of a deleted agent. */
 export function resolveAgent(db: Database.Database, input: string): AgentRef {
   const names = agentNames(db);
-  if (names.has(input)) return { id: input, label: agentLabel(names, input), deleted: false };
+  if (names.has(input)) return { id: input, name: names.get(input) ?? null, label: agentLabel(names, input), deleted: false };
   const byName = [...names].find(([, n]) => n.toLowerCase() === input.toLowerCase());
-  if (byName) return { id: byName[0], label: agentLabel(names, byName[0]), deleted: false };
-  return { id: input, label: `${input} (agent deleted)`, deleted: true };
+  if (byName) return { id: byName[0], name: byName[1], label: agentLabel(names, byName[0]), deleted: false };
+  return { id: input, name: null, label: `${input} (agent deleted)`, deleted: true };
 }
 
 export interface Window { from: number | null; to: number | null; note: string }
