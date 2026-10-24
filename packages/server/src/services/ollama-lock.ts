@@ -22,6 +22,7 @@
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
+import { heldFor, pinnedBegins, pinnedEnds, wakeQuietWaiters } from './ollama-quiet.js';
 
 const logger = createLogger('ollama-lock');
 
@@ -135,9 +136,9 @@ class OllamaModelLock {
     // v3.5: an ENGINE call on the Dojo's own resident pair (`pinned`, decided by the caller from the
     // call and the local provider's own row — never by tag) holds no slot: it never waits behind an
     // agent's turn and the lock never swaps the agent's model for it. `release` mirrors this.
-    if (pinned) return;
-    // Re-read config on each acquire (single DB read, ~0.1ms)
-    this.loadConfig();
+    for (let h = heldFor(providerId); h; h = heldFor(providerId)) await h;   // fix round 4: a model-limit restart (`ollama-quiet.ts`)
+    if (pinned) { pinnedBegins(providerId); return; }
+    this.loadConfig();   // re-read config on each acquire (single DB read, ~0.1ms)
 
     // Is this model already loaded on this provider?
     const existingSlot = this.slots.find(s => s.providerId === providerId && s.modelName === modelName);
@@ -238,7 +239,7 @@ class OllamaModelLock {
 
   /** Release a slot after an Ollama call completes (success or error). */
   release(providerId: string, modelName: string, pinned = false): void {
-    if (pinned) return;   // it took no slot (see `acquire`)
+    if (pinned) { pinnedEnds(providerId); return; }   // it took no slot (see `acquire`), only an in-flight count
     const slot = this.slots.find(s => s.providerId === providerId && s.modelName === modelName);
     if (!slot) {
       logger.warn('Ollama lock release: no slot found', { providerId, modelName });
@@ -269,6 +270,7 @@ class OllamaModelLock {
     }
 
     this.broadcastStatus();
+    wakeQuietWaiters();
   }
 
   /** Process queued requests for one provider after a slot becomes idle. */

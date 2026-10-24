@@ -102,6 +102,19 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
     expect(writers.calls.length).toBeGreaterThan(0);
   });
 
+  it('fix round 4 (NB-9): refusals under an earlier writer setting are pruned; a span summarized after all leaves none', async () => {
+    const { generateSummary } = await import('../summarize.js');
+    const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'summary_span_refused' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
+    await generateSummary({ ...span, modelId: 'writer-small' });
+    expect(refused()).toEqual([`${AGENT}|writer-small|msg-1`, `${AGENT}|writer-small|msg-2`]);
+    db().prepare("UPDATE config SET value = 'paid-own' WHERE key = 'compaction_model_id'").run();
+    await generateSummary({ ...span, spanIds: ['msg-9'], modelId: 'paid-own' });
+    expect(refused()).toEqual([`${AGENT}|paid-own|msg-9`]);   // the old setting's rows are gone
+    writers.fine.add('SPAN-B');
+    await generateSummary({ ...span, content: 'SPAN-B rows', spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
+    expect(refused()).toEqual([]);   // summarized with a new row: no refusal left behind
+  });
+
   it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {
     const ids = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
     // Two placeholders: the older one's rows always fail, the newer one's rows summarise fine.

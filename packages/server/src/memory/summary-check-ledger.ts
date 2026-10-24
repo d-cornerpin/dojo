@@ -28,9 +28,20 @@ export function spanRefused(keys: string[]): boolean {
 }
 export function recordRefusedSpan(keys: string[]): void {
   try {
-    const ins = getDb().prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms');
+    const db = getDb();
+    // NB-9: refusals recorded under an earlier summary-writer setting are over (the setting changed): pruned.
+    const setting = keys[0]?.split('|')[1];
+    if (setting !== undefined) db.prepare("DELETE FROM healer_state WHERE scope = ? AND key NOT LIKE '%|' || ? || '|%'").run(REFUSED_SCOPE, setting);
+    const ins = db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms');
     for (const k of keys) ins.run(REFUSED_SCOPE, k, Date.now());
   } catch { /* best-effort: the worst case is one more try */ }
+}
+/** NB-9: the span was summarized after all (new rows joined it): its rows' refusals go. */
+export function clearRefusedSpan(keys: string[]): void {
+  if (keys.length === 0) return;
+  try {
+    getDb().prepare(`DELETE FROM healer_state WHERE scope = ? AND key IN (${keys.map(() => '?').join(',')})`).run(REFUSED_SCOPE, ...keys);
+  } catch { /* best-effort */ }
 }
 
 /** The Healer report's running numbers over the kept window, or null when nothing was checked. */
@@ -56,8 +67,21 @@ export function summaryWriterStatus(): { writer: string | null; failed: number; 
     const writer = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value
       || standardModelRowId('writer');
     if (!writer) return { writer: null, failed: 0, total: 0, failing: false };
-    const r = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
-      .get(writer) as { failed: number | null; total: number };
-    return { writer, failed: r.failed ?? 0, total: r.total, failing: (r.failed ?? 0) > 0 };
+    return { writer, ...writerFailing(writer) };
   } catch { return { writer: null, failed: 0, total: 0, failing: false }; }
+}
+
+/**
+ * Is this writer "keep failing" the check (fix round 4)? Owner 2026-10-20: "significant summarization failures";
+ * plan B4: "the real signal, not a count", in the words "keep failing". So: its failure REPEATS — its latest
+ * checked summary failed AND so did the one before it, with no pass between. One isolated failure among passes
+ * is not it, and the next pass ends it. `failed`/`total` are the kept window's numbers the words quote.
+ */
+export function writerFailing(writer: string): { failed: number; total: number; failing: boolean } {
+  const db = getDb();
+  const r = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
+    .get(writer) as { failed: number | null; total: number };
+  const latest = db.prepare("SELECT outcome FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable' ORDER BY id DESC LIMIT 2")
+    .all(writer) as Array<{ outcome: string }>;
+  return { failed: r.failed ?? 0, total: r.total, failing: latest.length === 2 && latest.every((x) => x.outcome === 'not_kept') };
 }

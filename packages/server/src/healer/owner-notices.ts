@@ -73,9 +73,14 @@ export const uncheckedFitWords = (name: string): string =>
   + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
 /** v3.5 (owner decision 2026-10-24): the Dojo set Ollama's loaded-model limit on the Mac, or could not. */
 export const OLLAMA_LIMIT_SET_WORDS = "The Dojo raised Ollama's limit on loaded models so its own two models, the embedder and an agent's "
-  + 'local model can stay loaded together. Ollama was restarted once to apply it.';
+  + 'local model can stay loaded together. The Ollama app picks it up when it starts; if it is running, the Dojo restarts it once, '
+  + 'when no local model is answering and no download is running.';
 export const OLLAMA_LIMIT_FAILED_WORDS = "The Dojo could not raise Ollama's limit on loaded models, so an agent's local model and the Dojo's "
-  + 'own models may unload each other and answer more slowly. Everything else keeps working; the Dojo tries again at the next update.';
+  + 'own models may unload each other and answer more slowly. Everything else keeps working; the Dojo tries again at its next start.';
+/** Fix round 4 (NB-2): this box's Ollama is not the Ollama app, so the Dojo changes nothing (condition `ollama-limit-manual:<n>`). */
+export const ollamaLimitManualWords = (n: number): string =>
+  "This box's Ollama is not run by the Ollama app, so the Dojo did not change it. For the Dojo's own two models, the embedder "
+  + `and an agent's local model to stay loaded together, start Ollama with OLLAMA_MAX_LOADED_MODELS=${n} (nothing is needed if it already has that or more).`;
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -160,6 +165,7 @@ export function wordsOf(key: string): string {
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
     : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS
     : kind === 'ollama-limit-set' ? OLLAMA_LIMIT_SET_WORDS : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
+    : kind === 'ollama-limit-manual' ? ollamaLimitManualWords(Number(agentId))
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
     : HEALER_BROKEN_WORDS;
 }
@@ -226,6 +232,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     && !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? UNION SELECT 1 FROM router_tier_models WHERE model_id = ? UNION SELECT 1 FROM config WHERE value = ?').get(modelId, modelId, modelId);
   return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
     : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
+    : key.startsWith('ollama-limit-manual:') ? true
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),

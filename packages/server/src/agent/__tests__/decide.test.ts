@@ -19,6 +19,8 @@ import { runMigrations } from '../../db/migrations.js';
 import { decide, type Question } from '../decide.js';
 import { getDecisionProvider } from '../decision-provider.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+import { decisionWindowTokens, writerJobWindowTokens } from '../../services/dojo-working-memory.js';
+import { holdWhenQuiet } from '../../services/ollama-quiet.js';
 
 const BASE = 'http://127.0.0.1:47123';
 const db = (): Database.Database => mockDb.current!;
@@ -69,12 +71,28 @@ describe('decide()', () => {
     const answers = await decide({ reply: 'I will start on it now.' }, QUESTIONS, { purpose: 'reply_claims', agentId: 'agent-x' });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${BASE}/v1/systemone`);
-    expect(calls[0].body).toEqual({ model: STANDARD_DECISION_MODEL.tag, state: { reply: 'I will start on it now.' }, questions: QUESTIONS, keep_alive: -1 });
+    expect(calls[0].body).toEqual({ model: STANDARD_DECISION_MODEL.tag, state: { reply: 'I will start on it now.' }, questions: QUESTIONS, keep_alive: -1, options: { num_ctx: await decisionWindowTokens() } });
     expect(answers).toEqual({
       only_promises_to_start: { type: 'noul', noul: 0.91 },
       topic: { type: 'choice', choice: 'billing', probabilities: { billing: 0.85, other: 0.15 }, confidence: 0.7 },
       urgency: { type: 'score', score: 1.3, probabilities: { not: 0.2, somewhat: 0.3, very: 0.5 }, confidence: 0.4 },
     });
+  });
+
+  it('NB-4: it runs at the window the memory fit sets aside for the decision model — one number, one origin', async () => {
+    install();
+    await decide({ reply: 'x' }, QUESTIONS, { purpose: 'reply_claims' });
+    const window = await decisionWindowTokens();
+    expect((calls[0].body.options as { num_ctx: number }).num_ctx).toBe(window);
+    expect(window).toBe(await writerJobWindowTokens(null));   // the summary check reads the writer's job text
+  });
+
+  it('NB-1: while the Ollama app restarts for the model limit, the rule answers at once (null), nothing dialled', async () => {
+    install();
+    const release = await holdWhenQuiet('ollama-local');
+    expect(await decide({ reply: 'x' }, QUESTIONS, { purpose: 'reply_claims' })).toBeNull();
+    expect(calls).toHaveLength(0);
+    release();
   });
 
   it('writes one cost row: the purpose, the latency, the input tokens, $0', async () => {

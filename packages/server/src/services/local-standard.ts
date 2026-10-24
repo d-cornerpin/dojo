@@ -20,6 +20,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isLocalOllamaBaseUrl, computeAndStoreRecommendedNumCtx } from './num-ctx-calculator.js';
 import { pullOllamaModel } from './ollama-pull.js';
+import { localWorkBegins } from './ollama-quiet.js';
 import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
@@ -268,7 +269,8 @@ export function retryStandardModelsIfMissing(installedNames: readonly string[], 
  * `compaction_model_id`, set `decision_model_id`. Idempotent; concurrent callers share one run.
  */
 export function ensureStandardModels(onProgress?: (line: string) => void): Promise<StandardState> {
-  if (!inFlight) inFlight = install(onProgress).finally(() => { inFlight = null; });
+  // Fix round 4: the whole install is in-flight work on the local Ollama: the model-limit restart never lands inside it.
+  if (!inFlight) inFlight = localWorkBegins().then(async (end) => { try { return await install(onProgress); } finally { end(); } }).finally(() => { inFlight = null; });
   return inFlight;
 }
 

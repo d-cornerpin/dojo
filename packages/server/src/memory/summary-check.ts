@@ -20,6 +20,8 @@ import { decide, type Answer, type Question } from '../agent/decide.js';
 import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
 import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
+import { decisionWindowTokens } from '../services/dojo-working-memory.js';
+import { CHARS_PER_TOKEN } from './budget.js';
 
 const logger = createLogger('summary-check');
 
@@ -73,7 +75,17 @@ const failsAt = passMark;
  * question's line. When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
 export async function checkSummary(sourceRows: string, summary: string, agentId: string, timeoutMs?: number): Promise<SummaryCheck> {
-  const answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs });
+  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens());
+  let answers: Record<string, Answer> | null;
+  if (parts === null) {
+    logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
+    answers = null;
+  } else if (parts.length === 1) {
+    answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs });
+  } else {
+    answers = combineParts(await Promise.all(parts.map((part, i) =>
+      decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs }))));
+  }
   const p = (q: keyof typeof QUESTIONS): number => (answers?.[q]?.type === 'noul' ? (answers[q] as { noul: number }).noul : 0);
   const [invented, dropped, statedCurrent] = [p('invented'), p('dropped'), p('stated_current')];
   const ok = !answers || (invented < failsAt('invented') && dropped < failsAt('dropped') && statedCurrent < failsAt('stated_current'));
@@ -84,6 +96,47 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
     for (const q of Object.keys(QUESTIONS)) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: checkId, ruleSaid: false, modelSaid: answers[q] ?? null });
   }
   return { ok, invented, dropped, statedCurrent, answers };
+}
+
+// ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
+// The window is `decisionWindowTokens()` — the same number `decide()` sends as `num_ctx` and the memory fit sets
+// aside. A part is as many whole rows (the `---` lines the callers join rows with) as fit beside the summary and
+// the questions; a single row larger than that is split by characters. Joined back with the same separator, the
+// parts are exactly the source.
+const ROW_SEPARATOR = '\n---\n';
+function sourceParts(source: string, summary: string, windowTokens: number): string[] | null {
+  const room = windowTokens * CHARS_PER_TOKEN - summary.length - JSON.stringify(QUESTIONS).length - JSON.stringify({ source_rows: '', summary: '', source_part: '' }).length;
+  if (room <= 0) return null;
+  if (source.length <= room) return [source];
+  const parts: string[] = [];
+  let current: string | null = null;
+  for (const piece of source.split(ROW_SEPARATOR)) {
+    const joined: string = current === null ? piece : current + ROW_SEPARATOR + piece;
+    if (joined.length <= room) { current = joined; continue; }
+    if (current !== null) parts.push(current);
+    if (piece.length <= room) { current = piece; continue; }
+    // One row larger than the room: split by characters, the last slice carried on.
+    let rest = piece;
+    while (rest.length > room) { parts.push(rest.slice(0, room)); rest = rest.slice(room); }
+    current = rest;
+  }
+  if (current !== null) parts.push(current);
+  return parts;
+}
+
+/** The parts' verdicts as one. "dropped" and "stated_current" are true of the summary if true of ANY part (a
+ *  request any part holds and the summary left out was left out). "invented" — the summary states what the
+ *  source does not say — only if NO part says it, so the lowest part's probability; a summary drawing on several
+ *  parts may read as invented to each, which fails it (the rows stay whole: never a wrong record). Any part
+ *  unanswered → the whole check unanswered. */
+function combineParts(answers: Array<Record<string, Answer> | null>): Record<string, Answer> | null {
+  if (answers.some((a) => a === null)) return null;
+  const noul = (q: keyof typeof QUESTIONS): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
+  return {
+    invented: { type: 'noul', noul: Math.min(...noul('invented')) },
+    dropped: { type: 'noul', noul: Math.max(...noul('dropped')) },
+    stated_current: { type: 'noul', noul: Math.max(...noul('stated_current')) },
+  };
 }
 
 function failedFeedback(c: SummaryCheck): string {
@@ -114,23 +167,21 @@ export const SUMMARY_CHECK_NOTICE_CODE = 'SUMMARY_CHECK_FAILING';
 const noticedKey = (writer: string): string => `summary_check_noticed.${writer}`;
 
 /**
- * The owner is told once per writer model, by the existing `chat:error` card, when a summary this
- * writer wrote failed its check even after the rewrite (the real signal: two attempts at the same
- * span were wrong). The mark re-arms when the writer changes, or when this writer's failures have
- * aged out of the kept window (they stopped).
+ * The owner is told once per writer model, by the existing `chat:error` card, when this writer KEEPS failing
+ * its check (`writerFailing`, fix round 4: a failure that repeats; one isolated failure is not it). The mark
+ * re-arms when the writer changes, or when this writer's failures have aged out of the kept window (they stopped).
  */
 function noticeIfFailing(agentId: string, writer: string): void {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
-      .get(writer) as { failed: number | null; total: number };
-    const failed = row.failed ?? 0;
+    const row = writerFailing(writer);
+    const failed = row.failed;
     const noticed = !!db.prepare('SELECT 1 FROM config WHERE key = ?').get(noticedKey(writer));
     if (failed === 0) {
       if (noticed) db.prepare('DELETE FROM config WHERE key = ?').run(noticedKey(writer));
       return;
     }
-    if (noticed) return;
+    if (noticed || !row.failing) return;
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(noticedKey(writer), writer);
     broadcast({
@@ -181,7 +232,7 @@ export function summaryCheckRefusedSince(agentId: string, sinceMs: number): bool
   } catch { return false; }
 }
 
-import { spanKeys, spanRefused, recordRefusedSpan, type SummaryParams } from './summary-check-ledger.js';
+import { spanKeys, spanRefused, recordRefusedSpan, clearRefusedSpan, writerFailing, type SummaryParams } from './summary-check-ledger.js';
 
 /** `generateSummary`'s body: write (settled), then keep only what passes. `write` is the settled writer call. */
 export async function writeThenCheck<P extends SummaryParams>(params: P, write: (p: P) => Promise<SummaryResult>): Promise<SummaryResult> {
@@ -195,6 +246,7 @@ export async function writeThenCheck<P extends SummaryParams>(params: P, write: 
   const kept = await keepOnlyIfChecked(params.content, written, params.agentId, params.modelId,
     (checkFeedback) => write({ ...params, checkFeedback }), Date.now() - started);
   if (!kept.ok && kept.checkFailed) recordRefusedSpan(keys);
+  else if (kept.ok) clearRefusedSpan(keys);   // NB-9: a span that is summarized now leaves no refusal behind
   return kept;
 }
 

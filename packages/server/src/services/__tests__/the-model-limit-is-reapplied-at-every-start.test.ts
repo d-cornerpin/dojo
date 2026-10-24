@@ -26,7 +26,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
 describe('every Dojo start', () => {
-  it('re-applies the limit, also when this version was already stamped and on a box with no Ollama set up', async () => {
+  it('re-applies the limit, also when this version was already stamped (the routine itself does nothing on a box with no local Ollama: its own test)', async () => {
     mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('standard_models_version', '3.5.0')").run();
     await ensureStandardModelsAtBoot();
     await ensureStandardModelsAtBoot();

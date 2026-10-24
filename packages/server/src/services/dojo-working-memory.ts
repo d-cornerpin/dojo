@@ -22,6 +22,13 @@ export async function writerJobWindowTokens(configuredNumCtx: number | null): Pr
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, getLeafTargetTokens()) });
 }
 
+/** The decision model's window, in tokens: the ONE number both the memory it is set aside (below) and the
+ *  `num_ctx` `decide()` sends are (fix round 4, NB-4). The summary check hands it a job's source rows and
+ *  the summary — exactly the text the writer's job window holds — so it is that window. */
+export async function decisionWindowTokens(): Promise<number> {
+  return writerJobWindowTokens(null);
+}
+
 /** The KV bytes the Dojo's writer holds for that job on this Ollama; 0 when no writer is installed or
  *  its architecture cannot be read (nothing is set aside for what cannot be sized). */
 export async function writerWorkingBytes(baseUrl: string): Promise<number> {
@@ -35,14 +42,13 @@ export async function writerWorkingBytes(baseUrl: string): Promise<number> {
 }
 
 /** The Dojo's whole working memory on its own Ollama: the writer's job, plus (fix round 2) the decision
- *  model's — the summary check hands it the job's source rows and the summary, which is exactly the text
- *  the writer's job window holds, so it is sized at that window. 0 for what Ollama cannot describe. */
+ *  model's at `decisionWindowTokens()`. 0 for what Ollama cannot describe. */
 export async function dojoWorkingBytes(baseUrl: string): Promise<number> {
   let decision = 0;
   try {
     const arch = await fetchModelArchInfo(baseUrl, STANDARD_DECISION_MODEL.tag);
     const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
-    if (typeof kv === 'number') decision = kv * await writerJobWindowTokens(null);
+    if (typeof kv === 'number') decision = kv * await decisionWindowTokens();
   } catch { /* nothing set aside for what cannot be sized */ }
   return await writerWorkingBytes(baseUrl) + decision;
 }

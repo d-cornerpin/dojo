@@ -32,7 +32,9 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { SUMMARY_CHECK_NOTICE_CODE, passMark } from '../summary-check.js';
+import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary } from '../summary-check.js';
+import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
+import { CHARS_PER_TOKEN } from '../budget.js';
 import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
@@ -107,30 +109,35 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(checks().map((c) => c.outcome)).toEqual(['unavailable']);
   });
 
-  it('the notice fires once with the numbers, and re-arms only when the writer changes', async () => {
-    writer.outputs = ['INVENTED a.', 'INVENTED b.', 'fine', 'INVENTED c.', 'INVENTED d.'];
-    await write();
-    await write();
+  it('fix round 4: ONE isolated failure among passes is not "keep failing" — no notice', async () => {
+    writer.outputs = ['fine', 'INVENTED a.', 'INVENTED b.', 'fine', 'fine'];
+    await write(); await write(); await write(); await write();
+    expect(cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE)).toEqual([]);
+  });
+
+  it('the notice fires once with the numbers when a failure REPEATS, and re-arms only when the writer changes', async () => {
+    writer.outputs = ['INVENTED a.', 'INVENTED b.', 'INVENTED c.', 'INVENTED d.', 'INVENTED e.', 'INVENTED f.'];
     await write();
     const notices = () => cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE);
+    expect(notices()).toHaveLength(0);   // one failure: not yet "keep failing"
+    await write();
+    await write();
     expect(notices()).toHaveLength(1);
     expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: AGENT });
     expect(notices()[0].error).toBe(
-      "This box's memory summaries keep failing the accuracy check (1 of the last 1). The small writer may be too small for this box's conversations; pick a larger model under Settings → Models → Summarization Model.",
+      "This box's memory summaries keep failing the accuracy check (2 of the last 2). The small writer may be too small for this box's conversations; pick a larger model under Settings → Models → Summarization Model.",
     );
-    writer.outputs = ['INVENTED e.', 'INVENTED f.'];
-    await write('writer-large');
+    writer.outputs = ['INVENTED g.', 'INVENTED h.', 'INVENTED i.', 'INVENTED j.'];
+    await write('writer-large'); await write('writer-large');
     expect(notices()).toHaveLength(2);
   });
 
   it('I-B4-2: the latch is per writer — two writers that fail in turn do not trade cards back and forth', async () => {
     const notices = () => cards.list.filter((c) => c.code === SUMMARY_CHECK_NOTICE_CODE);
-    writer.outputs = ['INVENTED a.', 'INVENTED b.'];
-    await write('writer-small');
-    writer.outputs = ['INVENTED c.', 'INVENTED d.'];
-    await write('writer-large');
-    writer.outputs = ['INVENTED e.', 'INVENTED f.'];
-    await write('writer-small');
+    const twice = async (w: string): Promise<void> => { writer.outputs = ['INVENTED 1.', 'INVENTED 2.', 'INVENTED 3.', 'INVENTED 4.']; await write(w); await write(w); };
+    await twice('writer-small');
+    await twice('writer-large');
+    await twice('writer-small');
     expect(notices()).toHaveLength(2);
   });
 
@@ -145,7 +152,13 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 0, total: 0, failing: false });
     writer.outputs = ['fine', 'INVENTED x.', 'INVENTED y.'];
     await write(); await write();
-    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 1, total: 2, failing: true });
+    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 1, total: 2, failing: false });   // one isolated failure
+    writer.outputs = ['INVENTED z.', 'INVENTED w.'];
+    await write();
+    expect(summaryWriterStatus()).toEqual({ writer: 'writer-small', failed: 2, total: 3, failing: true });   // it failed again
+    writer.outputs = ['fine'];
+    await write();
+    expect(summaryWriterStatus()).toMatchObject({ failing: false });   // the latest passed: it is not failing now
   });
 
   it('the Healer section carries the running numbers', async () => {
@@ -153,6 +166,35 @@ describe('a summary is checked against its source before it is kept', () => {
     await write(); await write(); await write();
     expect(summaryCheckLine()).toBe('Summary check (kept window): 3 checked, 1 kept as written, 1 kept after one rewrite, 1 left the rows whole, 0 unchecked (decision model unavailable).');
     expect(getDecisionScoreItems()[0].detail).toContain('Summary check (kept window): 3 checked');
+  });
+});
+
+describe('NB-4: a source larger than the decision model\'s window is checked in parts, never cut', () => {
+  it('every part fits the window with the summary; the parts together are the whole source; the verdicts combine', async () => {
+    const seen: Array<{ rows: string; part?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+      const { state } = JSON.parse(init?.body ?? '{}') as { state: { source_rows: string; summary: string; source_part?: string } };
+      seen.push({ rows: state.source_rows, part: state.source_part });
+      // "dropped" is true of exactly one part (it holds a request the summary left out): the whole check fails on it.
+      return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: state.source_rows.includes('DROPPED-REQUEST') ? 0.9 : 0.05 }, stated_current: { noul: 0.05 } } });
+    }));
+    const window = await decisionWindowTokens();
+    const row = (i: number): string => `[USER · the owner] row ${i} ${'x'.repeat(1000)}`;
+    const rows = Array.from({ length: Math.ceil((window * CHARS_PER_TOKEN * 2.5) / 1000) }, (_, i) => (i === 7 ? `${row(i)} DROPPED-REQUEST` : row(i)));
+    const source = rows.join('\n\n---\n\n');
+    const r = await checkSummary(source, 'A plain summary.', AGENT);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    for (const s of seen) expect(s.rows.length + 'A plain summary.'.length).toBeLessThan(window * CHARS_PER_TOKEN);
+    expect(seen.map((s) => s.rows).join('\n---\n')).toBe(source);   // nothing was cut
+    expect(seen.map((s) => s.part)).toEqual(seen.map((_, i) => `${i + 1} of ${seen.length}`));
+    expect(r.ok).toBe(false);
+    expect(r.dropped).toBe(0.9);
+  });
+
+  it('a source that fits is asked once, whole, as before', async () => {
+    const r = await checkSummary(SOURCE, 'The owner asked for the offsite budget.', AGENT);
+    expect(decisions.asked).toBe(1);
+    expect(r.ok).toBe(true);
   });
 });
 

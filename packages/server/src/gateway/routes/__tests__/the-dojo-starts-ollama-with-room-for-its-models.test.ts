@@ -36,6 +36,14 @@ describe('setup starts Ollama with room for the Dojo\'s models', () => {
     expect(serve?.env?.OLLAMA_MAX_LOADED_MODELS).toBe('4');
   }, 10_000);
 
+  it('fix round 4 (NB-3): an owner\'s own higher value is never lowered', async () => {
+    process.env.OLLAMA_MAX_LOADED_MODELS = '8';
+    try {
+      await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });
+      expect(spawned.calls.find((c) => c.cmd === 'ollama serve')?.env?.OLLAMA_MAX_LOADED_MODELS).toBe('8');
+    } finally { delete process.env.OLLAMA_MAX_LOADED_MODELS; }
+  }, 10_000);
+
   it('follows the owner\'s Max Concurrent Models setting', async () => {
     mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '2')").run();
     await setupDepsRouter.request('/deps/install/ollama-start', { method: 'POST' });

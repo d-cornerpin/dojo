@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { openAgentCall } from '../agent/abortable-call.js';
+import { localWorkBegins } from '../services/ollama-quiet.js';
 
 const logger = createLogger('embeddings');
 
@@ -146,6 +147,8 @@ export async function generateEmbedding(
 
   if (config.provider === 'ollama') {
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
+    const endLocalWork = await localWorkBegins(baseUrl);   // v3.5: in-flight work the model-limit restart waits for
+    try {
     // C12: adaptive retry, on a token-context overflow, halve the input and retry (up to
     // 3x) so a dense input still embeds instead of dropping to un-searchable.
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -175,6 +178,7 @@ export async function generateEmbedding(
       throw embedResponseError('Ollama embedding failed', response.status, errorText);
     }
     throw new Error('Ollama embedding failed: input still exceeded the context length after 3 halving retries');
+    } finally { endLocalWork(); }
   }
 
   // OpenAI-compatible endpoint, C12: same adaptive halving retry on a context overflow.

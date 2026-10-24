@@ -7,7 +7,8 @@
 // rule runs exactly as before. Safety gates (the spec's Group C) are never callers.
 //
 // The call is a separate request: the agent's own prompt is untouched (the cache tenet). The model is
-// resident (`keep_alive: -1`; it takes no Ollama lock slot, `services/ollama-lock.ts`). An agent that
+// resident (`keep_alive: -1`; it takes no Ollama lock slot, `services/ollama-lock.ts`), at the window the memory fit
+// sets aside for it (`num_ctx`, `services/dojo-working-memory.ts decisionWindowTokens`). An agent that
 // waits on a decision is the one whose stop cuts it (`openAgentCall`).
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -15,6 +16,8 @@ import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
+import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
+import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 
 const logger = createLogger('decide');
 
@@ -73,6 +76,13 @@ export async function decide(
   if (names.length === 0) return {};
   if (names.length > MAX_QUESTIONS_PER_REQUEST) return fail('too_many_questions', opts.purpose, String(names.length));
 
+  // Fix round 4 (NB-4): the window it runs at is the one the memory fit sets aside for it — one number, one
+  // origin (`decisionWindowTokens`); without it Ollama would size the call by the model file's own default.
+  const numCtx = await decisionWindowTokens();
+  // NB-1: while the Ollama app restarts to apply the model limit, the rule answers (no wait on a restart);
+  // otherwise this call is in-flight work the restart waits for.
+  if (localHeld()) return null;
+  const endLocalWork = await localWorkBegins();
   const clock = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const slot = opts.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn', clock);
   const started = Date.now();
@@ -82,7 +92,7 @@ export async function decide(
       resp = await fetch(`${provider.baseUrl}/v1/systemone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: provider.model, state, questions, keep_alive: -1 }),
+        body: JSON.stringify({ model: provider.model, state, questions, keep_alive: -1, options: { num_ctx: numCtx } }),
         signal: slot?.signal ?? clock,
       });
     } catch (err) {
@@ -108,5 +118,6 @@ export async function decide(
     return answers;
   } finally {
     slot?.release();
+    endLocalWork();
   }
 }

@@ -1142,7 +1142,7 @@ export async function runLeafCompaction(
           else if (opts?.left) opts.left.tooBig = true;
           continue;
         }
-        logger.warn('SUMMARY_REFUSED leaf chunk left uncompacted', {
+        (summary.checkFailed ? logger.debug : logger.warn)('SUMMARY_REFUSED leaf chunk left uncompacted', {   // v3.5: a refused span was logged once (summary_check_failed)
           messageCount: chunk.length, reason: summary.reason,
         }, agentId);
         if (summary.stopped) break;   // t149 F3: the owner stopped this agent
