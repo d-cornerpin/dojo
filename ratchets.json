@@ -9054,6 +9054,20 @@
       "to": 2153,
       "by": "t250 (2026-10-23): v3.5 fix round 3",
       "why": "+1 net: the delivered-run sweep re-reads the task's measure before it closes a run (+1); the stuck-row force-reset's two log lines now say what happened and its schedule patch is skipped when already completed (the same lines, rewritten). From 2,153 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 841,
+      "to": 843,
+      "by": "t250 (2026-10-23): v3.5 fix round 4, the deliverable gate decides before the measure",
+      "why": "+2: the measure's switch to `incomplete` moves from BEFORE the deliverable gate to AFTER it (one comment line saying why the order is the requirement: an owed run is still refused and a spent ladder still records UNDELIVERED with the owner's alert), and one line choosing which settle carries the run history's `N <unit> left`. Here because `settleOccurrence` is the run authority and the order of its two gates is the fix. REFUSED: a second settle path for measured runs. From 843 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2153,
+      "to": 2154,
+      "by": "t250 (2026-10-23): v3.5 fix round 4",
+      "why": "+1: the delivered-run sweep's measure re-read is guarded, so one row that cannot be re-read is logged and left for the next tick instead of stopping the sweep for every row after it. From 2,154 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9304,7 +9318,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2153,
+    "packages/server/src/scheduler/runner.ts": 2154,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -9359,7 +9373,7 @@
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 630,
-    "packages/server/src/work/occurrences.ts": 841,
+    "packages/server/src/work/occurrences.ts": 843,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/row-authority.ts": 398,
     "packages/server/src/work/store.ts": 2264,
