@@ -52,6 +52,8 @@ describe('setup: the Dojo\'s two models', () => {
     expect(screen.queryByText('Recommended')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
     expect(screen.getByText('Models for your agents')).toBeTruthy();
+    // t268 fix round 4 (N-6): each agent's own model writes its summaries; the writer writes one only as the fallback.
+    expect(screen.getByText(/the other writes titles, and memory summaries when an agent's own model cannot be reached/)).toBeTruthy();
   });
 });
 

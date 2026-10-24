@@ -416,7 +416,8 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           <h3 className="card-header mb-1">Dojo's two models</h3>
           <p className="text-xs text-ui/40 mb-3">
             The Dojo installs two small local models of its own: one answers its yes/no questions, the other writes
-            titles and memory summaries. They download by themselves; there is nothing to choose.
+            titles, and memory summaries when an agent's own model cannot be reached. They download by themselves;
+            there is nothing to choose.
           </p>
           <div className="glass-nested rounded-xl p-4 mb-5 border border-ui/[0.10]">
             <StandardModels repair />
