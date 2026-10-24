@@ -80,20 +80,20 @@ const failsAt = passMark;
  * Three noul questions over { source_rows, summary }. `ok` when every probability is below its
  * question's line. When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
-export async function checkSummary(sourceRows: string, summary: string, agentId: string, timeoutMs?: number): Promise<SummaryCheck> {
+export async function checkSummary(sourceRows: string, summary: string, agentId: string): Promise<SummaryCheck> {
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, localCharsPerToken(), getDecisionProvider()?.model ?? '');
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
     answers = null;
   } else if (parts.length === 1) {
-    answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs });
+    answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId });
   } else {
     // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
     // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
     const each: Array<Record<string, Answer> | null> = [];
     for (const [i, part] of parts.entries()) {
-      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs }));
+      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId }));
     }
     answers = combineParts(each);
   }
@@ -167,14 +167,15 @@ function noticeIfFailing(agentId: string, writer: string): void {
 
 /**
  * The flow between "written" and "kept". `written` is an ok result; `rewrite(feedback)` writes the same
- * input again with the failed questions named. `checkTimeoutMs` is how long the writer took on this
- * input: the check reads the same input once, so it is given that long.
+ * input again with the failed questions named. The check's time is `decide()`'s own measured formula for its
+ * size (t268 ruling 4: how long the WRITER took says nothing about the decision model — a fast cloud writer
+ * gave the check almost no time at all).
  */
 export async function keepOnlyIfChecked(
   source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
-  rewrite: (feedback: string) => Promise<SummaryResult>, checkTimeoutMs?: number,
+  rewrite: (feedback: string) => Promise<SummaryResult>,
 ): Promise<SummaryResult> {
-  const first = await checkSummary(source, written.text, agentId, checkTimeoutMs);
+  const first = await checkSummary(source, written.text, agentId);
   if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
   // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
   // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
@@ -184,7 +185,7 @@ export async function keepOnlyIfChecked(
 
   const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
-  const second = await checkSummary(source, again.text, agentId, checkTimeoutMs);
+  const second = await checkSummary(source, again.text, agentId);
   if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
   if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
 
@@ -214,11 +215,10 @@ export async function writeThenCheck<P extends SummaryParams>(params: P, write: 
   if (keys.length > 0 && summaryCheckActs() && spanRefused(keys)) {   // t268: the hold acts only in `model` mode
     return { ok: false, checkFailed: true, reason: 'this span failed its accuracy check; it is left as it is until the summary writer changes or new rows join it' };
   }
-  const started = Date.now();
   const written = await write(params);
   if (!written.ok || !params.modelId) return written;
   const kept = await keepOnlyIfChecked(params.content, written, params.agentId, params.modelId,
-    (checkFeedback) => write({ ...params, checkFeedback }), Date.now() - started);
+    (checkFeedback) => write({ ...params, checkFeedback }));
   if (!kept.ok && kept.checkFailed) recordRefusedSpan(keys);
   else if (kept.ok) clearRefusedSpan(keys);   // NB-9: a span that is summarized now leaves no refusal behind
   return kept;

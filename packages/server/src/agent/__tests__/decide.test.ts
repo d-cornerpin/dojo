@@ -58,6 +58,9 @@ beforeEach(() => {
   calls.length = 0;
   respond = async () => Response.json(DOCUMENTED);
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string; signal?: AbortSignal }) => {
+    // t268 ruling 4: decide() asks Ollama what is loaded to size its timeout (the clauses are in
+    // decide-waits-as-long-as-its-size-takes); `calls` keeps the decision requests only.
+    if (url.endsWith('/api/ps')) return Response.json({ models: [] });
     const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
     calls.push({ url, body });
     return respond(body, init?.signal);

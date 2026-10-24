@@ -18,6 +18,7 @@ import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
 import { fenceExternal } from '../tools/external-content.js';
+import { localCharsPerToken, tokensAt } from '../services/token-density.js';
 
 const logger = createLogger('decide');
 
@@ -36,10 +37,26 @@ const MAX_QUESTIONS_PER_REQUEST = 64;
 /** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): any body over 64 KiB is
  *  refused with HTTP 413 "text and schema must not exceed 64 KiB". A request over it is not dialled. */
 export const MAX_DECISION_BODY_BYTES = 64 * 1024;
-/** PROVISIONAL (orchestrator ruling, fix round 1): the plan's figure, with no measurement behind it yet.
- *  It is REPLACED by Wave 2's B5 dev-box measurement of decide() latency (the cost rows already carry
- *  `latency_ms` per purpose). Callers pass their own. */
-const DEFAULT_TIMEOUT_MS = 1_500;
+/**
+ * THE TIMEOUT, MEASURED (t268 ruling 4; B5, `overhaul-plans/v35-writer-measure.md` → "decide() latency"): on a
+ * box whose GPU the writer shares, a warm call took 62 + 1.33·T + 94·(Q − 1) ms (T = the state's tokens, Q =
+ * the questions: reading the state is most of it, each extra question ~94 ms), observed ÷ fitted was 2.05 at
+ * p99, and loading a model that is not resident added about 1.3 s. So a call is given that long for its own
+ * size — never one fixed figure (the provisional 1,500 ms cut 22 of 24 cold calls). A caller may pass its own.
+ */
+export function decideTimeoutMs(stateTokens: number, questions: number, resident: boolean): number {
+  return Math.ceil((62 + 1.33 * stateTokens + 94 * (questions - 1)) * 2.05) + (resident ? 0 : 1_300);
+}
+
+/** Is `model` loaded in Ollama now (`/api/ps`)? Asked within the warm call's own time; no answer is "not loaded". */
+async function residentNow(baseUrl: string, model: string, boundMs: number, stop?: AbortSignal): Promise<boolean> {
+  try {
+    const clock = AbortSignal.timeout(boundMs);
+    const resp = await fetch(`${baseUrl}/api/ps`, { signal: stop ? AbortSignal.any([stop, clock]) : clock });
+    const loaded = resp.ok ? ((await resp.json()) as { models?: Array<{ name?: string; model?: string }> }).models ?? [] : [];
+    return loaded.some((m) => m.name === model || m.model === model);
+  } catch { return false; }
+}
 /** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn. */
 const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
@@ -102,17 +119,23 @@ export async function decide(
   // otherwise this call is in-flight work the restart waits for.
   if (localHeld()) return null;
   const endLocalWork = await localWorkBegins();
-  const clock = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const slot = opts.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn', clock);
-  const started = Date.now();
+  const slot = opts.agentId === undefined ? null : openAgentCall(opts.agentId, 'turn');
   try {
+    let timeoutMs = opts.timeoutMs;
+    if (timeoutMs === undefined) {
+      const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, localCharsPerToken());
+      const warm = decideTimeoutMs(stateTokens, names.length, true);
+      timeoutMs = decideTimeoutMs(stateTokens, names.length, await residentNow(provider.baseUrl, provider.model, warm, slot?.signal));
+    }
+    const clock = AbortSignal.timeout(timeoutMs);
+    const started = Date.now();
     let resp: Response;
     try {
       resp = await fetch(`${provider.baseUrl}/v1/systemone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: request,
-        signal: slot?.signal ?? clock,
+        signal: slot ? AbortSignal.any([slot.signal, clock]) : clock,
       });
     } catch (err) {
       return fail(clock.aborted ? 'timeout' : 'transport', opts.purpose, err instanceof Error ? err.message : String(err));

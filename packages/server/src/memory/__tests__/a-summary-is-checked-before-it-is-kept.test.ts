@@ -62,7 +62,8 @@ beforeEach(() => {
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES (?, 'ollama-local', ?, ?, '["chat"]', 32000, 1)`).run(id, id, id);
   }
   // The decision model: a summary carrying INVENTED states what the source does not say.
-  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { body?: string }) => {
+    if (url.endsWith('/api/ps')) return Response.json({ models: [] });   // t268: decide() sizes its timeout; not a decision
     decisions.asked++;
     if (!decisions.up) throw new Error('fetch failed: ECONNREFUSED');
     const { state } = JSON.parse(init?.body ?? '{}') as { state: { summary: string } };
