@@ -1283,7 +1283,7 @@ export const toolDefinitions: ToolDefinition[] = [
         allow_regenerate: { type: 'boolean', description: 'action="retask": set true ONLY when the deliverable was already delivered to the user AND you have judged it genuinely misses the goal, so the assignee should redo and overwrite it. Without this, retask refuses to protect delivered work. Default false.' },
         override_request_id: { type: 'string', description: 'action="override": the OVERRIDE_REQUEST id (full or 8-char prefix).' },
         approve: { type: 'boolean', description: 'action="override": true = force the status through; false = deny and notify the agent.' },
-        reason: { type: 'string', description: 'action="override": one sentence on why you approved or denied.' },
+        reason: { type: 'string', description: 'action="override": one sentence on why you approved or denied. action="validate" with valid=true: optional, one sentence on why you upheld; it is recorded beside what you looked at.' },
         status: { type: 'string', description: 'action="apply_user_verdict": the status the user chose. Typically complete, blocked, paused, in_progress, or on_deck.' },
         validated: { type: 'boolean', description: 'action="apply_user_validation": true = user confirmed the work is done. false = user said it is NOT done.' },
         user_quote: { type: 'string', description: 'The user\'s exact reply for the audit trail. Required for both user-verdict actions.' },

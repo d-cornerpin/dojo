@@ -98,6 +98,14 @@ export function readAuditTrail(
   const kinds = opts?.kinds ?? null;
   const jx = (f: string): string => `json_extract(e.payload, '$.${f}')`;
 
+  // K35: what the PM looked at rides under its verdict on the card. A close the PM moved itself keeps
+  // the record as JSON in the transition's evidence_ref; a throw-back keeps it in the claim event.
+  // An uphold's own note already says it ("PM validated: ..."), so only these two add a line.
+  const underNote = (note: string, summary: string): string =>
+    `CASE WHEN ${summary} IS NOT NULL THEN coalesce(${note} || char(10), '') || 'Looked at: ' || ${summary} ELSE ${note} END`;
+  const movedSummary = `CASE WHEN json_valid(${jx('evidence_ref')}) THEN json_extract(${jx('evidence_ref')}, '$.summary') END`;
+  const rejectSummary = `CASE WHEN e.kind = 'claim_rejected' THEN ${jx('looked_at.summary')} END`;
+
   const branches = [
     `SELECT e.id AS id, e.work_id AS task_id, e.actor AS from_entity,
             ${jx('entry_kind')} AS entry_kind,
@@ -109,12 +117,12 @@ export function readAuditTrail(
       WHERE e.work_id = ? AND e.kind = '${AUDIT_KIND}'`,
     `SELECT e.id, e.work_id, e.actor, 'transition',
             ${STATE_TO_STATUS_SQL(jx('from'))}, ${STATE_TO_STATUS_SQL(jx('to'))},
-            ${jx('reason')}, NULL, ${jx('note')}, ${jx('evidence_ref')}, e.created_at
+            ${jx('reason')}, NULL, ${underNote(jx('note'), movedSummary)}, ${jx('evidence_ref')}, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind = 'transition'`,
     `SELECT e.id, e.work_id, e.actor, e.kind,
             ${STATE_TO_STATUS_SQL(jx('claim_state'))}, ${STATE_TO_STATUS_SQL(jx('claim_state'))},
-            NULL, NULL, ${jx('note')}, NULL, e.created_at
+            NULL, NULL, ${underNote(jx('note'), rejectSummary)}, NULL, e.created_at
        FROM work_events e
       WHERE e.work_id = ? AND e.kind IN (${VERDICT_KINDS.map((k) => `'${k}'`).join(', ')})`,
     // ── (d) UX-REPAIR T40 — THE PENDING CLOSE IS A FACT THE OWNER CAN SEE. ──

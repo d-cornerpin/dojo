@@ -69,11 +69,27 @@ const rootTag = (r: Row): string => (r.root_id ? ` · ${r.root_kind ?? 'root'} $
 const fpNote = (fps: Array<[string, string]>): string => fps.map(([tool, text]) => `  [error fingerprint: ${fingerprint(tool, text)}]`).join('');
 const who = (r: Row, names: Map<string, string>): string => `agent ${agentLabel(names, r.agent_id as string)}`;
 
+/** K35: a verdict's note, and what the PM looked at when the note does not already say it (an uphold's does). */
+function verdictSummary(p: Record<string, unknown>): string {
+  const said = clip(p.note ?? '');
+  const seen = (p.looked_at as { summary?: unknown } | undefined)?.summary;
+  return typeof seen === 'string' && !said.includes(seen) ? `${said}${said ? ' · ' : ''}looked at: ${seen}` : said || clip(JSON.stringify(p));
+}
+
+/** A close the PM moved itself keeps what it looked at as JSON in the transition's evidence_ref; other evidence is an id. */
+function movedSeen(ref: unknown): string {
+  try {
+    const seen = typeof ref === 'string' ? (JSON.parse(ref) as { summary?: unknown }).summary : undefined;
+    return typeof seen === 'string' ? ` · looked at: ${seen}` : '';
+  } catch { return ''; }
+}
+
 function eventSummary(kind: string, payload: unknown): string {
   let p: Record<string, unknown> = {};
   try { p = typeof payload === 'string' ? JSON.parse(payload) as Record<string, unknown> : {}; } catch { return clip(payload); }
-  if (kind === 'transition') return `${String(p.from)} → ${String(p.to)}${p.reason ? `: ${clip(p.reason)}` : ''}`;
+  if (kind === 'transition') return `${String(p.from)} → ${String(p.to)}${p.reason ? `: ${clip(p.reason)}` : ''}${movedSeen(p.evidence_ref)}`;
   if (kind === 'claim_turn') return `claimed in turn ${String(p.turn_number)}`;
+  if (kind === 'claim_upheld' || kind === 'claim_rejected') return verdictSummary(p);
   return clip(p.reason ?? p.text ?? p.note ?? (Object.keys(p).length ? JSON.stringify(p) : ''));
 }
 

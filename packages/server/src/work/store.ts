@@ -584,7 +584,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
  *  `work` does. */
 export function rejectClaim(
   workId: string,
-  params: { claimState: WorkState; by: Actor; byId?: string; note: string; evidenceRef?: string | null },
+  params: { claimState: WorkState; by: Actor; byId?: string; note: string; evidenceRef?: string | null; lookedAt?: object },
 ): { kind: 'applied'; id: number } | { kind: 'refused'; reason: TransitionGate; detail: string } {
   if (!AUTHORITIES.includes(params.by)) {
     return {
@@ -603,7 +603,7 @@ export function rejectClaim(
       `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
        VALUES (?, ?, 'rejected', ?, ?, ?, ?)`,
     ).run(workId, params.claimState, params.byId ?? params.by, params.evidenceRef ?? null, params.note, now());
-    appendEvent(workId, 'claim_rejected', params.byId ?? params.by, { claim_state: params.claimState, note: params.note });
+    appendEvent(workId, 'claim_rejected', params.byId ?? params.by, { claim_state: params.claimState, note: params.note, looked_at: params.lookedAt });
     return { kind: 'applied', id: Number(info.lastInsertRowid) };
   });
 }
