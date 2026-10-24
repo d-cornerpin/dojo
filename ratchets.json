@@ -9299,6 +9299,69 @@
       "to": 410,
       "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
       "why": "+1: the fence import and the owner check on a known sender's text (the owner's own words are not fenced; anyone else's are, master plan K33). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/microsoft/tools-office.ts",
+      "from": 3538,
+      "to": 3541,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+3: the import of the span mark, and the Word and PowerPoint plain-text reads split their \"next slice\" call out of the marked text (a `more` line each) so the platform's paging instruction stays OUTSIDE the fence; the JSON reads wrap their existing return inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 666,
+      "to": 668,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+2: the door's one call moved to executeToolInner before admission (ruling 3: the kept whole is stored fenced) with its two-line reason; the round-1 call in dispatchResolved is gone. The conversion itself is agent/tools/outside-content.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/web-tools.ts",
+      "from": 441,
+      "to": 443,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+2: the import of the span mark and the raw-fetch branch marking the page whether or not it was truncated, the truncation note left outside (one reason line). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tools/unified-read.ts",
+      "from": 761,
+      "to": 763,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+2: the import of the span mark and its reason line at the merged agenda; the merged email search and the other-calendars rows wrap their existing lines inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/browser.ts",
+      "from": 433,
+      "to": 434,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+1: the import of the span mark (and the strip for the extractor's input); every marked return is wrapped inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/pdf-tools.ts",
+      "from": 1055,
+      "to": 1056,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+1: the import of the span mark; pdf_read and pdf_get_info wrap their existing returns inline, the header and the image-only remedy left outside. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 910,
+      "to": 911,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+1: the import of the span mark; the transcription wraps only the transcript text inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/google/tools-forms.ts",
+      "from": 821,
+      "to": 822,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+1: the import of the span mark; forms_get and forms_list_responses wrap their existing returns inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/microsoft/tools-read.ts",
+      "from": 1631,
+      "to": 1632,
+      "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
+      "why": "+1: the import of the span mark; every registered read wraps its item list inline, its re-call hints left outside. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9355,7 +9418,7 @@
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
     "packages/server/src/agent/brokers/sudo-policy.ts": 1320,
     "packages/server/src/agent/brokers/sudo-probe.ts": 82,
-    "packages/server/src/agent/browser.ts": 433,
+    "packages/server/src/agent/browser.ts": 434,
     "packages/server/src/agent/destructive-gate.ts": 496,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
@@ -9364,7 +9427,7 @@
     "packages/server/src/agent/errors.ts": 187,
     "packages/server/src/agent/model-contract.ts": 300,
     "packages/server/src/agent/model.ts": 3995,
-    "packages/server/src/agent/pdf-tools.ts": 1055,
+    "packages/server/src/agent/pdf-tools.ts": 1056,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 407,
@@ -9378,14 +9441,14 @@
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
-    "packages/server/src/agent/tools/cat/media.ts": 910,
+    "packages/server/src/agent/tools/cat/media.ts": 911,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 998,
     "packages/server/src/agent/tools/definitions.ts": 2941,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 666,
+    "packages/server/src/agent/tools/index.ts": 668,
     "packages/server/src/agent/tools/surface.ts": 735,
     "packages/server/src/agent/tools/types.ts": 340,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -9471,7 +9534,7 @@
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 584,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
-    "packages/server/src/agent/web-tools.ts": 441,
+    "packages/server/src/agent/web-tools.ts": 443,
     "packages/server/src/config/schema.ts": 201,
     "packages/server/src/costs/ledger-calibration.ts": 440,
     "packages/server/src/costs/prefill-calibration.ts": 309,
@@ -9532,8 +9595,8 @@
     "packages/server/src/memory/work-board-lane.ts": 790,
     "packages/server/src/microsoft/auth.ts": 635,
     "packages/server/src/microsoft/client.ts": 257,
-    "packages/server/src/microsoft/tools-office.ts": 3538,
-    "packages/server/src/microsoft/tools-read.ts": 1631,
+    "packages/server/src/microsoft/tools-office.ts": 3541,
+    "packages/server/src/microsoft/tools-read.ts": 1632,
     "packages/server/src/microsoft/tools-write.ts": 2221,
     "packages/server/src/migration/checks.ts": 531,
     "packages/server/src/migration/import.ts": 406,
@@ -9576,7 +9639,7 @@
     "packages/server/src/techniques/tools.ts": 914,
     "packages/server/src/tools/name-help.ts": 355,
     "packages/server/src/tools/tool-docs.ts": 771,
-    "packages/server/src/tools/unified-read.ts": 761,
+    "packages/server/src/tools/unified-read.ts": 763,
     "packages/server/src/tools/work-verbs.ts": 416,
     "packages/server/src/tracker/assignee-patience.ts": 208,
     "packages/server/src/tracker/delivery-evidence.ts": 320,
