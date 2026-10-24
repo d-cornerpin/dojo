@@ -9,14 +9,13 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/budget.js';
+import { timeline } from '../inspect/timeline.js';
 import { markLessonCycleStart } from './lessons-store.js';
 import { frictionCensus, type FrictionTask } from './friction-census.js';
 
 export interface RoughTasksBatch { ids: string[]; text: string; verbatim: true }
 
 const logger = createLogger('rough-tasks-batch');
-
-interface EventRow { id: number; kind: string; actor: string; payload: string | null; created_at: number }
 
 const HEADER = [
   'ROUGH TASKS (engine). These tracker tasks went badly since the last cycle. For each one, read its timeline and answer in this form, or write NO_ENTRY if there is nothing to learn:',
@@ -27,19 +26,19 @@ const HEADER = [
   'Record each answer with lesson_record(task_id, cue, lesson, evidence_event_ids, confidence, component), where component says what should change: technique, door_text (a tool\'s or refusal\'s wording), soul (an agent\'s instructions) or engine. Lessons are not vault entries: do not save them with vault_remember. Then call complete_task.',
 ].join('\n');
 
+/** The task's story as the inspect timeline tells it (every record that names the task: its events,
+ *  its tool calls and their error fingerprints, receipts, deliveries, messages). The friction events
+ *  are marked; over the allowance the oldest unmarked lines go first and the friction stays. */
 function timelineOf(task: FrictionTask, allowanceTokens: number): string {
-  const rows = getDb().prepare(
-    'SELECT id, kind, actor, payload, created_at FROM work_events WHERE work_id = ? ORDER BY id',
-  ).all(task.taskId) as EventRow[];
   const friction = new Set(task.eventIds);
-  const lines = rows.map((r) => ({
-    id: r.id,
-    line: `#${r.id} ${new Date(r.created_at).toISOString().slice(0, 16).replace('T', ' ')} ${r.kind} (${r.actor})${r.payload ? ` ${r.payload}` : ''}${friction.has(r.id) ? '  <- friction' : ''}`,
-  }));
-  // Over the allowance: drop the oldest lines that are not friction. The friction itself stays.
+  const lines = timeline({ task_id: task.taskId }, getDb()).split('\n').filter((l) => l.startsWith('[')).map((l) => {
+    const id = /\bwork_events #(\d+)\b/.exec(l)?.[1];
+    const marked = id !== undefined && friction.has(Number(id));
+    return { marked, line: marked ? `${l}  <- friction` : l };
+  });
   let total = lines.reduce((a, l) => a + estimateTokens(l.line), 0);
   for (let i = 0; i < lines.length && total > allowanceTokens; ) {
-    if (friction.has(lines[i].id)) { i++; continue; }
+    if (lines[i].marked) { i++; continue; }
     total -= estimateTokens(lines[i].line);
     lines.splice(i, 1);
   }
