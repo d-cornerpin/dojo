@@ -32,7 +32,7 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary } from '../summary-check.js';
+import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary, summaryChecksSettled } from '../summary-check.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
 import { unfenceExternal } from '../../tools/external-content.js';
@@ -250,6 +250,7 @@ describe('I-B4-3: the pass mark', () => {
   it('every check is recorded in the shadow log, so the record can grow', async () => {
     writer.outputs = ['The owner asked for the offsite budget.'];
     await write();
+    await summaryChecksSettled();   // fix round 1 (M-2): in shadow the check runs after the summary is kept
     expect(db().prepare("SELECT COUNT(*) AS n FROM decision_shadow WHERE purpose = 'summary_check'").get()).toEqual({ n: 3 });
   });
 });

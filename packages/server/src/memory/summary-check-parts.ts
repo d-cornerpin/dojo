@@ -41,6 +41,8 @@ export function sourceParts(
     // One row larger than the room: split by characters (the longest slice that fits both), the last slice carried on.
     let rest = piece;
     while (!fits(rest.length, bodyBytes(rest))) {
+      // Fix round 1 (M-1): not even one character fits the bytes left: no parts (recorded unavailable), never a spin.
+      if (bodyBytes(rest.slice(0, 1)) > byteRoom || bodyBytes(rest.slice(0, 2)) > byteRoom && /[\uD800-\uDBFF]/.test(rest[0])) return null;
       let n = Math.min(rest.length, charRoom);
       while (bodyBytes(rest.slice(0, n)) > byteRoom) n = Math.max(1, Math.min(n - 1, Math.floor((n * byteRoom) / bodyBytes(rest.slice(0, n)))));
       if (n > 1 && /[\uD800-\uDBFF]/.test(rest[n - 1])) n--;   // never between the two halves of one character
@@ -67,10 +69,8 @@ export function sourceParts(
  */
 export function combineParts(answers: Array<Record<string, Answer> | null>): Record<string, Answer> | null {
   if (answers.some((a) => a === null)) return null;
-  const noul = (q: 'invented' | 'dropped' | 'stated_current'): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
-  return {
-    invented: { type: 'noul', noul: Math.min(...noul('invented')) },
-    dropped: { type: 'noul', noul: Math.max(...noul('dropped')) },
-    stated_current: { type: 'noul', noul: Math.max(...noul('stated_current')) },
-  };
+  // Only the questions asked (fix round 1, M-3: a question held to the rule is not asked at all).
+  const asked = Object.keys(answers[0]!);
+  const noul = (q: string): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));
+  return Object.fromEntries(asked.map((q) => [q, { type: 'noul', noul: q === 'invented' ? Math.min(...noul(q)) : Math.max(...noul(q)) } as Answer]));
 }

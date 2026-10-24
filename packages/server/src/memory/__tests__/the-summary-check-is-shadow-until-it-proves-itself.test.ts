@@ -27,7 +27,7 @@ vi.mock('../../agent/model.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
-import { SUMMARY_CHECK_NOTICE_CODE, summaryCheckRefusedSince } from '../summary-check.js';
+import { SUMMARY_CHECK_NOTICE_CODE, summaryCheckRefusedSince, summaryChecksSettled } from '../summary-check.js';
 import { summaryWriterStatus, spanKeys, recordRefusedSpan } from '../summary-check-ledger.js';
 import { modeFor } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
@@ -76,6 +76,7 @@ describe('in shadow (no measured accuracy yet): the check is asked and recorded,
     expect(r).toMatchObject({ ok: true, text: 'INVENTED: the budget was sent and the task is closed.' });
     expect(writer.prompts).toHaveLength(1);                                   // no rewrite
     expect(writer.prompts[0]).not.toContain('accuracy check');
+    await summaryChecksSettled();   // fix round 1 (M-2): in shadow the check runs after the summary is kept
     expect(checks()).toEqual([{ outcome: 'ok', invented: 0.93 }]);            // kept as written, with its numbers
     const shadow = db().prepare("SELECT question, rule_said, model_said FROM decision_shadow WHERE purpose = 'summary_check' ORDER BY question").all() as
       Array<{ question: string; rule_said: string; model_said: string }>;

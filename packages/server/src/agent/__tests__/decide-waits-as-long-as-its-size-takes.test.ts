@@ -17,7 +17,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { decide, decideTimeoutMs, fencedState, __forgetResidencyForTests, type Question } from '../decide.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { B5_MEASURED_CHARS_PER_TOKEN, recordDensitySample } from '../../services/token-density.js';
-import { writeThenCheck } from '../../memory/summary-check.js';
+import { writeThenCheck, summaryChecksSettled } from '../../memory/summary-check.js';
 
 const BASE = 'http://127.0.0.1:47151';
 const db = (): Database.Database => mockDb.current!;
@@ -102,6 +102,7 @@ describe('decide() gives each call the time its own size takes', () => {
     // A writer that answered at once (a fast cloud writer): its time says nothing about the decision model's.
     const r = await writeThenCheck({ content: source, agentId: 'agent-t', modelId: 'writer-fast' }, async () => ({ ok: true, text: summary }));
     expect(r.ok).toBe(true);
+    await summaryChecksSettled();   // fix round 1 (M-2): in shadow it runs after the summary is kept
     expect(callClock()).toBe(decideTimeoutMs(stateTokens({ source_rows: source, summary }), 3, true));
   });
 });

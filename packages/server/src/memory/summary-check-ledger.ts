@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import { modeFor } from '../agent/decision-policy.js';
+import type { Answer } from '../agent/decide.js';
 
 /** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
 export const SUMMARY_CHECK_PURPOSE = 'summary_check';
@@ -20,6 +21,16 @@ export type SummaryCheckQuestion = typeof SUMMARY_CHECK_QUESTIONS[number];
  */
 export const actingQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) === 'model');
 export const summaryCheckActs = (): boolean => actingQuestions().length > 0;
+/** Fix round 1 (M-3): the questions the model is asked at all — every one not held to the rule. */
+export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTIONS.filter((q) => modeFor(SUMMARY_CHECK_PURPOSE, q) !== 'rule');
+/**
+ * Fix round 1 (I-4): the check's id — the join key between its `decision_shadow` rows and the summary row it
+ * judged. It is derived from the summary's own text, which is what the row stores (no new column), so it reads
+ * straight off the row. NO TRUTH SOURCE EXISTS YET (`recordTruth` has no caller): until one joins on this key, no
+ * summary-check question can be promoted to `model`, and the check stays in shadow.
+ */
+export const summaryCheckId = (summaryText: string): string => `summary-check:${createHash('sha256').update(summaryText).digest('hex').slice(0, 32)}`;
+
 
 export type SummaryParams = { content: string; agentId: string; modelId?: string; checkFeedback?: string; spanIds?: readonly string[] };
 
@@ -98,4 +109,33 @@ export function writerFailing(writer: string): { failed: number; total: number; 
   const latest = db.prepare("SELECT outcome FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable' ORDER BY id DESC LIMIT 2")
     .all(writer) as Array<{ outcome: string }>;
   return { failed: r.failed ?? 0, total: r.total, failing: latest.length === 2 && latest.every((x) => x.outcome === 'not_kept') };
+}
+
+/**
+ * THE PASS MARK (fix round 1, I-B4-3): a summary fails a question when the model's probability is at or
+ * above it. With no recorded data it is 0.5, the binary decision boundary: a noul answer is P(yes), so
+ * p ≥ 0.5 is exactly "the model holds yes at least as likely as no" — the same line the shadow score
+ * reads a verdict at. With recorded summary_check rows whose truth is known, it is the cut that agrees
+ * with the most of them: the candidates are the midpoints between neighbouring recorded probabilities,
+ * 0.5, and the midpoint above the highest; a cut at or below the lowest recorded probability (one that
+ * fails every summary) is never a candidate; a tie goes to the cut nearest 0.5.
+ */
+export function passMark(question: string): number {
+  let rows: Array<{ model_said: string; truth: string }> = [];
+  try {
+    rows = getDb().prepare(`SELECT model_said, truth FROM decision_shadow WHERE purpose = ? AND question = ?
+      AND truth IS NOT NULL AND model_said IS NOT NULL`).all(SUMMARY_CHECK_PURPOSE, question) as typeof rows;
+  } catch { return 0.5; }
+  const points = rows.flatMap((r) => {
+    try { const a = JSON.parse(r.model_said) as Answer; return a.type === 'noul' ? [{ p: a.noul, bad: r.truth === 'true' }] : []; } catch { return []; }
+  });
+  if (points.length === 0) return 0.5;
+  const ps = [...new Set(points.map((x) => x.p))].sort((a, b) => a - b);
+  const candidates = [0.5, (ps[ps.length - 1] + 1) / 2, ...ps.slice(1).map((p, i) => (ps[i] + p) / 2)].filter((t) => t > ps[0]);
+  const agree = (t: number): number => points.filter((x) => (x.p >= t) === x.bad).length;
+  if (candidates.length === 0) return 0.5;   // every recorded probability is 1.0: nothing to cut between (N6)
+  return candidates.reduce((best, t) => {
+    const d = agree(t) - agree(best);
+    return d > 0 || (d === 0 && Math.abs(t - 0.5) < Math.abs(best - 0.5)) ? t : best;
+  });
 }

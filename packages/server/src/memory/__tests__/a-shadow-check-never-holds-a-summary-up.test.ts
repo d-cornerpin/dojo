@@ -1,0 +1,130 @@
+// t268 fix round 1 (M-2, M-3, I-4, M-1) — A CHECK THAT CANNOT ACT NEVER HOLDS A SUMMARY UP.
+// · M-2: in shadow the summary is kept at once and the check runs after it, off the compaction's path;
+// · M-3: a question held to the rule (or a box with no decision model) never asks the model at all;
+// · I-4: the shadow rows carry the check's id, derived from the kept summary's own text (`summaryCheckId`), so a
+//   future truth source can join them to the summary row (none exists yet);
+// · M-1: a part splitter with less than one character of byte room ends (no room, recorded), never spins.
+// The writer is scripted; every /v1/systemone call is a scripted fetch.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+const mockDb = { current: null as Database.Database | null };
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  getDbPath: () => ':memory:',
+}));
+const cards = vi.hoisted(() => ({ list: [] as Array<{ code?: string }> }));
+vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { code?: string }) => { cards.list.push(e); }, stampPersistedRow: (e: unknown) => e }));
+const writer = vi.hoisted(() => ({ outputs: [] as string[], prompts: [] as string[] }));
+vi.mock('../../agent/model.js', () => ({
+  callModel: async (p: { systemPrompt: string }) => {
+    writer.prompts.push(p.systemPrompt);
+    return { content: writer.outputs.shift() ?? 'a plain summary', toolCalls: [], usage: {} };
+  },
+  getContextWindow: () => 32_000,
+  getModelOutputCap: () => 4096,
+  getProviderCeilingTokens: () => null,
+}));
+
+import { runMigrations } from '../../db/migrations.js';
+import { generateSummary } from '../summarize.js';
+import { summaryChecksSettled, checkSummary } from '../summary-check.js';
+import { summaryCheckId } from '../summary-check-ledger.js';
+import { sourceParts } from '../summary-check-parts.js';
+import { decideRequestBody } from '../../agent/decide.js';
+import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
+
+const AGENT = 'agent-shadow-first';
+const SOURCE = '[USER · the owner] please draft the offsite budget\n---\n[ASSISTANT · the agent] drafting it now';
+const db = (): Database.Database => mockDb.current!;
+/** The decision model's door: closed, a check waits until the case opens it. */
+const gate = { open: true, waiting: [] as Array<() => void> };
+const asked: string[][] = [];
+
+beforeEach(() => {
+  mockDb.current = new Database(':memory:');
+  runMigrations(mockDb.current);
+  cards.list.length = 0;
+  writer.outputs = [];
+  writer.prompts = [];
+  db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://127.0.0.1:47131', 'none', 1)").run();
+  db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-decision', 'ollama-local', ?, ?, '["decision"]', 1)`).run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
+  db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('writer-small', 'ollama-local', 'w', 'w', '["chat"]', 32000, 1)`).run();
+  db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'writer-small')").run();
+  // The decision model: INVENTED → the "invented" question fails; PENDING → "stated_current" fails.
+  gate.open = true; gate.waiting = []; asked.length = 0;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+    const { state, questions } = JSON.parse(init?.body ?? '{}') as { state: { summary: string }; questions: Record<string, unknown> };
+    asked.push(Object.keys(questions));
+    if (!gate.open) await new Promise<void>((r) => gate.waiting.push(r));
+    return Response.json({ answers: {
+      invented: { noul: state.summary.includes('INVENTED') ? 0.93 : 0.04 },
+      dropped: { noul: 0.06 },
+      stated_current: { noul: state.summary.includes('PENDING') ? 0.91 : 0.05 },
+    } });
+  }));
+});
+afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+
+
+let span = 0;
+const write = () => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small' });
+const shadowRows = (): Array<{ question: string; turn_id: string }> =>
+  db().prepare("SELECT question, turn_id FROM decision_shadow WHERE purpose = 'summary_check' ORDER BY question").all() as Array<{ question: string; turn_id: string }>;
+
+describe('M-2: in shadow the summary is kept first; the check runs after it', () => {
+  it('the summary comes back while the decision model has not answered yet; the verdict is recorded once it does', async () => {
+    gate.open = false;
+    writer.outputs = ['INVENTED: the budget was sent.'];
+    const r = await write();   // would hang here if the summary waited on the check
+    expect(r).toMatchObject({ ok: true, text: 'INVENTED: the budget was sent.' });
+    expect(shadowRows()).toEqual([]);
+    gate.open = true; for (const go of gate.waiting.splice(0)) go();
+    await summaryChecksSettled();
+    expect(shadowRows().map((s) => s.question)).toEqual(['dropped', 'invented', 'stated_current']);
+    expect(db().prepare('SELECT outcome FROM summary_checks').all()).toEqual([{ outcome: 'ok' }]);
+  });
+});
+
+describe('M-3: a question held to the rule never asks the model', () => {
+  it('all three held: no decision call at all, nothing recorded', async () => {
+    for (const q of ['invented', 'dropped', 'stated_current']) db().prepare('INSERT INTO config (key, value) VALUES (?, ?)').run(`decision_mode.summary_check.${q}`, 'rule');
+    writer.outputs = ['The owner asked for the budget.'];
+    expect(await write()).toMatchObject({ ok: true });
+    await summaryChecksSettled();
+    expect(asked).toEqual([]);
+    expect(shadowRows()).toEqual([]);
+  });
+
+  it('one held: only the other two are asked', async () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_mode.summary_check.dropped', 'rule')").run();
+    writer.outputs = ['The owner asked for the budget.'];
+    await write();
+    await summaryChecksSettled();
+    expect(asked).toEqual([['invented', 'stated_current']]);
+    expect(shadowRows().map((s) => s.question)).toEqual(['invented', 'stated_current']);
+  });
+});
+
+describe('I-4: the shadow rows can be joined to the summary they judged', () => {
+  it('their id is derived from the kept summary\'s own text, the join key a future truth source reads off the row', async () => {
+    writer.outputs = ['The owner asked for the offsite budget.'];
+    const r = await write();
+    await summaryChecksSettled();
+    const id = summaryCheckId(r.ok ? r.text : '');
+    expect(id).toMatch(/^summary-check:[0-9a-f]{32}$/);
+    expect(new Set(shadowRows().map((s) => s.turn_id))).toEqual(new Set([id]));
+  });
+});
+
+describe('M-1: the part splitter always ends', () => {
+  it('less than one character of byte room: no parts (the check is recorded unavailable), never a spin', async () => {
+    const Q = { invented: { type: 'noul' as const, instructions: 'x' } };
+    const source = '€'.repeat(40);   // 3 bytes each
+    const base = Buffer.byteLength(decideRequestBody(STANDARD_DECISION_MODEL.tag, { source_rows: '', summary: '', source_part: `${source.length} of ${source.length}` }, Q));
+    const summary = 's'.repeat(64 * 1024 - base - 2);   // 2 bytes of room: less than one '€'
+    expect(sourceParts(source, summary, 1_000_000, Q, 2.48, STANDARD_DECISION_MODEL.tag)).toBeNull();
+    const c = await checkSummary(source, summary, AGENT);
+    expect(c.answers).toBeNull();
+  });
+});

@@ -21,13 +21,13 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { decide, type Answer, type Question } from '../agent/decide.js';
 import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
-import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, combineParts } from './summary-check-parts.js';
 import { decisionCharsPerToken } from '../services/token-density.js';
 import { getDecisionProvider } from '../agent/decision-provider.js';
-import { SUMMARY_CHECK_PURPOSE, actingQuestions, summaryCheckActs, type SummaryCheckQuestion } from './summary-check-ledger.js';
+import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
+export { passMark };
 
 const logger = createLogger('summary-check');
 
@@ -46,66 +46,37 @@ const FEEDBACK: Record<keyof typeof QUESTIONS, string> = {
   stated_current: 'it described something as currently pending or owed',
 };
 
-/**
- * THE PASS MARK (fix round 1, I-B4-3): a summary fails a question when the model's probability is at or
- * above it. With no recorded data it is 0.5, the binary decision boundary: a noul answer is P(yes), so
- * p ≥ 0.5 is exactly "the model holds yes at least as likely as no" — the same line the shadow score
- * reads a verdict at. With recorded summary_check rows whose truth is known, it is the cut that agrees
- * with the most of them: the candidates are the midpoints between neighbouring recorded probabilities,
- * 0.5, and the midpoint above the highest; a cut at or below the lowest recorded probability (one that
- * fails every summary) is never a candidate; a tie goes to the cut nearest 0.5.
- */
-export function passMark(question: string): number {
-  let rows: Array<{ model_said: string; truth: string }> = [];
-  try {
-    rows = getDb().prepare(`SELECT model_said, truth FROM decision_shadow WHERE purpose = ? AND question = ?
-      AND truth IS NOT NULL AND model_said IS NOT NULL`).all(PURPOSE, question) as typeof rows;
-  } catch { return 0.5; }
-  const points = rows.flatMap((r) => {
-    try { const a = JSON.parse(r.model_said) as Answer; return a.type === 'noul' ? [{ p: a.noul, bad: r.truth === 'true' }] : []; } catch { return []; }
-  });
-  if (points.length === 0) return 0.5;
-  const ps = [...new Set(points.map((x) => x.p))].sort((a, b) => a - b);
-  const candidates = [0.5, (ps[ps.length - 1] + 1) / 2, ...ps.slice(1).map((p, i) => (ps[i] + p) / 2)].filter((t) => t > ps[0]);
-  const agree = (t: number): number => points.filter((x) => (x.p >= t) === x.bad).length;
-  if (candidates.length === 0) return 0.5;   // every recorded probability is 1.0: nothing to cut between (N6)
-  return candidates.reduce((best, t) => {
-    const d = agree(t) - agree(best);
-    return d > 0 || (d === 0 && Math.abs(t - 0.5) < Math.abs(best - 0.5)) ? t : best;
-  });
-}
 const failsAt = passMark;
 
 /**
- * Three noul questions over { source_rows, summary }. `ok` when every probability is below its
- * question's line. When decide() returns null, `answers` is null and `ok` is true (never blocks).
+ * The noul questions over { source_rows, summary } — the ones not held to the rule (fix round 1, M-3: a
+ * question in `rule` mode never asks the model). `ok` when every probability is below its question's line.
+ * When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
-export async function checkSummary(sourceRows: string, summary: string, agentId: string): Promise<SummaryCheck> {
-  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
+export async function checkSummary(sourceRows: string, summary: string, agentId: string, asked = askedQuestions()): Promise<SummaryCheck> {
+  const questions = Object.fromEntries(asked.map((q) => [q, QUESTIONS[q]]));
+  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
     answers = null;
   } else if (parts.length === 1) {
-    answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId });
+    answers = await decide({ source_rows: sourceRows, summary }, questions, { purpose: PURPOSE, agentId });
   } else {
     // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
     // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
     const each: Array<Record<string, Answer> | null> = [];
     for (const [i, part] of parts.entries()) {
-      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId }));
+      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, questions, { purpose: PURPOSE, agentId }));
     }
     answers = combineParts(each);
   }
   const p = (q: keyof typeof QUESTIONS): number => (answers?.[q]?.type === 'noul' ? (answers[q] as { noul: number }).noul : 0);
   const [invented, dropped, statedCurrent] = [p('invented'), p('dropped'), p('stated_current')];
   const ok = !answers || (invented < failsAt('invented') && dropped < failsAt('dropped') && statedCurrent < failsAt('stated_current'));
-  // Every answered check joins the shadow log (the rule today keeps every summary: `false`), under a check
-  // id a later truth source can join to, so the pass mark can be calibrated from what really happened.
-  if (answers) {
-    const checkId = `summary-check:${randomUUID()}`;
-    for (const q of Object.keys(QUESTIONS)) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: checkId, ruleSaid: false, modelSaid: answers[q] ?? null });
-  }
+  // Every answered check joins the shadow log (the rule today keeps every summary: `false`) under the check's id,
+  // derived from the summary's own text (I-4), so a truth source can join it to the summary row it judged.
+  if (answers) for (const q of asked) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId: summaryCheckId(summary), ruleSaid: false, modelSaid: answers[q] ?? null });
   return { ok, invented, dropped, statedCurrent, answers };
 }
 
@@ -165,6 +136,11 @@ function noticeIfFailing(agentId: string, writer: string): void {
   } catch { /* a notice is a courtesy; never break the summary it rides on */ }
 }
 
+/** The shadow checks still running after their summaries were kept. */
+const lateChecks = new Set<Promise<void>>();
+/** Resolves when every shadow check started so far has recorded its verdict. Starts nothing. */
+export async function summaryChecksSettled(): Promise<void> { while (lateChecks.size > 0) await Promise.all([...lateChecks]); }
+
 /**
  * The flow between "written" and "kept". `written` is an ok result; `rewrite(feedback)` writes the same
  * input again with the failed questions named. The check's time is `decide()`'s own measured formula for its
@@ -175,17 +151,25 @@ export async function keepOnlyIfChecked(
   source: string, written: Extract<SummaryResult, { ok: true }>, agentId: string, writer: string,
   rewrite: (feedback: string) => Promise<SummaryResult>,
 ): Promise<SummaryResult> {
-  const first = await checkSummary(source, written.text, agentId);
-  if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
   // t268: only a failure on a question the policy flipped to `model` acts; a shadow verdict is recorded
   // (`decision_shadow`, and this row's numbers) and the summary is kept as written.
+  const asked = askedQuestions();
   const acting = actingQuestions();
+  if (asked.length === 0) return written;   // M-3: every question held to the rule (or no decision model): the model is not asked
+  if (acting.length === 0) {   // M-2: a verdict that cannot act never holds the summary up: kept now, checked after
+    const late = checkSummary(source, written.text, agentId, asked).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
+      .catch(() => undefined).finally(() => { lateChecks.delete(late); });
+    lateChecks.add(late);
+    return written;
+  }
+  const first = await checkSummary(source, written.text, agentId, asked);
+  if (!first.answers) { record(agentId, writer, 'unavailable', null); return written; }
   const failed = actedFailures(first, acting);
   if (failed.length === 0) { record(agentId, writer, 'ok', first); noticeIfFailing(agentId, writer); return written; }
 
   const again = await rewrite(failed.map((q) => FEEDBACK[q]).join('; '));
   if (!again.ok) return again;   // the writer itself refused: its own outcome, recorded by its own door
-  const second = await checkSummary(source, again.text, agentId);
+  const second = await checkSummary(source, again.text, agentId, asked);
   if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
   if (actedFailures(second, acting).length === 0) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
 
