@@ -68,10 +68,12 @@ function embedderName(): string {
   }
 }
 
-/** `/api/tags`, bounded like every other Ollama read of the Dojo's (5 s, `services/local-standard.ts`). */
-async function installedSizes(baseUrl: string): Promise<Map<string, number> | null> {
+/** `/api/tags` (each model's file size), or (t268 N-C) `/api/ps` (each LOADED model and what it really holds now:
+ *  weights plus the KV cache of the window it was loaded at, Ollama's own figure). Both list `{ name, size }`; bounded
+ *  like every other Ollama read of the Dojo's (5 s, `services/local-standard.ts`). */
+async function installedSizes(baseUrl: string, list: '/api/tags' | '/api/ps' = '/api/tags'): Promise<Map<string, number> | null> {
   try {
-    const resp = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    const resp = await fetch(`${baseUrl}${list}`, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
     const data = await resp.json() as { models?: Array<{ name: string; size?: number }> };
     return new Map((data.models ?? []).filter((m) => typeof m.size === 'number').map((m) => [m.name, m.size as number]));
@@ -205,19 +207,6 @@ export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void>
   throw new Error(v.message ?? 'This model does not fit in this box\'s memory.');
 }
 
-/** `/api/ps`: each model loaded on this Ollama and what it REALLY holds now — Ollama's own figure, its weights plus the
- *  working memory (KV cache) of the window it was loaded at. Bounded like `/api/tags` above. */
-async function loadedSizes(baseUrl: string): Promise<Map<string, number> | null> {
-  try {
-    const resp = await fetch(`${baseUrl}/api/ps`, { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) return null;
-    const data = await resp.json() as { models?: Array<{ name: string; size?: number }> };
-    return new Map((data.models ?? []).filter((m) => typeof m.size === 'number').map((m) => [m.name, m.size as number]));
-  } catch {
-    return null;
-  }
-}
-
 /**
  * t268 fix round 2 (ruling): the window a job of the Dojo's writer that NO reserve holds (a fallback summary, when an
  * agent's own model cannot be reached) can have NOW on this box's Ollama — its reserved room plus the open memory the
@@ -229,7 +218,7 @@ async function loadedSizes(baseUrl: string): Promise<Map<string, number> | null>
 export async function freeWriterWindowTokens(): Promise<number | null> {
   const provider = localOllamaProvider();
   const sizes = provider ? await installedSizes(provider.baseUrl) : null;
-  const loadedNow = provider ? await loadedSizes(provider.baseUrl) : null;
+  const loadedNow = provider ? await installedSizes(provider.baseUrl, '/api/ps') : null;
   const total = provider ? resolveOllamaTotalRamBytes(provider.baseUrl, null) : null;
   if (!provider || !sizes || !loadedNow || total === null) return null;
   const arch = await fetchModelArchInfo(provider.baseUrl, STANDARD_WRITER_MODEL.tag);
