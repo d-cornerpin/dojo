@@ -11,51 +11,58 @@
 // both ends, whole: a result too long for one view is kept whole by the tool layer (t200), which
 // shows its head and tail and the `tool_result_read` call that reads the rest.
 //
-// THE WRITER IS NEVER HELD. The database runs in WAL mode, where a reader works from its own
-// snapshot and the engine's writer appends beside it; the read-only connection's busy timeout
-// covers the rare checkpoint wait. A long SELECT costs this view time, not the engine.
+// NOTHING IS HELD. The query runs in its own worker thread on its own read-only connection
+// (`sql-worker.ts`), so the engine's thread keeps serving while it runs, and in WAL mode the
+// engine's writer appends beside the reader's snapshot. The agent's stop ends a runaway query.
+// Every cell is redacted under the SOURCE column it was read from, never only its alias.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
-import { keyNamesCredential, redactCell, refuseDeniedSql, rowAgents } from './redact.js';
+import { isReadStatement } from '../db/read-only-door.js';
+import { columnNamesCredential, keyNamesCredential, redactCell, refuseDeniedSql, rowAgents } from './redact.js';
+import { readInWorker, type OutColumn } from './sql-worker.js';
 
 const READ_ONLY = 'Refused: only a read runs here (a statement starting with SELECT, WITH or EXPLAIN). dojo_inspect never changes anything.';
 
-/** The first keyword, past comments and whitespace. */
-function firstWord(q: string): string {
-  const s = q.replace(/^(\s+|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
-  return (/^[A-Za-z]+/.exec(s)?.[0] ?? '').toLowerCase();
-}
-
 function show(v: unknown): string {
   if (v === null || v === undefined) return 'NULL';
-  if (Buffer.isBuffer(v)) return `<blob ${v.length} bytes>`;
   return String(v).replace(/\r?\n/g, '\\n');
 }
 
-/** Run one read and render its rows. */
-export function sql(args: { query: string }, db: Database.Database = getReadOnlyDb()): string {
+/** The name a cell is redacted under: the SOURCE column it was read from when that names a
+ *  credential, so an alias can never carry one out unblanked; otherwise its output name. */
+const redactionName = (c: OutColumn): string => (c.column && columnNamesCredential(c.column) ? c.column : c.name);
+
+/**
+ * Run one read and render its rows. The checks and the compile run here; the query itself runs
+ * in a worker (`sql-worker.ts`), so the engine's thread is never held, and the agent's stop ends it.
+ */
+export async function sql(args: { query: string }, opts: { agentId?: string; db?: Database.Database } = {}): Promise<string> {
+  const db = opts.db ?? getReadOnlyDb();
   const query = (args.query ?? '').trim().replace(/;\s*$/, '');
-  if (!['select', 'with', 'explain'].includes(firstWord(query))) return READ_ONLY;
+  if (!isReadStatement(query)) return READ_ONLY;
   const refused = refuseDeniedSql(query, db);
   if (refused) return refused;
-  let stmt: Database.Statement;
-  try { stmt = db.prepare(query); } catch (e) { return `SQLite refused the statement: ${e instanceof Error ? e.message : String(e)}`; }
-  if (!stmt.reader) return READ_ONLY;
-  const columns = stmt.columns().map((c) => c.name);
-  const keyAt = columns.indexOf('key');
-  const rows: string[][] = [];
   try {
-    for (const raw of stmt.raw(true).iterate() as Iterable<unknown[]>) {
-      const cells = columns.map((c, i) => [c, raw[i]] as [string, unknown]);
-      const agents = rowAgents(cells);
-      const keyed = keyAt !== -1 && keyNamesCredential(raw[keyAt]);
-      rows.push(cells.map(([c, v]) => show(redactCell(c, v, agents, keyed))));
-    }
+    const stmt = db.prepare(query);
+    if (!stmt.reader) return READ_ONLY;
   } catch (e) {
-    return `SQLite stopped the query: ${e instanceof Error ? e.message : String(e)}`;
+    const msg = e instanceof Error ? e.message : String(e);
+    return /read-only connection/.test(msg) ? READ_ONLY : `SQLite refused the statement: ${msg}`;
   }
+  const out = await readInWorker(query, query.replace(/^(\s+|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, ''), opts.agentId);
+  if ('ended' in out) return out.ended;
+  if ('error' in out) return `SQLite stopped the query: ${out.error}`;
+  const names = out.columns.map(redactionName);
+  const keyAt = out.columns.findIndex((c) => (c.column ?? c.name) === 'key');
+  const rows: string[][] = out.rows.map((raw) => {
+    const cells = names.map((c, i) => [c, raw[i]] as [string, unknown]);
+    const agents = rowAgents(cells);
+    const keyed = keyAt !== -1 && keyNamesCredential(raw[keyAt]);
+    return cells.map(([c, v]) => show(redactCell(c, v, agents, keyed)));
+  });
+  const columns = out.columns.map((c) => c.name);
   const count = `${rows.length.toLocaleString('en-US')} row${rows.length === 1 ? '' : 's'}.`;
   // Every column but the last is padded to its widest cell; the last is never padded.
   const widths = columns.map((c, i) => rows.reduce((w, r) => Math.max(w, r[i].length), c.length));

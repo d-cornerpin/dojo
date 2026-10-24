@@ -84,40 +84,46 @@ describe('schema', () => {
 });
 
 describe('sql', () => {
-  it('runs a read and renders an aligned table with a header and the row count', () => {
-    const out = mod.sql({ query: "select id, role, content from messages where id in ('m-1', 'm-2') order by id" });
+  it('runs a read and renders an aligned table with a header and the row count', async () => {
+    const out = await mod.sql({ query: "select id, role, content from messages where id in ('m-1', 'm-2') order by id" });
     expect(out).toMatch(/^id {2}role {6}content$/m);
     expect(out).toMatch(/^m-1 assistant row 1$/m);
     expect(out).toMatch(/2 rows\./);
   });
 
-  it('refuses a write with the sentence, before it reaches the connection — and the connection refuses it again', () => {
-    for (const q of ['update work set title = 1', "delete from messages where id = 'm-1'", 'drop table work', "with x as (select 1) delete from messages where id = 'm-1'"]) {
-      expect(mod.sql({ query: q }), q).toMatch(/^Refused: only a read runs here/);
+  it('refuses a write with the sentence, before it reaches the connection — and the connection refuses it again', async () => {
+    for (const q of ['update work set title = 1', "delete from messages where id = 'm-1'", 'drop table work', "with x as (select 1) delete from messages where id = 'm-1'", 'pragma query_only = 0', "vacuum into '/tmp/x.db'"]) {
+      expect(await mod.sql({ query: q }), q).toMatch(/^Refused: only a read runs here/);
     }
     expect(main.prepare("SELECT count(*) FROM messages WHERE id = 'm-1'").pluck().get()).toBe(1);
-    expect(() => mod.connection.getReadOnlyDb().prepare("DELETE FROM messages WHERE id = 'm-1'").run()).toThrow(/readonly/);
+    expect(() => mod.connection.getReadOnlyDb().prepare("DELETE FROM messages WHERE id = 'm-1'").run()).toThrow(/read-only connection/);
   });
 
-  it('allows EXPLAIN, and the extension loader is not reachable', () => {
-    expect(mod.sql({ query: "explain query plan select * from messages where id = 'm-1'" })).toMatch(/rows?\./);
-    expect(mod.sql({ query: "select load_extension('x')" })).toMatch(/SQLite (refused the statement|stopped the query): not authorized/);
+  it('allows EXPLAIN, and the extension loader is not reachable', async () => {
+    expect(await mod.sql({ query: "explain query plan select * from messages where id = 'm-1'" })).toMatch(/rows?\./);
+    expect(await mod.sql({ query: "select load_extension('x')" })).toMatch(/SQLite (refused the statement|stopped the query): not authorized/);
   });
 
-  it('REVIEW FOCUS 2: no credential leaves, however the statement reaches for it', () => {
-    const outs = [
+  it('REVIEW FOCUS 2: no credential leaves, however the statement reaches for it', async () => {
+    const outs = await Promise.all([
       'select * from google_accounts',
       "select m.id, g.access_token from messages m join google_accounts g on 1 where m.id = 'm-7'",
       'select * from destructive_approvals',
       "select m.id, d.token from messages m join destructive_approvals d on 1 where m.id = 'm-7'",
       "select content from messages where id = 'm-7'",
       "select content as note from messages where id = 'm-7'",
-    ].map((query) => mod.sql({ query }));
+      // Fix round 1: the reviewer's probes, verbatim, and the alias that used to defeat the blanking.
+      "select access_token as a, refresh_token as b, 1 as explain from 'google_accounts'",
+      'select token as t, 0 as explain from destructive_approvals',
+      "select rawtok as x from (select access_token as rawtok from 'google_accounts') t, (select 1 as explain) e",
+      'explain select token from destructive_approvals',
+    ].map((query) => mod.sql({ query })));
     expect(outs[0]).toMatch(/Refused: the statement reaches google_accounts/);
     expect(outs[2]).toMatch(/Refused: the statement reads destructive_approvals\.token/);
     expect(outs[4]).toContain('<redacted-credential>');
     for (const out of outs) for (const secret of [ACCESS, APPROVAL, PASTED, 'r-synthetic-value-0003']) expect(out).not.toContain(secret);
-    expect(mod.sql({ query: 'select agent_id, tool_name, status from destructive_approvals' })).toMatch(/1 row\./);
+    for (const out of outs.slice(6)) expect(out).toMatch(/^Refused/);
+    expect(await mod.sql({ query: 'select agent_id, tool_name, status from destructive_approvals' })).toMatch(/1 row\./);
   });
 
   it('REVIEW FOCUS 1: 100K rows come back whole, the view shows the head and a pointer, and the writer is never held', async () => {
@@ -139,9 +145,14 @@ describe('sql', () => {
       };
       tick();`, { eval: true, workerData: { file, sqlitePath } });
     await new Promise<void>((resolve) => worker.once('message', () => resolve()));
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
     const t0 = Date.now();
-    const out = mod.sql({ query: 'select id, content, created_at from messages order by seq' });
+    const out = await mod.sql({ query: 'select id, content, created_at from messages order by seq' });
     const t1 = Date.now();
+    clearInterval(timer);
+    // Fix round 1: the engine's own thread kept running while the query ran.
+    expect(ticks).toBeGreaterThan(0);
     const writes = await new Promise<Array<[number, number]>>((resolve) => { worker.once('message', resolve); worker.postMessage('stop'); });
     await worker.terminate();
 
@@ -157,4 +168,18 @@ describe('sql', () => {
     expect(view).toContain('tool_result_read({"id":"call-inspect-1"');
     expect(view.startsWith(out.slice(0, 200))).toBe(true);
   }, 120_000);
+
+  it('fix round 1 (B2-CRITICAL): a runaway query does not hold the engine thread, and the stop button ends it', async () => {
+    const { abortInFlight } = await import('../../agent/shared-state.js');
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
+    const run = mod.sql({ query: 'with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c' }, { agentId: 'agent-sql-stop' });
+    await new Promise((r) => setTimeout(r, 300));
+    const during = ticks;
+    abortInFlight('agent-sql-stop', 'user-stop', { scope: 'all' });
+    const out = await run;
+    clearInterval(timer);
+    expect(during).toBeGreaterThan(10);
+    expect(out).toMatch(/^Stopped: you pressed stop/);
+  }, 60_000);
 });
