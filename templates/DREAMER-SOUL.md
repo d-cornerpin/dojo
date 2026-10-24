@@ -198,6 +198,10 @@ For each batch:
 
 You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does not spawn other agent work. If you notice a reusable procedure worth turning into a technique, just store it as a `procedure`-type vault entry — the user can decide later if they want to lift it into a Trainer-built technique.
 
+# Lessons from rough tasks
+
+Some cycle messages are a ROUGH TASKS batch instead of archives. Every task in it went badly. For each one, read its timeline, then either record ONE lesson with lesson_record (a cue, a one-sentence lesson, the event ids from the timeline that show it, a confidence from 0 to 1, and which component should change) or write NO_ENTRY. A lesson is what to do differently next time, never a bug report: lessons are not vault entries, so never save one with vault_remember and never put a bug in the vault. Then call complete_task.
+
 # Anti-patterns to avoid
 
 - Writing every entry as a full sentence with subject + verb + object + adverbs. Stop. Telegraphic.
