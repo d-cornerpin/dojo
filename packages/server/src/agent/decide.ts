@@ -16,7 +16,7 @@ import { createLogger } from '../logger.js';
 import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
-import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
+import { localHeld, localWorkBegins, whenAgentWorkEnds } from '../services/ollama-quiet.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../services/token-density.js';
 
@@ -30,7 +30,9 @@ export type Answer =
   | { type: 'noul'; noul: number }
   | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
   | { type: 'score'; score: number; probabilities: Record<string, number>; confidence: number };
-export interface DecideOpts { purpose: string; agentId?: string; timeoutMs?: number; turnId?: string }
+/** `background` (t268 fix round 2): nobody waits on the answer (a shadow check): it also waits behind agents' own
+ *  turns on the local Ollama. */
+export interface DecideOpts { purpose: string; agentId?: string; timeoutMs?: number; turnId?: string; background?: boolean }
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
@@ -115,6 +117,28 @@ export async function decide(
   const request = decideRequestBody(provider.model, state, questions);
   const stateChars = JSON.stringify(fencedState(state)).length;
   if (Buffer.byteLength(request) > MAX_DECISION_BODY_BYTES) return fail('too_large', opts.purpose, `${Buffer.byteLength(request)} bytes`);
+  return inTurn(async () => {
+    if (opts.background) await whenAgentWorkEnds(provider.providerId);
+    return sent(provider, request, stateChars, names, questions, opts);
+  });
+}
+
+/**
+ * ONE QUEUE (t268 fix round 2): the local Ollama answers one request at a time, so decide() calls go one after
+ * another — each call's clock starts when it is SENT, never while it waits (calls dialled together spent their
+ * clocks queued in Ollama, and most shadow verdicts of a busy fold were lost).
+ */
+let tail: Promise<unknown> = Promise.resolve();
+function inTurn<T>(work: () => Promise<T>): Promise<T> {
+  const run = tail.then(work, work);
+  tail = run.catch(() => undefined);
+  return run;
+}
+
+async function sent(
+  provider: NonNullable<ReturnType<typeof getDecisionProvider>>, request: string, stateChars: number, names: string[],
+  questions: Record<string, Question>, opts: DecideOpts,
+): Promise<Record<string, Answer> | null> {
   // NB-1: while the Ollama app restarts to apply the model limit, the rule answers (no wait on a restart);
   // otherwise this call is in-flight work the restart waits for.
   if (localHeld()) return null;

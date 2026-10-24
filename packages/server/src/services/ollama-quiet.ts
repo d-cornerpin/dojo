@@ -80,6 +80,12 @@ export function localWorkBegins(baseUrl?: string, wait?: HoldWait): Promise<() =
   return (async () => { for (let w = waitOutHold(undefined, wait); w; w = waitOutHold(undefined, wait)) await w; return begin(); })();
 }
 
+/** t268 fix round 2: resolves once no agent turn holds a lock slot on this Ollama (woken by each slot's release). */
+export async function whenAgentWorkEnds(providerId: string): Promise<void> {
+  const busy = (): boolean => getOllamaLock().getStatus().slots.some((s) => s.providerId === providerId && s.activeRequests > 0);
+  while (busy()) await new Promise<void>((r) => { quietWaiters.push(r); });
+}
+
 /** Everything in flight on the local Ollama (`providerId` is its provider row). */
 export function localInFlight(providerId: string): number {
   return getOllamaLock().getStatus().slots.filter((s) => s.providerId === providerId).reduce((n, s) => n + s.activeRequests, 0)

@@ -32,6 +32,7 @@ import { summaryChecksSettled, checkSummary } from '../summary-check.js';
 import { summaryCheckId } from '../summary-check-ledger.js';
 import { sourceParts } from '../summary-check-parts.js';
 import { decideRequestBody } from '../../agent/decide.js';
+import { getOllamaLock } from '../../services/ollama-lock.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-shadow-first';
@@ -64,7 +65,7 @@ beforeEach(() => {
     } });
   }));
 });
-afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(async () => { await summaryChecksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });   // t268 fix round 2: late checks are queued; none outlives its case
 
 
 let span = 0;
@@ -126,5 +127,38 @@ describe('M-1: the part splitter always ends', () => {
     expect(sourceParts(source, summary, 1_000_000, Q, 2.48, STANDARD_DECISION_MODEL.tag)).toBeNull();
     const c = await checkSummary(source, summary, AGENT);
     expect(c.answers).toBeNull();
+  });
+});
+
+describe('fix round 2 (3): shadow checks wait their turn, one at a time, each with its own clock', () => {
+  it('10 summaries in one fold on a slow Ollama that answers one request at a time: 10 verdicts recorded', async () => {
+    let busyUntil = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string; signal?: AbortSignal }) => {
+      const { questions } = JSON.parse(init?.body ?? '{}') as { questions: Record<string, unknown> };
+      // Ollama serves one request at a time: this one starts when the one before it is done, and takes 700 ms.
+      const start = Math.max(Date.now(), busyUntil);
+      busyUntil = start + 700;
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, busyUntil - Date.now());
+        init?.signal?.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+      });
+      return Response.json({ answers: Object.fromEntries(Object.keys(questions).map((q) => [q, { noul: 0.05 }])) });
+    }));
+    for (let i = 0; i < 10; i++) { writer.outputs.push(`The owner asked for the budget, part ${i}.`); await write(); }
+    await summaryChecksSettled();
+    const outcomes = db().prepare('SELECT outcome FROM summary_checks').all() as Array<{ outcome: string }>;
+    expect(outcomes.map((o) => o.outcome)).toEqual(Array(10).fill('ok'));
+  }, 60_000);
+
+  it('a shadow check waits behind an agent\'s own turn on the local Ollama, and goes when the turn lets go', async () => {
+    const lock = getOllamaLock();
+    await lock.acquire('ollama-local', 'agent-local:8b');
+    writer.outputs.push('The owner asked for the budget.');
+    await write();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(asked).toEqual([]);   // still waiting behind the agent's turn
+    lock.release('ollama-local', 'agent-local:8b');
+    await summaryChecksSettled();
+    expect(asked).toHaveLength(1);
   });
 });

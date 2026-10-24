@@ -57,7 +57,7 @@ beforeEach(() => {
     } });
   }));
 });
-afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(async () => { await summaryChecksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });   // t268 fix round 2: late checks are queued; none outlives its case
 
 let span = 0;
 const write = (spanIds?: string[]) => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId: 'writer-small', spanIds });

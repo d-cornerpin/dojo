@@ -71,7 +71,7 @@ beforeEach(() => {
     return Response.json({ answers: { invented: { noul: invented }, dropped: { noul: 0.06 }, stated_current: { noul: 0.05 } } });
   }));
 });
-afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(async () => { await summaryChecksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });   // t268 fix round 2: late checks are queued; none outlives its case
 
 let span = 0;   // each write is its own span (fix round 2: a span that failed is not tried again by anyone)
 const write = (modelId = 'writer-small') => generateSummary({ content: `${SOURCE}\n--- span ${span++}`, depth: 0, targetTokens: 400, agentId: AGENT, modelId });

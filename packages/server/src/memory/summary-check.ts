@@ -53,21 +53,22 @@ const failsAt = passMark;
  * question in `rule` mode never asks the model). `ok` when every probability is below its question's line.
  * When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
-export async function checkSummary(sourceRows: string, summary: string, agentId: string, asked = askedQuestions()): Promise<SummaryCheck> {
+export async function checkSummary(sourceRows: string, summary: string, agentId: string, asked = askedQuestions(), background = false): Promise<SummaryCheck> {
   const questions = Object.fromEntries(asked.map((q) => [q, QUESTIONS[q]]));
+  const opts = { purpose: PURPOSE, agentId, background };
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
     answers = null;
   } else if (parts.length === 1) {
-    answers = await decide({ source_rows: sourceRows, summary }, questions, { purpose: PURPOSE, agentId });
+    answers = await decide({ source_rows: sourceRows, summary }, questions, opts);
   } else {
     // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
     // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
     const each: Array<Record<string, Answer> | null> = [];
     for (const [i, part] of parts.entries()) {
-      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, questions, { purpose: PURPOSE, agentId }));
+      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, questions, opts));
     }
     answers = combineParts(each);
   }
@@ -157,7 +158,7 @@ export async function keepOnlyIfChecked(
   const acting = actingQuestions();
   if (asked.length === 0) return written;   // M-3: every question held to the rule (or no decision model): the model is not asked
   if (acting.length === 0) {   // M-2: a verdict that cannot act never holds the summary up: kept now, checked after
-    const late = checkSummary(source, written.text, agentId, asked).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
+    const late = checkSummary(source, written.text, agentId, asked, true).then((c) => record(agentId, writer, c.answers ? 'ok' : 'unavailable', c.answers ? c : null))
       .catch(() => undefined).finally(() => { lateChecks.delete(late); });
     lateChecks.add(late);
     return written;
