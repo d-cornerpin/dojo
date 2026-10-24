@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { resultViewChars } from '../tools/index.js';
 import { applyTextPagination } from '../tools/pagination.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
+import { stripOutsideMarks } from '../../tools/external-content.js';
 
 /** What the executor hands the recorder for this result: its view, and whether the whole is kept. */
 function admit(tool: string, content: string): { view: string; kept: boolean } {
@@ -106,7 +107,8 @@ describe('resultViewChars + toolResultView (t200: kept whole, never cut away)', 
 describe('applyTextPagination (Phase 3.5)', () => {
   it('returns content unchanged when whole content fits', () => {
     const small = 'short content';
-    expect(applyTextPagination(small, 'gmail_read', {}, { message_id: 'abc' })).toBe(small);
+    // v3.5 K33 fix round 2: the slice is marked as the outside span (the door fences it); the text is unchanged.
+    expect(stripOutsideMarks(applyTextPagination(small, 'gmail_read', {}, { message_id: 'abc' }))).toBe(small);
   });
 
   it('returns first slice + pagination trailer when more remains', () => {

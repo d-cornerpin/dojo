@@ -15,6 +15,57 @@ import { coerceNumberArg } from '../pagination.js';
 import { findToolResult } from '../../../memory/kept-results.js';
 import { RESULT_READ_TOOL, TOOL_RESULT_VIEW_CHARS, charBoundary, readCall, resultLines } from '../../../memory/tool-result-view.js';
 import type { ToolHandlerMap } from '../handler.js';
+import { fenceRanges, fenceHead, fenceEnd, newFenceCode, type FenceRange } from '../../../tools/external-content.js';
+
+// v3.5 K33 fix round 2 (ruling 3): a kept whole is stored FENCED (the tool door fences before
+// admission). A page shows the lines that lie inside a fence under a FRESH code of the same kind
+// and source, and leaves the stored fence's own marker lines out — so a middle page is fenced too,
+// and the page's own head and foot (this file's) stay outside.
+type FenceMap = { inside: Array<FenceRange | null>; marker: boolean[] };
+function fenceMap(text: string, lines: readonly string[]): FenceMap {
+  const ranges = fenceRanges(text);
+  const inside: Array<FenceRange | null> = [];
+  const marker: boolean[] = [];
+  let at = 0;
+  for (const line of lines) {
+    const r = ranges.find((f) => at >= f.headStart && at < f.endEnd + 1) ?? null;
+    const isMarker = r !== null && (at < r.bodyStart || at > r.bodyEnd);
+    marker.push(isMarker);
+    inside.push(r !== null && !isMarker ? r : null);
+    at += line.length + 1;
+  }
+  return { inside, marker };
+}
+/** Rows of a page (each with its 1-based line), marker lines dropped, inside runs re-fenced. */
+function presentRows(rows: readonly string[], at: readonly number[], map: FenceMap): string[] {
+  const out: string[] = [];
+  let open: { range: FenceRange; code: string } | null = null;
+  const close = (): void => { if (open) { out.push(fenceEnd(open.range.kind, open.code)); open = null; } };
+  rows.forEach((row, k) => {
+    const i = at[k] - 1;
+    if (map.marker[i]) return;
+    const range = map.inside[i];
+    if (open && (range !== open.range || (k > 0 && at[k] !== at[k - 1] + 1))) close();
+    if (range && !open) { open = { range, code: newFenceCode() }; out.push(fenceHead(range.kind, open.code, range.from, range.addressedToAgent)); }
+    out.push(row);
+  });
+  close();
+  return out;
+}
+/** A character slice of a kept whole, its fenced share re-fenced and the stored markers left out. */
+function presentSlice(text: string, start: number, end: number): string {
+  let out = '';
+  let pos = start;
+  for (const r of fenceRanges(text)) {
+    if (r.endEnd <= pos || r.headStart >= end) continue;
+    if (r.headStart > pos) out += text.slice(pos, r.headStart);
+    const a = Math.max(r.bodyStart, pos);
+    const b = Math.min(r.bodyEnd, end);
+    if (b > a) { const code = newFenceCode(); out += `${fenceHead(r.kind, code, r.from, r.addressedToAgent)}\n${text.slice(a, b)}\n${fenceEnd(r.kind, code)}`; }
+    pos = Math.min(end, r.endEnd);
+  }
+  return out + (pos < end ? text.slice(pos, end) : '');
+}
 
 /** One page of an answer. The room left under the view is for the header, the footer and the
  *  short engine notes that are appended to a result after it is admitted (a link reminder, a
@@ -36,6 +87,7 @@ export interface ReadArgs {
 /** One page of a kept result, as the agent asked for it. Pure: the text in, the answer out. */
 export function readResultPage(text: string, id: string, args: ReadArgs): string {
   const lines = resultLines(text);
+  const map = fenceMap(text, lines);
   const total = lines.length;
   const width = String(total).length;
   const row = (i: number, body: string): string => `${String(i).padStart(width)}\t${body}`;
@@ -49,6 +101,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
     const matching = lower.reduce((c, l) => (l.includes(needle) ? c + 1 : c), 0);
     if (matching === 0) return `No line of tool result ${id} contains ${JSON.stringify(search)} (${n(total)} lines searched).`;
     const out: string[] = [];
+    const lineOf: number[] = [];
     let used = 0;
     let last = 0;
     let more = false;
@@ -62,6 +115,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
       const r = row(i + 1, shown);
       if (used + r.length + 1 > PAGE_CHARS) { more = true; break; }
       out.push(r);
+      lineOf.push(i + 1);
       used += r.length + 1;
       last = i + 1;
     }
@@ -73,7 +127,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
       : `[End of matches. Read around a match with ${readCall(id, { from_line: Math.max(1, (last || from) - 5) })}.]`;
     return out.length === 0
       ? `${head}\n[No matches at or after line ${n(from)}. Search from the start with ${readCall(id, { search })}.]`
-      : `${head}\n${out.join('\n')}\n${foot}`;
+      : `${head}\n${presentRows(out, lineOf, map).join('\n')}\n${foot}`;
   }
 
   const offsetArg = coerceNumberArg(args.offset);
@@ -87,19 +141,21 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
     const foot = end < text.length
       ? `[Characters ${n(start)}–${n(end)} of ${n(text.length)}. Continue: ${readCall(id, { offset: end })}]`
       : `[Characters ${n(start)}–${n(end)} of ${n(text.length)}; end of result.]`;
-    return `${text.slice(start, end)}\n${foot}`;
+    return `${presentSlice(text, start, end)}\n${foot}`;
   }
 
   if (from > total) return `[Tool result ${id} has ${n(total)} lines; line ${n(from)} is past its end.]`;
   const toArg = coerceNumberArg(args.to_line);
   const to = toArg === null ? total : Math.min(total, Math.max(from, Math.floor(toArg)));
   const out: string[] = [];
+  const at: number[] = [];
   let used = 0;
   let last = from - 1;
   for (let i = from; i <= to; i++) {
     const r = row(i, lines[i - 1]);
     if (used + r.length + 1 <= PAGE_CHARS) {
       out.push(r);
+      at.push(i);
       used += r.length + 1;
       last = i;
       continue;
@@ -109,7 +165,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
       const take = charBoundary(lines[i - 1], PAGE_CHARS - width - 1, 'back');   // D18 r4: never half a character
       let lineStart = 0;
       for (let k = 0; k < i - 1; k++) lineStart += lines[k].length + 1;
-      return `${row(i, lines[i - 1].slice(0, take))}\n[Line ${n(i)} is longer than one page; this is its first `
+      return `${presentRows([row(i, lines[i - 1].slice(0, take))], [i], map).join('\n')}\n[Line ${n(i)} is longer than one page; this is its first `
         + `${n(take)} of ${n(lines[i - 1].length)} characters. Read on inside it: ${readCall(id, { offset: lineStart + take })}]`;
     }
     break;
@@ -120,7 +176,7 @@ export function readResultPage(text: string, id: string, args: ReadArgs): string
     : last < to
       ? `[${range}. Continue: ${readCall(id, { from_line: last + 1, ...(toArg === null ? {} : { to_line: to }) })}]`
       : `[${range}.]`;
-  return `${out.join('\n')}\n${foot}`;
+  return `${presentRows(out, at, map).join('\n')}\n${foot}`;
 }
 
 export const resultReadHandlers: ToolHandlerMap = {

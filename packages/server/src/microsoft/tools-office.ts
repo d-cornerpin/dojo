@@ -17,6 +17,7 @@ import { homeDir } from '../home.js';
 const logger = createLogger('office-tools');
 
 import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
+import { outsideSpan } from '../tools/external-content.js';
 
 // ─────────────────────────────────────────
 // v2.5.10 — Shared edit helpers
@@ -2756,7 +2757,7 @@ export async function executeOfficeTool(
           };
         });
         logMicrosoftActivity({ agentId, agentName, action: 'office_get_word_document_outline', actionType: 'read', details: JSON.stringify({ local: target.isLocal, blockCount: outline.length }), apiEndpoint: target.isLocal ? 'local' : 'drive/download', success: true });
-        return JSON.stringify({ file: target.name, ...(target.isLocal ? { path: target.handle } : { file_id: target.handle }), blocks: outline });
+        return outsideSpan(JSON.stringify({ file: target.name, ...(target.isLocal ? { path: target.handle } : { file_id: target.handle }), blocks: outline }));
       } catch (err) {
         return `Error reading document outline: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2799,7 +2800,7 @@ export async function executeOfficeTool(
         logMicrosoftActivity({ agentId, agentName, action: 'office_read_word_document', actionType: 'read', details: JSON.stringify({ local: target.isLocal, offset, returned: parsed.length, totalBlocks }), apiEndpoint: target.isLocal ? 'local' : 'drive/download', success: true });
 
         if (format === 'json') {
-          return JSON.stringify({
+          return outsideSpan(JSON.stringify({
             file: meta.name,
             ...(target.isLocal ? { path: target.handle } : { file_id: target.handle }),
             total_blocks: totalBlocks,
@@ -2807,7 +2808,7 @@ export async function executeOfficeTool(
             returned: parsed.length,
             has_more: offset + parsed.length < totalBlocks,
             blocks: parsed,
-          });
+          }));
         }
 
         // Plain-text mode: clean transcript with markdown-style formatting.
@@ -2841,10 +2842,11 @@ export async function executeOfficeTool(
             lines.push('');
           }
         }
-        if (offset + parsed.length < totalBlocks) {
-          lines.push(`[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(${target.isLocal ? `path="${target.handle}"` : `file_id="${target.handle}"`}, offset=${offset + parsed.length}) for the next slice.]`);
-        }
-        return lines.join('\n').trim();
+        // v3.5 K33: the document is outside text; the "next slice" call is the platform's.
+        const more = offset + parsed.length < totalBlocks
+          ? `\n[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(${target.isLocal ? `path="${target.handle}"` : `file_id="${target.handle}"`}, offset=${offset + parsed.length}) for the next slice.]`
+          : '';
+        return outsideSpan(lines.join('\n').trim()) + more;
       } catch (err) {
         return `Error reading document: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2959,7 +2961,7 @@ export async function executeOfficeTool(
             values.push(row);
           }
           logMicrosoftActivity({ agentId, agentName, action: 'office_get_spreadsheet_range', actionType: 'read', details: JSON.stringify({ local: true, sheet: ws.name, range }), apiEndpoint: 'local', success: true });
-          return JSON.stringify({ sheet: ws.name, address: range ?? 'usedRange', values });
+          return outsideSpan(JSON.stringify({ sheet: ws.name, address: range ?? 'usedRange', values }));
         }
 
         const fileId = args.file_id as string;
@@ -2993,7 +2995,7 @@ export async function executeOfficeTool(
         if (!resp.ok) return `Error reading range: HTTP ${resp.status} ${(await resp.text()).slice(0, 300)}`;
         const data = await resp.json() as { values?: unknown[][]; address?: string };
         logMicrosoftActivity({ agentId, agentName, action: 'office_get_spreadsheet_range', actionType: 'read', details: JSON.stringify({ fileId, sheetName, range }), apiEndpoint: 'workbook/range', success: true });
-        return JSON.stringify({ address: data.address, values: data.values ?? [] });
+        return outsideSpan(JSON.stringify({ address: data.address, values: data.values ?? [] }));
       } catch (err) {
         return `Error reading spreadsheet range: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -3234,7 +3236,7 @@ export async function executeOfficeTool(
         }
         const meta = await getFileMeta(fileId, agentId);
         logMicrosoftActivity({ agentId, agentName, action: 'office_get_presentation_outline', actionType: 'read', details: JSON.stringify({ fileId, slideCount: outline.length }), apiEndpoint: 'drive/download', success: true });
-        return JSON.stringify({ file: meta.name, file_id: fileId, slides: outline });
+        return outsideSpan(JSON.stringify({ file: meta.name, file_id: fileId, slides: outline }));
       } catch (err) {
         return `Error reading presentation outline: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -3268,7 +3270,7 @@ export async function executeOfficeTool(
         logMicrosoftActivity({ agentId, agentName, action: 'office_read_presentation', actionType: 'read', details: JSON.stringify({ fileId, offset, returned: slides.length, totalSlides }), apiEndpoint: 'drive/download', success: true });
 
         if (format === 'json') {
-          return JSON.stringify({
+          return outsideSpan(JSON.stringify({
             file: meta.name,
             file_id: fileId,
             total_slides: totalSlides,
@@ -3276,7 +3278,7 @@ export async function executeOfficeTool(
             returned: slides.length,
             has_more: offset + slides.length < totalSlides,
             slides,
-          });
+          }));
         }
 
         const lines: string[] = [];
@@ -3292,10 +3294,11 @@ export async function executeOfficeTool(
           }
           lines.push('');
         }
-        if (offset + slides.length < totalSlides) {
-          lines.push(`[truncated — ${totalSlides - offset - slides.length} more slides. Call office_read_presentation(file_id="${fileId}", offset=${offset + slides.length}) for the next slice.]`);
-        }
-        return lines.join('\n').trim();
+        // v3.5 K33: the deck is outside text; the "next slice" call is the platform's.
+        const more = offset + slides.length < totalSlides
+          ? `\n[truncated — ${totalSlides - offset - slides.length} more slides. Call office_read_presentation(file_id="${fileId}", offset=${offset + slides.length}) for the next slice.]`
+          : '';
+        return outsideSpan(lines.join('\n').trim()) + more;
       } catch (err) {
         return `Error reading presentation: ${err instanceof Error ? err.message : String(err)}`;
       }

@@ -14,4 +14,7 @@
 // `tools/__tests__/every-external-render-is-fenced.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════
 
-export { fenceExternal, unfenceExternal, defangExternalMarkers, EXTERNAL_KINDS, type ExternalKind } from '@dojo/shared';
+export {
+  fenceExternal, unfenceExternal, defangExternalMarkers, EXTERNAL_KINDS, type ExternalKind,
+  outsideSpan, fenceMarkedSpan, stripOutsideMarks, fenceRanges, fenceHead, fenceEnd, newFenceCode, type FenceRange,
+} from '@dojo/shared';

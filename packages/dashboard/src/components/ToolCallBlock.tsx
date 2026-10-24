@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { classifyTool } from '@dojo/shared';
 import { deriveChipLabel } from '../lib/tool-display';
+import { withoutFence } from '../lib/channel-display';
 
 // ── Tool Call Card (assistant used a tool) ──
 
@@ -137,8 +138,10 @@ interface ToolResultBlockProps {
 
 const TRUNCATE_LENGTH = 600;
 
-export const ToolResultBlock = ({ content, isError }: ToolResultBlockProps) => {
+export const ToolResultBlock = ({ content: raw, isError }: ToolResultBlockProps) => {
   const [expanded, setExpanded] = useState(false);
+  // v3.5 K33: the owner sees the tool's text as it arrived, without the agent's fence lines.
+  const content = withoutFence(raw);
   const isTruncated = content.length > TRUNCATE_LENGTH && !expanded;
   const displayContent = isTruncated ? content.slice(0, TRUNCATE_LENGTH) : content;
 

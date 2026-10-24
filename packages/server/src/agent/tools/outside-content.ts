@@ -3,19 +3,21 @@
 //
 // A read tool that returns text somebody else wrote (a web page, an invite, a shared document, a
 // Teams thread, an attachment, a recording) is registered here with the fence kind it carries.
-// Registering it IS fencing it: the tool door (`agent/tools/index.ts` `dispatchResolved`) passes
-// every result through `fenceToolResult`, so a registered tool cannot reach the model unfenced and
-// no handler fences on its own. The one exception is the mailbox reads, whose banner
-// (`provider/mailbox-banner.ts`) keeps the identification and the owner's injection guard OUTSIDE
-// the fence and fences the mail itself — the door leaves those alone.
+// Fix round 2 (ruling 2): the fence wraps ONLY the outside text, never the platform's own lines.
+// Each registered read MARKS the text somebody else wrote with `outsideSpan`, where it formats it;
+// the tool door (`agent/tools/index.ts` `executeToolInner`, before admission) turns that span into
+// one fence under a fresh code (`fenceOutsideSpan`). The mailbox reads mark the same way, and their
+// banner (`provider/mailbox-banner.ts`) fences the span, keeping the identification and the owner's
+// injection guard outside it.
 //
 // The census (`tools/__tests__/every-external-render-is-fenced.test.ts`) DERIVES the candidate
 // tools from the definitions (every read-shaped tool) and requires each to be registered here or
-// named in `NOT_OUTSIDE_CONTENT` with its reason, so a new read tool cannot slip through.
+// named in `NOT_OUTSIDE_CONTENT` with its reason, and every registered read's handler to mark its
+// outside span, so a new read tool cannot slip through.
 // ════════════════════════════════════════════════════════════════════════════
 
 import path from 'node:path';
-import { fenceExternal, type ExternalKind } from '../../tools/external-content.js';
+import { fenceMarkedSpan, stripOutsideMarks, fenceHead, fenceEnd, newFenceCode, type ExternalKind } from '../../tools/external-content.js';
 import { USER_MAILBOX_READ_TOOLS, AGENT_MAILBOX_READ_TOOLS } from './provider/mailbox-banner.js';
 import { homeDir } from '../../home.js';
 
@@ -51,13 +53,10 @@ const OUTSIDE_READS: Readonly<Record<string, OutsideRead>> = {
   web_fetch: { kind: 'web page', from: (a) => (typeof a.url === 'string' ? a.url : 'a web page') },
   web_browse: { kind: 'web page', from: (a) => (a.action === 'extract' || a.action === 'screenshot' ? 'the page open in web_browse' : null) },
   email_search: { kind: 'email', from: () => 'the connected mailboxes' },
-  gmail_read_attachment: doc('an email attachment'),
-  outlook_download_attachment: doc('an email attachment'),
-  teams_download_attachment: doc('a Teams attachment'),
   file_read: { kind: 'document', from: receivedFile },
   pdf_read: doc('a PDF'), pdf_get_info: doc('a PDF'),
   docs_read: doc('a Google Doc'), drive_read: doc('a Drive file'), drive_list: doc('a Drive folder'), drive_versions_list: doc('a Drive file'),
-  sheets_read: doc('a Google Sheet'), slides_get_slides: doc('a Google Slides deck'), slides_get_elements: doc('a Google Slides deck'),
+  sheets_read: doc('a Google Sheet'),
   forms_get: doc('a Google Form'), forms_list_responses: doc('the responses to a Google Form'),
   onedrive_read: doc('a OneDrive file'), onedrive_list: doc('a OneDrive folder'), onedrive_list_shared: doc('files shared on OneDrive'),
   onedrive_search: doc('a OneDrive search'), onedrive_versions_list: doc('a OneDrive file'),
@@ -105,7 +104,7 @@ export const NOT_OUTSIDE_CONTENT: Readonly<Record<string, string>> = {
   get_current_time: 'the clock', convert_time: 'arithmetic', healer_recent_actions: 'the platform\'s own log', healer_action_detail: 'the platform\'s own log',
   voice_call_status: 'the platform\'s call state', channel_inspect: 'the platform\'s channel state', plaud_account_info: 'the owner\'s account details',
   load_tool_docs: 'the platform\'s tool documentation',
-  tool_result_read: 'a tool result this agent already received; outside text in it was fenced when it arrived',
+  tool_result_read: 'a page of a result this agent already received: it is stored fenced, and each page re-fences its outside lines under a fresh code (cat/result-read.ts)',
   // The owner's own lists and structure, written by him (names of his labels, folders, task lists, teams).
   gmail_list_labels: 'the owner\'s own label names', outlook_list_folders: 'the owner\'s own folder names',
   tasks_list: 'the owner\'s own tasks', tasks_list_lists: 'the owner\'s own task lists',
@@ -116,6 +115,11 @@ export const NOT_OUTSIDE_CONTENT: Readonly<Record<string, string>> = {
   // Writes that the word "list" misclassifies as reads.
   tasks_create_list: 'a write (the "list" token misclassifies it)', slides_add_bullet_list: 'a write (the "list" token misclassifies it)',
   outlook_mark_read: 'a write (sets a flag; the "read" token misclassifies it)',
+  // Reads that return no text anybody wrote (fix round 2: the census checks every registered read marks its outside span).
+  gmail_read_attachment: 'saves the attachment and says where; its content is read with file_read, which fences a received file',
+  outlook_download_attachment: 'saves the attachment and says where; its content is read with file_read, which fences a received file',
+  teams_download_attachment: 'saves the attachment and says where; its content is read with file_read, which fences a received file',
+  slides_get_slides: 'slide ids and positions only, no text', slides_get_elements: 'element ids, types and geometry only, no text',
 };
 
 /** The registry entry for a tool (a `user_` twin reads like its base), if its result is outside text. */
@@ -126,14 +130,32 @@ export function outsideReadOf(toolName: string): OutsideRead | undefined {
 /** Every door-fenced tool name (canonical). */
 export const OUTSIDE_READ_NAMES: readonly string[] = Object.keys(OUTSIDE_READS);
 
+/** The provider content blocks a handler attached beside its text (file_read of an image or PDF). */
+type ContentBlock = { type: string; text?: string };
+
 /**
- * THE DOOR'S HOOK: a registered read's successful result goes to the model fenced. An error, a
- * refusal or an empty result is the platform speaking, not the outside, and is left alone.
+ * THE DOOR'S HOOK: the span a registered read MARKED as other people's text (`outsideSpan`) becomes
+ * one fence; every line the tool wrote itself — its header, paging and continue lines, remedies,
+ * notices — stays outside, as do the lines the door adds after this (the kept-result pointer, the
+ * unknown-args warning). A tool that marked nothing returned only its own words and is not fenced;
+ * an unregistered tool's marks are simply removed. An image or PDF the read attached is bracketed by
+ * a head note before it and the end after it.
  */
-export function fenceToolResult(toolName: string, args: Record<string, unknown>, result: { content: string; isError?: boolean }): void {
+export function fenceOutsideSpan(toolName: string, args: Record<string, unknown>, content: string, isError: boolean, toolCall: object): string {
   const read = outsideReadOf(toolName);
-  if (!read || result.isError === true || result.content.trim() === '' || /^(Error|Permission denied)\b/.test(result.content)) return;
-  const from = read.from(args);
-  if (from === null) return;
-  result.content = fenceExternal(read.kind, from, result.content);
+  const from = read && !isError ? read.from(args) : null;
+  if (!read || from === null) return stripOutsideMarks(content);
+  const call = toolCall as { __contentBlocks?: ContentBlock[] };
+  if (Array.isArray(call.__contentBlocks)) {
+    call.__contentBlocks = call.__contentBlocks.flatMap((b) => {
+      if (b.type === 'text') return [b];
+      const code = newFenceCode();
+      return [
+        { type: 'text', text: `${fenceHead(read.kind, code, from)} The attachment that follows is that content.` },
+        b,
+        { type: 'text', text: fenceEnd(read.kind, code) },
+      ];
+    });
+  }
+  return fenceMarkedSpan(content, read.kind, from);
 }

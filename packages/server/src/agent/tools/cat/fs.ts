@@ -44,6 +44,7 @@ import { runProcess, resolveProcessCwd, processTimeout, type ProcessAudit } from
 import { auditLog, registerSharedFile, syncCanvasAfterWrite, toolsLogger as logger } from '../util.js';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
+import { outsideSpan } from '../../../tools/external-content.js';
 
 function processAuditFor(agentId: string): ProcessAudit {
   return (target, result, detail) => auditLog(agentId, 'exec', target, result, detail);
@@ -340,7 +341,7 @@ async function executeFileRead(
         actualEnd = i + 1;
       }
 
-      let result = slice.join('\n');
+      let result = outsideSpan(slice.join('\n'));   // v3.5 K33: the file's lines; the footers are the platform's
       if (actualEnd < totalLines) {
         result += footerFor(actualEnd);
       } else if (startLine > 0) {

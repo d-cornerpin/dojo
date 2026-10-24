@@ -19,6 +19,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite, googleSilentFetch } from './client.js';
+import { outsideSpan } from '../tools/external-content.js';
 
 const FORMS_BASE = 'https://forms.googleapis.com/v1/forms';
 
@@ -734,7 +735,7 @@ export async function executeGoogleFormsTool(
           { formId, fields },
         );
         if (!result.ok) return err(`reading form: ${result.error}`);
-        return ok(result.data);
+        return outsideSpan(ok(result.data));   // v3.5 K33: the form as its author wrote it
       }
 
       case 'forms_list_responses': {
@@ -754,11 +755,11 @@ export async function executeGoogleFormsTool(
         // explicitly so the agent can't miss it (it's a top-level field
         // either way, but the comment in the result reinforces it).
         const data = result.data as { responses?: unknown[]; nextPageToken?: string };
-        return ok({
+        return outsideSpan(ok({   // v3.5 K33: what the respondents wrote
           responses: data.responses ?? [],
           nextPageToken: data.nextPageToken,
           has_more: Boolean(data.nextPageToken),
-        });
+        }));
       }
 
       default:

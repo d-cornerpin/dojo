@@ -102,6 +102,7 @@ import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
+import { outsideSpan } from '../../../tools/external-content.js';
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -891,7 +892,7 @@ const handlers = {
       content =
         `Transcription of "${filename}" (engine: ${result.apiModelId}).\n` +
         `If you paste the transcript to the user, paste it verbatim INSIDE a fenced \`\`\`source/transcript ... \`\`\` block. Do not paraphrase the words unless the user asks for a summary.\n\n` +
-        `\`\`\`source/transcript\n${result.text}\n\`\`\``;
+        `\`\`\`source/transcript\n${outsideSpan(result.text)}\n\`\`\``;   // v3.5 K33: only the words are outside text
     } else {
       content = `Transcription of "${filename}" (engine: ${result.apiModelId}): no detectable speech.`;
     }

@@ -28,6 +28,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { CHARS_PER_TOKEN } from './budget.js';
+import { fenceRanges, fenceHead, fenceEnd } from '../tools/external-content.js';
 
 export const V2_MAX_TOOL_RESULT_TOKENS = 15000;
 
@@ -125,5 +126,20 @@ export function toolResultView(text: string, id: string, viewChars: number = TOO
     + `(~${n(Math.ceil(text.length / CHARS_PER_TOKEN))} tokens) in ${n(lines)} line${lines === 1 ? '' : 's'}, too long to show at once. `
     + `${shown} Nothing was lost. Read any part with ${next} (any from_line/to_line range), `
     + `or find text in it with ${readCall(id, { search: '…' })}. …]`;
-  return excerpt === 0 ? label : `${text.slice(0, headEnd)}\n\n${label}\n\n${text.slice(tailStart)}`;
+  const [head, tail] = aroundTheLabel(text, headEnd, tailStart);
+  return excerpt === 0 ? label : `${head}\n\n${label}\n\n${tail}`;
+}
+
+/** v3.5 K33: the two excerpts of a FENCED whole. When the cut falls inside the fence, the start closes
+ *  with that fence's end and the end reopens with its head (same code), so the label — the platform's
+ *  own words — stands outside the fence, never in it. */
+function aroundTheLabel(text: string, headEnd: number, tailStart: number): [string, string] {
+  let head = text.slice(0, headEnd);
+  let tail = text.slice(tailStart);
+  const fence = fenceRanges(text)[0];
+  if (fence) {
+    if (fence.headStart < headEnd && fence.endEnd > headEnd) head += `\n${fenceEnd(fence.kind, fence.code)}`;
+    if (fence.headStart < tailStart && fence.endEnd > tailStart) tail = `${fenceHead(fence.kind, fence.code, fence.from, fence.addressedToAgent)}\n${tail}`;
+  }
+  return [head, tail];
 }

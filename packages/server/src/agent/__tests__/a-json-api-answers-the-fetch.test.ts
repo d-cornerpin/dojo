@@ -52,6 +52,7 @@ vi.mock('../../logger.js', () => ({
 }));
 
 import { webFetch } from '../web-tools.js';
+import { stripOutsideMarks } from '../../tools/external-content.js';
 
 // ── HTTP content negotiation, as much of RFC 9110 §12.5.1 as this needs ──
 
@@ -131,7 +132,7 @@ describe('web_fetch against a JSON API', () => {
   it('gets a 200 and hands the agent JSON it can still parse', async () => {
     stubJsonOnlyOrigin();
 
-    const out = await webFetch('agent-under-test', { url: JSON_API_URL });
+    const out = stripOutsideMarks(await webFetch('agent-under-test', { url: JSON_API_URL }));   // v3.5 K33 fix round 2: read without the door's marks
 
     // Not the tool's non-2xx guidance line. This is the clause the bare header broke.
     expect(out).not.toMatch(/returned HTTP 415/);

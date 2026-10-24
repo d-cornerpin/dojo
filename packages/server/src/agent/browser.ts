@@ -9,6 +9,7 @@ import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { assertPublicHttpTarget } from './net-guard.js';
+import { outsideSpan, stripOutsideMarks } from '../tools/external-content.js';
 
 const logger = createLogger('browser');
 
@@ -165,7 +166,7 @@ class BrowserSession {
         tools: false,
       });
 
-      return result.content;
+      return outsideSpan(result.content);   // v3.5 K33: a description of the page is the page's text
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn('Vision model failed for browser screenshot', { error: msg }, agentId);
@@ -244,8 +245,8 @@ class BrowserSession {
     const maxChars = 50000;
     const truncated = text.length > maxChars;
     const content = truncated
-      ? text.substring(0, maxChars) + `\n\n[Content truncated at ${maxChars} characters]`
-      : text;
+      ? outsideSpan(text.substring(0, maxChars)) + `\n\n[Content truncated at ${maxChars} characters]`
+      : outsideSpan(text);
 
     return `Page: "${title}" (${currentUrl})\n\n${content}`;
   }
@@ -371,7 +372,7 @@ export async function executeWebBrowse(
             const { callModel } = await import('./model.js');
             const lightModel = selectModel('light', agentId);
             if (lightModel?.modelId) {
-              const snippet = raw.length > 50_000 ? raw.slice(0, 50_000) : raw;
+              const snippet = stripOutsideMarks(raw.length > 50_000 ? raw.slice(0, 50_000) : raw);
               const result = await callModel({
                 agentId,
                 modelId: lightModel.modelId,
@@ -394,7 +395,7 @@ export async function executeWebBrowse(
               });
               const extract = result.content?.trim();
               if (extract && extract.length > 0) {
-                return `Extracted (goal: ${goal}):\n\n${extract}`;
+                return `Extracted (goal: ${goal}):\n\n${outsideSpan(extract)}`;
               }
               extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
               logger.warn('web_browse extract: extractor returned empty content — falling back to raw', { agentId });

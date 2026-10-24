@@ -87,7 +87,7 @@ import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
-import { fenceToolResult } from './outside-content.js';
+import { fenceOutsideSpan } from './outside-content.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
@@ -231,11 +231,10 @@ async function dispatchResolved(
   toolCall: ToolCall,
   resolved: { name: string; args: Record<string, unknown>; note?: string | null },
 ): Promise<ToolResult> {
-  const result = resolved.name === toolCall.name
-    ? await executeToolInner(agentId, toolCall)
-    : await executeToolInner(agentId, { ...toolCall, name: resolved.name, arguments: resolved.args });
-  // v3.5 K33: a read whose result is other people's text reaches the model fenced (outside-content.ts).
-  fenceToolResult(resolved.name, resolved.args, result);
+  if (resolved.name === toolCall.name) {
+    return executeToolInner(agentId, toolCall);
+  }
+  const result = await executeToolInner(agentId, { ...toolCall, name: resolved.name, arguments: resolved.args });
   if (resolved.note) result.content = `${resolved.note}\n${result.content}`;
   return result;
 }
@@ -614,6 +613,9 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   // t200 (D12): admission. A result longer than its view is kept WHOLE (`keptWhole`, written by
   // the loop's recorder) and the agent sees its pointer; nothing is cut away and running the tool
   // again is never the advice. It replaced the Phase-3 cap here, which threw the rest away.
+  // v3.5 K33: the span a read marked as other people's text becomes ONE fence here — before
+  // admission, so a kept whole is stored fenced, and before the platform adds its own lines.
+  content = fenceOutsideSpan(name, args, content, isError, toolCall);
   const admitted = admitToolResult(name, id, content, isError);
   content = admitted.content;
   const keptWhole = admitted.keptWhole;

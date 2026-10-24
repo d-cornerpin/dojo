@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { stripOutsideMarks } from '../external-content.js';
 import {
   normalizeTitle,
   mergeCalendarChronologically,
@@ -211,7 +212,8 @@ describe('renderOtherCalendarsSection', () => {
     const rows: OtherCalendarRow[] = Array.from({ length: 8 }, (_, i) => ({
       title: `E${i}`, when: 'All day', source: agentGoogle,
     }));
-    const out = renderOtherCalendarsSection(rows, new Set());
+    // v3.5 K33 fix round 2: the rows are marked as the outside span (the door fences it); read the text.
+    const out = stripOutsideMarks(renderOtherCalendarsSection(rows, new Set()));
     const bulletLines = out.split('\n').filter(l => l.startsWith('- '));
     expect(bulletLines).toHaveLength(6);
     expect(out).toContain('(call calendar_agenda for the fully merged view)');

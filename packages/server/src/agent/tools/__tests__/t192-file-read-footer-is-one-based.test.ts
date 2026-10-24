@@ -27,6 +27,7 @@ import { attachCallCapability, mintCallCapability } from '../../effects/capabili
 import { grantsForCall } from '../../effects/scopes.js';
 import { effectsFor } from '../registry.js';
 import type { ToolCall } from '@dojo/shared';
+import { stripOutsideMarks } from '../../../tools/external-content.js';
 
 const AGENT = 'agent-1';
 let tmpDir: string;
@@ -44,7 +45,7 @@ function read(args: Record<string, unknown>): Promise<string> {
       agentId: AGENT, name: 'file_read', args, callId: 't192-read',
       toolCall: { id: 't192-read', name: 'file_read', input: args } as unknown as ToolCall,
     });
-    return out.content;
+    return stripOutsideMarks(out.content);   // v3.5 K33 fix round 2: the door's marks, read without the door
   });
 }
 

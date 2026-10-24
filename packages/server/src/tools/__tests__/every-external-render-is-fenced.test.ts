@@ -64,10 +64,42 @@ describe('K33 — tool reads: derived from the definitions, every one decided', 
     expect(all.filter((n) => !known.has(n)), 'stale registry entries').toEqual([]);
   });
 
-  it('the one tool door fences every registered read', () => {
-    const door = code(path.join(SRC, 'agent/tools/index.ts'));
-    const body = door.slice(door.indexOf('async function dispatchResolved('), door.indexOf('async function executeToolInner('));
-    expect(body).toMatch(/fenceToolResult\(resolved\.name, resolved\.args, result\);/);
+  it('the one tool door turns the marked span into the fence BEFORE admission and the platform\'s own lines', () => {
+    const door = read(path.join(SRC, 'agent/tools/index.ts'));   // raw: a glob in a string can fool the comment stripper here
+    const inner = door.slice(door.indexOf('async function executeToolInner('));
+    const fence = inner.indexOf('content = fenceOutsideSpan(name, args, content, isError, toolCall);');
+    expect(fence, 'the door does not convert the marked span').toBeGreaterThan(0);
+    expect(fence, 'the fence must come before admission (the kept whole is stored fenced)').toBeLessThan(inner.indexOf('admitToolResult(name, id, content, isError)'));
+    expect(fence, 'and before the unknown-args warning is added').toBeLessThan(inner.indexOf('content = `${unknownArgsWarning}'));
+  });
+
+  // Fix round 2 (ruling 2): the fence wraps ONLY the outside text, so every registered read must MARK
+  // its outside span where it renders it — itself, or by calling a renderer that does.
+  const DELEGATES: Readonly<Record<string, string>> = {
+    applyTextPagination: 'agent/tools/pagination.ts', webSearch: 'agent/web-tools.ts', webFetch: 'agent/web-tools.ts',
+    executeWebBrowse: 'agent/browser.ts', executeGmailSearch: 'google/gmail-search.ts', executeFileRead: 'agent/tools/cat/fs.ts',
+    unifiedEmailSearch: 'tools/unified-read.ts', unifiedCalendarAgenda: 'tools/unified-read.ts',
+  };
+  const sources = walk(SRC).map((f) => ({ rel: path.relative(SRC, f), text: code(f) }));
+  /** Every block that renders tool `name`: a `case 'name':` arm or an `async "name"(` handler. */
+  function blocks(name: string): Array<{ rel: string; body: string }> {
+    const out: Array<{ rel: string; body: string }> = [];
+    for (const { rel, text } of sources) {
+      for (const m of text.matchAll(new RegExp(`case '${name}':|async "${name}"\\(`, 'g'))) {
+        const start = m.index ?? 0;
+        const rest = text.slice(start + m[0].length);
+        const next = rest.search(/\n\s*(case '|default:|async ")/);
+        out.push({ rel, body: next === -1 ? rest : rest.slice(0, next) });
+      }
+    }
+    return out;
+  }
+  it.each([...new Set([...OUTSIDE_READ_NAMES, ...[...BANNER_FENCED_READS].map(base)])])('%s marks its outside span', (name) => {
+    const found = blocks(name);
+    expect(found.length, `no rendering block found for ${name}`).toBeGreaterThan(0);
+    const marks = found.some(({ body }) => /outsideSpan\(/.test(body)
+      || Object.entries(DELEGATES).some(([fn, file]) => new RegExp(`\\b${fn}\\(`).test(body) && /outsideSpan\(/.test(code(path.join(SRC, file)))));
+    expect(marks, `${name}: none of its rendering blocks (${found.map((f) => f.rel).join(', ')}) marks its outside span`).toBe(true);
   });
 });
 

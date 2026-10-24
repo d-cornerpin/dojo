@@ -25,6 +25,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
+import { outsideSpan } from './external-content.js';
 
 // ── Pure types (no provider / DB / format-time dependency) ──
 
@@ -180,14 +181,16 @@ export function renderCalendarAgenda(
   lines.push(
     `Merged agenda (next ${opts.days} day(s)) across ${opts.accountCount} connected calendar${opts.accountCount === 1 ? '' : 's'}:`,
   );
+  // v3.5 K33: the events are outside text (an invite is written by its sender); the headings,
+  // the coverage lines and the failures are the platform's.
   if (timed.length > 0) {
     lines.push('');
-    for (const m of timed) lines.push(renderCalendarLine(m, ambiguous));
+    lines.push(outsideSpan(timed.map((m) => renderCalendarLine(m, ambiguous)).join('\n')));
   }
   if (allDay.length > 0) {
     lines.push('');
     lines.push('All-day:');
-    for (const m of allDay) lines.push(renderCalendarLine(m, ambiguous));
+    lines.push(outsideSpan(allDay.map((m) => renderCalendarLine(m, ambiguous)).join('\n')));
   }
   if (timed.length === 0 && allDay.length === 0) {
     lines.push('');
@@ -221,14 +224,15 @@ export function renderEmailSearch(
   );
   if (items.length > 0) {
     lines.push('');
-    for (const m of items) {
+    // v3.5 K33: the emails are outside text; the heading, coverage lines and failures are the platform's.
+    lines.push(outsideSpan(items.map((m) => {
       const label = formatSourceLabel(m.source, ambiguous);
       const unread = m.unread ? ' [UNREAD]' : '';
       const snip = m.snippet
         ? ` | ${m.snippet.length > 160 ? m.snippet.slice(0, 160) + '…' : m.snippet}`
         : '';
-      lines.push(`- ${label}${unread} ${m.when} | ${m.from} — ${m.subject}\n  ID: ${m.id}${snip}`);
-    }
+      return `- ${label}${unread} ${m.when} | ${m.from} — ${m.subject}\n  ID: ${m.id}${snip}`;
+    }).join('\n')));
   } else {
     lines.push('');
     lines.push('No matching email in any connected mailbox.');
@@ -300,9 +304,7 @@ export function renderOtherCalendarsSection(
   const lines: string[] = [];
   if (rows.length > 0) {
     lines.push('Also on other connected calendars (not shown above):');
-    for (const r of rows.slice(0, cap)) {
-      lines.push(`- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`);
-    }
+    lines.push(outsideSpan(rows.slice(0, cap).map((r) => `- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`).join('\n')));
     if (rows.length > cap) lines.push('(call calendar_agenda for the fully merged view)');
   }
   if (empty.length > 0) {

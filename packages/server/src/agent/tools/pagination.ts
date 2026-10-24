@@ -15,7 +15,11 @@
 // (`git grep -n coerceNumberArg -- packages/` at `d0b3320`: no hits outside
 // that file). `tools.ts` imports it back and keeps re-exporting it, so the nine
 // coercion sites T3 Step 3 is going to replace are exactly where they were.
+// (v3.5 K33: its one import is the shared package's span mark, which imports nothing of the
+// server, so the leaf property — no loop — holds.)
 // ════════════════════════════════════════════════════════════════════════════
+
+import { outsideSpan } from '@dojo/shared';
 
 /**
  * Defensive type coercion for numeric tool arguments.
@@ -56,6 +60,8 @@ export function coerceNumberArg(v: unknown): number | null {
  * executor's own-page carve-out (`resultViewChars`), so a page that slightly
  * overshoots its tool's size is still shown whole.
  */
+/** v3.5 K33: every caller pages a body somebody else wrote, so the slice is marked as the outside
+ *  span (`outsideSpan`); the trailers stay the platform's, outside the fence the door makes. */
 export function applyTextPagination(
   content: string,
   toolName: string,
@@ -79,17 +85,17 @@ export function applyTextPagination(
   const slice = content.slice(offset, end);
 
   // No truncation, entire content fits in this slice.
-  if (offset === 0 && end >= total) return slice;
+  if (offset === 0 && end >= total) return outsideSpan(slice);
 
   if (end >= total) {
-    return slice + `\n\n[End of content. Read chars ${offset}-${end} of ${total} total.]`;
+    return outsideSpan(slice) + `\n\n[End of content. Read chars ${offset}-${end} of ${total} total.]`;
   }
 
   // More content remains, give exact next-call guidance.
   const remaining = total - end;
   const nextArgs = { ...callExampleArgs, offset: end, limit };
   return (
-    slice +
+    outsideSpan(slice) +
     `\n\n[Read chars ${offset}-${end} of ${total} total. ${remaining} more chars remain.\n` +
     ` To continue: ${toolName}(${stringifyArgs(nextArgs)}).]`
   );

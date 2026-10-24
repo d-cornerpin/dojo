@@ -27,7 +27,7 @@ describe('K33 fix round 1 — a stored agent report reads back as written', () =
   const stored = `[A2A:DELIVERABLE thread:${THREAD.slice(0, 8)} from:A worker] ${a2aPayloadForModel('primary', 'worker-1', false, 'A worker', REPORT)}\n\n[Thread ${THREAD}]`;
 
   it('the stored row the model reads IS fenced (the premise)', () => {
-    expect(stored).toContain('[EXTERNAL agent report from A worker');
+    expect(stored).toMatch(/\[EXTERNAL agent report [0-9a-f]{8} from A worker/);
   });
 
   it('dedup compares the sender\'s words, not the fence', () => {

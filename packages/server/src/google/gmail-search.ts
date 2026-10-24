@@ -9,6 +9,7 @@
 
 import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
+import { outsideSpan } from '../tools/external-content.js';
 
 export const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
@@ -112,7 +113,8 @@ export async function executeGmailSearch(
   });
 
   if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
-  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.join(verbose ? '\n---\n' : '\n')}${paging}`;
+  // v3.5 K33: only the emails are outside text; the paging line, the other-mailbox counts and the re-call hints are the platform's.
+  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${outsideSpan(details.join(verbose ? '\n---\n' : '\n'))}${paging}`;
   if (verbose) return header + others;
   return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
 }

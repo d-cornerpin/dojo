@@ -30,6 +30,7 @@ import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from './tools/types.js';
 import { homeDir } from '../home.js';
+import { outsideSpan } from '../tools/external-content.js';
 
 const logger = createLogger('pdf-tools');
 
@@ -939,7 +940,7 @@ export async function executePdfTool(
         if (!p) return 'Error: path is required.';
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const info = await getPdfInfo(p);
-        return JSON.stringify(info, null, 2);
+        return outsideSpan(JSON.stringify(info, null, 2));   // v3.5 K33: the PDF's own metadata
       }
       case 'pdf_read': {
         const p = args.path as string;
@@ -954,7 +955,7 @@ export async function executePdfTool(
             return `This PDF (${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}) has no extractable text layer — it is almost certainly scanned or image-only. There is nothing to read as text; tell the user it looks image-based.`;
           }
           const header = `[PDF text — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}, ${extracted.charCount} chars${extracted.truncated ? `, truncated to the first ${extracted.pagesExtracted} page(s)` : ''}]`;
-          return `${header}\n${trimmed}`;
+          return `${header}\n${outsideSpan(trimmed)}`;   // v3.5 K33: the header and the image-only remedy are the platform's
         } catch (err) {
           const reason = err instanceof PdfExtractError ? err.message : (err instanceof Error ? err.message : String(err));
           return `Error reading PDF text: ${reason}`;
