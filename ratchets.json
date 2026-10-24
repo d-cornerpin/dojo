@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/index.ts",
+      "from": 246,
+      "to": 247,
+      "by": "t261 (2026-10-24), v3.5 Task D1 orchestrator ruling 1: the owner's own measured job continues by itself",
+      "why": "+1: one field on the step context, `stashContinuationIfHuman`, the driver's existing C3 closure handed across exactly like the five closures above it. The measured-job park needs the continuation to keep the owner's conversation, and that record has ONE writer by a pinned census (`a-scheduler-cycle-has-no-continuation.test.ts`); writing it from the step instead would have been a second writer. REFUSED: a direct `continuationContext.set` in job-continues.ts (the census's own named defect). From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts",
       "from": 320,
       "to": 323,
@@ -9369,7 +9376,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 300,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
-    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 246,
+    "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 247,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 176,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 409,
     "packages/server/src/agent/v2/steps/post-call-classify/no-tool-calls.ts": 104,
