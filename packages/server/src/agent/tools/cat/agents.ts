@@ -1154,8 +1154,8 @@ export const agentsHandlers: ToolHandlerMap = {
         }
         return null;
       };
-      const inspectRefused = [newGrants, newPerms, newTools].some((v) => v !== undefined) ? inspectGainRefusal(agentId, target.id, () => applyAccess([])) : null;
-      if (inspectRefused) return { content: inspectRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const };
+      const preRefused = [newGrants, newPerms, newTools].some((v) => v !== undefined) ? inspectGainRefusal(agentId, target.id, () => applyAccess([])) : null;
+      if (preRefused) return typeof preRefused === 'string' ? { content: preRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const } : preRefused;
       // Identity (name / system_prompt): forbidden on the primary agent.
       if (newName !== undefined || newPrompt !== undefined) {
         if (isPrimaryAgent(target.id)) {

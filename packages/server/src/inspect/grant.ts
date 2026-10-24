@@ -61,24 +61,27 @@ export function withoutInheritedInspect(granterId: string, allow: string[]): str
  * edit runs inside a savepoint that is ALWAYS rolled back, the target is asked through the one
  * predicate, and the edit is refused when the target would GAIN the tool: from an agent the owner
  * withheld it from (a deny, or the main agent / Healer with its group switched off) always; from
- * any other target unless the editor may grant it. Null: the caller then makes the edit for real.
+ * any other target unless the editor may grant it. The edit's OWN refusal (no escalation, no
+ * permission) is passed back too, so a refused call writes nothing. Null: make the edit for real.
  * The owner's dashboard/API routes do not ask.
  */
-export function inspectGainRefusal(editorId: string, targetId: string, edit: () => unknown): string | null {
-  if (holdsDojoInspect(targetId)) return null;
+export function inspectGainRefusal<R>(editorId: string, targetId: string, edit: () => R | null): R | string | null {
+  const held = holdsDojoInspect(targetId);
   const withheld = toolGrantsFor(targetId).deny.includes(DOJO_INSPECT) || isPrimaryAgent(targetId) || isHealerAgent(targetId);
   const db = getDb();
   let gains = false;
+  let editRefused: R | null = null;
   db.exec('SAVEPOINT inspect_gain');
   try {
-    edit();
+    editRefused = edit();
     forgetAccessGrants(targetId);
-    gains = holdsDojoInspect(targetId);
+    gains = !held && holdsDojoInspect(targetId);
   } finally {
     db.exec('ROLLBACK TO inspect_gain');
     db.exec('RELEASE inspect_gain');
     forgetAccessGrants(targetId);
   }
+  if (editRefused) return editRefused;   // the edit's own refusal, returned before ANY write: all-or-nothing
   if (!gains || (!withheld && mayGrantDojoInspect(editorId))) return null;
   return withheld
     ? 'Refused, and nothing was changed: this edit would give dojo_inspect back, but the owner withheld it from this agent; only the owner can give it back, from the dashboard.'

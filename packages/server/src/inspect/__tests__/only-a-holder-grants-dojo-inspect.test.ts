@@ -206,6 +206,20 @@ describe('fix round 4 RULING: an edit is judged on what it leaves', () => {
     }
   });
 
+  it('LAST MINORS: the edit is all-or-nothing — a grants half refused for any reason leaves the model unwritten too', async () => {
+    const { TOOL_CATEGORIES } = await import('../../tools/categories.js');
+    try {
+      const narrowed = await mod.agentsRouter.request(`/${PRIMARY}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grants: { tools: { categories: TOOL_CATEGORIES.map((c) => c.label).filter((l) => l !== 'Web') } } }) });
+      expect(narrowed.status).toBe(200);
+      forget();
+      db().prepare('UPDATE agents SET model_id = NULL WHERE id = ?').run(WORKER);
+      const r = await upd({ agent_id: WORKER, model_id: 'mdl', grants: { tools: { categories: '*' } } });
+      expect(r.isError, r.content).toBe(true);
+      expect(r.content).toMatch(/can only grant access it holds itself/);
+      expect((row(WORKER) as { model_id: string | null }).model_id).toBeNull();
+    } finally { restore(PRIMARY); }
+  });
+
   it('an unrelated edit to a denied agent still works and keeps the deny', async () => {
     withhold(HEALER);
     try {

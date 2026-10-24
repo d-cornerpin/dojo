@@ -169,7 +169,10 @@ describe('the shell does not write the Dojo\'s own database — except the Heale
   it('fix round 4 RULING: the Healer\'s exemption is its repair statements only — a file-level write of the database files is refused for it too', () => {
     for (const script of ['rm ~/.dojo/data/dojo.db-wal', `rm -f ${DB}-shm`, 'mv /tmp/x ~/.dojo/data/dojo.db', 'cp /tmp/x ~/.dojo/data/dojo.db',
       'truncate -s 0 ~/.dojo/data/dojo.db-wal', 'echo x > ~/.dojo/data/dojo.db', 'echo x >> ~/.dojo/data/dojo.db', `dd if=/dev/zero of=${DB}-wal count=1`,
-      `sqlite3 ${DB} ".restore /tmp/old.db"`, `sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'" && rm ${DB}-wal`]) {
+      `sqlite3 ${DB} ".restore /tmp/old.db"`, `sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'" && rm ${DB}-wal`,
+      // Last minors: sqlite3's own shell-escape and reopen dot-commands beside a repair statement.
+      `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'" ".shell rm ${DB}-wal"`, `sqlite3 -cmd ".shell rm ${DB}-wal" ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'"`,
+      `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'" ".system rm ${DB}-shm"`, `sqlite3 ${DB} "UPDATE agents SET status = 'idle' WHERE id = 'x'" ".open --new ${DB}"`]) {
       expect(refusal(HEALER, 'shell', script), script).toMatch(WRITE);
     }
     expect(refusal(HEALER, 'proc', ['rm', `${DB}-wal`])).toMatch(WRITE);

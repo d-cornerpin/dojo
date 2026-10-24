@@ -18,7 +18,7 @@
 //     files — is refused for every agent. The one exemption is the Healer's repair STATEMENTS through
 //     sqlite3 (model switch, persist flag, ending an agent, a stuck schedule, a config value, a WAL
 //     checkpoint), which have no engine tool and keep working exactly as before v3.5. A file-level
-//     write (and sqlite3's `.restore`, which replaces the whole file) is not a repair: refused for
+//     write (and sqlite3's `.restore`/`.open`/`.shell`/`.system`, which replace the file or leave sqlite3) is not a repair: refused for
 //     the Healer too (orchestrator rulings 2026-10-24, fix rounds 2 and 4).
 //   • a READ of the live database: an agent that HOLDS dojo_inspect is pointed at the view that
 //     answers (`schema` for a schema look, otherwise `sql`); any other agent is refused (same
@@ -81,7 +81,7 @@ function classifySegment(segment: string, line: string): DojoLineClass | null {
     if (WRITES_EVERY_OPERAND.has(program)) return 'write';
     if (WRITES_LAST_OPERAND.has(program) && operands.length > 1 && namesDb(operands[operands.length - 1])) return 'write';
     if (program === 'dd') return operands.some((w) => /^if=/.test(w) && namesDb(w)) ? 'sql' : null;
-    if (SQL_PROGRAMS.has(program) && WRITE_STATEMENT.test(line)) return program === 'sqlite3' && !/\.restore\b/.test(line) ? 'repair' : 'write';
+    if (SQL_PROGRAMS.has(program) && WRITE_STATEMENT.test(line)) return program === 'sqlite3' && !/\.(?:restore|shell|system|open)\b/.test(line) ? 'repair' : 'write';
     if (SQL_PROGRAMS.has(program)) return SCHEMA_LOOK.test(line) ? 'schema' : 'sql';
     if (CONTENT_READERS.has(program)) return 'sql';
   }
