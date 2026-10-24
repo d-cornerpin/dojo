@@ -62,7 +62,15 @@ export function createWorkTable(db: DatabaseType.Database): void {
       -- SLOW-INFERENCE T79c (migration 165): the durable effort meter. Monotonic total +
       -- moving baseline, so effort_calls minus effort_reviewed_calls is "how much has this
       -- task burned since it last genuinely advanced."
-      effort_calls INTEGER NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0
+      effort_calls INTEGER NOT NULL DEFAULT 0, effort_reviewed_calls INTEGER NOT NULL DEFAULT 0,
+      -- v3.5 (migration 200): the task's measure and the engine's reading of it.
+      measure_json TEXT, measure_initial INTEGER, measure_remaining INTEGER, measure_at INTEGER
+    );
+    -- v3.5 (migration 200): the items a task's calls touched. A reference into work(id), so every
+    -- deleter clears it (work-refs.ts) and a fixture without it would make those paths throw.
+    CREATE TABLE IF NOT EXISTS work_ledger (
+      work_id TEXT NOT NULL REFERENCES work(id), item_key TEXT NOT NULL, tool TEXT NOT NULL,
+      first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, PRIMARY KEY (work_id, item_key)
     );
     CREATE TABLE IF NOT EXISTS work_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, work_id TEXT NOT NULL,

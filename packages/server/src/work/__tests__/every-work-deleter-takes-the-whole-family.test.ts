@@ -251,12 +251,14 @@ const seedWork = (id: string, kind: string, parent: string | null, agent = 'a-do
   `).run(id, kind, parent, agent, NOW, NOW);
 };
 
-/** The two dependents a work row owns. */
+/** The three dependents a work row owns (v3.5 migration 200 added the ledger). */
 const seedDependents = (workId: string): void => {
   db().prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at)
                 VALUES (?, 'opened', '{}', 'owner', ?)`).run(workId, NOW);
   db().prepare(`INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at)
                 VALUES (?, 'done', 'upheld', 'owner', ?)`).run(workId, NOW);
+  db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at)
+                VALUES (?, 'gmail:msg:fixture', 'gmail_label', ?, ?)`).run(workId, NOW, NOW);
 };
 
 /** The reference nobody thinks about: a technique naming the row that built it. */
@@ -350,6 +352,7 @@ describe('deleteTrackerRow — the three shapes that raised', () => {
     expect(n('SELECT COUNT(*) AS n FROM work WHERE id = ?', 'other')).toBe(1);
     expect(n('SELECT COUNT(*) AS n FROM work_events WHERE work_id = ?', 'other')).toBe(1);
     expect(n('SELECT COUNT(*) AS n FROM adjudications WHERE work_id = ?', 'other')).toBe(1);
+    expect(n('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ?', 'other')).toBe(1);
     expect(db().prepare('SELECT build_project_id AS b FROM techniques WHERE id = ?').get('t-on-other'))
       .toEqual({ b: 'other' });
   });

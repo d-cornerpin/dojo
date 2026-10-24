@@ -1,14 +1,15 @@
 // ── EVERYTHING THAT POINTS AT A WORK ROW, IN ONE PLACE (release-blocker round) ────────────
 //
-// FOUR things reference `work(id)`, and every one of them is `NO ACTION`:
+// FIVE things reference `work(id)`, and every one of them is `NO ACTION`:
 //
 //   work_events.work_id            deleted with the row
+//   work_ledger.work_id            deleted with the row (v3.5: the items the task's calls touched)
 //   adjudications.work_id          deleted with the row
 //   techniques.build_project_id    NULLED — a technique outlives whatever built it
 //   work.parent_id (itself)        NULLED — a child work row outlives its parent
 //
 // `NO ACTION` means the database does nothing for you: every path that deletes a work row has to
-// clear all four by hand, and a path that clears three of four either strands a row or — because
+// clear all five by hand, and a path that clears four of five either strands a row or — because
 // `NO ACTION` REFUSES rather than cascades — raises and cannot complete at all.
 //
 // ── WHY THIS IS A MODULE ──
@@ -20,7 +21,7 @@
 // into three can be wrong three different ways, and was.
 //
 // The census clause in `work/__tests__/a-deleted-work-row-leaves-no-verdict.test.ts` reads the
-// four references out of `PRAGMA foreign_key_list` at run time and fails if a fifth appears — so
+// five references out of `PRAGMA foreign_key_list` at run time and fails if a sixth appears — so
 // this comment cannot quietly go stale.
 
 import { getDb } from '../db/connection.js';
@@ -40,10 +41,11 @@ export function clearReferencesToWork(workIds: readonly string[]): void {
   if (workIds.length === 0) return;
   const db = getDb();
   const ph = workIds.map(() => '?').join(',');
-  // Order is irrelevant among these four — none references another — but the deletes come first
+  // Order is irrelevant among these five — none references another — but the deletes come first
   // so a reader sees "remove what is owned, then release what merely points".
   db.prepare(`DELETE FROM work_events WHERE work_id IN (${ph})`).run(...workIds);
   db.prepare(`DELETE FROM adjudications WHERE work_id IN (${ph})`).run(...workIds);
+  db.prepare(`DELETE FROM work_ledger WHERE work_id IN (${ph})`).run(...workIds);
   db.prepare(`UPDATE techniques SET build_project_id = NULL WHERE build_project_id IN (${ph})`).run(...workIds);
   db.prepare(`UPDATE work SET parent_id = NULL WHERE parent_id IN (${ph})`).run(...workIds);
 }

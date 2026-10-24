@@ -225,17 +225,18 @@ describe('deleteOccurrencesOf — a schedule’s children take their verdicts wi
 // ── L1-F2: THE WORK-SIDE CENSUS ──────────────────────────────────────────────────────────
 
 describe('the work-side census — no reference to a deleted work row is forgotten', () => {
-  it('names the four references the schema declares today, so a fifth is visible', () => {
+  it('names the five references the schema declares today, so a sixth is visible', () => {
     const refs = tablesReferencingWork();
     expect(refs.map(r => `${r.table}.${r.column}`).sort()).toEqual([
       'adjudications.work_id',
       'techniques.build_project_id',
       'work.parent_id',
       'work_events.work_id',
+      'work_ledger.work_id',   // v3.5 migration 200: the items a task's calls touched
     ]);
     // Non-vacuity: an empty census would pass every clause below it.
-    expect(refs.length).toBe(4);
-    // All four are NO ACTION — which is WHY every delete path has to sweep them by hand.
+    expect(refs.length).toBe(5);
+    // All five are NO ACTION — which is WHY every delete path has to sweep them by hand.
     for (const r of refs) expect(r.onDelete, `${r.table}.${r.column}`).toBe('NO ACTION');
   });
 
