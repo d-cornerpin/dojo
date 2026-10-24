@@ -255,8 +255,8 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
     const service = typeof args.service_name === 'string' ? args.service_name : null;
     gates.push({ kind: 'credential', service, row: '16' });
   }
-  // 17 — LAST (an earlier row's sentence stays the one the agent reads); a tool the index does not name mints nothing.
-  if (toolCategoryLabels(name).length > 0) gates.push({ kind: 'category', row: '17' });
+  // 17 — LAST (an earlier row's sentence stays the one the agent reads); a tool the index does not name mints nothing. dojo_inspect's grant is row 10i's.
+  if (name !== 'dojo_inspect' && toolCategoryLabels(name).length > 0) gates.push({ kind: 'category', row: '17' });
 
   return gates;
 }

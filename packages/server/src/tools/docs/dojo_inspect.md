@@ -6,7 +6,7 @@ Use it before any shell command about the Dojo: the shell refuses `sqlite3` read
 
 That shell check is a guard for the common commands, not a boundary — the grant is the boundary. It catches the usual `sqlite3`, `cat`, `grep` and `tail` forms and says which view answers; it does not try to read every possible shell script.
 
-Who holds it: the main agent and the Healer. The owner, or the main agent, can give it to another agent by naming `dojo_inspect` in that agent's tools and the "Oversight & Admin" tool group in its grants; an agent that was given it cannot pass it on.
+Who holds it: the main agent and the Healer. The owner, or the main agent, can give it to another agent by naming `dojo_inspect` in that agent's tools; an agent that was given it cannot pass it on.
 
 A long answer is kept whole: you see its start, its end and a note, and `tool_result_read` reads or searches the rest. Nothing is cut.
 

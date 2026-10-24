@@ -29,6 +29,7 @@ let mod: {
   tools: typeof import('../../agent/tools/index.js');
   outcome: typeof import('../../agent/tool-outcome.js');
   agentsRouter: typeof import('../../gateway/routes/agents.js')['agentsRouter'];
+  surface: typeof import('../../agent/tools/surface.js');
 };
 
 beforeAll(async () => {
@@ -55,6 +56,7 @@ beforeAll(async () => {
     tools: await import('../../agent/tools/index.js'),
     outcome: await import('../../agent/tool-outcome.js'),
     agentsRouter: (await import('../../gateway/routes/agents.js')).agentsRouter,
+    surface: await import('../../agent/tools/surface.js'),
   };
 }, 120_000);
 
@@ -132,6 +134,21 @@ describe('a holder, or the owner, grants it', () => {
     const child = await spawn(PRIMARY, { toolsPolicy: { allow: ['dojo_inspect', 'send_to_agent'], deny: [] } });
     mod.access.forgetAccessGrants();
     expect(mod.grant.holdsDojoInspect(child.agentId)).toBe(true);
+  });
+
+  it('RULING: naming it IS the grant — offered and callable without the "Oversight & Admin" group; not granted, neither', async () => {
+    const call = async (agent: string) => mod.outcome.toolResultOf(await mod.tools.executeTool(agent, { id: `call-g-${Math.random()}`, name: 'dojo_inspect', arguments: { what: 'schema', table: 'agents' } }));
+    const granted = await spawn(PRIMARY, { toolsPolicy: { allow: ['dojo_inspect', 'send_to_agent'], deny: [] } });
+    const plain = await spawn(PRIMARY, { toolsPolicy: { allow: ['send_to_agent'], deny: [] } });
+    mod.access.forgetAccessGrants();
+    expect(mod.access.getAccessGrants(granted.agentId).tools.categories).not.toContain('Oversight & Admin');
+    const offered = (agent: string) => mod.surface.getFilteredTools(agent).some((t) => t.name === 'dojo_inspect');
+    expect(offered(granted.agentId)).toBe(true);
+    const ok = await call(granted.agentId);
+    expect(ok.isError, ok.content).toBe(false);
+    expect(ok.content).toMatch(/^agents — /);
+    expect(offered(plain.agentId)).toBe(false);
+    expect((await call(plain.agentId)).isError).toBe(true);
   });
 
   it('the owner\'s dashboard grants it to an existing worker', async () => {

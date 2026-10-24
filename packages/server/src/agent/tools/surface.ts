@@ -681,7 +681,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
   // mechanism at HEAD withheld a category, so the honest snapshot withholds
   // none — which is what makes A1 invisible while A3's panel has something real
   // to switch. A tool in no category is never refused here (`read.ts`).
-  filtered = filtered.filter(t => toolCategoryGranted(agentId, t.name));
+  filtered = filtered.filter(t => t.name === DOJO_INSPECT || toolCategoryGranted(agentId, t.name));   // dojo_inspect: its grant is its own (strip above)
 
   // ── SURFACE TRUTH FOR THE CHANNEL TOOLS (UX-ACCESS A4) — A1 §6.5, closed ──
   //
