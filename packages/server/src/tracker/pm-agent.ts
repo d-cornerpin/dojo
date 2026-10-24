@@ -1,4 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
+import { closeoutMeasure, stalledRetaskExample } from './closeout-measure.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -606,9 +607,11 @@ export async function escalateCloseoutMissToPM(ctx: {
     });
   }
 
+  const measured = rows.map((r) => closeoutMeasure(r.id));   // v3.5 D2: the measured record and any stall, per task
   const taskLines = rows
-    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})`)
+    .map((r, i) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})${measured[i].lines}`)
     .join('\n');
+  const stalled = measured.find((m) => m.stalledRemaining !== null)?.stalledRemaining ?? null;
   const truncatedSaid = ctx.agentText.length > 1500
     ? ctx.agentText.slice(0, 1500) + '...'
     : ctx.agentText;
@@ -624,7 +627,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
     `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
-    `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
+    `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"${stalled !== null ? `; for the stalled task, ${stalledRetaskExample(stalled)}` : ''}). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
     `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project. USE THIS WHEN the task is stuck or dead, not done. You cannot reassign a task and must never ask the owner to choose a different agent: a slow assignee is yours to KEEP WORKING, by poking it.\n` +
     `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +

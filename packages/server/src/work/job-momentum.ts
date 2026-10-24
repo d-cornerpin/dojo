@@ -27,13 +27,14 @@ export function recordStalled(taskId: string, f: StalledFacts): void {
 }
 
 /** How the task's last turn ended, as its spine records it: the latest `continued`, `stalled` or
- *  `claim_turn` event (the plan's "previous turn's kind"), with its payload. null when none. */
-export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled' | 'claim_turn'; payload: Record<string, unknown> } | null {
+ *  `claim_turn` event (the plan's "previous turn's kind"), with its payload and when it was written.
+ *  null when none. */
+export function lastTurnEnd(taskId: string): { kind: 'continued' | 'stalled' | 'claim_turn'; payload: Record<string, unknown>; at: number } | null {
   const r = getDb().prepare(
-    `SELECT kind, payload FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled', 'claim_turn') ORDER BY id DESC LIMIT 1`,
-  ).get(taskId) as { kind: 'continued' | 'stalled' | 'claim_turn'; payload: string | null } | undefined;
+    `SELECT kind, payload, created_at AS at FROM work_events WHERE work_id = ? AND kind IN ('continued', 'stalled', 'claim_turn') ORDER BY id DESC LIMIT 1`,
+  ).get(taskId) as { kind: 'continued' | 'stalled' | 'claim_turn'; payload: string | null; at: number } | undefined;
   if (!r) return null;
   let payload: Record<string, unknown> = {};
   try { payload = r.payload ? JSON.parse(r.payload) as Record<string, unknown> : {}; } catch { /* an unreadable payload reads as empty */ }
-  return { kind: r.kind, payload };
+  return { kind: r.kind, payload, at: r.at };
 }
