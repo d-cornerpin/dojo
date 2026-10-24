@@ -73,9 +73,7 @@ export interface Model {
   apiModelId: string;
   capabilities: string[];
   contextWindow: number | null;
-  // The window the engine budgets this model with while `contextWindow` is not set (null), so the
-  // model row can name the figure in use instead of leaving the gap silent. Null when the window is
-  // set (nothing is assumed) and absent on payloads that do not carry the model row's settings.
+  // The window the engine budgets with while `contextWindow` is null (so the row can name it); null when set.
   assumedContextWindow?: number | null;
   maxOutputTokens: number | null;
   inputCostPerM: number | null;

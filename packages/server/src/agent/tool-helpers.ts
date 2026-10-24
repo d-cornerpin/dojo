@@ -158,6 +158,12 @@ export function liveAgentsNamed(name: string): LiveAgentByName[] {
   ).all(name) as LiveAgentByName[];
 }
 
+/** E21: when a name matches two live agents (differing only by case), the sender is told who got it. */
+export function sameNameNote(ref: string, named: ReadonlyArray<{ id: string; name: string }>): string {
+  if (named.length < 2) return '';
+  return ` NOTE: ${named.length} live agents are named "${ref}" (differing only by capital letters): ${named.map((a) => `"${a.name}" (${a.id})`).join(', ')}. The message went to the newest, "${named[0].name}" (${named[0].id}); pass an agent id to reach a different one.`;
+}
+
 /**
  * The live agents' names a failed lookup of `requested` most plausibly meant: the ones that contain it
  * or are contained by it, or are within two edits of it (ignoring case). When none is close the answer

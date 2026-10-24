@@ -14,6 +14,7 @@ import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/sh
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { CollapseChevron } from '../CollapseToggle';
+import { UnsetWindowNote, contextInputId } from './UnsetWindowNote';
 
 
 // ── Models Tab ──
@@ -523,23 +524,7 @@ export const ModelRow = ({
             {model.apiModelId}
             {model.contextWindow ? ` | ${Math.round(model.contextWindow / 1000)}k context` : ''}
             {' | '}{model.providerId}
-            {/* M41: a window nobody set is said out loud, with the figure in use; the sentence is the
-                way into the Model Limits editor below (it puts the cursor in the Context field). */}
-            {!model.contextWindow && (
-              <>
-                {' | '}
-                <button
-                  type="button"
-                  className="underline text-cp-amber hover:text-cp-amber/80"
-                  onClick={() => document.getElementById(`model-context-${model.id}`)?.focus()}
-                >
-                  context not reported by the provider — set it
-                </button>
-                {model.assumedContextWindow
-                  ? ` (using ${Math.round(model.assumedContextWindow / 1000)}k until you set it)`
-                  : ''}
-              </>
-            )}
+            <UnsetWindowNote model={model} />
           </p>
           {editingCaps ? (
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -884,7 +869,7 @@ const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => vo
       </div>
       <div className="flex items-center gap-2">
         <label
-          htmlFor={`model-context-${model.id}`}
+          htmlFor={contextInputId(model.id)}
           className="text-xs text-ui/40"
           title="How much this model can read in one call, prompt and reply together. Set it to what your server is actually configured for — a wrong value here shrinks the room left for the reply."
         >
@@ -894,7 +879,7 @@ const ModelLimitsEditor = ({ model, onSaved }: { model: Model; onSaved: () => vo
           type="number"
           step="1"
           min="1"
-          id={`model-context-${model.id}`}
+          id={contextInputId(model.id)}
           placeholder="auto"
           value={ctx}
           onChange={(e) => setCtx(e.target.value)}

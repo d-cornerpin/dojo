@@ -6,7 +6,7 @@
 
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
-import { resolveProviderStopReason } from '../agent/provider-stop-reason.js';
+import { createSdkStopReasonTracker } from './sdk-stop-reason.js';
 
 const logger = createLogger('agent-sdk');
 
@@ -305,19 +305,6 @@ export interface AgentSdkCallResult {
   stopReason: string;
 }
 
-/**
- * B14: the SDK transport's stop reason is the provider's own word, never a guess from the
- * parsed tool-call count. Anthropic's ordinary finishes (`end_turn`, `tool_use`,
- * `stop_sequence`) say only what the call count already says (this transport parses its tool
- * calls out of text, so the provider says `end_turn` even when one parsed); anything else, above
- * all a cut at the output limit, passes through untouched so the cut ladder can see it.
- */
-function sdkStopReason(seen: string | null, outputLimitError: boolean, toolCallCount: number): string {
-  const ordinary = seen === 'end_turn' || seen === 'tool_use' || seen === 'stop_sequence';
-  const provider = ordinary ? null : (seen ?? (outputLimitError ? 'max_output_tokens' : null));
-  return resolveProviderStopReason(provider, toolCallCount);
-}
-
 export async function callAnthropicViaSdk(params: {
   agentId: string;
   apiModelId: string;
@@ -391,15 +378,7 @@ export async function callAnthropicViaSdk(params: {
   // arrived, mirroring `makeStreamWatchdog`'s own `contentStarted()` definition exactly ("a text
   // delta, a reasoning delta, or a tool-call delta" — this transport only ever streams text).
   let sawAnyContent = false;
-  // B14: the provider's own word for why it stopped, as the SDK relays it. Three places carry
-  // it (the finished assistant message, the streamed `message_delta`, the closing `result`);
-  // the last non-null one wins. `max_output_tokens` also arrives as the assistant message's
-  // `error`, which is the SDK saying the same thing when no `stop_reason` rode along.
-  let seenStopReason: string | null = null;
-  let seenOutputLimitError = false;
-  const noteStopReason = (reason: unknown): void => {
-    if (typeof reason === 'string' && reason !== '') seenStopReason = reason;
-  };
+  const stopReason = createSdkStopReasonTracker();   // B14: the provider's own word for why it stopped
 
   logger.info('Calling Anthropic via Agent SDK', {
     model: sdkModel,
@@ -518,6 +497,7 @@ export async function callAnthropicViaSdk(params: {
     })) {
       // t114: ANY message is evidence of life — re-arm before inspecting what it was.
       bumpGap();
+      stopReason.observe(message as { type?: string });
       if (message.type === 'assistant') {
         // Full assistant message with content blocks
         const betaMsg = (message as any).message;
@@ -532,8 +512,6 @@ export async function callAnthropicViaSdk(params: {
             }
           }
         }
-        noteStopReason(betaMsg?.stop_reason);
-        if ((message as any).error === 'max_output_tokens') seenOutputLimitError = true;
         // Extract usage if available
         if (betaMsg?.usage) {
           inputTokens = betaMsg.usage.input_tokens ?? 0;
@@ -545,7 +523,6 @@ export async function callAnthropicViaSdk(params: {
       } else if (message.type === 'stream_event') {
         // Streaming chunks
         const event = (message as any).event;
-        if (event?.type === 'message_delta') noteStopReason(event.delta?.stop_reason);
         if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
           sawTokenEvents = true;
           const text = event.delta.text ?? '';
@@ -553,8 +530,6 @@ export async function callAnthropicViaSdk(params: {
           noteContent();
           onChunk?.(text);
         }
-      } else if (message.type === 'result') {
-        noteStopReason((message as any).stop_reason);
       } else if (message.type === 'auth_status') {
         const authMsg = message as any;
         if (authMsg.error) {
@@ -615,6 +590,6 @@ export async function callAnthropicViaSdk(params: {
     outputTokens,
     cacheReadTokens,
     cacheCreationTokens,
-    stopReason: sdkStopReason(seenStopReason, seenOutputLimitError, toolCalls.length),
+    stopReason: stopReason.resolve(toolCalls.length),
   };
 }

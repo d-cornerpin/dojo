@@ -50,7 +50,7 @@ import { clearPlatformConfigCache } from '../../../config/platform.js';
 import { executeTool } from '../index.js';
 import { toolResultOf } from '../../tool-outcome.js';
 import { googleWrite } from '../../../google/client.js';
-import { suggestArgNames } from '../../../tools/name-help.js';
+import { suggestArgNames } from '../../../tools/arg-name-help.js';
 
 const AGENT = 'agent-b11';
 

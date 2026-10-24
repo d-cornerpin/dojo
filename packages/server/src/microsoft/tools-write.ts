@@ -18,6 +18,7 @@ import {
 import type { AccountSlot } from './auth.js';
 import { moveToFolder } from './outlook-conversation.js';
 import { homeDir } from '../home.js';
+import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
 // ── Tool Definitions ──
@@ -427,9 +428,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       },
       required: ['message_id', 'categories'],
     },
-    // The description says an empty array clears every category, and the handler does exactly
-    // that; the validation boundary refused `[]` before it got there. Required, but empty is legal.
-    fields: { categories: { allowEmpty: true } },
+    fields: { categories: { allowEmpty: true } },   // the description says [] clears; the boundary refused it
   },
   // ── OneDrive version history ──
   {
@@ -1228,10 +1227,7 @@ export async function executeMicrosoftWriteTool(
       if (args.start) patch.start = { dateTime: args.start, timeZone: tz };
       if (args.end) patch.end = { dateTime: args.end, timeZone: tz };
       if (args.description) patch.body = { contentType: 'Text', content: args.description };
-      // B11: a patch with nothing in it changes nothing; it is not sent.
-      if (Object.keys(patch).length === 0) {
-        return 'Error: nothing to change — pass at least one of title, start, end, description. Nothing was sent to the calendar.';
-      }
+      if (Object.keys(patch).length === 0) return CALENDAR_NOTHING_TO_CHANGE;   // B11
 
       const endpoint = calendarId ? `${calendarPrefix(calendarId)}events/${eventId}` : `me/events/${eventId}`;
       const result = await msGraphWrite('PATCH', endpoint, patch, agentId, agentName, 'calendar_update_ms', {

@@ -17,6 +17,7 @@ import {
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
 import { homeDir } from '../home.js';
+import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -1423,11 +1424,7 @@ export async function executeGoogleWriteTool(
       if (times.start) patch.start = times.start;
       if (times.end) patch.end = times.end;
       if (args.description) patch.description = args.description;
-      // B11: a patch with nothing in it changes nothing; it must not be sent, and above all must
-      // not leave a verified receipt for a change that never happened.
-      if (Object.keys(patch).length === 0) {
-        return 'Error: nothing to change — pass at least one of title, start, end, description. Nothing was sent to the calendar.';
-      }
+      if (Object.keys(patch).length === 0) return CALENDAR_NOTHING_TO_CHANGE;   // B11
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
       const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch }, undefined, slot);
