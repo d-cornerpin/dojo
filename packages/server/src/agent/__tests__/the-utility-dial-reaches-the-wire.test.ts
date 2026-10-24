@@ -49,7 +49,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache } from '../model.js';
-import { utilityDial } from '../utility-dial.js';
+import { utilityDial, MIN_UTILITY_NUM_CTX } from '../utility-dial.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -297,4 +297,47 @@ describe('the Dojo\'s standard writer is kept resident on the wire', () => {
     await dial('ask_title');
     expect(bodies[0].keep_alive).toBeUndefined();
   });
+});
+
+// v3.5 A4 — EVERY WRITER JOB IS SIZED FOR THE STANDARD WRITER, BY NAME. The 5.4 GB incident (a 4b
+// utility model given its full recommended window) must not repeat on the one model every box now
+// runs for titles, project names, voice openers and memory summaries: each call carries thinking off,
+// its dial's output cap, and a window sized to the call — also on a fresh box whose writer row has no
+// recommended window yet (Ollama would otherwise allocate the Modelfile's full 256K context).
+describe('every writer job on the standard writer is sized per job, never per model', () => {
+  const WRITER_PURPOSES = ['ask_title', 'multistep_classify', 'voice_opener', 'memory_summarize', 'continuity_brief'] as const;
+  const write = (purpose: string, chars: number): Promise<unknown> => callModel({
+    agentId: 'a-fixture', modelId: 'm-std-writer', systemPrompt: '',
+    messages: [{ role: 'user', content: 'x'.repeat(chars) }], tools: false, purpose,
+  });
+
+  for (const recommended of [RECOMMENDED_NUM_CTX, null]) {
+    describe(`with the writer's recommended window ${recommended ?? 'not computed yet'}`, () => {
+      beforeEach(() => {
+        mockDb.current!.prepare(`
+          INSERT OR REPLACE INTO models (id, provider_id, name, api_model_id, capabilities, context_window,
+                              max_output_tokens, thinking_enabled, num_ctx_recommended, is_enabled,
+                              created_at, updated_at)
+          VALUES ('m-std-writer', 'local-ollama', 'Standard writer', ?, '["chat"]', 262144,
+                  ?, 1, ?, 1, datetime('now'), datetime('now'))
+        `).run(STANDARD_WRITER_MODEL.tag, MAX_OUTPUT_TOKENS, recommended);
+        clearClientCache();
+      });
+
+      for (const purpose of WRITER_PURPOSES) {
+        it(`${purpose}: thinking off, the dial's output cap, a window sized to the input`, async () => {
+          await write(purpose, 1_200);
+          await write(purpose, 24_000);
+          const [small, large] = bodies;
+          expect(small.think).toBe(false);
+          expect(small.options?.num_predict).toBe(utilityDial(purpose)!.maxOutputTokens);
+          const w = small.options?.num_ctx ?? 0;
+          expect(w).toBeGreaterThanOrEqual(MIN_UTILITY_NUM_CTX);
+          expect(w).toBeLessThan(utilityDial(purpose)!.maxOutputTokens + 4_096);   // the call, not the model
+          expect(large.options?.num_ctx ?? 0).toBeGreaterThan(w);                     // sized to the input
+          expect(large.options?.num_ctx ?? 0).toBeLessThan(32_768);                   // never the model's 256K
+        });
+      }
+    });
+  }
 });
