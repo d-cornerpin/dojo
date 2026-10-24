@@ -8930,46 +8930,46 @@
       "why": "+1: the floor module's notice (which broadcasts) moved to its own file so the spawn door can use the floor without loading the websocket layer; this route now has two import lines where it had one. Nothing else in the file changed."
     },
     {
-          "path": "packages/dashboard/src/components/settings/ModelRows.tsx",
-          "from": 1257,
-          "to": 1261,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+4: the import of the new UnsetWindowNote component, its one use in the card header, and two lines wiring the Context field to the note (an id and the label's htmlFor). The note's own code lives in the new settings/UnsetWindowNote.tsx."
+      "path": "packages/dashboard/src/components/settings/ModelRows.tsx",
+      "from": 1257,
+      "to": 1261,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+4: the import of the new UnsetWindowNote component, its one use in the card header, and two lines wiring the Context field to the note (an id and the label's htmlFor). The note's own code lives in the new settings/UnsetWindowNote.tsx."
     },
     {
-          "path": "packages/server/src/agent/tools/index.ts",
-          "from": 661,
-          "to": 664,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+3: the import of the new unknown-args-refusal module and the two-line door (the refusal text and the suggestion logic live in agent/tools/unknown-args-refusal.ts and tools/arg-name-help.ts). The refusal must sit in this door because it has to run before the gate loop and return the tool result."
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 661,
+      "to": 664,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+3: the import of the new unknown-args-refusal module and the two-line door (the refusal text and the suggestion logic live in agent/tools/unknown-args-refusal.ts and tools/arg-name-help.ts). The refusal must sit in this door because it has to run before the gate loop and return the tool result."
     },
     {
-          "path": "packages/server/src/microsoft/tools-write.ts",
-          "from": 2218,
-          "to": 2221,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+3: an import of the shared nothing-to-change refusal, the one-line empty-patch guard in calendar_update_ms, and the one-line allowEmpty declaration on outlook_categories_set. Both belong beside the handlers and definition they guard."
+      "path": "packages/server/src/microsoft/tools-write.ts",
+      "from": 2218,
+      "to": 2221,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+3: an import of the shared nothing-to-change refusal, the one-line empty-patch guard in calendar_update_ms, and the one-line allowEmpty declaration on outlook_categories_set. Both belong beside the handlers and definition they guard."
     },
     {
-          "path": "packages/server/src/providers/anthropic-sdk.ts",
-          "from": 592,
-          "to": 595,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+3: the import of the new sdk-stop-reason tracker, its construction, and the one line that shows it each SDK message; the return line is unchanged in length. The tracker itself lives in providers/sdk-stop-reason.ts."
+      "path": "packages/server/src/providers/anthropic-sdk.ts",
+      "from": 592,
+      "to": 595,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+3: the import of the new sdk-stop-reason tracker, its construction, and the one line that shows it each SDK message; the return line is unchanged in length. The tracker itself lives in providers/sdk-stop-reason.ts."
     },
     {
-          "path": "packages/server/src/agent/a2a-transport.ts",
-          "from": 2866,
-          "to": 2868,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+2: the import of the case-insensitive name lookup, and a comment line above its one call; the lookup replaced a two-line exact-name query in place."
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2866,
+      "to": 2868,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+2: the import of the case-insensitive name lookup, and a comment line above its one call; the lookup replaced a two-line exact-name query in place."
     },
     {
-          "path": "packages/shared/src/types.ts",
-          "from": 655,
-          "to": 657,
-          "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
-          "why": "+2: the optional assumedContextWindow field on Model (a comment line and the field) and 'UNKNOWN_ARGS' added to the ToolErrorCode union on its existing line. The dashboard and the server both read these shared types."
+      "path": "packages/shared/src/types.ts",
+      "from": 655,
+      "to": 657,
+      "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
+      "why": "+2: the optional assumedContextWindow field on Model (a comment line and the field) and 'UNKNOWN_ARGS' added to the ToolErrorCode union on its existing line. The dashboard and the server both read these shared types."
     }
   ],
   "maxNewFileLines": 400,
