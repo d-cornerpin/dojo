@@ -8970,6 +8970,13 @@
       "to": 657,
       "by": "t254 (2026-10-24): small server fixes B11/B14/D17/E21/M41",
       "why": "+2: the optional assumedContextWindow field on Model (a comment line and the field) and 'UNKNOWN_ARGS' added to the ToolErrorCode union on its existing line. The dashboard and the server both read these shared types."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1084,
+      "to": 1086,
+      "by": "t258 (2026-10-23): K37, the Healer lists the week's recurring tool errors",
+      "why": "+2: one import line and one spread line that call the new collector. THE COLLECTOR ITSELF IS NOT HERE: it lives in the new healer/recurring-tool-errors.ts (the query, the remedy yes/no, the wording), which needs no pin. This file is where every other collector is registered into the report, so the registration cannot sit anywhere else without creating a second place a reader must look. The cap is inline like the provider-outage collector two lines above, so no constant was added. REFUSED: folding the collector into an existing function to save the two lines; each collector here is one named function with its own cap."
     }
   ],
   "maxNewFileLines": 400,
@@ -9168,10 +9175,10 @@
     "packages/server/src/google/tools-forms.ts": 821,
     "packages/server/src/google/tools-read.ts": 945,
     "packages/server/src/google/tools-slides.ts": 3022,
-    "packages/server/src/google/tools-write.ts": 2024,
+    "packages/server/src/google/tools-write.ts": 2007,
     "packages/server/src/healer/approval-routing.ts": 513,
     "packages/server/src/healer/auto-fix.ts": 519,
-    "packages/server/src/healer/diagnostic.ts": 1084,
+    "packages/server/src/healer/diagnostic.ts": 1086,
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1328,
