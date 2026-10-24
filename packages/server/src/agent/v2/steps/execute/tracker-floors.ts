@@ -321,14 +321,14 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         ? (
           `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
           `Multi-step work that isn't reflected in a live tracker task drifts and stalls (the PM agent can't intervene because there's nothing current to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
-          `Decide now: if what you've been doing IS that task, bring it current via work_update(action="status") / work_note; otherwise this is NEW work, so open a project for it with work_open(kind="project", title="<short name>", level=2, tasks=[…one task per discrete batch…]). ` +
+          `Decide now: if what you've been doing IS that task, bring it current via work_update(action="status") / work_note; otherwise this is NEW work, so open a project for it with work_open(kind="project", title="<short name>", level=2, plan={approach, steps:[{title, how, done}…one step per discrete batch…]}). ` +
           `Then keep each task current via work_update(action="status"), and use scratchpad_set to keep a running outline that survives compaction. ` +
           `Resume the work once the tracker reflects it.]`
         )
         : (
           `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn without an active tracker task assigned to you. ` +
           `Multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
-          `STOP what you're doing right now and call work_open(kind="project", title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
+          `STOP what you're doing right now and call work_open(kind="project", title="<short name>", level=2, plan={approach, steps:[{title, how, done}…]}) describing the steps for what you've been doing and what's left. ` +
           `Then update each task as you complete it via work_update(action="status"), and use scratchpad_set to keep a running outline that survives compaction. ` +
           `Resume the work after the project is opened.]`
         );

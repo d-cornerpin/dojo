@@ -206,7 +206,10 @@ const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
 // t262's bytes; every earlier rung is asserted on that view, unchanged.
 //   work_open   9,478 → 8,708  (-770: +118 per full object for the enum and the clause, minus the two repeated descriptions)
 //   work_update 10,075 → 10,193 (+118: the enum and the clause)
-const T266_BASELINE_CHARS = { work_open: 8708, work_update: 10193 };
+// And the parked t262 entry: `tasks` no longer says a project REQUIRES them ("just put down the FIRST
+// concrete thing"); it says they are optional beside the plan, one per step: 8,708 → 8,407 (-301).
+const T266_BASELINE_CHARS = { work_open: 8407, work_update: 10193 };
+const PRE_T266_TASKS_TEXT = 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.';
 const PRE_T266_MEASURE = {
   ...WORK_MEASURE_PROP,
   description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it and again when you close; your task board shows the last count.',
@@ -218,6 +221,8 @@ function withoutT266(schema: Record<string, unknown>): Record<string, unknown> {
   const put = (o: Schema | undefined): void => { if (o?.properties.measure) o.properties.measure = structuredClone(PRE_T266_MEASURE); };
   put(out);
   put((out.properties.tasks as { items?: Schema } | undefined)?.items);
+  const tasks = out.properties.tasks as { description?: string } | undefined;
+  if (tasks?.description) tasks.description = PRE_T266_TASKS_TEXT;
   put(((out.properties.plan as Schema | undefined)?.properties.steps as { items?: Schema } | undefined)?.items);
   return out;
 }
@@ -258,6 +263,7 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search', 'user_gmail_search']);
     expect(String(WORK_MEASURE_PROP.description)).toContain('at the end of each turn that makes progress');
     expect(WORK_MEASURE_REF_PROP.properties).toBe(WORK_MEASURE_PROP.properties);
+    expect((po.tasks as { description: string }).description).toBe('Project only. Optional: tasks of your own. Leave it out and the engine makes one task per plan step; if you pass it, give exactly one task per plan step, in step order.');
   });
 
   it('t262 — the plan field is the whole delta on work_open, and nothing else moved', () => {

@@ -1020,7 +1020,7 @@ export const toolDefinitions: ToolDefinition[] = [
         level: { type: 'number', description: 'Project only. Importance level: 1 (routine), 2 (important), 3 (critical).' },
         tasks: {
           type: 'array',
-          description: 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.',
+          description: 'Project only. Optional: tasks of your own. Leave it out and the engine makes one task per plan step; if you pass it, give exactly one task per plan step, in step order.',
           minItems: 1,
           items: {
             type: 'object',
