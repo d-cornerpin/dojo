@@ -8977,6 +8977,20 @@
       "to": 1086,
       "by": "t258 (2026-10-23): K37, the Healer lists the week's recurring tool errors",
       "why": "+2: one import line and one spread line that call the new collector. THE COLLECTOR ITSELF IS NOT HERE: it lives in the new healer/recurring-tool-errors.ts (the query, the remedy yes/no, the wording), which needs no pin. This file is where every other collector is registered into the report, so the registration cannot sit anywhere else without creating a second place a reader must look. The cap is inline like the provider-outage collector two lines above, so no constant was added. REFUSED: folding the collector into an existing function to save the two lines; each collector here is one named function with its own cap."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2917,
+      "to": 2934,
+      "by": "t258 (2026-10-23): K34, the Dreamer's lesson_record tool definition",
+      "why": "+17: ONE new tool definition, `lesson_record` (a description line, six schema properties, the required list), placed beside `vault_discard_archives`, the other Dreamer-only door. A tool's schema is the model-facing contract and the registry reads it from this array, so the definition cannot live anywhere but here without a second registration path. THE MECHANISM IS NOT HERE: the validation, the 90-day expiry and the renewal live in the new vault/lessons-store.ts, the handler is 22 lines in the already-small agent/tools/cat/vault.ts. REFUSED: a separate definitions file spliced into getAllToolDefinitions, which would add a family array the effects census and the twin generator do not know about."
+    },
+    {
+      "path": "packages/server/src/vault/maintenance.ts",
+      "from": 2150,
+      "to": 2161,
+      "by": "t258 (2026-10-23): K34, the rough-tasks batch joins the nightly cycle",
+      "why": "+11 (net of a refactor that moves lines out): two import lines; the batch budget arithmetic that used to sit inline in batchArchives is now `batchBudgetTokens` so the ROUGH TASKS batch is sized by the SAME rule as the archive batches (+3 for the function frame, the body moved); a `DreamBatch` type carrying `verbatim`; two lines that build the batch and append it after the archives; one report line; one finalize line that tells the owner once and moves the census window; and the `verbatim` branch where the next batch is woken. EVERYTHING ELSE IS ELSEWHERE: the census (vault/friction-census.ts), the batch text and window cursor (vault/rough-tasks-batch.ts), the store (vault/lessons-store.ts) and the card (vault/lessons-announce.ts) are new files. The cycle's own state machine was not touched: the batch rides state.batches and the existing empty-archive-ids path advances past it. REFUSED: growing the file with the census or the form text, or giving the Dreamer a second wake path for lessons."
     }
   ],
   "maxNewFileLines": 400,
@@ -9059,7 +9073,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 997,
-    "packages/server/src/agent/tools/definitions.ts": 2917,
+    "packages/server/src/agent/tools/definitions.ts": 2934,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
@@ -9268,7 +9282,7 @@
     "packages/server/src/update/disk-preflight.ts": 246,
     "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/bounded-reads.ts": 606,
-    "packages/server/src/vault/maintenance.ts": 2150,
+    "packages/server/src/vault/maintenance.ts": 2161,
     "packages/server/src/vault/retrieval.ts": 425,
     "packages/server/src/vault/store.ts": 1297,
     "packages/server/src/vault/tools.ts": 658,
