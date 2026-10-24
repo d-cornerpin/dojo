@@ -9,13 +9,12 @@
 //
 // Whose message: one that came in through an ingest door (it has a channel) on any channel the owner
 // uses — the dashboard, voice and the owner's iMessage, by the stamped origin (`deriveOrigin`, the
-// one "who is this from" answer); and email from one of the owner's own connected mailboxes (the
-// mail watchers stamp no relation, so the sender address is the fact), read from its preview line.
+// one "who is this from" answer). EMAIL NEVER VERIFIES (orchestrator ruling, fix round 6): a sender is
+// only a From header nobody authenticated, and a reply carries the agent's own quoted question back.
 import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
 import { normalizeQuote } from '../work/row-authority.js';
-import { listOwnerMailboxIdentities, matchSelfIdentity } from '../services/self-identities.js';
 
 interface Row {
   content: string; lane: string; channel: string; source_agent_id: string | null;
@@ -23,17 +22,9 @@ interface Row {
   inbound_meta: string | null; origin_intent: string | null;
 }
 
-const ENTITIES: Record<string, string> = { '&#39;': "'", '&quot;': '"', '&amp;': '&', '&lt;': '<', '&gt;': '>' };
-
 /** The owner's own words in this row, or null when the row is not the owner writing. */
-function ownerWords(m: Row, ownerMailboxes: () => string[]): string | null {
-  if (m.channel === 'email') {
-    let sender = '';
-    try { sender = String((JSON.parse(m.inbound_meta ?? '{}') as { sender?: unknown }).sender ?? ''); } catch { return null; }
-    if (!sender || !matchSelfIdentity(sender, ownerMailboxes())) return null;
-    const preview = /^Preview: (.*)$/m.exec(m.content)?.[1] ?? '';
-    return preview.replace(/&#39;|&quot;|&amp;|&lt;|&gt;/g, (e) => ENTITIES[e]);
-  }
+function ownerWords(m: Row): string | null {
+  if (m.channel === 'email') return null;
   const o = deriveOrigin({
     role: 'user', content: m.content, ...legacyOriginInputs(m.lane, m.channel),
     sourceAgentId: m.source_agent_id, a2aThreadId: m.a2a_thread_id, a2aIntent: m.a2a_intent,
@@ -60,10 +51,8 @@ export function ownerSaidSinceVerdictAsked(taskId: string, quote: string): boole
        FROM messages
       WHERE role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL AND sent_at >= ?`,
   ).all(Math.floor(asked.at / 1000) * 1000) as Row[];   // floored to the second: `sent_at`'s default is second-resolution
-  let mailboxes: string[] | null = null;
-  const ownerMailboxes = (): string[] => (mailboxes ??= listOwnerMailboxIdentities());
   return rows.some((m) => {
-    const words = ownerWords(m, ownerMailboxes);
+    const words = ownerWords(m);
     return words !== null && quotableUnits(words).includes(q);
   });
 }

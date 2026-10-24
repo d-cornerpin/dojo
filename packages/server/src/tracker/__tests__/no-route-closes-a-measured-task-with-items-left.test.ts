@@ -333,16 +333,33 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: from, emailService: 'gmail' }),
   });
   const emailBody = (preview: string): string => `[SOURCE: GMAIL NOTIFICATION — agent@box (agent)]\n\n[DIRECT MESSAGE] x emailed you.\n\nFrom: x\nSubject: Re: verdict\nDate: today\nPreview: ${preview}\nMessage ID: 1\nUse \`gmail_read\` to read the full body.`;
-  it('an email reply from the owner\'s own mailbox is accepted', async () => {
+  // fix round 6 (orchestrator ruling): email is never the owner's verified word. A sender is only a
+  // From header, and an email carries the agent's own quoted question back at the PM.
+  it('an email reply, even from the owner\'s own mailbox, never verifies a quote', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Yes. Close it, I&#39;ll do the rest.'), "close it, I'll do the rest", emailRow('owner@home.example'));
-    expect(r.out).not.toMatch(/^Error|Refused/);
-    expect(r.state).toBe('done');
+    expect(r.out).toMatch(/measure-items-left/);
+    expect(r.state).toBe('claimed');
   });
   it('an email from anyone else is not the owner', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Close it.'), 'close it', emailRow('someone@else.example'));
     expect(r.out).toMatch(/measure-items-left/);
+  });
+  it('the agent\'s own question, quoted back in an owner-mailbox reply, never verifies', async () => {
+    db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
+    const r = await verdictOn(emailBody('Not yet. On Mon, the agent wrote: > 30 messages are still left. Close it now? Or keep going?'), 'Close it now', emailRow('owner@home.example'));
+    expect(r.out).toMatch(/measure-items-left/);
+    expect(r.state).toBe('claimed');
+  });
+  it('the owner\'s dashboard reply still verifies when an email with the same words is also on record', async () => {
+    db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
+    const id = await stalemated();
+    ownerSays(emailBody('Close it.'), emailRow('owner@home.example'));
+    ownerSays('Close it.');
+    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'close it' });
+    expect(out).not.toMatch(/^Error|Refused/);
+    expect(readWork(id).state).toBe('done');
   });
 
   it('the owner\'s words from BEFORE the verdict was asked do not count', async () => {

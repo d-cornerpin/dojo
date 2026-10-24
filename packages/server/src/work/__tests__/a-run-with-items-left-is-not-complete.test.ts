@@ -43,6 +43,7 @@ import {
 } from '../occurrences.js';
 import { declareDeliverableOnSchedule } from '../deliverable-declaration.js';
 import { listOccurrenceRuns } from '../occurrence-runs.js';
+import { countOf } from '../measure-close-gate.js';
 import { seedTrackerTask } from './work-fixture.js';
 import {
   MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
@@ -400,5 +401,14 @@ describe('fix round 4 (minor): one row that cannot be re-read never stops the de
     const [first, second] = order[0] === W ? [run1, run2] : [run2, run1];
     expect(['open', 'claimed']).toContain(stateOf(first));
     expect(stateOf(second)).toBe('done');
+  });
+});
+
+describe('fix round 6: a count reads in the singular only where the unit is a plural', () => {
+  it.each([
+    [1, 'boxes', '1 box'], [1, 'messages', '1 message'], [1, 'addresses', '1 address'], [1, 'batches', '1 batch'],
+    [1, 'items', '1 item'], [2, 'boxes', '2 boxes'], [0, 'messages', '0 messages'],
+  ])('%i %s -> %s', (n, unit, out) => {
+    expect(countOf(n, unit)).toBe(out);
   });
 });

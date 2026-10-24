@@ -25,8 +25,11 @@ import { appendAuditEntry } from './audit-trail.js';
 
 const permits = new Set<string>();
 
-/** "1 message", "5 messages": a count of the measure's unit, in the owner's words. */
-export const countOf = (n: number, unit: string): string => `${n} ${n === 1 && /[^s]s$/.test(unit) ? unit.slice(0, -1) : unit}`;
+/** "1 message", "1 box", "5 messages": a count of the measure's unit, in the owner's words. Only a
+ *  trailing plural "s" comes off ("boxes"/"batches"/"addresses" lose "es"; "messages" loses "s"). */
+const singular = (unit: string): string =>
+  /(?:x|ch|sh|ss)es$/.test(unit) ? unit.slice(0, -2) : /[^s]s$/.test(unit) ? unit.slice(0, -1) : unit;
+export const countOf = (n: number, unit: string): string => `${n} ${n === 1 ? singular(unit) : unit}`;
 
 /** Run `close` with this task's named remainder honoured by the writer. Synchronous on purpose:
  *  the permit cannot outlive the call it was granted for. */

@@ -47,12 +47,6 @@ export function listAgentSelfIdentities(): string[] {
   return emails;
 }
 
-/** The owner's own connected mailboxes (kind === 'user'): mail FROM one of these is the owner writing. */
-export function listOwnerMailboxIdentities(): string[] {
-  return [...listGoogleAccountViews(), ...listMicrosoftAccountViews()]
-    .filter((v: MailboxIdentityView) => v.kind === 'user' && v.connected && !!v.email).map((v) => v.email as string);
-}
-
 /**
  * If `address` matches any of `identities` (tolerant compare via the shared
  * addressesMatch), return the matched identity email; otherwise null. Callers
