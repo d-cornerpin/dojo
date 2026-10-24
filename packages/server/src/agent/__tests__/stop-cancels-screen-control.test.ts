@@ -131,6 +131,8 @@ describe('E19: Stop cancels an in-flight screen-control call', () => {
     expect(raced.stopped).toBe(true);
     expect(await until(() => grandchild().length === 1, 2_000), 'the stand-in started its child').toBe(true);
     expect(await until(() => !alive(grandchild()[0]), 2_000), 'the grandchild did not survive the Stop').toBe(true);
+    // The abandoned call settles with its "cut off" notice: wait for it here, so it cannot land in the next clause.
+    expect(await until(() => cutOffNotices().length === 1, 5_000), 'the owner is told it was cut off').toBe(true);
   });
 
   it('a call that completes before Stop is unaffected', async () => {
