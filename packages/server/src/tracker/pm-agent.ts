@@ -2484,7 +2484,19 @@ export async function runPokeCheck(): Promise<void> {
   }
 
   // ── Engine-level in_progress poke chain (nudge → urgent → escalate) ──
-  const inProgressTasks = allActiveTasks.filter(t => t.status === 'in_progress');
+  await checkInOn(allActiveTasks.filter(t => t.status === 'in_progress'));
+}
+
+/** v3.5 D1 (fix round 3): the check-in for a continued measured job, asked at its PARK — the boundary
+ *  between its continued turns, never inside one. The same ladder, for this one task, with the
+ *  assignee's turn read as ended (the park is the turn's last act; the continuation reads it). */
+export async function checkInAtThePark(taskId: string): Promise<void> {
+  const task = getTask(taskId);
+  if (task?.status === 'in_progress') await checkInOn([task], true);
+}
+
+/** The check-in ladder over these in-progress tasks (the sweep's own loop). */
+async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[number]>, atThePark = false): Promise<void> {
   const now = Date.now();
 
   for (const task of inProgressTasks) {
@@ -2554,7 +2566,7 @@ export async function runPokeCheck(): Promise<void> {
     // positives the old "STILL WORKING: continue from EXACTLY where you
     // stopped" counter-prompt existed to undo. The rung fires on the next
     // tick after the turn ends if the task still hasn't moved.
-    const assigneeStatus = (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
+    const assigneeStatus = atThePark ? 'parked' : (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
       .get(task.assignedTo) as { status: string } | undefined)?.status;
     // t143 round 4 (C1, owner's rule: a job that is really working is left alone): the idle-clock
     // rungs and the strike-2 close skip a task ONLY if it is the job in flight (the agent's standing
@@ -2562,8 +2574,9 @@ export async function runPokeCheck(): Promise<void> {
     // recently": an agent that said "on it" and left a task claimed, or a busy agent with a second
     // task it dropped, is still nudged on schedule. (A PM-recorded circling verdict is evidence of
     // what the agent is doing, not an idle clock, and still goes through the fill-in below.)
-    // v3.5 D1 (fix round 2): a continued measured job is left alone only while it is touching items, since
-    // the last check-in (or within the first rung's own window); one that touches none is checked in on.
+    // v3.5 D1: a continued measured job is left alone only while it is touching items, since the last
+    // check-in (or within the first rung's own window). One that touches none is checked in on, and its
+    // ladder clock runs while it works; the check-in itself lands at the park, never mid-turn (`checkInAtThePark`).
     const looping = continuedJobTouchingNothing(task.id, lastPokeOf(task.id)?.sentAtMs ?? now - thresholds.first * 1000);
     const leftAlone = !looping && (jobCarriedIds(task.assignedTo).includes(task.id) || agentIsLive(task.assignedTo));
     // t151 (R-V333-19): while the sweep may not poke, the ladder's clock does not run. A task waiting
@@ -2572,7 +2585,7 @@ export async function runPokeCheck(): Promise<void> {
     // 3 and 10 found the whole job's length as idleness and sent the top rung at once).
     if ((assigneeStatus === 'working' && !looping) || leftAlone) holdLadder(task.id);
     else resumeLadder(task.id, getPMAgentId(), thresholds.first * 1000);
-    if (assigneeStatus === 'working' && !looping) continue;
+    if (assigneeStatus === 'working') continue;
     const idleSeconds = Math.max(0, Math.floor((now - movedAt - heldMsSince(task.id, movedAt)) / 1000));
 
     // The rung this ticket has already reached in the CURRENT escalation cycle, read from the

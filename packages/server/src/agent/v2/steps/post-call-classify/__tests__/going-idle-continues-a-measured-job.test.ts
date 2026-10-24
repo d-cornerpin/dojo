@@ -28,7 +28,8 @@ vi.mock('../../../../../db/connection.js', async () => {
   };
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-const { countMeasure, parkJob, stash } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn() }));
+const { countMeasure, parkJob, stash, checkIn } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn(), checkIn: vi.fn(async () => undefined) }));
+vi.mock('../../../../../tracker/pm-agent.js', () => ({ checkInAtThePark: checkIn }));
 vi.mock('../../../../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/measure.js')>()), countMeasure }));
 vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/job-continuation.js')>()), parkJob }));
 
@@ -134,6 +135,7 @@ beforeEach(() => {
   endJobRun(AGENT);
   endJobCarry(AGENT);
   stash.mockClear();
+  checkIn.mockClear();
 });
 
 describe('D1: a turn that ends mid-job is parked and continued', () => {
@@ -421,5 +423,19 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10551, touchedThisTurn: 0, novelCallsThisTurn: 0 })]);
     expect(stash).toHaveBeenCalledTimes(1);
+  });
+
+  it('fix round 3: a park after a turn that touched NO item asks the PM\'s ladder to check in, at the boundary; one after a turn that touched items does not', async () => {
+    const id = await openTask(true);
+    countMeasure.mockResolvedValue({ ok: true, count: 10412 });
+    await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
+    expect(parkJob).toHaveBeenCalledTimes(1);
+    expect(checkIn).not.toHaveBeenCalled();
+    theContinuationStarts();
+    const page = { id: 'tc-p3', name: 'gmail_search', arguments: { query: 'in:inbox -label:Done', page_token: 'p3' } } as ToolCall;
+    await runGoingIdle(ranCalls(freshTurn(), id, [page]), ctxFor(), scratch());
+    expect(parkJob).toHaveBeenCalledTimes(2);
+    expect(checkIn).toHaveBeenCalledTimes(1);
+    expect(checkIn).toHaveBeenCalledWith(id);
   });
 });

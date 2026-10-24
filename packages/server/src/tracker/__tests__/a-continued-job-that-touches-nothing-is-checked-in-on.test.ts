@@ -6,7 +6,9 @@
 // applies to a continued measured job only while it is touching items (new ledger items since the last
 // check-in, or, before the first, within the first rung's own window). One that touches none lets the
 // ladder run on its existing rungs, and the check-in carries the fact: continuations since it last
-// touched an item, and how many are left. A job touching items is left alone exactly as before.
+// touched an item, and how many are left. Pokes still never fire mid-turn (orchestrator ruling, fix
+// round 3): such a job's check-in lands at the CONTINUATION BOUNDARY, the park between its turns,
+// where the engine asks the ladder (`checkInAtThePark`). A job touching items is left alone as before.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -89,7 +91,7 @@ import { runMigrations } from '../../db/migrations.js';
 // Each clause boots the real module graph and runs the full migration chain; an import cost, not
 // a timing assertion. Nothing here measures time.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { runPokeCheck } from '../pm-agent.js';
+import { runPokeCheck, checkInAtThePark } from '../pm-agent.js';
 import { endJobCarry, registerTimerWake, beginJobRun, endJobRun, carryJobWork } from '../../work/task-freshness.js';
 import { recordContinued } from '../../work/job-momentum.js';
 import { recordTouched } from '../../work/ledger-store.js';
@@ -165,22 +167,35 @@ function aContinuedJob(now: number, ageMin: number, continuations: number): void
 }
 
 describe('fix round 2 (c): a continued job that touches nothing is checked in on', () => {
-  it('a loop of new successful reads with 0 items touched: the check-in fires on its normal rung, carrying the fact', async () => {
+  it('the sweep never pokes it mid-turn (the rule stands): its check-in waits for the continuation boundary', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     aContinuedJob(now, 6, 3);
     await sweepAt(now);
+    expect(pokes(JOB)).toBe(0);
+    endJobRun('helper');
+  });
+
+  it('at the park (the continuation boundary), a loop of new successful reads with 0 items touched is checked in on at its normal rung, carrying the fact', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    aContinuedJob(now, 6, 3);
+    vi.setSystemTime(now);
+    await checkInAtThePark(JOB);
+    await new Promise((r) => setTimeout(r, 15));
     expect(rungsSent(JOB)).toEqual([1]);
     expect(checkIns(JOB).join('\n')).toMatch(/Continued 3 times since it last touched an item; 12 left on its measure\./);
     endJobRun('helper');
   });
 
-  it('CONTROL: the same job touching items is left alone, as before', async () => {
+  it('CONTROL: the same job touching items is left alone at the park, as before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();
     aContinuedJob(now, 6, 3);
     recordTouched(JOB, 'gmail_label', ['gmail:msg:a'], now - MIN);
-    await sweepAt(now);
+    vi.setSystemTime(now);
+    await checkInAtThePark(JOB);
+    await new Promise((r) => setTimeout(r, 15));
     expect(pokes(JOB)).toBe(0);
     endJobRun('helper');
   });
