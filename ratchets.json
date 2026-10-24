@@ -9145,6 +9145,13 @@
       "to": 1086,
       "by": "t252 B3 (v3.5, 2026-10-23): the Healer report carries the decision model's per-question score",
       "why": "+2: one import and one collector line in compileDiagnosticReport. The section itself (the score per question, the mode and the switching sentence the plan specifies) lives in the NEW agent/decision-policy.ts beside the policy it reports, so the report builder only mounts it, the way it mounts every other collector."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 376,
+      "to": 383,
+      "by": "t252 B4 (v3.5, 2026-10-23): one KNOWN_DIVERGENCES entry for the in-lane amendment of unreleased migration 201",
+      "why": "+7: one ledger entry (file, the two checksums, since, reason) in the shape every other entry has. The migration freeze gate counts every commit on the branch since the last tag as applicable, and the lane's one reserved migration was amended after B2 committed it (B4 added summary_checks). The ledger is the gate's only adjudication mechanism and the entry is data, not code. ALTERNATIVE REFUSED: rewriting the lane's history to fold B4's table into B2's commit is a rebase, which the lane rules forbid."
     }
   ],
   "maxNewFileLines": 400,
