@@ -7,8 +7,14 @@ import type { Model } from '@dojo/shared';
 /** The id of a model card's Context field, so the note above it can land the cursor there. */
 export const contextInputId = (modelId: string): string => `model-context-${modelId}`;
 
+// Capabilities of a model that reads and writes text, so a context window applies to it. A model whose
+// capabilities are not known yet is treated as one (the probe has not run); image, video, audio, music,
+// transcription and embedding models carry none of these and have no text context to report.
+const TEXT_CAPABILITIES = new Set(['chat', 'text', 'code', 'tools', 'thinking', 'vision', 'analysis']);
+
 export const UnsetWindowNote = ({ model }: { model: Model }) => {
   if (model.contextWindow) return null;
+  if (model.capabilities.length > 0 && !model.capabilities.some((c) => TEXT_CAPABILITIES.has(c))) return null;
   return (
     <>
       {' | '}

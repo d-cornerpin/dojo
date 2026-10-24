@@ -56,4 +56,20 @@ describe('M41 — the model row says when the window is not set', () => {
     expect(screen.getByText(/context not reported by the provider/i)).toBeTruthy();
     expect(screen.queryByText(/using .*k until/i)).toBeNull();
   });
+
+  it('a model with no text context (image, video, audio, music, transcription, embedding) draws no such line', () => {
+    for (const capabilities of [['image_generation'], ['video_generation'], ['audio_generation'], ['music_generation'], ['transcription'], ['embedding']]) {
+      const { unmount } = draw(model({ capabilities, contextWindow: null, assumedContextWindow: 200_000 }));
+      expect(screen.queryByText(/not reported by the provider/i), capabilities.join()).toBeNull();
+      unmount();
+    }
+  });
+
+  it('chat, tool and thinking models still draw it; so does a model whose capabilities are not yet known', () => {
+    for (const capabilities of [['chat'], ['tools', 'thinking'], ['text'], []]) {
+      const { unmount } = draw(model({ capabilities, contextWindow: null, assumedContextWindow: 200_000 }));
+      expect(screen.getByText(/context not reported by the provider/i), capabilities.join()).toBeTruthy();
+      unmount();
+    }
+  });
 });
