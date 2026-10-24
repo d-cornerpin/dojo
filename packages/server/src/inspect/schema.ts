@@ -29,7 +29,7 @@ function meaning(name: string, virtualNames: Set<string>): string {
   if (virtualNames.has(name)) return 'full-text search index';
   const part = FTS_PART.exec(name);
   if (part && virtualNames.has(part[1])) return `full-text search internals of ${part[1]}`;
-  return '(no note)';
+  return '(no description)';
 }
 
 /** Every table with its row count and meaning, or one table's columns. */
@@ -54,7 +54,7 @@ export function schema(args: { table?: string }, db: Database.Database = getRead
   const typeW = Math.max(...cols.map((c) => typeOf(c).length));
   const rows = cols.map((c) => {
     const credential = isDeniedColumn(c.name, c.type) ? ` (credential: ${NOT_READABLE})` : '';
-    return `${c.name.padEnd(nameW)}  ${typeOf(c).padEnd(typeW)}  ${notes?.get(c.name.toLowerCase()) ?? '(no note)'}${credential}`;
+    return `${c.name.padEnd(nameW)}  ${typeOf(c).padEnd(typeW)}  ${notes?.get(c.name.toLowerCase()) ?? '(no description)'}${credential}`;
   });
   const head = `${t.name} — ${denied ? `${NOT_READABLE}: its rows hold credentials or the owner's private memory` : meaning(t.name, virtualNames)}`;
   return `${head}\n\n${rows.join('\n')}`;

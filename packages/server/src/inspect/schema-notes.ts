@@ -6,8 +6,10 @@
 // own `migrationFileNames` / `readMigrationFile`, once per process and in the runner's order, so
 // a later migration's note replaces an earlier one's. Three forms are read:
 //
-//   a table's meaning   an inline comment on its CREATE TABLE line, else the first line of the
-//                       file's header (its migration number stripped);
+//   a table's meaning   an inline comment on its CREATE TABLE line, else the first WHOLE header
+//                       sentence that opens with its name in backticks (or says "this table" in a
+//                       file that creates only it), from the
+//                       migration that first described it; else none ("(no description)");
 //   header column notes `--   name   text` lines in the header, with deeper-indented lines
 //                       continuing them, for the tables the file creates or alters;
 //   inline column notes a comment beside a column definition (or on the lines directly above
@@ -53,14 +55,38 @@ function columnsOn(code: string): string[] {
   return out;
 }
 
-const stripNumber = (s: string): string => s.replace(/^\d+[a-z]?(_[a-z0-9_]+\.sql)?\s*(\([^)]*\))?\s*[:—–-]\s*/i, '').trim();
+/**
+ * The whole sentences of a file's header. Paragraphs break at a blank comment line, a rule of
+ * box characters and a `--   name   text` column line; a sentence counts only when it ends
+ * (`.`, `!`, `?`, or a `:` that introduces a list), so a heading or a line cut mid-thought is
+ * never offered as a meaning.
+ */
+function headerSentences(header: string[]): string[] {
+  const paragraphs: string[][] = [[]];
+  for (const l of header) {
+    const text = l.replace(/^--\s?/, '');
+    if (!text.trim() || /^[\s═─━=-]+$/.test(text) || HEADER_COLUMN.test(l)) { paragraphs.push([]); continue; }
+    paragraphs[paragraphs.length - 1].push(text.trim());
+  }
+  return paragraphs.filter((p) => p.length).flatMap((p) => p.join(' ').split(/(?<=[.!?:])\s+(?=[A-Z`"(])/))
+    .map((x) => x.trim()).filter((x) => /[.!?:]$/.test(x)).map((x) => x.replace(/:$/, '.'));
+}
+
+/** A sentence describes a table when it is ABOUT it: it opens with the table's name in backticks
+ *  ("A `grant_rule` row is …"), or, in a file that creates only that table, "this table" is its
+ *  subject ("This table is …", "THIS table carries …" — not "Until this table, …"). */
+const describes = (sentence: string, names: string[], onlyTable: boolean): boolean =>
+  (onlyTable && /\bthis table (is|carries|holds|records|keeps|lets|stores|says|names|exists)\b/i.test(sentence))
+  || names.some((n) => new RegExp(`^(the |a |an |each |one |every )?\`${n}\``, 'i').test(sentence));
 
 function parseFile(text: string, notes: SchemaNotes): void {
   const lines = text.split('\n');
   const header: string[] = [];
   let i = 0;
   for (; i < lines.length && (lines[i].startsWith('--') || lines[i].trim() === ''); i++) header.push(lines[i]);
-  const headline = stripNumber(header.find((l) => l.startsWith('--') && l.slice(2).trim())?.slice(2).trim() ?? '');
+  const sentences = headerSentences(header);
+  const inline = new Set<string>();
+  const created = new Set<string>();
   const touched = new Set<string>();
   const renames: Array<[string, string]> = [];
   let table: string | null = null; let pending: string[] = []; let last: { cols: string[]; indent: number } | null = null;
@@ -71,9 +97,9 @@ function parseFile(text: string, notes: SchemaNotes): void {
     const rename = /ALTER\s+TABLE\s+["`]?([A-Za-z_][A-Za-z0-9_]*)["`]?\s+RENAME\s+TO\s+["`]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(code);
     if (rename) renames.push([rename[1].toLowerCase(), rename[2].toLowerCase()]);
     if (create) {
-      table = create[1].toLowerCase(); touched.add(table); pending = []; last = null;
-      const meaning = comment ?? headline;
-      if (meaning) notes.tables.set(table, meaning);
+      table = create[1].toLowerCase(); touched.add(table); created.add(table); pending = []; last = null;
+      // An inline comment on the CREATE line is the author's own label for the table: it wins.
+      if (comment) { notes.tables.set(table, comment); inline.add(table); }
       if (!/\(/.test(code.slice(create.index + create[0].length))) continue;
       const rest = code.slice(code.indexOf('(', create.index) + 1);
       for (const c of columnsOn(rest)) if (comment) noteFor(notes.columns, table).set(c, comment);
@@ -102,8 +128,17 @@ function parseFile(text: string, notes: SchemaNotes): void {
     pending = comment !== null && code.trim() === '' ? [...pending, comment] : [];
   }
   headerColumns(header, touched, notes);
+  // Otherwise the first whole header sentence that describes the table, from the migration
+  // that first described it (a later rebuild's header is about the rebuild, not the table).
+  const finalName = (t: string): string => renames.find(([f]) => f === t)?.[1] ?? t;
+  for (const t of created) {
+    const names = [t, finalName(t)];
+    if (inline.has(t) || names.some((n) => notes.tables.has(n))) continue;
+    const sentence = sentences.find((x) => describes(x, names, created.size === 1));
+    if (sentence) notes.tables.set(t, sentence);
+  }
   for (const [from, to] of renames) {
-    if (notes.tables.has(from)) notes.tables.set(to, notes.tables.get(from) as string);
+    if (notes.tables.has(from) && !notes.tables.has(to)) notes.tables.set(to, notes.tables.get(from) as string);
     for (const [c, n] of notes.columns.get(from) ?? []) noteFor(notes.columns, to).set(c, n);
   }
 }

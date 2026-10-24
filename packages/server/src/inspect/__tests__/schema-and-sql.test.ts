@@ -63,13 +63,30 @@ afterAll(() => {
 describe('schema', () => {
   it('lists every table with its row count and the meaning its migration gives it', () => {
     const out = mod.schema({});
-    expect(out).toMatch(/^kept_tool_results \(0 rows\) — A TOOL RESULT TOO LONG FOR THE VIEW IS KEPT WHOLE, HERE\./m);
-    expect(out).toMatch(/^work \(0 rows\) — PHASE-2 T2: the order-ticket IS the tracker \(OR1\)\./m);
+    expect(out).toMatch(/^kept_tool_results \(0 rows\) — Now the stored `tool` row carries what the agent sees .* and THIS table carries the whole, which `tool_result_read` reads by line range or search\.$/m);
+    expect(out).toMatch(/^agent_tool_outcomes \(0 rows\) — This table is the per-\(agent, tool\) truth, written on every tool result\.$/m);
+    // Fix round 1: no migration describes `work` in a whole sentence, so it says so instead of quoting a heading.
+    expect(out).toMatch(/^work \(0 rows\) — \(no description\)$/m);
     expect(out).toMatch(new RegExp(`^messages \\(${ROWS.toLocaleString('en-US')} rows\\)`, 'm'));
     expect(out).toMatch(/^google_accounts — not readable through dojo_inspect/m);
   });
 
-  it('lists a table\'s columns with type, nullability and the meaning, or "(no note)"', () => {
+  it('fix round 1: a meaning is a whole sentence about the table, or "(no description)" — never a cut heading', () => {
+    const out = mod.schema({});
+    for (const t of ['messages', 'turns', 'agents', 'audit_log', 'deliveries']) {
+      const line = out.split('\n').find((l) => l.startsWith(`${t} (`)) ?? '';
+      const meaning = line.replace(/^[^—]*— /, '');
+      expect(meaning === '(no description)' || /[.!?]$/.test(meaning), `${t}: ${meaning}`).toBe(true);
+    }
+    // An inline label on the CREATE TABLE line is the author's own, whole, and is kept as written.
+    expect(out).toMatch(/^work_events \(0 rows\) — absorbs task_log, poke_log, override requests$/m);
+    expect(out).not.toContain('the old message system leaves the');
+    expect(out).not.toContain('TWO WORDS THAT NAME EVENTS THAT');
+    expect(out).toMatch(/^messages \([\d,]+ rows\) — \(no description\)$/m);
+    expect(out).toMatch(/^turns \(0 rows\) — \(no description\)$/m);
+  });
+
+  it('lists a table\'s columns with type, nullability and the meaning, or "(no description)"', () => {
     const kept = mod.schema({ table: 'kept_tool_results' });
     expect(kept).toMatch(/message_id\s+TEXT NOT NULL PRIMARY KEY\s+the `tool` row that shows the pointer\. Its foreign key is the lifetime rule/);
     expect(kept).toMatch(/content\s+TEXT NOT NULL\s+the whole result, after credential redaction/);
@@ -77,7 +94,7 @@ describe('schema', () => {
     expect(work).toMatch(/intent\s+TEXT NOT NULL\s+no default: the writer must say\. The old `FYI` default silently killed wake-needing work\./);
     expect(work).toMatch(/wakes\s+INTEGER NOT NULL\s+INDEPENDENT columns: conflating them stalled multi-step workflows \(v2\.5\.32\)/);
     expect(work).toMatch(/remaining_children\s+INTEGER\s+fan-out countdown \(atomic decrement\)/);
-    expect(work).toMatch(/\(no note\)/);
+    expect(work).toMatch(/\(no description\)/);
     expect(mod.schema({ table: 'destructive_approvals' })).toMatch(/token\s+TEXT.*credential: not readable through dojo_inspect/);
     expect(mod.schema({ table: 'nope' })).toMatch(/No table named nope/);
   });
