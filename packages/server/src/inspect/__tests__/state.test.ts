@@ -38,6 +38,7 @@ beforeAll(() => {
   cfg.run('compaction_model_id', 'model-1');
   cfg.run('imessage_enabled', 'true');
   cfg.run('some_provider_api_key', CONFIG_KEY);
+  for (let i = 0; i < 5; i++) cfg.run(`proactive_send_streak:agent-${i}`, String(i));
   db.prepare("INSERT OR REPLACE INTO budgets (id, scope, limit_usd, period) VALUES ('global_daily', 'global', 25, 'daily')").run();
   db.prepare("INSERT INTO drain_state (agent_id, drain, head, stuck, updated_at) VALUES ('agent-worker', 'unserved_wake', 'e:12', 2, ?)").run(at(9));
   db.prepare('INSERT INTO healer_diagnostics (id, report, warning_count, created_at) VALUES (?, ?, 1, ?)')
@@ -68,5 +69,12 @@ describe('state', () => {
     expect(out).not.toContain(URL_PASSWORD);
     expect(out).not.toContain(CONFIG_KEY);
     expect(out).toMatch(/some_provider_api_key: <redacted-credential>/);
+  });
+
+  it('fix round 1: a family of per-agent settings is one line with its count and how to read it', () => {
+    const out = state(db);
+    expect(out).toContain("- proactive_send_streak:* — 5 rows; read them with sql: select key, value from config where key like 'proactive_send_streak:%'");
+    expect(out).not.toContain('proactive_send_streak:agent-3');
+    expect(out).toMatch(/- platform_name: /);
   });
 });

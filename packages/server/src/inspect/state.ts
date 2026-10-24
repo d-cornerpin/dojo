@@ -12,7 +12,7 @@
 import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
 import { getOllamaLock } from '../services/ollama-lock.js';
-import { redactRows } from './redact.js';
+import { redactRows, redactText } from './redact.js';
 import { agentLabel, agentNames, short, toMs, utc } from './scope.js';
 import { pointerLine, sourceRef } from './source-remote.js';
 
@@ -24,6 +24,22 @@ const rows = (db: Database.Database, q: string, ...args: unknown[]): Row[] => re
 const or = (lines: string[], none: string): string => (lines.length ? lines.join('\n') : none);
 const MODEL_KEY = /model/i;
 const SWITCH_KEY = /_(connected|enabled)$/i;
+
+/** Every distinct setting as one line, except a FAMILY of keys that differ only after a `:` (one
+ *  row per agent, say — 554 `proactive_send_streak:<id>` rows on the dev box): that is one line
+ *  with its count and the query that reads it, so the page stays a page and nothing is hidden. */
+function settings(rows: Row[]): string[] {
+  const family = new Map<string, number>();
+  for (const r of rows) { const p = /^([^:]+):./.exec(String(r.key))?.[1]; if (p) family.set(p, (family.get(p) ?? 0) + 1); }
+  const shown = new Set<string>();
+  return rows.flatMap((r) => {
+    const p = /^([^:]+):./.exec(String(r.key))?.[1];
+    if (!p || (family.get(p) ?? 0) < 2) return [`- ${r.key}: ${r.value}`];
+    if (shown.has(p)) return [];
+    shown.add(p);
+    return [`- ${p}:* — ${family.get(p)} rows; read them with sql: select key, value from config where key like '${p}:%'`];
+  });
+}
 
 function score(min: unknown, max: unknown): string {
   if (min !== null && max !== null) return `score ${min}–${max}`;
@@ -66,8 +82,8 @@ export function state(db: Database.Database = getReadOnlyDb()): string {
     }), 'Nothing scheduled.'),
     Budgets: or(rows(db, 'SELECT id, scope, limit_usd, period FROM budgets ORDER BY id').map((b) => `- ${b.id} · ${b.scope} · $${b.limit_usd} ${b.period}`), 'No budgets.'),
     'Integrations and switches': or(config.filter((c) => SWITCH_KEY.test(c.key as string)).map((c) => `- ${c.key}: ${c.value}`), 'No integration switches set.'),
-    Settings: or(config.filter((c) => !MODEL_KEY.test(c.key as string) && !SWITCH_KEY.test(c.key as string)).map((c) => `- ${c.key}: ${c.value}`), 'No other settings.'),
-    Ollama: JSON.stringify(getOllamaLock().getStatus()),
+    Settings: or(settings(config.filter((c) => !MODEL_KEY.test(c.key as string) && !SWITCH_KEY.test(c.key as string))), 'No other settings.'),
+    Ollama: redactText(JSON.stringify(getOllamaLock().getStatus())),
     Drains: or(rows(db, 'SELECT agent_id, drain, head, stuck, updated_at FROM drain_state ORDER BY agent_id').map((d) =>
       `- ${agentLabel(names, d.agent_id as string)} · ${d.drain} · head ${d.head} · stuck ${d.stuck} · updated ${utc(Number(d.updated_at))}`), 'No drain is counting.'),
     'Healer diagnostics': (() => {

@@ -23,10 +23,12 @@ import type { Rec, RecordScope } from './records.js';
 export type Level = 'debug' | 'info' | 'warn' | 'error';
 const RANK: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
-interface Entry { at: number; level: string; component: string; agentId: string | null; text: string }
+interface Entry { at: number; level: string; component: string; agentId: string | null; line: string }
 
-/** Every readable line of the log, oldest first, already scrubbed. */
-function logEntries(agents: readonly string[]): { entries: Entry[]; unreadable: number } {
+/** Every readable line of the log, oldest first, parsed but NOT yet scrubbed: the filters on
+ *  time, level and component run on the parsed fields first, and only the lines that survive
+ *  are scrubbed (`scrubbed`), so a view pays for what it returns, not for the whole log. */
+function logEntries(): { entries: Entry[]; unreadable: number } {
   const entries: Entry[] = []; let unreadable = 0;
   for (const file of readLogFiles()) {
     for (const raw of file.split('\n')) {
@@ -38,14 +40,17 @@ function logEntries(agents: readonly string[]): { entries: Entry[]; unreadable: 
       const agentId = typeof e.agentId === 'string' ? e.agentId
         : (e.meta && typeof (e.meta as { agentId?: unknown }).agentId === 'string' ? (e.meta as { agentId: string }).agentId : null);
       const meta = e.meta && typeof e.meta === 'object' && Object.keys(e.meta).length ? ` · ${JSON.stringify(e.meta)}` : '';
-      const text = redactText(`${String(e.level)} ${String(e.component)} · ${String(e.message ?? '')}${meta}`, agentId ? [...agents, agentId] : agents);
-      entries.push({ at, level: String(e.level), component: String(e.component), agentId, text });
+      entries.push({ at, level: String(e.level), component: String(e.component), agentId, line: `${String(e.level)} ${String(e.component)} · ${String(e.message ?? '')}${meta}` });
     }
   }
   // Stable: lines of the same millisecond keep their file order.
   entries.sort((a, b) => a.at - b.at);
   return { entries, unreadable };
 }
+
+/** One surviving line, scrubbed against the scope's agents and its own. */
+const scrubbed = (e: Entry, agents: readonly string[]): Entry & { text: string } =>
+  ({ ...e, text: redactText(e.line, e.agentId ? [...agents, e.agentId] : agents) });
 
 const inWindow = (e: Entry, from: number | null, to: number | null): boolean => (from === null || e.at >= from) && (to === null || e.at <= to);
 
@@ -57,14 +62,16 @@ export function logs(a: LogsArgs, db: Database.Database = getReadOnlyDb()): stri
   let w = resolveWindow(db, a, agent?.id ?? null);
   const filtered = !!(a.level || a.component || a.agent || a.pattern || a.tail);
   if (w.from === null && w.to === null && !a.around && !filtered) w = latestTurnWindow(db, null) ?? w;
-  const { entries, unreadable } = logEntries(agent ? [agent.id] : []);
+  const { entries, unreadable } = logEntries();
   const min = a.level ? RANK[a.level] ?? 0 : -1;
   const name = agent?.name?.toLowerCase() ?? null;
   const needle = a.pattern?.toLowerCase();
+  // The parsed fields first; then scrub the survivors; then the text filters, on scrubbed text.
   let hits = entries.filter((e) => inWindow(e, w.from, w.to)
     && (min < 0 || (RANK[e.level] ?? 0) >= min)
-    && (!a.component || e.component.toLowerCase() === a.component.toLowerCase())
-    && (!agent || e.agentId === agent.id || e.text.includes(agent.id) || (name !== null && e.text.toLowerCase().includes(name)))
+    && (!a.component || e.component.toLowerCase() === a.component.toLowerCase()))
+    .map((e) => scrubbed(e, agent ? [agent.id] : []))
+    .filter((e) => (!agent || e.agentId === agent.id || e.text.includes(agent.id) || (name !== null && e.text.toLowerCase().includes(name)))
     && (!needle || e.text.toLowerCase().includes(needle)));
   if (a.tail && a.tail > 0) hits = hits.slice(-a.tail);
   const filters = [a.level && `${a.level} and above`, a.component && `component ${a.component}`, agent && `agent ${agent.label}`,
@@ -87,8 +94,9 @@ export function logRecords(db: Database.Database, scope: RecordScope, agentIds: 
   const ids = [...(scope.ids ?? []), ...(scope.conversation ? [scope.conversation] : [])];
   const agents = new Set(scope.agents ?? []);
   const identity = agents.size > 0 || spans.length > 0 || ids.length > 0;
-  return logEntries(agentIds).entries
+  return logEntries().entries
     .filter((e) => (RANK[e.level] ?? 0) >= RANK.warn && inWindow(e, scope.from, scope.to))
+    .map((e) => scrubbed(e, agentIds))
     .filter((e) => !identity
       || (e.agentId !== null && agents.has(e.agentId))
       || spans.some((s) => e.agentId === s.agent && e.at >= s.from && e.at <= s.to)

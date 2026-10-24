@@ -17,10 +17,16 @@ vi.mock('../../db/connection.js', () => ({
   getDb: () => h.db, getReadOnlyDb: () => h.db, closeDb: () => {}, getDbPath: () => h.file,
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+// Counted, not replaced: fix round 1 pins that only the lines a view returns are scrubbed.
+vi.mock('../redact.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../redact.js')>();
+  return { ...real, redactText: vi.fn(real.redactText) };
+});
 
 import { runMigrations } from '../../db/migrations.js';
 import { dojoDir } from '../../home.js';
 import { logs } from '../logs.js';
+import { redactText } from '../redact.js';
 import { timeline } from '../timeline.js';
 import { seedTaskStory, at, TASK, BEARER } from './seed.js';
 
@@ -92,6 +98,16 @@ describe('logs', () => {
     const ls = shown(logs({ component: 'gmail', tail: 1 }));
     expect(ls).toHaveLength(1);
     expect(ls[0]).toContain('after the turn');
+  });
+});
+
+describe('fix round 1 — filter first, scrub only what is returned', () => {
+  it('a component filter scrubs the lines it keeps, not the whole log', () => {
+    const scrub = vi.mocked(redactText);
+    scrub.mockClear();
+    const kept = shown(logs({ component: 'gmail' }));
+    expect(kept).toHaveLength(3);
+    expect(scrub.mock.calls.length).toBe(3);
   });
 });
 
