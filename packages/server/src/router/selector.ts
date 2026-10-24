@@ -57,17 +57,12 @@ function getTierModels(tierId: string): TierModelRow[] {
 }
 
 /**
- * The model for the engine's own writing jobs (titles, the multi-step classifier's names, voice
- * openers). v3.5: the Dojo's standard WRITER (`services/local-standard.ts`) whenever it is
- * installed; the `system` tier row its install routine writes is what older readers see, and the
- * fallback while the pair is not installed yet. Null when neither exists (callers fall back to their
- * non-LLM behaviour). Separate from the PM agent model (`pm_agent_model`) by design.
+ * The model for the engine's own writing jobs (titles, project names, voice openers). v3.5: the Dojo's
+ * standard WRITER (`services/local-standard.ts`) when installed, else the `system` tier row its install
+ * writes; null when neither (callers fall back to their non-LLM behaviour). Not `pm_agent_model`.
  */
 export function getSystemModel(): string | null {
-  const writer = standardModelRowId('writer');
-  if (writer) return writer;
-  const models = getTierModels('system');
-  return models.length > 0 ? models[0].model_id : null;
+  return standardModelRowId('writer') ?? getTierModels('system')[0]?.model_id ?? null;
 }
 
 function estimateRequestCost(model: TierModelRow): number {

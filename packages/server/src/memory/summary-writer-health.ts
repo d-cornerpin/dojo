@@ -191,15 +191,14 @@ function notAnswering(modelId: string, agentId?: string): boolean {
  * Every writer a summary of this agent's conversation MAY go to, in order (ruling R-V333-12, round 4:
  * the fallback never sends a conversation to a provider that would not have received it before):
  *   1. the owner's Settings writer, when one is set and usable;
- *   2. v3.5 (owner ruling 2026-10-20, "the default should be the small writer"): the Dojo's standard
- *      writer, local, so it sends the conversation nowhere new;
+ *   2. v3.5 (owner 2026-10-20): the Dojo's standard writer — local, so it sends the conversation nowhere new;
  *   3. the agent's own model, then the other text models on the agent's own provider;
  *   4. ONLY when the owner set no Settings writer — exactly as before t140 — the cheapest text model.
- * The decision model is not a writer (its capability is `decision`).
+ * An auto-routed agent has no own model: its list is the Settings writer, the standard writer, else the cheapest.
  */
 export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const db = getDb();
-  const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%' AND m.capabilities NOT LIKE '%decision%'";
+  const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%' AND m.capabilities NOT LIKE '%decision%'";   // the decision model writes nothing
   const usable = (db.prepare(
     `SELECT m.id AS id, m.provider_id AS provider FROM models m JOIN providers p ON p.id = m.provider_id
       WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}
@@ -213,10 +212,9 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const own = isUsable(ownId) ? ownId : undefined;
   const ownProvider = usable.find((u) => u.id === own)?.provider;
   const ownProviderModels = ownProvider ? usable.filter((u) => u.provider === ownProvider).map((u) => u.id) : [];
-  const writer = standardModelRowId('writer');
   const list = [
     ...(explicit ? [explicit] : []),
-    ...(isUsable(writer ?? undefined) ? [writer as string] : []),
+    ...[standardModelRowId('writer') ?? ''].filter(isUsable),
     ...(own ? [own, ...ownProviderModels] : []),
     ...(explicit ? [] : usable.map((u) => u.id)),
   ];
