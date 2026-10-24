@@ -920,7 +920,7 @@ export function contractForConfiguredModel(modelId: string | null | undefined): 
 
 import { getOllamaLock } from '../services/ollama-lock.js';
 import { isStandardModelRow } from '../services/local-standard.js';
-import { ollamaCharsPerToken, tokensAt } from '../services/token-density.js';
+import { modelCharsPerToken, recordDensitySample } from '../services/token-density.js';
 import { refuseUncheckedAtFirstLoad } from './local-model-fit.js';
 
 interface NativeOllamaMessage {
@@ -1210,7 +1210,7 @@ async function callOllamaModel(
       imageBase64Lengths: nativeMessages.flatMap((m) => (m.images ?? []).map((img) => img.length)),
       outputTokens: dialOutputCap ?? dial.maxOutputTokens,
       configuredNumCtx: effectiveNumCtx,
-      charsPerToken: ollamaCharsPerToken(modelInfo.providerId),   // t268: this box's measured density (B5: ~2.5, not 4)
+      charsPerToken: modelCharsPerToken(modelId),   // t268: this model's measured density (B5: ~2.5, not 4)
     }
     : null;
   const dialNumCtx = dialNumCtxInput ? utilityNumCtx(dialNumCtxInput) : null;
@@ -1590,9 +1590,9 @@ async function callOllamaModel(
       // `requestType` above is unchanged, byte for byte, including the `??` chain — this is
       // the fact that chain discards, recorded beside it rather than instead of it.
       callPurpose: purpose,
-      // t268: a utility dial's characters beside Ollama's own prompt_eval_count — the sample the ledger measures this box's density from.
-      ...(dialNumCtxInput ? { estimatedInputTokens: tokensAt(dialNumCtxInput.inputChars, dialNumCtxInput.charsPerToken), estimatorCharsPerToken: dialNumCtxInput.charsPerToken } : {}),
     });
+    // t268 (I-3): a text dial's characters against Ollama's own prompt_eval_count teach THIS model its density.
+    if (dialNumCtxInput && dialNumCtxInput.imageBase64Lengths.length === 0) recordDensitySample(modelId, dialNumCtxInput.inputChars, inputTokens, dialNumCtx);
 
     recordProviderSuccess(modelInfo.providerId);
 

@@ -14,15 +14,15 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { decide, decideTimeoutMs, fencedState, type Question } from '../decide.js';
+import { decide, decideTimeoutMs, fencedState, __forgetResidencyForTests, type Question } from '../decide.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
-import { B5_MEASURED_CHARS_PER_TOKEN } from '../../services/token-density.js';
+import { B5_MEASURED_CHARS_PER_TOKEN, recordDensitySample } from '../../services/token-density.js';
 import { writeThenCheck } from '../../memory/summary-check.js';
 
 const BASE = 'http://127.0.0.1:47151';
 const db = (): Database.Database => mockDb.current!;
 const Q3: Record<string, Question> = Object.fromEntries(['a', 'b', 'c'].map((k) => [k, { type: 'noul', instructions: `${k}?` } as Question]));
-const ollama = { resident: [] as string[], psUp: true };
+const ollama = { up: true, fetches: [] as string[] };
 let clocks: number[] = [];
 
 beforeEach(() => {
@@ -30,17 +30,15 @@ beforeEach(() => {
   runMigrations(mockDb.current);
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', ?, 'none', 1)").run(BASE);
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-decision', 'ollama-local', ?, ?, '["decision"]', 1)`).run(STANDARD_DECISION_MODEL.tag, STANDARD_DECISION_MODEL.tag);
-  ollama.resident = [];
-  ollama.psUp = true;
+  ollama.up = true;
+  ollama.fetches = [];
   clocks = [];
+  __forgetResidencyForTests();
   const timeout = AbortSignal.timeout.bind(AbortSignal);
   vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => { clocks.push(ms); return timeout(ms); });
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    const path = new URL(url).pathname;
-    if (path === '/api/ps') {
-      if (!ollama.psUp) throw new Error('fetch failed: ECONNREFUSED');
-      return Response.json({ models: ollama.resident.map((name) => ({ name, model: name })) });
-    }
+    ollama.fetches.push(new URL(url).pathname);
+    if (!ollama.up) throw new Error('fetch failed: ECONNREFUSED');
     return Response.json({ answers: { a: { noul: 0.1 }, b: { noul: 0.1 }, c: { noul: 0.1 }, invented: { noul: 0.1 }, dropped: { noul: 0.1 }, stated_current: { noul: 0.1 } } });
   }));
 });
@@ -62,26 +60,31 @@ describe('the arithmetic (B5\'s worked examples)', () => {
 });
 
 describe('decide() gives each call the time its own size takes', () => {
-  it('resident (/api/ps lists it): the warm formula for its state tokens at the box\'s density and its questions', async () => {
-    ollama.resident = [STANDARD_DECISION_MODEL.tag];
+  it('resident (a call it answered left the model loaded): the warm formula for its state tokens and its questions', async () => {
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
     const state = { reply: 'w'.repeat(6_000) };
     expect(await decide(state, Q3, { purpose: 'probe' })).not.toBeNull();
     expect(callClock()).toBeGreaterThan(1_500);   // the provisional fixed figure would have cut it (B5)
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, true));
   });
 
-  it('the cold path: a model Ollama has not loaded gets the load time too', async () => {
+  it('the cold path: the first call, and the first after any failure, get the load time too; no /api/ps is asked', async () => {
     const state = { reply: 'short' };
     await decide(state, Q3, { purpose: 'probe' });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, false));
-    ollama.psUp = false;   // Ollama cannot say: counted as not loaded (the call that follows fails on its own if it is down)
+    await decide(state, Q3, { purpose: 'probe' });
+    expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, true));
+    ollama.up = false;
+    expect(await decide(state, Q3, { purpose: 'probe' })).toBeNull();
+    ollama.up = true;
     await decide(state, Q3, { purpose: 'probe' });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, false));
+    expect(ollama.fetches.every((p) => p === '/v1/systemone')).toBe(true);
   });
 
-  it('T is counted at the box\'s own measured density when it has one', async () => {
-    ollama.resident = [STANDARD_DECISION_MODEL.tag];
-    db().prepare("UPDATE providers SET measured_chars_per_token_prose = 2.0 WHERE id = 'ollama-local'").run();
+  it('T is counted at the decision model\'s OWN measured density when it has one', async () => {
+    for (let i = 0; i < 3; i++) recordDensitySample('m-decision', 20_000, 10_000);   // 2.0 chars per token
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
     const state = { reply: 'd'.repeat(6_000) };
     await decide(state, Q3, { purpose: 'probe' });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state, 2.0), 3, true));
@@ -93,7 +96,7 @@ describe('decide() gives each call the time its own size takes', () => {
   });
 
   it('the summary check gets the formula too — the decision model\'s own time, not how long the writer took', async () => {
-    ollama.resident = [STANDARD_DECISION_MODEL.tag];
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
     const source = '[USER · the owner] draft the budget';
     const summary = 'The owner asked for a budget.';
     // A writer that answered at once (a fast cloud writer): its time says nothing about the decision model's.

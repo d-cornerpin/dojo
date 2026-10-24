@@ -18,7 +18,7 @@ import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
 import { fenceExternal } from '../tools/external-content.js';
-import { localCharsPerToken, tokensAt } from '../services/token-density.js';
+import { decisionCharsPerToken, recordDensitySample, tokensAt } from '../services/token-density.js';
 
 const logger = createLogger('decide');
 
@@ -48,15 +48,14 @@ export function decideTimeoutMs(stateTokens: number, questions: number, resident
   return Math.ceil((62 + 1.33 * stateTokens + 94 * (questions - 1)) * 2.05) + (resident ? 0 : 1_300);
 }
 
-/** Is `model` loaded in Ollama now (`/api/ps`)? Asked within the warm call's own time; no answer is "not loaded". */
-async function residentNow(baseUrl: string, model: string, boundMs: number, stop?: AbortSignal): Promise<boolean> {
-  try {
-    const clock = AbortSignal.timeout(boundMs);
-    const resp = await fetch(`${baseUrl}/api/ps`, { signal: stop ? AbortSignal.any([stop, clock]) : clock });
-    const loaded = resp.ok ? ((await resp.json()) as { models?: Array<{ name?: string; model?: string }> }).models ?? [] : [];
-    return loaded.some((m) => m.name === model || m.model === model);
-  } catch { return false; }
-}
+/**
+ * Is the decision model loaded? Fix round 1: no `/api/ps` round trip per call — what this process already knows:
+ * a call it answered left the model resident (`keep_alive: -1`), until any call of it fails (a restart, an
+ * eviction, a removed tag), after which the next call is given the load time again.
+ */
+const resident = new Set<string>();
+/** Test-only: forget which models this process saw answer. */
+export function __forgetResidencyForTests(): void { resident.clear(); }
 /** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn. */
 const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
@@ -114,6 +113,7 @@ export async function decide(
   if (names.length > MAX_QUESTIONS_PER_REQUEST) return fail('too_many_questions', opts.purpose, String(names.length));
 
   const request = decideRequestBody(provider.model, state, questions);
+  const stateChars = JSON.stringify(fencedState(state)).length;
   if (Buffer.byteLength(request) > MAX_DECISION_BODY_BYTES) return fail('too_large', opts.purpose, `${Buffer.byteLength(request)} bytes`);
   // NB-1: while the Ollama app restarts to apply the model limit, the rule answers (no wait on a restart);
   // otherwise this call is in-flight work the restart waits for.
@@ -123,10 +123,9 @@ export async function decide(
   try {
     let timeoutMs = opts.timeoutMs;
     if (timeoutMs === undefined) {
-      const stateTokens = tokensAt(JSON.stringify(fencedState(state)).length, localCharsPerToken());
-      const warm = decideTimeoutMs(stateTokens, names.length, true);
-      timeoutMs = decideTimeoutMs(stateTokens, names.length, await residentNow(provider.baseUrl, provider.model, warm, slot?.signal));
+      timeoutMs = decideTimeoutMs(tokensAt(stateChars, decisionCharsPerToken()), names.length, resident.has(provider.model));
     }
+    resident.delete(provider.model);   // until this call is answered
     const clock = AbortSignal.timeout(timeoutMs);
     const started = Date.now();
     let resp: Response;
@@ -157,6 +156,9 @@ export async function decide(
       inputTokens: isNum(inputTokens) ? inputTokens : 0, outputTokens: 0, latencyMs: Date.now() - started,
       requestType: 'decision', callPurpose: opts.purpose,
     });
+    resident.add(provider.model);
+    // I-3: usage is summed over the questions (B5), so one question's count against the state teaches the decision model its density.
+    if (isNum(inputTokens)) recordDensitySample(provider.modelId, stateChars, inputTokens / names.length);
     return answers;
   } finally {
     slot?.release();

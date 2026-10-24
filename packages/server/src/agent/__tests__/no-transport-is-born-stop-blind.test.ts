@@ -511,7 +511,7 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
    */
   const FETCH_SITES: Record<string, number> = {
     'agent/model.ts': 1,
-    'agent/decide.ts': 2,   // t268: + the /api/ps residency read that sizes its timeout, under the same openAgentCall stop
+    'agent/decide.ts': 1,
     'agent/site-snapshot.ts': 1,
     'agent/tools/definitions.ts': 1,
     'agent/web-tools.ts': 2,

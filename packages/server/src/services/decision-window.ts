@@ -19,7 +19,7 @@ import { createLogger } from '../logger.js';
 import { STANDARD_DECISION_MODEL } from './local-standard.js';
 import { writerJobWindowTokens, DECISION_WINDOW_KEY } from './dojo-working-memory.js';
 import { utilityNumCtx } from '../agent/utility-dial.js';
-import { localCharsPerToken } from './token-density.js';
+import { decisionCharsPerToken } from './token-density.js';
 import { MAX_DECISION_BODY_BYTES } from '../agent/decide.js';
 
 const logger = createLogger('decision-window');
@@ -30,8 +30,10 @@ const OLLAMA_MODEL_CALL_MS = 10_000;
 /** The window the decision model should run at on this box, in tokens. */
 export async function desiredDecisionWindowTokens(): Promise<number> {
   // A character is at least one byte, so a body Ollama accepts holds at most MAX_DECISION_BODY_BYTES characters.
-  const bodyWindow = utilityNumCtx({ inputChars: MAX_DECISION_BODY_BYTES, outputTokens: 0, configuredNumCtx: null, charsPerToken: localCharsPerToken() });
-  return Math.min(await writerJobWindowTokens(null), bodyWindow);
+  // Both counted by the DECISION model's tokenizer (fix round 1, I-3): it is the one reading the job's text.
+  const cpt = decisionCharsPerToken();
+  const bodyWindow = utilityNumCtx({ inputChars: MAX_DECISION_BODY_BYTES, outputTokens: 0, configuredNumCtx: null, charsPerToken: cpt });
+  return Math.min(await writerJobWindowTokens(null, cpt), bodyWindow);
 }
 
 async function ollamaPost(baseUrl: string, path: string, body: unknown): Promise<Response | null> {
