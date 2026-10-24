@@ -26,6 +26,7 @@ beforeAll(() => {
     CREATE TABLE messages (seq INTEGER PRIMARY KEY, id TEXT, agent_id TEXT, content TEXT, token_count INTEGER);
     CREATE TABLE providers (id TEXT PRIMARY KEY, measured_chars_per_token REAL, measured_chars_per_token_at TEXT);
     CREATE INDEX ix_da_token ON destructive_approvals(token);
+    CREATE VIEW approval_tokens AS SELECT id, token FROM destructive_approvals;
   `);
 });
 
@@ -59,6 +60,43 @@ describe('refuseDeniedSql', () => {
     expect(refuseDeniedSql('select token_count, content from messages', db)).toBeNull();
     expect(refuseDeniedSql('select measured_chars_per_token, measured_chars_per_token_at from providers', db)).toBeNull();
     expect(refuseDeniedSql('select id, agent_id, created_at from destructive_approvals', db)).toBeNull();
+  });
+});
+
+describe('refuseDeniedSql — fix round 1: the word explain, every quoting form, every way round', () => {
+  it("the reviewer's two probes, verbatim, are refused", () => {
+    expect(refuseDeniedSql("select access_token as a, refresh_token as b, 1 as explain from 'google_accounts'", db)).toMatch(/google_accounts/);
+    expect(refuseDeniedSql('select token as t, 0 as explain from destructive_approvals', db)).toMatch(/destructive_approvals\.token/);
+  });
+
+  it('a single-quoted table name is a table name to SQLite, so it is one to the scan', () => {
+    expect(refuseDeniedSql("select email from 'google_accounts'")).toMatch(/google_accounts/);
+    expect(refuseDeniedSql("select * from messages where content = 'google_accounts'")).toMatch(/google_accounts/);
+    // A literal that merely CONTAINS the name is text, not a table.
+    expect(refuseDeniedSql("select * from messages where content like '%google_accounts%'", db)).toBeNull();
+  });
+
+  it('an alias, a CTE named explain, a view, a subquery, a UNION and json_each are all refused', () => {
+    for (const q of [
+      'select token as innocent from destructive_approvals',
+      'with explain as (select token from destructive_approvals) select * from explain',
+      'select * from approval_tokens',
+      'select x from (select token as x from destructive_approvals) as explain',
+      'select 1, 2 union all select id, token from destructive_approvals',
+      "select value from json_each((select json_group_array(access_token) from 'google_accounts'))",
+      'select rawtok from (select access_token as rawtok from "google_accounts") t, (select 1 as explain) e',
+    ]) expect(refuseDeniedSql(q, db), q).toMatch(/Refused/);
+  });
+
+  it('a genuine EXPLAIN is checked like the statement it explains', () => {
+    expect(refuseDeniedSql('explain select token from destructive_approvals', db)).toMatch(/destructive_approvals\.token/);
+    expect(refuseDeniedSql('EXPLAIN QUERY PLAN select access_token from google_accounts', db)).toMatch(/google_accounts/);
+    expect(refuseDeniedSql('explain query plan select token_count from messages', db)).toBeNull();
+    expect(refuseDeniedSql('explain pragma query_only = 0', db)).toMatch(/Refused/);
+  });
+
+  it("a statement SQLite cannot compile is left to SQLite's own error", () => {
+    expect(refuseDeniedSql('select nope from nowhere', db)).toBeNull(); // SQLite's own error is shown where it runs
   });
 });
 

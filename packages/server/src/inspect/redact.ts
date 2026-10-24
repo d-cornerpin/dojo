@@ -23,6 +23,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type Database from 'better-sqlite3';
+import { isReadStatement, stripExplain } from '../db/read-only-door.js';
 import { PATTERNS } from '../techniques/scrub.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 
@@ -32,6 +33,7 @@ export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
 
 /** A column name that says credential and is not a time. */
+export const columnNamesCredential = (name: string): boolean => namesCredential(name);
 function namesCredential(name: string): boolean {
   return !/_at$/i.test(name) && DENIED_COLUMN_PATTERNS.some((r) => r.test(name));
 }
@@ -43,15 +45,20 @@ export function isDeniedColumn(name: string, declaredType: string): boolean {
 
 const BARE_ID = /[A-Za-z_][A-Za-z0-9_$]*/y;
 
-/** The identifiers of a statement, lowercased, with string literals and comments skipped and
- *  every quoting form ("x", [x], `x`) unwrapped. */
+/** The identifiers of a statement, lowercased, comments skipped and every quoting form ("x", [x],
+ *  `x`) unwrapped. A single-quoted literal is kept too, whole: SQLite accepts `FROM 'name'` as a
+ *  table name, so a literal that IS a denied table's name counts as naming it. */
 function identifiers(sql: string): string[] {
   const out: string[] = [];
   let i = 0;
   const close: Record<string, string> = { '"': '"', '[': ']', '`': '`' };
   while (i < sql.length) {
     const c = sql[i];
-    if (c === "'") { i++; while (i < sql.length && !(sql[i] === "'" && sql[i + 1] !== "'")) i += sql[i] === "'" ? 2 : 1; i++; continue; }
+    if (c === "'") {
+      let j = i + 1; let lit = '';
+      while (j < sql.length && !(sql[j] === "'" && sql[j + 1] !== "'")) { lit += sql[j]; j += sql[j] === "'" ? 2 : 1; }
+      out.push(lit.trim().toLowerCase()); i = j + 1; continue;
+    }
     if (c === '-' && sql[i + 1] === '-') { while (i < sql.length && sql[i] !== '\n') i++; continue; }
     if (c === '/' && sql[i + 1] === '*') { const e = sql.indexOf('*/', i + 2); i = e === -1 ? sql.length : e + 2; continue; }
     if (close[c]) {
@@ -98,37 +105,47 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
   const tables = new Set<string>(); const columns = new Set<string>();
   const program = db.prepare(`EXPLAIN ${sql}`).all() as Op[];
   const trees = schemaTrees(db);
-  const cursors = new Map<number, Tree>();
+  // A cursor number can be reused by another part of the program, so a cursor stands for EVERY
+  // tree ever opened on it: over-counting a read refuses more, and cannot leak.
+  const cursors = new Map<number, Tree[]>();
   for (const op of program) {
     if ((op.opcode === 'OpenRead' || op.opcode === 'ReopenIdx') && op.p3 === 0) {
       const tree = trees.get(op.p2);
-      if (tree) { cursors.set(op.p1, tree); tables.add(tree.table); }
+      if (tree) { cursors.set(op.p1, [...(cursors.get(op.p1) ?? []), tree]); tables.add(tree.table); }
     }
   }
   for (const op of program) {
-    const tree = cursors.get(op.p1);
-    if (!tree || CONTENT_FREE.has(op.opcode)) continue;
-    const denied = (c: { name: string; type: string } | undefined): void => {
-      if (c && c.name && isDeniedColumn(c.name, c.type)) columns.add(`${tree.table}.${c.name}`);
-    };
-    if (op.opcode === 'Column') denied(tree.columns[op.p2]);
-    else if (tree.isIndex) tree.columns.forEach(denied);
+    if (CONTENT_FREE.has(op.opcode)) continue;
+    for (const tree of cursors.get(op.p1) ?? []) {
+      const denied = (c: { name: string; type: string } | undefined): void => {
+        if (c && c.name && isDeniedColumn(c.name, c.type)) columns.add(`${tree.table}.${c.name}`);
+      };
+      if (op.opcode === 'Column') denied(tree.columns[op.p2]);
+      else if (tree.isIndex) tree.columns.forEach(denied);
+    }
   }
   return { tables, columns };
 }
 
 /**
  * The sentence that refuses this statement, or null when it reaches no credential. With a
- * connection, the compiled program is checked as well; a statement SQLite cannot compile
- * returns null here and fails with SQLite's own error where it is run.
+ * connection, the compiled program is checked as well. An EXPLAIN is checked as the statement
+ * it explains (only a read may be explained); nothing else about a statement's words skips the
+ * check. A statement SQLite cannot compile returns null here and fails with SQLite's own error
+ * where it runs; one it compiles but this check cannot read is refused.
  */
 export function refuseDeniedSql(sql: string, db?: Database.Database): string | null {
   const ids = new Set(identifiers(sql));
   const named = DENIED_TABLES.find((t) => ids.has(t));
   if (named) return tableRefusal(named);
-  if (!db || ids.has('explain')) return null;
+  if (!db) return null;
+  const { explained, inner } = stripExplain(sql);
+  if (explained && !isReadStatement(inner)) return 'Refused: only a read (SELECT, WITH or VALUES) can be explained here.';
   let reached: ReturnType<typeof reads>;
-  try { reached = reads(sql, db); } catch { return null; }
+  try { reached = reads(inner, db); } catch {
+    try { db.prepare(inner); } catch { return null; }
+    return 'Refused: the statement could not be checked for what it reads, so it does not run.';
+  }
   const opened = DENIED_TABLES.find((t) => reached.tables.has(t));
   if (opened) return tableRefusal(opened);
   const [column] = [...reached.columns].sort();

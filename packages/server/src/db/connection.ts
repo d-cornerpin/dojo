@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
+import { guardReadOnly } from './read-only-door.js';
 
 const logger = createLogger('db');
 const DB_DIR = path.join(homeDir(), '.dojo', 'data');
@@ -54,15 +55,15 @@ export function getDb(): Database.Database {
   return db;
 }
 
-/** v3.5 inspect: the connection every dojo_inspect view reads through, opened readonly with
- *  query_only on top so SQLite itself refuses a write. WAL lets it read beside the writer. */
+/** v3.5 inspect: the connection every dojo_inspect view reads through. `readonly` makes SQLite
+ *  refuse a write; the door refuses anything but a read. WAL lets it read beside the writer. */
 export function getReadOnlyDb(): Database.Database {
   if (readOnlyDb) return readOnlyDb;
   getDb(); // the file and its WAL exist before a readonly open
   readOnlyDb = new Database(DB_PATH, { readonly: true, fileMustExist: true });
   readOnlyDb.pragma('query_only = 1');
   readOnlyDb.pragma('busy_timeout = 2000');
-  return readOnlyDb;
+  return guardReadOnly(readOnlyDb); // only a read gets through: read-only-door.ts
 }
 
 export function closeDb(): void {
