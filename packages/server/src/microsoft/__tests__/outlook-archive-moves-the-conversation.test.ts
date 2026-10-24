@@ -45,18 +45,18 @@ const batches = () => writes().filter((c) => String(c[1]) === '$batch');
 const batchRequests = (call: unknown[]) => (call[2] as { requests: Array<{ id: string; method: string; url: string; body: { destinationId: string } }> }).requests;
 
 /** The mailbox: message m1 sits in conversation conv1, which has `size` messages. */
-function mailbox(opts: { size?: number; listError?: string; archiveId?: string; failIds?: string[] } = {}) {
+function mailbox(opts: { size?: number; listError?: string; archiveId?: string; failIds?: string[]; elsewhere?: Array<{ id: string; parentFolderId: string }> } = {}) {
   const size = opts.size ?? 7;
   vi.mocked(msGraphRead).mockImplementation((async (endpoint: string) => {
-    if (/^me\/messages\/[^/?]+\?\$select=conversationId$/.test(endpoint)) return ok({ id: 'm1', conversationId: 'conv1' });
+    if (/^me\/messages\/[^/?]+\?\$select=conversationId,parentFolderId$/.test(endpoint)) return ok({ id: 'm1', conversationId: 'conv1', parentFolderId: 'inbox-id' });
     if (endpoint.startsWith('me/messages?') && decodeURIComponent(endpoint).includes("conversationId eq 'conv1'")) {
       if (opts.listError) return fail(opts.listError);
       // Two pages when it is long, to prove the listing follows the link to the end.
-      const all = ids(size);
+      const all = [...ids(size).map((m) => ({ ...m, parentFolderId: 'inbox-id' })), ...(opts.elsewhere ?? [])];
       if (size > 25) return ok({ value: all.slice(0, 25), '@odata.nextLink': 'https://graph.microsoft.com/v1.0/page2' });
       return ok({ value: all });
     }
-    if (endpoint === 'https://graph.microsoft.com/v1.0/page2') return ok({ value: ids(size).slice(25) });
+    if (endpoint === 'https://graph.microsoft.com/v1.0/page2') return ok({ value: [...ids(size).map((m) => ({ ...m, parentFolderId: 'inbox-id' })), ...(opts.elsewhere ?? [])].slice(25) });
     if (endpoint.startsWith('me/mailFolders/archive')) return ok({ id: opts.archiveId ?? 'AAMk-archive-id' });
     if (endpoint.startsWith('me/mailFolders/deleteditems')) return ok({ id: 'AAMk-deleted-id' });
     return fail(`unexpected read ${endpoint}`);
@@ -103,6 +103,31 @@ describe('E20: outlook_move_to_folder to the archive moves the conversation', ()
     const out = await run({ message_id: 'm1', folder_id: 'AAMk-archive-id' });
     expect(batchRequests(batches()[0])).toHaveLength(4);
     expect(out).toMatch(/WHOLE conversation \(4 messages\)/);
+  });
+
+  const sentAndDraft = [{ id: 'sent1', parentFolderId: 'sent-id' }, { id: 'draft1', parentFolderId: 'drafts-id' }];
+
+  it('only the messages in the SAME folder move: a sent reply and a draft stay where they are (archive)', async () => {
+    mailbox({ size: 3, elsewhere: sentAndDraft });
+    const out = await run({ message_id: 'm1', folder_id: 'archive' });
+    const moved = batchRequests(batches()[0]).map((r) => r.url);
+    expect(moved).toEqual(['/me/messages/c1/move', '/me/messages/c2/move', '/me/messages/c3/move']);
+    expect(out).toMatch(/Moved the WHOLE conversation \(3 messages\)/);
+    expect(out).toMatch(/2 .*other folders.*left/i);
+  });
+
+  it('the same for deleteditems: sent mail and drafts are not deleted', async () => {
+    mailbox({ size: 3, elsewhere: sentAndDraft });
+    await run({ message_id: 'm1', folder_id: 'deleteditems' });
+    const moved = batchRequests(batches()[0]).map((r) => r.url);
+    expect(moved).toHaveLength(3);
+    expect(moved.some((u) => /sent1|draft1/.test(u))).toBe(false);
+  });
+
+  it('a conversation_id given by itself names no folder, so it moves every message of it', async () => {
+    mailbox({ size: 3, elsewhere: sentAndDraft });
+    await run({ conversation_id: 'conv1', folder_id: 'archive' });
+    expect(batchRequests(batches()[0])).toHaveLength(5);
   });
 
   it('this_message_only moves the one message and looks nothing up', async () => {

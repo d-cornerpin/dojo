@@ -5,10 +5,14 @@
 // the inbox and the thread came back. Gmail already archives the whole conversation by default
 // (google/gmail-archive.ts); Outlook's name for the same idea is a message's `conversationId`.
 //
-//   conversation_id          -> that conversation, to any folder.
+//   conversation_id          -> every message of that conversation, to any folder (it names no
+//                               folder to compare against).
 //   message_id + the archive or deleted-items folder, no `this_message_only`
-//                            -> the message's WHOLE conversation (its id is looked up; a failed
-//                               lookup moves nothing, never a silent one-message move).
+//                            -> the message's conversation, the messages that sit in the SAME
+//                               folder as it (Gmail parity: archiving takes the thread out of the
+//                               inbox; the owner's sent copies and drafts are not touched). Its id
+//                               and folder are looked up; a failed lookup moves nothing, never a
+//                               silent one-message move.
 //   message_id, any other folder, or `this_message_only`
 //                            -> that one message, exactly as before.
 //
@@ -40,50 +44,55 @@ async function isPutAwayFolder(folderId: string, ctx: OutlookCallContext): Promi
   return ids.includes(folderId);
 }
 
-async function conversationIdOf(messageId: string, ctx: OutlookCallContext): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+async function conversationOf(messageId: string, ctx: OutlookCallContext): Promise<{ ok: true; id: string; folder: string } | { ok: false; error: string }> {
   const found = await msGraphRead(
-    `me/messages/${encodeURIComponent(messageId)}?$select=conversationId`,
+    `me/messages/${encodeURIComponent(messageId)}?$select=conversationId,parentFolderId`,
     ctx.agentId, ctx.agentName, 'outlook_move_to_folder:conversation_lookup', { messageId }, ctx.slot,
   );
-  const id = (found.data as { conversationId?: string } | null)?.conversationId;
-  if (!found.ok || !id) {
+  const data = found.data as { conversationId?: string; parentFolderId?: string } | null;
+  const id = data?.conversationId;
+  const folder = data?.parentFolderId;
+  if (!found.ok || !id || !folder) {
     return {
       ok: false,
-      error: `Error: could not find the conversation for message ${messageId} (${found.error ?? 'no conversation id returned'}), so nothing was moved. ` +
+      error: `Error: could not find the conversation for message ${messageId} (${found.error ?? 'no conversation id or folder returned'}), so nothing was moved. ` +
         'Retry, or pass this_message_only=true to move just that one message.',
     };
   }
-  return { ok: true, id };
+  return { ok: true, id, folder };
 }
 
 /** Every message id in a conversation, paging to the end. */
-async function listConversation(conversationId: string, ctx: OutlookCallContext): Promise<{ ok: true; ids: string[] } | { ok: false; error: string }> {
+async function listConversation(conversationId: string, ctx: OutlookCallContext): Promise<{ ok: true; found: Array<{ id: string; folder?: string }> } | { ok: false; error: string }> {
   const value = conversationId.replace(/'/g, "''");
-  let next: string | undefined = `me/messages?$filter=${encodeURIComponent(`conversationId eq '${value}'`)}&$select=id`;
-  const ids: string[] = [];
+  let next: string | undefined = `me/messages?$filter=${encodeURIComponent(`conversationId eq '${value}'`)}&$select=id,parentFolderId`;
+  const found: Array<{ id: string; folder?: string }> = [];
   const seen = new Set<string>();
   while (next && !seen.has(next)) {
     seen.add(next);
     const page = await msGraphRead(next, ctx.agentId, ctx.agentName, 'outlook_move_to_folder:conversation_list', { conversationId }, ctx.slot);
     if (!page.ok) return { ok: false, error: page.error ?? 'unknown error' };
-    const data = page.data as { value?: Array<{ id: string }>; '@odata.nextLink'?: string } | null;
-    for (const m of data?.value ?? []) ids.push(m.id);
+    const data = page.data as { value?: Array<{ id: string; parentFolderId?: string }>; '@odata.nextLink'?: string } | null;
+    for (const m of data?.value ?? []) found.push({ id: m.id, folder: m.parentFolderId });
     next = data?.['@odata.nextLink'];
   }
-  return { ok: true, ids };
+  return { ok: true, found };
 }
 
-async function moveConversation(conversationId: string, folderId: string, ctx: OutlookCallContext): Promise<string> {
+/** `sameFolder`: move only the messages in that folder (the named message's); absent = every message. */
+async function moveConversation(conversationId: string, folderId: string, ctx: OutlookCallContext, sameFolder?: string): Promise<string> {
   const listed = await listConversation(conversationId, ctx);
   if (!listed.ok) {
     return `Error: could not list the conversation (${listed.error}), so nothing was moved. Retry, or pass message_id with this_message_only=true to move just one message.`;
   }
-  if (listed.ids.length === 0) return `Error: that conversation has no messages to move (conversation_id ${conversationId}); nothing was moved.`;
+  const ids = listed.found.filter((m) => !sameFolder || m.folder === sameFolder).map((m) => m.id);
+  const left = listed.found.length - ids.length;
+  if (ids.length === 0) return `Error: that conversation has no messages to move (conversation_id ${conversationId}); nothing was moved.`;
 
   let moved = 0;
   const failures: string[] = [];
-  for (let i = 0; i < listed.ids.length; i += GRAPH_BATCH_SIZE) {
-    const group = listed.ids.slice(i, i + GRAPH_BATCH_SIZE);
+  for (let i = 0; i < ids.length; i += GRAPH_BATCH_SIZE) {
+    const group = ids.slice(i, i + GRAPH_BATCH_SIZE);
     const requests = group.map((id, k) => ({
       id: String(k + 1), method: 'POST', url: `/me/messages/${encodeURIComponent(id)}/move`,
       headers: { 'Content-Type': 'application/json' }, body: { destinationId: folderId },
@@ -98,9 +107,10 @@ async function moveConversation(conversationId: string, folderId: string, ctx: O
       else failures.push(r?.body?.error?.message ?? `HTTP ${r?.status ?? 'no answer'}`);
     }
   }
-  const total = listed.ids.length;
-  if (failures.length === 0) return `Moved the WHOLE conversation (${total} message${total === 1 ? '' : 's'}) to folder ${folderId}. Their old message IDs are no longer valid.`;
-  return `Moved ${moved} of ${total} messages of the conversation to folder ${folderId}; ${failures.length} could not be moved (${[...new Set(failures)].join('; ')}). Call again with conversation_id=${conversationId} to move the rest.`;
+  const total = ids.length;
+  const stayed = left > 0 ? ` ${left} other message${left === 1 ? '' : 's'} of it in other folders (sent copies, drafts) ${left === 1 ? 'was' : 'were'} left where ${left === 1 ? 'it is' : 'they are'}.` : '';
+  if (failures.length === 0) return `Moved the WHOLE conversation (${total} message${total === 1 ? '' : 's'}) to folder ${folderId}. Their old message IDs are no longer valid.${stayed}`;
+  return `Moved ${moved} of ${total} messages of the conversation to folder ${folderId}; ${failures.length} could not be moved (${[...new Set(failures)].join('; ')}). Call again with conversation_id=${conversationId} to move the rest.${stayed}`;
 }
 
 /** `outlook_move_to_folder`: one message, or a whole conversation (see the header). */
@@ -111,13 +121,12 @@ export async function moveToFolder(args: Record<string, unknown>, ctx: OutlookCa
   if (!messageId && !given) return 'Error: pass message_id (one email) or conversation_id (a whole conversation).';
   if (messageId && given) return 'Error: pass message_id or conversation_id, not both.';
 
-  let conversationId = given;
+  if (given) return moveConversation(given, folderId, ctx);
   if (messageId && args.this_message_only !== true && await isPutAwayFolder(folderId, ctx)) {
-    const found = await conversationIdOf(messageId, ctx);
+    const found = await conversationOf(messageId, ctx);
     if (!found.ok) return found.error;
-    conversationId = found.id;
+    return moveConversation(found.id, folderId, ctx, found.folder);
   }
-  if (conversationId) return moveConversation(conversationId, folderId, ctx);
 
   const result = await msGraphWrite('POST', `me/messages/${encodeURIComponent(messageId!)}/move`, { destinationId: folderId },
     ctx.agentId, ctx.agentName, 'outlook_move_to_folder', { messageId, folderId }, ctx.slot);
