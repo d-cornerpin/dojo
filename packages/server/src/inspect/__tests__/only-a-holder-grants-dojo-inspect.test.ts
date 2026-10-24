@@ -250,14 +250,17 @@ describe('fix round 4 RULING: an edit is judged on what it leaves', () => {
         const refused = await call(target);
         expect(refused.isError, target).toBe(true);
         expect(refused.errorCode).toBe('PERMISSION_DENIED');
-        // On again. (The route bounds every edit by the main agent's own grants, so a group the owner
-        // took from the main agent itself is not given back through it — older than this lane.)
-        if (target === HEALER) {
-          const on = await put(target, TOOL_CATEGORIES.map((c) => c.label));
-          expect(on.status, await on.clone().text()).toBe(200);
-          forget();
-          expect(offered(target), target).toBe(true);
-        }
+        // FIX ROUND 5 RULING: an agent's own edit giving the group back is still refused (no escalation)…
+        const byAgent = mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: `call-cat-up-${Math.random()}`, name: 'update_agent', arguments: { agent_id: target, grants: { tools: { categories: TOOL_CATEGORIES.map((c) => c.label) } } } }));
+        expect(byAgent.isError, byAgent.content).toBe(true);
+        forget();
+        expect(mod.grant.holdsDojoInspect(target)).toBe(false);
+        // …while the owner's switch on is judged as the OWNER's, never against the main agent's own grants.
+        const on = await put(target, TOOL_CATEGORIES.map((c) => c.label));
+        expect(on.status, await on.clone().text()).toBe(200);
+        forget();
+        expect(mod.grant.holdsDojoInspect(target), target).toBe(true);
+        expect(offered(target), target).toBe(true);
       } finally { restore(target); }
     }
   });

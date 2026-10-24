@@ -409,9 +409,9 @@ agentsRouter.put('/:id', async (c) => {
   // Whatever `update_agent({grants})` can set, this can set — same schema, same
   // merge-over-current semantics, same audit row. Two differences, both
   // deliberate: the refusal is a 400 rather than a tool result, and there is no
-  // no-escalation check to fail, because the ceiling passed in IS the primary's
-  // grants and this route is the owner acting through it. A3's Access panel is
-  // the caller.
+  // no-escalation check: this route is the OWNER, judged as the owner (null
+  // granter) — never against any agent's own grants, the main agent's included
+  // (t267 fix round 5). A3's Access panel is the caller.
   //
   // Top-level `grants` wins over `permissions.grants` (which A1's carry-forward
   // above still honours for the old permissions editor), because this is the
@@ -427,7 +427,7 @@ agentsRouter.put('/:id', async (c) => {
   // when the body is bad); only the WRITE moves after the batch.
   let pendingGrants: { grants: AccessGrants; source: string } | null = null;
   if (body.grants !== undefined) {
-    const resolution = resolveUpdateGrants(body.grants, getAccessGrants(id), getAccessGrants(getPrimaryAgentId()), true);
+    const resolution = resolveUpdateGrants(body.grants, getAccessGrants(id), null, true);
     if (!resolution.ok) {
       logger.warn('Agent grant update refused', { agentId: id, reason: resolution.reason });
       return c.json({ ok: false, error: resolution.reason }, 400);

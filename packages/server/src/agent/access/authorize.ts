@@ -401,17 +401,17 @@ export function resolveSpawnGrants(
   return { ok: true, grants: resolved };
 }
 
-/** THE EDIT DOOR. The patch merges over the TARGET's current object; the
- *  no-escalation rule judges the PATCH (see the header). */
+/** THE EDIT DOOR. The patch merges over the TARGET's current object; no escalation judges the PATCH
+ *  against an AGENT granter. `granter` null is the OWNER (t267 fix round 5): never bounded by an agent. */
 export function resolveUpdateGrants(
   requested: unknown,
   current: AccessGrants,
-  granter: AccessGrants,
+  granter: AccessGrants | null,
   granterIsPrimary: boolean,
 ): GrantsResolution {
   const validated = validateGrants(requested);
   if (!validated.ok) return { ok: false, reason: `invalid grants — ${validated.reason}` };
-  const excesses = grantExcesses(validated.patch, granter, granterIsPrimary);
+  const excesses = granter ? grantExcesses(validated.patch, granter, granterIsPrimary) : [];
   if (excesses.length > 0) return { ok: false, reason: refusal(excesses) };
   return { ok: true, grants: mergeGrants(current, validated.patch) };
 }
