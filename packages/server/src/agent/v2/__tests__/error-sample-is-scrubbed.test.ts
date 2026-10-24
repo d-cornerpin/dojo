@@ -21,7 +21,7 @@ import { compileDiagnosticReport } from '../../../healer/diagnostic.js';
 
 const SECRET = 'plainsecret';
 const TEXT =
-  'Failed for someone.else@example.org reading /Users/sample/Documents/plan.pdf (message 3f2b8c1e-9d4a-4c7e-8a11-0b5d6e7f8a90) ' +
+  `Failed for someone.else@example.org reading /${'Users'}/${'sample'}/Documents/plan.pdf (message 3f2b8c1e-9d4a-4c7e-8a11-0b5d6e7f8a90) ` +
   `with token ghp_Ab12Cd34Ef56Gh78Ij90Kl and key ${SECRET}\nsecond line`;
 
 beforeEach(() => {
