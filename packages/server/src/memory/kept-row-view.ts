@@ -19,11 +19,20 @@
 // the pointer becomes its own head + tail + pointer, named `msg:<id>#<block>`; image, document and tool
 // blocks keep the representation they already have. If the row is still over the room, its text blocks
 // collapse into one pointer (fix round 5, `structuredRowView`), so no text of a structured row is forced in whole.
+//
+// D18b (t257's final re-review): A ROW WHOSE BULK IS NOT TEXT IS NEVER FORCED IN WHOLE EITHER. A `tool_use` whose
+// input is long keeps its id and name (so it still pairs with its result on every provider shape), and each long
+// argument is its head + tail + `msg:<id>#<block>.<argument>`; `msg:<id>#<block>` reads the whole input. An image
+// or document block whose own cost exceeds the room is its note (`oversizeMediaNote`): kind, name, type, size, and
+// that it is not shown. The same note stands in for an owner's attachment the turn injects after the assembly
+// (`attachmentsWithinRoom`), beside the attachment pointer the row already carries (name, size, Path, reader).
+// Costs are the boundary's own (`lanes.ts` `messageTokens`: an image by its pixels, never its base64 length).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { Message } from '@dojo/shared';
-import { storedRowCost } from './budget.js';
-import { toolResultView, POINTER_VIEW_CHARS } from './tool-result-view.js';
+import { storedRowCost, replayedReasoningTokens } from './budget.js';
+import { messageTokens } from './lanes.js';
+import { toolResultView, POINTER_VIEW_CHARS, POINTER_LABEL_ROOM_CHARS } from './tool-result-view.js';
 import { getDb } from '../db/connection.js';
 
 /** The handle `tool_result_read` takes for a whole stored row (`msg:<message id>`), or for one text block of a
@@ -60,21 +69,71 @@ export function overRoomRowView(msg: Message, roomTokens: number): Message {
 }
 
 /**
- * A structured row over the room. First, block by block: each long text block is its own pointer. Fix round 5:
+ * A structured row over the room. First, block by block: each long text block is its own pointer, each long call
+ * input is pointered argument by argument, and an image or document over the room alone is its note. Fix round 5:
  * when the row is STILL over the room although no single block is (thousands of short text blocks, or a paste
  * of `"type":"text"` items), its text blocks collapse into ONE head + tail + pointer named `msg:<id>`, which
- * reads their text joined (`kept-results.ts`). Image, document and tool blocks are kept as they are, in place.
+ * reads their text joined (`kept-results.ts`). D18b: if it is over the room even then, no non-text bulk rides
+ * whole: every image and document is its note, and every call input longer than a label is its label alone.
  */
 function structuredRowView(msg: Message, blocks: StoredBlock[], roomTokens: number): Message {
-  const each = blocks.map((b, i) =>
-    (b.type === 'text' && typeof b.text === 'string' && b.text.length > POINTER_VIEW_CHARS ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), POINTER_VIEW_CHARS) } : b));
-  const view: Message = { ...msg, content: JSON.stringify(each), tokenCount: null };
-  if (storedRowCost(view) <= roomTokens) return view.content === msg.content ? msg : pointered(msg, view.content);
+  const fits = (view: StoredBlock[]): boolean => messageTokens({ role: 'user', content: view as never }) + replayedReasoningTokens(msg) <= roomTokens;
+  const done = (view: StoredBlock[]): Message => { const content = JSON.stringify(view); return content === msg.content ? msg : pointered(msg, content); };
+  const each = blocks.map((b, i) => (b.type === 'text' && typeof b.text === 'string' && b.text.length > POINTER_VIEW_CHARS ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), POINTER_VIEW_CHARS) }
+    : b.type === 'tool_use' && inputChars(b.input) > POINTER_VIEW_CHARS ? { ...b, input: inputView(keptRowHandle(msg.id, i), b.input) }
+      : isMedia(b) && mediaTokens(b) > roomTokens ? oversizeMediaNote(b) : b));
+  if (fits(each)) return done(each);
   const text = keptRowText(blocks);
-  if (text === null || text.length <= POINTER_VIEW_CHARS) return view.content === msg.content ? msg : pointered(msg, view.content);
   const first = blocks.findIndex((b) => b.type === 'text');
-  const collapsed = blocks.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS) }] : b.type === 'text' ? [] : [b]));
-  return pointered(msg, JSON.stringify(collapsed));
+  // Both steps below take a view aligned with `blocks` (index i is block i, so each handle names its own block).
+  const collapse = (view: StoredBlock[]): StoredBlock[] => (text === null || text.length <= POINTER_VIEW_CHARS ? view
+    : view.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS) }] : blocks[i].type === 'text' ? [] : [b])));
+  const squeeze = (view: StoredBlock[]): StoredBlock[] => view.map((b, i) => (isMedia(b) ? oversizeMediaNote(b)
+    : b.type === 'tool_use' && inputChars(b.input) > POINTER_LABEL_ROOM_CHARS ? { ...b, input: { input: toolResultView(callInputText(blocks[i].input), keptRowHandle(msg.id, i), POINTER_LABEL_ROOM_CHARS) } } : b));
+  const collapsed = collapse(each);
+  return done(fits(collapsed) ? collapsed : collapse(squeeze(each)));
+}
+
+// ── D18b: a call's input, an image, a document ──
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const inputChars = (input: unknown): number => JSON.stringify(input ?? {}).length;
+/** One argument as `msg:<id>#<n>.<argument>` reads it: a string as it is (its own lines), anything else as JSON. */
+export const argumentText = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v, null, 2) ?? String(v));
+/** A call's whole input as `msg:<id>#<n>` reads it: each argument as `name: value`. */
+export const callInputText = (input: unknown): string =>
+  (isObject(input) ? Object.entries(input).map(([k, v]) => `${k}: ${argumentText(v)}`).join('\n') : argumentText(input));
+
+/** A long call input as the view shows it: its short arguments as they are, each long one as its pointer. */
+function inputView(handle: string, input: unknown): Record<string, unknown> {
+  if (!isObject(input)) return { input: toolResultView(callInputText(input), handle, POINTER_VIEW_CHARS) };
+  return Object.fromEntries(Object.entries(input).map(([k, v]) => {
+    const whole = argumentText(v);
+    return [k, whole.length > POINTER_VIEW_CHARS ? toolResultView(whole, `${handle}.${k}`, POINTER_VIEW_CHARS) : v];
+  }));
+}
+
+const isMedia = (b: StoredBlock): boolean => (b.type === 'image' || b.type === 'document') && typeof (b.source as { data?: unknown } | undefined)?.data === 'string';
+const mediaTokens = (b: StoredBlock): number => messageTokens({ role: 'user', content: [b] as never });
+
+/** What the view shows for an image or document block the room cannot hold: what it is, and that it is not shown. */
+export function oversizeMediaNote(b: StoredBlock): StoredBlock {
+  const source = b.source as { media_type?: unknown; data?: unknown };
+  const type = typeof source.media_type === 'string' ? source.media_type : b.type;
+  const kind = b.type === 'image' ? 'image' : type === 'application/pdf' ? 'PDF' : 'document';
+  const name = typeof b.title === 'string' ? `"${b.title}" ` : '';
+  const bytes = Buffer.byteLength(String(source.data), 'base64').toLocaleString('en-US');
+  const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the user asks about it, say it is too large for the current model to see.';
+  return { type: 'text', text: `[Engine note: the attached ${kind} ${name}(${type}, ${bytes} bytes, ~${mediaTokens(b).toLocaleString('en-US')} tokens) is larger than this model's context window can hold, so it is NOT shown to you. Do not describe or assume its contents.${reader}]` };
+}
+
+/** D18b: the turn's injected attachments (`injectAttachmentBlocks`, after the assembly) never ride over the room. */
+export function attachmentsWithinRoom(messages: Array<{ role: string; content: unknown }>, roomTokens: number | undefined): void {
+  if (roomTokens === undefined) return;
+  for (const m of messages) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    const over = (b: StoredBlock): boolean => isMedia(b) && mediaTokens(b) > roomTokens;
+    if ((m.content as StoredBlock[]).some(over)) m.content = (m.content as StoredBlock[]).map((b) => (over(b) ? oversizeMediaNote(b) : b));
+  }
 }
 
 /** The text a structured row's `msg:<id>` reads: its text blocks joined, or null when it has none. */

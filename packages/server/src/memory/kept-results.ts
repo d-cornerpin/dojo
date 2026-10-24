@@ -16,7 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { insertMessageIfAbsent, type NewMessage } from './message-store.js';
-import { KEPT_ROW_PREFIX, contentBlocksOf, keptRowText, viewPointeredRow } from './kept-row-view.js';
+import { KEPT_ROW_PREFIX, argumentText, callInputText, contentBlocksOf, keptRowText, viewPointeredRow } from './kept-row-view.js';
 
 /** The whole of one long result, as the recorder hands it over. */
 export interface KeptWhole {
@@ -87,7 +87,7 @@ export function findToolResult(agentId: string, toolUseId: string): FoundResult 
 }
 
 /**
- * The whole of a stored row named `msg:<id>` (or one text block of a structured row, `msg:<id>#<block>`). Read
+ * The whole of a stored row named `msg:<id>` (or one block of a structured row, `msg:<id>#<block>[.<argument>]`). Read
  * exactly when a view of this agent pointered that row in its current session (`viewPointeredRow`, v3.5 D18 r5):
  * never stricter than what the view showed, never wider. Any other id is not found, as for an unknown one.
  */
@@ -100,8 +100,15 @@ function findKeptRow(agentId: string, handle: string): FoundResult | null {
     const blocks = contentBlocksOf(whole);
     return { content: blocks ? keptRowText(blocks) ?? whole : whole, toolName: null };
   }
-  const named = /^(.+)#(\d+)$/.exec(handle);
+  // `msg:<id>#<n>`: text block n, or call n's whole input; D18b `msg:<id>#<n>.<argument>`: one argument of call n.
+  const named = /^(.+?)#(\d+)(?:\.(.+))?$/.exec(handle);
   const row = named ? read(named[1]) : null;
   const block = row === null ? undefined : contentBlocksOf(row)?.[Number(named![2])];
-  return block?.type === 'text' && typeof block.text === 'string' ? { content: block.text, toolName: null } : null;
+  const arg = named?.[3];
+  if (block?.type === 'text' && typeof block.text === 'string' && arg === undefined) return { content: block.text, toolName: null };
+  if (block?.type !== 'tool_use') return null;
+  const input = block.input as Record<string, unknown> | undefined;
+  const toolName = typeof block.name === 'string' ? block.name : null;
+  if (arg === undefined) return { content: callInputText(input), toolName };
+  return input && typeof input === 'object' && Object.prototype.hasOwnProperty.call(input, arg) ? { content: argumentText(input[arg]), toolName } : null;
 }

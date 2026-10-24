@@ -3,10 +3,9 @@
 // byte-faithfully out of `loop.ts`: the F9 explicit-delegation routing hint and
 // the user's own attachments.
 //
-// One file because they are adjacent in the span and both are pure appends onto
-// the tail past the volatile boundary; neither writes `state`. The delegation hint
-// is advice voice (tier-7) and never an order — the owner's middle stance — and
-// the attachment injection is the same call v1 made at `runtime.ts:1929`.
+// One file because they are adjacent in the span and both are pure appends onto the tail past the
+// volatile boundary; neither writes `state`. The delegation hint is advice voice (tier-7) and never an
+// order — the owner's middle stance — and the attachment injection is the call v1 made at `runtime.ts:1929`.
 // ════════════════════════════════════════
 
 import { injectRegistryMessage } from '../../../../prompt/registry/assembler.js';
@@ -19,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AgentTurnState } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
+import { attachmentsWithinRoom } from '../../../../memory/kept-row-view.js';
 
 const logger = createLogger('v2-loop');
 
@@ -101,11 +101,12 @@ export interface DelegationAndAttachmentsInput {
   readonly lastUserMessageContent: string | null;
   readonly mctx: AssemblyContext;
   readonly messages: AssembledContext['messages'];
+  /** D18b: the assembly's content room (`allocation.budgetTokens`); an attachment over it alone is its note. */
+  readonly roomTokens?: number;
 }
 
 export async function injectDelegationHintAndAttachments(state: AgentTurnState, input: DelegationAndAttachmentsInput): Promise<void> {
   const { agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages } = input;
-
 
   // ── F9: explicit-delegation routing hint ───────────────────────────────
   // The user EXPLICITLY routed work to the agent's own agents ("have one of
@@ -162,7 +163,6 @@ export async function injectDelegationHintAndAttachments(state: AgentTurnState, 
     }
   }
 
-
   // Inject user-uploaded attachments (images, PDFs) as content blocks.
   // Without this, the agent never sees images/PDFs the user attached, 
   // it only sees the text content of those messages and hallucinates.
@@ -173,8 +173,8 @@ export async function injectDelegationHintAndAttachments(state: AgentTurnState, 
   // user knows what happened (later turns hit the on-disk cache and
   // stay silent).
   const { injectAttachmentBlocks } = await import('../../../runtime.js');
-  // Defensive default, older mocks may return undefined.
-  const freshResizes = injectAttachmentBlocks(messages, agentId) ?? [];
+  const freshResizes = injectAttachmentBlocks(messages, agentId) ?? [];   // `??`: older mocks return undefined
+  attachmentsWithinRoom(messages, input.roomTokens);   // D18b: never forced in whole over the room
   if (freshResizes.length > 0) {
     try {
       // v2.3.19, rectifier supplies the agent-facing note directly.
