@@ -131,10 +131,10 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       if (kind === 'reminder') return 'work_open:reminder';
       if (kind === 'commitment' || kind === 'promise') return 'work_open:commitment';
       // No kind: read the shape. `what` is the reminder's own field; `tasks` /
-      // `level` only exist on a project; a bare `description` with no title is a
+      // `level` / `plan` only exist on a project; a bare `description` with no title is a
       // promise; anything with a title is a task.
       if (has(args, 'what') || has(args, 'when')) return 'work_open:reminder';
-      if (has(args, 'tasks') || has(args, 'level')) return 'work_open:project';
+      if (has(args, 'tasks') || has(args, 'level') || has(args, 'plan')) return 'work_open:project';
       if (!has(args, 'title') && has(args, 'description')) return 'work_open:commitment';
       return 'work_open:task';
     }

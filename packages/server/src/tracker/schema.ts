@@ -29,6 +29,7 @@ import {
 import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
 import { writeAssignee } from '../work/row-authority.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
+import type { Plan } from '../work/plan.js';
 
 const logger = createLogger('tracker-schema');
 
@@ -191,7 +192,7 @@ function parseEvidence(raw: string | null): Task['evidence'] {
 
 export function createProject(params: {
   title: string;
-  description?: string;
+  description?: string; plan?: Plan;
   level: number;
   createdBy: string;
   // P1 lineage spine: see createTask. Applied to the project row AND inherited
@@ -222,7 +223,7 @@ export function createProject(params: {
   db.transaction(() => {
     openTrackerProject({
       id: projectId, title, description: description ?? null, level, createdBy,
-      origin: params.origin,
+      origin: params.origin, plan: params.plan,
     });
 
     if (tasks && tasks.length > 0) {

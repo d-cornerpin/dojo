@@ -55,6 +55,8 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
+import { checkPlan, planRefusal, renderPlan, tasksFromPlan } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { planOfProject } from '../work/plan-store.js';
 import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
@@ -852,42 +854,19 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     const title = args.title as string;
     if (!title) return 'Error: title is required';
 
-    const description = args.description as string | undefined;
     const level = typeof args.level === 'number' ? args.level : 1;
 
-    const tasksInput = args.tasks as Array<{
-      title: string;
-      description?: string;
-      goal?: string;
-      assignedTo?: string;
-      priority?: 'high' | 'normal' | 'low';
-      stepNumber?: number;
-      dependsOn?: string[];
-      phase?: number;
-    }> | undefined;
-
-    // Hard engine gate (2026-06-03 bug fix): a project MUST be opened
-    // with at least one task. Agents were creating projects without any
-    // task, leaving the project sitting open with nothing to do, PM
-    // pokes piling up, and no recovery path. The fix is at the engine,
-    // not in the prompt: refuse the create if `tasks` is missing or
-    // empty. The agent can always add more tasks later with
-    // work_open(kind="task") once the work shape clarifies.
-    if (!tasksInput || tasksInput.length === 0 || !tasksInput.some((t) => typeof t.title === 'string' && t.title.trim().length > 0)) {
-      return (
-        `Error: work_open(kind="project") requires at least one task. ` +
-        `Open it like this:\n` +
-        `  work_open(kind="project", \n` +
-        `    title: "...",\n` +
-        `    level: 1,\n` +
-        `    tasks: [{ title: "<the first concrete thing you'll do>", assigned_to: "${agentId}" }]\n` +
-        `  )\n\n` +
-        `If you don't know every step upfront, that's fine, just put down the FIRST one (e.g. "scope the deliverable", ` +
-        `"draft the outline", "pull source data"). Add more tasks incrementally with work_open(kind="task") as the shape clarifies. ` +
-        `A project with zero tasks is a stuck project, PM has no row to poke, you have nothing to mark complete, ` +
-        `and the tracker can't tell whether the work is done.`
-      );
-    }
+    // v3.5 PLAN BEFORE PROJECT: a project opens with the plan its agent wrote (approach, and steps
+    // saying what, how at scale and how it will know each is done). The engine checks the parts are
+    // there and stores them; it does not judge the content. The tasks are the plan's steps unless the
+    // caller passed its own, so a project always has a task for the PM to poke (the old zero-task
+    // gate is this gate: a valid plan has at least one step).
+    const planned = checkPlan(args.plan);
+    if (!planned.ok) return planRefusal(planned.error);
+    const plan = planned.plan;
+    const description = renderPlan(plan);
+    const given = args.tasks as Array<{ title: string; description?: string; goal?: string; assignedTo?: string; priority?: 'high' | 'normal' | 'low'; stepNumber?: number; dependsOn?: string[]; phase?: number }> | undefined;
+    const tasksInput: NonNullable<typeof given> = given?.some((t) => typeof t.title === 'string' && t.title.trim().length > 0) ? given : tasksFromPlan(plan);
 
     // Resolve inline task assignees (name / short id -> full agent id) BEFORE
     // anything is written. tasks.assigned_to carries a FOREIGN KEY to agents(id);
@@ -951,6 +930,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       level,
       createdBy: agentId,
       tasks: tasksInput,
+      plan,
     });
 
     // Give every inline task a goal. The tasks[] shape historically carried no
@@ -1017,7 +997,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       });
     }
 
-    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.${taskSummary}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
+    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.\n\n${description}${taskSummary}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCreateProject failed', { error: msg }, agentId);
@@ -2935,6 +2915,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         ``,
         `Project: ${project.title}`,
         `Level: ${project.level}`,
+        ...((p) => (p ? ['', renderPlan(p)] : []))(planOfProject(project.id)),
         '',
         `Task Summary:`,
         `  On Deck: ${project.taskCounts.pending}`,

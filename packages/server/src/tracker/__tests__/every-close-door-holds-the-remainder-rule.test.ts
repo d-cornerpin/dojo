@@ -149,7 +149,7 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
 
   const projectWithMeasuredTask = async (): Promise<{ project: string }> => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 42 });
-    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, allow_duplicate: true, tasks: [{ title: 'Label the inbox', measure: MEASURE }, { title: 'Write it up' }] });
+    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, allow_duplicate: true, plan: { approach: 'Label the inbox, then write it up.', steps: [{ title: 'Label the inbox', how: 'gmail_label in batches', done: 'the search returns 0' }] }, tasks: [{ title: 'Label the inbox', measure: MEASURE }, { title: 'Write it up' }] });
     const m = /project_id=([0-9a-f-]{36})/.exec(out.content);
     return { project: m![1] };
   };

@@ -53,6 +53,7 @@ import {
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
 import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure, closeWithMeasure, isCompleteStatus, remeasureProject } from './measure-door.js';   // v3.5 DONE IS MEASURED
+import { checkPlan, tasksFromPlan, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import type { ToolHandlerMap } from '../handler.js';
 
 // v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
@@ -107,28 +108,34 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'title', value: args.title, type: 'string' },
     ]);
     if (projErr) { content = projErr; isError = true; return { content, isError }; }
-    const measures = await Promise.all(((args.tasks as Array<Record<string, unknown>> | undefined) ?? []).map((t) => readMeasureArg(agentId, t?.measure)));
+    // v3.5 PLAN BEFORE PROJECT: with no tasks of its own the tasks are the plan's steps, so a step's measure is read here (counting is I/O); a bad plan is refused by the creator.
+    const given = args.tasks as Array<Record<string, unknown>> | undefined, planned = checkPlan(args.plan);
+    const rawTasks = given?.length ? given : planned.ok ? tasksFromPlan(planned.plan) : [];
+    const measures = await Promise.all(rawTasks.map((t) => readMeasureArg(agentId, t?.measure)));
     const badMeasure = measures.find((m) => m.error); if (badMeasure) return { content: badMeasure.error as string, isError: true };
-    const taskInputs = (args.tasks as Array<Record<string, unknown>> | undefined)?.map(t => ({
+    const taskInputs = given?.length ? given.map(t => ({
       title: t.title as string,
       description: t.description as string | undefined,
+      goal: t.goal as string | undefined,
       assignedTo: (t.assigned_to ?? t.assignedTo) as string | undefined,
       priority: t.priority as 'high' | 'normal' | 'low' | undefined,
       stepNumber: (t.step_number ?? t.stepNumber) as number | undefined,
       dependsOn: (t.depends_on ?? t.dependsOn) as string[] | undefined,
       phase: t.phase as number | undefined,
-    }));
+    })) : undefined;
     try {
       content = trackerCreateProject(agentId, {
         title: args.title as string,
         description: args.description as string | undefined,
         level: args.level as number,
         tasks: taskInputs,
+        plan: args.plan,
         allow_duplicate: args.allow_duplicate as boolean | undefined,
       }, { taskMeasures: measures.map((m) => m.reading) });
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="project")');
     }
+    if (content.startsWith(PLAN_REFUSAL_PREFIX)) isError = true;   // v3.5: a project the engine would not open is a failed call
     return { content, isError };
   },
 

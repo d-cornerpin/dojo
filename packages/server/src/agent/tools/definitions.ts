@@ -41,7 +41,7 @@ import type { ToolDefinition } from './types.js';
 // descriptions were paraphrases of each other now have ONE canonical wording, said once on
 // the wire — `WORK_FIELD_TEXT`. The other ten pairs are NOT paraphrases and are untouched;
 // work-verb-schema.ts enumerates them and says why.
-import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP } from '../work-verb-schema.js';
+import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_PLAN_PROP, WORK_REMAINDER_PROP } from '../work-verb-schema.js';
 import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './validate-args.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { formsToolDefinitions } from '../../google/tools-forms.js';
@@ -1035,6 +1035,7 @@ export const toolDefinitions: ToolDefinition[] = [
             required: ['title'],
           },
         },
+        plan: WORK_PLAN_PROP,
         project_id: workProp('project_id', 'Task only. Optional project ID to attach this task to.'),
         assigned_to: workProp('assigned_to', 'Task only. Agent ID or name to assign this task to.'),
         assigned_to_group: workProp('assigned_to_group', `Task only. ${WORK_FIELD_TEXT.assigned_to_group.canonical}`),

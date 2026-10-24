@@ -45,6 +45,7 @@ import {
 import { getOwnerName } from '../config/platform.js';
 import { takeoverRefusal } from './row-authority.js';
 import { measuredCloseRefusal, recordOwnerRemainder } from './measure-close-gate.js';
+import { planJson, type Plan } from './plan-json.js';   // v3.5 PLAN BEFORE PROJECT   // v3.5 PLAN BEFORE PROJECT
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
 // leaf (imports only the DB connection), so importing it here creates no cycle with the
 // CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
@@ -77,6 +78,7 @@ export interface OpenTrackerProjectInput {
   createdBy: string;
   groupId?: string | null;
   origin: TrackerOrigin;
+  plan?: Plan;   // v3.5: the agent's plan, stored as `plan_json`
 }
 
 export interface OpenTrackerTaskInput {
@@ -230,7 +232,8 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
       p.level ?? 1, p.groupId ?? null,
       p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
     );
-    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: scrubText([p.createdBy], p.title) });
+    if (p.plan) db.prepare('UPDATE work SET plan_json = ? WHERE id = ?').run(planJson(p.plan, (t) => scrubText([p.createdBy], t)), id);   // v3.5: the plan, scrubbed like every prose column
+    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: scrubText([p.createdBy], p.title), ...(p.plan ? { planned: true, steps: p.plan.steps.length } : {}) });
   });
   return id;
 }

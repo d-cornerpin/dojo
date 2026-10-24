@@ -236,7 +236,7 @@ describe('fix round 3 (NB1): THE OWNER CAN ALWAYS CLOSE HIS OWN TASK', () => {
 
   it('the owner\'s project close closes its measured tasks too', async () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 42 });
-    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, allow_duplicate: true, tasks: [{ title: 'Label the inbox', measure: MEASURE }] });
+    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, allow_duplicate: true, plan: { approach: 'Label the inbox, then write it up.', steps: [{ title: 'Label the inbox', how: 'gmail_label in batches', done: 'the search returns 0' }] }, tasks: [{ title: 'Label the inbox', measure: MEASURE }] });
     const project = /project_id=([0-9a-f-]{36})/.exec(out.content)![1];
     const res = await trackerRouter.request(`/projects/${project}/close`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'complete', reason: 'good enough for me' }) });
     expect(res.status).toBe(200);

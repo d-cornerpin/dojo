@@ -77,6 +77,7 @@ const SPECS: DoorSpec[] = [
       when: 'Reminder only; work_open(kind="reminder") forwards it as the first-fire time',
       level: 'Project only — the project importance tier',
       tasks: 'Project only — the initial task list a project is opened with',
+      plan: 'Project only — the plan a project is opened with',
     },
   },
   {
@@ -102,6 +103,7 @@ const SPECS: DoorSpec[] = [
       allow_duplicate: 'Task/Project only — the near-duplicate guard runs on titles, and a reminder has none',
       level: 'Project only',
       tasks: 'Project only',
+      plan: 'Project only',
       measure: 'Task only — a reminder covers no set of items to count',
     },
   },

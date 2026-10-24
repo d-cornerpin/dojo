@@ -20,6 +20,7 @@ import {
   workProp,
   WORK_MEASURE_PROP,
   WORK_REMAINDER_PROP,
+  WORK_PLAN_PROP,
 } from '../work-verb-schema.js';
 
 // PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
@@ -53,10 +54,12 @@ function schemaOf(name: string): Record<string, unknown> {
     // N1: the seven collapsed fields interpolate the canonical wording from the module.
     .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT')
     // v3.5 (t250): the measure and remainder objects, shared by both verbs.
-    .replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER');
+    .replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER')
+    // v3.5 (t262): the project's plan, declared once beside them.
+    .replace(/\bWORK_PLAN_PROP\b/g, '__PLAN');
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__REMAINDER', `return (${body});`);
-  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP) as Record<string, unknown>;
+  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__REMAINDER', '__PLAN', `return (${body});`);
+  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP, WORK_PLAN_PROP) as Record<string, unknown>;
 }
 
 // Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
@@ -189,7 +192,18 @@ const T193_STEP_PHRASE = ' and for action="complete_step"';
 // (Fix round 1: +9 per measure object — "counts it when you set it and again when you close; your
 // task board shows the last count", the turn-end count dropped until Task D1 makes it true.)
 const T250_BASELINE_CHARS = { work_open: 7942, work_update: 10075 };
+// ── v3.5 t262 (PLAN BEFORE PROJECT, Task A1) — A PROJECT OPENS WITH ITS PLAN: `plan` on work_open, the
+// one schema field the plan specifies, measured, not estimated. The guard undoes that one insertion and
+// must land back on t250's bytes; every earlier rung is asserted on the pre-t262 view, unchanged.
+//   work_open   7,942 → 9,478  (+1,536: the plan object, whose steps carry the measure object again)
+//   work_update 10,075 → 10,075 (+0)
+const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
 type Schema = { properties: Record<string, unknown> };
+function withoutT262(schema: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(schema) as Schema;
+  delete out.properties.plan;
+  return out;
+}
 function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
   const out = structuredClone(schema) as Schema;
   delete out.properties.measure;
@@ -202,12 +216,18 @@ function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const openNow = schemaOf('work_open');
   const updNow = schemaOf('work_update');
-  const open = withoutT250(openNow);
+  const open = withoutT250(withoutT262(openNow));
   const upd = withoutT250(updNow);
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
-    expect(JSON.stringify(openNow).length).toBe(T250_BASELINE_CHARS.work_open);
-    expect(JSON.stringify(updNow).length).toBe(T250_BASELINE_CHARS.work_update);
+    expect(JSON.stringify(openNow).length).toBe(T262_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(updNow).length).toBe(T262_BASELINE_CHARS.work_update);
+  });
+
+  it('t262 — the plan field is the whole delta on work_open, and nothing else moved', () => {
+    expect(JSON.stringify(withoutT262(openNow)).length).toBe(T250_BASELINE_CHARS.work_open);
+    expect(((openNow as Schema).properties.plan)).toBe(WORK_PLAN_PROP);
+    expect(WORK_PLAN_PROP.required).toEqual(['approach', 'steps']);
   });
 
   it('t250 — the measure and remainder fields are the whole delta, and nothing else moved', () => {
