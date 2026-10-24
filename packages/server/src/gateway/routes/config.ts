@@ -10,6 +10,7 @@ import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderP
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
+import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import type { Provider, Model, ThinkingLevel } from '@dojo/shared';
 import { contractForModel } from '../../agent/model-contract.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
@@ -770,6 +771,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
       `);
 
       for (const m of ollamaModels) {
+        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // t268 (I-1): the Dojo's own window tag, never a pickable model
         const capabilities = ['chat'];
         const nameLower = m.name.toLowerCase();
         if (nameLower.includes('code') || nameLower.includes('coder') || nameLower.includes('deepseek')) capabilities.push('code');

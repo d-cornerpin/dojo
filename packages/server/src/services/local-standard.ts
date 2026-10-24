@@ -37,6 +37,8 @@ export const STANDARD_WRITER_MODEL = { tag: 'qwen3.5:4b', bytes: 3_400_000_000 }
 export const STANDARD_PAIR_BYTES = STANDARD_DECISION_MODEL.bytes + STANDARD_WRITER_MODEL.bytes;
 /** The tags Ollama keeps resident for the Dojo itself (`services/ollama-lock.ts` pins them). */
 export const STANDARD_TAGS: readonly string[] = [STANDARD_DECISION_MODEL.tag, STANDARD_WRITER_MODEL.tag];
+/** t268 (I-1): Ollama's names less the Dojo's own window tag — never a model to list, register, remove or download. */
+export const withoutDojoInternalTags = (names: string[]): string[] => names.filter((n) => n !== STANDARD_DECISION_MODEL.windowTag);
 
 const GIB = 1024 ** 3;
 /** The owner's stated floor for a Dojo box ("a 16GB Mac mini (minimum for Dojo install)"). A box
@@ -61,6 +63,7 @@ const CAPABILITIES: Record<Which, string[]> = { decision: ['decision'], writer: 
 const pulling = new Set<Which>();
 let progressLines: string[] = [];
 let inFlight: Promise<StandardState> | null = null;
+let windowRepair: Promise<unknown> | null = null;   // t268 (I-1): the window tag being made again
 
 /** The local Ollama provider row (a localhost base URL), or null when this box has none. */
 export function localOllamaProvider(): { id: string; baseUrl: string } | null {
@@ -243,7 +246,7 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
     await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);   // sized now, not at the next boot's backfill
   }
   assign(ids.writer, ids.decision);
-  if (ids.decision) await (await import('./decision-window.js')).ensureDecisionWindowTag(provider.baseUrl);   // t268: its real window
+  if (ids.decision) await (await import('./decision-window.js')).ensureDecisionWindowTag(provider.baseUrl);   // t268: its real window (dynamic: the import graph's order)
   // Fix round 1 (I-2): an attempt that left a model missing is told once (the owner-card system); it ends when both are in.
   if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
   else if (tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
@@ -256,26 +259,23 @@ export function retryStandardModelsIfMissing(installedNames: readonly string[], 
   const provider = localOllamaProvider();
   if (!provider || inFlight || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;
   if (STANDARD_TAGS.every((t) => installedNames.includes(t)) && standardModelRowId('writer') && standardModelRowId('decision')) {
-    ownerConditionCleared(MISSING_CONDITION); return;   // N4: in and registered: the card ends (unregistered: the install registers, no pull)
+    ownerConditionCleared(MISSING_CONDITION);   // N4: in and registered: the card ends (unregistered: the install registers, no pull)
+    if (!installedNames.includes(STANDARD_DECISION_MODEL.windowTag)) windowRepair = import('./decision-window.js').then((m) => m.repairDecisionWindowTag(provider.baseUrl));   // t268 (I-1): made again locally
+    return;
   }
   startStandardInstall();
 }
 
-/**
- * Pull what is missing (through the bounded pull of t114), register both as models on the local
- * Ollama provider row, assign the writer to the `system` tier and (when unset) to
- * `compaction_model_id`, set `decision_model_id`. Idempotent; concurrent callers share one run.
- */
+/** Pull what is missing (the bounded pull of t114), register both on the local Ollama provider row, assign the
+ *  writer to the `system` tier, set `decision_model_id`, make the window tag. Idempotent; callers share one run. */
 export function ensureStandardModels(onProgress?: (line: string) => void): Promise<StandardState> {
   // Fix round 4: the whole install is in-flight work on the local Ollama: the model-limit restart never lands inside it.
   if (!inFlight) inFlight = localWorkBegins().then(async (end) => { try { return await install(onProgress); } finally { end(); } }).finally(() => { inFlight = null; });
   return inFlight;
 }
 
-/** Resolves when the install running now (if any) has finished. Starts nothing. */
-export async function standardInstallSettled(): Promise<void> {
-  await inFlight?.catch(() => undefined);
-}
+/** Resolves when the install (or the window tag's repair) running now has finished. Starts nothing. */
+export async function standardInstallSettled(): Promise<void> { await inFlight?.catch(() => undefined); await windowRepair?.catch(() => undefined); }
 
 /** Start the install in the background (setup, the Repair button); progress is read back by polling. */
 export function startStandardInstall(): void {

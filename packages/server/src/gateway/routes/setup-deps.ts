@@ -204,7 +204,7 @@ setupDepsRouter.get('/ollama/models', async (c) => {
     const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return c.json({ ok: false, error: 'Ollama not responding' }, 502);
     const data = await resp.json() as { models?: Array<{ name: string; size: number; details?: { parameter_size?: string } }> };
-    return c.json({ ok: true, data: data.models ?? [] });
+    return c.json({ ok: true, data: (data.models ?? []).filter((m) => m.name !== STANDARD_DECISION_MODEL.windowTag) });   // t268 (I-1): no Remove for the Dojo's own window tag
   } catch (err) {
     return routeFailure(c, logger, err, { status: 502, message: 'Cannot connect to Ollama' });
   }
@@ -331,6 +331,7 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
       let added = 0;
 
       for (const m of models) {
+        if (m.name === STANDARD_DECISION_MODEL.windowTag) continue;   // t268 (I-1): the Dojo's own window tag, never a model row
         const modelId = `ollama-${m.name.replace(/[^a-z0-9]/gi, '-')}`;
         const existingModel = db.prepare('SELECT id FROM models WHERE id = ? OR api_model_id = ?').get(modelId, m.name);
         if (!existingModel) {

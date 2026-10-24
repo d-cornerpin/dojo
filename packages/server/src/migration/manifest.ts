@@ -10,6 +10,7 @@ import { isImessageConfigured } from '../services/presence.js';
 import { createLogger } from '../logger.js';
 import { homeDir } from '../home.js';
 import { listOllamaModelNames } from '../services/ollama.js';
+import { withoutDojoInternalTags } from '../services/local-standard.js';
 
 const logger = createLogger('migration-manifest');
 
@@ -172,7 +173,7 @@ export async function generateManifest(dbSizeBytes: number, prompts: string[], t
       google_workspace_email: googleEmail,
       microsoft_connected: msConnected,
       imessage_configured: (() => { try { return isImessageConfigured(); } catch { return false; } })(),
-      ollama_models: await listOllamaModelNames(),
+      ollama_models: withoutDojoInternalTags(await listOllamaModelNames()),   // t268 (I-1): the window tag is made locally, never downloaded
       providers,
       uploads_size_bytes: uploadsSize,
       cloudflare_named_tunnel: cloudflareNamedTunnel,

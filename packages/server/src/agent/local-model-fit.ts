@@ -104,7 +104,7 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
       FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?`).get(modelId) as Row | undefined;
   } catch { return null; }
   if (!row) return null;
-  if (row.capabilities.includes('"decision"')) {
+  if (row.capabilities.includes('"decision"') || row.api_model_id === STANDARD_DECISION_MODEL.windowTag) {   // t268 (I-1): its window tag too
     return { fits: false, message: decisionModelWords(row.name), openBytes: 0, needBytes: 0, contextTokens: 0 };
   }
   if (row.type !== 'ollama') return null;

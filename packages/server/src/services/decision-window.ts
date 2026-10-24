@@ -58,12 +58,33 @@ function recordWindow(window: number | null): void {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(DECISION_WINDOW_KEY, String(window));
 }
 
+let inFlight: Promise<number | null> | null = null;
+let toldFailure = false;
+
 /**
  * Create or refresh the derived decision tag at the window this box reserves; idempotent (a tag already at
- * that window is left alone). Returns the window the tag has, or null when it could not be made — then
- * `decide()` asks the base tag at its built-in window, and the next install tries again. Never throws.
+ * that window is left alone; concurrent callers share one run). Returns the window the tag has, or null when
+ * it could not be made — then `decide()` asks the base tag at its built-in window, and the Ollama health
+ * check's retry (`local-standard.ts retryStandardModelsIfMissing`) tries again. Never throws.
  */
-export async function ensureDecisionWindowTag(baseUrl: string): Promise<number | null> {
+export function ensureDecisionWindowTag(baseUrl: string): Promise<number | null> {
+  if (!inFlight) inFlight = makeTag(baseUrl).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+/** t268 (I-1): the tag is gone from Ollama (removed by hand, or never made): the recorded window goes at once,
+ *  so `decide()` asks the base tag, and the tag is made again from the base tag — locally, never a download. */
+export function repairDecisionWindowTag(baseUrl: string): Promise<number | null> {
+  try { recordWindow(null); } catch { /* the make below records what is true */ }
+  return ensureDecisionWindowTag(baseUrl);
+}
+
+/** Resolves when the tag work running now (if any) has finished. Starts nothing. */
+export async function decisionWindowSettled(): Promise<void> {
+  await inFlight?.catch(() => undefined);
+}
+
+async function makeTag(baseUrl: string): Promise<number | null> {
   try {
     const want = await desiredDecisionWindowTokens();
     const have = await tagWindow(baseUrl);
@@ -72,11 +93,14 @@ export async function ensureDecisionWindowTag(baseUrl: string): Promise<number |
       model: STANDARD_DECISION_MODEL.windowTag, from: STANDARD_DECISION_MODEL.tag, parameters: { num_ctx: want }, stream: false,
     });
     if (!resp?.ok) {
-      logger.warn('The decision model\'s window tag could not be made; decide() keeps the built-in window', { status: resp?.status ?? null, want });
+      // Told once per process: the health check retries it on Ollama's own cadence, and one line says it.
+      if (!toldFailure) logger.warn('The decision model\'s window tag could not be made; decide() keeps the built-in window', { status: resp?.status ?? null, want });
+      toldFailure = true;
       recordWindow(have);   // what the tag (if any) really is
       return have;
     }
     recordWindow(want);
+    toldFailure = false;
     logger.info('The decision model\'s window tag is set', { tag: STANDARD_DECISION_MODEL.windowTag, numCtx: want, was: have });
     return want;
   } catch (err) {
