@@ -125,10 +125,9 @@ export async function listOllamaModelNames(baseUrl?: string): Promise<string[]> 
 
 // Fetch detailed model info from /api/show (context length, parameter count, etc.)
 export async function getOllamaModelInfo(modelName: string, baseUrl?: string): Promise<{
-  contextWindow: number;
-  maxOutputTokens: number;
-} | null> {
-  const url = baseUrl ?? DEFAULT_OLLAMA_URL;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+} | null> {  const url = baseUrl ?? DEFAULT_OLLAMA_URL;
 
   try {
     const response = await fetch(`${url}/api/show`, {
@@ -145,9 +144,11 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
       parameters?: string;
     };
 
-    // Extract context length from model_info or parameters
-    let contextWindow = 128000; // default
-    let maxOutputTokens = 8192; // default
+    // Extract context length from model_info or parameters.
+    // M41: NULL means "the server did not say". There is no stand-in figure here: a guessed window or
+    // cap written to a model row looks exactly like a real one and then overwrites the real one.
+    let contextWindow: number | null = null;
+    let maxOutputTokens: number | null = null;
     // FA-PC7: track whether num_predict was actually parsed so the ctx/4
     // heuristic below applies ONLY to genuinely-unset models. Without this, a
     // model whose real num_predict is 8192 was indistinguishable from the unset
@@ -176,10 +177,11 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
       }
     }
 
-    // max output is typically a fraction of context window if not explicitly set.
-    // FA-PC7: gate on the parsed flag, not on the 8192 sentinel value, so a real
+    // max output is typically a fraction of context window if not explicitly set, derived ONLY from a
+    // window the server actually reported (M41).
+    // FA-PC7: gate on the parsed flag, not on a sentinel value, so a real
     // num_predict of 8192 (with a large ctx) is respected rather than overwritten.
-    if (!maxOutputExplicit && contextWindow > 32000) {
+    if (!maxOutputExplicit && contextWindow !== null && contextWindow > 32000) {
       maxOutputTokens = Math.min(Math.floor(contextWindow / 4), 32768);
     }
 

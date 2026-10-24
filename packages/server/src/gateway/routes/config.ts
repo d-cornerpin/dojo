@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
-import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS } from '../../agent/model.js';
+import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS, getContextWindow } from '../../agent/model.js';
 import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema, ProviderPrefillThroughputSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
@@ -756,8 +756,11 @@ configRouter.post('/providers/:id/validate', async (c) => {
         INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, datetime('now'), datetime('now'))
       `);
+      // M41: a figure is written only when the server REPORTED one. NULL keeps what the row already
+      // holds (seeded, or typed by the owner in the Model Limits editor); a new row the server says
+      // nothing about is stored as "not set", which the editor and the engine already understand.
       const updateModel = db.prepare(`
-        UPDATE models SET context_window = ?, max_output_tokens = ?, updated_at = datetime('now')
+        UPDATE models SET context_window = COALESCE(?, context_window), max_output_tokens = COALESCE(?, max_output_tokens), updated_at = datetime('now')
         WHERE provider_id = ? AND api_model_id = ?
       `);
 
@@ -769,8 +772,8 @@ configRouter.post('/providers/:id/validate', async (c) => {
 
         // Fetch actual model metadata from Ollama
         const modelInfo = await getOllamaModelInfo(m.name, baseUrl);
-        const contextWindow = modelInfo?.contextWindow ?? 128000;
-        const maxOutputTokens = modelInfo?.maxOutputTokens ?? 8192;
+        const contextWindow = modelInfo?.contextWindow ?? null;
+        const maxOutputTokens = modelInfo?.maxOutputTokens ?? null;
 
         const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(id, m.name);
         if (existing) {
@@ -962,11 +965,14 @@ configRouter.post('/providers/:id/validate', async (c) => {
         // previously-known prices and also made unknown-pricing models
         // indistinguishable from actually-free ones. Now: `"0"` from the
         // API → store 0 (truly free), missing/empty → null (unknown).
-        const existingModels = db.prepare('SELECT id, api_model_id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string; api_model_id: string }>;
+        const existingModels = db.prepare('SELECT id, api_model_id, max_output_tokens FROM models WHERE provider_id = ?').all(id) as Array<{ id: string; api_model_id: string; max_output_tokens: number | null }>;
+        // M41: the window and the cap follow the same rule as the prices — written only when the
+        // provider REPORTED one. NULL keeps the figure the row already holds (a preset's seed, or one
+        // the owner typed), so a /models list that says nothing about a model changes nothing.
         const updateModel = db.prepare(`
           UPDATE models SET
-            context_window = ?,
-            max_output_tokens = ?,
+            context_window = COALESCE(?, context_window),
+            max_output_tokens = COALESCE(?, max_output_tokens),
             input_cost_per_m = COALESCE(?, input_cost_per_m),
             output_cost_per_m = COALESCE(?, output_cost_per_m),
             updated_at = datetime('now')
@@ -983,19 +989,25 @@ configRouter.post('/providers/:id/validate', async (c) => {
         for (const existing of existingModels) {
           const apiModel = apiMap.get(existing.api_model_id);
           if (apiModel) {
-            const contextWindow = apiModel.context_length ?? apiModel.top_provider?.context_length ?? 128000;
+            const reported = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null);
+            const reportedWindow = reported(apiModel.context_length) ?? reported(apiModel.top_provider?.context_length);
             // T72b claim 1, the write side. `floor(cw / 4)` is exactly 1024 for a
             // 4096-window model — llama.cpp's default `n_ctx` — and a stored cap of 1024 is
             // a guaranteed empty answer for anything that reasons before it writes. When the
             // provider states its own `max_completion_tokens` we take it verbatim, as
-            // before; it is OUR OWN GUESS that must not be allowed below the floor. A
+            // before; it is OUR OWN DERIVATION that must not be allowed below the floor. A
             // provider that genuinely cannot produce this much will say so, which is
             // information; silently persisting an unusable cap is not.
-            const maxOutputTokens = apiModel.top_provider?.max_completion_tokens
-              ?? Math.max(THINKING_OUTPUT_FLOOR_TOKENS, Math.min(Math.floor(contextWindow / 4), 16384));
+            // M41: the derivation exists only to FILL A BLANK cap, and only from a window the provider
+            // reported. It never replaces a cap the row already holds, and with no reported window there
+            // is nothing to derive from.
+            const maxOutputTokens = reported(apiModel.top_provider?.max_completion_tokens)
+              ?? (reportedWindow !== null && existing.max_output_tokens === null
+                ? Math.max(THINKING_OUTPUT_FLOOR_TOKENS, Math.min(Math.floor(reportedWindow / 4), 16384))
+                : null);
             const inputCostPerM = parsePrice(apiModel.pricing?.prompt);
             const outputCostPerM = parsePrice(apiModel.pricing?.completion);
-            updateModel.run(contextWindow, maxOutputTokens, inputCostPerM, outputCostPerM, existing.id);
+            updateModel.run(reportedWindow, maxOutputTokens, inputCostPerM, outputCostPerM, existing.id);
             updated++;
           }
         }
@@ -2649,6 +2661,11 @@ function thinkingLevelsForRow(row: Record<string, unknown>): ThinkingLevel[] {
   }
 }
 
+/** The window the engine budgets a model with when none is stored (`getContextWindow`'s own answer). */
+function engineWindowFor(modelId: unknown): number | null {
+  try { return typeof modelId === 'string' ? getContextWindow(modelId) : null; } catch { return null; }
+}
+
 function rowToModel(row: Record<string, unknown>): Model {
   // thinking_enabled may be missing on pre-migration reads in rare paths;
   // default to true so the behavior matches the migration default.
@@ -2735,6 +2752,8 @@ function rowToModel(row: Record<string, unknown>): Model {
     apiModelId: row.api_model_id as string,
     capabilities: JSON.parse(row.capabilities as string),
     contextWindow: row.context_window as number | null,
+    // M41: a window that is not set is not a silent gap. The row names the figure the engine budgets with.
+    assumedContextWindow: typeof row.context_window === 'number' && row.context_window > 0 ? null : engineWindowFor(row.id),
     maxOutputTokens: row.max_output_tokens as number | null,
     inputCostPerM: row.input_cost_per_m as number | null,
     outputCostPerM: row.output_cost_per_m as number | null,
