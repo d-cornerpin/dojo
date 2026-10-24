@@ -1,5 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, validationRecordLine } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -1987,9 +1987,9 @@ async function runPMReview(): Promise<void> {
       ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
       : 'unassigned';
     const isRecurringRun = cTask.repeat_interval !== null && cTask.next_run_at !== null;
-    const tierHint = cTask.assigned_to === cTask.created_by
-      ? '  Trust hint: this is a SELF-ASSIGNED task. Bias toward validate unless something concretely smells off.'
-      : '';
+    // Text wave (orchestrator ruling): the report carries the record the close is judged on, never a bias.
+    const recordLine = validationRecordLine(cTask.id);
+
     const smellLine = cTask.last_smell_flag
       ? `\n  ⚠ SMELL_FLAG: ${renderSmellFlag(cTask.last_smell_flag)}`
       : '';
@@ -2019,9 +2019,9 @@ async function runPMReview(): Promise<void> {
     // shape: the engine steers, the PM speaks), and it names the ONE thing he asked for —
     // confirm it, push back on it, or go get more information.
     const doorbellLine = doorbell.has(cTask.id)
-      ? `\n  🔔 ${agentName} just said they got this done. Confirm and mark it in the tracker, `
-        + `or push back, or get more info — whatever it takes to make sure the task actually `
-        + `gets completed. Do this one now.`
+      ? `\n  🔔 ${agentName} just said they got this done. Judge it now on its record (the measure, `
+        + `what its calls touched, any remainder it named, the receipts): validate it, reject it naming `
+        + `what is missing, or get more info. Do this one now.`
       : '';
     // UX-REPAIR round 2 T11 — THE DEREFERENCEABLE POINTER, finally in the payload that demands
     // one. `resolveTaskAnswerPointer` reads the ask's own recorded receipt (via T11's task→ask
@@ -2052,7 +2052,7 @@ async function runPMReview(): Promise<void> {
         `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
         `  Evidence:\n${evidenceLines}${lastNoteLine}${deliveredLine}\n` +
-        `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
+        `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${recordLine}\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
         `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
         `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
@@ -2760,10 +2760,10 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     const escalateToAssignee = pokeType === 'escalate_primary' && (primaryId === task.assignedTo
       || !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId)));
     const basePokeMessage = deliveryEvidence && tangibleHandover
-      ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
-        `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
-        `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
-        `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
+      ? `DELIVERY ON RECORD: task "${task.title}" (${task.id}) still says in_progress, and the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
+        `If that delivery finished the task, close it with work_update(action="status", task_id="${task.id}", status="complete", result, evidence). ` +
+        `If something remains, say what in a work_note and continue. ` +
+        `Do NOT redo the work, and do NOT re-deliver what the user already has.`
       : buildPokeMessage(task, escalateToAssignee ? 'escalate_assignee' : pokeType, pokeNumber, idleSeconds, pokesSentThisCycle(task.id));
     // FIX ROUND, Finding 1: the PM's own reason, when this send is the guarded delivery of a
     // recorded circling verdict rather than an ordinary idle-based rung.

@@ -160,7 +160,7 @@ describe('fix round 3 (NB2): a delivered measured task with items left is driven
     claimedTask('task-m', 'the mailbox sweep', now - 6 * MIN, 12);
     for (const m of [0, 10, 25, 31, 47, 62, 80, 95]) await sweepAt(now + m * MIN);
     const sent = checkIns('task-m').join('\n---\n');
-    expect(sent).not.toMatch(/CLOSE-OUT NEEDED|Do NOT redo the work/);
+    expect(sent).not.toMatch(/DELIVERY ON RECORD|Do NOT redo the work/);
     expect(rungsSent('task-m')).toEqual(expect.arrayContaining([1, 2, 3]));
     expect(closeLogged('task-m')).toBe(0);
     expect(remediations('task-m')).toBe(0);
@@ -173,7 +173,7 @@ describe('fix round 3 (NB2): a delivered measured task with items left is driven
     const now = Date.now();
     claimedTask('task-u', 'the one-page report', now - 6 * MIN, null);
     await sweepAt(now);
-    expect(checkIns('task-u').join('\n')).toMatch(/CLOSE-OUT NEEDED/);
+    expect(checkIns('task-u').join('\n')).toMatch(/DELIVERY ON RECORD/);
   });
 
   it('CONTROL: a measured task at zero is still receipt-closed at strike 2 as before', async () => {
@@ -182,7 +182,7 @@ describe('fix round 3 (NB2): a delivered measured task with items left is driven
     const now = Date.now();
     claimedTask('task-z', 'the finished sweep', now - 6 * MIN, 0);
     for (const m of [0, 10, 25]) await sweepAt(now + m * MIN);
-    expect(checkIns('task-z').join('\n')).toMatch(/CLOSE-OUT NEEDED/);
+    expect(checkIns('task-z').join('\n')).toMatch(/DELIVERY ON RECORD/);
     expect(closeLogged('task-z')).toBeGreaterThan(0);
   });
 });

@@ -87,4 +87,17 @@ describe('the tracker lines around a close', () => {
     expect(gate).toContain('now. It is done when that reads 0.`');
     expect(gate).not.toContain('or when you name what is left.`');
   });
+
+  it('orchestrator ruling: the PM report and the delivery steer carry no bias toward closing or validating', () => {
+    const pm = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'pm-agent.ts'), 'utf8');
+    for (const s of ['Bias toward validate', 'CLOSE-OUT NEEDED', 'with the result NOW', 'whatever it takes to make sure the task actually']) expect(pm).not.toContain(s);
+    expect(pm).toContain('Judge it now on its record (the measure, ');
+  });
+  it('orchestrator ruling: the validation record line names the measure, what was touched and the remainder', async () => {
+    const { validationRecordLine } = await import('../job-loop-facts.js');
+    expect(validationRecordLine(TASK)).toBe('\n  Record: No measure. 0 items touched by its calls.');
+    db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 1 WHERE id = ?')
+      .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), TASK);
+    expect(validationRecordLine(TASK)).toBe('\n  Record: Its measure (gmail_search "in:inbox -label:Done") still returns 12 messages (of 50 at the start). 0 items touched by its calls.');
+  });
 });

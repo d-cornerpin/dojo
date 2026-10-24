@@ -6,8 +6,9 @@
 // new reads, would never be checked in on. The hold stands for such a job only while it is touching
 // items; one that is not lets the ladder run on its existing rungs, and the check-in carries the fact.
 import { getDb } from '../db/connection.js';
-import { ledgerNewItemsSince } from '../work/ledger-store.js';
+import { ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
 import { lastTurnEnd } from '../work/job-momentum.js';
+import { listTaskLog } from './task-log.js';
 
 /** Is this a measured job the engine has been continuing that touched NO new item since `sinceMs`
  *  (the last check-in, or before the first, the start of the first rung's own window)? */
@@ -49,4 +50,20 @@ export function parkCheckInText(task: { id: string; title: string }, idleMinutes
   const fact = continuedJobFact(task.id) ?? measuredLeftFact(task.id);
   return `[PM check-in] ${fact ? `${fact} ` : ''}Still on it? A work_note saying what is next answers this. `
     + `Waiting on someone? status="paused" or "blocked" with the reason. Task "${task.title}", ID: ${task.id}, no movement for ${idleMinutes} minutes.`;
+}
+
+/** A measured task's reading when there is no count left to state: it reads 0, or it was never read. */
+function measureNoneLeft(taskId: string): string {
+  const r = getDb().prepare('SELECT measure_json, measure_remaining FROM work WHERE id = ?').get(taskId) as { measure_json: string | null; measure_remaining: number | null } | undefined;
+  if (!r?.measure_json) return 'No measure.';
+  return r.measure_remaining === null ? 'Its measure could not be read.' : 'Its measure reads 0.';
+}
+
+/** What the validator judges a close on, from the records (orchestrator ruling, text wave): the measure,
+ *  what the task's calls touched, and the remainder its agent named, if any. Read off the rows, like `measuredLeftFact`. */
+export function validationRecordLine(taskId: string): string {
+  const touched = `${ledgerTotals(taskId).touched.toLocaleString('en-US')} items touched by its calls`;
+  const left = measuredLeftFact(taskId) ?? measureNoneLeft(taskId);
+  const rem = listTaskLog(taskId, { kinds: ['observation'] }).map((e) => e.note ?? '').find((n) => n.startsWith('Remainder named at close:'));   // newest first
+  return `\n  Record: ${left} ${touched}.${rem ? ` ${rem}` : ''}`;
 }
