@@ -114,7 +114,7 @@ export async function executeGmailSearch(
 
   if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
   // v3.5 K33: only the emails are outside text; the paging line, the other-mailbox counts and the re-call hints are the platform's.
-  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${outsideSpan(details.join(verbose ? '\n---\n' : '\n'))}${paging}`;
+  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.map((item) => outsideSpan(item)).join(verbose ? '\n---\n' : '\n')}${paging}`;
   if (verbose) return header + others;
   return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
 }

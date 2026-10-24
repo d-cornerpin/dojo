@@ -71,7 +71,9 @@ describe('K33 — every inbound producer hands the model fenced bytes', () => {
   it('Teams: the message is a chat message addressed to the agent, under the notice\'s own lines', () => {
     const out = teamsInboundContent('A colleague (c@example.test)', '1:1 chat with A colleague (oneOnOne)', '2026-10-24T09:00:00Z', ESCAPE, 'chat-1');
     expect(out.startsWith('[SOURCE: TEAMS MESSAGE FROM A colleague (c@example.test)]')).toBe(true);
-    fencedOnce(out, 'chat message', 'A colleague (c@example.test)', true);
+    fencedOnce(out, 'chat message', 'a Teams chat (chat-1)', true);
+    // Fix round 3 (N9): the head is the platform's; the sender's display name is never in it.
+    expect(out.split('\n').find((l) => l.startsWith('[EXTERNAL '))).not.toContain('A colleague');
     expect(out.endsWith('Chat ID: chat-1')).toBe(true);
   });
 
@@ -82,9 +84,12 @@ describe('K33 — every inbound producer hands the model fenced bytes', () => {
   });
 
   it('the mail watchers: the email block is an email; addressed to the agent only when it was sent to it', () => {
-    const block = (direct: boolean) => fencedMailBlock({ from: 'A sender <s@example.test>', subject: 'Hi', date: 'today', snippet: ESCAPE, messageId: 'm1', directToAgent: direct });
-    fencedOnce(block(false), 'email', 'A sender <s@example.test>', false);
-    fencedOnce(block(true), 'email', 'A sender <s@example.test>', true);
+    const block = (direct: boolean) => fencedMailBlock({ account: 'inbox@example.test', from: 'A sender <s@example.test>', subject: 'Hi', date: 'today', snippet: ESCAPE, messageId: 'm1', directToAgent: direct });
+    fencedOnce(block(false), 'email', 'a new email in inbox@example.test', false);
+    fencedOnce(block(true), 'email', 'a new email in inbox@example.test', true);
+    // Fix round 3 (N9): the sender's display name sits inside the fence, on its From line, never in the head.
+    expect(block(false).split('\n')[0]).not.toContain('A sender');
+    expect(block(false).split('\n')[1]).toBe('From: A sender <s@example.test>');
     expect(block(false).endsWith('\nMessage ID: m1\n')).toBe(true);
   });
 

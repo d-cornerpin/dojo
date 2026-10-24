@@ -53,7 +53,7 @@ function checkRateLimit(agentId: string): boolean {
 
 // ── Browser Session ──
 
-class BrowserSession {
+export class BrowserSession {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
@@ -114,7 +114,7 @@ class BrowserSession {
 
     const title = await page.title();
     const currentUrl = page.url();
-    return `Navigated to "${title}" (${currentUrl})`;
+    return `Navigated to ${outsideSpan(`"${title}"`)} (${currentUrl})`;   // v3.5 K33: a page title is page-author text
   }
 
   async screenshot(agentId: string): Promise<string> {
@@ -136,7 +136,7 @@ class BrowserSession {
     if (!visionModel) {
       const currentUrl = this.page.url();
       const title = await this.page.title();
-      return `Screenshot captured of "${title}" (${currentUrl}). No vision-capable model is configured to describe the page. Pick a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
+      return `Screenshot captured of ${outsideSpan(`"${title}"`)} (${currentUrl}). No vision-capable model is configured to describe the page. Pick a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
     }
 
     try {
@@ -172,7 +172,7 @@ class BrowserSession {
       logger.warn('Vision model failed for browser screenshot', { error: msg }, agentId);
       const currentUrl = this.page.url();
       const title = await this.page.title();
-      return `Screenshot captured of "${title}" (${currentUrl}). Vision analysis failed: ${msg}`;
+      return `Screenshot captured of ${outsideSpan(`"${title}"`)} (${currentUrl}). Vision analysis failed: ${msg}`;
     }
   }
 
@@ -248,7 +248,7 @@ class BrowserSession {
       ? outsideSpan(text.substring(0, maxChars)) + `\n\n[Content truncated at ${maxChars} characters]`
       : outsideSpan(text);
 
-    return `Page: "${title}" (${currentUrl})\n\n${content}`;
+    return `Page: ${outsideSpan(`"${title}"`)} (${currentUrl})\n\n${content}`;
   }
 
   async close(): Promise<string> {

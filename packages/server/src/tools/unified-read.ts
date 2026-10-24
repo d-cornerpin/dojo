@@ -185,12 +185,12 @@ export function renderCalendarAgenda(
   // the coverage lines and the failures are the platform's.
   if (timed.length > 0) {
     lines.push('');
-    lines.push(outsideSpan(timed.map((m) => renderCalendarLine(m, ambiguous)).join('\n')));
+    lines.push(timed.map((m) => outsideSpan(renderCalendarLine(m, ambiguous))).join('\n'));
   }
   if (allDay.length > 0) {
     lines.push('');
     lines.push('All-day:');
-    lines.push(outsideSpan(allDay.map((m) => renderCalendarLine(m, ambiguous)).join('\n')));
+    lines.push(allDay.map((m) => outsideSpan(renderCalendarLine(m, ambiguous))).join('\n'));
   }
   if (timed.length === 0 && allDay.length === 0) {
     lines.push('');
@@ -225,14 +225,14 @@ export function renderEmailSearch(
   if (items.length > 0) {
     lines.push('');
     // v3.5 K33: the emails are outside text; the heading, coverage lines and failures are the platform's.
-    lines.push(outsideSpan(items.map((m) => {
+    lines.push(items.map((m) => {
       const label = formatSourceLabel(m.source, ambiguous);
       const unread = m.unread ? ' [UNREAD]' : '';
       const snip = m.snippet
         ? ` | ${m.snippet.length > 160 ? m.snippet.slice(0, 160) + '…' : m.snippet}`
         : '';
-      return `- ${label}${unread} ${m.when} | ${m.from} — ${m.subject}\n  ID: ${m.id}${snip}`;
-    }).join('\n')));
+      return outsideSpan(`- ${label}${unread} ${m.when} | ${m.from} — ${m.subject}\n  ID: ${m.id}${snip}`);
+    }).join('\n'));
   } else {
     lines.push('');
     lines.push('No matching email in any connected mailbox.');
@@ -304,7 +304,7 @@ export function renderOtherCalendarsSection(
   const lines: string[] = [];
   if (rows.length > 0) {
     lines.push('Also on other connected calendars (not shown above):');
-    lines.push(outsideSpan(rows.slice(0, cap).map((r) => `- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`).join('\n')));
+    lines.push(rows.slice(0, cap).map((r) => outsideSpan(`- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`)).join('\n'));
     if (rows.length > cap) lines.push('(call calendar_agenda for the fully merged view)');
   }
   if (empty.length > 0) {

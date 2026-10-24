@@ -761,7 +761,7 @@ export async function executeMicrosoftReadTool(
         return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}${conversationLine(m.conversationId, '\n  ')}`;
       });
 
-      const header = `Found ${fetched.items.length} email(s)${inAcct}:\n\n${outsideSpan(emails.join(verbose ? '\n\n---\n\n' : '\n'))}`;
+      const header = `Found ${fetched.items.length} email(s)${inAcct}:\n\n${emails.map((item) => outsideSpan(item)).join(verbose ? '\n\n---\n\n' : '\n')}`;
       if (verbose) return header + others;
       return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.${others}`;
     }
@@ -829,7 +829,7 @@ export async function executeMicrosoftReadTool(
         return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${fmtTime2(m.receivedDateTime)}${conversationLine(m.conversationId, ' | ')}`;
       });
 
-      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.value.length} messages):\n\n${outsideSpan(emails.join('\n'))}`;
+      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.value.length} messages):\n\n${emails.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_agenda_ms': {
@@ -870,7 +870,7 @@ export async function executeMicrosoftReadTool(
       const agendaHeader = acctLabel
         ? `Calendar agenda for ${acctLabel} (next ${days} day(s)):`
         : `Calendar agenda (next ${days} day(s)):`;
-      return `${agendaHeader}\n\n${outsideSpan(events.join('\n\n'))}` + others;
+      return `${agendaHeader}\n\n${events.map((item) => outsideSpan(item)).join('\n\n')}` + others;
     }
 
     case 'calendar_search_ms': {
@@ -899,7 +899,7 @@ export async function executeMicrosoftReadTool(
           : `${e.start.dateTime} (could not parse)`;
         return `- ${e.subject}\n  ${when}\n  [ID: ${e.id}]`;
       });
-      return `Found ${data.value.length} event(s) matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${outsideSpan(events.join('\n'))}`;
+      return `Found ${data.value.length} event(s) matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${events.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_list_ms': {
@@ -919,7 +919,7 @@ export async function executeMicrosoftReadTool(
         const ownerStr = c.owner?.name || c.owner?.address ? ` (owner: ${c.owner.name ?? c.owner.address})` : '';
         return `- ${c.name}${ownerStr} [${perms.join(', ') || 'read-only'}]\n  ID: ${c.id}`;
       });
-      return `${data.value.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${outsideSpan(lines.join('\n'))}`;
+      return `${data.value.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${lines.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_share_invites_ms': {
@@ -979,7 +979,7 @@ export async function executeMicrosoftReadTool(
         return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.lastModifiedDateTime.slice(0, 10)}`;
       });
 
-      const header = `Found ${data.value.length} item(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${outsideSpan(files.join(verbose ? '\n\n' : '\n'))}`;
+      const header = `Found ${data.value.length} item(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.map((item) => outsideSpan(item)).join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
       return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: onedrive_read(file_id=<id>). For full mime types + URLs on every result: re-call onedrive_list with verbose=true.`;
     }
@@ -1042,7 +1042,7 @@ export async function executeMicrosoftReadTool(
         const chats = data.value.map(c =>
           `- ${c.topic ?? '(untitled)'} [${c.chatType}]\n  ID: ${c.id}\n  Last updated: ${fmtTime5(c.lastUpdatedDateTime)}`
         );
-        return `Teams chats:\n\n${outsideSpan(chats.join('\n\n'))}\n\nUse teams_read_messages with a chat_id to read messages.`;
+        return `Teams chats:\n\n${chats.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse teams_read_messages with a chat_id to read messages.`;
       }
 
       const result = await msGraphRead(
@@ -1062,7 +1062,7 @@ export async function executeMicrosoftReadTool(
         return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${body.slice(0, 500)}`;
       });
 
-      return `Teams messages:\n\n${outsideSpan(messages.join('\n\n'))}`;
+      return `Teams messages:\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;
     }
 
     case 'teams_list_attachments': {
@@ -1084,7 +1084,7 @@ export async function executeMicrosoftReadTool(
       const items = atts.map(a =>
         `- ${a.name ?? '(unnamed)'} (${a.contentType ?? 'unknown type'})\n  ID: ${a.id}`,
       );
-      return `Attachments (${atts.length}):\n\n${outsideSpan(items.join('\n\n'))}\n\nUse teams_download_attachment with the chat_id, message_id, and attachment_id to save to local disk.`;
+      return `Attachments (${atts.length}):\n\n${items.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse teams_download_attachment with the chat_id, message_id, and attachment_id to save to local disk.`;
     }
 
     case 'outlook_list_attachments': {
@@ -1103,7 +1103,7 @@ export async function executeMicrosoftReadTool(
         .map(a => `- ${a.name} (${Math.round(a.size / 1024)}KB, ${a.contentType})\n  ID: ${a.id}`);
 
       if (items.length === 0) return 'No non-inline attachments on this email.';
-      return `Attachments (${items.length}):\n\n${outsideSpan(items.join('\n\n'))}\n\nUse outlook_download_attachment with the message ID and attachment ID to save to local disk.`;
+      return `Attachments (${items.length}):\n\n${items.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse outlook_download_attachment with the message ID and attachment ID to save to local disk.`;
     }
 
     case 'onedrive_search': {
@@ -1129,7 +1129,7 @@ export async function executeMicrosoftReadTool(
         return line;
       });
 
-      return `Found ${data.value.length} result(s) for "${query}":\n\n${outsideSpan(files.join('\n\n'))}`;
+      return `Found ${data.value.length} result(s) for "${query}":\n\n${files.map((item) => outsideSpan(item)).join('\n\n')}`;
     }
 
     case 'onedrive_list_shared': {
@@ -1148,7 +1148,7 @@ export async function executeMicrosoftReadTool(
         const itemId = f.remoteItem?.id ?? f.id;
         return `- ${f.name}${size} [${type}]\n  drive_id: ${driveId}\n  file_id: ${itemId}${f.webUrl ? `\n  URL: ${f.webUrl}` : ''}`;
       });
-      return `${data.value.length} shared item(s):\n\n${outsideSpan(lines.join('\n\n'))}\n\nUse drive_id + file_id together with onedrive_read / onedrive_list / etc. to operate on a shared file.`;
+      return `${data.value.length} shared item(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse drive_id + file_id together with onedrive_read / onedrive_list / etc. to operate on a shared file.`;
     }
 
     case 'onedrive_list_drives': {
@@ -1163,7 +1163,7 @@ export async function executeMicrosoftReadTool(
         const owner = d.owner?.user?.displayName ?? d.owner?.user?.email ?? 'unknown';
         return `- ${d.name} [${d.driveType}] (owner: ${owner})\n  drive_id: ${d.id}`;
       });
-      return `${data.value.length} drive(s):\n\n${outsideSpan(lines.join('\n'))}`;
+      return `${data.value.length} drive(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'sharepoint_list_sites': {
@@ -1181,7 +1181,7 @@ export async function executeMicrosoftReadTool(
         const desc = s.description ? `\n  ${s.description.slice(0, 120)}` : '';
         return `- ${name}\n  site_id: ${s.id}\n  URL: ${s.webUrl}${desc}`;
       });
-      return `${data.value.length} site(s):\n\n${outsideSpan(lines.join('\n\n'))}\n\nUse sharepoint_list_drives(site_id) to find document libraries inside a site.`;
+      return `${data.value.length} site(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse sharepoint_list_drives(site_id) to find document libraries inside a site.`;
     }
 
     case 'sharepoint_list_drives': {
@@ -1197,7 +1197,7 @@ export async function executeMicrosoftReadTool(
         const desc = d.description ? `\n  ${d.description.slice(0, 120)}` : '';
         return `- ${d.name} [${d.driveType}]\n  drive_id: ${d.id}${desc}`;
       });
-      return `${data.value.length} document librar${data.value.length === 1 ? 'y' : 'ies'}:\n\n${outsideSpan(lines.join('\n'))}\n\nUse drive_id with onedrive_list / onedrive_read / onedrive_upload / etc. to operate on files in a library.`;
+      return `${data.value.length} document librar${data.value.length === 1 ? 'y' : 'ies'}:\n\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse drive_id with onedrive_list / onedrive_read / onedrive_upload / etc. to operate on files in a library.`;
     }
 
     case 'online_meeting_get': {
@@ -1277,7 +1277,7 @@ export async function executeMicrosoftReadTool(
         return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
       });
 
-      return `Channel messages (newest first):\n\n${outsideSpan(messages.join('\n\n'))}`;
+      return `Channel messages (newest first):\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;
     }
 
     case 'teams_list_chats': {
@@ -1298,7 +1298,7 @@ export async function executeMicrosoftReadTool(
         const when = c.lastUpdatedDateTime ? ` | last activity ${formatTimeForAgent(c.lastUpdatedDateTime)}` : '';
         return `- [${c.chatType}] ${label}${when}\n    ID: ${c.id}`;
       });
-      return `${chats.length} chat(s):\n\n${outsideSpan(lines.join('\n'))}\n\nUse teams_send_message(chat_id, message) to send to one.`;
+      return `${chats.length} chat(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse teams_send_message(chat_id, message) to send to one.`;
     }
 
     case 'online_meeting_list': {
@@ -1319,7 +1319,7 @@ export async function executeMicrosoftReadTool(
         const join = m.joinUrl ? `\n    Join: ${m.joinUrl}` : '';
         return `- "${m.subject}" | ${formatTimeForAgent(m.startDateTime)} → ${formatTimeForAgent(m.endDateTime)}\n    ID: ${m.id}${join}`;
       });
-      return `${meetings.length} online meeting(s) in the next ${days} day(s):\n\n${outsideSpan(lines.join('\n'))}`;
+      return `${meetings.length} online meeting(s) in the next ${days} day(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'onedrive_versions_list': {
@@ -1337,7 +1337,7 @@ export async function executeMicrosoftReadTool(
         const who = v.lastModifiedBy?.user?.displayName ? ` by ${v.lastModifiedBy.user.displayName}` : '';
         return `- ${formatTimeForAgent(v.lastModifiedDateTime)}${who} | ${Math.round(v.size / 1024)}KB\n    ID: ${v.id}`;
       });
-      return `${versions.length} version(s):\n\n${outsideSpan(lines.join('\n'))}\n\nUse onedrive_versions_restore(file_id, version_id) to restore an old version (current version is also kept).`;
+      return `${versions.length} version(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse onedrive_versions_restore(file_id, version_id) to restore an old version (current version is also kept).`;
     }
 
     case 'calendar_freebusy_ms': {
@@ -1543,7 +1543,7 @@ export async function executeMicrosoftReadTool(
         const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
         return `- ${n.displayName}${tagStr}\n    ID: ${n.id}`;
       });
-      return `${books.length} notebook(s):\n\n${outsideSpan(lines.join('\n'))}\n\nUse onenote_list_sections(notebook_id) to see what's inside.`;
+      return `${books.length} notebook(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse onenote_list_sections(notebook_id) to see what's inside.`;
     }
 
     case 'onenote_list_sections': {
@@ -1572,7 +1572,7 @@ export async function executeMicrosoftReadTool(
       if (pages.length === 0) return 'No pages in this section.';
       const { formatTimeForAgent } = await import('../services/format-time.js');
       const lines = pages.map(p => `- ${p.title || '(untitled)'} | modified ${formatTimeForAgent(p.lastModifiedDateTime)}\n    ID: ${p.id}`);
-      return `${pages.length} page(s):\n\n${outsideSpan(lines.join('\n'))}\n\nUse onenote_read_page(page_id) for content.`;
+      return `${pages.length} page(s):\n\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse onenote_read_page(page_id) for content.`;
     }
 
     case 'onenote_read_page': {

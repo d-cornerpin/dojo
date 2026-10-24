@@ -47,6 +47,7 @@ import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfi
  */
 export const MIN_BINDABLE_MAX_OUTPUT_TOKENS = 256;
 import type { ToolCall } from '@dojo/shared';
+import { attachmentBrackets, defangExternalMarkers } from '../tools/external-content.js';
 
 const logger = createLogger('model');
 
@@ -976,15 +977,19 @@ export async function buildNativeOllamaMessages(
             // Structured content blocks, extract text for tool result,
             // queue images for a follow-up user message
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
-            const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
+            // v3.5 K33: a fenced attachment's head and end travel WITH the image, not in the tool text.
+            const { around, isBracket } = attachmentBrackets(contentBlocks as Array<{ type: string; text?: unknown }>);
+            const textParts = contentBlocks.filter((b, i) => b.type === 'text' && !isBracket[i]).map(b => (b.text as string) ?? '').join('\n');
             native.push({ role: 'tool', content: textParts || '[Image loaded]', tool_name: toolName });
 
-            for (const img of contentBlocks.filter(b => b.type === 'image')) {
+            contentBlocks.forEach((img, i) => {
+              if (img.type !== 'image') return;
               const source = img.source as Record<string, unknown> | undefined;
-              if (source?.type === 'base64' && typeof source.data === 'string') {
-                pendingOllamaImages.push(source.data as string);
-              }
-            }
+              if (source?.type !== 'base64' || typeof source.data !== 'string') return;
+              const fence = around[i];
+              if (fence) native.push({ role: 'user', content: `${fence.head}\n(the image attached to this message)\n${fence.end}`, images: [source.data] } as unknown as typeof native[0]);
+              else pendingOllamaImages.push(source.data as string);
+            });
           } else {
             native.push({ role: 'tool', content: JSON.stringify(tr.content), tool_name: toolName });
           }
@@ -1775,9 +1780,12 @@ export async function buildOpenAIMessages(
           } else if (Array.isArray(tr.content)) {
             // Structured content blocks, extract text and images separately
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
-            const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
-            const imageBlks = contentBlocks.filter(b => b.type === 'image');
-            const docBlks = contentBlocks.filter(b => b.type === 'document');
+            // v3.5 K33: a fenced attachment's head and end travel WITH the image or PDF, in the order
+            // they are rendered, never joined into the tool text with nothing between them.
+            const { around, isBracket } = attachmentBrackets(contentBlocks as Array<{ type: string; text?: unknown }>);
+            const textParts = contentBlocks.filter((b, i) => b.type === 'text' && !isBracket[i]).map(b => (b.text as string) ?? '').join('\n');
+            const imageBlks = contentBlocks.flatMap((b, i) => (b.type === 'image' ? [{ b, fence: around[i] }] : []));
+            const docBlks = contentBlocks.flatMap((b, i) => (b.type === 'document' ? [{ b, fence: around[i] }] : []));
 
             openaiMessages.push({
               role: 'tool',
@@ -1786,28 +1794,31 @@ export async function buildOpenAIMessages(
             });
 
             // Queue images to be emitted as a user message after tool results
-            for (const img of imageBlks) {
+            for (const { b: img, fence } of imageBlks) {
               const source = img.source as Record<string, unknown> | undefined;
               if (source?.type === 'base64' && typeof source.data === 'string') {
                 const mediaType = (source.media_type as string) || 'image/png';
+                if (fence) pendingImages.push({ type: 'text', text: fence.head });
                 pendingImages.push({
                   type: 'image_url',
                   image_url: { url: `data:${mediaType};base64,${source.data}` },
                 });
+                if (fence) pendingImages.push({ type: 'text', text: fence.end });
               }
             }
 
             // Inline PDF text for non-vision document blocks
-            for (const doc of docBlks) {
+            for (const { b: doc, fence } of docBlks) {
               const source = doc.source as Record<string, unknown> | undefined;
               if (source?.type === 'base64' && typeof source.data === 'string') {
                 try {
                   const { extractPdfText } = await import('../services/pdf-extract.js');
                   const extracted = await extractPdfText(source.data as string);
                   const title = (doc.title as string) ?? 'document';
+                  const pdf = `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`;
                   openaiMessages.push({
                     role: 'user',
-                    content: `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`,
+                    content: fence ? `${fence.head}\n${defangExternalMarkers(pdf)}\n${fence.end}` : pdf,
                   });
                 } catch { /* PDF extraction failed, skip */ }
               }

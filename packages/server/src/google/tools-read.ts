@@ -481,7 +481,7 @@ export async function executeGoogleReadTool(
           const size = a.body?.size ? ` ${Math.round(a.body.size / 1024)}KB` : '';
           return `- ${name} (${a.mimeType}${size})\n  attachment_id: ${a.body?.attachmentId}`;
         });
-        output += `\n\nAttachments (${attachments.length}):\n${lines.join('\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download.`;
+        output += `\n\nAttachments (${attachments.length}):\n${lines.map((item) => outsideSpan(item)).join('\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download.`;   // v3.5 K33: a filename is the sender's
       }
       return output;
     }
@@ -508,7 +508,7 @@ export async function executeGoogleReadTool(
           return `- ${name} (${a.mimeType}, ${size})\n  attachment_id: ${a.body?.attachmentId}`;
         });
       if (items.length === 0) return 'No attachments on this email.';
-      return `Attachments (${items.length}):\n\n${outsideSpan(items.join('\n\n'))}\n\nUse gmail_read_attachment(message_id, attachment_id) to download to local disk.`;
+      return `Attachments (${items.length}):\n\n${items.map((item) => outsideSpan(item)).join('\n\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download to local disk.`;
     }
 
     case 'gmail_inbox': {
@@ -537,7 +537,7 @@ export async function executeGoogleReadTool(
           details.push(`${unread}ID: ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${fmtEmailDate(date)}`);
         }
       }
-      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.messages.length} messages):\n\n${outsideSpan(details.join('\n'))}`;
+      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.messages.length} messages):\n\n${details.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_agenda': {
@@ -580,7 +580,7 @@ export async function executeGoogleReadTool(
       const agendaHeader = acctLabel
         ? `Calendar agenda for ${acctLabel} (next ${days} day(s)):`
         : `Calendar agenda (next ${days} day(s)):`;
-      return `${agendaHeader}\n\n${outsideSpan(events.join('\n\n'))}` + others;
+      return `${agendaHeader}\n\n${events.map((item) => outsideSpan(item)).join('\n\n')}` + others;
     }
 
     case 'calendar_search': {
@@ -616,7 +616,7 @@ export async function executeGoogleReadTool(
           : `${raw} (could not parse)`;
         return `- ${e.summary}\n  ${when}\n  [ID: ${e.id}]`;
       });
-      return `Found ${data.items.length} event(s) matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${outsideSpan(events.join('\n'))}`;
+      return `Found ${data.items.length} event(s) matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${events.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_list': {
@@ -631,7 +631,7 @@ export async function executeGoogleReadTool(
         const desc = c.description ? `\n  ${c.description.slice(0, 120)}` : '';
         return `- ${name} [${tags}]\n  ID: ${c.id}${desc}`;
       });
-      return `${data.items.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${outsideSpan(lines.join('\n'))}`;
+      return `${data.items.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${lines.map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'drive_list': {
@@ -677,7 +677,7 @@ export async function executeGoogleReadTool(
         return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.modifiedTime.slice(0, 10)}`;
       });
 
-      const header = `Found ${data.files.length} file(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${outsideSpan(files.join(verbose ? '\n\n' : '\n'))}`;
+      const header = `Found ${data.files.length} file(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.map((item) => outsideSpan(item)).join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
       return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: drive_read(file_id=<id>). For full mime types + timestamps on every result: re-call drive_list with verbose=true.`;
     }
@@ -798,7 +798,7 @@ export async function executeGoogleReadTool(
         const size = r.size ? ` | ${Math.round(parseInt(r.size, 10) / 1024)}KB` : '';
         return `- ${formatTimeForAgent(r.modifiedTime)}${who}${size}${pin}\n    ID: ${r.id}`;
       });
-      return `${revs.length} version(s) (newest first):\n\n${outsideSpan(lines.reverse().join('\n'))}`;
+      return `${revs.length} version(s) (newest first):\n\n${lines.reverse().map((item) => outsideSpan(item)).join('\n')}`;
     }
 
     case 'calendar_freebusy': {

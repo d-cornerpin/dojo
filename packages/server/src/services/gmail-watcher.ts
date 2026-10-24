@@ -396,7 +396,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const content =
         `[SOURCE: GMAIL NOTIFICATION — ${notifyAccount} (${accountSuffix})]\n\n` +
         body +
-        fencedMailBlock({ from, subject, date, snippet, messageId: msg.id, directToAgent: isDirectToAgent }) +
+        fencedMailBlock({ account: notifyAccount, from, subject, date, snippet, messageId: msg.id, directToAgent: isDirectToAgent }) +
         `Use \`${toolHint}\`${kind === 'user' ? ` (account: ${notifyAccount})` : ''} to read the full body${isDirectToAgent ? ' if you need it' : ' before deciding'}.`;
 
       const msgId = uuidv4();

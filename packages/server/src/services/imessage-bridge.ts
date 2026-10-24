@@ -1726,6 +1726,8 @@ const stopOrFail = (result: SendResult, failed: string): string => (result === '
 // by accident; async ones ran in parallel, so two owner notices seconds apart could reach the phone
 // out of order. Every exported send takes its turn here; a send made INSIDE a send (an attachment's
 // caption) runs in its parent's turn. An idle queue starts the send at once, in the caller's frame.
+// LATENT (re-review N6, left as ruled): async work STARTED inside a send inherits this marker, so a
+// send it fires without awaiting would skip the queue. No send path does that today.
 const inASend = new AsyncLocalStorage<true>();
 let sendsInFlight = 0;
 let lastSend: Promise<unknown> = Promise.resolve();

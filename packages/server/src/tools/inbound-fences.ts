@@ -33,7 +33,9 @@ export function teamsInboundContent(senderLabel: string, chat: string, time: str
     `Time: ${time}`,
     ``,
     `Message:`,
-    fenceExternal('chat message', senderLabel, body, { addressedToAgent: true }),
+    // Fix round 3 (N9): the head names the chat by its id; the sender's display name stays in the
+    // notice's own SOURCE line above, and never in the fence's head.
+    fenceExternal('chat message', `a Teams chat (${chatId})`, body, { addressedToAgent: true }),
     ``,
     `Chat ID: ${chatId}`,
   ].join('\n');
@@ -50,8 +52,10 @@ export function voicemailNoticeContent(ownerName: string, to: string, from: stri
 
 /** The email block under both mail watchers' notice sentences (`services/gmail-watcher.ts`,
  *  `services/outlook-watcher.ts`): addressed to the agent only when it was a direct message to it. */
-export function fencedMailBlock(m: { from: string; subject: string; date: string; snippet: string; messageId: string; directToAgent: boolean }): string {
-  return fenceExternal('email', m.from, `From: ${m.from}\nSubject: ${m.subject}\nDate: ${m.date}\nPreview: ${m.snippet}`, { addressedToAgent: m.directToAgent })
+export function fencedMailBlock(m: { account: string; from: string; subject: string; date: string; snippet: string; messageId: string; directToAgent: boolean }): string {
+  // Fix round 3 (N9): the head is the platform's, so it names the watched mailbox; the sender's own
+  // display name stays inside, on the From line.
+  return fenceExternal('email', `a new email in ${m.account}`, `From: ${m.from}\nSubject: ${m.subject}\nDate: ${m.date}\nPreview: ${m.snippet}`, { addressedToAgent: m.directToAgent })
     + `\nMessage ID: ${m.messageId}\n`;
 }
 

@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import path from 'node:path';
-import { fenceMarkedSpan, stripOutsideMarks, fenceHead, fenceEnd, newFenceCode, type ExternalKind } from '../../tools/external-content.js';
+import { fenceMarkedSpan, stripOutsideMarks, fenceAttachment, type ExternalKind } from '../../tools/external-content.js';
 import { USER_MAILBOX_READ_TOOLS, AGENT_MAILBOX_READ_TOOLS } from './provider/mailbox-banner.js';
 import { homeDir } from '../../home.js';
 
@@ -51,7 +51,7 @@ const cal = (what: string): OutsideRead => ({ kind: 'calendar event', from: name
 const OUTSIDE_READS: Readonly<Record<string, OutsideRead>> = {
   web_search: { kind: 'search result', from: (a) => `a web search for "${typeof a.query === 'string' ? a.query : ''}"` },
   web_fetch: { kind: 'web page', from: (a) => (typeof a.url === 'string' ? a.url : 'a web page') },
-  web_browse: { kind: 'web page', from: (a) => (a.action === 'extract' || a.action === 'screenshot' ? 'the page open in web_browse' : null) },
+  web_browse: { kind: 'web page', from: () => 'the page open in web_browse' },   // every action that names the page's title or text marks it
   email_search: { kind: 'email', from: () => 'the connected mailboxes' },
   file_read: { kind: 'document', from: receivedFile },
   pdf_read: doc('a PDF'), pdf_get_info: doc('a PDF'),
@@ -149,12 +149,8 @@ export function fenceOutsideSpan(toolName: string, args: Record<string, unknown>
   if (Array.isArray(call.__contentBlocks)) {
     call.__contentBlocks = call.__contentBlocks.flatMap((b) => {
       if (b.type === 'text') return [b];
-      const code = newFenceCode();
-      return [
-        { type: 'text', text: `${fenceHead(read.kind, code, from)} The attachment that follows is that content.` },
-        b,
-        { type: 'text', text: fenceEnd(read.kind, code) },
-      ];
+      const { head, end } = fenceAttachment(read.kind, from);
+      return [{ type: 'text', text: head }, b, { type: 'text', text: end }];
     });
   }
   return fenceMarkedSpan(content, read.kind, from);
