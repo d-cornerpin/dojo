@@ -44,3 +44,11 @@ export function messageText(content: string, toolNames: Map<string, string> = ne
     return `[${b.type}]`;
   }).filter(Boolean).join('\n');
 }
+
+/** The tool name and text of every FAILED tool result in one stored message (K37: the timeline
+ *  prints each one's error fingerprint). Empty for plain text and for results that succeeded. */
+export function failedResults(content: string, toolNames: Map<string, string> = new Map()): Array<{ tool: string; text: string }> {
+  return (blocksOf(content) ?? [])
+    .filter((b) => b.type === 'tool_result' && b.is_error)
+    .map((b) => ({ tool: typeof b.tool_use_id === 'string' ? toolNames.get(b.tool_use_id) ?? 'tool' : 'tool', text: resultText(b.content) }));
+}

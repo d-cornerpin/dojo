@@ -15,7 +15,8 @@
 import type Database from 'better-sqlite3';
 import { redactRows } from './redact.js';
 import { agentLabel, msExpr, short, utc, toMs } from './scope.js';
-import { messageText, toolNamesIn } from './message-text.js';
+import { failedResults, messageText, toolNamesIn } from './message-text.js';
+import { fingerprint } from '../agent/v2/error-fingerprint.js';
 
 export type Source = 'events' | 'tools' | 'receipts' | 'deliveries' | 'turns' | 'messages';
 export const SOURCES: readonly Source[] = ['events', 'tools', 'receipts', 'deliveries', 'turns', 'messages'];
@@ -64,6 +65,8 @@ const join = (...cs: Clause[]): Clause => {
 
 const turnTag = (r: Row): string => (r.turn_number !== null && r.turn_number !== undefined ? ` · turn ${r.turn_number}` : '');
 const rootTag = (r: Row): string => (r.root_id ? ` · ${r.root_kind ?? 'root'} ${short(String(r.root_id))}` : '');
+/** K37: beside a failed call, the fingerprint the cross-agent tool-error ledger counts it under. */
+const fpNote = (fps: Array<[string, string]>): string => fps.map(([tool, text]) => `  [error fingerprint: ${fingerprint(tool, text)}]`).join('');
 const who = (r: Row, names: Map<string, string>): string => `agent ${agentLabel(names, r.agent_id as string)}`;
 
 function eventSummary(kind: string, payload: unknown): string {
@@ -86,7 +89,7 @@ const DEFS: Record<Source, Def> = {
     table: 'audit_log', at: msExpr('created_at', 'text'),
     agent: plain, turn: plainTurn,
     ids: (ids) => [`root_id IN (${marks(ids)})`, ids], named: (id) => ['(instr(target, ?) > 0 OR instr(detail, ?) > 0)', [id, id]], conv: () => null,
-    render: (r, names) => `${who(r, names)} · ${r.action_type === 'tool_call' ? 'tool' : r.action_type} ${r.target ?? ''} (${r.result}) · audit_log ${short(String(r.id))}${turnTag(r)}${rootTag(r)}  ${clip(r.detail)}`,
+    render: (r, names) => `${who(r, names)} · ${r.action_type === 'tool_call' ? 'tool' : r.action_type} ${r.target ?? ''} (${r.result}) · audit_log ${short(String(r.id))}${turnTag(r)}${rootTag(r)}  ${clip(r.detail)}${r.action_type === 'tool_call' && r.result === 'error' && r.detail ? fpNote([[String(r.target ?? ''), String(r.detail)]]) : ''}`,
   },
   receipts: {
     table: 'tool_receipts', at: msExpr('created_at', 'text'),
@@ -113,7 +116,7 @@ const DEFS: Record<Source, Def> = {
     table: 'messages', at: msExpr('created_at', 'ms'),
     agent: plain, turn: plainTurn,
     ids: (ids) => [`(root_id IN (${marks(ids)}) OR task_id IN (${marks(ids)}))`, [...ids, ...ids]], named: (id) => ['instr(content, ?) > 0', [id]], conv: (c) => ['conversation_id = ?', [c]],
-    render: (r, names, tools) => `${who(r, names)} · msg ${short(r.id as string)} ${r.role}${r.channel ? ` · ${r.channel}` : ''}${turnTag(r)}${r.a2a_thread_id ? ` · thread ${short(r.a2a_thread_id as string)} ${r.a2a_intent ?? ''}` : ''}  ${clip(messageText(String(r.content), tools))}`,
+    render: (r, names, tools) => `${who(r, names)} · msg ${short(r.id as string)} ${r.role}${r.channel ? ` · ${r.channel}` : ''}${turnTag(r)}${r.a2a_thread_id ? ` · thread ${short(r.a2a_thread_id as string)} ${r.a2a_intent ?? ''}` : ''}  ${clip(messageText(String(r.content), tools))}${fpNote(failedResults(String(r.content), tools).map((f): [string, string] => [f.tool, f.text]))}`,
   },
 };
 
