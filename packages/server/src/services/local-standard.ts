@@ -24,7 +24,8 @@ import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 
-export { STANDARD_MODELS_MISSING_WORDS }; const MISSING_CONDITION = 'standard-models';
+export { STANDARD_MODELS_MISSING_WORDS };
+const MISSING_CONDITION = 'standard-models';
 
 const logger = createLogger('local-standard');
 
@@ -284,16 +285,17 @@ export function startStandardInstall(): void {
 }
 
 /**
- * The update hook (the once-per-version pattern of `prompt/shipped-souls.ts`): the first boot of a
- * version installs or repairs the pair. Stamped only when both are installed, so an install Ollama
- * could not finish is tried again at the next boot. A box that never set up a local Ollama is left
- * to setup. Returns whether a run happened.
+ * The update hook (the once-per-version pattern of `prompt/shipped-souls.ts`): the first boot of a version
+ * raises Ollama's model limit (owner decision 2026-10-24) and installs or repairs the pair. Stamped only when
+ * both are installed, so an unfinished install is tried again at the next boot. A box that never set up a
+ * local Ollama is left to setup. Returns whether a run happened.
  */
 export async function ensureStandardModelsOncePerVersion(version: string): Promise<boolean> {
   if (!/^\d/.test(version)) return false;
   const db = getDb();
   const seen = (db.prepare("SELECT value FROM config WHERE key = 'standard_models_version'").get() as { value: string } | undefined)?.value;
   if (seen === version || !localOllamaProvider()) return false;
+  await (await import('./ollama-model-limit.js')).ensureOllamaModelLimit();   // never throws; says so on a card
   const s = await ensureStandardModels();
   if (s.decision === 'installed' && s.writer === 'installed') {
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('standard_models_version', ?, datetime('now'))

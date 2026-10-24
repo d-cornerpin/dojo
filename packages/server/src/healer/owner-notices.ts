@@ -71,6 +71,11 @@ export const STANDARD_MODELS_MISSING_WORDS = "The Dojo's own two local models co
 export const uncheckedFitWords = (name: string): string =>
   `${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
   + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
+/** v3.5 (owner decision 2026-10-24): the Dojo set Ollama's loaded-model limit on the Mac, or could not. */
+export const OLLAMA_LIMIT_SET_WORDS = "The Dojo raised Ollama's limit on loaded models so its own two models, the embedder and an agent's "
+  + 'local model can stay loaded together. Ollama was restarted once to apply it.';
+export const OLLAMA_LIMIT_FAILED_WORDS = "The Dojo could not raise Ollama's limit on loaded models, so an agent's local model and the Dojo's "
+  + 'own models may unload each other and answer more slowly. Everything else keeps working; the Dojo tries again at the next update.';
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -154,6 +159,7 @@ export function wordsOf(key: string): string {
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
     : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS
+    : kind === 'ollama-limit-set' ? OLLAMA_LIMIT_SET_WORDS : kind === 'ollama-limit-failed' ? OLLAMA_LIMIT_FAILED_WORDS
     : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
     : HEALER_BROKEN_WORDS;
 }
@@ -224,7 +230,7 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') || key.startsWith('ollama-limit') ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

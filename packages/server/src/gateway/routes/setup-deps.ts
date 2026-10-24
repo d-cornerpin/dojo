@@ -16,9 +16,9 @@ import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
 import {
   ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
-  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS,
+  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
 } from '../../services/local-standard.js';
-import { getOllamaLock, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
+import { ensureOllamaModelLimit, desiredOllamaMaxLoaded } from '../../services/ollama-model-limit.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -137,8 +137,7 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         // Start ollama serve in background. v3.5: with room for the embedder, the Dojo's resident pair and
         // the lock's agent slots — Ollama's default of 3 runners would make an agent's model and one of
         // those three evict each other turn after turn (its scheduler unloads an idle runner at the limit).
-        getOllamaLock().reloadConfig();
-        const maxLoaded = String(1 + STANDARD_TAGS.length + getOllamaMaxConcurrent());
+        const maxLoaded = String(desiredOllamaMaxLoaded());   // services/ollama-model-limit.ts states the arithmetic
         exec('ollama serve', { timeout: 0, env: { ...execEnv, OLLAMA_MAX_LOADED_MODELS: maxLoaded } }); // fire and forget
         // Wait a moment for it to start
         await new Promise(r => setTimeout(r, 3000));
@@ -345,7 +344,10 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
 
       logger.info('Ollama model discovery complete', { total: models.length, added });
       // v3.5: Ollama answers and the embedder is present — the Dojo's two models install themselves.
-      if (models.some((m) => m.name.startsWith('nomic-embed-text'))) startStandardInstall();
+      if (models.some((m) => m.name.startsWith('nomic-embed-text'))) {
+        void ensureOllamaModelLimit();   // owner decision 2026-10-24: at setup the Dojo raises Ollama's model limit
+        startStandardInstall();
+      }
       return c.json({ ok: true, data: { providerId, modelsFound: models.length, modelsAdded: added } });
     }
   } catch { /* ignore */ }
