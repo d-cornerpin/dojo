@@ -9033,6 +9033,27 @@
       "to": 383,
       "by": "t250 (2026-10-23): v3.5 fix round 1, the one work_events rebuild of the release",
       "why": "+7: seven lines of ledger ROW, no logic, the same five-field shape as every entry above it. The orchestrator ruled that D1's `continued` and `stalled` kinds fold into migration 200b, so the release rebuilds work_events once instead of twice. 200b had an earlier version on the v3.5 lane branch, and `check-migration-freeze.mjs` counts branch history since the tag as applied, so the amendment needs its (file, appliedChecksum, fileChecksum) triple here. The entry's reason states that the earlier bytes were applied by no released or owner box; `migration-checksums.test.ts` machine-checks the fileChecksum against the tree and pins the file list. REFUSED: a second rebuild file (200c) to avoid the entry, which would copy every box's work_events twice for the release, the cost the ruling exists to avoid. From 383 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 835,
+      "to": 841,
+      "by": "t250 (2026-10-23): v3.5 fix round 3, a run is not complete while its measure lists items",
+      "why": "+6: one import, one read of what the task's measure lists, one line switching the run's word to `incomplete`, two lines of settle reason, one line recording the remainder. Here because `settleOccurrence` is the run authority every run close crosses (the delivered-run sweep, the deliver-ladder stand-down, the agent's per-run close); the judgement itself lives in `work/measure-close-gate.ts` (`runItemsLeft`). REFUSED: judging at each of the two engine doors, which is the two-deciders shape. From 841 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": 583,
+      "to": 584,
+      "by": "t250 (2026-10-23): v3.5 fix round 3",
+      "why": "+1: the deliver-ladder stand-down re-reads the task's measure before the run is settled, so the run authority judges a fresh count. From 584 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 2152,
+      "to": 2153,
+      "by": "t250 (2026-10-23): v3.5 fix round 3",
+      "why": "+1 net: the delivered-run sweep re-reads the task's measure before it closes a run (+1); the stuck-row force-reset's two log lines now say what happened and its schedule patch is skipped when already completed (the same lines, rewritten). From 2,153 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9202,7 +9223,7 @@
     "packages/server/src/agent/v2/steps/preflight/turn-trigger.ts": 304,
     "packages/server/src/agent/v2/steps/step-outcome.ts": 140,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
-    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 583,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 584,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 317,
     "packages/server/src/agent/v2/turn-record.ts": 332,
     "packages/server/src/agent/web-tools.ts": 441,
@@ -9283,7 +9304,7 @@
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 320,
     "packages/server/src/scheduler/engine.ts": 414,
-    "packages/server/src/scheduler/runner.ts": 2152,
+    "packages/server/src/scheduler/runner.ts": 2153,
     "packages/server/src/services/audio-generation.ts": 435,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/capability-registry.ts": 251,
@@ -9338,7 +9359,7 @@
     "packages/server/src/work/deliverable-declaration.ts": 320,
     "packages/server/src/work/join-drive.ts": 498,
     "packages/server/src/work/obligation-memory.ts": 630,
-    "packages/server/src/work/occurrences.ts": 835,
+    "packages/server/src/work/occurrences.ts": 841,
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/row-authority.ts": 398,
     "packages/server/src/work/store.ts": 2264,
