@@ -12,9 +12,12 @@ set -euo pipefail
 # new version and then failed to download it.
 #
 # Usage:
-#   bash deploy/release.sh <version> [--dry-run] [--notes-file <path>]
-#   e.g.  bash deploy/release.sh 3.0.4
-#         bash deploy/release.sh 3.0.4 --dry-run     # build + verify, no push
+#   bash deploy/release.sh <version> --notes-file <path> [--dry-run]
+#   e.g.  bash deploy/release.sh 3.0.4 --notes-file notes.md
+#         bash deploy/release.sh 3.0.4 --notes-file notes.md --dry-run   # build + verify, no push
+#
+# --notes-file is REQUIRED (the plain-language notes the rule in deploy/RELEASE.md asks for): a
+# release without it is refused before anything is touched. There is no commit-subject fallback.
 #
 # --dry-run does everything locally (bump, build, verify the embedded version)
 # then reverts the bump WITHOUT committing/pushing/releasing. Use it to prove a
@@ -188,12 +191,35 @@ tag_points_at_head() {
 # Preflight publishes vX.Y.Z-preflight.N from the `Preflight` branch.
 # See deploy/RELEASES.md for the full process + numbering rules.
 if [ "$PREFLIGHT" = "0" ] && [ -z "$VERSION" ]; then
-  fail "Usage: bash deploy/release.sh <X.Y.Z> [--dry-run] [--notes-file <path>]   (preflight: --preflight [<X.Y.Z>])"
+  fail "Usage: bash deploy/release.sh <X.Y.Z> --notes-file <path> [--dry-run]   (preflight: --preflight [<X.Y.Z>])"
 fi
 if [ -n "$VERSION" ]; then
   echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Base version must be X.Y.Z (got: $VERSION)"
 fi
 BASE="$VERSION"
+
+# ── Plain release notes are required (G23) ──
+# The notes are what a user reads in Settings before updating; the rule (deploy/RELEASE.md) is
+# plain sentences, grouped, no developer words. A commit-subject list is not that, so there is no
+# fallback to one: no notes file, or an empty one, is a refusal, before anything is touched. A
+# --dry-run says what the real run would say and carries on, so the other gates are still proven.
+WOULD_REFUSE=0
+NOTES_REFUSAL=""
+if [ -z "$NOTES_FILE" ]; then
+  NOTES_REFUSAL="Refused: a release needs plain release notes (--notes-file). The rule is in deploy/RELEASE.md. NOT publishing."
+elif [ ! -f "$NOTES_FILE" ]; then
+  NOTES_REFUSAL="Notes file not found: $NOTES_FILE. NOT publishing."
+elif ! grep -q '[^[:space:]]' "$NOTES_FILE"; then
+  NOTES_REFUSAL="Refused: a release needs plain release notes (--notes-file). The rule is in deploy/RELEASE.md. NOT publishing. ($NOTES_FILE is empty.)"
+fi
+if [ -n "$NOTES_REFUSAL" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "" >&2; echo "❌ WOULD FAIL (dry run): $NOTES_REFUSAL" >&2
+    WOULD_REFUSE=1
+  else
+    fail "$NOTES_REFUSAL"
+  fi
+fi
 
 cd "$ROOT"
 
@@ -898,28 +924,22 @@ if [ "$DRY_RUN" = "1" ]; then
   git checkout -- package.json
   echo "  Would next: commit, tag $TAG, push $BRANCH + tag, create $([ "$PREFLIGHT" = "1" ] && echo 'PRE-')release $TAG with all three assets, then verify."
   echo ""
+  if [ "$WOULD_REFUSE" = "1" ]; then
+    fail "Dry run: every blocking gate is green, but the real run would be REFUSED ($NOTES_REFUSAL)"
+  fi
   echo "✅ Dry run OK — every blocking gate green, report tier recorded. Re-run without --dry-run to release for real."
   exit 0
 fi
 
 # ── Release notes ──
-PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-NOTES_ARGS=()
-if [ -n "$NOTES_FILE" ]; then
-  [ -f "$NOTES_FILE" ] || fail "Notes file not found: $NOTES_FILE"
-  NOTES_ARGS=(--notes-file "$NOTES_FILE")
-elif [ -n "$PREV_TAG" ]; then
-  TMP_NOTES="$(mktemp)"
-  { echo "Changes since $PREV_TAG:"; echo ""; git log "$PREV_TAG"..HEAD --pretty='- %s'; } > "$TMP_NOTES"
-  # Honesty line the skip-flag warning promises: a build cut without the
-  # behavioral-suite marker says so on its release page.
-  if [ "$SKIP_BEHAVIORAL" = "1" ]; then
-    { echo ""; echo "Note: cut with --skip-behavioral-gate (owner-authorized); the behavioral suite was not re-run for this build."; } >> "$TMP_NOTES"
-  fi
-  NOTES_ARGS=(--notes-file "$TMP_NOTES")
-else
-  NOTES_ARGS=(--generate-notes)
+# The notes file was checked up front (a missing or empty one never gets here). A build cut without
+# the behavioral-suite marker says so on its release page, so that honesty line rides on a copy.
+TMP_NOTES="$(mktemp)"
+cat "$NOTES_FILE" > "$TMP_NOTES"
+if [ "$SKIP_BEHAVIORAL" = "1" ]; then
+  { echo ""; echo "Note: cut with --skip-behavioral-gate (owner-authorized); the behavioral suite was not re-run for this build."; } >> "$TMP_NOTES"
 fi
+NOTES_ARGS=(--notes-file "$TMP_NOTES")
 
 # ── Commit + tag + push (order preserved; each step idempotent on re-run) ──
 # FA-D3: keeping the documented order (commit → tag → push → release), every
@@ -930,7 +950,10 @@ git add package.json
 if git diff --cached --quiet; then
   echo "  ↪ package.json bump already committed (re-entry); skipping commit"
 else
-  git commit -m "release: $TAG" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+  # The trailer is the neutral identity this repo is configured with (the commit-identity gate
+  # refuses a machine-default one), so no model or person is baked into the script.
+  RELEASE_IDENTITY="$(git config user.name) <$(git config user.email)>"
+  git commit -m "release: $TAG" -m "Co-Authored-By: $RELEASE_IDENTITY"
 fi
 COMMITTED=1
 if git rev-parse "$TAG" >/dev/null 2>&1; then
