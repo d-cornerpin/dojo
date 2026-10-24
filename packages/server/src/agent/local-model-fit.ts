@@ -33,7 +33,8 @@ import {
 } from '../services/num-ctx-calculator.js';
 import { dojoWorkingBytes, writerJobWindowTokens, writerReservedWindowTokens } from '../services/dojo-working-memory.js';
 import { kvBytesPerTokenOf } from '../services/kv-bytes.js';
-import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../services/local-standard.js';
+import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS } from '../services/local-standard.js';
+import { getOllamaLock } from '../services/ollama-lock.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { MAIN_MODEL_MIN_WINDOW } from './main-model-floor.js';
 import { ownerCardFrame } from '../services/owner-card-frames.js';
@@ -203,4 +204,25 @@ export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void>
   ownerConditionCleared(fitUncheckedKey(modelId));   // checked now: the card leaves every dashboard
   if (v.fits) { getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND key IN (?, ?)').run(UNCHECKED_SCOPE, `agent:${modelId}`, `job:${modelId}`); return; }
   throw new Error(v.message ?? 'This model does not fit in this box\'s memory.');
+}
+
+/**
+ * t268 fix round 2 (ruling): the window a job of the Dojo's writer that NO reserve holds (a fallback summary, when an
+ * agent's own model cannot be reached) can have NOW on this box's Ollama — its reserved room plus the open memory the
+ * fit computes, less the agent models the platform has loaded there (the lock's slots), at the writer's KV per
+ * token. Null when it cannot be sized (then nothing is refused).
+ */
+export async function freeWriterWindowTokens(): Promise<number | null> {
+  const provider = localOllamaProvider();
+  const sizes = provider ? await installedSizes(provider.baseUrl) : null;
+  const total = provider ? resolveOllamaTotalRamBytes(provider.baseUrl, null) : null;
+  if (!provider || !sizes || total === null) return null;
+  const arch = await fetchModelArchInfo(provider.baseUrl, STANDARD_WRITER_MODEL.tag);
+  const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
+  if (typeof kv !== 'number' || kv <= 0) return null;
+  const pair = (sizes.get(STANDARD_DECISION_MODEL.tag) ?? STANDARD_DECISION_MODEL.bytes) + (sizes.get(STANDARD_WRITER_MODEL.tag) ?? STANDARD_WRITER_MODEL.bytes);
+  const loaded = getOllamaLock().getStatus().slots.filter((s) => s.providerId === provider.id && !STANDARD_TAGS.includes(s.modelName))
+    .reduce((n, s) => n + (sizeOf(sizes, s.modelName) ?? 0), 0);
+  const open = total - pickDesktopReserve(total) - ENGINE_RESERVE_BYTES - (sizeOf(sizes, embedderName()) ?? 0) - pair - await dojoWorkingBytes(provider.baseUrl) - loaded;
+  return await writerReservedWindowTokens(null) + Math.max(0, Math.floor(open / kv));
 }

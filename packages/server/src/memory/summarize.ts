@@ -4,7 +4,7 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
-import { writeThenCheck, rewriteInstruction } from './summary-check.js';
+import { writeThenCheck, rewriteInstruction, refuseFallbackOverFreeMemory } from './summary-check.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
 import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
@@ -267,7 +267,7 @@ async function writeSummary(params: {
   }
 
   const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId) + rewriteInstruction(checkFeedback);
-  const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId);
+  const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId) ?? await refuseFallbackOverFreeMemory(modelId, systemPrompt, content, targetTokens, agentId);
   if (tooBig) return tooBig;
 
   try {

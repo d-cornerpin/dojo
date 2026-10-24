@@ -28,6 +28,7 @@ import { decisionCharsPerToken } from '../services/token-density.js';
 import { getDecisionProvider } from '../agent/decision-provider.js';
 import { SUMMARY_CHECK_PURPOSE, actingQuestions, askedQuestions, summaryCheckActs, summaryCheckId, passMark, type SummaryCheckQuestion } from './summary-check-ledger.js';
 import { createHash } from 'node:crypto';
+export { refuseFallbackOverFreeMemory } from './writer-fallback-room.js';   // summarize.ts's one door asks it
 /** A span no caller named (a direct check): keyed by its source text instead. */
 const contentKey = (t: string): string => createHash('sha256').update(t).digest('hex').slice(0, 32);
 export { passMark };

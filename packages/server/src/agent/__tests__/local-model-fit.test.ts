@@ -352,12 +352,25 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
   });
 
-  it('not the pick: the largest job it really ran, at its real size — a title, then a fallback summary', async () => {
+  // Fix round 2 (ruling): the ASSIGNED jobs on this box's configuration, deterministic — never the largest job of
+  // the last 30 days (edited: that clause pinned the round-1 rule).
+  it('not the pick: its assigned system jobs only (a title\'s bounded window), however large a job it ran', async () => {
     ran('ask_title', 1_500);
-    expect(await writerReservedWindowTokens(null)).toBe(2_048);   // 1,500 + 64 out + 256 slack → one 2,048 block
-    ran('memory_summarize', 40_000);
-    expect(await writerReservedWindowTokens(null)).toBeGreaterThanOrEqual(40_000);
-    expect(await writerReservedWindowTokens(null)).toBeLessThan(await writerJobWindowTokens(null));
+    ran('memory_summarize', 40_000);   // a fallback summary: sized to the free memory when it runs, never reserved
+    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
+  });
+
+  it('an agent whose summaries are assigned to the writer reserves its summary job: auto-routed, or the writer is its model', async () => {
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-auto', 'Auto', 'auto', 'idle', '{}')").run();
+    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
+    db().prepare("UPDATE agents SET model_id = 'm-cloud' WHERE id = 'ag-auto'").run();
+    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
+    db().prepare("UPDATE agents SET model_id = 'm-writer' WHERE id = 'ag-auto'").run();
+    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
+    // An explicit pick of another model takes every agent's summaries off the writer.
+    db().prepare("UPDATE agents SET model_id = 'auto' WHERE id = 'ag-auto'").run();
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-cloud')").run();
+    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
   });
 
   it('the explicit Summarization pick: its summary job\'s window', async () => {
