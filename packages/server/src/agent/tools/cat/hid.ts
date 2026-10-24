@@ -24,7 +24,7 @@ export const hidHandlers: ToolHandlerMap = {
   async "mouse_click"({ agentId, args }) {
     let content = '';
     let isError = false;
-    content = mouseClick(agentId, {
+    content = await mouseClick(agentId, {
       x: args.x as number,
       y: args.y as number,
       click_type: args.click_type as string | undefined,
@@ -36,7 +36,7 @@ export const hidHandlers: ToolHandlerMap = {
   async "mouse_move"({ agentId, args }) {
     let content = '';
     let isError = false;
-    content = mouseMove(agentId, {
+    content = await mouseMove(agentId, {
       x: args.x as number,
       y: args.y as number,
     });
@@ -52,7 +52,7 @@ export const hidHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    content = keyboardType(agentId, {
+    content = await keyboardType(agentId, {
       text: args.text as string | undefined,
       key_combo: args.key_combo as string | undefined,
     });
@@ -74,7 +74,7 @@ export const hidHandlers: ToolHandlerMap = {
   async "applescript_run"({ agentId, args }) {
     let content = '';
     let isError = false;
-    content = applescriptRun(agentId, { script: args.script as string });
+    content = await applescriptRun(agentId, { script: args.script as string });
     isError = content.startsWith('AppleScript error');
     return { content, isError };
   },

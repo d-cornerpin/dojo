@@ -17,46 +17,17 @@
 // that spawns.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { requireAuthorized } from './capability.js';
 import { endsWithTheStop } from './proc-tree.js';
 
-const execFileAsync = promisify(execFile);
-
-export interface AuthorizedExecOptions {
-  timeout: number;
-  maxBuffer: number;
-  encoding: 'utf-8';
-  cwd?: string;
-}
-
 /**
- * `execFile(file, argv, options)` behind the capability.
+ * `spawn(file, argv)` behind the capability — the toolbox's ONE process door.
  *
- * `execFile` never consults a shell, which is what makes the exec door
- * argv-no-shell rather than argv-shaped; the shell door reaches the same
- * primitive with an explicit `/bin/zsh -c`. Nothing about that changed — what
- * changed is that the program has to be one this call was authorized for.
- */
-export async function execFileAuthorized(
-  file: string,
-  argv: readonly string[],
-  options: AuthorizedExecOptions,
-): Promise<{ stdout: string; stderr: string }> {
-  requireAuthorized({ op: 'proc', program: file });
-  return execFileAsync(file, [...argv], options);
-}
-
-/**
- * `spawn(file, argv)` behind the same capability — the STREAMING form.
- *
- * `execFileAuthorized` buffers both streams and resolves once; a converted
- * mechanism that reads `stderr` as it arrives, or that waits on `exit` itself,
- * needs the process object rather than its output. Both forms ask the SAME
- * question of the SAME capability, so the streaming door is not a second door:
- * the program still has to be one the gate loop resolved from this call's own
- * declaration.
+ * v3.5 E19: the buffered sibling (`execFileAuthorized`) is deleted. It had no production caller
+ * after t114 moved the exec door to this streaming form, and a door nothing uses is a second door
+ * waiting to be reached for. The program still has to be one the gate loop resolved from this
+ * call's own declaration.
  *
  * No shell, exactly as `execFile` uses none — `spawn` without `shell: true`
  * hands argv straight to `execve`.

@@ -36,7 +36,7 @@ import {
 import { runWithToolCallId } from '../../turn-state.js';
 import { grantsForCall, expandScopeTemplate, CARRIED_PROGRAMS, INDIRECT_RESOLVERS } from '../scopes.js';
 import { effectsFor } from '../../tools/registry.js';
-import { execFileAuthorized } from '../proc.js';
+import { spawnAuthorized } from '../proc.js';
 import { decodeToWav16kMono, extractAudioFromVideo } from '../transcode.js';
 import * as effectFs from '../fs.js';
 import { runProcess } from '../../tools/process-run.js';
@@ -88,18 +88,21 @@ describe('a converted call site cannot act on a resource the call never declared
     // This is the T8 Step 1 proof in its permanent shape. Before the facade the
     // handler held `child_process` and could spawn anything; the gate loop's
     // decision was about `echo` and nothing carried it any further.
+    // v3.5 E19: asked of the one process door left (`spawnAuthorized`); the buffered one is deleted.
     await inCall([{ kind: 'proc', program: 'echo', display: 'echo hi' }], 'exec', async () => {
-      await expect(execFileAuthorized('/bin/sh', ['-c', 'echo reached'], {
-        timeout: 5000, maxBuffer: 1024, encoding: 'utf-8',
-      })).rejects.toBeInstanceOf(EffectNotAuthorized);
+      expect(() => spawnAuthorized('/bin/sh', ['-c', 'echo reached'])).toThrow(EffectNotAuthorized);
     });
   });
 
   it('and with NO authorization at all it is refused too — that is the strongest form', async () => {
-    await expect(execFileAuthorized('echo', ['hi'], {
-      timeout: 5000, maxBuffer: 1024, encoding: 'utf-8',
-    })).rejects.toBeInstanceOf(EffectNotAuthorized);
+    expect(() => spawnAuthorized('echo', ['hi'])).toThrow(EffectNotAuthorized);
     expect(() => effectFs.readFileSync(inScope, 'utf8')).toThrow(EffectNotAuthorized);
+  });
+
+  it('v3.5 E19: the buffered process door is GONE — nothing defines or calls `execFileAuthorized`', () => {
+    const procSrc = fs.readFileSync(path.join(SRC, 'agent/effects/proc.ts'), 'utf8');
+    expect(/export\s+(async\s+)?function\s+execFileAuthorized/.test(procSrc)).toBe(false);
+    expect(filesContaining('execFileAuthorized(')).toEqual([]);
   });
 
   it('the fs entries read what the call declared and refuse what it did not', async () => {
@@ -421,7 +424,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     const runnerSrc = fs.readFileSync(path.join(SRC, 'agent/tools/process-idle-bound.ts'), 'utf8');
     expect(/^import .*child_process/m.test(runnerSrc), 'the runner leaf must not hold child_process either').toBe(false);
     expect(
-      /\b(execFileAuthorized|spawnAuthorized)\(/.test(doorSrc + runnerSrc),
+      /\bspawnAuthorized\(/.test(doorSrc + runnerSrc),
       'it spawns through the facade',
     ).toBe(true);
     // …and the whole toolbox tree is clean of it, which is the per-category

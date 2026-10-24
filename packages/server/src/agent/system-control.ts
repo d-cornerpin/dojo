@@ -8,15 +8,15 @@
 // nothing but `system_control`, so an agent granted *"control the mouse and
 // keyboard"* held a shell. §T0-PINS P7 records `osascript -` as the same class.
 //
-// `execFileSync(program, argv)` is what stands here now: a program and an
-// argument VECTOR, so the bytes never reach a parser. The vectors are built by
+// `execFile(program, argv)` is what stands here now (async since v3.5 E19, see
+// `run`): a program and an argument VECTOR, so the bytes never reach a parser. The vectors are built by
 // `system-control-argv.ts`, which is PURE — the splitting that `/bin/sh` used to
 // do (a key combo is FOUR arguments, not one string) is explicit there, where a
 // test can read it, and `system-control-argv.test.ts` asserts an injection
 // payload comes back as one inert element.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,8 +30,27 @@ import { getEffectiveVisionModel } from '../services/vision-model.js';
 import {
   clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
 } from './system-control-argv.js';
+import { endsWithTheStop } from './effects/proc-tree.js';
 
 const logger = createLogger('system-control');
+
+/**
+ * v3.5 E19 — THE ONE WAY THIS FILE RUNS A PROGRAM THAT DRIVES THE SCREEN: asynchronously, and bound
+ * to the owner's Stop (`effects/proc-tree.ts`, the door every toolbox child already waits on). It was
+ * `execFileSync`, which held the event loop: the stop race could not even see the Stop until the
+ * child returned or hit its bound, and nothing ended the child. Same argv, same bound as before.
+ */
+function run(agentId: string, program: string, argv: string[], opts: { timeout: number; input?: string; maxBuffer?: number }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(program, argv, { timeout: opts.timeout, maxBuffer: opts.maxBuffer, encoding: 'utf-8' }, (err, stdout, stderr) => {
+      if (err) reject(Object.assign(err, { stderr }));
+      else resolve(stdout);
+    });
+    endsWithTheStop(agentId, child);
+    child.stdin?.on('error', () => undefined);   // a child cut by the Stop closes its stdin: EPIPE is that, not a fault
+    child.stdin?.end(opts.input ?? '');
+  });
+}
 
 // ── Dependency Check ──
 
@@ -50,10 +69,10 @@ function checkCliclick(): boolean {
 
 // ── Mouse Click ──
 
-export function mouseClick(
+export async function mouseClick(
   agentId: string,
   args: { x: number; y: number; click_type?: string },
-): string {
+): Promise<string> {
   if (!checkCliclick()) {
     return 'Error: cliclick is not installed. Install with: brew install cliclick';
   }
@@ -63,7 +82,7 @@ export function mouseClick(
   logger.info('Mouse click', { x, y, click_type }, agentId);
 
   try {
-    execFileSync('cliclick', clickArgv(x, y, click_type), { timeout: 5000, encoding: 'utf-8' });
+    await run(agentId, 'cliclick', clickArgv(x, y, click_type), { timeout: 5000 });
     return `Clicked ${click_type} at (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -74,10 +93,10 @@ export function mouseClick(
 
 // ── Mouse Move ──
 
-export function mouseMove(
+export async function mouseMove(
   agentId: string,
   args: { x: number; y: number },
-): string {
+): Promise<string> {
   if (!checkCliclick()) {
     return 'Error: cliclick is not installed. Install with: brew install cliclick';
   }
@@ -87,7 +106,7 @@ export function mouseMove(
   logger.info('Mouse move', { x, y }, agentId);
 
   try {
-    execFileSync('cliclick', moveArgv(x, y), { timeout: 5000, encoding: 'utf-8' });
+    await run(agentId, 'cliclick', moveArgv(x, y), { timeout: 5000 });
     return `Mouse moved to (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -103,10 +122,10 @@ export function mouseMove(
 // dropping the shell without moving the splitting would hand cliclick one
 // argument it does not understand and the keyboard would silently stop working.
 
-export function keyboardType(
+export async function keyboardType(
   agentId: string,
   args: { text?: string; key_combo?: string },
-): string {
+): Promise<string> {
   if (!checkCliclick()) {
     return 'Error: cliclick is not installed. Install with: brew install cliclick';
   }
@@ -123,7 +142,7 @@ export function keyboardType(
     if (key_combo) {
       const argv = keyComboArgv(key_combo);
       if (!argv) return `Error: Unknown key combo: ${key_combo}`;
-      execFileSync('cliclick', argv, { timeout: 5000, encoding: 'utf-8' });
+      await run(agentId, 'cliclick', argv, { timeout: 5000 });
       return `Key combo pressed: ${key_combo}`;
     }
 
@@ -134,7 +153,7 @@ export function keyboardType(
       // — a hand-rolled quote escape in front of /bin/sh, on model-authored
       // text. As one argv element the text is bytes cliclick receives; there is
       // no quote to close and no shell to close it into.
-      execFileSync('cliclick', typeTextArgv(text), { timeout: 10000, encoding: 'utf-8' });
+      await run(agentId, 'cliclick', typeTextArgv(text), { timeout: 10000 });
       return `Typed: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`;
     }
 
@@ -175,9 +194,7 @@ export async function screenRead(
     // Capture screenshot. The output path is ONE argv element, so a directory
     // with a space in it works by construction rather than by the quoting the
     // string form got right only by accident.
-    execFileSync('screencapture', screencaptureArgv(screenshotPath, region ?? null), {
-      timeout: 10000, encoding: 'utf-8',
-    });
+    await run(agentId, 'screencapture', screencaptureArgv(screenshotPath, region ?? null), { timeout: 10000 });
 
     if (!fs.existsSync(screenshotPath)) {
       return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
@@ -294,10 +311,10 @@ const APPLESCRIPT_CEILING_MS = 5 * 60_000;
 
 // ── AppleScript Run ──
 
-export function applescriptRun(
+export async function applescriptRun(
   agentId: string,
   args: { script: string },
-): string {
+): Promise<string> {
   const { script } = args;
 
   logger.info('Running AppleScript', { scriptLength: script.length }, agentId);
@@ -309,7 +326,7 @@ export function applescriptRun(
     // name stops going through /bin/sh either, and (b) the AUTHORIZATION —
     // `brokers/applescript.ts` now reads this script before the dispatcher lets
     // the call reach here, including any `do shell script` payload inside it.
-    const result = execFileSync('osascript', ['-'], {
+    const result = await run(agentId, 'osascript', ['-'], {
       // ── t114 (census U21) — A BOUND RAISE, ARGUED, BECAUSE THERE IS NO LIVENESS FACT HERE ──
       //
       // THE DEFECT: 30 seconds, and on expiry SIGTERM mid-action with side effects ALREADY
@@ -327,7 +344,6 @@ export function applescriptRun(
       // ended it. A bound still exists: a wedged `osascript` holding a UI dialog cannot run for
       // ever.
       timeout: APPLESCRIPT_CEILING_MS,
-      encoding: 'utf-8',
       input: script,
       maxBuffer: 1024 * 1024,
     });
