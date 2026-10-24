@@ -13,7 +13,7 @@ import {
   deleteSummary,
 } from '../../memory/dag.js';
 import { checkAndCompact } from '../../memory/compaction.js';
-import { getContextWindow } from '../../agent/model.js';
+import { agentTurnWindow } from '../../router/router-window.js';
 import {
   generateBriefing,
   getLatestBriefing,
@@ -338,7 +338,7 @@ memoryRouter.post('/:agentId/compact', async (c) => {
       return c.json({ ok: false, error: 'Agent has no model configured' }, 400);
     }
 
-    const contextWindow = getContextWindow(agent.model_id);
+    const contextWindow = agentTurnWindow(agentId, agent.model_id);
     const result = await checkAndCompact(agentId, agent.model_id, contextWindow, { force: true, waitIfBusy: true });
 
     return c.json({

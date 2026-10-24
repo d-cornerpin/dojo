@@ -14,6 +14,14 @@
 // pass-over there, ahead of the build), the one assembly for the pick, then `runCallLLM`, on a migrated
 // DB with the real router selector, the real assembler and re-fit; scripted: the tier decision and the
 // provider call.
+//
+// v3.5 N42 (GitHub #25, the owner's design): every automatic pick runs at ONE router window, topped at
+// the smallest model on the light, standard and heavy tiers. A tier model too small for the agent
+// therefore makes that one window too small for EVERY pick: nothing is passed over, the agent is
+// stopped honestly (no model fits, the card), and the fix is the owner's — raise the smallest model or
+// take it off the router. The round-6 clause below states that; the round-7 cause clauses keep their
+// subject (the true cause when nothing reachable can be dialled) on a router whose smallest model
+// holds the agent (`seed`'s `tinyOnRouter: false`), where a budget or a rate limit IS the cause.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -74,7 +82,8 @@ const ROOMY = 'm-roomy-200k';
 const db = (): Database.Database => mockDb.current!;
 const starvedCards = (): number => owner.cards.filter((c) => c.code === 'WINDOW_TOO_SMALL').length;
 
-function seed(roomyOverBudget: boolean): void {
+function seed(roomyOverBudget: boolean, opts: { tinyOnRouter?: boolean } = {}): void {
+  const tinyOnRouter = opts.tinyOnRouter ?? true;
   db().prepare(`INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
                 VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now'))`).run();
   const model = db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m, created_at, updated_at)
@@ -82,7 +91,7 @@ function seed(roomyOverBudget: boolean): void {
   model.run(TINY, 'Tiny', 'tiny', 8_192, 0, 0);
   model.run(ROOMY, 'Roomy', 'roomy', 200_000, 3, 15);
   const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
-  tier.run('light', TINY);
+  tier.run('light', tinyOnRouter ? TINY : ROOMY);
   tier.run('standard', ROOMY);
   tier.run('heavy', ROOMY);
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
@@ -125,27 +134,28 @@ beforeEach(async () => {
   runMigrations();
   dialed.length = 0;
   owner.cards.length = 0;
+  (await import('../../../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();   // N42: clauses card now
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('t140 round 6 — the router\'s own pick, too small for the agent', () => {
-  it('is passed over like a fallback: the next model the router offers answers, and the owner sees the answer, no card', async () => {
+  it('v3.5 N42: the smallest router model too small for the agent makes the one router window too small for every pick: an honest stop, the card, nothing dialled', async () => {
     seed(false);
-    const out = await callStep();
-    expect(out.directive, 'the turn went on').toBe('proceed');
-    expect(dialed, 'the roomy model answered; the tiny one was never dialled').toEqual([ROOMY]);
-    expect((out as { result: { content: string } }).result.content).toBe('The dock is open.');
-    expect(starvedCards(), 'the agent can hold a conversation; no card').toBe(0);
+    const thrown = await callStep().then(() => null, (err: unknown) => err);
+    expect(thrown, 'the call step hands the honest stop to the lock').toMatchObject({ code: 'NO_MODEL_FITS' });
+    expect(dialed, 'nothing was dialled at a window that cannot hold the agent').toEqual([]);
+    expect(starvedCards(), 'the card is true now: at the router window the agent cannot hold a conversation').toBe(1);
   });
 
   it('when nothing the router can reach right now holds the agent (the roomy model is over budget): the turn ends with one notice to the owner, and no false card', async () => {
-    seed(true);
+    seed(true, { tinyOnRouter: false });
     // Round 7 (re-review H2'): judged by what the OWNER is sent, not by a thrown error's text.
     // t148: the limit alone is an honest stop. The call step throws it to the platform's lock (the ask
     // re-armed, nothing handed back), and the lock tells the owner once.
     const { recoverFromError } = await import('../../../recovery.js');
     const thrown = await callStep().then(() => null, (err: unknown) => err);
-    expect(thrown, 'the call step hands the honest stop to the lock').toMatchObject({ code: 'BUDGET_STOP' });
+    // N42: on this router (its smallest model holds the agent) the limit leaves the router no model at all.
+    expect(thrown, 'the router hands the stop on: no model within the limit').toMatchObject({ code: 'NO_MODEL' });
     await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), thrown, { isUserFacingTurn: true });
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('paused');
     const notices = owner.cards.filter((c) => c.type === 'chat:error');
@@ -169,7 +179,7 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
 // budget stop is not an injury.
 describe('t140 round 7 — when no router pick fits, what the owner sees is the true cause', () => {
   it('the roomy model is skipped for budget: the owner is told, in plain words, that today\'s spending limit is reached — and the agent is not errored or handed to the Healer', async () => {
-    seed(true);
+    seed(true, { tinyOnRouter: false });
     const { recoverFromError } = await import('../../../recovery.js');
     let outcome: unknown = null;
     try {
@@ -190,7 +200,9 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   // The roomy model is turned away for a reason that passes (a rate limit): the turn must still be
   // BUILT for it, so the call step can say so. Building for the small pick alone failed the assembly
   // with the "cannot hold a conversation" card — false — and the generic Healer error.
-  it('the roomy model is rate-limited right now: the owner is told so in plain words — no false card, no Healer, not errored', async () => {
+  // v3.5 N42: with the tiny model on the router the one window cannot hold the agent whatever the rate
+  // limit does, so the TRUE cause is that: the owner reads the no-fit words and the card, never the Healer.
+  it('v3.5 N42: the roomy model is rate-limited, but the tiny router model is the true cause: the owner is told that — no Healer, not errored', async () => {
     seed(false);
     const { updateRateLimits } = await import('../../../../../router/rate-limits.js');
     updateRateLimits(ROOMY, { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
@@ -201,9 +213,9 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
       await recoverFromError(advance(initState({ agentId: AGENT, contextWindow: 200_000, isAutoRouted: true, configuredModelId: 'auto', turnNumber: 21 }), { phase: CALL_LLM_PHASE, loopCount: 1 }), err, { isUserFacingTurn: true });
     }
     const said = owner.cards.map((c) => `${(c as { error?: string }).error ?? ''} ${JSON.stringify((c as { message?: { content?: string } }).message?.content ?? '')}`).join('\n');
-    expect(said, `what the owner was shown:\n${said}`).toMatch(/rate-limited/);
+    expect(said, `what the owner was shown:\n${said}`).toMatch(/cannot hold a conversation|can hold its instructions and tools/);
     expect(said).not.toMatch(/Healer/);
-    expect(starvedCards(), 'the agent can hold a conversation once the limit lifts').toBe(0);
+    expect(starvedCards(), 'the card is true: at the router window it cannot hold one').toBe(1);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).not.toBe('error');
     expect(dialed).toEqual([]);
   });
@@ -212,7 +224,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   // summary writer on that provider that had failed. t207 (D9) reverses it: only a SUMMARY answer, a person's
   // fresh message or the Settings writer changing does. A chat answer says nothing about summaries.
   it('t207: the turn\'s call answers: a summary writer on that provider that had failed is STILL passed over', async () => {
-    seed(false);
+    seed(false, { tinyOnRouter: false });
     const health = await import('../../../../../memory/summary-writer-health.js');
     health.__resetSummaryWriterHealthForTests();
     health.noteSummaryWriterOutcome(ROOMY, false);                     // a summary call on its provider failed

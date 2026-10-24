@@ -28,7 +28,7 @@
 import { createLogger } from '../../../../logger.js';
 import { checkAndCompact, estimateAssembledTokens, leavingFromView } from '../../../../memory/compaction.js';
 import type { LeavingView } from '../../../../memory/tail-horizon.js';
-import { getContextWindow } from '../../../model.js';
+import { agentTurnWindow } from '../../../../router/router-window.js';
 import { backgroundDrains } from '../../../shared-state.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
@@ -55,7 +55,7 @@ export async function runContextGates(
   // by the summary writer resolved from the CONFIGURED model — never by a locked, possibly expensive pick.
   const lockedModelId = isAutoRouted ? state.lockedModelId : null;
   const dialModelId = lockedModelId ?? contextModelId;
-  const contextWindow = lockedModelId ? getContextWindow(lockedModelId) : turnWindow;
+  const contextWindow = lockedModelId ? agentTurnWindow(agentId, lockedModelId) : turnWindow;
 
   // t140 round 7: a person's FRESH message (the turn's trigger row) earns this agent's writers a retry.
   if (state.loopCount === 1 && state.lastUserMessageId) noteAPersonSpoke(agentId);

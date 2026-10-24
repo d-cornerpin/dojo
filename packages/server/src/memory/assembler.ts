@@ -7,7 +7,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
-import { getContextWindow, getModelOutputCap, getProviderCeilingTokens } from '../agent/model.js';
+import { getModelOutputCap, getProviderCeilingTokens } from '../agent/model.js';
+import { agentTurnWindow } from '../router/router-window.js';
 // PHASE-3 T9: the ONE tool_use ⇄ tool_result pairing repair. The assembler's own second
 // copy is deleted; see the call site and `__tests__/one-pairing-repair.test.ts`.
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
@@ -1306,7 +1307,7 @@ async function assembleMessageContext(
   turnContext?: PromptTurnContext,
   dryRun?: { contextWindow?: number },   // t194: stop at the fit and report the view (`measureView`)
 ): Promise<AssembledContext> {
-  const contextWindow = dryRun?.contextWindow ?? getContextWindow(modelId);
+  const contextWindow = dryRun?.contextWindow ?? agentTurnWindow(agentId, modelId);   // N42: an auto agent's one router window
   // ONE budget (PHASE-3 T2): threshold, reserve and ceiling from `memory/budget.ts`.
   // PHASE-3 T4: the reserve is MEASURED, not a constant — the tools payload this agent's
   // transport will actually serialise, plus the derived output allowance. The old 15,000

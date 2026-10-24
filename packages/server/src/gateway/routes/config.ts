@@ -2382,6 +2382,8 @@ configRouter.put('/settings/:key', async (c) => {
     });
   }
 
+  if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look
+
   // Clear platform config cache when platform keys are updated
   const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed', 'sudo_policy'];
   if (platformKeys.includes(key)) {

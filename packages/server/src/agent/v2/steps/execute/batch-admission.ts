@@ -25,7 +25,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../../../../logger.js';
-import { getContextWindow } from '../../../model.js';
+import { agentTurnWindow } from '../../../../router/router-window.js';
 import { estimateAssembledTokens } from '../../../../memory/compaction.js';
 import { estimateTokens, CHARS_PER_TOKEN } from '../../../../memory/budget.js';
 import { POINTER_VIEW_CHARS, toolResultView } from '../../../../memory/tool-result-view.js';
@@ -76,7 +76,7 @@ export async function admitBatchToRoom(ctx: ExecuteContext, results: PendingTool
     const items = results.map(itemOf).filter((it): it is Item => it !== null);
     // Nothing to give: no result is long enough for its pointer to be shorter than it is.
     if (!items.some((it) => it.whole.length > POINTER_VIEW_CHARS)) return;
-    const { view } = await estimateAssembledTokens(ctx.agentId, getContextWindow(ctx.effectiveModelIdForPersist), ctx.effectiveModelIdForPersist);
+    const { view } = await estimateAssembledTokens(ctx.agentId, agentTurnWindow(ctx.agentId, ctx.effectiveModelIdForPersist), ctx.effectiveModelIdForPersist);
     if (view.tailRoomTokens <= 0) return;   // the room could not be measured: leave the results as they are
     const calls = estimateTokens(JSON.stringify(ctx.result.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments }))));
     const room = Math.max(0, Math.floor(view.tailRoomTokens / 2) - calls);

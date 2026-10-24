@@ -27,7 +27,7 @@ import { recordCost } from '../costs/tracker.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { checkBudget, WALL_ESTIMATE_USD } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
-import { routedFirstPicks } from '../router/selector.js';
+import { routerWindowTokens } from '../router/router-window.js';
 import { recordProviderSuccess, recordProviderError } from '../gateway/routes/services.js';
 import { settleFailedCall } from './failed-call.js';
 import { broadcast } from '../gateway/ws.js';
@@ -3860,15 +3860,10 @@ export function getContextWindow(modelId: string): number {
 //    dial on that row to "N tokens against 0"), and an id with no row at all.
 //  * THE AUTO-ROUTER: the `'__auto__'` sentinel (and `'auto'`, the seeded row agents point at)
 //    names no model. It fell into the catch above and was sized for 200K whatever the box routes
-//    to (#13's "45K family"). Round 5: it is the largest window among the models the router OPENS
-//    each tier on (`router/selector.ts`'s `routedFirstPicks`) — never a model the router only
-//    reaches past them (a box with several 1M rows enabled below its 128K picks answers 128K).
-//    Since t212 no turn is BUILT for it: the router picks from the newest rows first and the turn
-//    is assembled once, for the pick (`call-llm/model-selection.ts`, called by the assemble step).
-//    It remains the answer for a reader that asks an auto agent's window without a pick (the
-//    turn's opening state, the pre-call gate's frame). Every condensing decision for a call is
-//    made against the dialed pick's own window (`pre-call-gates/context-gates.ts`,
-//    `call-llm/reassemble-for-fit.ts`).
+//    to (#13's "45K family"); t140 round 5 made it the LARGEST opening pick's window. v3.5 N42 (the
+//    owner's design, GitHub #25): it is THE ROUTER WINDOW (`router/router-window.ts`), the one window
+//    every automatic pick runs at, so what the dashboard and the opening turn report is the window
+//    the agent actually runs at. The seeded `auto` row's own 200,000 is never read for budgeting.
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 function declaredContextWindow(stored: number | null | undefined): number {
@@ -3879,17 +3874,9 @@ function isAutoRouteSentinel(modelId: string): boolean {
   return modelId === '__auto__' || modelId === 'auto';
 }
 
-/** The largest effective window among the router's opening picks; the default when nothing is routed. */
+/** The router window (N42); the default when no model is on the light, standard or heavy tier. */
 function routedOpeningWindow(): number {
-  try {
-    let largest = 0;
-    for (const id of routedFirstPicks()) {
-      if (!isAutoRouteSentinel(id)) largest = Math.max(largest, getContextWindow(id));
-    }
-    return largest > 0 ? largest : DEFAULT_CONTEXT_WINDOW;
-  } catch {
-    return DEFAULT_CONTEXT_WINDOW;
-  }
+  return routerWindowTokens() ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 /**

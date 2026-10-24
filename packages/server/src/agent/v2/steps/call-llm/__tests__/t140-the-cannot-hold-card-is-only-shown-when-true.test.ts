@@ -180,14 +180,16 @@ describe('t140 round 5 (a) — the fit pre-check measures the prompt the assembl
 });
 
 describe('t140 round 5 (b) — the card is shown only when the agent itself cannot hold a conversation', () => {
-  it('the ROUTER\'S OWN pick is too small, but another model the router opens on holds the agent: refused by name, no card', async () => {
+  // v3.5 N42 (the owner's design): every automatic pick runs at ONE router window, topped at the smallest
+  // tier model. A tier model too small for the agent makes that window too small for every pick, so the
+  // card is TRUE here: the agent cannot hold a conversation until that model is raised or taken off.
+  it('v3.5 N42: the ROUTER\'S OWN pick is too small, so the one router window is too small for every pick: the turn\'s own assembly refuses by name, and the card is true', async () => {
     const AGENT = 'agent-routed-tiny';
     seedAgent(AGENT, 'auto');
     seedConversation(AGENT, 40);
     db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)').run('light', TINY);
-    const err = await refit(AGENT, TINY);
-    expect(err).toBeInstanceOf(SystemPromptTooLargeError);
-    expect(starvedCards(), 'the agent can hold a conversation on its other routed picks').toBe(0);
+    await expect(assembleContext(AGENT, '__auto__', turnCtx)).rejects.toBeInstanceOf(SystemPromptTooLargeError);
+    expect(starvedCards(), 'no other pick holds it at the router window').toBe(1);
   });
 
   it('the BUDGET REDIRECT\'S free model is too small, but the agent\'s own model holds it: refused by name, no card', async () => {

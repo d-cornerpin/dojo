@@ -44,7 +44,7 @@ import {
 } from '../memory/message-store.js';
 import { freshTailHorizon } from '../memory/tail-horizon.js';
 import { contextWindowPolicy } from '../memory/budget.js';
-import { getContextWindow } from '../agent/model.js';
+import { agentTurnWindow } from '../router/router-window.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { workOperation, type WorkOp } from '../tools/work-verbs.js';
@@ -961,7 +961,7 @@ export function pruneOldPMMessages(pmId: string): void {
     // The fold boundary (`freshTailHorizon` owns where a tail starts). `keepFromSeq` 0 is the
     // floor, where the view is "the newest rows" and nothing is out of view for good.
     const modelId = (db.prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined)?.model_id ?? '';
-    const horizon = freshTailHorizon(pmId, contextWindowPolicy(getContextWindow(modelId), { toolPayloadTokens: 0 }));
+    const horizon = freshTailHorizon(pmId, contextWindowPolicy(agentTurnWindow(pmId, modelId), { toolPayloadTokens: 0 }));
     if (horizon.keepFromSeq <= 0 || horizon.anchorSeq <= 0) return;
 
     // The Nth most recent message (none: too few rows to prune), then the older of it and the boundary.

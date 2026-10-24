@@ -578,13 +578,16 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     expect(ask(), 'the message is kept, still the owner\'s open ask').toBe('open');
   });
 
-  it('a model that holds it takes a tier: the agent is released and answers; the card ends', async () => {
+  // v3.5 N42 (the owner's design): every automatic pick runs at ONE router window, the smallest tier
+  // model's, so the tiny model is lifted only by taking it off the router (or raising it): a roomy model
+  // on ONE tier beside it leaves the window where it was.
+  it('v3.5 N42: the tiny model is taken off the router for a model that holds it: the agent is released and answers; the card ends', async () => {
     await everyTierTooSmall();
     const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
-    // The heavy tier is pointed at a roomy model — what the router route does, then asks the lock to look again.
-    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'heavy'`).run();
+    // Every tier is pointed at a roomy model — what the router route does, then asks the lock to look again.
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model'`).run();
     handleMessageSpy.mockClear();
     const { noteModelsChanged } = await import('../honest-stop-lock.js');
     await noteModelsChanged();
@@ -593,9 +596,9 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     expect(healerOwnerCards(), 'the card ends with the lock').toEqual([]);
   });
 
-  it('CONTROL: the same refusal for an auto agent that DOES have a model that holds it is not parked (it stays on the error path)', async () => {
+  it('CONTROL: the same refusal for an auto agent whose router window DOES hold it is not parked (it stays on the error path)', async () => {
     await everyTierTooSmall();
-    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'heavy'`).run();
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model'`).run();   // N42: the smallest router model holds it
     await runV2Turn(AGENT);
     expect(status()).not.toBe('paused');
     expect(onAgentInjuredSpy).toHaveBeenCalled();

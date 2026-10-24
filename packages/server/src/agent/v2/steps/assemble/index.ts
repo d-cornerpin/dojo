@@ -55,7 +55,7 @@ import { injectDelegationHintAndAttachments } from './delegation-and-attachments
 import { runSteerCheckpoint } from './steer-checkpoint.js';
 import { proceed, requestExit } from '../step-outcome.js';
 import { selectModel, type ModelSelection } from '../call-llm/model-selection.js';
-import { getContextWindow } from '../../../model.js';
+import { agentTurnWindow } from '../../../../router/router-window.js';
 
 const logger = createLogger('v2-loop');
 
@@ -258,7 +258,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   state = routed.state;
   if (routed.said !== undefined) return requestExit(state, routed.said) as Extract<AssembleOutcome, { directive: 'exit' }>;
   const modelId = routed.selection.modelId;
-  const dialWindow = modelId === contextModelId ? contextWindow : getContextWindow(modelId);
+  const dialWindow = modelId === contextModelId ? contextWindow : agentTurnWindow(agentId, modelId);   // N42: one window for every pick
   // t140 round 2: the assembly this turn dials never leaves a row out of view without a summary —
   // rows the trim took are folded (bounded, awaited) and the context assembled again (`out-of-view-fold.ts`).
   const ctx = await assembleWithNothingOutOfViewUnsummarised(agentId, dialWindow,

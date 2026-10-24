@@ -269,13 +269,20 @@ describe('t140 round 5 — an auto-routed turn is measured against the model the
     }
   });
 
-  it('the same mixed box, a HEAVY-routed call to the 1M model: nothing is condensed — the view is nowhere near full for the model dialed', async () => {
+  // v3.5 N42 (the owner's design): every automatic pick runs at ONE router window, the smallest tier
+  // model's — 128K on this box. The 1M pick is measured for 128K too, so a heavy turn and a standard turn
+  // condense alike and a switch of tier never changes what the agent remembers word for word.
+  it('v3.5 N42: the same mixed box, a HEAVY-routed call to the 1M model runs at the one 128K router window, measured for it like the 128K pick', async () => {
     seedBox('mixed');
     seedConversation(150);
     route.tier = 'heavy';
     const { dialedModelId } = await oneRoutedCall();
     expect(dialedModelId).toBe(BIG_1M);
     expect(provider.dialed).toEqual([API_1M]);
-    expect(decisions, 'no condense: the 1M model can hold the whole view').toEqual([]);
+    expect(decisions.length, 'the view is full at the router window, as for the 128K pick').toBeGreaterThan(0);
+    for (const d of decisions) {
+      expect(d.contextWindow, 'measured at the router window, not the 1M row').toBe(WINDOW_128K);
+      expect(d.dialedModelId).toBe(BIG_1M);
+    }
   });
 });

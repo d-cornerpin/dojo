@@ -576,13 +576,18 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   // ── t140's own no-pick exit, the budget stop and the rollover: the same lock, the same release ──
 
-  it('t140\'s no-pick exit (light tier on a free 8K model too small for the agent, the roomy model over the limit) tells the owner ONCE, hands nothing back, and the message is answered after the limit is raised', async () => {
+  // v3.5 N42 (the owner's design): every automatic pick runs at ONE router window, the smallest tier
+  // model's. The free 8K model on the light tier would make that window too small for the agent — a
+  // no-fit stop, not this one — so these two clauses take it off the router: the router's own models
+  // are all priced, and the limit turns them all away. Same lock, same release.
+  it('v3.5 N42: an auto agent whose router models are all over the limit (the free 8K model off the router) tells the owner ONCE, hands nothing back, and the message is answered after the limit is raised', async () => {
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'light'`).run();
     toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools; the 200K one can
     budget(1.00, 0.999);   // under the line, so the free model is still offered; the priced one's call would cross it
     await runV2Turn(AGENT);
     expectAnHonestStop(/spending limit/i);
-    expect(callModelSpy, 'the stop came from the router\'s no-pick exit: no model was dialed').not.toHaveBeenCalled();
+    expect(callModelSpy, 'the stop came from the router: no model was dialed').not.toHaveBeenCalled();
     expect(status()).toBe('paused');
     expect(ask(), 'the message is still the owner\'s open ask, not handed back through a settlement rung').toBe('open');
     // The drain stands down for the lock, so nothing re-serves it and nothing is said again.
@@ -799,8 +804,9 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
   });
 
   // Minor 1 — the limit is the real stop even beside a transient cause.
-  it('a no-pick exit whose causes are the limit AND a rate limit is an honest park (the limit does not clear itself), not a repeat-then-quarantine', async () => {
+  it('v3.5 N42: a stop whose causes are the limit AND a rate limit is an honest park (the limit does not clear itself), not a repeat-then-quarantine', async () => {
     db().prepare(`UPDATE agents SET model_id = 'auto' WHERE id = ?`).run(AGENT);
+    db().prepare(`UPDATE router_tier_models SET model_id = 'test-model' WHERE tier_id = 'light'`).run();   // N42: see above
     toolPayload.tokens = 7_000;   // the free 8K model cannot hold the agent's tools
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
       VALUES ('m-b', 'test-provider', 'B', 'b', '["text","tools"]', 200000, 4096, 1, 3, 15)`).run();

@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 import { RouterConfig } from '../RouterConfig';
 import { RouterTest } from '../RouterTest';
+import { RouterWindowSection, type RouterWindowData } from './RouterWindowSection';
 
 
 // ── Router Tab ──
@@ -28,6 +29,7 @@ interface RouterConfigData {
 
 export const RouterTab = () => {
   const [config, setConfig] = useState<RouterConfigData | null>(null);
+  const [routerWindow, setRouterWindow] = useState<RouterWindowData | null>(null);   // v3.5 N42
   const [loading, setLoading] = useState(true);
 
   const loadConfig = async () => {
@@ -48,6 +50,7 @@ export const RouterTab = () => {
         isEnabled: d.isEnabled as boolean,
       }));
       setConfig({ tiers, dimensions });
+      setRouterWindow((data.window ?? null) as RouterWindowData | null);
     }
     setLoading(false);
   };
@@ -83,6 +86,7 @@ export const RouterTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      <RouterWindowSection routerWindow={routerWindow} />
       <RouterConfig
         config={config}
         onUpdateTierModels={handleUpdateTierModels}

@@ -10,7 +10,7 @@
 import { getDb } from '../../db/connection.js';
 import { isPrimaryAgent, isPMAgent, getOwnerName } from '../../config/platform.js';
 import { getModelCapabilities } from '../../services/capabilities.js';
-import { getContextWindow } from '../../agent/model.js';
+import { agentTurnWindow } from '../../router/router-window.js';
 import { resolveInboundContext, resolveTtsEngine, type PromptTurnContext } from '../assembler.js';
 import { getSystemEntries, getMessageEntries } from './registry.js';
 import { pushEngineMessage } from '../../agent/v2/engine-message.js';
@@ -56,7 +56,7 @@ export function buildAssemblyContext(
     isPrimary,
     isPM: isPMAgent(agentId),
     capabilities,
-    contextWindow: getContextWindow(modelId),
+    contextWindow: agentTurnWindow(agentId, modelId),
     ownerName: getOwnerName(),
     // The reply goes to THIS turn's counterparty (the actual inbound sender),
     // not always the owner. Falls back to the owner for proactive/dashboard turns.

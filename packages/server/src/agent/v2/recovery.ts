@@ -377,8 +377,8 @@ export function classifyError(error: Error, facts?: ProviderErrorFacts): Classif
 async function forcedPassThenPark(state: AgentTurnState, reason: string, afterPass?: () => void): Promise<void> {
   const { agentId } = state;
   const { checkAndCompact } = await import('../../memory/compaction.js');
-  const { getContextWindow } = await import('../model.js');
-  const contextWindow = state.lockedModelId ? getContextWindow(state.lockedModelId) : state.contextWindow;
+  const { agentTurnWindow } = await import('../../router/router-window.js');
+  const contextWindow = state.lockedModelId ? agentTurnWindow(agentId, state.lockedModelId) : state.contextWindow;
   const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
   await checkAndCompact(agentId, state.configuredModelId, contextWindow, {
     force: true, dialedModelId: state.lockedModelId ?? state.configuredModelId,

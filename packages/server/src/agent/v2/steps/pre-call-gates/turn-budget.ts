@@ -31,7 +31,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../../../../logger.js';
-import { getContextWindow } from '../../../model.js';
+import { agentTurnWindow } from '../../../../router/router-window.js';
 import { checkAndCompact } from '../../../../memory/compaction.js';
 import { turnContinuationCounts, isStopFenced } from '../../../shared-state.js';
 import { type AgentTurnState } from '../../state.js';
@@ -107,7 +107,7 @@ export async function runTurnTimeBudget(
     // below is untouched.
     let historyWasRebuilt = false;
     try {
-      const compaction = await checkAndCompact(agentId, effectiveModel, getContextWindow(effectiveModel));
+      const compaction = await checkAndCompact(agentId, effectiveModel, agentTurnWindow(agentId, effectiveModel));
       historyWasRebuilt = compaction.leafCreated > 0 || compaction.condensedCreated > 0;
       // ════════════════════════════════════════════════════════════════════════════
       // TOMBSTONE — THE `compaction-recap` STEER, RETIRED HL4 STEP 2 (2d), 2026-08-15.

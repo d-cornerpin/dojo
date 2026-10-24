@@ -100,10 +100,10 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
   // fold is not set aside by a background one started here.
   const gates = await import('../pre-call-gates/context-gates.js');
   if (!gates.routineCheckMeasuredAtGate(input.agentId, input.modelId)) {
-    const [{ getContextWindow }, { getDb }] = await Promise.all([import('../../../model.js'), import('../../../../db/connection.js')]);
+    const [{ agentTurnWindow }, { getDb }] = await Promise.all([import('../../../../router/router-window.js'), import('../../../../db/connection.js')]);
     const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as { model_id: string | null } | undefined)?.model_id;
     await gates.condenseForTheDialedModel({
-      agentId: input.agentId, dialedModelId: input.modelId, contextWindow: getContextWindow(input.modelId),
+      agentId: input.agentId, dialedModelId: input.modelId, contextWindow: agentTurnWindow(input.agentId, input.modelId),
       writerModelId: configured ?? input.modelId, systemPromptTokens: estimateTokens(refit?.systemPrompt ?? input.systemPrompt),
     });
   }
@@ -113,13 +113,13 @@ export async function reassembleForFitIfNeeded(input: ReassembleForFitInput): Pr
 /** The budget of the model about to be dialed: ITS window, ITS output cap, its provider ceiling.
  *  One derivation, read by the re-fit below and by the append-only turn's room check (t210). */
 export async function dialedPolicy(agentId: string, modelId: string) {
-  const { getProviderCeilingTokens, getContextWindow, getModelOutputCap } = await import('../../../model.js');
+  const [{ getProviderCeilingTokens, getModelOutputCap }, { agentTurnWindow }] = await Promise.all([import('../../../model.js'), import('../../../../router/router-window.js')]);
   const [{ contextWindowPolicy }, { measureAgentToolPayloadTokens }] = await Promise.all([
     import('../../../../memory/budget.js'),
     import('../../../../tools/tool-docs.js'),
   ]);
   const toolPayloadTokens = await measureAgentToolPayloadTokens(agentId);
-  const policy = contextWindowPolicy(getContextWindow(modelId), {
+  const policy = contextWindowPolicy(agentTurnWindow(agentId, modelId), {   // N42: an auto agent's one router window
     toolPayloadTokens,
     maxOutputTokens: getModelOutputCap(modelId),
     providerCeilingTokens: getProviderCeilingTokens(modelId),
@@ -200,8 +200,8 @@ export async function modelHoldsAgent(agentId: string, modelId: string, toolPayl
  *  budget), or null. Asked BEFORE an auto-routed turn is assembled for its pick, so a pick too small is
  *  passed over without the assembler's card (`call-llm/model-selection.ts`). */
 export async function refusalFor(agentId: string, modelId: string, toolPayloadTokens: number, turnContext: PromptTurnContext): Promise<SystemPromptTooLargeError | null> {
-  const [{ contextWindowPolicy }, model] = await Promise.all([import('../../../../memory/budget.js'), import('../../../model.js')]);
-  const policy = contextWindowPolicy(model.getContextWindow(modelId), {
+  const [{ contextWindowPolicy }, model, { agentTurnWindow }] = await Promise.all([import('../../../../memory/budget.js'), import('../../../model.js'), import('../../../../router/router-window.js')]);
+  const policy = contextWindowPolicy(agentTurnWindow(agentId, modelId), {
     toolPayloadTokens, maxOutputTokens: model.getModelOutputCap(modelId), providerCeilingTokens: model.getProviderCeilingTokens(modelId),
   });
   const systemTokens = await systemTokensFor(agentId, modelId, turnContext);

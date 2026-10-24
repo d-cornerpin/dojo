@@ -12,8 +12,8 @@ import type { RouterConfig, TierConfig } from '../../router/types.js';
 const logger = createLogger('router-routes');
 const routerRouter = new Hono();
 
-// GET /config — tiers + dimensions
-routerRouter.get('/config', (c) => {
+// GET /config — tiers + dimensions, and (v3.5 N42) the one window every automatic pick runs at
+routerRouter.get('/config', async (c) => {
   const db = getDb();
 
   const tiers = db.prepare(`
@@ -67,6 +67,7 @@ routerRouter.get('/config', (c) => {
       weight: d.weight,
       isEnabled: d.is_enabled === 1,
     })),
+    window: await (await import('../../router/router-window.js')).routerWindowReport(),
   };
 
   return c.json({ ok: true, data: config });

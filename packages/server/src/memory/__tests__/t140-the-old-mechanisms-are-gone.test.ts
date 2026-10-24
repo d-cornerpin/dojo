@@ -128,7 +128,7 @@ describe('t140 census — the 200K stand-in and the ceiling-only re-size are gon
   it('reassemble-for-fit no longer skips a pick for declaring no provider ceiling', () => {
     const fit = FILES.find((f) => f.rel === REFIT_REL)!.code;
     expect(fit).not.toMatch(/providerCeiling === null\) return null/);
-    expect(fit).toMatch(/contextWindowPolicy\(getContextWindow\(modelId\), \{/);
+    expect(fit).toMatch(/contextWindowPolicy\(agentTurnWindow\(agentId, modelId\), \{/);   // v3.5 N42: the turn's window
   });
 
   it('no window resolution in the engine hard-codes 200000 as a fallback any more', () => {
@@ -183,15 +183,16 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     expect(filesWith(/\bROUTED_TIERS\b/)).toEqual([]);
     const model = FILES.find((f) => f.rel === 'agent/model.ts')!.code;
     expect(model).toMatch(/if \(isAutoRouteSentinel\(modelId\)\) return routedOpeningWindow\(\);/);
-    expect(model).toMatch(/for \(const id of routedFirstPicks\(\)\) \{/);
+    // v3.5 N42: the auto window is THE ROUTER WINDOW (router/router-window.ts), not the largest opening pick's.
+    expect(model).toMatch(/return routerWindowTokens\(\) \?\? DEFAULT_CONTEXT_WINDOW;/);
     // The opening picks are the selector's own: ONE standing-filter predicate, read by both.
     // Round 7: the opening picks read its reason, and count the skips that pass (rate limit, breaker).
     const selector = FILES.find((f) => f.rel === 'router/selector.ts')!.code;
     expect(selector.match(/passesStandingFilters\(/g)?.length, 'declaration + selectModel').toBe(2);
     expect(selector).toMatch(/const skip = standingSkip\(model, \['tools'\]\);\s*if \(skip === null \|\| PASSING\.has\(skip\)\) \{ picks\.add\(model\.model_id\); break walk; \}/);
     expect(selector).toMatch(/const PASSING = new Set<RoutedSkip>\(\['rate_limit', 'provider_down'\]\);/);
-    // Its readers: the turn's building window, and the card's "can a model of its own hold it" (round 5 b).
-    expect(filesWith(/\broutedFirstPicks\(/)).toEqual(['agent/model.ts', REFIT_REL, 'router/selector.ts']);
+    // Its reader: the card's "can a model of its own hold it" (round 5 b). (N42: model.ts no longer reads it.)
+    expect(filesWith(/\broutedFirstPicks\(/)).toEqual([REFIT_REL, 'router/selector.ts']);
   });
 
   it('ONE routine check, measured for the dialed model: called by the gate for a model it knows and by the call step for the router\'s pick', () => {
@@ -202,7 +203,7 @@ describe('t140 census, round 5 — the turn is measured against the model the ro
     // … and the call step runs it for the pick it is about to dial, unless the gate already did.
     const fit = FILES.find((f) => f.rel === REFIT_REL)!.code;
     expect(fit).toMatch(/if \(!gates\.routineCheckMeasuredAtGate\(input\.agentId, input\.modelId\)\) \{/);
-    expect(fit).toMatch(/agentId: input\.agentId, dialedModelId: input\.modelId, contextWindow: getContextWindow\(input\.modelId\),/);
+    expect(fit).toMatch(/agentId: input\.agentId, dialedModelId: input\.modelId, contextWindow: agentTurnWindow\(input\.agentId, input\.modelId\),/);
   });
 });
 

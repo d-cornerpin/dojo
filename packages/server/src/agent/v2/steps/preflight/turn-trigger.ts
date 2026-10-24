@@ -18,7 +18,7 @@ import type { Database } from 'better-sqlite3';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { AgentError } from '../../../errors.js';
-import { getContextWindow } from '../../../model.js';
+import { agentTurnWindow } from '../../../../router/router-window.js';
 import { continuationContext } from '../../../turn-state.js';
 import { turnContinuationCounts } from '../../../shared-state.js';
 import { stampConversationIdByRowid } from '../../../../memory/message-store.js';
@@ -76,7 +76,7 @@ export function runTurnTrigger(
 
   const isAutoRouted = configuredModelId === 'auto';
   const contextModelId = isAutoRouted ? '__auto__' : configuredModelId;
-  const contextWindow = getContextWindow(contextModelId);
+  const contextWindow = agentTurnWindow(agentId, contextModelId);
 
   // UX-REPAIR T7: the `working` status write + its broadcast USED TO STAND HERE, ~80 lines
   // before `chosenConvKey` exists. That is why frame 1 of every turn carried no `userFacing`

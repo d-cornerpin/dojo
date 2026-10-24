@@ -21,6 +21,12 @@
 //   1. `assembleContext(agentId, '__auto__')`   — what `assemble` runs for an auto-routed turn
 //   2. `reassembleForFitIfNeeded({ modelId })`  — what `callLLM` runs once the router has picked
 //   3. `callModel({ modelId, messages })`        — the dial, through the boundary validator
+//
+// v3.5 N42 (GitHub #25, the owner's design): an auto-routed agent runs every pick at ONE router window,
+// topped at the smallest model on the light, standard and heavy tiers (here the 16K light pick). A tier
+// model too small for the agent therefore makes the window too small for every pick — the clauses that
+// put one on a tier now state that honest refusal, not a pass-over; a re-fit for a smaller pick happens
+// only for a model the router reaches outside its tiers, which is where the M3 clause dials now.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -112,6 +118,7 @@ import { __resetAssemblyValidationCounters, AssemblyValidationError } from '../.
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
 import { SystemPromptTooLargeError } from '../../../../../memory/budget.js';
+import { __resetStarvedWindowsForTests } from '../../../../../memory/window-starvation-card.js';
 
 const AGENT = 'agent-t140-routed';
 /** Two routed models, both far below the 200K stand-in — the reporting box's shape. */
@@ -210,6 +217,7 @@ beforeEach(() => {
   // Module state keyed by agent id: a low-yield brake armed by one clause's fold must not brake
   // the next clause's (the trap the t94 file documents).
   __resetBrakesForTests();
+  __resetStarvedWindowsForTests();   // v3.5 N42: clauses card now, and the card is once per outage
   seedRoutedBox();
 });
 
@@ -250,9 +258,8 @@ describe('t140 W1 — a routed pick below the 200K stand-in still receives the l
   });
 
   it('the auto-routed window is a REAL routed window, never the 200K stand-in', () => {
-    // The largest window any routed pick declares: every pick can be sized DOWN to its own
-    // window before dial (reassemble-for-fit); none can be sized up.
-    expect(getContextWindow('__auto__')).toBe(HEAVY_WINDOW);
+    // v3.5 N42: THE ROUTER WINDOW — the smallest tier model's window, the one every pick runs at.
+    expect(getContextWindow('__auto__')).toBe(LIGHT_WINDOW);
   });
 
   it('a pick whose window cannot hold the system prompt and tools FAILS LOUD with a named defect, and nothing is dialed', async () => {
@@ -288,8 +295,11 @@ describe('t140 — the provider boundary never ships an assembly without the liv
   it('RED at 00a2b34d: an array too big for the dialed window is lane-repaired down to no conversation and SENT', async () => {
     seedConversation(250);
     // Assembled for a 200K model, dialed on the 32K heavy pick with no re-assembly in between:
-    // the boundary is the only thing left between this array and the provider.
+    // the boundary is the only thing left between this array and the provider. (N42: an auto agent is
+    // never sized above the router window, so the stale 200K array is built while it is pinned to it.)
+    db().prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(ROOMY, AGENT);
     const assembled = await assembleContext(AGENT, ROOMY);
+    db().prepare("UPDATE agents SET model_id = 'auto' WHERE id = ?").run(AGENT);
     const before = provider.requests.length;
     let thrown: unknown = null;
     try {
@@ -377,7 +387,7 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     expectTheNewerHalfOfTheViewKept(provider.requests.filter((r) => shown(r).includes('Runtime Information')).pop());
   });
 
-  it('the fallback SELECTION checks each candidate against its own window, and skips one that cannot hold the turn at all', async () => {
+  it('v3.5 N42: a 12K model on the light tier makes the one router window too small for the agent: refused by name, nothing dialled', async () => {
     // Round 3: replies long enough that the heavy pick's array (~25K) is over BOTH light
     // candidates' fill lines, so the fit-aware selection comes back empty and the RESCUE runs.
     seedConversation(250, 4);
@@ -392,16 +402,11 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
     provider.failNext = 1;
-    const out = await dialStep(HEAVY);
-    expect(out.abandoned).toBeUndefined();
-    if (out.abandoned) return;
-    expect(out.modelId, 'the candidate whose window holds the turn').toBe(LIGHT);
-    // Round 3 (re-review 2 §3, mutant M5): every candidate failed the fit filter here, so this is
-    // the RESCUE path — the 12K one it tried first is passed over QUIETLY: no owner card.
-    expect(windowCards(), 'no "cannot hold a conversation" card on a turn that was answered').toBe(0);
+    await expect(dialStep(HEAVY)).rejects.toBeInstanceOf(SystemPromptTooLargeError);
+    expect(provider.requests.length, 'nothing was dialled at a window that cannot hold the agent').toBe(0);
   });
 
-  it('a fallback the window check lets through but whose window cannot hold the system prompt and tools is excluded, and the next pick answers', async () => {
+  it('v3.5 N42: the same 12K tier model with a short conversation: still refused by name, because the window, not the conversation, is too small', async () => {
     // A SHORT conversation: the array (~6.5K) is under the 12K model's fill line, so the window
     // check admits it — but 0.96 × 12,288 − (2,000 tools + 4,096 output) is below the ~6K system
     // prompt, so its re-fit refuses by name. The pick is excluded and the 16K one answers.
@@ -414,11 +419,8 @@ describe('t140 fix round 1 — I1: the fallback and the budget redirect are re-f
     db().prepare("UPDATE router_tier_models SET priority = 1 WHERE tier_id = 'light' AND model_id = ?").run(LIGHT);
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('light', ?, 0)").run(SMALLER);
     provider.failNext = 1;
-    const out = await dialStep(HEAVY);
-    expect(out.abandoned).toBeUndefined();
-    if (out.abandoned) return;
-    expect(out.modelId).toBe(LIGHT);
-    expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 5]')).toBe(true);
+    await expect(dialStep(HEAVY)).rejects.toBeInstanceOf(SystemPromptTooLargeError);
+    expect(provider.requests.length).toBe(0);
   });
 
   it('the BUDGET redirect to a free model re-fits the array before it dials, and the turn succeeds', async () => {
@@ -458,13 +460,20 @@ describe('t140 fix round 1 — M1: a pick that cannot hold even the system promp
 describe('t140 fix round 1 — M3: a single-call turn routed to a smaller pick folds what its re-fit set aside, for that window', () => {
   it('the 16K pick\'s re-fit sets rows aside, and exactly those are folded before it is dialed (round 2: awaited, through the assembly door)', async () => {
     seedConversation(250);
-    const dialed = await dialAsRouted(LIGHT);
+    // v3.5 N42: every TIER pick runs at the 16K router window, so no tier pick is re-fitted. A pick the
+    // router reaches outside its tiers (the budget's free redirect) can still be smaller: a 14K one here.
+    const OFF_TIER = 'm-off-tier-14k';
+    db().prepare(
+      `INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+       VALUES (?, 'prov-routed', 'Off Tier 14K', 'sonnet', '["text","tools"]', 14336, 4096, 1, datetime('now'), datetime('now'))`,
+    ).run(OFF_TIER);
+    const dialed = await dialAsRouted(OFF_TIER);
     const summarisedAtDial = summarisedRowCount();
     let folded = 0;
     // Polled with a generous bound: under a loaded full suite the background fold (archive,
     // chunking, the scripted summariser) has been measured to need more than two seconds.
     for (let i = 0; i < 1000 && folded === 0; i++) { await new Promise((r) => setTimeout(r, 10)); folded = summarisedRowCount(); }
-    expect(folded, 'the rows the 16K view set aside were folded for that window').toBeGreaterThan(0);
+    expect(folded, 'the rows the smaller view set aside were folded for that window').toBeGreaterThan(0);
     // Round 2: folded BEFORE the dial — the turn's own request already sat behind the summary.
     expect(summarisedAtDial, 'folded before the pick was dialed, not after').toBeGreaterThan(0);
     const total = (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
@@ -492,22 +501,19 @@ function lightTierIs(...ids: string[]): void {
 const windowCards = (): number => owner.cards.filter((c) => c.code === 'WINDOW_TOO_SMALL').length;
 
 describe('t140 round 2 — N1: a too-small fallback is passed over quietly when a later pick answers', () => {
-  it('the 12K pick ahead of the 16K one: never assembled for, no owner card, and the 16K pick answers', async () => {
-    seedConversation(5);            // short: the array is under the 12K fill line, so selection admits it
+  it('v3.5 N42: a 12K pick on the light tier is the router window, too small for the agent: refused by name and the true card, never a pick dialled', async () => {
+    seedConversation(5);
     addModel('m-routed-12k', 12_288);
     lightTierIs('m-routed-12k', LIGHT);
-    provider.failNext = 1;          // the heavy pick dies on the wire
-    const out = await dialStep(HEAVY);
-    expect(out.abandoned).toBeUndefined();
-    if (out.abandoned) return;
-    expect(out.modelId).toBe(LIGHT);
-    expect(assembledFor, 'the fit check did not rebuild the context for a pick that cannot hold it').not.toContain('m-routed-12k');
-    expect(windowCards(), 'no "cannot hold a conversation" card on a turn that was answered').toBe(0);
+    provider.failNext = 1;
+    await expect(dialStep(HEAVY)).rejects.toBeInstanceOf(SystemPromptTooLargeError);
+    expect(provider.requests.length).toBe(0);
+    expect(windowCards(), 'the card is true: at the one router window the agent cannot hold a conversation').toBe(1);
   });
 });
 
 describe('t140 round 2 — I1c: the selector judges each candidate against its own window', () => {
-  it('a higher-priority pick too small for the turn as built is passed over for one that holds it, and is never assembled for', async () => {
+  it('v3.5 N42: the 14K tier model is the router window, so the turn is built for it and the 14K fallback holds it (nothing is passed over)', async () => {
     seedConversation(250);
     // 14K holds the system prompt and tools (so only the SELECTOR's window check can pass it
     // over), but not this turn as built; 64K holds the turn as built.
@@ -518,27 +524,21 @@ describe('t140 round 2 — I1c: the selector judges each candidate against its o
     const out = await dialStep(HEAVY);
     expect(out.abandoned).toBeUndefined();
     if (out.abandoned) return;
-    expect(out.modelId, 'the candidate whose window holds the turn as built').toBe('m-routed-64k');
-    expect(assembledFor, 'the too-small candidate was never assembled for').not.toContain('m-routed-14k');
+    expect(out.modelId, 'the first light candidate holds the turn: it was built for the one window').toBe('m-routed-14k');
     expect(shown(provider.requests[provider.requests.length - 1]).includes('[ask 250]')).toBe(true);
   });
 });
 
 describe('t140 round 2 — when every fallback is too small, the owner is told THAT, not the first wire error', () => {
-  it('the turn fails naming the window cause; no false permanent card; nothing dialed cut down', async () => {
+  it('v3.5 N42: the 8K and 12K light models make the router window too small: the turn fails naming the window cause before any dial, with the true card', async () => {
     seedConversation(5);
     addModel('m-routed-12k', 12_288);
     lightTierIs(TINY, 'm-routed-12k');
     provider.failNext = 1;
     let thrown: unknown = null;
     try { await dialStep(HEAVY); } catch (e) { thrown = e; }
-    const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message, 'names the real cause').toMatch(/no model .*can hold this agent's instructions and tools/i);
-    expect(message, 'and still says what happened to the first pick').toMatch(/socket hang up/);
-    expect(provider.requests.filter((r) => shown(r).includes('Runtime Information')).length, 'only the first pick was dialed').toBe(1);
-    expect(assembledFor.filter((m) => m === TINY || m === 'm-routed-12k')).toEqual([]);
-    // The starved-window card says the agent's OWN model is too small and that it will not work
-    // until reconfigured. Here its own model is fine and died on the wire: that card would be false.
-    expect(windowCards()).toBe(0);
+    expect(thrown, 'names the real cause: the window cannot hold the system prompt').toBeInstanceOf(SystemPromptTooLargeError);
+    expect(provider.requests.length, 'nothing was dialled').toBe(0);
+    expect(windowCards(), 'at the one router window the agent cannot hold a conversation: the card is true').toBe(1);
   });
 });
