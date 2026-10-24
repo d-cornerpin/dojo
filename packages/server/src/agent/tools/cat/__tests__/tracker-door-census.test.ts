@@ -68,8 +68,10 @@ const SPECS: DoorSpec[] = [
   {
     door: 'work_open:task',
     tool: 'work_open',
-    baseArgs: { kind: 'task', title: 'probe task', repeat_unit: 'days', repeat_interval: 1 },
+    // `measure: undefined`: a probe object is not a countable measure; the measure's own path is driven end to end in its test.
+    baseArgs: { kind: 'task', title: 'probe task', repeat_unit: 'days', repeat_interval: 1, measure: undefined },
     notForwarded: {
+      measure: 'v3.5: read at the door (`measure-door.ts`) because counting is I/O; the inner creator gets the validated, counted reading as its own argument, never the raw wire value. `a-measured-task-is-not-complete-while-items-remain.test.ts` proves it lands on the row',
       kind: 'the dispatch discriminator itself — it selects THIS door, it is not a task field',
       what: 'Reminder only (its own description says so); work_open(kind="reminder") forwards it',
       when: 'Reminder only; work_open(kind="reminder") forwards it as the first-fire time',
@@ -100,6 +102,7 @@ const SPECS: DoorSpec[] = [
       allow_duplicate: 'Task/Project only — the near-duplicate guard runs on titles, and a reminder has none',
       level: 'Project only',
       tasks: 'Project only',
+      measure: 'Task only — a reminder covers no set of items to count',
     },
   },
   {
@@ -107,6 +110,7 @@ const SPECS: DoorSpec[] = [
     tool: 'work_open',
     baseArgs: { kind: 'project', title: 'probe project' },
     notForwarded: {
+      measure: 'Task only — a per-task measure travels inside `tasks[]`, read at the door like the task door\'s',
       kind: 'the dispatch discriminator itself',
       what: 'Reminder only',
       when: 'Reminder only',
@@ -132,8 +136,10 @@ const SPECS: DoorSpec[] = [
   {
     door: 'work_update:edit',
     tool: 'work_update',
-    baseArgs: { action: 'edit', task_id: 'probe-task-id' },
+    baseArgs: { action: 'edit', task_id: 'probe-task-id', measure: undefined },
     notForwarded: {
+      measure: 'v3.5: read at the door (`measure-door.ts`) because counting is I/O; the inner creator gets the validated, counted reading as its own argument, never the raw wire value. `a-measured-task-is-not-complete-while-items-remain.test.ts` proves it lands on the row',
+      remainder: 'action="status" (status="complete") and action="complete_step" — the close door reads it',
       action: 'the dispatch discriminator itself — it selects THIS door',
       id: 'action="get" alias for task_id/project_id; the edit door takes `task_id`',
       project_id: 'a project_id with no task_id ROUTES to the project editor (the §7.2 absorb rule) — a routing discriminator, not a task field',

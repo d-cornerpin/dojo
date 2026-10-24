@@ -7,6 +7,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -84,5 +87,53 @@ describe('migration 200: measure + ledger', () => {
     // A second boot does not re-run it.
     expect(() => runMigrations()).not.toThrow();
     expect((db.prepare('SELECT COUNT(*) AS n FROM _migrations WHERE name = ?').get(FILE) as { n: number }).n).toBe(1);
+  });
+});
+
+// ── 200b: `measured` joins the declared work_events kinds (a CHECK rebuild, 189's shape) ──
+
+const MIGRATIONS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
+const FILE_B = '200b_work_event_kind_measured.sql';
+
+describe('migration 200b: the measured event kind', () => {
+  const insertEvent = (db: Database.Database, kind: string, id?: number): void => {
+    db.prepare(`INSERT INTO work_events (${id ? 'id, ' : ''}work_id, kind, payload, actor, created_at) VALUES (${id ? '?, ' : ''}'w-ev', ?, '{}', 'engine', 1)`)
+      .run(...(id ? [id, kind] : [kind]));
+  };
+  const seedWorkRow = (db: Database.Database): void => {
+    const row: Record<string, unknown> = {
+      id: 'w-ev', kind: 'task', agent_id: 'agent-a', requester: 'agent', requester_id: 'agent-a',
+      root_kind: 'tracker', root_id: 'r1', state: 'claimed', intent: 'tracker', wakes: 0, closes_thread: 0,
+      hop_count: 0, compile_pending: 0, attempts: 0, opened_at: 1_700_000_000_000, updated_at: 1_700_000_000_000, provenance: 'live',
+    };
+    const cols = Object.keys(row);
+    db.prepare(`INSERT INTO work (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`).run(row);
+  };
+
+  it('a body as 189 left it applies 200b: every event, the id counter, the index, and the verdict trigger survive', () => {
+    const db = mockDb.current!;
+    seedWorkRow(db);
+    // Rewind to "200b never ran": the table exactly as 189 built it (its own file, re-run).
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, '189_work_told_event.sql'), 'utf-8'));
+    db.prepare('DELETE FROM _migrations WHERE name = ?').run(FILE_B);
+    expect(() => insertEvent(db, 'measured')).toThrow(/CHECK constraint failed/);
+    insertEvent(db, 'opened', 5);
+    insertEvent(db, 'person_told', 9);
+    insertEvent(db, 'transition', 12);
+    db.prepare('DELETE FROM work_events WHERE id = 12').run();   // the counter now runs ahead of MAX(id)
+    const seqBefore = (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'work_events'").get() as { seq: number }).seq;
+    expect(seqBefore).toBe(12);
+
+    runMigrations();
+
+    expect(db.prepare('SELECT id, kind FROM work_events ORDER BY id').all()).toEqual([{ id: 5, kind: 'opened' }, { id: 9, kind: 'person_told' }]);
+    expect((db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'work_events'").get() as { seq: number }).seq).toBe(12);
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_work_events_work_id'").get()).toBeTruthy();
+    insertEvent(db, 'measured');
+    expect(db.prepare("SELECT id FROM work_events WHERE kind = 'measured'").get()).toEqual({ id: 13 });   // never a reused id
+    expect(() => insertEvent(db, 'not_a_kind')).toThrow(/CHECK constraint failed/);
+    // 189c's trigger still stamps a new verdict with the id the next event receives.
+    db.prepare("INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at) VALUES ('w-ev', 'done', 'upheld', 'pm', 1)").run();
+    expect(db.prepare("SELECT event_seq FROM adjudications WHERE work_id = 'w-ev'").get()).toEqual({ event_seq: 14 });
   });
 });

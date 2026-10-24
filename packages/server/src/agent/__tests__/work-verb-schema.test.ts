@@ -18,6 +18,8 @@ import {
   WORK_FIELD_TEXT,
   WORK_EDITABLE_TASK_FIELDS,
   workProp,
+  WORK_MEASURE_PROP,
+  WORK_REMAINDER_PROP,
 } from '../work-verb-schema.js';
 
 // PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
@@ -49,10 +51,12 @@ function schemaOf(name: string): Record<string, unknown> {
     .replace(/\bworkProp\(/g, '__workProp(')
     .replace(/\bWORK_PRIORITY_ENUM\b/g, '__PRIORITY_ENUM')
     // N1: the seven collapsed fields interpolate the canonical wording from the module.
-    .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT');
+    .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT')
+    // v3.5 (t250): the measure and remainder objects, shared by both verbs.
+    .replace(/\bWORK_MEASURE_PROP\b/g, '__MEASURE').replace(/\bWORK_REMAINDER_PROP\b/g, '__REMAINDER');
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', `return (${body});`);
-  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT) as Record<string, unknown>;
+  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', '__MEASURE', '__REMAINDER', `return (${body});`);
+  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP) as Record<string, unknown>;
 }
 
 // Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
@@ -175,13 +179,46 @@ const T169_BASELINE_CHARS = { work_open: 6338, work_update: 8111 };
 const T193_BASELINE_CHARS = { work_open: 6338, work_update: 8788 };
 const T193_STEP_PHRASE = ' and for action="complete_step"';
 
+// ── v3.5 t250 (DONE IS MEASURED, Task A4) — A TASK CAN CARRY A MEASURE: the schema fields the plan
+// specifies, measured, not estimated. `measure` on work_open (top level AND each `tasks[]` item) and
+// on work_update (action="edit"); `remainder` on work_update (a close of a measured task with items
+// left). The guard undoes exactly those three insertions and must land back on t193's bytes; every
+// earlier rung below is then asserted on that pre-t250 view, unchanged.
+//   work_open   6,338 → 7,924  (+1,586: the measure object twice, top level and tasks[])
+//   work_update 8,788 → 10,066 (+1,278: the measure object and the remainder object)
+const T250_BASELINE_CHARS = { work_open: 7924, work_update: 10066 };
+type Schema = { properties: Record<string, unknown> };
+function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
+  const out = structuredClone(schema) as Schema;
+  delete out.properties.measure;
+  delete out.properties.remainder;
+  const items = (out.properties.tasks as { items?: Schema } | undefined)?.items;
+  if (items) delete items.properties.measure;
+  return out;
+}
+
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
-  const open = schemaOf('work_open');
-  const upd = schemaOf('work_update');
+  const openNow = schemaOf('work_open');
+  const updNow = schemaOf('work_update');
+  const open = withoutT250(openNow);
+  const upd = withoutT250(updNow);
 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
+    expect(JSON.stringify(openNow).length).toBe(T250_BASELINE_CHARS.work_open);
+    expect(JSON.stringify(updNow).length).toBe(T250_BASELINE_CHARS.work_update);
+  });
+
+  it('t250 — the measure and remainder fields are the whole delta, and nothing else moved', () => {
     expect(JSON.stringify(open).length).toBe(T193_BASELINE_CHARS.work_open);
     expect(JSON.stringify(upd).length).toBe(T193_BASELINE_CHARS.work_update);
+    const po = (openNow as Schema).properties;
+    const pu = (updNow as Schema).properties;
+    expect(po.measure).toBe(WORK_MEASURE_PROP);
+    expect(((po.tasks as { items: Schema }).items.properties.measure)).toBe(WORK_MEASURE_PROP);
+    expect(pu.measure).toBe(WORK_MEASURE_PROP);
+    expect(pu.remainder).toBe(WORK_REMAINDER_PROP);
+    expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search']);
+    expect((WORK_REMAINDER_PROP.properties as { disposition: { enum: string[] } }).disposition.enum).toEqual(['skipped', 'blocked']);
   });
 
   it('t193 — the +677 is `cause`, `user_quote` and the complete_step phrase, and nothing else moved', () => {

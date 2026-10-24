@@ -41,7 +41,7 @@ import type { ToolDefinition } from './types.js';
 // descriptions were paraphrases of each other now have ONE canonical wording, said once on
 // the wire — `WORK_FIELD_TEXT`. The other ten pairs are NOT paraphrases and are untouched;
 // work-verb-schema.ts enumerates them and says why.
-import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT } from '../work-verb-schema.js';
+import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP } from '../work-verb-schema.js';
 import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './validate-args.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { formsToolDefinitions } from '../../google/tools-forms.js';
@@ -1030,6 +1030,7 @@ export const toolDefinitions: ToolDefinition[] = [
               step_number: { type: 'number' },
               depends_on: { type: 'array', items: { type: 'string' } },
               phase: { type: 'number' },
+              measure: WORK_MEASURE_PROP,
             },
             required: ['title'],
           },
@@ -1046,6 +1047,7 @@ export const toolDefinitions: ToolDefinition[] = [
         depends_on: workProp('depends_on', 'Task IDs that must complete before this task can start.'),
         phase: workProp('phase', 'Phase number for phased execution.'),
         goal: workProp('goal', 'The definition of done. PM compares the close-out result against it.'),
+        measure: WORK_MEASURE_PROP,
         what: {
           type: 'string',
           description: 'Reminder only. What to remind the user about, in their own words. ("go get coffee", "call mom", "stand up and stretch")',
@@ -1170,6 +1172,8 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: workProp('repeat_end_type', 'action="edit": how the recurrence ends.'),
         repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.onUpdate),
         anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.onUpdate),
+        measure: WORK_MEASURE_PROP,
+        remainder: WORK_REMAINDER_PROP,
         // ── PHASE-6 T0C-W — the wall-clock pair and the revert acknowledgement ─────────
         // See work_open for why these are inline. Each line is this verb's ROUTING plus a
         // pointer, never a restatement of work_open's wording — N1's shape, applied to

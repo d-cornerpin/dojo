@@ -282,8 +282,9 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(exprs).toContain('AUDIT_KIND');              // the bound-single route
     // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer;
     // 26 since UX-REPAIR ROUND 6 T25 landed `owed_interrupt`'s (`work/ask-settlement.ts`);
-    // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`).
-    expect(writtenKinds().kinds.size).toBe(27);
+    // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`);
+    // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT).
+    expect(writtenKinds().kinds.size).toBe(28);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
@@ -350,10 +351,10 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
 });
 
 describe('the list itself', () => {
-  it('is sorted, unique, and 27 values — the CHECK is diffed against it by humans', () => {
+  it('is sorted, unique, and 28 values — the CHECK is diffed against it by humans', () => {
     expect([...WORK_EVENT_KINDS]).toEqual(sorted(WORK_EVENT_KINDS));
     expect(new Set(WORK_EVENT_KINDS).size).toBe(WORK_EVENT_KINDS.length);
-    expect(WORK_EVENT_KINDS.length).toBe(27);
+    expect(WORK_EVENT_KINDS.length).toBe(28);
   });
 
   it('`isWorkEventKind` answers for every member and refuses a near-miss', () => {

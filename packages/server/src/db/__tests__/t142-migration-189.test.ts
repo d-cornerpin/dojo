@@ -29,6 +29,10 @@ const M189E = '189e_verdict_sequence_conservative.sql';
 /** Every lane-t142 migration, whatever letters exist: 189, 189c and the fix round's files. */
 const SUBJECTS = FILES.filter((f) => f.startsWith('189'));
 const isSubject = (f: string): boolean => SUBJECTS.includes(f);
+/** A LATER work_events kind rebuild (v3.5's 200b adds `measured`) did not exist on any box this file
+ *  rehearses; replaying it would hand vintage A a CHECK that already carries `person_told`. */
+const isLaterKindRebuild = (f: string): boolean => f > '189~' && !f.startsWith('9')
+  && /CHECK\s*\(\s*kind\s+IN\s*\(/i.test(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf-8'));
 
 function baseSchemaFromRunner(): string {
   const src = fs.readFileSync(path.join(HERE, '..', 'migrations.ts'), 'utf-8');
@@ -54,7 +58,7 @@ function vintage(upTo: string | null): Database.Database {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (
     name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`);
   for (const f of FILES) {
-    if (isSubject(f)) continue;
+    if (isSubject(f) || isLaterKindRebuild(f)) continue;
     if (upTo !== null && f > upTo) break;
     applyFile(db, f);
   }

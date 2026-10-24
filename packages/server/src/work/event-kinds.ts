@@ -72,6 +72,9 @@ export const WORK_EVENT_KINDS = [
   'floor_ghosted',
   'join_complete',
   'join_opened',
+  // v3.5 DONE IS MEASURED (migration 200b). One reading of a task's measure: what it returned,
+  // when, and whether it could be read (`work/ledger-store.ts`).
+  'measured',
   'occurrence_fired',
   'occurrence_released',
   'occurrence_settled',

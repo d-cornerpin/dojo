@@ -325,6 +325,10 @@ describe('§2 every attribute column is classified as prose or not-prose', () =>
 /** The reviewed raw-SQL writers of `work`, with the verdict that makes each one safe.
  *  A file that writes `work` and is not here fails the clause below. */
 const REVIEWED_RAW_WRITERS: Record<string, string> = {
+  'work/ledger-store.ts':
+    'v3.5: writes only the measure columns (measure_json, measure_initial, measure_remaining, '
+    + 'measure_at). measure_json is the engine-validated measure (a tool name, a search query, a '
+    + 'unit), never a prose column; the counts and the instant are numbers. No prose column.',
   'work/row-authority.ts':
     't193: writeAssignee binds agent ids and a group id to agent_id / assignee_agent / '
     + 'assigned_to_group, plus updated_at. No prose column.',

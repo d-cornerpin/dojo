@@ -199,3 +199,28 @@ export const WORK_FIELD_TEXT: Record<string, { canonical: string; onUpdate: stri
     onUpdate: 'action="edit": the anchor timestamp (see work_open); use it to change WHEN a recurring task fires without recreating it, e.g. 06:00 instead of 06:05. Pass null or empty string to clear.',
   },
 };
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// v3.5 DONE IS MEASURED — `measure` (work_open, its tasks[], and work_update action="edit") and
+// `remainder` (work_update status="complete" / action="complete_step"). One object each, shared
+// by every verb that declares it. The engine side: `agent/tools/cat/measure-door.ts` and
+// `tracker/measure-gate.ts`.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+export const WORK_MEASURE_PROP: PropSchema = {
+  type: 'object',
+  description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it, at the end of each of your turns, and when you close.',
+  properties: {
+    tool: { type: 'string', enum: ['gmail_search'] },
+    args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },
+    unit: { type: 'string' },
+  },
+  required: ['tool', 'args'],
+};
+
+export const WORK_REMAINDER_PROP: PropSchema = {
+  type: 'object',
+  description: 'Only when closing a MEASURED task while its measure still returns items: say what is left and why. disposition="skipped" (you judged they should be left; the PM sees the count and your reason) or "blocked" (you cannot do them; use status="blocked" instead unless the rest of the task is done).',
+  properties: { disposition: { type: 'string', enum: ['skipped', 'blocked'] }, reason: { type: 'string' } },
+  required: ['disposition', 'reason'],
+};

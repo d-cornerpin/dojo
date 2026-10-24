@@ -55,6 +55,7 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
+import { applyMeasureToTask, remainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -843,7 +844,7 @@ function findRecentNearDuplicateProject(
   return null;
 }
 
-export function trackerCreateProject(agentId: string, args: Record<string, unknown>): string {
+export function trackerCreateProject(agentId: string, args: Record<string, unknown>, opts: { taskMeasures?: Array<MeasureReading | undefined> } = {}): string {
   try {
     const title = args.title as string;
     if (!title) return 'Error: title is required';
@@ -985,7 +986,8 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         const t = getTask(id);
         const step = t?.stepNumber !== null ? ` (step ${t?.stepNumber})` : '';
         const status = t?.status ?? 'on_deck';
-        return `  ${i + 1}. "${t?.title ?? 'Unknown'}", ID: ${id}${step} [${status}]`;
+        const m = opts.taskMeasures?.[i];
+        return `  ${i + 1}. "${t?.title ?? 'Unknown'}", ID: ${id}${step} [${status}]${m ? ` ${applyMeasureToTask(id, m)}` : ''}`;
       });
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
@@ -1022,7 +1024,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
 // ── trackerCreateTask ──
 
-export function trackerCreateTask(agentId: string, args: Record<string, unknown>): string {
+export function trackerCreateTask(agentId: string, args: Record<string, unknown>, opts: { measure?: MeasureReading } = {}): string {
   try {
     const title = args.title as string;
     if (!title) return 'Error: title is required';
@@ -1410,6 +1412,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       ``,
       `Task created successfully.`,
     ];
+    if (opts.measure) parts.push(applyMeasureToTask(taskId, opts.measure));
     if (projectId) parts.push(`Project: ${projectId}`);
     if (assignedTo) parts.push(`Assigned to: ${assignedTo}`);
     if (assignedToGroup) parts.push(`Assigned to group: ${assignedToGroup}`);
@@ -1877,7 +1880,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // Structure only. Engine never inspects evidence content; that is PM's job.
     // t193 (dec 27): ONE gate for both close doors — `complete_step` calls it too.
     if (status === 'complete' && !callerIsPM) {
-      const refused = closeEvidenceGate(agentId, taskId, args);
+      const refused = closeEvidenceGate(agentId, taskId, args) ?? remainderGate(agentId, taskId, args);
       if (refused) return refused;
     }
 
@@ -3471,7 +3474,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 
     // t193 (owner decision 27): the same result + evidence as `complete`, through the same gate;
     // the step's notes are recorded as the status door records them (a Key-1 filing drops them).
-    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"');
+    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"') ?? remainderGate(agentId, taskId, args, 'action="complete_step"');
     if (stepRefused) return stepRefused;
     if (notes && notes.trim()) {
       writeTaskLog({

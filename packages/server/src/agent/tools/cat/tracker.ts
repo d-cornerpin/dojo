@@ -52,6 +52,7 @@ import {
   trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
+import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure } from './measure-door.js';   // v3.5 DONE IS MEASURED
 import type { ToolHandlerMap } from '../handler.js';
 
 // v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
@@ -106,6 +107,8 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'title', value: args.title, type: 'string' },
     ]);
     if (projErr) { content = projErr; isError = true; return { content, isError }; }
+    const measures = await Promise.all(((args.tasks as Array<Record<string, unknown>> | undefined) ?? []).map((t) => readMeasureArg(agentId, t?.measure)));
+    const badMeasure = measures.find((m) => m.error); if (badMeasure) return { content: badMeasure.error as string, isError: true };
     const taskInputs = (args.tasks as Array<Record<string, unknown>> | undefined)?.map(t => ({
       title: t.title as string,
       description: t.description as string | undefined,
@@ -122,7 +125,7 @@ const tableOfHandlers: ToolHandlerMap = {
         level: args.level as number,
         tasks: taskInputs,
         allow_duplicate: args.allow_duplicate as boolean | undefined,
-      });
+      }, { taskMeasures: measures.map((m) => m.reading) });
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="project")');
     }
@@ -229,6 +232,8 @@ const tableOfHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
+    const measured = await readMeasureArg(agentId, args.measure);
+    if (measured.error) return { content: measured.error, isError: true };
     try {
       content = trackerCreateTask(agentId, {
         projectId: args.project_id as string | undefined,
@@ -266,7 +271,7 @@ const tableOfHandlers: ToolHandlerMap = {
         allow_duplicate: args.allow_duplicate as boolean | undefined,
         // Goal pass-through (B.1)
         goal: args.goal as string | undefined,
-      });
+      }, { measure: measured.reading });
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="task")');
     }
@@ -394,8 +399,10 @@ const tableOfHandlers: ToolHandlerMap = {
     if (args.assigned_to !== undefined) updateArgs.assignedTo = args.assigned_to;
     if (args.priority !== undefined) updateArgs.priority = args.priority;
     if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
+    if (args.remainder !== undefined) updateArgs.remainder = args.remainder;
+    if (args.status === 'complete') await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));
     content = trackerUpdateStatus(agentId, updateArgs);
-    return { content, isError };
+    return { content, isError: isError || content.startsWith('Refused:') };
   },
 
   async "work_note"({ agentId, args }) {
@@ -482,8 +489,7 @@ const tableOfHandlers: ToolHandlerMap = {
         editArgs.repeat_interval = 1;
       }
     }
-    content = trackerEditTask(agentId, editArgs);
-    return { content, isError };
+    return editWithMeasure(agentId, args, Object.keys(editArgs).length > 1, () => trackerEditTask(agentId, editArgs));
   },
 
   async "work_update:get"({ agentId, args }) {
@@ -712,14 +718,16 @@ const tableOfHandlers: ToolHandlerMap = {
     // trackerCompleteStep resolves the obvious task when exactly one is in
     // progress for this agent, and rejects-with-guidance otherwise, so we
     // pass whatever the model sent (possibly undefined) straight through.
+    await remeasureTask(agentId, closeTargetOf(agentId, args.task_id ?? args.taskId));
     content = trackerCompleteStep(agentId, {
       taskId: (args.task_id ?? args.taskId) as string | undefined,
       notes: args.notes as string | undefined,
       // t193 (owner decision 27): the same close-out proof as status="complete".
       result: args.result,
       evidence: args.evidence,
+      remainder: args.remainder,
     });
-    return { content, isError: false };
+    return { content, isError: content.startsWith('Refused:') };
   },
 
   async "work_validate:validate"({ agentId, args }) {

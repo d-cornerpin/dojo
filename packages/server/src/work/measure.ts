@@ -27,8 +27,13 @@ export function parseMeasure(raw: unknown): { ok: true; measure: Measure } | { o
   return { ok: true, measure: { tool: tool as Measure['tool'], args: { query, ...(account ? { account } : {}) }, unit } };
 }
 
-export function countMeasure(m: Measure, agentId: string, agentName: string): Promise<MeasureCount> {
-  return COUNTERS[m.tool](m, agentId, agentName);
+/** Never throws: a counter that fails is a reading that could not be made, and says why. */
+export async function countMeasure(m: Measure, agentId: string, agentName: string): Promise<MeasureCount> {
+  try {
+    return await COUNTERS[m.tool](m, agentId, agentName);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export function describeMeasure(m: Measure): string {

@@ -7,6 +7,13 @@
 // One row per (task, item): a re-touch moves `last_at`, so COUNT(*) is "distinct items touched".
 import { getDb } from '../db/connection.js';
 import { itemKeysOf } from '../tools/item-keys.js';
+import { appendWorkEvent } from './store.js';
+import type { WorkEventKind } from './event-kinds.js';
+import type { Measure, MeasureCount } from './measure.js';
+
+/** One reading of a task's measure, on the task's own spine. Written by the engine (`'engine'`),
+ *  so a reading is a record and never reads as the task moving (`taskMovedAtSql`). */
+export const MEASURED_EVENT = 'measured' as const satisfies WorkEventKind;
 
 /** Record the items a call touched for a task. Returns the rows inserted or touched. */
 export function recordTouched(workId: string, tool: string, keys: string[], at: number = Date.now()): number {
@@ -54,3 +61,26 @@ export function writeMeasured(workId: string, remaining: number | null, at: numb
   ).run(remaining, at, initial ?? null, workId);
 }
 
+/** A measure is SET on a task (open, or an edit: a new measure is a new scope), with its first reading. */
+export function setMeasure(workId: string, measure: Measure, count: MeasureCount, at: number): void {
+  const n = count.ok ? count.count : null;
+  getDb().prepare(
+    'UPDATE work SET measure_json = ?, measure_initial = ?, measure_remaining = ?, measure_at = ? WHERE id = ?',
+  ).run(JSON.stringify(measure), n, n, at, workId);
+  appendMeasured(workId, count, n, at);
+}
+
+/** A task's measure was re-read. `remaining` null on the row = it could not be read at `at`. The
+ *  first successful reading of a measure that could not be read when it was set becomes its start. */
+export function recordMeasured(workId: string, count: MeasureCount, at: number): void {
+  const row = getDb().prepare('SELECT measure_initial FROM work WHERE id = ?').get(workId) as { measure_initial: number | null } | undefined;
+  const initial = row?.measure_initial ?? (count.ok ? count.count : null);
+  writeMeasured(workId, count.ok ? count.count : null, at, initial ?? undefined);
+  appendMeasured(workId, count, initial, at);
+}
+
+function appendMeasured(workId: string, count: MeasureCount, initial: number | null, at: number): void {
+  appendWorkEvent(workId, MEASURED_EVENT, 'engine', count.ok
+    ? { remaining: count.count, initial, at, ok: true }
+    : { remaining: null, initial, at, ok: false, error: count.error }, at);
+}
