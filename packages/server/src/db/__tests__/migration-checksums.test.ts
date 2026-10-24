@@ -255,6 +255,9 @@ describe('divergence adjudication', () => {
       '168_work_tracker_default_grant.sql',
       '171_report_read_indexes.sql',
       '200b_work_event_kind_measured.sql',   // v3.5 fix round 1: an unreleased lane-branch version, the rebuild folded once
+      // v3.5 t252: an in-lane amendment of the UNRELEASED 201 (B4 added summary_checks); no database
+      // holds the earlier bytes — typed here so the claim is seen in review.
+      '201_decision_shadow.sql',
     ]);
     // ⚠ `165_work_effort_meter.sql` IS ABSENT ON PURPOSE. It diverges on the dev box and logs at
     // ERROR, and it stays that way: the applied checksum matches no version of the file in this
