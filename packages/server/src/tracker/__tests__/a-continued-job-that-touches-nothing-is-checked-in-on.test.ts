@@ -192,6 +192,22 @@ describe('fix round 2 (c): a continued job that touches nothing is checked in on
     endJobRun('helper');
   });
 
+  it('text wave (t261): the check-in at the park is the short form — fact and answer inside the 400-character gist, however long the title', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const now = Date.now();
+    aContinuedJob(now, 6, 3);
+    db().prepare('UPDATE work SET title = ? WHERE id = ?').run(`the mailbox sweep ${'of every folder and label '.repeat(5)}`, JOB);
+    vi.setSystemTime(now);
+    await checkInAtThePark(JOB);
+    await new Promise((r) => setTimeout(r, 15));
+    const rider = checkIns(JOB).join('\n');
+    const gist = rider.slice(rider.indexOf('[PM check-in]'), rider.indexOf('[PM check-in]') + 400);
+    expect(gist).toContain('Continued 3 times since it last touched an item; 12 left on its measure.');
+    expect(gist).toContain('Still on it? A work_note saying what is next answers this. Waiting on someone? status="paused" or "blocked" with the reason.');
+    expect(rider).not.toMatch(/If you've finished/);
+    endJobRun('helper');
+  });
+
   it('CONTROL: the same job touching items is left alone at the park, as before', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const now = Date.now();

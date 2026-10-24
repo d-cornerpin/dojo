@@ -1,5 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact } from './job-loop-facts.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -2755,10 +2755,10 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     }
 
     // ── Normal poke (nudge / urgent / escalate) ──
-    // Rung 3 goes to the primary; with no usable primary on the box (none, or a terminated one) the
-    // assignee is re-driven instead, in words addressed to it (t143 round 5).
-    const escalateToAssignee = pokeType === 'escalate_primary'
-      && !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId));
+    // Rung 3 goes to the primary; with no usable primary on the box (none, or a terminated one), or when the
+    // assignee IS the primary, the assignee is re-driven instead, in words addressed to it (t143 round 5; t261).
+    const escalateToAssignee = pokeType === 'escalate_primary' && (primaryId === task.assignedTo
+      || !(primaryId && pokeDb.prepare("SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'").get(primaryId)));
     const basePokeMessage = deliveryEvidence && tangibleHandover
       ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
         `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
@@ -2777,9 +2777,10 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
     // assignee there travels as the PM rider the circling verdict uses: read at the start of its NEXT turn (the
     // continuation the park queued), never injected into the running one, and latched only once the row exists.
     if (atThePark && recipient === task.assignedTo) {
-      // The rider is read as the events lane's 400-char gist: the fact leads, ahead of the title (re-review 3).
+      // The rider is read as the events lane's 400-char gist: its short form leads with the fact and the answer (t261,
+      // text wave); a circling verdict riding the check-in keeps the full text, the fact still first (re-review 3).
       const fact = continuedJobFact(task.id);
-      const brief = fact ? `${fact} ${pokeMessage.replace(`\n${fact}`, '')}` : pokeMessage;
+      const brief = !effortReviewReason ? parkCheckInText(task, Math.floor(idleSeconds / 60)) : fact ? `${fact} ${pokeMessage.replace(`\n${fact}`, '')}` : pokeMessage;
       if (!(await import('../work/engine-checkpoint-note.js')).handToTheNextTurn(recipient, brief, now)) continue;
       recordPoke(task.id, pmId, pokeNumber, pokeType, recipient);
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType } });

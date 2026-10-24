@@ -42,3 +42,11 @@ export function measuredLeftFact(taskId: string): string | null {
   // the PM's module graph) stopped the measured-close suites' counter seam from being reached, so it is not imported.
   return `Its measure (${m.tool} "${m.args.query}") still returns ${row.measure_remaining.toLocaleString('en-US')} ${typeof m.unit === 'string' ? m.unit : 'items'}${start}.`;
 }
+
+/** The check-in handed to a continued job at its PARK (t261's short form). The PM rider is read as a
+ *  400-character gist, so the facts and the answer lead and the title (any length) comes last. */
+export function parkCheckInText(task: { id: string; title: string }, idleMinutes: number): string {
+  const fact = continuedJobFact(task.id) ?? measuredLeftFact(task.id);
+  return `[PM check-in] ${fact ? `${fact} ` : ''}Still on it? A work_note saying what is next answers this. `
+    + `Waiting on someone? status="paused" or "blocked" with the reason. Task "${task.title}", ID: ${task.id}, no movement for ${idleMinutes} minutes.`;
+}

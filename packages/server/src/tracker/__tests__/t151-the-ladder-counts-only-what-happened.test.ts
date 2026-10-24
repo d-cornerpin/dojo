@@ -266,6 +266,22 @@ describe('A — the ladder starts at its first rung when the agent\'s own job en
     expect(all).toMatch(/no earlier check-in has been sent/);
   });
 
+  it('text wave (t261): rung 3 on the primary\'s OWN task reaches it in words addressed to it, not about it', async () => {
+    const now = Date.now();
+    seedTrackerTask(db(), { id: 'task-own', agentId: 'primary', status: 'in_progress', title: 'the main agent\'s own job',
+      opened_at: now - 31 * MIN, updated_at: now - 31 * MIN, origin_conv_key: 'c-1', priority: 'normal' } as never);
+    await runPokeCheck();
+    await new Promise((r) => setTimeout(r, 15));
+    const sent = (db().prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND lane = 'events'").all() as Array<{ content: string }>)
+      .map((r) => r.content).filter((c) => c.includes('task-own'));
+    expect(sent.length).toBeGreaterThan(0);
+    for (const c of sent) {
+      expect(c).not.toMatch(/^ESCALATION: Task/);
+      expect(c).not.toContain('assigned to primary');
+    }
+    expect(sent.join('\n')).toContain('This task is still yours and nobody is taking it from you.');
+  });
+
   it('t154: rung 2 reached as the first check-in (restart, circling verdict) is not labelled "Second"', async () => {
     const now = Date.now();
     claimedTask('task-mid', 'the price check', now - 20 * MIN, 'c-1');
