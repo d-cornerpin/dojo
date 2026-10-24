@@ -50,7 +50,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-const broadcast = vi.fn();
+const { broadcast } = vi.hoisted(() => ({ broadcast: vi.fn() }));
 vi.mock('../../logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
   setLogLevel: () => { /* no-op */ },
@@ -72,6 +72,13 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, claimAsk, openDelegationJoin, joinState, JOIN_LIVENESS_MAX_TOTAL_MS,
 } from '../../work/store.js';
+// Loaded ONCE, at file load, outside every clause's budget. This used to be a dynamic import
+// after `vi.resetModules()` inside each clause, so every clause paid the whole cold a2a-transport
+// module graph (~2.5 s idle; unbounded when vite-node wedges a cold import under a loaded box -
+// the t119/t265 class) and the first one died at its pinned 15 s with the product call itself
+// taking milliseconds. Nothing here needs a fresh module graph: the DB is reached only through
+// the mocked `getDb` -> `mockDb.current`, which every `beforeEach` replaces.
+import { sweepExpiredJoins } from '../a2a-transport.js';
 
 const AGENT = 'quill';
 const ASSIGNEE = 'tamsin';
@@ -124,13 +131,11 @@ function setAssigneeStatus(status: string): void {
 async function sweep(): Promise<{
   failedClosed: number; relayedReplies: number; extendedForLiveAssignee: number;
 }> {
-  const { sweepExpiredJoins } = await import('../a2a-transport.js');
   return sweepExpiredJoins();
 }
 
 beforeEach(() => {
   broadcast.mockClear();
-  vi.resetModules();
   const db = new Database(':memory:');
   mockDb.current = db;
   runMigrations();
@@ -166,8 +171,11 @@ describe('§1 a healthy delegate past the deadline keeps its join', () => {
     seedLiveJoinPastTtl();
     setAssigneeStatus('working');
 
-    await sweep();
+    const out = await sweep();
 
+    // A sweep that did nothing at all would also leave the owner un-told; the control is that the
+    // reaper DID reach this row and chose to keep it.
+    expect(out.extendedForLiveAssignee, 'the reaper reached the row and kept it').toBe(1);
     const said = ownerFacing().map((m) => m.content).join('\n');
     expect(said, 'nothing came back YET is not the same as never answered').not.toMatch(/never answered/i);
     expect(said, 'and the platform has not "stopped waiting" — it is still waiting').not.toMatch(/stopped waiting/i);
