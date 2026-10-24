@@ -7,16 +7,21 @@
 // The SDK relays the reason in three places (the finished assistant message, the streamed
 // `message_delta`, the closing `result`); the last non-null one wins. `max_output_tokens` also
 // arrives as the assistant message's `error`, which says the same thing when no `stop_reason` rode
-// along. Anthropic's ordinary finishes (`end_turn`, `tool_use`, `stop_sequence`) say only what the
+// along. A CUT is sticky: once any message said the output was cut, a later ordinary finish (the
+// closing `result` mirrors the last message) cannot hide it. Anthropic's ordinary finishes (`end_turn`, `tool_use`, `stop_sequence`) say only what the
 // parsed tool-call count already says (this transport parses its tool calls out of text, so the
 // provider says `end_turn` even when one parsed); anything else, above all a cut, passes through.
 import { resolveProviderStopReason } from '../agent/provider-stop-reason.js';
+import { isOutputCut } from '../agent/v2/classifiers/output.js';
 
 export function createSdkStopReasonTracker() {
   let seen: string | null = null;
+  let cut: string | null = null;
   let outputLimitError = false;
   const note = (reason: unknown): void => {
-    if (typeof reason === 'string' && reason !== '') seen = reason;
+    if (typeof reason !== 'string' || reason === '') return;
+    if (isOutputCut(reason)) cut = reason;
+    seen = reason;
   };
   return {
     /** Read whatever stop information one SDK message carries. */
@@ -34,7 +39,8 @@ export function createSdkStopReasonTracker() {
     /** The stop reason to report, given how many tool calls parsed out of the text. */
     resolve(toolCallCount: number): string {
       const ordinary = seen === 'end_turn' || seen === 'tool_use' || seen === 'stop_sequence';
-      return resolveProviderStopReason(ordinary ? null : (seen ?? (outputLimitError ? 'max_output_tokens' : null)), toolCallCount);
+      const provider = cut ?? (outputLimitError ? 'max_output_tokens' : (ordinary ? null : seen));
+      return resolveProviderStopReason(provider, toolCallCount);
     },
   };
 }

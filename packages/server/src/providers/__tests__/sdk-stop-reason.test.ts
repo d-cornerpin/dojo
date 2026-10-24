@@ -94,4 +94,26 @@ describe('B14 — the SDK transport reads the provider\'s stop reason', () => {
     ];
     expect((await run()).stopReason).toBe('max_tokens');
   });
+
+  it('a cut once seen survives a later ordinary end_turn (the closing result cannot hide it)', async () => {
+    stream.messages = [
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'max_tokens' } } },
+      { type: 'result', subtype: 'success', stop_reason: 'end_turn' },
+    ];
+    const r = await run();
+    expect(r.stopReason).toBe('max_tokens');
+  });
+
+  it('a cut survives a later ordinary end_turn even when a tool call parsed', async () => {
+    stream.messages = [
+      assistant(`Reading it. ${TOOL_TEXT}`, { stop_reason: 'max_tokens' }),
+      { type: 'result', subtype: 'success', stop_reason: 'end_turn' },
+    ];
+    expect((await run()).stopReason).toBe('max_tokens');
+  });
+
+  it('an ordinary end_turn together with the max_output_tokens error is still a cut', async () => {
+    stream.messages = [assistant('cut off mid-sen', { stop_reason: 'end_turn' }, { error: 'max_output_tokens' })];
+    expect((await run()).stopReason).toBe('max_output_tokens');
+  });
 });
