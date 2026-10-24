@@ -163,6 +163,14 @@ describe('I-B4-3: the pass mark', () => {
     expect(mark).toBeLessThanOrEqual(1);
   });
 
+  it('N6: every recorded probability at 1.0 does not throw; the mark is 0.5', () => {
+    for (let i = 0; i < 3; i++) {
+      recordShadow({ purpose: 'summary_check', question: 'stated_current', turnId: `s${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: 1 } });
+      recordTruth(`s${i}`, 'stated_current', true, 'test');
+    }
+    expect(passMark('stated_current')).toBe(0.5);
+  });
+
   it('with a clear separation in the record, the mark sits between the fine and the wrong', () => {
     for (const [i, [p, bad]] of ([[0.1, false], [0.2, false], [0.35, true], [0.4, true]] as const).entries()) {
       recordShadow({ purpose: 'summary_check', question: 'dropped', turnId: `d${i}`, ruleSaid: false, modelSaid: { type: 'noul', noul: p } });

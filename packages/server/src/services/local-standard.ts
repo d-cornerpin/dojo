@@ -24,8 +24,7 @@ import { getOllamaModelInfo } from './ollama.js';
 import { STANDARD_MODELS_MISSING_WORDS, tellOwnerOnce, ownerConditionCleared } from '../healer/owner-notices.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 
-export { STANDARD_MODELS_MISSING_WORDS };
-const MISSING_CONDITION = 'standard-models';
+export { STANDARD_MODELS_MISSING_WORDS }; const MISSING_CONDITION = 'standard-models';
 
 const logger = createLogger('local-standard');
 
@@ -256,7 +255,9 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
 export function retryStandardModelsIfMissing(installedNames: readonly string[], baseUrl: string): void {
   const provider = localOllamaProvider();
   if (!provider || inFlight || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;
-  if (STANDARD_TAGS.every((t) => installedNames.includes(t))) return;
+  if (STANDARD_TAGS.every((t) => installedNames.includes(t)) && standardModelRowId('writer') && standardModelRowId('decision')) {
+    ownerConditionCleared(MISSING_CONDITION); return;   // N4: in and registered: the card ends (unregistered: the install registers, no pull)
+  }
   startStandardInstall();
 }
 

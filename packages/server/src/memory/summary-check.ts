@@ -60,6 +60,7 @@ export function passMark(question: string): number {
   const ps = [...new Set(points.map((x) => x.p))].sort((a, b) => a - b);
   const candidates = [0.5, (ps[ps.length - 1] + 1) / 2, ...ps.slice(1).map((p, i) => (ps[i] + p) / 2)].filter((t) => t > ps[0]);
   const agree = (t: number): number => points.filter((x) => (x.p >= t) === x.bad).length;
+  if (candidates.length === 0) return 0.5;   // every recorded probability is 1.0: nothing to cut between (N6)
   return candidates.reduce((best, t) => {
     const d = agree(t) - agree(best);
     return d > 0 || (d === 0 && Math.abs(t - 0.5) < Math.abs(best - 0.5)) ? t : best;

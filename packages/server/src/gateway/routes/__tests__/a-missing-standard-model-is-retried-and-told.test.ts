@@ -77,6 +77,20 @@ describe('a pair that failed to install', () => {
     expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
   });
 
+  it('N4: Ollama slow at boot, then answering with both models already there → registered, and the card ends', async () => {
+    const real = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed: ECONNREFUSED'); }));
+    await ensureStandardModelsOncePerVersion('3.5.0');
+    expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
+    vi.stubGlobal('fetch', real);
+    ollama.installed.add('tev1:4b-q4_K_M');
+    ollama.installed.add('qwen3.5:4b');
+    await checkOllamaHealth('http://localhost:11434');
+    await standardInstallSettled();
+    expect(standardModelRowId('writer')).toBeTruthy();
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
+  });
+
   it('a health check of a box with both models installed starts nothing', async () => {
     ollama.registryDown = false;
     await ensureStandardModelsOncePerVersion('3.5.0');
