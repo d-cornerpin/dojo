@@ -8998,6 +8998,20 @@
       "to": 205,
       "by": "t250 (2026-10-23): v3.5 done-is-measured, the engine ledger (Task A3)",
       "why": "+2: one import and one call. The ledger of items a task's successful mutation calls touched is charged at exactly the seam and to exactly the task the effort meter is charged (`resolveCurrentClaimedTaskId`), because the review focus requires the same pick (two claimed tasks: the most recently updated one; never a paused one). The loop itself lives in `work/ledger-store.ts` (`recordCallsTouched`), not here, which is why this is +2 and not +9. REFUSED: charging from a second seam (a post-result hook) would need its own copy of the claimed-task pick, the two-deciders shape; trimming this file's existing comments to fit would delete other tasks' reasons. From 205 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5213,
+      "to": 5216,
+      "by": "t250 (2026-10-23): v3.5 done-is-measured, the remainder rule at the close door (Task A4)",
+      "why": "+3: one import line, one line storing a measure on a created task, one line storing a project task's measure beside its summary row. Both close doors call the remainder gate WITHOUT a new line (`closeEvidenceGate(...) ?? remainderGate(...)`), and the gate, the measure store and the edit path live in a new focused file, `tracker/measure-gate.ts`; the I/O half lives at the door that has the awaits, `agent/tools/cat/measure-door.ts`. REFUSED: making the synchronous close handlers async (every caller and dozens of tests read their string return), and parsing the creator's own OK text for the new task id from the door (a coupling to prose). From 5,216 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2917,
+      "to": 2920,
+      "by": "t250 (2026-10-23): v3.5 done-is-measured, `measure` and `remainder` on the wire (Task A4)",
+      "why": "+3: three property lines, the plan's schema fields: `measure` on work_open's top level and inside each `tasks[]` item, and `measure` + `remainder` on work_update (two lines). The two schema objects themselves live once in `agent/work-verb-schema.ts` (`WORK_MEASURE_PROP`, `WORK_REMAINDER_PROP`), on the existing import line, so this file carries only the references. The wire cost is measured in `agent/__tests__/work-verb-schema.test.ts` (work_open +1,586, work_update +1,278 chars). From 2,920 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9080,7 +9094,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 997,
-    "packages/server/src/agent/tools/definitions.ts": 2934,
+    "packages/server/src/agent/tools/definitions.ts": 2937,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
@@ -9281,7 +9295,7 @@
     "packages/server/src/tracker/pm-rereview-bound.ts": 147,
     "packages/server/src/tracker/schema.ts": 1130,
     "packages/server/src/tracker/task-stamps.ts": 336,
-    "packages/server/src/tracker/tools.ts": 5213,
+    "packages/server/src/tracker/tools.ts": 5216,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
     "packages/server/src/twilio/call-session.ts": 916,
     "packages/server/src/twilio/sms-inbound.ts": 409,
