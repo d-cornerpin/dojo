@@ -9351,10 +9351,10 @@
     },
     {
       "path": "packages/server/src/google/tools-forms.ts",
-      "from": 821,
-      "to": 822,
+      "from": 822,
+      "to": 823,
       "by": "t260 fix round 2 (2026-10-24): v3.5 K33, the fence wraps only the outside text (orchestrator ruling 2)",
-      "why": "+1: the import of the span mark; forms_get and forms_list_responses wrap their existing returns inline. From here this file may only shrink."
+      "why": "+1: the import of the span mark; forms_get and forms_list_responses wrap their existing returns inline. From here this file may only shrink. Rebase onto v35 (2026-10-24): t262 raised the same 821 pin to 822 independently; the rebased file holds both, 821 + 1 + 1 = 823."
     },
     {
       "path": "packages/server/src/microsoft/tools-read.ts",
@@ -9557,7 +9557,7 @@
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 776,
-    "packages/server/src/google/tools-forms.ts": 822,
+    "packages/server/src/google/tools-forms.ts": 823,
     "packages/server/src/google/tools-read.ts": 945,
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2007,
