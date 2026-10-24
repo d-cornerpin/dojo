@@ -9180,6 +9180,13 @@
       "to": 611,
       "by": "t252 fix round 2 (v3.5, 2026-10-24): the Summarization card says when its writer keeps failing (owner 2026-10-20)",
       "why": "+5: the generic card gains a notice prop (its type, its destructure, its one render line), the ReactNode type import rides the existing react import, one import line for the new SummaryCheckNotice and the Summarization card passing it. The notice itself (the fetch, the words) lives in the NEW focused file components/settings/SummaryCheckNotice.tsx; the existing card (no new UX) only mounts it."
+    },
+    {
+      "path": "packages/server/src/services/local-standard.ts",
+      "from": 315,
+      "to": 317,
+      "by": "t252 fix round 2 (v3.5, 2026-10-24): the update raises Ollama's model limit (owner decision) and the install card ends when the pair is already in (N4)",
+      "why": "+2: one line in the once-per-version update hook calling the new services/ollama-model-limit.ts (the owner's 'Dojo raises the limit'; everything it does lives in that new focused file), and the N4 branch of the health-check retry (both models already in and registered: the card ends). The doc comment was rewritten at the same length."
     }
   ],
   "maxNewFileLines": 400,
@@ -9440,7 +9447,7 @@
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
-    "packages/server/src/services/local-standard.ts": 315,
+    "packages/server/src/services/local-standard.ts": 317,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 466,
     "packages/server/src/services/outlook-watcher.ts": 520,
