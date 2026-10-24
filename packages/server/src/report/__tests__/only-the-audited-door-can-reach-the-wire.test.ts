@@ -271,6 +271,9 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
                                         // the local Ollama's /api/pull carrying only a model name.
   'services/local-standard.ts',         // fetch( — v3.5, reached through router/selector.ts: GETs of the local Ollama's
                                         // /api/tags and /api/ps; no exported function takes content to send.
+  'services/decision-window.ts',        // fetch( — v3.5 t268, reached through memory/summarize.ts → agent/decide.ts: one POST
+                                        // of /api/show and /api/create to the local Ollama carrying only the standard
+                                        // decision model's tag names and a window number; no exported function takes content.
   'services/transcription.ts',          // fetch(
   'services/video-generation.ts',       // fetch(
   'twilio/client.ts',                   // fetch(

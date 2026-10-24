@@ -151,7 +151,11 @@ describe('K33 — the decision model', () => {
   it('decide() is the only caller of the decision model, and it sends the state fenced', () => {
     const callers = walk(SRC).filter((f) => /\/v1\/systemone/.test(code(f))).map((f) => path.relative(SRC, f));
     expect(callers).toEqual(['agent/decide.ts']);
-    expect(code(path.join(SRC, 'agent/decide.ts'))).toMatch(/JSON\.stringify\(\{ model: provider\.model, state: fencedState\(state\), questions/);
+    // t268 (edited): the body is built once by `decideRequestBody` (the summary check sizes its parts by the same bytes).
+    const decideSrc = code(path.join(SRC, 'agent/decide.ts'));
+    expect(decideSrc).toMatch(/JSON\.stringify\(\{ model, state: fencedState\(state\), questions/);
+    expect(decideSrc).toMatch(/const request = decideRequestBody\(provider\.model, state, questions\)/);
+    expect(decideSrc).toMatch(/body: request,/);
   });
 });
 
