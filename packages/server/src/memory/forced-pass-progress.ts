@@ -12,11 +12,8 @@
 //      nothing (the leaf-less early return, say, reached by the recovery door) is recorded here, WITH
 //      its facts, so a pass that bought nothing arms the brake and the park waits for it, and a genuine
 //      stall (over budget with nothing left that can shrink) is reported once as a compaction defect.
-//      Fix round 4: A BUSY LOCK IS HANDLED HERE TOO, for every caller. A forced pass never skips because
-//      another pass holds the agent's lock (the skip recorded nothing and woke the agent at once into the
-//      same wall, a provider dial each time): it waits for the running pass, and then either that pass
-//      made progress (the next assembly is the one re-assembly) or this one runs and records
-//      (`afterTheRunningPass`). `checkAndCompact` takes no option to skip a forced pass.
+//      Fix rounds 4-5: A BUSY LOCK IS HANDLED HERE TOO, for every caller (`forcedPassDoor`): a turn's pass is
+//      told the lock is busy and its caller parks until the running pass lands; the owner's waits for it.
 //   2. NOTHING LEFT OUTSIDE THE PROTECTED RECENT PART IS NOT THE END. The next forced pass folds the
 //      OLDEST whole group of the protected part itself — summarised, never dropped: the live
 //      conversation is kept as a summary — one group per pass, until the assembly fits. Every round
@@ -139,15 +136,29 @@ export function afterTheRunningPass(agentId: string, finishedWhenQueued: number)
   return f && f.count > finishedWhenQueued && progressed(f.last) ? f.last : null;
 }
 
+/** What the door answers: the pass's counts, and when the lock was busy, which way that was settled. */
+export type DoorResult = PassResult & { lockBusy?: true; byRunningPass?: boolean };
+
 /**
- * THE ONE FORCED-PASS DOOR (`checkAndCompact` runs every forced pass through it). It waits for a pass that
- * holds the agent's lock, never skips: then the running pass's progress is the answer, or this pass runs and
- * records its outcome (`recordingForcedPass`).
+ * THE ONE FORCED-PASS DOOR (`checkAndCompact` runs every forced pass through it). A busy lock is never skipped
+ * silently (the skip recorded nothing and woke the agent at once into the same wall):
+ *   · INSIDE A TURN (`inTurn`: the recovery door, the boundary's refusal) it never waits on another pass's lock
+ *     (t140 r6/r7): it answers `lockBusy`, and the caller parks until that pass lands (`parkUntilCompactionLands`);
+ *   · the owner's compact-now waits for the running pass, then runs its own unless that pass made progress and
+ *     left the view fitting (fix round 5, ruling 4), and says which (`byRunningPass`).
+ * A pass that runs records its outcome (`recordingForcedPass`).
  */
-export async function forcedPassDoor(agentId: string, run: () => Promise<PassResult>, opts: Parameters<typeof recordingForcedPass>[2]): Promise<PassResult> {
+export async function forcedPassDoor(agentId: string, run: () => Promise<PassResult>, opts: Parameters<typeof recordingForcedPass>[2] & { inTurn?: boolean }): Promise<DoorResult> {
+  const lock = `compact:${agentId}`;
+  const own = (): Promise<PassResult> => finishedUnderTheLock(agentId, () => recordingForcedPass(agentId, run, opts));
+  if (opts.inTurn) return (await withLock(lock, own, { ifBusy: 'skip' })) ?? { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0, lockBusy: true };
   const queuedAfter = passesFinished(agentId);
-  const result = await withLock(`compact:${agentId}`, () => finishedUnderTheLock(agentId, async () => afterTheRunningPass(agentId, queuedAfter)
-    ?? recordingForcedPass(agentId, run, opts)), { ifBusy: 'wait' });
+  const result = await withLock(lock, async (): Promise<DoorResult> => {
+    const borrowed = afterTheRunningPass(agentId, queuedAfter);
+    const facts = borrowed ? await opts.measure().catch(() => undefined) : undefined;
+    if (borrowed && facts && facts.assembledTokens <= facts.budgetTokens) return { ...borrowed, byRunningPass: true };
+    return borrowed ? { ...(await own()), byRunningPass: false } : own();   // said only when a running pass had progress
+  }, { ifBusy: 'wait' });
   return result ?? { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };   // 'wait' always runs it: for the type only
 }
 

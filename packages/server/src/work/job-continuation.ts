@@ -24,9 +24,9 @@ export function queueJobContinuation(agentId: string, reason: string): boolean {
 
 /** The tool-loop park's continuation: its own timer (a second lets the park's DB writes settle),
  *  which starts a run FROM that wake. */
-export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
+export function armToolLoopContinuation(agentId: string, delayMs = 1000, after?: Promise<unknown>): void {
   const wake = armTimerWake(agentId);
-  setTimeout(() => {
+  const go = (): unknown => setTimeout(() => {
     if (timerWakeIsSpent(agentId, wake)) {   // t158 E: the drain already started this park's continuation
       logger.info('park timer wake not run: its continuation already started', { agentId }, agentId);
       return;
@@ -37,6 +37,7 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
         logger.error('v2 auto-continuation after tool limit failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
       });
   }, delayMs);
+  if (after) void after.then(go, go); else go();   // v3.5 D18 r5: `after` — the wake waits for that event, no clock
 }
 
 /**
@@ -49,12 +50,13 @@ export function armToolLoopContinuation(agentId: string, delayMs = 1000): void {
  * of error recovery (`recovery.ts`). On a turn that is not a job it carries nothing and is a plain wake.
  * `delayMs` (timer parks only, t168): when the park's wake must wait for a named event rather than for the
  * park's own DB writes to settle, such as the compaction brake's expiry for a context that is full.
+ * `after` (timer parks only, v3.5 D18 r5): the wake is armed when that promise settles, e.g. a running pass landing.
  */
-export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain', delayMs?: number): boolean {
+export function parkJob(agentId: string, reason: string, how: 'drain' | 'timer' = 'drain', delayMs?: number, after?: Promise<unknown>): boolean {
   const named = turnWorkIds(agentId);
   const served = servedOwnerMessageIds(agentId);
   carryJobWork(agentId, named, served, parkOrigin(agentId, named, served));   // t173b: and where the job started, so even a park that carries no task has a job to continue
-  const queued = how === 'timer' ? (armToolLoopContinuation(agentId, delayMs), true) : queueJobContinuation(agentId, reason);
+  const queued = how === 'timer' ? (armToolLoopContinuation(agentId, delayMs, after), true) : queueJobContinuation(agentId, reason);
   const bag = turnContext(agentId);
   if (queued && bag) bag.jobParked = true;   // t159 G2: the running turn parked the job; the end-of-turn nets read this (`turnParkedTheJob`)
   return queued;

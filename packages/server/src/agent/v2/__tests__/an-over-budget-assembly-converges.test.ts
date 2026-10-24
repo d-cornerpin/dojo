@@ -204,21 +204,26 @@ describe('D18 fix round 2: a forced pass that cannot run records its outcome, so
     expect(seen.cards.filter((c) => c.code === 'WINDOW_TOO_SMALL')).toEqual([]);
   });
 
-  it('a pass skipped because another compaction holds the lock WAITS for it, then re-assembles once', async () => {
+  // v3.5 D18 r5 (ruling 3): a turn never waits on another compaction's lock (t140 r6/r7). The refusal's own
+  // condense finds the lock busy and returns at once; the door parks, and the wake comes when that pass lands.
+  it('a refusal while another compaction holds the lock: the turn does not wait; it parks, and wakes ONCE when that pass lands', async () => {
     const size = await witnessSize(1_000);
-    const { refusal } = await dial(size);
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
-    await new Promise((r) => setTimeout(r, 20));
+    const { refusal } = await dial(size);
     let done = false;
     const recovering = recover(refusal, 401).then(() => { done = true; });
-    await new Promise((r) => setTimeout(r, 200));
-    expect(done, 'recovery waits for the running pass').toBe(false);
+    for (let i = 0; i < 200 && !done; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(done, 'the turn did not wait on the other pass\'s lock').toBe(true);
+    await recovering;
+    expect(pendingWakeups.has(AGENT), 'no immediate wake').toBe(false);
+    const wakes = seen.wakes;
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(seen.wakes, 'no wake while the other pass runs').toBe(wakes);
     release();
     await held;
-    await recovering;
-    expect(seen.summaries, 'the refusal\'s own pass ran after the other one').toBeGreaterThan(0);
-    expect(pendingWakeups.has(AGENT), 'one re-assembly').toBe(true);
+    for (let i = 0; i < 100 && seen.wakes === wakes; i++) await new Promise((r) => setTimeout(r, 30));
+    expect(seen.wakes, 'one wake when it lands: the one re-assembly').toBe(wakes + 1);
   });
 });
 
@@ -411,32 +416,28 @@ describe('D18 fix round 4, finding 1: a structured or JSON-looking owner message
   });
 });
 
-describe('D18 fix round 4, finding 2: the busy lock is handled inside the one forced-pass door', () => {
-  it('three consecutive rounds while a background condense holds the lock: each waits for it, then its own pass records; no immediate wake, no extra dial', async () => {
+describe('D18 fix round 5, ruling 3: the recovery door never waits on another pass\'s lock; it parks until that pass lands', () => {
+  it('three consecutive rounds while a background condense holds the lock: each returns at once, no immediate wake, and exactly one wake per pass that lands', async () => {
     db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'Is the north dock open?', turnNumber: 1 });
-    let now = Date.now();
-    try {
-      for (const turn of [611, 612, 613]) {
-        pendingWakeups.clear();
-        const wakes = seen.wakes;
-        let release!: () => void;
-        const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
-        let done = false;
-        const recovering = recover(new Error('prompt is too long: 40000 tokens > 32768 maximum'), turn).then(() => { done = true; });
-        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-        expect(done, `round ${turn}: the door waits for the running pass`).toBe(false);
-        expect(pendingWakeups.has(AGENT), `round ${turn}: no wake while it waits`).toBe(false);
-        release();
-        await held;
-        await recovering;
-        expect(compactionBrakeMsLeft(AGENT), `round ${turn}: its own pass ran and recorded (the brake is on)`).not.toBeNull();
-        expect(pendingWakeups.has(AGENT), `round ${turn}: no immediate wake`).toBe(false);
-        expect(seen.wakes, `round ${turn}: no extra dial`).toBe(wakes);
-        now += 16 * 60_000;   // the brake lets go, so the next round's pass runs again
-        vi.useFakeTimers({ toFake: ['Date'], now });
-      }
-    } finally { vi.useRealTimers(); }
+    for (const turn of [611, 612, 613]) {
+      pendingWakeups.clear();
+      const wakes = seen.wakes;
+      let release!: () => void;
+      const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
+      let done = false;
+      const recovering = recover(new Error('prompt is too long: 40000 tokens > 32768 maximum'), turn).then(() => { done = true; });
+      for (let i = 0; i < 200 && !done; i++) await new Promise((r) => setTimeout(r, 5));
+      expect(done, `round ${turn}: the turn does not wait on the other pass's lock`).toBe(true);
+      await recovering;
+      expect(pendingWakeups.has(AGENT), `round ${turn}: no immediate wake`).toBe(false);
+      expect(seen.wakes, `round ${turn}: no dial while the other pass runs`).toBe(wakes);
+      release();
+      await held;
+      for (let i = 0; i < 100 && seen.wakes === wakes; i++) await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 300));
+      expect(seen.wakes, `round ${turn}: one wake when it landed, no extra dial`).toBe(wakes + 1);
+    }
   });
 });
 
@@ -474,5 +475,59 @@ describe('D18 fix round 4, finding 3: a stall whose first no-progress pass threw
     const { compactionFailureReason } = await import('../../../memory/compaction-defect.js');
     expect(compactionFailureReason(AGENT), 'the stall is a recorded defect').toBe('nothing_left_to_shrink');
     expect(seen.texts.filter((t) => /stuck/i.test(t)), 'the owner is told once').toHaveLength(1);
+  });
+});
+
+// ── Fix round 5 (re-review t257-rereview-4.md) ──────────────────────────────────────────────────────
+describe('D18 fix round 5, finding 1: a block row over the room although no single block is', () => {
+  it('the re-reviewer\'s shape: 4,000 short text blocks (~500K characters) collapse into ONE head + tail + pointer; it fits and the agent answers', async () => {
+    const id = 'msg-many-short-blocks';
+    const blocks = Array.from({ length: 4_000 }, (_, i) => ({ type: 'text', text: `crate ${4000 + i}, north dock, sealed, 40 kg, inspected by the morning shift on the ramp beside the board${'.'.repeat(30)}` }));
+    blocks.push({ type: 'text', text: 'END OF TRANSCRIPT' });
+    const content = JSON.stringify(blocks);
+    expect(content.length, 'precondition: the re-reviewer\'s size').toBeGreaterThan(450_000);
+    insertMessage({ id, agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content, turnNumber: 121 });
+    const { fitted, rounds } = await answersThroughThePark(6);
+    expect(fitted, `the agent answers (after ${rounds} rounds)`).toBe(true);
+    expect(rounds).toBeLessThanOrEqual(3);
+    const shown = JSON.stringify((await assembleContext(AGENT, MODEL)).messages);
+    expect(shown, 'one pointer naming the row').toContain(`msg:${id}`);
+    expect(shown, 'the head').toContain('crate 4000, north dock');
+    expect(shown, 'the tail').toContain('END OF TRANSCRIPT');
+    const read = await readWhole(`msg:${id}`, 'END OF TRANSCRIPT');
+    expect(read.isError, read.content.slice(0, 200)).toBe(false);
+    expect(read.content).toContain('END OF TRANSCRIPT');
+    expect(seen.texts, 'no stall, so no text').toEqual([]);
+  });
+});
+
+describe('D18 fix round 5, finding 2: a msg: read is allowed exactly when the view showed the pointer', () => {
+  it('the re-reviewer\'s shape: an ENGINE turn whose trigger is an over-room events row with no conversation — the view pointers it, and the pointer reads on that turn', async () => {
+    const id = 'msg-engine-event-huge';
+    insertMessage({ id, agentId: AGENT, role: 'user', lane: 'events', content: `[engine] The dock sensor log:\n${'sensor 7, north dock, door open, 12 C\n'.repeat(12_000)}END OF SENSOR LOG`, turnNumber: 121 });
+    const { openTurnContext, endTurnContext } = await import('../../turn-context.js');
+    const bag = openTurnContext(AGENT);
+    bag.root = { kind: 'engine', id: 'engine-root', sourceMessageId: null, conversationId: null };
+    bag.conversationId = null;
+    bag.triggerMessageId = id;
+    let shown = '';
+    let read: { isError: boolean; content: string };
+    try {
+      shown = JSON.stringify((await assembleContext(AGENT, MODEL)).messages);
+      read = await readWhole(`msg:${id}`, 'END OF SENSOR LOG');
+    } finally { endTurnContext(AGENT); }
+    // (On this turn the row reaches the view through the empty-context fallback, a third site that used to force
+    // an over-room row in whole.)
+    expect(shown.length, 'never the whole row').toBeLessThan(100_000);
+    expect(shown, 'the view pointers the row').toContain(`msg:${id}`);
+    expect(read.isError, read.content.slice(0, 200)).toBe(false);
+    expect(read.content).toContain('END OF SENSOR LOG');
+  });
+
+  it('a row the view never showed is refused, though it is the agent\'s own', async () => {
+    insertMessage({ id: 'msg-never-shown', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'a short note', turnNumber: 121 });
+    await assembleContext(AGENT, MODEL);
+    const read = await readWhole('msg:msg-never-shown', 'note');
+    expect(read.isError).toBe(true);
   });
 });

@@ -55,3 +55,8 @@ export async function withLock<T>(key: string, fn: () => Promise<T>,
   try { return await fn(); }
   finally { release(); if (chains.get(key) === mine) chains.delete(key); }
 }
+
+/** Resolves once nobody holds or queues for `key` (v3.5 D18 r5: the park whose wake is a running pass landing). */
+export async function whenLockFree(key: string): Promise<void> {
+  for (let held = chains.get(key); held; held = chains.get(key)) await held.catch(() => undefined);
+}

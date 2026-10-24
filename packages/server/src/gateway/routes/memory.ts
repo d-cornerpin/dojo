@@ -344,8 +344,8 @@ memoryRouter.post('/:agentId/compact', async (c) => {
     return c.json({
       ok: true,
       data: {
-        leafSummariesCreated: result.leafCreated,
-        condensedCreated: result.condensedCreated,
+        leafSummariesCreated: result.leafCreated, condensedCreated: result.condensedCreated,
+        byRunningPass: result.byRunningPass === true,   // v3.5 D18 r5: a pass already running did it (its counts)
       },
     });
   } catch (err) {

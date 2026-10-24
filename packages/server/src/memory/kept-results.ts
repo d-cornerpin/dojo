@@ -16,9 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { insertMessageIfAbsent, type NewMessage } from './message-store.js';
-import { KEPT_ROW_PREFIX, contentBlocksOf } from './kept-row-view.js';
-import { historyScope } from './recall.js';
-import { turnConversationScope } from '../agent/turn-context.js';
+import { KEPT_ROW_PREFIX, contentBlocksOf, keptRowText, viewPointeredRow } from './kept-row-view.js';
 
 /** The whole of one long result, as the recorder hands it over. */
 export interface KeptWhole {
@@ -89,18 +87,18 @@ export function findToolResult(agentId: string, toolUseId: string): FoundResult 
 }
 
 /**
- * The whole of a stored row named `msg:<id>` (or one text block of a structured row, `msg:<id>#<block>`), read
- * under the scope the history tools apply (v3.5 D18 r4): the agent's own rows since its session began, in the
- * conversation this turn serves (`historyScope`). A row outside it is not found, as for any unknown id.
+ * The whole of a stored row named `msg:<id>` (or one text block of a structured row, `msg:<id>#<block>`). Read
+ * exactly when a view of this agent pointered that row in its current session (`viewPointeredRow`, v3.5 D18 r5):
+ * never stricter than what the view showed, never wider. Any other id is not found, as for an unknown one.
  */
 function findKeptRow(agentId: string, handle: string): FoundResult | null {
-  const { clauses, params } = historyScope(agentId, { turnConversationId: turnConversationScope(agentId) });
-  const read = (id: string): string | null => (getDb().prepare(`SELECT content FROM messages WHERE ${clauses.join(' AND ')} AND id = ?`)
-    .get(...params, id) as { content: string } | undefined)?.content ?? null;
+  const read = (id: string): string | null => (viewPointeredRow(agentId, id)
+    ? (getDb().prepare('SELECT content FROM messages WHERE agent_id = ? AND id = ?').get(agentId, id) as { content: string } | undefined)?.content ?? null
+    : null);
   const whole = read(handle);
   if (whole !== null) {
     const blocks = contentBlocksOf(whole);
-    return { content: blocks ? blockText(blocks) ?? whole : whole, toolName: null };
+    return { content: blocks ? keptRowText(blocks) ?? whole : whole, toolName: null };
   }
   const named = /^(.+)#(\d+)$/.exec(handle);
   const row = named ? read(named[1]) : null;

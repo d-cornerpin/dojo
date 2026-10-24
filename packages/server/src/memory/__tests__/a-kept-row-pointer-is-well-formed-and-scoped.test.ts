@@ -7,7 +7,8 @@
 // grapheme where one is near: an emoji with its joiners, a letter with its combining marks), and so do the
 // pages `tool_result_read` hands back.
 // Finding 5 (check a): `msg:<id>` read any row of the agent, a row from before a session reset included.
-// It now applies the scope the history tools apply: the session boundary and the conversation scope.
+// Fix round 5: it reads exactly the rows the agent's view pointered in this session — never stricter than the
+// view (round 4's history-tool scope refused an engine turn's own trigger), never wider.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -29,6 +30,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { toolResultView } from '../tool-result-view.js';
 import { findToolResult } from '../kept-results.js';
+import { overRoomRowView } from '../kept-row-view.js';
 import { readResultPage } from '../../agent/tools/cat/result-read.js';
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
@@ -111,27 +113,42 @@ describe('finding 5: msg: reads only a row the agent\'s view could show', () => 
   });
   afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-  it('a row of this session and this conversation is read', () => {
-    insertMessage({ id: 'row-now', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'the manifest', conversationId: 'conv-dock' });
-    expect(findToolResult(AGENT, 'msg:row-now')?.content).toBe('the manifest');
+  // v3.5 D18 r5 (ruling 2): exactly the rows the agent's VIEW pointered — never stricter than the view (an engine
+  // turn's trigger, another thread's question the human-turn scoper keeps), never wider (a row it never showed).
+  const big = (words: string): string => `${words}\n${'crate 0412, north dock, sealed, 40 kg\n'.repeat(4_000)}END`;
+  const stored = (id: string) => db().prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown>;
+  const asMessage = (id: string) => { const r = stored(id); return { id, agentId: r.agent_id, role: r.role, content: r.content, tokenCount: null } as never; };
+
+  it('a row the view pointered is read — another thread\'s question the scoper keeps, from another conversation', () => {
+    insertMessage({ id: 'row-other-thread', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'someone', content: big('their manifest'), conversationId: 'conv-other' });
+    insertMessage({ id: 'row-this-conv', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'my question', conversationId: 'conv-dock' });
+    expect(overRoomRowView(asMessage('row-other-thread'), 1_000).content).toContain('msg:row-other-thread');
+    expect(findToolResult(AGENT, 'msg:row-other-thread')?.content).toContain('their manifest');
   });
 
-  it('a row from before a session reset is refused', () => {
-    insertMessage({ id: 'row-before-reset', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'the old manifest', conversationId: 'conv-dock' });
-    db().prepare("UPDATE messages SET created_at = created_at - 3600000 WHERE id = 'row-before-reset'").run();
-    db().prepare("UPDATE agents SET session_started_at = datetime('now', '-1 minute') WHERE id = ?").run(AGENT);
+  it('an engine turn\'s trigger row, no conversation, pointered by the view, is read', () => {
+    insertMessage({ id: 'row-trigger', agentId: AGENT, role: 'user', lane: 'events', content: big('[engine] the sensor log') });
+    overRoomRowView(asMessage('row-trigger'), 1_000);
+    expect(findToolResult(AGENT, 'msg:row-trigger')?.content).toContain('the sensor log');
+  });
+
+  it('a row the view never pointered is refused, though it is the agent\'s own and this session\'s', () => {
+    insertMessage({ id: 'row-now', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'the manifest', conversationId: 'conv-dock' });
+    expect(findToolResult(AGENT, 'msg:row-now')).toBeNull();
+  });
+
+  it('a pointer shown before a session reset is refused after it (the new view cannot show that row)', () => {
+    insertMessage({ id: 'row-before-reset', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: big('the old manifest'), conversationId: 'conv-dock' });
+    overRoomRowView(asMessage('row-before-reset'), 1_000);
+    expect(findToolResult(AGENT, 'msg:row-before-reset'), 'precondition: read before the reset').not.toBeNull();
+    db().prepare("UPDATE agents SET session_started_at = datetime('now') WHERE id = ?").run(AGENT);
     expect(findToolResult(AGENT, 'msg:row-before-reset')).toBeNull();
   });
 
-  it('a person\'s row from another conversation is refused', () => {
-    insertMessage({ id: 'row-other-conv', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'someone', content: 'their manifest', conversationId: 'conv-other' });
-    insertMessage({ id: 'row-this-conv', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'my question', conversationId: 'conv-dock' });
-    expect(findToolResult(AGENT, 'msg:row-other-conv')).toBeNull();
-    expect(findToolResult(AGENT, 'msg:row-this-conv')?.content).toBe('my question');
-  });
-
-  it('another agent\'s row is refused (unchanged)', () => {
-    insertMessage({ id: 'row-theirs', agentId: 'agent-other', role: 'user', lane: 'owner', senderId: 'owner', content: 'not yours' });
+  it('another agent\'s row is refused, even one its own view pointered', () => {
+    insertMessage({ id: 'row-theirs', agentId: 'agent-other', role: 'user', lane: 'owner', senderId: 'owner', content: big('not yours') });
+    overRoomRowView(asMessage('row-theirs'), 1_000);
     expect(findToolResult(AGENT, 'msg:row-theirs')).toBeNull();
+    expect(findToolResult('agent-other', 'msg:row-theirs')).not.toBeNull();
   });
 });

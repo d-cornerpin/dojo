@@ -39,6 +39,7 @@
 import { createLogger } from '../../logger.js';
 import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
 import { parkJob } from '../../work/job-continuation.js';
+import { whenLockFree } from '../../db/with-lock.js';
 import { tellOwnerOnce, ownerConditionCleared, wordsOf } from '../../healer/owner-notices.js';
 import { sendAlert } from '../../services/imessage-bridge.js';
 
@@ -67,6 +68,16 @@ export function parkAfterForcedPass(agentId: string, reason: string, brakedBefor
   waiting.add(agentId);
   logger.info('Context is full and compaction is braked: the wake waits for the brake to let go', { msLeft }, agentId);
   parkJob(agentId, reason, 'timer', msLeft);
+}
+
+/**
+ * v3.5 D18 r5 (ruling 3): A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK (t140 r6/r7). A turn's forced pass that
+ * found the lock held (`lockBusy`) parks the job here, and its one wake is that pass landing (`whenLockFree`; no
+ * clock of ours): the woken turn re-assembles once. Never an immediate wake, so never a dial into the same wall.
+ */
+export function parkUntilCompactionLands(agentId: string, reason: string): void {
+  logger.info('Another compaction holds the lock: the turn does not wait on it; the wake is that pass landing', { reason }, agentId);
+  parkJob(agentId, reason, 'timer', undefined, whenLockFree(`compact:${agentId}`));
 }
 
 /** The wait is over: a pass reclaimed, or the context fits again. Ends the owner's condition if we raised it. */

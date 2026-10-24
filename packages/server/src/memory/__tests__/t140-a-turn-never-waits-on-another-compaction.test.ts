@@ -307,14 +307,27 @@ describe('t178 — the owner\'s compact-now waits its turn instead of reporting 
     expect(settled || probe === undefined, 'the queued pass ran after the release').toBe(true);
     void p;
   });
-  // v3.5 D18 r4: every forced pass waits now (the skip recorded nothing and woke the agent into the same
-  // refusal); the control is an UNFORCED pass, which still skips, so a turn never waits on the lock (t140 r6).
+  // v3.5 D18 r5 (ruling 3): A TURN NEVER WAITS ON ANOTHER COMPACTION'S LOCK — its forced pass (`inTurn`, the
+  // recovery door and the boundary's refusal) returns at once, saying the lock is busy, and the caller parks
+  // until that pass lands. Only the owner's compact-now (above) waits.
   it('CONTROL: an unforced pass still skips at once while the lock is held', async () => {
     seedACut();
     let release!: () => void;
     const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
     const result = await onTheClock(checkAndCompact(AGENT, OWN, writers.windowNow, {}));
     expect(result.leafCreated + result.condensedCreated).toBe(0);
+    release();
+    await held;
+  });
+  it('a TURN\'s forced pass never waits on the lock: it returns at once, saying the lock is busy', async () => {
+    seedACut();
+    let release!: () => void;
+    const held = withLock(`compact:${AGENT}`, () => new Promise<void>((r) => { release = r; }), { ifBusy: 'wait' });
+    let settled = false;
+    const p = checkAndCompact(AGENT, OWN, writers.windowNow, { force: true, inTurn: true }).then((r) => { settled = true; return r; });
+    for (let i = 0; i < 5; i++) await realTurn();
+    expect(settled, 'it did not queue behind the running pass').toBe(true);
+    expect((await p).lockBusy, 'the caller is told, so it parks until that pass lands').toBe(true);
     release();
     await held;
   });

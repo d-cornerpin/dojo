@@ -21,7 +21,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined }));
 
-import { recordingForcedPass, lastForcedPassThrew, finishedUnderTheLock, passesFinished, afterTheRunningPass, __resetForcedPassProgressForTests } from '../forced-pass-progress.js';
+import { recordingForcedPass, forcedPassDoor, lastForcedPassThrew, finishedUnderTheLock, passesFinished, afterTheRunningPass, __resetForcedPassProgressForTests } from '../forced-pass-progress.js';
 import { compactionBrakeMsLeft, notePassOutcome, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
 
@@ -59,14 +59,16 @@ describe('§1 the census', () => {
   });
 });
 
-describe('§1b fix round 4: a busy lock is handled inside the door, and no caller can opt out', () => {
+describe('§1b fix rounds 4-5: a busy lock is handled inside the door, and no caller can opt out', () => {
   const code = (rel: string): string => read(rel).split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
   it('the forced run always waits for the lock; only an unforced run can skip', () => {
     const progress = code('memory/forced-pass-progress.ts');
     const door = progress.slice(progress.indexOf('export async function forcedPassDoor('), progress.indexOf('/** Test-only reset'));
-    expect(door, 'the door waits').toMatch(/\{ ifBusy: 'wait' \}\);/);
-    expect(door).not.toMatch(/skip/);
-    expect(door, 'the running pass\'s progress, else this pass records').toMatch(/afterTheRunningPass\(agentId, queuedAfter\)\s*\?\? recordingForcedPass\(agentId, run, opts\)/);
+    // v3.5 D18 r5: a turn's pass is TOLD the lock is busy (never a silent zero); the owner's waits.
+    expect(door, 'inside a turn: a busy lock answers lockBusy').toMatch(/if \(opts\.inTurn\) return \(await withLock\(lock, own, \{ ifBusy: 'skip' \}\)\) \?\? \{[^}]*lockBusy: true \};/);
+    expect(door, 'otherwise the door waits').toMatch(/\}, \{ ifBusy: 'wait' \}\);/);
+    expect(door.match(/ifBusy:/g), 'no third way').toHaveLength(2);
+    expect(door, 'a pass that runs records').toMatch(/const own = \(\): Promise<PassResult> => finishedUnderTheLock\(agentId, \(\) => recordingForcedPass\(agentId, run, opts\)\);/);
     const compaction = code('memory/compaction.ts');
     const entry = compaction.slice(compaction.indexOf('export async function checkAndCompact('), compaction.indexOf('async function runCheckAndCompact('));
     expect(entry.match(/withLock\(/g), 'one lock call in the entry, after the forced branch returned').toHaveLength(1);
@@ -74,8 +76,32 @@ describe('§1b fix round 4: a busy lock is handled inside the door, and no calle
     expect(entry, 'the unforced run skips').toMatch(/withLock\([^\n]*\{ ifBusy: 'skip' \}\);/);
   });
 
+  it('every forced caller inside a turn says so (`inTurn: true`): it never waits, it parks; only the owner\'s compact-now waits', () => {
+    for (const rel of ['agent/v2/recovery.ts', 'memory/assembly-validation.ts']) expect(code(rel), rel).toMatch(/inTurn: true/);
+    expect(code('gateway/routes/memory.ts')).not.toMatch(/inTurn/);
+    expect(code('agent/v2/recovery.ts'), 'the recovery door parks on a busy lock').toMatch(/lockBusy\) \{ parkUntilCompactionLands\(/);
+    expect(code('agent/v2/over-budget-assembly.ts'), 'the over-budget door parks on a busy lock').toMatch(/lockBusy[^\n]*parkUntilCompactionLands\(/);
+  });
+
   it('no production file carries a way to skip a forced pass (`waitIfBusy` is gone)', () => {
     expect(productionFiles(SRC).filter((f) => /waitIfBusy/.test(code(path.relative(SRC, f)))).map((f) => path.relative(SRC, f))).toEqual([]);
+  });
+
+  it('the owner\'s compact-now (D18 r5, ruling 4): after the running pass it runs its own unless that pass left the view fitting', async () => {
+    const won = { leafCreated: 1, condensedCreated: 0, tokensReclaimed: 3_000 };
+    const mine = { leafCreated: 2, condensedCreated: 0, tokensReclaimed: 4_000 };
+    let release!: () => void;
+    const { withLock } = await import('../../db/with-lock.js');
+    const held = withLock(`compact:${AGENT}`, () => finishedUnderTheLock(AGENT, () => new Promise<typeof won>((r) => { release = () => r(won); })), { ifBusy: 'wait' });
+    const still = forcedPassDoor(AGENT, async () => mine, { measure: over });
+    await new Promise((r) => setImmediate(r));
+    release(); await held;
+    expect(await still, 'the view still needs it: its own pass ran').toEqual({ ...mine, byRunningPass: false });
+    const held2 = withLock(`compact:${AGENT}`, () => finishedUnderTheLock(AGENT, () => new Promise<typeof won>((r) => { release = () => r(won); })), { ifBusy: 'wait' });
+    const fitting = forcedPassDoor(AGENT, async () => mine, { measure: fits });
+    await new Promise((r) => setImmediate(r));
+    release(); await held2;
+    expect(await fitting, 'the running pass left the view fitting: that is what it reports').toEqual({ ...won, byRunningPass: true });
   });
 
   it('after the running pass: its progress is the answer; no progress, or no pass finished, and this pass runs', async () => {

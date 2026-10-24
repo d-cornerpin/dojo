@@ -17,13 +17,14 @@
 // is a real content-block array (every element a provider block, `contentBlocksOf`); anything else, a JSON
 // export included, is text and is pointered like any row. In a structured row each TEXT block longer than
 // the pointer becomes its own head + tail + pointer, named `msg:<id>#<block>`; image, document and tool
-// blocks keep the representation they already have. If the row is still over the room, every text block
-// that is longer than its label becomes the label alone, so no text of a structured row is forced in whole.
+// blocks keep the representation they already have. If the row is still over the room, its text blocks
+// collapse into one pointer (fix round 5, `structuredRowView`), so no text of a structured row is forced in whole.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type { Message } from '@dojo/shared';
 import { storedRowCost } from './budget.js';
-import { toolResultView, POINTER_VIEW_CHARS, POINTER_LABEL_ROOM_CHARS } from './tool-result-view.js';
+import { toolResultView, POINTER_VIEW_CHARS } from './tool-result-view.js';
+import { getDb } from '../db/connection.js';
 
 /** The handle `tool_result_read` takes for a whole stored row (`msg:<message id>`), or for one text block of a
  *  structured row (`msg:<message id>#<block index>`). */
@@ -55,14 +56,54 @@ export function overRoomRowView(msg: Message, roomTokens: number): Message {
   // A row no longer than the standard pointer is shown whole: its pointer would cost as much and show less.
   if (msg.content.length <= POINTER_VIEW_CHARS) return msg;
   // The standard pointer (t200): an eighth of one view of head and tail, and the label.
-  return { ...msg, content: toolResultView(msg.content, keptRowHandle(msg.id), POINTER_VIEW_CHARS), tokenCount: null };
+  return pointered(msg, toolResultView(msg.content, keptRowHandle(msg.id), POINTER_VIEW_CHARS));
 }
 
-/** A structured row over the room, block by block: each long text block is its own pointer; other blocks are kept. */
+/**
+ * A structured row over the room. First, block by block: each long text block is its own pointer. Fix round 5:
+ * when the row is STILL over the room although no single block is (thousands of short text blocks, or a paste
+ * of `"type":"text"` items), its text blocks collapse into ONE head + tail + pointer named `msg:<id>`, which
+ * reads their text joined (`kept-results.ts`). Image, document and tool blocks are kept as they are, in place.
+ */
 function structuredRowView(msg: Message, blocks: StoredBlock[], roomTokens: number): Message {
-  const pointered = (viewChars: number): StoredBlock[] => blocks.map((b, i) =>
-    (b.type === 'text' && typeof b.text === 'string' && b.text.length > viewChars ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), viewChars) } : b));
-  let view: Message = { ...msg, content: JSON.stringify(pointered(POINTER_VIEW_CHARS)), tokenCount: null };
-  if (storedRowCost(view) > roomTokens) view = { ...view, content: JSON.stringify(pointered(POINTER_LABEL_ROOM_CHARS)) };
-  return view.content === msg.content ? msg : view;
+  const each = blocks.map((b, i) =>
+    (b.type === 'text' && typeof b.text === 'string' && b.text.length > POINTER_VIEW_CHARS ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), POINTER_VIEW_CHARS) } : b));
+  const view: Message = { ...msg, content: JSON.stringify(each), tokenCount: null };
+  if (storedRowCost(view) <= roomTokens) return view.content === msg.content ? msg : pointered(msg, view.content);
+  const text = keptRowText(blocks);
+  if (text === null || text.length <= POINTER_VIEW_CHARS) return view.content === msg.content ? msg : pointered(msg, view.content);
+  const first = blocks.findIndex((b) => b.type === 'text');
+  const collapsed = blocks.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS) }] : b.type === 'text' ? [] : [b]));
+  return pointered(msg, JSON.stringify(collapsed));
+}
+
+/** The text a structured row's `msg:<id>` reads: its text blocks joined, or null when it has none. */
+export function keptRowText(blocks: StoredBlock[]): string | null {
+  const texts = blocks.filter((b) => b.type === 'text' && typeof b.text === 'string').map((b) => b.text as string);
+  return texts.length > 0 ? texts.join('\n') : null;
+}
+
+// ── Fix round 5 (ruling 2): A `msg:` READ IS ALLOWED EXACTLY WHEN THE VIEW SHOWED THE POINTER ──
+// Round 4 scoped the read by the history tools' filter, which is narrower than the view: an engine turn's own
+// trigger row and another thread's question the human-turn scoper keeps were pointered and then refused. The
+// read now asks the view itself: the rows a view of this agent pointered, in the session that view belonged to
+// (a reset starts a view that cannot show them). Never stricter than the view, never wider.
+const pointeredRows = new Map<string, Map<string, string | null>>();
+const sessionOf = (agentId: string): string | null =>
+  (getDb().prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? null;
+
+function pointered(msg: Message, content: string): Message {
+  const rows = pointeredRows.get(msg.agentId) ?? new Map<string, string | null>();
+  rows.set(msg.id, sessionOf(msg.agentId));
+  pointeredRows.set(msg.agentId, rows);
+  return { ...msg, content, tokenCount: null };
+}
+
+/** Did a view of this agent, in its current session, point at row `messageId`? */
+export function viewPointeredRow(agentId: string, messageId: string): boolean {
+  const rows = pointeredRows.get(agentId);
+  if (!rows?.has(messageId)) return false;
+  if (rows.get(messageId) === sessionOf(agentId)) return true;
+  rows.delete(messageId);   // shown before a reset: the new session's view cannot show it
+  return false;
 }

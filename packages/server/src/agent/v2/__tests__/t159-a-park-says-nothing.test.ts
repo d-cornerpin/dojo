@@ -664,6 +664,8 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
     expect(sites).toEqual([
       // t168: surrenders park through `parkAfterForcedPass`, whose two parks (now, or at the brake's expiry) are these.
       'agent/v2/full-context-wait.ts', 'agent/v2/full-context-wait.ts',
+      // v3.5 D18 r5: a turn whose forced pass found another compaction holding the lock parks until it lands.
+      'agent/v2/full-context-wait.ts',
       // t211: the two recovery forced compactions park through the same door (`forcedPassThenPark`), so
       // `recovery.ts` no longer calls `parkJob` itself.
       'agent/v2/loop.ts',

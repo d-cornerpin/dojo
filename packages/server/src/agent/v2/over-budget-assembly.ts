@@ -35,7 +35,7 @@ import { AgentError } from '../errors.js';
 import { isEngineAssemblyFault } from './classifiers/provider.js';
 import { honestStopWords } from './error-format.js';
 import { NO_MODEL_FITS_CODE } from './honest-stop-lock.js';
-import { parkAfterForcedPass } from './full-context-wait.js';
+import { parkAfterForcedPass, parkUntilCompactionLands } from './full-context-wait.js';
 import type { AgentTurnState } from './state.js';
 
 const logger = createLogger('v2-over-budget-assembly');
@@ -60,7 +60,9 @@ export async function tryOverBudgetAssemblyRecovery(state: AgentTurnState, error
 
   if (await agentFits(agentId)) {
     const brakedNow = compactionBrakeMsLeft(agentId) !== null;
-    await condensed;   // resolves whether the pass ran, was skipped or failed (its own catch logs a failure)
+    // Resolves whether the pass ran, was skipped or failed (its own catch logs a failure). v3.5 D18 r5: another pass
+    // held the lock, so this turn does not wait on it; it parks, and wakes when that pass lands.
+    if (((await condensed) as { lockBusy?: true } | undefined)?.lockBusy) { parkUntilCompactionLands(agentId, 'recovery-over-budget-assembly'); return true; }
     // The park tells a braked skip from a pass that ran: the pass itself recorded which (fix round 3); a pass
     // with nothing to fold lands before this step could have read the brake.
     const { lastForcedPassThrew, lastForcedPassWasBraked } = await import('../../memory/forced-pass-progress.js');

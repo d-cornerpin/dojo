@@ -198,8 +198,8 @@ function parseToolContent(content: string): string {
   return content;
 }
 
-/** The clauses bounding a history read (the session, the conversation); `msg:` reads apply them too (v3.5 D18 r4). */
-export function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turnConversationId'>): { clauses: string[]; params: (string | number)[]; sessionBoundary: string | null } {
+/** The clauses bounding a history read: the session boundary, then the conversation scope. */
+function historyScope(agentId: string, opts: Pick<RecallOptions, 'scope' | 'turnConversationId'>): { clauses: string[]; params: (string | number)[]; sessionBoundary: string | null } {
   const db = getDb();
   // Respect session boundary so a recent reset doesn't bleed pre-reset content into the recall.
   const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;

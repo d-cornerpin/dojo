@@ -28,7 +28,7 @@ import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemb
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 import { compactionBrakeMsLeft } from '../../memory/compaction-brakes.js';
-import { parkAfterForcedPass } from './full-context-wait.js';
+import { parkAfterForcedPass, parkUntilCompactionLands } from './full-context-wait.js';
 import {
   queueSelfWake,
   recoveryRunStreak,
@@ -380,9 +380,8 @@ async function forcedPassThenPark(state: AgentTurnState, reason: string, afterPa
   const { agentTurnWindow } = await import('../../router/router-window.js');
   const contextWindow = state.lockedModelId ? agentTurnWindow(agentId, state.lockedModelId) : state.contextWindow;
   const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
-  await checkAndCompact(agentId, state.configuredModelId, contextWindow, {
-    force: true, dialedModelId: state.lockedModelId ?? state.configuredModelId,
-  });
+  const ran = await checkAndCompact(agentId, state.configuredModelId, contextWindow, { force: true, inTurn: true, dialedModelId: state.lockedModelId ?? state.configuredModelId });
+  if (ran.lockBusy) { parkUntilCompactionLands(agentId, reason); return; }   // v3.5 D18 r5: never wait on its lock
   afterPass?.();
   parkAfterForcedPass(agentId, reason, brakedBefore);
 }

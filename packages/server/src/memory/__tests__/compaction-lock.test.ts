@@ -153,8 +153,10 @@ describe('checkAndCompact concurrency (PHASE-1 T2)', () => {
     // And the second runner did no summarising work of its own. v3.5 D18 r4: a forced pass no longer skips
     // (the skip recorded nothing and woke the agent into the same wall); it waits, and the running pass's
     // progress is its answer — the same result, reported twice, summarised once.
+    // r5: the owner's compact-now runs its own unless the running pass left the view fitting; it says which.
     expect(a.leafCreated).toBeGreaterThan(0);
-    expect(b).toEqual(a);
+    expect(b.byRunningPass, 'the view fit after the first pass: the second reports it').toBe(true);
+    expect({ ...b, byRunningPass: undefined }).toEqual({ ...a, byRunningPass: undefined });
 
     // Every summarised message is covered exactly once; summaries exist.
     expect(summaries.length).toBeGreaterThan(0);

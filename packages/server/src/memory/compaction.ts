@@ -364,7 +364,7 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 export interface CheckAndCompactOptions {
   force?: boolean;
-  // STRIP (v3.5 D18 r4): `waitIfBusy` — every forced pass queues behind a running one; an unforced pass skips.
+  inTurn?: boolean;   // v3.5 D18 r5: a turn's forced pass never waits on the lock; it is told (`lockBusy`) and parks
   untilItFits?: boolean;   // v3.5 D18 r2: a boundary refusal's pass; nothing else to fold folds the protected part's oldest exchange
   // STRIP (t140 r6, H3): `maxChunksPerRun` (bounded by what is leaving and by the turn's patience now).
   // v2.5.14, Optional abort signal for cancellation. Used by the
@@ -391,7 +391,7 @@ export interface CheckAndCompactOptions {
   inTheBackground?: boolean;
 }
 
-export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number };
+export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number; lockBusy?: true; byRunningPass?: boolean };
 
 const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
 
@@ -414,7 +414,7 @@ const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, t
  * Skipping returns the same zero result those callers already handle — every
  * caller reads the counts and none treats zero as an error — and the work is
  * not lost: the next turn's gate re-checks and compacts if pressure remains. v3.5 D18 r4: for an UNFORCED
- * pass only; a forced pass waits, then the running pass's progress or its own recorded run (`forcedPassDoor`).
+ * pass only; a forced pass is never skipped silently: a turn's parks, the owner's waits (`forcedPassDoor`).
  *
  * Scope: `withLock` is IN-PROCESS. One dojo server owns its box, which is the
  * shape of the observed race; it is not a cross-process lock and must not be
@@ -428,7 +428,7 @@ export async function checkAndCompact(
 ): Promise<CompactionResult> {
   if (options?.force) {
     forcedPassAt.set(agentId, Date.now());
-    return forcedPassDoor(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } });
+    return forcedPassDoor(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, inTurn: options.inTurn, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } });
   }
   const result = await withLock(`compact:${agentId}`, () => finishedUnderTheLock(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options)), { ifBusy: 'skip' });
   if (result === undefined) logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);

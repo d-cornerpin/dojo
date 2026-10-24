@@ -131,6 +131,8 @@ describe('an AUTOMATIC path binds the session boundary', () => {
       'memory/tail-horizon.ts',       // the tail window
       'memory/compaction-brakes.ts',  // a brake keyed on the boundary
       'memory/message-store.ts',      // a comment-level reference to the column's writers
+      'memory/kept-row-view.ts',      // v3.5 D18 r5: keys the rows a VIEW pointered to its session, so a `msg:` read
+                                      // after a reset is refused; it re-injects nothing
     ]);
     const dir = path.join(SERVER_SRC, 'memory');
     const readers = fs.readdirSync(dir)

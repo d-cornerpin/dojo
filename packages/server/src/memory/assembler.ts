@@ -1734,7 +1734,7 @@ async function assembleMessageContext(
         // served message does), so the model is never handed an unlabelled message with no time or subject.
         // Applied after the A2A salience pass below, which reads the marker at the START of a message.
         const [row] = withSubjectKinds(agentId, getMessagesByIds([lastUserMsg.id]));
-        const msg = tagMessageLane({ role: 'user' as const, content: lastUserMsg.content }, 'lane.empty-context-fallback');
+        const msg = tagMessageLane({ role: 'user' as const, content: row ? overRoomRowView(row, contentBudget).content : lastUserMsg.content }, 'lane.empty-context-fallback');   // D18 r5: never whole over the room
         fallbackLabel = { msg, label: row ? `${renderRowLabel(row, new LabelFacts(agentId))} (recovered: the last message sent to you)` : null };
         merged.push(msg);
       } else if (sessionBoundary) {
