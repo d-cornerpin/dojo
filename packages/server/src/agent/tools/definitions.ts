@@ -41,7 +41,8 @@ import type { ToolDefinition } from './types.js';
 // descriptions were paraphrases of each other now have ONE canonical wording, said once on
 // the wire — `WORK_FIELD_TEXT`. The other ten pairs are NOT paraphrases and are untouched;
 // work-verb-schema.ts enumerates them and says why.
-import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_PLAN_PROP, WORK_REMAINDER_PROP } from '../work-verb-schema.js';
+import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT, WORK_MEASURE_PROP, WORK_REMAINDER_PROP } from '../work-verb-schema.js';
+import { WORK_PLAN_PROP } from '../work-plan-schema.js';
 import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './validate-args.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { formsToolDefinitions } from '../../google/tools-forms.js';

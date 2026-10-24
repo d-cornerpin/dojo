@@ -20,8 +20,8 @@ import {
   workProp,
   WORK_MEASURE_PROP,
   WORK_REMAINDER_PROP,
-  WORK_PLAN_PROP,
 } from '../work-verb-schema.js';
+import { WORK_PLAN_PROP } from '../work-plan-schema.js';
 
 // PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
 // This walk reads the SOURCE TEXT, so the path follows the code — that is the point
