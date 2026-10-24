@@ -53,7 +53,7 @@ import {
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
 import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure, closeWithMeasure, isCompleteStatus, remeasureProject } from './measure-door.js';   // v3.5 DONE IS MEASURED
-import { checkPlan, tasksFromPlan, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { checkPlan, tasksFromPlan, explicitTasks, taskPlanMismatch, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { scaleFactsForAgent } from '../../../tools/scale-facts.js';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -110,11 +110,11 @@ const tableOfHandlers: ToolHandlerMap = {
     ]);
     if (projErr) { content = projErr; isError = true; return { content, isError }; }
     // v3.5 PLAN BEFORE PROJECT: with no tasks of its own the tasks are the plan's steps, so a step's measure is read here (counting is I/O); a bad plan is refused by the creator.
-    const given = args.tasks as Array<Record<string, unknown>> | undefined, planned = checkPlan(args.plan);
-    const rawTasks = given?.length ? given : planned.ok ? tasksFromPlan(planned.plan) : [];
+    const given = explicitTasks(args.tasks as Array<Record<string, unknown>> | undefined), planned = checkPlan(args.plan);
+    const rawTasks = !planned.ok || (given && taskPlanMismatch(given.length, planned.plan)) ? [] : given ?? tasksFromPlan(planned.plan);
     const measures = await Promise.all(rawTasks.map((t) => readMeasureArg(agentId, t?.measure)));
     const badMeasure = measures.find((m) => m.error); if (badMeasure) return { content: badMeasure.error as string, isError: true };
-    const taskInputs = given?.length ? given.map(t => ({
+    const taskInputs = given ? given.map(t => ({
       title: t.title as string,
       description: t.description as string | undefined,
       goal: t.goal as string | undefined,

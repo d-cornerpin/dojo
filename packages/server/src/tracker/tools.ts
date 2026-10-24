@@ -55,7 +55,7 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
-import { checkPlan, planRefusal, renderPlan, tasksFromPlan } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { checkPlan, planRefusal, renderPlan, tasksFromPlan, explicitTasks, taskPlanMismatch } from '../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
 import { planOfProject } from '../work/plan-store.js';
 import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
 import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
@@ -866,8 +866,13 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     if (!planned.ok) return planRefusal(planned.error) + scale;
     const plan = planned.plan;
     const description = renderPlan(plan);
-    const given = args.tasks as Array<{ title: string; description?: string; goal?: string; assignedTo?: string; priority?: 'high' | 'normal' | 'low'; stepNumber?: number; dependsOn?: string[]; phase?: number }> | undefined;
-    const tasksInput: NonNullable<typeof given> = given?.some((t) => typeof t.title === 'string' && t.title.trim().length > 0) ? given : tasksFromPlan(plan);
+    const given = explicitTasks(args.tasks as Array<{ title: string; description?: string; goal?: string; assignedTo?: string; priority?: 'high' | 'normal' | 'low'; stepNumber?: number; dependsOn?: string[]; phase?: number }> | undefined);
+    const mismatch = given ? taskPlanMismatch(given.length, plan) : null;
+    if (mismatch) return planRefusal(mismatch) + scale;
+    // Task i IS plan step i+1 (the board shows a task its own step), whatever step number the caller put on it.
+    const tasksInput: NonNullable<typeof given> = given
+      ? given.map((t, i) => ({ ...t, stepNumber: i + 1, description: t.description ?? plan.steps[i].how, goal: t.goal ?? plan.steps[i].done }))
+      : tasksFromPlan(plan);
 
     // Resolve inline task assignees (name / short id -> full agent id) BEFORE
     // anything is written. tasks.assigned_to carries a FOREIGN KEY to agents(id);

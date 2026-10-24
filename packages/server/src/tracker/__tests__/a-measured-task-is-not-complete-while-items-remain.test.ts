@@ -241,7 +241,7 @@ describe('a measured task is not complete while items remain', () => {
 
   it('a project task carries its own measure', async () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 42 });
-    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, plan: { approach: 'Label the inbox, then write it up.', steps: [{ title: 'Label the inbox', how: 'gmail_label in batches', done: 'the search returns 0' }] }, tasks: [{ title: 'Label the inbox', measure: MEASURE }, { title: 'Write it up' }] });
+    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, plan: { approach: 'Label the inbox, then write it up.', steps: [{ title: 'Label the inbox', how: 'gmail_label in batches', done: 'the search returns 0' }, { title: 'Write it up', how: 'file_write the summary', done: 'the summary is handed over' }] }, tasks: [{ title: 'Label the inbox', measure: MEASURE }, { title: 'Write it up' }] });
     expect(out.content).toContain('returns 42 messages now');
     const rows = db().prepare("SELECT title, measure_initial FROM work WHERE kind = 'task' ORDER BY title").all();
     expect(rows).toEqual([{ title: 'Label the inbox', measure_initial: 42 }, { title: 'Write it up', measure_initial: null }]);

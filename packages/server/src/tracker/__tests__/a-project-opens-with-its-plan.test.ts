@@ -35,6 +35,7 @@ vi.mock('../../agent/access/read.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { createProject } from '../schema.js';
+import { planStepLineOf } from '../../work/plan-store.js';
 
 const AGENT = 'agent-planner';
 const MAILBOX_PLAN = {
@@ -183,6 +184,36 @@ describe('the agent sees what its tools do at scale exactly when it plans (A2)',
     const out = await open({ title: 'Clean the mailbox' });
     expect(out.content).toMatch(/^Refused: a project opens with its plan/);
     expect(out.content).toMatch(SCALE);
+  });
+});
+
+describe('tasks and plan passed together agree, or the call is refused plainly', () => {
+  const TWO = { approach: 'Two steps.', steps: [{ title: 'First', how: 'do the first', done: 'first done' }, { title: 'Second', how: 'do the second', done: 'second done' }] };
+
+  it('one task per step, in order: each task is its step\'s, whatever step numbers the caller put on them, so the board shows the right line', async () => {
+    const out = await open({ title: 'Two-step job', plan: TWO, tasks: [{ title: 'Second thing', step_number: 1 }, { title: 'First thing', step_number: 1 }] });
+    expect(out.content).toMatch(/^\[OK\]/);
+    const rows = db().prepare('SELECT id, title, step_number, description, goal FROM work WHERE parent_id = ? ORDER BY step_number').all(projectIdFrom(out)) as Array<{ id: string; title: string; step_number: number; description: string | null; goal: string | null }>;
+    expect(rows.map((r) => [r.title, r.step_number])).toEqual([['Second thing', 1], ['First thing', 2]]);
+    expect(planStepLineOf(rows[0].id)).toContain('Plan step 1 of 2 — First: do the first');
+    expect(planStepLineOf(rows[1].id)).toContain('Plan step 2 of 2 — Second: do the second');
+    // A task without its own words takes its step's.
+    expect(rows[0]).toMatchObject({ description: 'do the first', goal: 'first done' });
+  });
+
+  it('a different number of tasks than steps is refused, naming both counts and the two ways out; nothing is written', async () => {
+    const out = await open({ title: 'Two-step job', plan: TWO, tasks: [{ title: 'Only one' }] });
+    expect(out.content).toMatch(/^Refused: a project opens with its plan \(.*1 task.*2 plan steps/);
+    expect(out.content).toContain('leave out `tasks`');
+    expect(out.isError).toBe(true);
+    expect(projects()).toBe(0);
+  });
+
+  it('tasks with no titles are no tasks: the plan\'s steps make them (the door and the creator read the same list)', async () => {
+    const out = await open({ title: 'Clean the mailbox', plan: MAILBOX_PLAN, tasks: [{}] });
+    expect(out.content).toMatch(/^\[OK\]/);
+    expect(tasksOf(projectIdFrom(out)).map((t) => t.title)).toEqual(['Count', 'Label in pages']);
+    expect(tasksOf(projectIdFrom(out)).map((t) => t.measure_json !== null)).toEqual([false, true]);   // the plan step's own measure, read at the door
   });
 });
 

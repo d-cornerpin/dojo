@@ -14,6 +14,19 @@ export interface Plan { approach: string; steps: PlanStep[] }
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
+/** The caller's own tasks when it passed any with a title; otherwise none (untitled entries are no tasks). */
+export function explicitTasks<T extends { title?: unknown }>(raw: readonly T[] | undefined): T[] | undefined {
+  return raw?.some((t) => typeof t?.title === 'string' && t.title.trim().length > 0) ? [...raw] : undefined;
+}
+
+/** Tasks and plan passed together must pair up, one task per step in step order (the task board shows a
+ *  task its own step); null when they do. */
+export function taskPlanMismatch(tasks: number, plan: Plan): string | null {
+  if (tasks === plan.steps.length) return null;
+  const n = (c: number, w: string): string => `${c} ${w}${c === 1 ? '' : 's'}`;
+  return `you passed ${n(tasks, 'task')} and the plan has ${n(plan.steps.length, 'plan step')}; the plan's steps are the tasks, so leave out \`tasks\` and the engine makes one per step, or pass exactly one task per step, in step order`;
+}
+
 /** The structural check: an approach, and at least one step with a title, a how and a done. */
 export function checkPlan(raw: unknown): { ok: true; plan: Plan } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'no plan was passed (plan must be an object {approach, steps})' };
