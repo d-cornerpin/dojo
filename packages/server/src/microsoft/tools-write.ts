@@ -460,7 +460,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_move_to_folder',
-    description: 'Move an Outlook email into a specific folder. Get folder IDs from outlook_list_folders. The original email ID becomes invalid; the response contains the new ID under the destination folder.',
+    description: 'Move an Outlook email into a specific folder. Get folder IDs from outlook_list_folders. Moving to archive or deleteditems takes the message\'s conversation, the messages in the same folder as it (sent copies and drafts stay put); pass this_message_only=true for just one message; any other folder moves one message unless you pass conversation_id (the "Conversation:" id the mail reads print; every message of it moves, except that to archive or deleteditems the sent copies and drafts stay put). Moved messages get new IDs.',
     effects: [],
     input_schema: {
       type: 'object',
