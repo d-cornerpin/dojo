@@ -30,12 +30,12 @@ import * as RouterConfigModule from '../components/RouterConfig';
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('Settings → Models', () => {
-  it('has no System Model card, and the Summarization Model card says the writer is the default and is checked', async () => {
+  it('has no System Model card, and the Summarization Model card says each agent\'s own model writes unless one is chosen (owner 2026-10-24)', async () => {
     render(<ModelsTab />);
     await waitFor(() => expect(screen.getByText('Summarization Model')).toBeTruthy());
     expect(screen.queryByText('System Model')).toBeNull();
     expect(screen.getByText(
-      "Writes memory summaries when an agent compacts its history. The Dojo's small writer is the default and every summary is checked against the source before it is kept. If this box's summaries keep failing that check, pick a larger model here.",
+      "Writes memory summaries when an agent compacts its history. Unless one model is chosen here, each agent's own model writes its summaries, and the Dojo's small local writer steps in only when that model cannot be reached.",
     )).toBeTruthy();
     expect(screen.queryByText(/cheapest/)).toBeNull();
   });

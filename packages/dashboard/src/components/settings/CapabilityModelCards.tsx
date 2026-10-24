@@ -363,7 +363,7 @@ export const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
 export const CompactionModelCard = ({ models }: { models: Model[] }) => (
   <CapabilityModelCard
     title="Summarization Model"
-    description="Writes memory summaries when an agent compacts its history. The Dojo's small writer is the default and every summary is checked against the source before it is kept. If this box's summaries keep failing that check, pick a larger model here."
+    description="Writes memory summaries when an agent compacts its history. Unless one model is chosen here, each agent's own model writes its summaries, and the Dojo's small local writer steps in only when that model cannot be reached."
     settingKey="compaction_model_id"
     matchFn={(m) => !m.capabilities.some((c) => c.includes('generation') || c === 'embedding' || c === 'decision')}
     selectorLabel="Summarization model"
