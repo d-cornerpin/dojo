@@ -37,7 +37,7 @@ function namesCredential(name: string): boolean {
 }
 
 /** A schema column that can hold a credential: its name says so and its type is not a number. */
-function isDeniedColumn(name: string, declaredType: string): boolean {
+export function isDeniedColumn(name: string, declaredType: string): boolean {
   return namesCredential(name) && !NUMERIC_TYPE.test(declaredType);
 }
 
@@ -161,18 +161,29 @@ export function redactText(s: string, agentIds: readonly string[] = []): string 
 /** The cells of a row that name the agents it belongs to, for the handed-value scrub. */
 const AGENT_CELLS = ['agent_id', 'assignee_agent', 'source_agent_id', 'created_by_agent_id'];
 
+/** One cell, redacted: blanked when its column names a credential (or it is the value of a
+ *  key/value row whose key does) and it holds bytes; otherwise a string is scrubbed. */
+export function redactCell(column: string, v: unknown, agentIds: readonly string[], keyNamesCredential = false): unknown {
+  const holdsBytes = typeof v === 'string' || Buffer.isBuffer(v);
+  if (holdsBytes && (namesCredential(column) || (column === 'value' && keyNamesCredential))) return REDACTED_CREDENTIAL;
+  return typeof v === 'string' ? redactText(v, agentIds) : v;
+}
+
+/** The agents a row belongs to, read from its agent cells, for the handed-value scrub. */
+export function rowAgents(cells: ReadonlyArray<[string, unknown]>, base: readonly string[] = []): string[] {
+  return [...base, ...cells.filter(([k, v]) => AGENT_CELLS.includes(k) && typeof v === 'string').map(([, v]) => v as string)];
+}
+
+/** Does a `key` cell name a credential (the config table's shape)? */
+export const keyNamesCredential = (key: unknown): boolean => typeof key === 'string' && namesCredential(key);
+
 /** Blank credential columns (and the value of a key/value row whose key names one), then
  *  scrub every string cell. Returns new rows; the input is not changed. */
 export function redactRows<T extends Record<string, unknown>>(rows: T[], agentIds: readonly string[] = []): T[] {
   return rows.map((row) => {
-    const agents = [...agentIds, ...AGENT_CELLS.map((k) => row[k]).filter((v): v is string => typeof v === 'string')];
-    const keyNamesCredential = typeof row.key === 'string' && namesCredential(row.key);
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(row)) {
-      const holdsBytes = typeof v === 'string' || Buffer.isBuffer(v);
-      if (holdsBytes && (namesCredential(k) || (k === 'value' && keyNamesCredential))) out[k] = REDACTED_CREDENTIAL;
-      else out[k] = typeof v === 'string' ? redactText(v, agents) : v;
-    }
-    return out as T;
+    const cells = Object.entries(row);
+    const agents = rowAgents(cells, agentIds);
+    const keyed = keyNamesCredential(row.key);
+    return Object.fromEntries(cells.map(([k, v]) => [k, redactCell(k, v, agents, keyed)])) as T;
   });
 }

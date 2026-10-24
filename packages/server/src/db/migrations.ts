@@ -10,6 +10,17 @@ import {
 
 const logger = createLogger('migrations');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
+
+/** The chain's files, in the order it applies them. Empty when the directory is absent. */
+export function migrationFileNames(): string[] {
+  return fs.existsSync(MIGRATIONS_DIR) ? fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort() : [];
+}
+
+/** One chain file's text; the runner applies it, and v3.5 dojo_inspect reads its prose notes. */
+export function readMigrationFile(name: string): string {
+  return fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf-8');
+}
 
 export function runMigrations(): void {
   const db = getDb();
@@ -163,12 +174,8 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // their checksums, and the audit below reads the column on the same pass.
   ensureMigrationChecksumColumn(db);
 
-  const migrationsDir = path.join(__dirname, 'migrations');
-  if (!fs.existsSync(migrationsDir)) return;
-
-  const files = fs.readdirSync(migrationsDir)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
+  if (!fs.existsSync(MIGRATIONS_DIR)) return;
+  const files = migrationFileNames();
 
   // Snapshot the pending set up front so the pre-chain backup and the chain
   // timing both see the whole set. This is a read-only probe; each file is still
@@ -241,7 +248,7 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // ── Chain timing (info-level, cheap Date.now diffs) ──
   const chainStart = Date.now();
   for (const file of pending) {
-    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+    const sql = readMigrationFile(file);
     const missing = unmetRequirement(db, sql);
     if (missing) {
       // The subject of this file is already gone. Record it as run and move on — see
@@ -277,7 +284,7 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // RULING 7 rider (a): the boot divergence check. Report tier by construction — see
   // `migration-checksums.ts` for the refusal-tier argument and the Bridge author's story.
   reportMigrationChecksums(db, (name) => {
-    try { return fs.readFileSync(path.join(migrationsDir, name), 'utf-8'); }
+    try { return readMigrationFile(name); }
     catch { return null; }
   });
 
