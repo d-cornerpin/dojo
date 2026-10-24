@@ -49,10 +49,10 @@ export function parseMailboxEvent(content: string): MailboxEvent | null {
 
   const from = content.match(/^From:[ \t]*(.*)$/m)?.[1]?.trim() ?? null;
 
-  // Preview can be multi-line; it runs until the "Message ID:" / "Use `…`" line, or (v3.5 K33)
-  // the end of the outside-text fence the notice wraps the email in.
+  // Preview can be multi-line; it runs until the "Message ID:" / "Use `…`" line. (v3.5 K33: the
+  // caller hands this the notice WITHOUT the agent's fence lines — `withoutFence`.)
   const body =
-    content.match(/^Preview:[ \t]*([\s\S]*?)\n(?:\[END EXTERNAL email\]|Message ID:|Use `)/m)?.[1]?.trim() ??
+    content.match(/^Preview:[ \t]*([\s\S]*?)\n(?:Message ID:|Use `)/m)?.[1]?.trim() ??
     content.match(/^Preview:[ \t]*([\s\S]*)$/m)?.[1]?.trim() ??
     null;
 

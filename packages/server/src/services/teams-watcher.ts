@@ -20,7 +20,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
-import { fenceExternal } from '../tools/external-content.js';
+import { teamsInboundContent } from '../tools/inbound-fences.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
@@ -166,7 +166,10 @@ async function pollForNewMessages(): Promise<void> {
   }
 
   const services = getEnabledMsServices();
-  if (!services.teams) { recordPollSkip('Teams service disabled in Settings → Microsoft'); return; }
+  if (!services.teams) {
+    recordPollSkip('Teams service disabled in Settings → Microsoft');
+    return;
+  }
 
   try {
     const myId = await getOwnUserId();
@@ -274,20 +277,7 @@ async function pollForNewMessages(): Promise<void> {
             ? `1:1 chat with ${senderName}`
             : 'group chat';
 
-        const content = [
-          `[SOURCE: TEAMS MESSAGE FROM ${senderLabel}]`,
-          ``,
-          `This is an incoming Microsoft Teams message — NOT a message from the dashboard user.`,
-          `To reply, call teams_send_message with the chat_id shown below.`,
-          ``,
-          `Chat: ${chatLabel} (${chat.chatType})`,
-          `Time: ${msg.createdDateTime}`,
-          ``,
-          `Message:`,
-          fenceExternal('chat message', senderLabel, body, { addressedToAgent: true }),   // v3.5 K33: answerable, never orders
-          ``,
-          `Chat ID: ${chat.id}`,
-        ].join('\n');
+        const content = teamsInboundContent(senderLabel, `${chatLabel} (${chat.chatType})`, msg.createdDateTime, body, chat.id);
 
         const msgId = uuidv4();
         // P5: conversation identity = the Teams chat id (thread-true).

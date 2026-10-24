@@ -125,7 +125,6 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
 // Register concurrency/cap overrides for the v2 partitioner. Mirrors the
 // pattern in google/tools-read.ts and microsoft/tools-read.ts.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
-import { fenceExternal } from '../tools/external-content.js';
 for (const def of plaudReadToolDefinitions) {
   if (def.concurrency) registerConcurrency(def.name, def.concurrency);
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
@@ -184,15 +183,14 @@ export async function executePlaudTool(
       const recordingId = args.recording_id as string;
       const result = await runPlaudCommand(['transcript', recordingId], { agentId, timeoutMs: 60_000 });
       if (!result.ok) return result.error ?? 'Plaud transcript fetch failed.';
-      // v3.5 K33: what was said in a recording is information, not orders.
-      return `Transcript for ${recordingId}:\n\n${fenceExternal('transcript', `Plaud recording ${recordingId}`, result.stdout.trim())}`;
+      return `Transcript for ${recordingId}:\n\n${result.stdout.trim()}`;
     }
 
     case 'plaud_get_summary': {
       const recordingId = args.recording_id as string;
       const result = await runPlaudCommand(['summary', recordingId], { agentId, timeoutMs: 30_000 });
       if (!result.ok) return result.error ?? 'Plaud summary fetch failed.';
-      return `Summary for ${recordingId}:\n\n${fenceExternal('transcript', `the summary of Plaud recording ${recordingId}`, result.stdout.trim())}`;
+      return `Summary for ${recordingId}:\n\n${result.stdout.trim()}`;
     }
 
     case 'plaud_get_audio_url': {

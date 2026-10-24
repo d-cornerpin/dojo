@@ -87,6 +87,7 @@ import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 import { CHARS_PER_TOKEN } from '../../memory/budget.js';
 import { prependMailboxOwnerHeader } from './provider/mailbox-banner.js';
+import { fenceToolResult } from './outside-content.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
 import { openCallCapability } from '../effects/scopes.js';
@@ -230,10 +231,11 @@ async function dispatchResolved(
   toolCall: ToolCall,
   resolved: { name: string; args: Record<string, unknown>; note?: string | null },
 ): Promise<ToolResult> {
-  if (resolved.name === toolCall.name) {
-    return executeToolInner(agentId, toolCall);
-  }
-  const result = await executeToolInner(agentId, { ...toolCall, name: resolved.name, arguments: resolved.args });
+  const result = resolved.name === toolCall.name
+    ? await executeToolInner(agentId, toolCall)
+    : await executeToolInner(agentId, { ...toolCall, name: resolved.name, arguments: resolved.args });
+  // v3.5 K33: a read whose result is other people's text reaches the model fenced (outside-content.ts).
+  fenceToolResult(resolved.name, resolved.args, result);
   if (resolved.note) result.content = `${resolved.note}\n${result.content}`;
   return result;
 }

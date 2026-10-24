@@ -41,8 +41,8 @@ import {
 } from './audio-codec.js';
 import { getTwilioConfig } from './auth.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
-import { addressesMatch, isOwnerIMessageRecipient } from '../services/safe-senders.js';
-import { fenceExternal } from '../tools/external-content.js';
+import { addressesMatch } from '../services/imessage-bridge.js';
+import { callUtteranceText } from '../tools/inbound-fences.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { recordAtDoor, recordedId, recordHeld } from '../agent/v2/outbound.js';
@@ -457,7 +457,10 @@ export class CallSession {
 
     // Submit to the agent runtime as a user-role message.
     const primaryId = this.agentId ?? getPrimaryAgentId();
-    if (!primaryId) { logger.warn('No primary agent, dropping utterance', { callSid: this.callSid }); return; }
+    if (!primaryId) {
+      logger.warn('No primary agent, dropping utterance', { callSid: this.callSid });
+      return;
+    }
     // v2.9.23 — resolve the OTHER party's number (not necessarily
     // `fromNumber`) to a friendly name. For inbound calls the other
     // party IS `fromNumber`; for outbound calls the other party is
@@ -490,9 +493,7 @@ export class CallSession {
       `Their Name: ${otherPartyName ?? ''}\n` +
       `Purpose: ${this.purpose ?? ''}\n` +
       `Callback: ${callbackNumber}`;
-    // v3.5 K33: the other party speaks TO the agent — answerable, never orders. The owner on the line is not fenced.
-    const said = isOwnerIMessageRecipient(otherPartyNumber) ? text : fenceExternal('transcript', `a phone call with ${otherPartyDisplay}`, text, { addressedToAgent: true });
-    const content = `${sourceTag}\n\n${said}\n\n${trailer}`;
+    const content = `${sourceTag}\n\n${callUtteranceText(otherPartyNumber, otherPartyDisplay, text)}\n\n${trailer}`;
     const msgId = uuidv4();
     try {
       // P5: conversation identity = the caller's number; call sid = external id.

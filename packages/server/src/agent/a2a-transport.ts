@@ -30,8 +30,9 @@ import { isSenderAuthorized } from './v2/channel-auth.js';
 // SWEEP CORE-2 item 5: STATIC, because the relay's scope check runs on the synchronous
 // path beside the compose branches. `config/platform.ts` imports only `db/connection.js`,
 // so there is no cycle to buy with the dynamic form the older call sites in this file use.
-import { isPrimaryAgent, isSystemServiceAgent } from '../config/platform.js';
-import { fenceExternal } from '../tools/external-content.js';
+import { isPrimaryAgent } from '../config/platform.js';
+import { unfenceExternal } from '../tools/external-content.js';
+import { a2aPayloadForModel } from '../tools/inbound-fences.js';
 import { mayUseChannel } from './access/read.js';
 import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
 import { type DeliveryInput } from './v2/deliveries.js';
@@ -313,7 +314,9 @@ async function findRecentDuplicateAssignThread(
   }
 }
 
-function extractPayloadFromA2AMessage(content: string): string | null {
+export function extractPayloadFromA2AMessage(fenced: string): string | null {
+  // v3.5 K33 fix round 1: dedup compares what the sender WROTE — the stored row's fence is for the model.
+  const content = unfenceExternal(fenced);
   // New format: [A2A:INTENT thread:xxx from:Name] payload
   const a2aMatch = content.match(/^\[A2A:\w+ thread:\S+ from:[^\]]+\]\s*([\s\S]*?)(\n\n\[Thread|$)/);
   if (a2aMatch) return a2aMatch[1].trim();
@@ -570,7 +573,10 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     logDrop(envelope, 'AGENT_NOT_FOUND', { liveAgentsNearThatName: liveAgentNamesNear(envelope.toAgent) });
     return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
   }
-  if (target.status === 'terminated') { logDrop(envelope, 'AGENT_NOT_FOUND'); return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId }; }
+  if (target.status === 'terminated') {
+    logDrop(envelope, 'AGENT_NOT_FOUND');
+    return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
+  }
 
   // ── 3. Enforce intent rules ──
   // Two independent concepts:
@@ -948,8 +954,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   const promotionTag = autoPromotedFromFyi
     ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
     : '';
-  // v3.5 K33: another agent's report to the main agent is information, not orders (platform agents and the engine are not fenced).
-  const theirReport = isPrimaryAgent(target.id) && !isPrimaryAgent(envelope.fromAgent) && !isEngineEnvelope && !isSystemServiceAgent(envelope.fromAgent) ? fenceExternal('agent report', senderName, envelope.payload, { addressedToAgent: true }) : envelope.payload;
+  const theirReport = a2aPayloadForModel(target.id, envelope.fromAgent, isEngineEnvelope, senderName, envelope.payload);
   let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${theirReport}${threadInfo}${primaryDeliverableHint}`;
 
   // ── ND-3: attach the recipient's OWN task evidence to a validation QUESTION ──
@@ -1780,7 +1785,7 @@ function tellAgentTheJoinFailed(join: JoinState, what: string): void {
  * on the FULL thread id — the length-sniffing `parkThreadCondition` is gone with the 8-char
  * tokens that forced it.
  */
-function findUnlandedInboundReply(
+export function findUnlandedInboundReply(
   agentId: string, threadId: string, sinceMs: number,
 ): { payload: string; senderName: string; messageId: string; senderId: string | null } | null {
   const row = getDb().prepare(
@@ -1795,7 +1800,9 @@ function findUnlandedInboundReply(
   if (!row) return null;
   // The stored row is the full context message: [A2A:...] envelope + payload + [Thread ...]
   // footer (+ optional engine hint). Relay just the payload.
-  const payload = row.content.replace(/^\[A2A:[^\]]*\]\s*/, '').split('\n\n[Thread ')[0];
+  // v3.5 K33 fix round 1: the relay hands on what the sender WROTE (it can reach the owner's
+  // phone); the stored row's fence is for the model only.
+  const payload = unfenceExternal(row.content).replace(/^\[A2A:[^\]]*\]\s*/, '').split('\n\n[Thread ')[0];
   const fromTag = row.content.match(/^\[A2A:[A-Z]+\s+thread:\S+\s+from:([^\]]+)\]/);
   const senderName = resolveAgentDisplayName(row.source_agent_id) ?? fromTag?.[1]?.trim() ?? 'the other agent';
   return { payload, senderName, messageId: row.id, senderId: row.source_agent_id };

@@ -4,7 +4,17 @@
 // drift. The PARSING lives in @dojo/shared (parseInboundChannel /
 // parseOutboundRouting); this is the dashboard-side wording. See
 // DOJO-CHAT-VISIBILITY-PLAN.md §3 and V3 (channel-badge correctness).
-import type { ChannelKind } from '@dojo/shared';
+import { unfenceExternal, type ChannelKind } from '@dojo/shared';
+
+/**
+ * v3.5 K33 (orchestrator ruling: the fence is model-facing only). The engine fences other
+ * people's text (a contact's message, an email, another agent's report) as information for the
+ * agent; the owner sees that text exactly as it arrived. The ONE dashboard strip, used by every
+ * place that shows a message (Chat's bubble and email card, the inter-agent lane).
+ */
+export function withoutFence(content: string): string {
+  return unfenceExternal(content);
+}
 
 const CHANNEL_EMOJI: Record<ChannelKind, string> = {
   imessage: '\u{1F4AC}',     // speech balloon

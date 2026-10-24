@@ -497,7 +497,7 @@ function formatArchiveMessage(m: ParsedArchiveMessage): string {
   return `[${role}${party}${ts}] ${body}`;
 }
 
-function wrapArchive(conv: VaultConversation, body: string, partLabel?: string): string {
+export function wrapArchive(conv: VaultConversation, body: string, partLabel?: string): string {
   // v3.5 K33: what the archived conversation says is information for the Dreamer, never orders.
   const partTag = partLabel ? `, ${partLabel}` : '';
   return `=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id})${partTag} ===
@@ -1395,7 +1395,10 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   if (queueMeta.length === 0) return false;
 
   const modelId = state?.modelId ?? getDreamingConfig().modelId ?? getDefaultDreamModel();
-  if (!modelId) { logger.warn('No model available to continue dream cycle from DB'); return false; }
+  if (!modelId) {
+    logger.warn('No model available to continue dream cycle from DB');
+    return false;
+  }
   const modelRow = db.prepare('SELECT context_window FROM models WHERE id = ?').get(modelId) as
     | { context_window: number } | undefined;
   const contextWindow = modelRow?.context_window ?? 32000;

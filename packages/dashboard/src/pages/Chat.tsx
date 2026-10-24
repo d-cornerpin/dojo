@@ -4,7 +4,7 @@ import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResul
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
-import { inboundBadge, outboundBadge } from '../lib/channel-display';
+import { inboundBadge, outboundBadge, withoutFence } from '../lib/channel-display';
 import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
@@ -223,7 +223,8 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
   const fromVoice = msg.source === 'voice';
   const badge = inbound ? inboundBadge(inbound.channel, inbound.sender) : null;
 
-  let displayContent = msg.content;
+  // v3.5 K33: the owner sees other people's text as it arrived, without the agent's fence lines.
+  let displayContent = withoutFence(msg.content);
   // Strip injected technique build/edit context (no-op for normal messages) so
   // the user bubble shows only what they typed during a technique session.
   displayContent = stripBuilderContext(displayContent);
@@ -236,7 +237,7 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
   // Engine inbox-watcher notifications render as a clean email card in non-wordy
   // mode (the raw [MAILBOX EVENT] framing + Message ID + tool hint are hidden;
   // the account header replaces the generic "via email" badge).
-  const mailbox = !wordyMode ? parseMailboxEvent(msg.content) : null;
+  const mailbox = !wordyMode ? parseMailboxEvent(withoutFence(msg.content)) : null;
 
   return (
     <div className="flex flex-col items-end">

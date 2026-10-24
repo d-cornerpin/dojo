@@ -26,7 +26,7 @@ import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.j
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
-import { fenceExternal } from '../tools/external-content.js';
+import { fencedMailBlock } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
@@ -396,7 +396,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const content =
         `[SOURCE: GMAIL NOTIFICATION — ${notifyAccount} (${accountSuffix})]\n\n` +
         body +
-        fenceExternal('email', from, `From: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}`, { addressedToAgent: isDirectToAgent }) + `\nMessage ID: ${msg.id}\n` +   // v3.5 K33
+        fencedMailBlock({ from, subject, date, snippet, messageId: msg.id, directToAgent: isDirectToAgent }) +
         `Use \`${toolHint}\`${kind === 'user' ? ` (account: ${notifyAccount})` : ''} to read the full body${isDirectToAgent ? ' if you need it' : ' before deciding'}.`;
 
       const msgId = uuidv4();
@@ -538,7 +538,10 @@ export function markGmailWatchBaselineNow(accountId: string): void {
 }
 
 export function startGmailWatcher(): void {
-  if (pollTimer) { logger.warn('Gmail watcher already running'); return; }
+  if (pollTimer) {
+    logger.warn('Gmail watcher already running');
+    return;
+  }
 
   // Hydrate per-account lastCheckedAt from DB. Accounts that have never polled
   // but are connected + monitored get seeded to "now" so a freshly-connected

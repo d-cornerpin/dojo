@@ -9,7 +9,6 @@ import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { assertPublicHttpTarget } from './net-guard.js';
-import { fenceExternal } from '../tools/external-content.js';
 
 const logger = createLogger('browser');
 
@@ -231,7 +230,9 @@ class BrowserSession {
   }
 
   async extract(): Promise<string> {
-    if (!this.page) return 'Error: No browser session. Use action "navigate" first.';
+    if (!this.page) {
+      return 'Error: No browser session. Use action "navigate" first.';
+    }
 
     logger.info('Browser extract', {}, this.agentId);
 
@@ -246,7 +247,7 @@ class BrowserSession {
       ? text.substring(0, maxChars) + `\n\n[Content truncated at ${maxChars} characters]`
       : text;
 
-    return `Page: "${title}" (${currentUrl})\n\n${fenceExternal('web page', currentUrl, content)}`;
+    return `Page: "${title}" (${currentUrl})\n\n${content}`;
   }
 
   async close(): Promise<string> {
@@ -393,7 +394,7 @@ export async function executeWebBrowse(
               });
               const extract = result.content?.trim();
               if (extract && extract.length > 0) {
-                return `Extracted (goal: ${goal}):\n\n${fenceExternal('web page', raw.split('\n')[0].replace(/^Page: /, ''), extract)}`;
+                return `Extracted (goal: ${goal}):\n\n${extract}`;
               }
               extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
               logger.warn('web_browse extract: extractor returned empty content — falling back to raw', { agentId });

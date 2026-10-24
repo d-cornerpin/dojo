@@ -4,6 +4,7 @@ import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { formatDate } from '../lib/dates';
+import { withoutFence } from '../lib/channel-display';
 
 // ════════════════════════════════════════
 // Inter-Agent lane (D-A step 5)
@@ -27,7 +28,8 @@ import { formatDate } from '../lib/dates';
 // render as chips, so the raw marker is noise in the lane. Falls back to the
 // full content when the strip would empty it.
 function cleanContent(content: string): string {
-  const stripped = content.replace(/^\[(?:A2A:|SOURCE:)[^\]]*\]\s*/i, '').trim();
+  // v3.5 K33: a worker's report is shown as it was written, without the agent's fence lines.
+  const stripped = withoutFence(content).replace(/^\[(?:A2A:|SOURCE:)[^\]]*\]\s*/i, '').trim();
   return stripped.length > 0 ? stripped : content.trim();
 }
 
