@@ -1589,6 +1589,12 @@ async function callOllamaModel(
       inputTokens,
       outputTokens,
       stopReason: resolveProviderStopReason(doneReason, accumulatedToolCalls.length),   // t239: the provider's cut wins over a parsed tool call
+      // B14: the room this call was really given, so a cut at it is read against a true number. Only
+      // when `num_predict` went on the wire; a call that sent no cap has no room figure to report.
+      // The ceiling is the model's own configured maximum (never below what was sent).
+      ...(typeof options.num_predict === 'number'
+        ? { outputRoom: { sent: options.num_predict, ceiling: Math.max(options.num_predict, modelInfo.maxOutputTokens) } }
+        : {}),
     };
   } catch (err) {
     watchdog.finish();
