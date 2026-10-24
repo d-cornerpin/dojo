@@ -6,8 +6,7 @@
 // `user@Hostname.local`. Released history is public and permanent, so nothing since the last release
 // tag may carry one. This lists every commit `PREV_TAG..HEAD` whose author or committer email is
 //
-//   - not the repo's neutral identity: its configured `user.email` (a GitHub noreply address), any
-//     other GitHub noreply address (a merge made on the web, a co-author), or
+//   - not the repo's neutral identity: its configured `user.email` (a GitHub noreply address), or
 //   - on a `.local` host (the machine default, always refused),
 //
 // and refuses, naming each commit. It also refuses a repo whose OWN configured identity is not a
@@ -30,10 +29,10 @@ const tryGit = (...a) => { try { return git(...a); } catch { return ''; } };
 const NOREPLY = /@users\.noreply\.github\.com$/i;
 const configuredRaw = tryGit('config', 'user.email');
 const configured = configuredRaw.toLowerCase();
+// Neutral = exactly the repo's configured identity (which must itself be a noreply address, below).
 const isNeutral = (email) => {
   const e = email.trim().toLowerCase();
-  if (e.endsWith('.local')) return false;
-  return e === configured || NOREPLY.test(e) || e === 'noreply@github.com';
+  return !e.endsWith('.local') && e === configured;
 };
 
 const problems = [];

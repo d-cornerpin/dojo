@@ -171,7 +171,7 @@ export const GATES = [
     args: [],
     title: 'Commit-identity gate (no machine-default author or committer since the last release)',
     fail: 'Commit-identity gate: a commit since the last release tag carries a machine-default or non-neutral identity (or this repo\'s configured identity is not a noreply address). NOT publishing.',
-    why: 'A commit made on a box with no identity configured takes the machine default, a real name and user@Hostname.local, and a release publishes that history for ever. The owner set the neutral identity repo-locally on 2026-10-19; nothing checked it. This lists every commit PREV_TAG..HEAD whose author or committer email is neither the configured noreply identity, another GitHub noreply address, nor on a .local host, and refuses a repo whose own configured identity is not neutral (the release commit would carry it).',
+    why: 'A commit made on a box with no identity configured takes the machine default, a real name and user@Hostname.local, and a release publishes that history for ever. The owner set the neutral identity repo-locally on 2026-10-19; nothing checked it. This lists every commit PREV_TAG..HEAD whose author or committer email is on a .local host or differs from the repo\'s configured noreply identity, and refuses a repo whose own configured identity is not neutral (the release commit would carry it).',
   },
   {
     id: 'upgrade-bypass',

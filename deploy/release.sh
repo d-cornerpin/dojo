@@ -212,6 +212,12 @@ elif [ ! -f "$NOTES_FILE" ]; then
 elif ! grep -q '[^[:space:]]' "$NOTES_FILE"; then
   NOTES_REFUSAL="Refused: a release needs plain release notes (--notes-file). The rule is in deploy/RELEASE.md. NOT publishing. ($NOTES_FILE is empty.)"
 fi
+if [ -z "$NOTES_REFUSAL" ]; then
+  # Absolute, once, before the `cd "$ROOT"` below: a relative path validated here would be read
+  # from the wrong directory after it.
+  NOTES_FILE="$(cd "$(dirname "$NOTES_FILE")" && pwd)/$(basename "$NOTES_FILE")"
+  echo "  ✓ release notes: $NOTES_FILE"
+fi
 if [ -n "$NOTES_REFUSAL" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     echo "" >&2; echo "❌ WOULD FAIL (dry run): $NOTES_REFUSAL" >&2
