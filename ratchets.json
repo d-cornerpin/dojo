@@ -9173,6 +9173,13 @@
       "to": 315,
       "by": "t252 fix round 1 (v3.5, 2026-10-23): a missing standard model is retried whenever Ollama answers, and the owner is told once",
       "why": "+26, from the orchestrator's I-2 ruling and the A1 review minors: retryStandardModelsIfMissing (the health check's hook, 9 lines with its doc), the owner-card telling and clearing at the end of an install (4), the capability repair of a row discovery made first (+3 with its why), progress lines keyed by model instead of by a string split (+3), sizing the rows' num_ctx at install instead of the next boot (+1), and the imports and the re-exported notice words (+6). All of it acts on the install this module owns; moving it out would split the install from its own retry and notice."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/CapabilityModelCards.tsx",
+      "from": 606,
+      "to": 611,
+      "by": "t252 fix round 2 (v3.5, 2026-10-24): the Summarization card says when its writer keeps failing (owner 2026-10-20)",
+      "why": "+5: the generic card gains a notice prop (its type, its destructure, its one render line), the ReactNode type import rides the existing react import, one import line for the new SummaryCheckNotice and the Summarization card passing it. The notice itself (the fetch, the words) lives in the NEW focused file components/settings/SummaryCheckNotice.tsx; the existing card (no new UX) only mounts it."
     }
   ],
   "maxNewFileLines": 400,
@@ -9194,7 +9201,7 @@
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 502,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
-    "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 606,
+    "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 611,
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
     "packages/dashboard/src/components/settings/ModelRows.tsx": 1261,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
