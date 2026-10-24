@@ -251,15 +251,26 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     'dojo_report',
   ];
 
-  it('the hidden set is exactly the pinned 108 names plus the arrivals since (arg-less, as the registry is read)', () => {
-    const pinned = [...HIDDEN_AT_T54, ...HIDDEN_SINCE_T54];
+  // NAMES THAT LEFT THE HIDDEN SET AFTER T54, each one argued here (same history rule as above:
+  // the T54 pin stays as it was; only this list records a later departure).
+  const UNHIDDEN_SINCE_T54: readonly string[] = [
+    // v3.5 (done is measured): `gmail_label` is a mutation of the owner's mailbox, and a
+    // mailbox job is made of it. Hidden, a worker that labelled five hundred messages looked
+    // like a worker that did nothing to every engine reader of this class (thrash-progress,
+    // promise floor, going-idle). The owner-ruled direction is that mutation is work, so the
+    // call now draws a chip like its siblings `gmail_create_label` and `gmail_delete_label`.
+    'gmail_label',
+  ];
+
+  it('the hidden set is exactly the pinned 108 names plus the arrivals since, minus the departures (arg-less, as the registry is read)', () => {
+    const pinned = [...HIDDEN_AT_T54, ...HIDDEN_SINCE_T54].filter((n) => !UNHIDDEN_SINCE_T54.includes(n));
     const hidden = [...new Set(TOOL_CATEGORIES.flatMap((c) => c.tools))]
       .filter((n) => classifyTool(n) === 'bookkeeping').sort();
     const gained = hidden.filter((n) => !pinned.includes(n));
     const lost = pinned.filter((n) => !hidden.includes(n));
     expect(gained, `tool(s) that newly went HIDDEN — the chip-noise class returning: ${gained.join(', ')}`).toEqual([]);
     expect(lost, `tool(s) that newly grew a chip without a ruling: ${lost.join(', ')}`).toEqual([]);
-    expect(hidden.length).toBe(108 + HIDDEN_SINCE_T54.length);
+    expect(hidden.length).toBe(108 + HIDDEN_SINCE_T54.length - UNHIDDEN_SINCE_T54.length);
   });
 
   it('the three names T54 moved are gone from the hidden set and nothing else went with them', () => {

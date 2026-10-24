@@ -846,17 +846,11 @@ const BOOKKEEPING_EXACT: ReadonlySet<string> = new Set([
 // retrieval so that a world-changing act wins when both appear.
 const EFFECTFUL_VERBS: ReadonlySet<string> = new Set([
   'send', 'reply', 'forward',
-  // T77b: `draft` joins the verb set rather than taking a per-name override, because it is
-  // the SAME shape T54 diagnosed on `shell` — a world-changing act the vocabulary simply
-  // lacked a word for, not a heuristic getting a name wrong. Writing a message into the
-  // owner's Drafts folder is a real change to his mailbox and must draw a badge; hidden, it
-  // is the chip-noise defect in the other direction, where the owner sees nothing at all.
-  // As with `shell`, the consequence is said out loud: this class is read by five ENGINE
-  // sites (loop thrash-progress, promise-floor, going-idle's countsAsTaskWork and its
-  // side-effect hint, execute/post-result), so preparing a draft now counts as real work in
-  // each — which is correct, since "write me an email to send later" is the whole task.
-  // Measured before landing: `gmail_draft` and `outlook_draft` are the only tools in the
-  // registry carrying a `draft` token, so nothing else moves.
+  // T77b: `draft` is a world-changing act (a message written into the owner's Drafts folder)
+  // the vocabulary lacked a word for, like `shell` in T54. Hidden, the owner sees nothing; as
+  // effectful it counts as real work in the five ENGINE sites that read this class (loop
+  // thrash-progress, promise-floor, going-idle's countsAsTaskWork and side-effect hint,
+  // execute/post-result). Only `gmail_draft` and `outlook_draft` carry the token.
   'draft',
   'create', 'write', 'edit', 'append', 'insert', 'replace', 'update',
   'delete', 'remove', 'patch',
@@ -866,6 +860,10 @@ const EFFECTFUL_VERBS: ReadonlySet<string> = new Set([
   'call', 'run', 'finalize',
   'respond', 'accept', 'subscribe', 'unsubscribe',
   'start', 'stop', 'restart', 'end',
+  // v3.5: mailbox mutation verbs (a mailbox job is work). Census: only gmail_label and
+  // outlook_mark_read change class; gmail_list_labels stays retrieval.
+  'label', 'archive', 'trash', 'untrash', 'spam', 'star', 'unstar', 'flag', 'mark',
+  'modify', 'batch',
 ]);
 
 const RETRIEVAL_VERBS: ReadonlySet<string> = new Set([
@@ -905,6 +903,7 @@ export function classifyTool(name: string, args?: Record<string, unknown>): Tool
   // Retrieval first: an explicit read verb (get/read/list/search/...) wins over
   // a soft mutation token, so e.g. slides_get_style reads (retrieval) while
   // slides_set_style / slides_style_text_range mutate (effectful).
+  if (tokens.includes('mark')) return 'effectful-action'; // outlook_mark_read sets a flag, fetches nothing
   if (tokens.some((t) => RETRIEVAL_VERBS.has(t))) return 'retrieval';
   if (tokens.some((t) => EFFECTFUL_VERBS.has(t))) return 'effectful-action';
 
