@@ -9110,6 +9110,13 @@
       "to": 822,
       "by": "t262 (2026-10-23): v3.5 plan before project, Task A2",
       "why": "+1: the form-responses tool's one-line `scale` declaration (page size 5000 with its page_token, Forms' documented maximum). From 822 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2940,
+      "to": 2941,
+      "by": "t262 (2026-10-24): v3.5 plan before project, plan schema in its own file",
+      "why": "+1: the import of WORK_PLAN_PROP from the new agent/work-plan-schema.ts (the plan object moved out of work-verb-schema.ts, which the growth detector flagged at 247 lines). A further import line, no new code. From 2,941 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9192,7 +9199,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 998,
-    "packages/server/src/agent/tools/definitions.ts": 2940,
+    "packages/server/src/agent/tools/definitions.ts": 2941,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
