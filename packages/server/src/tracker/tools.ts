@@ -916,8 +916,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
           return (
             `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
             `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
-            `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps, ` +
-            `and work_update(action="status") / work_update(action="complete_step") as you finish each. ` +
+            `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps. ` +
             `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
           );
         }
@@ -1003,7 +1002,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       });
     }
 
-    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.\n\n${description}${taskSummary}${scale}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
+    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.\n\n${description}${taskSummary}${scale}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCreateProject failed', { error: msg }, agentId);
@@ -2893,8 +2892,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
               : renderDeliveryEvidence(ev!);
             parts.push(
               `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
-              `If that delivery completed the task, close it NOW with work_update(action="status", status="complete") (or work_update(action="complete_step")) ` +
-              `and do NOT redo or re-deliver the work. Only continue working if something genuinely remains.]`
+              `If that delivery completed the task, close it with work_update(action="status", status="complete", result, evidence); if not, continue. ` +
+              `Do NOT redo or re-deliver what was already delivered.]`
             );
           }
         }
@@ -4670,7 +4669,7 @@ export async function trackerValidateComplete(
         `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck, this is a routine PM check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `To close this out: address what PM flagged, then call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
+        `To close this out: address what PM flagged, then call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
       redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: directive, taskId });
     } catch (err) {
       redriven = false;

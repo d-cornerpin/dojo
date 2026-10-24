@@ -1,5 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
-import { continuedJobTouchingNothing, continuedJobFact } from './job-loop-facts.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -2835,7 +2835,7 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
   }
 }
 
-function buildPokeMessage(
+export function buildPokeMessage(
   task: ReturnType<typeof getTask> & object,
   pokeType: string,
   pokeNumber: number,
@@ -2876,13 +2876,15 @@ function buildPokeMessage(
     task.stepNumber !== null ? `Step: ${task.stepNumber}${task.totalSteps ? ` of ${task.totalSteps}` : ''}` : null,
     task.notes ? `\nLatest notes:\n${task.notes.split('\n').slice(-3).join('\n')}` : null,
   ].filter(Boolean).join('\n');
+  const left = measuredLeftFact(task.id);   // v3.5 Part C5: a measured task with items left says so
+  const measureInfo = left ? `\n${left}` : '';
 
   switch (pokeType) {
     case 'nudge':
-      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call work_update(action="status") with task_id="${task.id}" and status="complete" with notes on what you did.\nIf you are still working on it, say so with work_note(task_id="${task.id}") and carry on; that answers this check-in.\nIf blocked, call work_update(action="status") with status="blocked" and explain why.`;
+      return `Checking in on "${task.title}": no movement for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nIf you are still on it, say what is next with work_note(task_id="${task.id}") and carry on; that answers this. If you are waiting on someone, status="paused" or "blocked" with the reason. If it is finished, close it with the result and evidence.`;
 
     case 'urgent':
-      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}\n\nAny one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes.\n\n${taskInfo}${measureInfo}\n\nAny one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") with the reason\n3. Finished? work_update(action="status", task_id="${task.id}", status="complete", result, evidence)`;
 
     case 'escalate_primary':
       // t90 D1 (report #6): this rung NOTIFIES. It used to say "Reassign or unblock the task — or
@@ -2891,25 +2893,25 @@ function buildPokeMessage(
       // not the PM. No silent handoffs." The close-out line stays — telling a status row the truth
       // about work that was already delivered is a repair, not a transfer — and the one thing the
       // primary is now told about reassignment is that it is not its call.
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes${pokesSent === 0 ? ' and no earlier check-in has been sent to it' : ` with no response after ${earlier}`}.\n\n${taskInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes${pokesSent === 0 ? ' and no earlier check-in has been sent to it' : ` with no response after ${earlier}`}.\n\n${taskInfo}${measureInfo}\n\nFor your awareness. If your own records show this work was already delivered, call work_update(action="status", task_id="${task.id}", status="complete") with the result — that is a close-out, not a takeover.\nOtherwise do NOT reassign, cancel or re-run it. A slow assignee is not a stalled one: the platform keeps poking it and will not move the work. If the agent's process is genuinely dead the engine's own reaper handles that, not you and not the project manager.`;
 
     case 'escalate_assignee':
       // Rung 3 with nobody else to tell: the same facts, addressed to the assignee itself.
-      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still working? Say so with work_note(task_id="${task.id}") and carry on\n2. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n3. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") naming exactly what you are waiting on`;
+      return `${ordinal}: task "${task.title}" has had no update for ${idleMinutes} minutes${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}${measureInfo}\n\nThis task is still yours and nobody is taking it from you. Any one of these answers it:\n1. Still on it? Say what is next with work_note(task_id="${task.id}") and carry on\n2. Waiting on someone? work_update(action="status", task_id="${task.id}", status="paused" or "blocked", notes="...") naming exactly what you are waiting on\n3. Finished? work_update(action="status", task_id="${task.id}", status="complete", result, evidence)`;
 
     case 'redrive':
       // The ladder's top rung, and the end of the PM's authority. It is a HARDER poke, not a
       // different kind of act: no reassignment is offered, threatened or asked about, because
       // (owner ruling 2026-10-02) keeping the agent working is the whole job.
       return `STILL OPEN: task "${task.title}" has been idle for ${idleMinutes} minutes`
-        + `${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}\n\nThis task is still yours and nobody is taking it from `
-        + `you. Pick it up where you left off and do the next concrete step now, or — if you `
-        + `genuinely cannot proceed — call work_update(action="status", task_id="${task.id}", `
-        + `status="blocked", notes="...") naming exactly what you are waiting on. If you are still `
-        + `working on it, a work_note saying so is the whole answer.`;
+        + `${pokesSent === 0 ? '' : ` through ${earlier}`}.\n\n${taskInfo}${measureInfo}\n\nThis task is still yours and nobody is taking it from `
+        + `you. Pick it up where you left off and do the next concrete step now; if you are still `
+        + `working on it, a work_note saying what is next is the whole answer. If you genuinely cannot `
+        + `proceed, call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") `
+        + `naming exactly what you are waiting on.`;
 
     default:
-      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall work_update(action="status", task_id="${task.id}", status="complete") if done.`;
+      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}${measureInfo}\n\nStill on it? Say what is next with work_note(task_id="${task.id}"). Finished? Close it with the result and evidence.`;
   }
 }
 

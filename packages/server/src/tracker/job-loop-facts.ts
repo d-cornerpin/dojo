@@ -27,3 +27,18 @@ export function continuedJobFact(taskId: string): string | null {
   const times = n === 1 ? '1 time' : `${n} times`;
   return `Continued ${times} since it last touched an item${left === null ? '' : `; ${left.toLocaleString('en-US')} left on its measure`}.`;
 }
+
+/** v3.5 text wave (Part C5, t250 fix round 3 NB2): the fact a check-in carries for a MEASURED task with
+ *  items left, or null (unmeasured, never read, or reading 0). */
+export function measuredLeftFact(taskId: string): string | null {
+  const row = getDb().prepare('SELECT measure_json, measure_initial, measure_remaining FROM work WHERE id = ?')
+    .get(taskId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null } | undefined;
+  if (!row?.measure_json || row.measure_remaining === null || row.measure_remaining <= 0) return null;
+  let m: { tool?: unknown; args?: { query?: unknown }; unit?: unknown };
+  try { m = JSON.parse(row.measure_json) as typeof m; } catch { return null; }
+  if (typeof m.tool !== 'string' || typeof m.args?.query !== 'string') return null;
+  const start = row.measure_initial === null ? '' : ` (of ${row.measure_initial.toLocaleString('en-US')} at the start)`;
+  // The words of `work/measure.ts describeMeasure`, read off the stored row. Importing the registry here (into
+  // the PM's module graph) stopped the measured-close suites' counter seam from being reached, so it is not imported.
+  return `Its measure (${m.tool} "${m.args.query}") still returns ${row.measure_remaining.toLocaleString('en-US')} ${typeof m.unit === 'string' ? m.unit : 'items'}${start}.`;
+}
