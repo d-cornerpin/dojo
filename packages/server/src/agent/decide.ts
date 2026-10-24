@@ -117,22 +117,29 @@ export async function decide(
   const request = decideRequestBody(provider.model, state, questions);
   const stateChars = JSON.stringify(fencedState(state)).length;
   if (Buffer.byteLength(request) > MAX_DECISION_BODY_BYTES) return fail('too_large', opts.purpose, `${Buffer.byteLength(request)} bytes`);
-  return inTurn(async () => {
-    if (opts.background) await whenAgentWorkEnds(provider.providerId);
-    return sent(provider, request, stateChars, names, questions, opts);
-  });
+  // N-A (fix round 4): a background call waits for the agents to go idle BEFORE it joins the queue, so a call
+  // somebody waits on is never held behind a check that is itself waiting.
+  if (opts.background) await whenAgentWorkEnds(provider.providerId);
+  return inTurn(() => sent(provider, request, stateChars, names, questions, opts));
 }
 
 /**
  * ONE QUEUE (t268 fix round 2): the local Ollama answers one request at a time, so decide() calls go one after
  * another — each call's clock starts when it is SENT, never while it waits (calls dialled together spent their
- * clocks queued in Ollama, and most shadow verdicts of a busy fold were lost).
+ * clocks queued in Ollama, and most shadow verdicts of a busy fold were lost). A slot is released however its
+ * call ends, a throw included.
  */
-let tail: Promise<unknown> = Promise.resolve();
-function inTurn<T>(work: () => Promise<T>): Promise<T> {
-  const run = tail.then(work, work);
-  tail = run.catch(() => undefined);
-  return run;
+let tail: Promise<void> = Promise.resolve();
+async function inTurn<T>(work: () => Promise<T>): Promise<T> {
+  const before = tail;
+  let release!: () => void;
+  tail = new Promise<void>((r) => { release = r; });
+  try {
+    await before;
+    return await work();
+  } finally {
+    release();
+  }
 }
 
 async function sent(
