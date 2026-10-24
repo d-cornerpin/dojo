@@ -99,8 +99,9 @@ describe('T54(a) — `shell` renders like the sibling it split from', () => {
   });
 
   it('CONTROL: the ruling did not spread to shell\'s hidden category neighbours', () => {
-    // Same `File & System` category, NOT ruled on, still bookkeeping.
-    for (const n of ['screen_screenshot', 'keyboard_type', 'mouse_click', 'scratchpad_set', 'get_current_time']) {
+    // Same `File & System` category, NOT ruled on, still bookkeeping. (keyboard_type and
+    // mouse_click were ruled on later, at v3.5 E19b — see UNHIDDEN_SINCE_T54 below.)
+    for (const n of ['screen_screenshot', 'scratchpad_set', 'get_current_time']) {
       expect(classifyTool(n), n).toBe('bookkeeping');
     }
   });
@@ -263,6 +264,11 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     // promise floor, going-idle). The owner-ruled direction is that mutation is work, so the
     // call now draws a chip like its siblings `gmail_create_label` and `gmail_delete_label`.
     'gmail_label',
+    // v3.5 E19b: `keyboard_type` and `mouse_click` type and click on the owner's screen, like
+    // `mouse_move` and `applescript_run` (already effectful). Hidden, a Stop that cut one told the
+    // owner nothing (the stop race tells him about actions by this class), and the engine readers
+    // counted a typing session as no work. The orchestrator's E19b brief rules them effectful.
+    'keyboard_type', 'mouse_click',
   ];
 
   it('the hidden set is exactly the pinned 108 names plus the arrivals since, minus the departures (arg-less, as the registry is read)', () => {

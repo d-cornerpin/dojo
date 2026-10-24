@@ -754,8 +754,9 @@ const TOOL_OVERRIDES: Readonly<Record<string, ToolDisplayClass>> = {
   kill_agent: 'bookkeeping',
   // internal conversion of the user's own input.
   transcribe_audio: 'bookkeeping',
-  // effectful but the verb token is not in the list.
+  // effectful but the verb token is not in the list (v3.5 E19b: the two that type and click on the screen).
   exec: 'effectful-action',
+  keyboard_type: 'effectful-action', mouse_click: 'effectful-action',
   // UX-REPAIR T54(a) (owner ruling 6, 2026-08-16): `shell` is `exec`'s own half — the two
   // split from ONE door at PHASE-5 T3 and sensei-policy.ts still says so. It runs arbitrary
   // zsh and drew NOTHING for one reason: "exec" had an override here and "shell" is in no
