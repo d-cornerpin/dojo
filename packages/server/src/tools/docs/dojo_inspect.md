@@ -2,7 +2,7 @@
 
 Look at anything that happened in your own Dojo, read-only: what happened to a task, an agent, a turn or a time window; what any agent said; what the platform logged; how the Dojo is configured; what is in its database; and its own source code. It never changes anything. Passwords, keys and tokens are never shown: credential tables are refused and token-shaped text is blanked in every view.
 
-Use it before any shell command about the Dojo.
+Use it before any shell command about the Dojo: the shell refuses `sqlite3` reads of the Dojo's database and reads of its platform log, and names the dojo_inspect call that answers instead.
 
 A long answer is kept whole: you see its start, its end and a note, and `tool_result_read` reads or searches the rest. Nothing is cut.
 

@@ -27,6 +27,7 @@ import { authorizeArgv, authorizeShellScript } from './proc.js';
 import { resolveArgvArg, resolveCommandArg } from './resolve.js';
 import type { Grant } from './grants.js';
 import { deny, type Verdict } from './types.js';
+import { redirectDojoQuestion } from './dojo-redirect.js';
 
 /** Which door a tool name speaks to. Anything else is not an exec-shaped call. */
 export type ExecDoor = 'proc' | 'shell';
@@ -55,13 +56,17 @@ export function authorizeExecShapedCall(grant: Grant, door: ExecDoor, raw: unkno
     if (!resolved.ok) {
       return deny('ladder-parity', `exec-shape:${resolved.code}`, resolved.reason);
     }
-    return authorizeArgv(grant, resolved.value);
+    const verdict = authorizeArgv(grant, resolved.value);
+    return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.display) ?? verdict : verdict;
   }
   const resolved = resolveCommandArg(raw);
   if (!resolved.ok) {
     return deny('ladder-parity', `shell-shape:${resolved.code}`, resolved.reason);
   }
-  return authorizeShellScript(grant, resolved.value);
+  const verdict = authorizeShellScript(grant, resolved.value);
+  // v3.5 inspect C2: a holder's Dojo question goes to dojo_inspect. Asked only of a line the
+  // broker allowed, so it can refuse and never permit (`dojo-redirect.ts`).
+  return verdict.allowed ? redirectDojoQuestion(grant.agentId, resolved.value.raw) ?? verdict : verdict;
 }
 
 /** The same question asked of an argument OBJECT, for callers outside the

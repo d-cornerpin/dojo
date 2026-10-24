@@ -878,6 +878,8 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
     }
   }
 
+  // v3.5 inspect C2: the standing line, for an agent that holds the tool (the shell redirect names the call).
+  if (agentTools.some((t) => t.name === 'dojo_inspect')) lines.push('## Your Own Dojo\nTo learn what happened in your Dojo — a task, an agent, a turn, the log, the configuration, your own code — use dojo_inspect first; the shell is for the outside world.', '');
   const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');
   if (hasSendToAgent) {
     lines.push(`## Talking to Other Agents`);

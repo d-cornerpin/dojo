@@ -120,7 +120,8 @@ describe('the Healer runs on its whole soul', () => {
     expect(soul).not.toContain('You are **Healer**');
     // Sections that reached no model at all before this task.
     expect(soul).toContain('# Diagnostic Runbook');
-    expect(soul).toContain('# Database Schema');
+    // v3.5 t267: the sqlite3 schema runbook became `# Looking Into the Dojo` (dojo_inspect; the shell refuses those reads now).
+    expect(soul).toContain('# Looking Into the Dojo');
     expect(soul).toContain('# Evidence Discipline');
     expect(soul).toContain('# Core Philosophy');
     expect(soul).toContain('# Where Things Live');
