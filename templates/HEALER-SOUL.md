@@ -37,6 +37,8 @@ The two off-limits things are:
 
 The permission layer enforces both denies; you won't accidentally hit them.
 
+The shell never writes the Dojo's own database (`dojo.db` and its -wal and -shm files): a fix that needs a record changed goes through the platform's own tools, and when no tool can make it, you propose it with `healer_propose`.
+
 # Where Things Live
 
 | What | Where |

@@ -7,10 +7,10 @@
 // command that reads the Dojo's database or its platform log is refused with the one call that
 // answers it, so the habit forms by itself. Driven on a scratch DOJO_HOME, never the live box.
 //
-// What it does NOT touch, each pinned below: any other command; other files under ~/.dojo/logs
-// (dojo_inspect does not read them, so refusing would remove a capability); a write statement
-// (not a question — handed up, unchanged); and an agent that does not hold the tool (pointing it
-// at a tool it cannot call would be a dead end — handed up, unchanged).
+// ORCHESTRATOR RULING 2026-10-24: a shell WRITE to the live database is refused for every agent,
+// the Healer included, and a shell READ of it is refused for an agent that does not hold the tool.
+// Untouched, each pinned below: any other command or file (another database, a backup, the other
+// files under ~/.dojo/logs) and a non-holder's read of the platform log.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -84,6 +84,9 @@ describe('a Dojo question asked of the shell is refused with the dojo_inspect ca
     }
     // The argv door too, and the Healer as well as the main agent.
     expect(refusal(HEALER, 'proc', ['sqlite3', DB, 'select count(*) from deliveries'])).toContain('what="sql"');
+    // The plan's `~/.dojo/data/*.db` form (t267 review, Minor), and a copy of the contents out.
+    expect(refusal(PRIMARY, 'shell', 'sqlite3 ~/.dojo/data/*.db "select 1"')).toContain('what="sql"');
+    expect(refusal(PRIMARY, 'shell', 'xxd ~/.dojo/data/dojo.db-wal | head')).toContain('what="sql"');
   });
 
   it('a look at the schema names the schema view', () => {
@@ -118,12 +121,55 @@ describe('what the redirect leaves exactly as it was', () => {
     expect(verdict(PRIMARY, 'shell', 'wc -l ~/.dojo/logs/assembly-validation.jsonl').allowed).toBe(true);
   });
 
-  it('a write statement: it is not a question (handed up, unchanged)', () => {
-    expect(verdict(HEALER, 'shell', `sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`).allowed).toBe(true);
+  it('an agent that does not hold dojo_inspect keeps its read of the platform log', () => {
+    expect(verdict(WORKER, 'shell', 'tail -20 ~/.dojo/logs/dojo.log').allowed).toBe(true);
   });
 
-  it('an agent that does not hold dojo_inspect is not pointed at it (handed up, unchanged)', () => {
-    expect(verdict(WORKER, 'shell', 'tail -20 ~/.dojo/logs/dojo.log').allowed).toBe(true);
+  it('t267 review: a look at the FILE, not its contents (size, WAL growth, who holds it) — every agent', () => {
+    for (const agent of [PRIMARY, HEALER, WORKER]) {
+      for (const script of ['ls -la ~/.dojo/data/dojo.db', 'du -sh ~/.dojo/data/dojo.db-wal', 'stat ~/.dojo/data/dojo.db-shm', 'lsof ~/.dojo/data/dojo.db',
+        'ls -la ~/.dojo/logs/dojo.log.1', 'wc -c ~/.dojo/logs/dojo.log', 'ls -la ~/.dojo/data/*.db']) {
+        expect(verdict(agent, 'shell', script).allowed, `${agent}: ${script}`).toBe(true);
+      }
+    }
+  });
+
+  it('sqlite3 on any other database file, a write included', () => {
+    expect(verdict(PRIMARY, 'shell', `sqlite3 ${HOME}/Projects/app.db "UPDATE items SET done = 1 WHERE id = 3"`).allowed).toBe(true);
+    expect(verdict(WORKER, 'shell', 'cp ~/.dojo/data/dojo.db.bak /tmp/old.db').allowed).toBe(true);
+  });
+});
+
+// ORCHESTRATOR RULING (2026-10-24), concerns 1-2 of the first report.
+describe('the shell never writes the Dojo\'s own database, for any agent', () => {
+  const WRITE = /^Refused: the shell does not change the Dojo's own database \(dojo\.db and its -wal and -shm files\)\./;
+  it('a write statement by the Healer is refused, plainly', () => {
+    for (const script of [`sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`, `sqlite3 ${DB} "delete from work where id = 'w1'"`,
+      `sqlite3 ${DB} "pragma wal_checkpoint(TRUNCATE)"`, `sqlite3 ${DB} "vacuum"`]) {
+      expect(refusal(HEALER, 'shell', script), script).toMatch(WRITE);
+    }
+    expect(refusal(HEALER, 'proc', ['sqlite3', DB, "INSERT INTO config (key, value) VALUES ('k', 'v')"])).toMatch(WRITE);
+  });
+
+  it('a write into the files themselves is refused, for the main agent and a worker alike', () => {
+    for (const [agent, script] of [[PRIMARY, 'echo x >> ~/.dojo/data/dojo.db-wal'], [PRIMARY, 'cp /tmp/restore.db ~/.dojo/data/dojo.db'],
+      [WORKER, 'mv /tmp/x ~/.dojo/data/dojo.db'], [WORKER, 'rm ~/.dojo/data/dojo.db-shm'], [PRIMARY, `dd if=/dev/zero of=${DB} count=1`],
+      [WORKER, 'cat /tmp/x | tee ~/.dojo/data/dojo.db']] as const) {
+      expect(refusal(agent, 'shell', script), script).toMatch(WRITE);
+    }
+  });
+});
+
+describe('a shell read of the database by an agent that does not hold dojo_inspect is refused', () => {
+  it('names why, plainly, and points at the main agent', () => {
+    for (const script of [`sqlite3 ${DB} "select * from google_accounts"`, 'strings ~/.dojo/data/dojo.db | grep token', 'cp ~/.dojo/data/dojo.db /tmp/copy.db']) {
+      expect(refusal(WORKER, 'shell', script), script)
+        .toBe('Refused: the Dojo\'s own database is not read through the shell: it holds the platform\'s internals and its credentials. Ask the main agent if you need something looked up in it.');
+    }
+  });
+
+  it('a holder\'s read is still redirected to dojo_inspect, not refused flatly', () => {
+    expect(refusal(PRIMARY, 'shell', 'cp ~/.dojo/data/dojo.db /tmp/copy.db')).toContain('dojo_inspect(what="sql"');
   });
 });
 
