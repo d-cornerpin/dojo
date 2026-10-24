@@ -173,26 +173,15 @@ export async function runGoingIdle(
       state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name, argsForResult(state.toolCalls, tr)));
 
     if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
-      // v2.10.2, detect scheduler-triggered turns AND scan this
-      // turn's tool_results for side-effecting calls that
-      // returned success. Pre-fix, the agent had to read a
-      // 4-option menu and construct result+evidence themselves,
-      // and frequently just emitted "08 done" as text. When
-      // we can see "you just ran gmail_send and got [SENT]",
-      // surfacing that inline makes the close-out mechanical.
+      // Scan this turn's tool_results for side-effecting calls that returned
+      // success, and list them as a FACT (do not repeat them). v3.5 Part C2: the
+      // list no longer carries a close command, and the scheduler hint that
+      // steered a scheduled turn to "DONE" is gone: no text pre-fills a close.
       //
       // Signal source is `state.toolResults` (in-memory, this
       // turn) rather than task_log, most tools don't write
       // per-task log entries when called, so a task_log scan
       // would almost always come up empty.
-      // v3.1.10 (attribution redesign §5, Phase 5): decide by structured
-      // origin first. The scheduler stamps origin_intent='scheduler'; reading
-      // it fixes the case where lastUserMessageContent (now sourced from the
-      // authorized-human waiting set) is null on a pure scheduler turn and the
-      // prose marker could never match. Prose kept only as the legacy fallback.
-      const isSchedulerTriggered =
-        mostRecentInbound?.origin_intent === 'scheduler' ||
-        (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
       // Same derived membership as countsAsTaskWork above (minus the
       // tracker tools: this hint warns about re-running EXTERNAL side
       // effects, and re-adding a tracker note is harmless). The old hand
@@ -208,26 +197,17 @@ export async function runGoingIdle(
       const taskList = openTasks
         .map(t => `  - "${t.title.slice(0, 60)}" (${t.id.slice(0, 8)})`)
         .join('\n');
-      const schedulerHint = isSchedulerTriggered
-        ? `\n**This turn was scheduler-triggered.** Scheduler-fired tasks rarely need option (1) KEEP GOING, the scheduler does the repetition, not you. The right answer here is almost always option (2) DONE.\n`
-        : '';
       const auditHint = recentSideEffects.length > 0
-        ? `\nYou successfully called ${recentSideEffects.length === 1 ? 'a side-effecting tool' : 'side-effecting tools'} this turn:\n` +
-          recentSideEffects.map(s => `  - \`${s.name}\` returned: ${s.preview}`).join('\n') + `\n\n` +
-          `These are NON-IDEMPOTENT actions that already executed. Re-running them would duplicate the side effect (double email, double text, double charge). The work is done. Close the task NOW:\n` +
-          `\`work_update(action="status", task_id="${openTasks[0].id}", status="complete", result="<one-line summary of what landed>", evidence=[{kind: "tool_call_ref", claim: "${recentSideEffects[0].name} succeeded"}])\`\n`
+        ? `\nSide-effecting calls that already ran this turn (do not repeat them):\n` + recentSideEffects.map(s => `  - \`${s.name}\`: ${s.preview}`).join('\n') + '\n'
         : '';
       const nudgeText = (
-        `[System: you are about to end this turn with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in_progress and assigned to you:\n` +
-        `${taskList}\n` +
-        schedulerHint +
-        auditHint +
-        `\nPick exactly one of these before ending the turn:\n\n` +
-        `  1. KEEP GOING - call your next tool NOW to continue from EXACTLY where you stopped. Long file reads, batch operations, multi-step processes, don't restart, don't re-read content you already processed, just advance to the next line / next item / next step.\n` +
-        `  2. DONE - work_update(action="status", task_id, status="complete", result="...", evidence=[...]) (or work_update(action="complete_step") for multi-step projects).\n` +
-        `  3. WAITING ON USER (already asked them) - work_update(action="status", task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
-        `  4. BLOCKED (needs escalation - user does not know yet) - work_update(action="status", task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
-        `If you go idle with a task still in_progress, the engine will auto-pause it and escalate to PM. Pre-fix for non-idempotent tasks (gmail_send, sms_send, voice_call, exec hitting live APIs), PM was then forced into a re-run remediation that duplicated the side effect. Save everyone the work: close the task now.]`
+        `[System: this turn is ending with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in progress and assigned to you:\n` +
+        `${taskList}\n` + auditHint +
+        `\nIf there is more to do, do it: call your next tool now and continue from exactly where you stopped (next item, next line, next step; do not restart or re-read what you already processed).\n` +
+        `If you are waiting on the person (you already asked them): work_update(action="status", task_id, status="paused", notes="waiting for X").\n` +
+        `If something the person does not know about stops you: work_update(action="status", task_id, status="blocked", notes="why").\n` +
+        `If the task is genuinely finished: work_update(action="status", task_id, status="complete", result, evidence) — a measured task closes only when its measure reads 0 or you name what is left.\n` +
+        `A task left in progress is not a problem: it stays open and you are brought back to it.]`
       );
       // v3.1.10: if the agent ALREADY produced a user-facing reply this
       // turn, do NOT re-prompt it. The weaker model treats the re-prompt
@@ -267,7 +247,7 @@ export async function runGoingIdle(
         // assembler strips, so the re-entered round would carry NO new info and
         // burn a model call for nothing. Deliver the menu via the steer queue (a
         // synthetic user message injected next iteration) so the extra round
-        // actually shows the model the 4-option decision. Row kept for the
+        // actually shows the model the end-of-turn choices. Row kept for the
         // dashboard. Gating is unchanged.
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'going-idle-in-progress', content: nudgeText, atLoop: state.loopCount }) });
         logger.info('v2 going-idle-with-in_progress nudge fired', {

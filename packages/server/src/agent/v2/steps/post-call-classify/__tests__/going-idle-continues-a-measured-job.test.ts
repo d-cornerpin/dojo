@@ -439,3 +439,29 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
     expect(checkIn).toHaveBeenCalledWith(id);
   });
 });
+
+// v3.5 Part C2: the end-of-turn text states facts and leaves continuing as the default.
+describe('C2: the end-of-turn text never coaches closure', () => {
+  const FORBIDDEN = ['Close the task NOW', 'auto-pause', 'Save everyone', 'almost always option', 'Pick exactly one'];
+
+  it('a scheduled turn ending with an unmeasured task in progress: continue first, then the doors; no scheduler "DONE" hint', async () => {
+    await openTask(false);
+    const out = await runGoingIdle(freshTurn(), ctxFor({ mostRecentInbound: { origin_intent: 'scheduler' } }), scratch());
+    const text = menuSteers(out.state)[0].content;
+    for (const f of FORBIDDEN) expect(text).not.toContain(f);
+    expect(text).not.toContain('scheduler-triggered');
+    const cont = text.indexOf('If there is more to do, do it');
+    expect(cont).toBeGreaterThan(-1);
+    for (const door of ['status="paused"', 'status="blocked"', 'status="complete"']) expect(text.indexOf(door)).toBeGreaterThan(cont);
+    expect(text).toContain('A task left in progress is not a problem');
+  });
+
+  it('a side effect that already ran is listed as a fact, with no close command', async () => {
+    const id = await openTask(false);
+    const send: ToolCall = { id: 'tc-send', name: 'gmail_send', arguments: { to: 'x@example.invalid', subject: 's', body: 'b' } } as ToolCall;
+    const text = menuSteers((await runGoingIdle(ranCalls(freshTurn(), id, [send]), ctxFor(), scratch())).state)[0].content;
+    expect(text).toContain('Side-effecting calls that already ran this turn (do not repeat them):\n  - `gmail_send`: [OK]');
+    for (const f of FORBIDDEN) expect(text).not.toContain(f);
+    expect(text).not.toContain(`task_id="${id}", status="complete"`);
+  });
+});
