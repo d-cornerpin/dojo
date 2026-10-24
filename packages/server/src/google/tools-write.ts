@@ -5,7 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
-import { resolveGmailLabelTarget } from './gmail-archive.js';
+import { executeGmailLabel } from './gmail-label.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import {
   type LocalAttachment,
@@ -1335,36 +1335,8 @@ export async function executeGoogleWriteTool(
       return `Attachment saved to ${outPath} (${Math.round(content.length / 1024)}KB). ${hint}`;
     }
 
-    case 'gmail_label': {
-      const addLabels = (args.add_labels as string[]) ?? [];
-      const removeLabels = (args.remove_labels as string[]) ?? [];
-      const target = await resolveGmailLabelTarget(args, GMAIL_BASE, agentId, agentName, slot);
-      if (!target.ok) return target.error;
-
-      const result = await googleWrite('POST', target.url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId: target.messageId, threadId: target.threadId, addLabels, removeLabels }, undefined, slot);
-      if (!result.ok) {
-        // A bare Gmail 400 ("Invalid label: Junk E-mail") has no remedy: point the agent at the
-        // lister and creator with the SAME prefix as the tool as called (`name`), so a user_ call
-        // is never sent to a base tool it cannot use.
-        if (/invalid label/i.test(result.error ?? '')) {
-          const prefix = name.startsWith('user_') ? 'user_' : '';
-          const listerTool = `${prefix}gmail_list_labels`;
-          const createTool = `${prefix}gmail_create_label`;
-          return (
-            `Error modifying labels: ${result.error}. That label does not exist on this Gmail account ` +
-            `(label names are per-account, not shared). Call ${listerTool} to see the account's actual label ` +
-            'names before retrying — do not guess or invent one. Two common cases already have a standard label: ' +
-            'to archive a message, remove_labels: ["INBOX"] (there is no separate "Archive" label to add); to ' +
-            'mark it as junk/spam, add_labels the system label "SPAM". If you intended a genuinely new custom ' +
-            `label, call ${createTool} first, then retry gmail_label with the exact name it returns.`
-          );
-        }
-        return `Error modifying labels: ${result.error}`;
-      }
-      if (!target.conversation) return `Labels updated on message ${target.messageId}`;
-      const count = (result.data as { messages?: unknown[] } | null)?.messages?.length;
-      return `Labels updated on the WHOLE conversation ${target.threadId}${count ? ` (${count} message${count === 1 ? '' : 's'})` : ''}. To change only one message next time, pass message_id with this_message_only=true.`;
-    }
+    case 'gmail_label':
+      return executeGmailLabel(name, args, GMAIL_BASE, agentId, agentName, slot);
 
     case 'gmail_create_label': {
       const labelName = (args.name as string | undefined)?.trim();
