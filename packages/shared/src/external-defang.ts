@@ -52,12 +52,32 @@ const PUNCT_CHAR = /[/\\|*:.]/;
  *  format, not a limit), so the defang costs one pass over the body. */
 const MARKER_AT = new RegExp(`[${SEP}${PUNCT}]?(?:(?:end|close|closing|stop)${SEP}?(?:of${SEP}?)?(?:the${SEP}?)?)?external(?![a-z])`, 'y');
 
+/** The most symbols of the folded stream a bracket's test can read: the 24 of the longest marker
+ *  (1 lead + 7 `closing` + 1 + 2 `of` + 1 + 3 `the` + 1 + 8 `external`) plus the one symbol the
+ *  `(?![a-z])` look-ahead reads. The test is handed exactly this stretch, so it cannot read more. */
+export const DEFANG_LOOKAHEAD = 1 + 7 + 1 + 2 + 1 + 3 + 1 + 8 + 1;
+
+/** An optional running count of the work the defang does, for the test that proves it is linear:
+ *  one step per body character read, per folded symbol it yields, per character of the folded
+ *  stream written, per character a bracket's test is handed, and per character copied out. */
+export interface DefangTally { steps: number }
+
 /** Turn the opening bracket of anything marker-shaped in `body` into "(". Nothing else changes.
  *  Fix round 4 (ruling 1): ONE pass. Each character is folded once into a stream in which invisible
  *  characters and marks vanish and every run of separators is one symbol, so no padding or
  *  invisible run, of any length, can push the word out of view — and each bracket is decided by
  *  reading only the bounded stretch after it. A marker never spans a line end. */
 export function defangExternalMarkers(body: string): string {
+  return defang(body);
+}
+
+/** The same defang, adding its work to `tally` (the output is byte-identical; see the test). */
+export function defangExternalMarkersCounting(body: string, tally: DefangTally): string {
+  return defang(body, tally);
+}
+
+function defang(body: string, tally?: DefangTally): string {
+  let work = 0;   // a plain local: counting costs one add per step, and nothing when no tally is given
   const parts: string[] = [];
   let len = 0;
   let run = '';   // the separator run being read: '', SEP or PUNCT (written once it ends)
@@ -67,6 +87,7 @@ export function defangExternalMarkers(body: string): string {
     len += sym.length;
   };
   const symbol = (d: string): void => {
+    work++;
     if (SEP_CHAR.test(d)) run = run === PUNCT ? PUNCT : SEP;
     else if (PUNCT_CHAR.test(d)) run = PUNCT;
     else put(d === SEP || d === PUNCT ? OTHER : d);
@@ -77,6 +98,7 @@ export function defangExternalMarkers(body: string): string {
   for (let i = 0; i < body.length;) {
     const cp = body.codePointAt(i) as number;
     const c = cp > 0xFFFF ? body.slice(i, i + 2) : body[i];
+    work++;
     if (c === '\n') put(c);
     else if (OPENER_CHARS.has(c)) { put(c); at.push(i); next.push(len); }
     else if (cp < 0x80) symbol(c.toLowerCase());
@@ -87,16 +109,22 @@ export function defangExternalMarkers(body: string): string {
     }
     i += c.length;
   }
-  if (at.length === 0) return body;
+  if (at.length === 0) { if (tally) tally.steps += work; return body; }
   if (run !== '') parts.push(run);
   const stream = parts.join('');
+  work += stream.length;
   let out = '';
   let from = 0;
   for (let k = 0; k < at.length; k++) {
-    MARKER_AT.lastIndex = next[k];
-    if (!MARKER_AT.test(stream)) continue;
+    const window = stream.slice(next[k], next[k] + DEFANG_LOOKAHEAD);
+    work += window.length;
+    MARKER_AT.lastIndex = 0;
+    if (!MARKER_AT.test(window)) continue;
     out += `${body.slice(from, at[k])}(`;
     from = at[k] + 1;
   }
-  return out + body.slice(from);
+  const result = out + body.slice(from);
+  work += result.length;
+  if (tally) tally.steps += work;
+  return result;
 }

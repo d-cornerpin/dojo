@@ -17,7 +17,7 @@
 // who wrote it — the owner's own calendar and documents are fenced too.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { OPENERS, CLOSERS, INVISIBLE, defangExternalMarkers } from './external-defang.js';
+import { OPENERS, CLOSERS, INVISIBLE, defangExternalMarkers, defangExternalMarkersCounting, DEFANG_LOOKAHEAD, type DefangTally } from './external-defang.js';
 
 export const EXTERNAL_KINDS = [
   'email', 'web page', 'search result', 'document', 'transcript',
@@ -49,7 +49,7 @@ export function fenceEnd(kind: ExternalKind, code: string): string {
 }
 
 // The second line of defence (marker-SHAPED text in a body loses its bracket): ./external-defang.ts.
-export { defangExternalMarkers };
+export { defangExternalMarkers, defangExternalMarkersCounting, DEFANG_LOOKAHEAD, type DefangTally };
 
 /** One line, no brackets of any width; an empty source is named as unknown rather than left blank. */
 function cleanSource(from: string): string {
