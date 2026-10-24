@@ -281,6 +281,12 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     residual: 'dispatch-context reach through a dual-service function stays gate-DECIDED but not facade-carried.',
   },
   {
+    file: 'agent/system-control-run.ts',
+    klass: 'honest-label',
+    why: 'v3.5 E19: the runner MOVED OUT of agent/system-control.ts (the entry above) when it became async and bound to the owner\'s Stop, so that file stays the tools; it serves the same two populations through the same dual-service functions (the tool layer and the dashboard control route). It runs ONLY the screen-control programs those functions name (cliclick, screencapture, osascript, which), argv form, no shell, and binds each child to the Stop through agent/effects/proc-tree.ts. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
+    residual: 'dispatch-context reach through a dual-service function stays gate-DECIDED but not facade-carried, exactly as for agent/system-control.ts.',
+  },
+  {
     file: 'services/canvas-html.ts',
     klass: 'honest-label',
     why: 'ADDENDUM 3(2), measured at T8F: all 3 fs sites are in one export with exactly two callers, one of them the tool layer and one the platform.',
