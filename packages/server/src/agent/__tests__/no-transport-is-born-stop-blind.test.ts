@@ -510,6 +510,7 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
    */
   const FETCH_SITES: Record<string, number> = {
     'agent/model.ts': 1,
+    'agent/decide.ts': 1,
     'agent/site-snapshot.ts': 1,
     'agent/tools/definitions.ts': 1,
     'agent/web-tools.ts': 2,
@@ -582,6 +583,8 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
       // rather than reworded, and `memory/embeddings.ts` joins them for the same reason (L2-3).
       'microsoft/graph-fetch.ts', 'microsoft/tools-office.ts', 'microsoft/tools-read.ts',
       'microsoft/tools-write.ts', 'memory/embeddings.ts',
+      // v3.5: an agent waits on a decision beside its reply floor, so its stop cuts the call.
+      'agent/decide.ts',
     ];
     for (const rel of WIRED) {
       // Either the file opens the slot itself, or every one of its calls goes through the
