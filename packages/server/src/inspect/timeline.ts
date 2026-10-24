@@ -50,14 +50,15 @@ function resolve(db: Database.Database, a: TimelineArgs, names: Map<string, stri
     const turnsOf = tree.map((w) => ({ agent: w.owner, turns: claimedTurns(db, w.id) }));
     const kind = a.project_id ? 'project' : 'task';
     const owners = [...new Set(tree.map((w) => w.owner))];
-    return { scope: { ids: tree.map((w) => w.id), turnsOf }, title: `${kind} ${short(root)} (${owners.map((o) => agentLabel(names, o)).join(', ')})`, agents: owners, narrow: true };
+    return { scope: { ids: tree.map((w) => w.id), named: root, turnsOf }, title: `${kind} ${short(root)} (${owners.map((o) => agentLabel(names, o)).join(', ')})`, agents: owners, narrow: true };
   }
   const agent = a.agent ? resolveAgent(db, a.agent) : null;
   if (a.turn !== undefined) {
     if (!agent) return 'A turn number belongs to one agent: give agent as well as turn.';
     return { scope: { turnsOf: [{ agent: agent.id, turns: [a.turn] }] }, title: `turn ${a.turn} of ${agent.label}`, agents: [agent.id], narrow: true };
   }
-  if (a.conversation) return { scope: { conversation: a.conversation }, title: `conversation ${short(a.conversation)}`, agents: agent ? [agent.id] : [], narrow: false };
+  // A conversation is narrow already: its whole history, not the platform's latest turn.
+  if (a.conversation) return { scope: { conversation: a.conversation }, title: `conversation ${short(a.conversation)}`, agents: agent ? [agent.id] : [], narrow: true };
   if (agent) return { scope: { agents: [agent.id] }, title: `agent ${agent.label}`, agents: [agent.id], narrow: false };
   return { scope: {}, title: 'the whole platform', agents: [], narrow: false };
 }

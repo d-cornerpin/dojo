@@ -68,22 +68,43 @@ export interface Window { from: number | null; to: number | null; note: string }
 
 interface TurnSpan { start: number; end: number | null }
 
+/**
+ * When a turn ended: its own end; or, for a turn that never closed (a crash, a restart — 85 of
+ * them on the dev box), its last record; or the agent's next turn's start; or null, meaning it
+ * is still running. A turn left open months ago must not stretch every window to now.
+ */
+function endOf(db: Database.Database, agentId: string, turn: number, start: number, ended: string | null): number | null {
+  const own = toMs(ended);
+  if (own !== null) return own;
+  const lastMsg = db.prepare('SELECT max(created_at) FROM messages WHERE agent_id = ? AND turn_number = ?').pluck().get(agentId, turn) as number | null;
+  const lastCall = db.prepare(`SELECT max(${msExpr('created_at', 'text')}) FROM audit_log WHERE agent_id = ? AND turn_number = ?`).pluck().get(agentId, turn) as number | null;
+  const last = Math.max(lastMsg ?? -Infinity, lastCall ?? -Infinity);
+  if (Number.isFinite(last)) return Math.max(last, start);
+  const next = db.prepare(`SELECT min(${msExpr('started_at', 'text')}) FROM turns WHERE agent_id = ? AND ${msExpr('started_at', 'text')} > ?`).pluck().get(agentId, start) as number | null;
+  return next ?? null;
+}
+
 /** The span of one turn, or null when no such turn row exists. */
 function turnSpan(db: Database.Database, agentId: string, turn: number): TurnSpan | null {
   const r = db.prepare('SELECT started_at, ended_at FROM turns WHERE agent_id = ? AND turn_number = ?').get(agentId, turn) as
     { started_at: string; ended_at: string | null } | undefined;
   const start = r ? toMs(r.started_at) : null;
-  return start === null || !r ? null : { start, end: toMs(r.ended_at) };
+  return start === null || !r ? null : { start, end: endOf(db, agentId, turn, start, r.ended_at) };
 }
 
-/** The turn a moment falls in, for one agent or for any. */
+/** The turn a moment falls in, for one agent or for any: from the latest start at or before it
+ *  to the earliest end at or after it. A never-closed turn ends where `endOf` says. */
 function bracket(db: Database.Database, at: number, agentId: string | null): TurnSpan {
   const a = agentId ? 'AND agent_id = ?' : '';
   const args = (x: number): unknown[] => (agentId ? [x, agentId] : [x]);
   const started = db.prepare(`SELECT max(${msExpr('started_at', 'text')}) FROM turns WHERE ${msExpr('started_at', 'text')} <= ? ${a}`).pluck().get(...args(at)) as number | null;
-  const open = db.prepare(`SELECT count(*) FROM turns WHERE ended_at IS NULL AND ${msExpr('started_at', 'text')} <= ? ${a}`).pluck().get(...args(at)) as number;
   const ended = db.prepare(`SELECT min(${msExpr('ended_at', 'text')}) FROM turns WHERE ended_at IS NOT NULL AND ${msExpr('ended_at', 'text')} >= ? ${a}`).pluck().get(...args(at)) as number | null;
-  return { start: started ?? at, end: open > 0 ? null : (ended ?? at) };
+  const open = db.prepare(`SELECT agent_id, turn_number, ${msExpr('started_at', 'text')} AS s FROM turns WHERE ended_at IS NULL AND ${msExpr('started_at', 'text')} <= ? ${a}`)
+    .all(...args(at)) as Array<{ agent_id: string; turn_number: number; s: number }>;
+  const ends = open.map((t) => endOf(db, t.agent_id, t.turn_number, t.s, null)).filter((e) => e === null || e >= at);
+  const finite = [ended, ...ends].filter((e): e is number => e !== null);
+  const end = finite.length ? Math.min(...finite) : (ends.includes(null) ? null : at);
+  return { start: started ?? at, end };
 }
 
 /** A message by id (or the first characters of one), with its agent, turn and time. */

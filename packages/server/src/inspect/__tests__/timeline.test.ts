@@ -19,7 +19,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 
 import { runMigrations } from '../../db/migrations.js';
 import { timeline } from '../timeline.js';
-import { seedTaskStory, TASK, PROJECT, SECOND_TASK, BEARER } from './seed.js';
+import { resolveWindow } from '../scope.js';
+import { seedTaskStory, TASK, PROJECT, SECOND_TASK, BEARER, at, sqlTime } from './seed.js';
 
 let db: Database.Database;
 beforeAll(() => {
@@ -98,6 +99,36 @@ describe('timeline of a turn and of an agent', () => {
     expect(out).toMatch(/around message msg-w-4 \(turn 5\)/);
     expect(out).toContain('tool gmail_search');
     expect(out).not.toContain('an unrelated earlier turn');
+  });
+});
+
+describe('fix round 1 — never-closed turns, conversation scope, one pass over text', () => {
+  it('a turn that never closed ends at its last record, so "around" does not run on to now', () => {
+    // An orphan: the worker's turn 3 began and never closed (85 such turns on the dev box).
+    db.prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, answered) VALUES ('agent-worker', 3, 'conv', ?, 0)").run(sqlTime(at(-30)));
+    db.prepare("INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES ('msg-orphan', 'agent-worker', 'owner', 'assistant', 'an orphaned reply', 3, ?, ?)").run(at(-29), at(-29));
+    const iso = new Date(at(2)).toISOString();
+    expect(resolveWindow(db, { around: iso }, 'agent-worker').to).toBe(at(6));
+    expect(resolveWindow(db, { around: iso }, null).to).not.toBeNull();
+    expect(resolveWindow(db, { around: 'msg-orphan' }, null)).toMatchObject({ from: at(-30), to: at(-29) });
+  });
+
+  it('a conversation with no time given is its whole history, not the platform\'s latest turn', () => {
+    db.prepare("INSERT INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered) VALUES ('agent-worker', 7, 'conv', ?, ?, 'answered', 1)").run(sqlTime(at(40)), sqlTime(at(41)));
+    const out = timeline({ conversation: 'conv-owner' }, db);
+    expect(out).toContain('how did the inbox labelling go?');
+    expect(out).toContain('It went fine.');
+  });
+
+  it("a project's timeline searches message text once, for the project, not once per task", () => {
+    const seen: string[] = [];
+    const spy = new Proxy(db, { get: (t, k) => (k === 'prepare' ? (q: string) => { seen.push(q); return t.prepare(q); } : Reflect.get(t, k)) });
+    timeline({ project_id: PROJECT }, spy as Database.Database);
+    const messagesQuery = seen.find((q) => /FROM messages WHERE/.test(q) && q.includes('instr(content'));
+    expect(messagesQuery).toBeDefined();
+    expect(messagesQuery?.match(/instr\(content/g)).toHaveLength(1);
+    const auditQuery = seen.find((q) => /FROM audit_log WHERE/.test(q));
+    expect(auditQuery?.match(/instr\(detail/g)).toHaveLength(1);
   });
 });
 

@@ -23,7 +23,11 @@ export const SOURCES: readonly Source[] = ['events', 'tools', 'receipts', 'deliv
 export interface RecordScope {
   agents?: string[];
   turnsOf?: Array<{ agent: string; turns: number[] }>;
+  /** Work ids, matched on the indexed link columns (work_id, root_id, task_id). */
   ids?: string[];
+  /** One id searched for in free text (message content, a call's target and detail). ONE id, so
+   *  text is scanned once per view: a project names itself, its tasks are found by their links. */
+  named?: string;
   conversation?: string;
   from: number | null;
   to: number | null;
@@ -43,11 +47,10 @@ type Clause = [string, unknown[]] | null;
 const marks = (xs: readonly unknown[]): string => xs.map(() => '?').join(', ');
 const workOf = (who: string): string => `work_id IN (SELECT id FROM work WHERE ${who})`;
 const turnJson = "(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.turn_number') END)";
-const each = (ids: readonly string[], one: string, per: number): Clause => [ids.map(() => one).join(' OR '), ids.flatMap((i) => Array.from({ length: per }, () => i))];
 
 interface Def {
   table: string; at: string;
-  agent(a: string[]): Clause; turn(agent: string, turns: number[]): Clause; ids(ids: string[]): Clause; conv(c: string): Clause;
+  agent(a: string[]): Clause; turn(agent: string, turns: number[]): Clause; ids(ids: string[]): Clause; named(id: string): Clause; conv(c: string): Clause;
   render(r: Row, names: Map<string, string>, tools: Map<string, string>): string;
 }
 
@@ -76,31 +79,31 @@ const DEFS: Record<Source, Def> = {
     table: 'work_events', at: msExpr('created_at', 'ms'),
     agent: (a) => [`(actor IN (${marks(a)}) OR ${workOf(`agent_id IN (${marks(a)}) OR assignee_agent IN (${marks(a)})`)})`, [...a, ...a, ...a]],
     turn: (agent, turns) => [`(${turnJson} IN (${marks(turns)}) AND ${workOf('agent_id = ? OR assignee_agent = ?')})`, [...turns, agent, agent]],
-    ids: (ids) => [`work_id IN (${marks(ids)})`, ids], conv: (c) => [workOf('conversation_id = ?'), [c]],
+    ids: (ids) => [`work_id IN (${marks(ids)})`, ids], named: () => null, conv: (c) => [workOf('conversation_id = ?'), [c]],
     render: (r, names) => `task ${short(r.work_id as string)} · ${r.kind} by ${names.has(r.actor as string) ? agentLabel(names, r.actor as string) : r.actor} · work_events #${r.id}  ${eventSummary(r.kind as string, r.payload)}`,
   },
   tools: {
     table: 'audit_log', at: msExpr('created_at', 'text'),
     agent: plain, turn: plainTurn,
-    ids: (ids) => join([`root_id IN (${marks(ids)})`, ids], each(ids, '(instr(target, ?) > 0 OR instr(detail, ?) > 0)', 2)), conv: () => null,
+    ids: (ids) => [`root_id IN (${marks(ids)})`, ids], named: (id) => ['(instr(target, ?) > 0 OR instr(detail, ?) > 0)', [id, id]], conv: () => null,
     render: (r, names) => `${who(r, names)} · ${r.action_type === 'tool_call' ? 'tool' : r.action_type} ${r.target ?? ''} (${r.result}) · audit_log ${short(String(r.id))}${turnTag(r)}${rootTag(r)}  ${clip(r.detail)}`,
   },
   receipts: {
     table: 'tool_receipts', at: msExpr('created_at', 'text'),
     agent: plain, turn: plainTurn,
-    ids: (ids) => [`(root_id IN (${marks(ids)}) OR task_id IN (${marks(ids)}))`, [...ids, ...ids]], conv: () => null,
+    ids: (ids) => [`(root_id IN (${marks(ids)}) OR task_id IN (${marks(ids)}))`, [...ids, ...ids]], named: () => null, conv: () => null,
     render: (r, names) => `${who(r, names)} · receipt ${r.tool} (${r.verified ? 'verified' : 'unverified'}, ${r.basis}) · tool_receipts ${short(String(r.id))}${r.provider_id ? ` · provider id ${r.provider_id}` : ''}${turnTag(r)}  ${clip(r.detail)}`,
   },
   deliveries: {
     table: 'deliveries', at: msExpr('created_at', 'text'),
     agent: plain, turn: plainTurn,
-    ids: (ids) => [`root_id IN (${marks(ids)})`, ids], conv: (c) => ['conversation_id = ?', [c]],
+    ids: (ids) => [`root_id IN (${marks(ids)})`, ids], named: () => null, conv: (c) => ['conversation_id = ?', [c]],
     render: (r, names) => `${who(r, names)} · delivery ${r.tool} → ${r.channel}${r.recipient_display ? ` ${r.recipient_display}` : ''} (${r.outcome}) · deliveries ${short(String(r.id))}${turnTag(r)}${rootTag(r)}  ${clip(r.detail)}`,
   },
   turns: {
     table: 'turns', at: msExpr('started_at', 'text'),
     agent: plain, turn: plainTurn,
-    ids: (ids) => [`root_id IN (${marks(ids)})`, ids], conv: (c) => ['source_message_id IN (SELECT id FROM messages WHERE conversation_id = ?)', [c]],
+    ids: (ids) => [`root_id IN (${marks(ids)})`, ids], named: () => null, conv: (c) => ['source_message_id IN (SELECT id FROM messages WHERE conversation_id = ?)', [c]],
     render: (r, names) => {
       const end = toMs(r.ended_at as string | null);
       return `${who(r, names)} · turn ${r.turn_number}${r.kind ? ` ${r.kind}` : ''} started · turns${rootTag(r)}  ${end === null ? 'still running' : `ended ${utc(end)} (${r.exit_reason}, ${r.effectful_calls} effectful call${r.effectful_calls === 1 ? '' : 's'})`}`;
@@ -109,7 +112,7 @@ const DEFS: Record<Source, Def> = {
   messages: {
     table: 'messages', at: msExpr('created_at', 'ms'),
     agent: plain, turn: plainTurn,
-    ids: (ids) => join([`(root_id IN (${marks(ids)}) OR task_id IN (${marks(ids)}))`, [...ids, ...ids]], each(ids, 'instr(content, ?) > 0', 1)), conv: (c) => ['conversation_id = ?', [c]],
+    ids: (ids) => [`(root_id IN (${marks(ids)}) OR task_id IN (${marks(ids)}))`, [...ids, ...ids]], named: (id) => ['instr(content, ?) > 0', [id]], conv: (c) => ['conversation_id = ?', [c]],
     render: (r, names, tools) => `${who(r, names)} · msg ${short(r.id as string)} ${r.role}${r.channel ? ` · ${r.channel}` : ''}${turnTag(r)}${r.a2a_thread_id ? ` · thread ${short(r.a2a_thread_id as string)} ${r.a2a_intent ?? ''}` : ''}  ${clip(messageText(String(r.content), tools))}`,
   },
 };
@@ -119,6 +122,7 @@ function whereOf(def: Def, s: RecordScope): { sql: string; args: unknown[] } {
   if (s.agents?.length) identity.push(def.agent(s.agents));
   for (const t of s.turnsOf ?? []) if (t.turns.length) identity.push(def.turn(t.agent, t.turns));
   if (s.ids?.length) identity.push(def.ids(s.ids));
+  if (s.named) identity.push(def.named(s.named));
   if (s.conversation) identity.push(def.conv(s.conversation));
   const parts: string[] = []; const args: unknown[] = [];
   if (identity.length) {
