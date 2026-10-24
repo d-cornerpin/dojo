@@ -133,6 +133,16 @@ describe('an image or document block', () => {
     expect(shownBlocks(shown)[0].text).toBe('Here is the scan.');
   });
 
+  it('round 1: a media-only row read as `msg:<id>` gives the note (what it is, its reader), never the base64', () => {
+    const data = Buffer.from(`%PDF-1.4\n${'0 0 obj << /Crate 0412 >> endobj\n'.repeat(3_000)}`).toString('base64');
+    const row = store('row-scan-only', 'user', [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data }, title: 'scan.pdf' }]);
+    view.overRoomRowView(row as never, ROOM);
+    const read = findToolResult(AGENT, 'msg:row-scan-only');
+    expect(read?.content).toContain('"scan.pdf"');
+    expect(read?.content).toContain('pdf_read');
+    expect(read?.content, 'never the bytes').not.toContain(data.slice(0, 64));
+  });
+
   it('an image is priced by its pixels, never its base64 length: a small picture in a large file is kept; a picture the room cannot hold is its note', () => {
     const small = store('row-small-pic', 'user', [{ type: 'text', text: 'The dock.' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png(64, 64, 120_000) } }]);
     expect(shownBlocks(view.overRoomRowView(small as never, ROOM)).some((b) => b.type === 'image'), 'kept: it costs its pixels').toBe(true);

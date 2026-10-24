@@ -944,7 +944,7 @@ interface NativeOllamaMessage {
 //     a chat:error banner and the PDF is dropped.
 //
 // Async because PDF extraction via pdfjs is async; the call site must await.
-async function buildNativeOllamaMessages(
+export async function buildNativeOllamaMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   agentId: string,

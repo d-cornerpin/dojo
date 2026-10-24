@@ -16,7 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { insertMessageIfAbsent, type NewMessage } from './message-store.js';
-import { KEPT_ROW_PREFIX, argumentText, callInputText, contentBlocksOf, keptRowText, viewPointeredRow } from './kept-row-view.js';
+import { KEPT_ROW_PREFIX, argumentText, callInputText, contentBlocksOf, isMedia, keptRowText, oversizeMediaNote, viewPointeredRow } from './kept-row-view.js';
 
 /** The whole of one long result, as the recorder hands it over. */
 export interface KeptWhole {
@@ -98,7 +98,8 @@ function findKeptRow(agentId: string, handle: string): FoundResult | null {
   const whole = read(handle);
   if (whole !== null) {
     const blocks = contentBlocksOf(whole);
-    return { content: blocks ? keptRowText(blocks) ?? whole : whole, toolName: null };
+    // D18b r1: a row with no text reads with each image/document as its note (what it is, its reader), never its base64.
+    return { content: blocks ? keptRowText(blocks) ?? blocks.map((b) => (isMedia(b) ? String(oversizeMediaNote(b).text) : JSON.stringify(b))).join('\n') : whole, toolName: null };
   }
   // `msg:<id>#<n>`: text block n, or call n's whole input; D18b `msg:<id>#<n>.<argument>`: one argument of call n.
   const named = /^(.+?)#(\d+)(?:\.(.+))?$/.exec(handle);

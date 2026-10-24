@@ -26,7 +26,7 @@ vi.mock('../../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
   closeDb: vi.fn(),
 }));
-const seen = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string }>, texts: [] as string[], wakes: 0 }));
+const seen = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string }>, texts: [] as string[], wakes: 0, summaries: 0 }));
 vi.mock('../../../gateway/ws.js', () => ({
   broadcast: (e: { type?: string; code?: string }) => { seen.cards.push(e); },
   stampPersistedRow: (e: unknown) => e,
@@ -49,7 +49,7 @@ vi.mock('../../../tools/tool-docs.js', async () => {
 });
 vi.mock('../../../providers/anthropic-sdk.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  callAnthropicViaSdk: async () => ({ content: 'The crates on the north dock were counted and the totals written on the board.', toolCalls: [], inputTokens: 40, outputTokens: 20, stopReason: 'end_turn' }),
+  callAnthropicViaSdk: async () => (seen.summaries++, { content: 'The crates on the north dock were counted and the totals written on the board.', toolCalls: [], inputTokens: 40, outputTokens: 20, stopReason: 'end_turn' }),
 }));
 
 import { runMigrations } from '../../../db/migrations.js';
@@ -64,14 +64,14 @@ import { initState, advance } from '../state.js';
 import { pendingWakeups } from '../../shared-state.js';
 import { withLock } from '../../../db/with-lock.js';
 import { injectDelegationHintAndAttachments } from '../steps/assemble/delegation-and-attachments.js';
-import { buildOpenAIMessages } from '../../model.js';
+import { buildOpenAIMessages, buildNativeOllamaMessages } from '../../model.js';
 import { contractForModel } from '../../model-contract.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
 const AGENT = 'agent-d18b-converge';
 const MODEL = 'm-d18b-32k';
-const WINDOW = 32_768;
+let WINDOW = 32_768;
 const db = (): Database.Database => mockDb.current!;
 const files = fs.mkdtempSync(path.join(os.tmpdir(), 'd18b-'));
 afterAll(() => { fs.rmSync(files, { recursive: true, force: true }); });
@@ -80,7 +80,7 @@ beforeEach(async () => {
   mockDb.current?.close();
   mockDb.current = new Database(':memory:');
   runMigrations();
-  seen.cards.length = 0; seen.texts.length = 0; seen.wakes = 0;
+  seen.cards.length = 0; seen.texts.length = 0; seen.wakes = 0; seen.summaries = 0; WINDOW = 32_768;
   pendingWakeups.clear();
   __resetBrakesForTests();
   (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
@@ -194,6 +194,22 @@ async function openAIPairsValid(messages: ValidatedMessage[], systemPrompt: stri
   return wire;
 }
 
+/** Ollama's native shape: every tool_call is followed by one `tool` message per call, named for it; arguments are objects. */
+async function ollamaPairsValid(messages: ValidatedMessage[], systemPrompt: string): Promise<void> {
+  const wire = await buildNativeOllamaMessages(systemPrompt, messages as never, AGENT) as unknown as Array<Record<string, unknown>>;
+  let checked = 0;
+  wire.forEach((m, i) => {
+    const calls = (m.tool_calls as Array<{ id?: string; function: { name: string; arguments: unknown } }> | undefined) ?? [];
+    if (calls.length === 0) return;
+    const followers: string[] = [];
+    for (let j = i + 1; j < wire.length && wire[j].role === 'tool'; j++) followers.push(wire[j].tool_name as string);
+    expect(followers.sort(), `every tool_call at ${i} is followed by its tool message`).toEqual(calls.map((c) => c.function.name).sort());
+    for (const c of calls) expect(typeof c.function.arguments === 'object' && c.function.arguments !== null, 'the arguments are an object').toBe(true);
+    checked += calls.length;
+  });
+  expect(checked, 'a call was on the wire').toBeGreaterThan(0);
+}
+
 // ── (a) The owner attaches a large PDF ───────────────────────────────────────────────────────────────
 describe('D18b: an owner message whose attachment alone is over the room', () => {
   it('a ~400 KB PDF on a 32K window: the agent answers within a few rounds, no repeated refusal; the view keeps the attachment pointer and says the document is not shown', async () => {
@@ -265,6 +281,43 @@ describe('D18b: an assistant row whose tool_use input alone is over the room', (
     expect(read.content).toContain('END OF FILE');
     anthropicPairsValid(last!.messages);
     await openAIPairsValid(last!.messages, last!.systemPrompt);
+    await ollamaPairsValid(last!.messages, last!.systemPrompt);
+    expect(seen.texts, 'no stall, so no text').toEqual([]);
+  });
+});
+
+// ── Round 1 (review t264 (a)): an attachment that fits the room ALONE but not with the history ─────────
+// The reviewer's shape: a 200K window, 600 exchanges (the view fills the room), and a PDF at 80% of the room.
+// The attachment was injected after the fit, so neither the trim nor the fold ever saw its cost: each refusal
+// folded ONE protected exchange through a paid summary call, and after 25 rounds it was still refused. The
+// turn's attachments are now counted in their row's cost inside the fit, so the trim cuts the history it
+// needs and the assemble door folds it, in the same turn.
+describe('D18b round 1: an attachment that fits the room alone but not with the history', () => {
+  it('a PDF at 80% of the room on a full 200K view: it fits in one or two rounds, the PDF is shown, and the fold is one pass, never a crawl', async () => {
+    WINDOW = 200_000;
+    db().prepare('UPDATE models SET context_window = ? WHERE id = ?').run(WINDOW, MODEL);
+    const reply = 'Counted another stack on the north dock; the running total is on the board beside the ramp. ';
+    for (let t = 121; t <= 600; t++) {
+      db().prepare(`INSERT OR IGNORE INTO turns (agent_id, turn_number, kind, started_at, ended_at, exit_reason, answered)
+        VALUES (?, ?, 'user', datetime('now'), datetime('now'), 'answered', 1)`).run(AGENT, t);
+      insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] Keep counting the crates.`, turnNumber: t });
+      insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
+    }
+    const room = (await assembleContext(AGENT, MODEL)).allocation!.budgetTokens;
+    const pdfPath = path.join(files, 'ledger-scan.pdf');
+    // The boundary prices a document by its base64 (4 characters per 3 bytes, 4 characters a token): 80% of the room.
+    const bytes = Math.floor(room * 0.8 * 4 * 3 / 4);
+    fs.writeFileSync(pdfPath, Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(bytes, 0x41)]));
+    const size = fs.statSync(pdfPath).size;
+    insertMessage({ id: 'msg-owner-ledger', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', turnNumber: 601,
+      content: `[ask 601] Please check the scanned ledger.\n\n[PDF attached: ledger-scan.pdf (${size} bytes), fileId: file-ledger]\nPath: ${pdfPath}`,
+      attachments: JSON.stringify([{ fileId: 'file-ledger', filename: 'ledger-scan.pdf', mimeType: 'application/pdf', size, path: pdfPath, category: 'pdf' }]) });
+    const { fitted, rounds, refusals, last } = await answersThroughThePark(6);
+    expect(fitted, `the agent answers (after ${rounds} rounds, ${seen.summaries} summary calls)`).toBe(true);
+    expect(rounds, 'one or two rounds').toBeLessThanOrEqual(2);
+    expect(refusals.length, 'at most one refusal').toBeLessThanOrEqual(1);
+    expect(last!.messages.some((m) => Array.isArray(m.content) && (m.content as Array<{ type: string }>).some((b) => b.type === 'document')), 'the PDF is shown, not hidden').toBe(true);
+    expect(JSON.stringify(last!.messages), 'and its ask with it').toContain('[ask 601] Please check the scanned ledger.');
     expect(seen.texts, 'no stall, so no text').toEqual([]);
   });
 });

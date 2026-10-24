@@ -112,18 +112,22 @@ function inputView(handle: string, input: unknown): Record<string, unknown> {
   }));
 }
 
-const isMedia = (b: StoredBlock): boolean => (b.type === 'image' || b.type === 'document') && typeof (b.source as { data?: unknown } | undefined)?.data === 'string';
+export const isMedia = (b: StoredBlock): boolean => (b.type === 'image' || b.type === 'document') && typeof (b.source as { data?: unknown } | undefined)?.data === 'string';
 const mediaTokens = (b: StoredBlock): number => messageTokens({ role: 'user', content: [b] as never });
 
 /** What the view shows for an image or document block the room cannot hold: what it is, and that it is not shown. */
 export function oversizeMediaNote(b: StoredBlock): StoredBlock {
   const source = b.source as { media_type?: unknown; data?: unknown };
-  const type = typeof source.media_type === 'string' ? source.media_type : b.type;
-  const kind = b.type === 'image' ? 'image' : type === 'application/pdf' ? 'PDF' : 'document';
-  const name = typeof b.title === 'string' ? `"${b.title}" ` : '';
-  const bytes = Buffer.byteLength(String(source.data), 'base64').toLocaleString('en-US');
+  return { type: 'text', text: mediaNoteText({ image: b.type === 'image', mediaType: typeof source.media_type === 'string' ? source.media_type : b.type,
+    title: typeof b.title === 'string' ? b.title : undefined, bytes: Buffer.byteLength(String(source.data), 'base64'), tokens: mediaTokens(b) }) };
+}
+
+/** The note's words, from what the attachment is (also priced before injection, `turn-attachments.ts`). */
+export function mediaNoteText(m: { image: boolean; mediaType: string; title?: string; bytes: number; tokens: number }): string {
+  const kind = m.image ? 'image' : m.mediaType === 'application/pdf' ? 'PDF' : 'document';
   const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the user asks about it, say it is too large for the current model to see.';
-  return { type: 'text', text: `[Engine note: the attached ${kind} ${name}(${type}, ${bytes} bytes, ~${mediaTokens(b).toLocaleString('en-US')} tokens) is larger than this model's context window can hold, so it is NOT shown to you. Do not describe or assume its contents.${reader}]` };
+  return `[Engine note: the attached ${kind} ${m.title ? `"${m.title}" ` : ''}(${m.mediaType}, ${m.bytes.toLocaleString('en-US')} bytes, ~${m.tokens.toLocaleString('en-US')} tokens) `
+    + `is larger than the room this model has for the conversation, so it is NOT shown to you. Do not describe or assume its contents.${reader}]`;
 }
 
 /** D18b: the turn's injected attachments (`injectAttachmentBlocks`, after the assembly) never ride over the room. */

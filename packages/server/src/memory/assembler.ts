@@ -27,6 +27,7 @@ import {
 } from './budget.js';
 import { readCall, toolResultView } from './tool-result-view.js';
 import { overRoomRowView } from './kept-row-view.js';
+import { chargeTurnAttachments } from './turn-attachments.js';
 // t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
@@ -940,6 +941,8 @@ type TailPayload = {
   /** t207 (D8): rows the EVENTS lane carries (the awareness rows it renders). A served trigger that is one of
    *  them is in view there and is not re-emitted beside it. */
   inEvents?: Array<{ id: string }>;
+  /** v3.5 D18b r1: charges a served row the attachments this turn injects into it (`turn-attachments.ts`). */
+  charge?: (rows: Message[]) => Message[];
 };
 
 // STRIP (T56): `storedRowCost` MOVED to `memory/budget.ts`, with its PHASE-3 T3 history
@@ -1232,16 +1235,18 @@ function buildContentLanes(
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
         // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
-        let served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]).map((m) => overRoomRowView(m, maxTokens));   // D18 r3
+        // D18 r3: never whole over the room; D18b r1: its attachments counted (`p.charge`).
+        const servedOf = (rows: Message[]): Message[] => (p.charge ?? ((r: Message[]) => r))(servedRowsOutOfView(p.agentId, [...rows, ...(p.inEvents ?? [])])).map((m) => overRoomRowView(m, maxTokens));
+        let served = servedOf(kept);
         if (served.length > 0) {
           kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));
-          served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]).map((m) => overRoomRowView(m, maxTokens));
+          served = servedOf(kept);
         }
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
         // at the row just before it.
         const droppedThroughSeq = Math.max(p.droppedThroughSeq ?? 0, dropped > 0 ? (p.rows[dropped - 1].rowid ?? 0) : 0);
-        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served, inEvents: p.inEvents });
+        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped, droppedThroughSeq, served, inEvents: p.inEvents, charge: p.charge });
       },
       render: (ctx) => {
         const { freshTail, awarenessEvents } = ctx.tail();
@@ -1250,7 +1255,8 @@ function buildContentLanes(
         // 5.9MB tool_result consumes the whole budget and evicts the user's question.
         const rows = capLargeToolResultStrings(freshTail);
         const inEvents = awarenessEvents.slice(-laneLimit('lane.events', 'rows', 'events'));
-        return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: servedRowsOutOfView(ctx.agentId, [...rows, ...inEvents]), inEvents });
+        const charge = (r: Message[]): Message[] => chargeTurnAttachments(ctx.agentId, ctx.modelId, r, contentBudget);
+        return tailRender({ rows, agentId: ctx.agentId, dropped: 0, served: charge(servedRowsOutOfView(ctx.agentId, [...rows, ...inEvents])), inEvents, charge });
       },
     },
   ];
@@ -1365,9 +1371,9 @@ async function assembleMessageContext(
     // row that renders to nothing spends no one else's place.
     const horizon = freshTailHorizon(agentId, policy, 2 * (maxTokens - systemTokens));   // t207: a token-bounded read
     const freshTailRows = getRecentMessages(agentId, horizon.requestRows);
-    const freshTail = horizon.keepFromSeq > 0
+    const freshTail = chargeTurnAttachments(agentId, modelId, horizon.keepFromSeq > 0   // D18b r1: its attachments in the fit
       ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
-      : freshTailRows;
+      : freshTailRows, maxTokens - systemTokens);
     const budgeted = budgetFreshTail(
       freshTail, maxTokens - systemTokens, tailTrimBlockGroups(policy.freshTailCount),
     );
@@ -1585,7 +1591,8 @@ async function assembleMessageContext(
         (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
       );
       const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
-      tailCache = { freshTail: scopedTail.filter((m) => !awarenessIds.has(m.id)), awarenessEvents };
+      // v3.5 D18b r1: a row whose attachments this turn injects carries their cost into the fit (`turn-attachments.ts`).
+      tailCache = { freshTail: chargeTurnAttachments(agentId, modelId, scopedTail.filter((m) => !awarenessIds.has(m.id)), contentBudget), awarenessEvents };
       return tailCache;
     },
   };

@@ -283,9 +283,10 @@ export interface StoredRowCostInput {
   content: string;
   tokenCount?: number | null;
   reasoningContent?: string | null;
-  /** T56 leg (b): a row whose reasoning was retired at a compaction boundary no longer
-   *  replays it, so it no longer costs anything either. */
+  /** T56 leg (b): a row whose reasoning was retired at a compaction boundary no longer replays it, so it no longer costs anything either. */
   reasoningAgedOut?: boolean | null;
+  /** v3.5 D18b r1: what this turn's injected attachments add to the row (`turn-attachments.ts`); absent: none. */
+  attachmentTokens?: number;
 }
 
 /** What this row's `reasoning_content` will cost on the wire — 0 when nothing replays it. */
@@ -304,12 +305,10 @@ export function replayedReasoningTokens(m: StoredRowCostInput): number {
  * measured 116 such rows before migration `150` re-computed every row to `MAX(1, …)`; any
  * writer bypassing `memory/message-store.ts` — the kit's own golden fixture is one — brings
  * it straight back). `||` not `??`, deliberately: a stored 0 is not a measurement, it is a
- * missing one. The compaction gate's copy used `??` and now shares this one.
- *
- * The reasoning half is T56 leg (a), above.
+ * missing one. The compaction gate's copy used `??` and now shares this one. The reasoning half is T56 leg (a), above.
  */
 export function storedRowCost(m: StoredRowCostInput): number {
-  return Math.max(1, m.tokenCount || estimateTokens(m.content)) + replayedReasoningTokens(m);
+  return Math.max(1, m.tokenCount || estimateTokens(m.content)) + replayedReasoningTokens(m) + (m.attachmentTokens ?? 0);
 }
 
 // ── The image estimator (PHASE-6 T4-CAP) ────────────────────────────────────────────────
