@@ -55,6 +55,7 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../trac
 import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budget.js';
 import { laneLimit, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
+import { readMeasureFacts, formatMeasureLine, type MeasureFacts } from '../work/measure-view.js';
 import { conversationLabel } from './party-label.js';
 import {
   capLabel, originLabel, spend, laterSection, readLaterMessages,
@@ -140,6 +141,8 @@ interface TaskView {
   /** R-V333-14: the request message is in the live conversation this assembly emitted, so the
    *  line points to it instead of printing it a second time. */
   inView?: boolean;
+  /** v3.5: the task's measure and ledger (`work/measure-view.ts`); null for a waiting task. */
+  measure?: MeasureFacts | null;
 }
 
 type WaitingBy = 'blocked' | 'engine' | 'owner' | 'other' | 'later';
@@ -218,6 +221,7 @@ function taskLine(v: TaskView, req: string, edited: string, caps: TermCaps): str
       + 'Not current work: do not resume it unless asked.';
   }
   if (v.stamp) line += `\n  State: ${v.stamp}${v.steps ? ` | ${v.steps}` : ''}`;
+  if (v.measure && !v.waiting) line += `\n  ${formatMeasureLine(v.measure, caps.title)}`;
   line += v.waiting ? pointerLine(v.origin, caps) : req + newerLine(v) + edited;
   if (t.notes) {
     const lastNote = t.notes.split('\n').filter(Boolean).pop();
@@ -591,7 +595,9 @@ function activeTasksFrom(tasks: BoardTask[], roomTokens: number, inView: (o: Tas
         if (r) newer = { count: r.n, newestAt: r.newest };
       }
       const laters = isWaiting ? [] : readLaterMessages(t.id).map((m) => ({ ...m, inView: inView(m) }));
-      return { t, stamp, steps, origin, waiting, edited, newer, laters, inView: !isWaiting && inView(origin) };
+      let measure: MeasureFacts | null = null;
+      try { measure = isWaiting ? null : readMeasureFacts(t.id); } catch { /* progress is best-effort, like the stamps */ }
+      return { t, stamp, steps, origin, waiting, edited, newer, laters, inView: !isWaiting && inView(origin), measure };
     };
     const seen: TaskView[] = [];
     const viewAt = (i: number): TaskView => (seen[i] ??= read(tasks[i]));
@@ -680,6 +686,14 @@ export function activeTasksWorstCaseTokens(): number {
   // A count no real row reaches (10 digits), substituted into every "continues"/"Newer" line.
   const longest = 9_999_999_999;
   const party = 'l'.repeat(labelCap + 10);
+  // v3.5: the widest Progress line, by CALLING its formatter on each of its shapes with every term
+  // over the title width and every count at 10 digits, and keeping the longest.
+  const flooded = { tool: 'gmail_search', args: { query: 'q'.repeat(titleCap + 10) }, unit: 'u'.repeat(titleCap + 10) } as const;
+  const widestMeasure = ([
+    { measure: flooded, initial: longest, remaining: longest, at: widestInstant, touched: longest },
+    { measure: flooded, initial: longest, remaining: null, at: widestInstant, touched: longest },
+    { measure: null, initial: null, remaining: null, at: null, touched: longest },
+  ] as MeasureFacts[]).sort((a, b) => formatMeasureLine(b, titleCap).length - formatMeasureLine(a, titleCap).length)[0];
   const caps = declaredCaps();
   // The widest of the four "waiting on" texts, by rendering each through the real `waitingOn`.
   const widestWaitingBy = (['blocked', 'engine', 'owner', 'other', 'later'] as const)
@@ -711,6 +725,7 @@ export function activeTasksWorstCaseTokens(): number {
       inView: shape === 'inView',
     })),
     inView: shape === 'inView',
+    measure: widestMeasure,
   });
   let worst = 0;
   // Round 6: three line shapes — current, waiting, and in view (a pointer to the conversation).

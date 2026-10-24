@@ -555,7 +555,9 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     // is swept across every length that leaves a sliver of pool, so the older one prints a head, a few
     // characters and a cut line — longer than a collapse line. The words are still the one room-driven
     // pool; this is only the framing's worst case. Group B frees the pin's 2,081 reserved tokens.
-    reserveTokens: 3980,
+    // v3.5 (done is measured): 3,980 -> 4,495 (+515), a current row's Progress line (its touched count, its
+    // measure's query and unit at the title width, three 10-digit counts and the reading's instant).
+    reserveTokens: 4495,
     measured:
       'W81 + t139, DERIVED BY CALLING THE RENDERER: `activeTasksWorstCaseTokens()` '
       + '(`memory/work-board-lane.ts`) builds 5 task lines (rows.tasks) through the REAL '
