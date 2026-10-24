@@ -66,6 +66,11 @@ export const budgetStopWords = (budgetId: string): string => budgetId.startsWith
  *  when both are in). Platform trouble, so a dashboard card; the install is retried by itself. */
 export const STANDARD_MODELS_MISSING_WORDS = "The Dojo's own two local models could not be installed yet. The Dojo keeps trying "
   + 'whenever Ollama is running; Settings → Platform → Ollama shows what is missing and why.';
+/** v3.5: a local model picked while Ollama could not size it (condition `fitunchecked:<model id>`; it ends
+ *  when the fit is checked at the model's first load, `agent/local-model-fit.ts`). */
+export const uncheckedFitWords = (name: string): string =>
+  `${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
+  + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
 export const healerMissingWords = (name: string): string =>
   `${name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
 
@@ -148,7 +153,9 @@ export function wordsOf(key: string): string {
     : kind === 'nofit' ? (isAutoAgent(agentId) ? autoNoFitWords : noFitWords)(nameOf(agentId))
     : kind === 'budgetstop' ? budgetStopWords(agentId)
     : kind === 'healer-missing' ? healerMissingWords(nameOf(agentId))
-    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS : HEALER_BROKEN_WORDS;
+    : kind === 'standard-models' ? STANDARD_MODELS_MISSING_WORDS
+    : kind === 'fitunchecked' ? uncheckedFitWords((getDb().prepare('SELECT name FROM models WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId)
+    : HEALER_BROKEN_WORDS;
 }
 
 /** The condition cleared (its `key`, or every key under `family`): forget he was told and
@@ -207,12 +214,17 @@ export function healerOwnerCards(): Array<{ words: string; severity: 'critical' 
       AND (? = 0 OR (status = 'paused' AND instr(COALESCE(last_error, ''), '[no_model_fits]') = 1))`).get(id, parked ? 1 : 0);
   // A window's "limit reached" card stands while an agent is still parked for the limit (t167).
   const budgetParked = (): boolean => !!db.prepare(`SELECT 1 FROM agents WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') = 1`).get();
+  // A "fit not checked" card stands while its model is still marked AND still in use somewhere (an agent, a
+  // tier, a setting): a pick that a door then refused, or that was changed since, says nothing (N7).
+  const fitStillOwed = (modelId: string): boolean => !!db.prepare(`SELECT 1 FROM healer_state WHERE scope = 'local_fit_unchecked' AND key IN (?, ?)`).get(`agent:${modelId}`, `job:${modelId}`)
+    && !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? UNION SELECT 1 FROM router_tier_models WHERE model_id = ? UNION SELECT 1 FROM config WHERE value = ?').get(modelId, modelId, modelId);
   return rows.filter(({ key }) => key.startsWith('budgetstop:') ? budgetParked()
+    : key.startsWith('fitunchecked:') ? fitStillOwed(key.slice('fitunchecked:'.length))
     : !key.includes(':') || live(key.split(/:(.*)/s)[1] ?? '', key.startsWith('nofit:'))).map(({ key }) => {
     return {
       words: wordsOf(key),
       cardKey: cardKeyOf(key),
-      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' ? 'notice' as const : 'critical' as const,
+      severity: key.startsWith('stuck:') || key.startsWith('nofit:') || key.startsWith('budgetstop:') || key === 'standard-models' || key.startsWith('fitunchecked:') ? 'notice' as const : 'critical' as const,
       dismiss: () => { dismiss(key); },
     };
   });

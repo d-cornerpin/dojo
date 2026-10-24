@@ -481,7 +481,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
   // Re-running setup on the model an existing agent already has is not a change and never refused.
   // v3.5: and a local model that will not fit in this box's memory is refused the same way.
-  const refused = await refuseUnfitLocalModel(modelId, existing?.model_id ?? null) ?? refuseSmallMainModel(modelId, existing?.model_id ?? null);
+  const refused = await refuseUnfitLocalModel(modelId, existing?.model_id ?? null, 'agent', () => refuseSmallMainModel(modelId, existing?.model_id ?? null));
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (existing) {

@@ -83,12 +83,12 @@ function reassignAffectedAgents(modelIds: string[]): number {
   try {
     const placeholders = modelIds.map(() => '?').join(',');
     candidates = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC`
+      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`
     ).all(...modelIds) as Array<{ id: string }>;
   } catch {
     // If query fails, try without the exclusion
     candidates = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC`
+      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' AND capabilities NOT LIKE '%"decision"%' ORDER BY input_cost_per_m ASC, id ASC`
     ).all() as Array<{ id: string }>;
   }
   const fallback = candidates.find(m => passesMainModelFloor(m.id)) ?? candidates[0];
@@ -2337,7 +2337,7 @@ configRouter.put('/settings/:key', async (c) => {
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
     const main = MAIN_MODEL_SETTING_KEYS.includes(key);   // memory first, so a refusal names the true reason
-    const refused = await refuseUnfitLocalModel(body.value, current, main ? 'agent' : 'job') ?? (main ? refuseSmallMainModel(body.value, current) : null);
+    const refused = await refuseUnfitLocalModel(body.value, current, main ? 'agent' : 'job', () => (main ? refuseSmallMainModel(body.value, current) : null));
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 

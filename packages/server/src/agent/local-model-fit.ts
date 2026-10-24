@@ -29,13 +29,15 @@
 import { getDb } from '../db/connection.js';
 import {
   pickDesktopReserve, ENGINE_RESERVE_BYTES, resolveOllamaTotalRamBytes, fetchModelArchInfo,
-  isLocalOllamaBaseUrl, writerWorkingBytes, writerJobWindowTokens,
+  isLocalOllamaBaseUrl,
 } from '../services/num-ctx-calculator.js';
+import { dojoWorkingBytes, writerJobWindowTokens } from '../services/dojo-working-memory.js';
 import { kvBytesPerTokenOf } from '../services/kv-bytes.js';
 import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../services/local-standard.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { MAIN_MODEL_MIN_WINDOW } from './main-model-floor.js';
-import { ownerCardFrame, ownerCardEnded } from '../services/owner-card-frames.js';
+import { ownerCardFrame } from '../services/owner-card-frames.js';
+import { tellOwnerOnce, ownerConditionCleared, wordsOf, uncheckedFitWords } from '../healer/owner-notices.js';
 
 /** What the model is being picked FOR: an agent's conversations, or one of the engine's own jobs. */
 export type ModelUse = 'agent' | 'job';
@@ -52,9 +54,6 @@ const kTokens = (t: number): string => `${Math.round(t / 1000)}K`;   // as the 3
 
 export const decisionModelWords = (name: string): string =>
   `${name} is the Dojo's decision model: it answers the Dojo's own yes/no questions and cannot run an agent or write. Choose another model.`;
-export const uncheckedFitWords = (name: string, why: string): string =>
-  `${name} was selected, but its memory fit could not be checked now (${why}). It will be checked when the model first loads, and refused then if it does not fit this box's memory.`;
-
 interface Row {
   name: string; api_model_id: string; capabilities: string; provider_id: string; type: string; base_url: string | null;
   host_ram_gb: number | null; context_window: number | null; num_ctx_override: number | null; num_ctx_recommended: number | null;
@@ -113,12 +112,12 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
   if (totalRamBytes === null) return null;
   const baseUrl = (row.base_url ?? 'http://localhost:11434').replace(/\/+$/, '');
   const contextTokens = await contextFor(row, use);
-  const unchecked = (why: string): FitVerdict =>
-    ({ fits: true, unchecked: true, message: uncheckedFitWords(row!.name, why), openBytes: 0, needBytes: 0, contextTokens });
+  const unchecked = (): FitVerdict =>
+    ({ fits: true, unchecked: true, message: uncheckedFitWords(row!.name), openBytes: 0, needBytes: 0, contextTokens });
   const sizes = await installedSizes(baseUrl);
-  if (sizes === null) return unchecked('Ollama is not answering');
+  if (sizes === null) return unchecked();   // Ollama is not answering
   const weights = sizeOf(sizes, row.api_model_id);
-  if (weights === undefined) return unchecked('the model is not downloaded yet');
+  if (weights === undefined) return unchecked();   // the model is not downloaded yet
 
   const arch = await fetchModelArchInfo(baseUrl, row.api_model_id);
   const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
@@ -126,67 +125,80 @@ export async function localModelFit(modelId: string, use: ModelUse = 'agent'): P
   // The Dojo's own models live on the LOCAL Ollama: they are charged to that box only, measured when listed.
   const dojoBox = isLocalOllamaBaseUrl(row.base_url) && localOllamaProvider()?.id === row.provider_id;
   const pair = (sizes.get(STANDARD_DECISION_MODEL.tag) ?? STANDARD_DECISION_MODEL.bytes) + (sizes.get(STANDARD_WRITER_MODEL.tag) ?? STANDARD_WRITER_MODEL.bytes);
-  const isWriter = dojoBox && row.api_model_id === STANDARD_WRITER_MODEL.tag;   // its weights are already counted
-  const needBytes = (isWriter ? 0 : weights) + kvBytes;
+  // N1 (fix round 2): the Dojo's writer is never charged twice — its weights are counted in the pair and its
+  // job's KV is the room set aside below, so its fit is only the KV it would need BEYOND that room.
+  const isWriter = dojoBox && row.api_model_id === STANDARD_WRITER_MODEL.tag;
+  const writerJob = isWriter ? await writerJobWindowTokens(resolveNumCtx({ numCtxOverride: row.num_ctx_override, numCtxRecommended: row.num_ctx_recommended }).effective ?? null) : 0;
+  const chargedKv = isWriter ? (typeof kv === 'number' ? kv * Math.max(0, contextTokens - writerJob) : 0) : kvBytes;
+  const needBytes = (isWriter ? 0 : weights) + chargedKv;
   const openBytes = totalRamBytes - pickDesktopReserve(totalRamBytes) - ENGINE_RESERVE_BYTES
-    - (dojoBox ? (sizeOf(sizes, embedderName()) ?? 0) + pair + await writerWorkingBytes(baseUrl) : 0);
-  const fits = needBytes <= openBytes;
+    - (dojoBox ? (sizeOf(sizes, embedderName()) ?? 0) + pair + await dojoWorkingBytes(baseUrl) : 0);
+  const fits = needBytes <= Math.max(0, openBytes);   // nothing more needed (the writer at its own jobs) always fits
   return {
     fits, openBytes, needBytes, contextTokens,
     message: fits ? null
       : `${row.name} needs about ${gb(needBytes)} GB of memory to run with its ${kTokens(contextTokens)}-token window `
-        + `(${gb(isWriter ? 0 : weights)} GB of weights and ${gb(kvBytes)} GB of working memory). This box has ${macGb(totalRamBytes)} GB; `
+        + `(${gb(isWriter ? 0 : weights)} GB of weights and ${gb(chargedKv)} GB of working memory). This box has ${macGb(totalRamBytes)} GB; `
         + (dojoBox
-          ? `after the desktop, the engine, the embedder, the Dojo's own two models and the working memory its writer keeps for summaries, about ${gb(openBytes)} GB is open. `
+          ? `after the desktop, the engine, the embedder, the Dojo's own two models and the working memory they keep for summaries, about ${gb(openBytes)} GB is open. `
           : `after the desktop and the engine, about ${gb(openBytes)} GB is open. `)
         + 'Choose a smaller local model or a cloud model.',
   };
 }
 
 // ── CHECKED LATER: an unsized selection is marked, told once, and judged at its first load ──
+// The mark is `healer_state` (scope `local_fit_unchecked`, key `<use>:<model id>`). Fix round 2: the owner's
+// card is the persistent owner-notice card (`fitunchecked:<model id>`, re-derived from the marks on every
+// dashboard load by `healerOwnerCards`), and it ends when the fit is checked.
 const UNCHECKED_SCOPE = 'local_fit_unchecked';
+export const fitUncheckedKey = (modelId: string): string => `fitunchecked:${modelId}`;
 
-function markUnchecked(modelId: string, words: string): void {
+function markUnchecked(modelId: string, use: ModelUse): void {
   try {
-    const db = getDb();
-    const had = db.prepare('SELECT 1 FROM healer_state WHERE scope = ? AND key = ?').get(UNCHECKED_SCOPE, modelId);
-    db.prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms`)
-      .run(UNCHECKED_SCOPE, modelId, Date.now());
-    if (!had) ownerCardFrame(words, 'warning');   // the existing owner card, once per unchecked model
+    getDb().prepare(`INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms`)
+      .run(UNCHECKED_SCOPE, `${use}:${modelId}`, Date.now());
+    if (tellOwnerOnce(fitUncheckedKey(modelId))) ownerCardFrame(wordsOf(fitUncheckedKey(modelId)), 'warning');
   } catch { /* best-effort: the first-load check still runs whenever the mark was written */ }
 }
 
 /**
  * The refusal for SELECTING `modelId`, or null when it may be saved. `currentModelId` is what the door
- * holds now: re-saving that same model is not a change and is never refused. An unsized model is allowed
- * and marked for its first load (the owner is told why, once).
+ * holds now: re-saving that same model is not a change and is never refused. `otherRefusal` is the door's
+ * own next check (the 32K floor): asked AFTER the memory fit, so a refusal names the true reason, and
+ * BEFORE an unsized model is marked, so nothing is told about a pick that is then refused (N7).
  */
 export async function refuseUnfitLocalModel(
   modelId: string | null | undefined,
   currentModelId?: string | null,
   use: ModelUse = 'agent',
+  otherRefusal?: () => string | null,
 ): Promise<string | null> {
   if (!modelId || modelId === currentModelId) return null;
   const v = await localModelFit(modelId, use);
-  if (!v) return null;
-  if (v.unchecked) { markUnchecked(modelId, v.message as string); return null; }
-  return v.fits ? null : v.message;
+  if (v && !v.unchecked && !v.fits) return v.message;
+  const other = otherRefusal?.() ?? null;
+  if (other) return other;
+  if (v?.unchecked) markUnchecked(modelId, use);
+  return null;
 }
 
 /**
  * Called before a local model's call is dialled (`agent/model.ts`). A model selected while it could not be
- * sized is judged now: it fits → the mark and its card go; it does not → the call is refused with the plain
- * sentence (and keeps being refused until another model is picked); still unsizeable → it runs, still marked.
+ * sized is judged now, at the strictest use it was picked for (an agent pick is judged as an agent even
+ * when the first call is a utility job: N8): it fits → the marks and the card go; it does not → the call
+ * is refused with the plain sentence (and keeps being refused until another model is picked); still
+ * unsizeable → it runs, still marked.
  */
-export async function refuseUncheckedAtFirstLoad(modelId: string, use: ModelUse): Promise<void> {
-  let marked = false;
-  try { marked = !!getDb().prepare('SELECT 1 FROM healer_state WHERE scope = ? AND key = ?').get(UNCHECKED_SCOPE, modelId); } catch { return; }
-  if (!marked) return;
-  const v = await localModelFit(modelId, use);
+export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void> {
+  let uses: ModelUse[] = [];
+  try {
+    uses = (getDb().prepare('SELECT key FROM healer_state WHERE scope = ? AND key IN (?, ?)').all(UNCHECKED_SCOPE, `agent:${modelId}`, `job:${modelId}`) as Array<{ key: string }>)
+      .map((r) => r.key.split(':')[0] as ModelUse);
+  } catch { return; }
+  if (uses.length === 0) return;
+  const v = await localModelFit(modelId, uses.includes('agent') ? 'agent' : 'job');
   if (!v || v.unchecked) return;
-  const name = (getDb().prepare('SELECT name FROM models WHERE id = ?').get(modelId) as { name: string } | undefined)?.name ?? modelId;
-  ownerCardEnded(uncheckedFitWords(name, 'Ollama is not answering'));
-  ownerCardEnded(uncheckedFitWords(name, 'the model is not downloaded yet'));
-  if (v.fits) { getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(UNCHECKED_SCOPE, modelId); return; }
-  throw new Error(v.message ?? `${name} does not fit in this box's memory.`);
+  ownerConditionCleared(fitUncheckedKey(modelId));   // checked now: the card leaves every dashboard
+  if (v.fits) { getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND key IN (?, ?)').run(UNCHECKED_SCOPE, `agent:${modelId}`, `job:${modelId}`); return; }
+  throw new Error(v.message ?? 'This model does not fit in this box\'s memory.');
 }

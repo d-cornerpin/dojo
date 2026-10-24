@@ -31,8 +31,10 @@ import { localModelFit, refuseUnfitLocalModel, refuseUncheckedAtFirstLoad } from
 import { Hono } from 'hono';
 import { routerRouter } from '../../gateway/routes/router.js';
 import { configRouter } from '../../gateway/routes/config.js';
-import { pickDesktopReserve, ENGINE_RESERVE_BYTES, writerJobWindowTokens } from '../../services/num-ctx-calculator.js';
+import { pickDesktopReserve, ENGINE_RESERVE_BYTES } from '../../services/num-ctx-calculator.js';
+import { writerJobWindowTokens } from '../../services/dojo-working-memory.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { healerOwnerCards } from '../../healer/owner-notices.js';
 
 const GIB = 1024 ** 3;
 const EMBEDDER = 274_302_471;
@@ -114,8 +116,8 @@ describe('the arithmetic (figures for the owner)', () => {
     expect(v!.needBytes).toBe(6_600_000_000 + kvPerToken(36) * AT_32K);
     expect(v!.message).toBe(
       'qwen3.5:9b needs about 11.3 GB of memory to run with its 32K-token window (6.6 GB of weights and 4.7 GB of working memory). '
-      + "This box has 16 GB; after the desktop, the engine, the embedder, the Dojo's own two models and the working memory its writer "
-      + 'keeps for summaries, about 0.0 GB is open. Choose a smaller local model or a cloud model.',
+      + "This box has 16 GB; after the desktop, the engine, the embedder, the Dojo's own two models and the working memory they "
+      + 'keep for summaries, about 0.0 GB is open. Choose a smaller local model or a cloud model.',
     );
     expect(await refuseUnfitLocalModel('m-9b')).toBe(v!.message);
   });
@@ -146,6 +148,37 @@ describe('the arithmetic (figures for the owner)', () => {
   });
 });
 
+describe('N1 (fix round 2): the Dojo\'s writer is never charged twice', () => {
+  it('as a job (summary writer, voice opener) its reserved room IS its fit, even on 16 GB', async () => {
+    expect(await refuseUnfitLocalModel('m-writer', null, 'job')).toBeNull();
+    expect((await localModelFit('m-writer', 'job'))!.needBytes).toBe(0);
+  });
+
+  it('as an agent it needs only the KV beyond the room already reserved for its jobs', async () => {
+    totalRam = 32 * GIB;
+    const job = await writerJobWindowTokens(null);
+    expect((await localModelFit('m-writer'))!.needBytes).toBe(kvPerToken(36) * Math.max(0, AT_32K - job));
+  });
+
+  it('a pick of the writer made while Ollama was down never makes its summary calls fail', async () => {
+    ollama.up = false;
+    expect(await refuseUnfitLocalModel('m-writer', null, 'job')).toBeNull();
+    ollama.up = true;
+    await expect(refuseUncheckedAtFirstLoad('m-writer')).resolves.toBeUndefined();
+  });
+});
+
+describe('fix round 2: the decision model\'s own working memory is reserved (it reads source + summary)', () => {
+  it('when Ollama describes the decision model, its KV at the check\'s window comes out of what is open', async () => {
+    totalRam = 32 * GIB;
+    const before = (await localModelFit('m-2b'))!.openBytes;
+    ollama.show[STANDARD_DECISION_MODEL.tag] = arch(36);
+    const after = (await localModelFit('m-2b'))!.openBytes;
+    expect(before - after).toBe(kvPerToken(36) * await writerJobWindowTokens(null));
+    delete ollama.show[STANDARD_DECISION_MODEL.tag];
+  });
+});
+
 describe('the decision model is never a choice', () => {
   it('refused for an agent and for a job, in plain words', async () => {
     const words = "tev1:4b-q4_K_M is the Dojo's decision model: it answers the Dojo's own yes/no questions and cannot run an agent or write. Choose another model.";
@@ -161,25 +194,40 @@ describe('what is never refused', () => {
 });
 
 describe('RULING: what Ollama cannot size now is allowed, told, and judged at its first load', () => {
-  it('Ollama down: allowed, and the owner is told the fit will be checked when it first loads', async () => {
+  const WORDS = (name: string): string => `${name} was selected, but its memory fit could not be checked then (Ollama was not answering, or the model was not downloaded yet). `
+    + "It will be checked when the model first loads, and refused then if it does not fit this box's memory.";
+  const inUse = (modelId: string): void => { db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_model', ?)").run(modelId); };
+
+  it('Ollama down: allowed, and the owner is told once on the persistent owner card', async () => {
     ollama.up = false;
     expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
-    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([
-      'qwen3.5:9b was selected, but its memory fit could not be checked now (Ollama is not answering). It will be checked when the model first loads, and refused then if it does not fit this box\'s memory.',
-    ]);
+    expect(await refuseUnfitLocalModel('m-9b')).toBeNull();
+    expect(frames.list.filter((f) => f.severity === 'warning').map((f) => f.error)).toEqual([WORDS('qwen3.5:9b')]);
+    inUse('m-9b');
+    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('qwen3.5:9b'));   // N2: survives a reload
   });
 
-  it('not downloaded yet: allowed with its own reason', async () => {
+  it('not downloaded yet: allowed the same way', async () => {
     expect(await refuseUnfitLocalModel('m-unlisted')).toBeNull();
-    expect(frames.list.some((f) => f.error?.includes('(the model is not downloaded yet)'))).toBe(true);
+    inUse('m-unlisted');
+    expect(healerOwnerCards().map((c) => c.words)).toContain(WORDS('not-pulled:3b'));
   });
 
-  it('the first load refuses it with the plain error when it does not fit — and keeps refusing', async () => {
+  it('N7: a pick the door then refuses (the 32K floor) is neither marked nor told', async () => {
+    ollama.up = false;
+    expect(await refuseUnfitLocalModel('m-9b', null, 'agent', () => 'too small')).toBe('too small');
+    expect(frames.list).toEqual([]);
+    await expect(refuseUncheckedAtFirstLoad('m-9b')).resolves.toBeUndefined();
+  });
+
+  it('the first load refuses it with the plain error when it does not fit — keeps refusing — and the card ends', async () => {
     ollama.up = false;
     await refuseUnfitLocalModel('m-9b');
+    inUse('m-9b');
     ollama.up = true;
-    await expect(refuseUncheckedAtFirstLoad('m-9b', 'agent')).rejects.toThrow(/^qwen3\.5:9b needs about 11\.3 GB of memory/);
-    await expect(refuseUncheckedAtFirstLoad('m-9b', 'agent')).rejects.toThrow(/needs about/);
+    await expect(refuseUncheckedAtFirstLoad('m-9b')).rejects.toThrow(/^qwen3\.5:9b needs about 11\.3 GB of memory/);
+    await expect(refuseUncheckedAtFirstLoad('m-9b')).rejects.toThrow(/needs about/);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(WORDS('qwen3.5:9b'));
   });
 
   it('the first load lets it run when it fits, and the mark and its card go', async () => {
@@ -187,14 +235,23 @@ describe('RULING: what Ollama cannot size now is allowed, told, and judged at it
     ollama.up = false;
     await refuseUnfitLocalModel('m-2b');
     ollama.up = true;
-    await expect(refuseUncheckedAtFirstLoad('m-2b', 'agent')).resolves.toBeUndefined();
-    expect(frames.list.some((f) => f.severity === 'info' && f.error?.startsWith('qwen3.5:2b was selected'))).toBe(true);
+    await expect(refuseUncheckedAtFirstLoad('m-2b')).resolves.toBeUndefined();
+    expect(frames.list.some((f) => f.severity === 'info' && f.error === WORDS('qwen3.5:2b'))).toBe(true);
     ollama.up = false;   // no longer marked: nothing to ask
-    await expect(refuseUncheckedAtFirstLoad('m-2b', 'agent')).resolves.toBeUndefined();
+    await expect(refuseUncheckedAtFirstLoad('m-2b')).resolves.toBeUndefined();
+  });
+
+  it('N8: an AGENT pick is judged as an agent even when its first call is a utility job', async () => {
+    totalRam = 32 * GIB;
+    db().prepare("UPDATE models SET num_ctx_recommended = 262144 WHERE id = 'm-2b'").run();
+    ollama.up = false;
+    await refuseUnfitLocalModel('m-2b', null, 'agent');
+    ollama.up = true;
+    await expect(refuseUncheckedAtFirstLoad('m-2b')).rejects.toThrow(/262K-token window/);
   });
 
   it('a model selected normally is not re-judged at load', async () => {
-    await expect(refuseUncheckedAtFirstLoad('m-9b', 'agent')).resolves.toBeUndefined();
+    await expect(refuseUncheckedAtFirstLoad('m-9b')).resolves.toBeUndefined();
   });
 });
 

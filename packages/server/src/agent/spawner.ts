@@ -236,7 +236,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   // Resolve model: "auto" means use the router
   const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
   // 32K floor (dec 13) then the memory fit (v3.5): a NAMED model only. Loaded on demand (agent/model.ts is a heavy graph).
-  const refused = modelId && modelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => await f.refuseUnfitLocalModel(modelId, parent.model_id) ?? f.refuseSmallMainModel(modelId, parent.model_id)) : null;
+  const refused = modelId && modelId !== 'auto' ? await import('./main-model-floor.js').then(async (f) => await f.refuseUnfitLocalModel(modelId, parent.model_id, 'agent', () => f.refuseSmallMainModel(modelId, parent.model_id))) : null;
   if (refused) throw new Error(refused);
   if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');

@@ -1102,7 +1102,7 @@ export const agentsHandlers: ToolHandlerMap = {
         if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
         if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
         resolvedModel = model;
-        const refused = await refuseUnfitLocalModel(model.id, target.model_id) ?? refuseSmallMainModel(model.id, target.model_id);
+        const refused = await refuseUnfitLocalModel(model.id, target.model_id, 'agent', () => refuseSmallMainModel(model.id, target.model_id));
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 

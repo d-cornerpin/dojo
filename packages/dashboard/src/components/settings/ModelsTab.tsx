@@ -557,6 +557,7 @@ export const ModelsTab = () => {
   const [primaryModelId, setPrimaryModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [settingModel, setSettingModel] = useState(false);
+  const [primaryError, setPrimaryError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
 
   const [primaryAgentId, setPrimaryAgentId] = useState('primary');
 
@@ -608,9 +609,7 @@ export const ModelsTab = () => {
   const handleSetPrimaryModel = async (modelId: string) => {
     setSettingModel(true);
     const result = await api.setAgentModel(primaryAgentId, modelId);
-    if (result.ok) {
-      setPrimaryModelId(modelId);
-    }
+    if (result.ok) { setPrimaryModelId(modelId); setPrimaryError(null); } else setPrimaryError(result.error);
     setSettingModel(false);
   };
 
@@ -639,12 +638,13 @@ export const ModelsTab = () => {
             <option value="" disabled>
               {settingModel ? 'Setting...' : 'Set Model'}
             </option>
-            {enabledModels.map((m) => (
+            {enabledModels.filter((m) => !m.capabilities.includes('decision')).map((m) => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>
         </div>
       )}
+      {primaryError && <div className="alert-banner alert-error">{primaryError}</div>}
 
       {providers.length === 0 ? (
         <p className="text-ui/40 text-sm">No providers configured. Add one in the Providers tab first.</p>

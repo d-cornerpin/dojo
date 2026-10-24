@@ -101,7 +101,7 @@ agentsRouter.patch('/:id/model', async (c) => {
 
   const { modelId } = body;
 
-  const refused = await refuseUnfitLocalModel(modelId, agent.model_id) ?? refuseSmallMainModel(modelId, agent.model_id);   // 32K floor (t202 D10), memory fit (v3.5)
+  const refused = await refuseUnfitLocalModel(modelId, agent.model_id, 'agent', () => refuseSmallMainModel(modelId, agent.model_id));   // 32K floor (t202 D10), memory fit (v3.5)
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (modelId === 'auto') {
@@ -148,7 +148,7 @@ agentsRouter.post('/', async (c) => {
     return c.json({ ok: false, error: 'name (string) and systemPrompt (string) are required' }, 400);
   }
 
-  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId) ?? refuseSmallMainModel(body.modelId) : null;   // before any write
+  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, null, 'agent', () => refuseSmallMainModel(body.modelId)) : null;   // before any write
   if (refused) return c.json({ ok: false, error: refused }, 400);
   try {
     const db = getDb();
@@ -350,7 +350,7 @@ agentsRouter.put('/:id', async (c) => {
     return c.json({ ok: false, error: 'Request body required' }, 400);
   }
 
-  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, agent.model_id) ?? refuseSmallMainModel(body.modelId, agent.model_id) : null;   // before the rename
+  const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, agent.model_id, 'agent', () => refuseSmallMainModel(body.modelId, agent.model_id)) : null;   // before the rename
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   const updates: string[] = [];

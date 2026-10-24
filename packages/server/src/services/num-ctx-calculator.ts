@@ -36,9 +36,8 @@ import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { kvBytesPerTokenOf } from './kv-bytes.js';
-import { STANDARD_TAGS, STANDARD_WRITER_MODEL } from './local-standard.js';
-import { utilityDial, utilityNumCtx, utilityOutputCap } from '../agent/utility-dial.js';
-import { CHARS_PER_TOKEN } from '../memory/budget.js';
+import { STANDARD_TAGS } from './local-standard.js';
+import { dojoWorkingBytes } from './dojo-working-memory.js';
 
 // Detect whether an Ollama base URL points at the host machine we're
 // running on. Localhost → use os.totalmem(). Remote → use the user-entered
@@ -263,26 +262,6 @@ function enabledOllamaApiModelIds(): string[] {
   }
 }
 
-/** The window, in tokens, of the Dojo writer's largest job (a leaf summary: its chunk plus its output),
- *  sized by the same `utilityNumCtx` the call itself is sized by. */
-export async function writerJobWindowTokens(configuredNumCtx: number | null): Promise<number> {
-  const { getLeafChunkTokens, getLeafTargetTokens } = await import('../memory/compaction.js');
-  return utilityNumCtx({ inputChars: getLeafChunkTokens() * CHARS_PER_TOKEN, configuredNumCtx,
-    outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, getLeafTargetTokens()) });
-}
-
-/** The KV bytes the Dojo's writer holds for that job on this Ollama; 0 when no writer is installed or
- *  its architecture cannot be read (nothing is set aside for what cannot be sized). */
-export async function writerWorkingBytes(baseUrl: string): Promise<number> {
-  try {
-    const row = getDb().prepare(`SELECT m.num_ctx_override AS o, m.num_ctx_recommended AS r FROM models m JOIN providers p ON p.id = m.provider_id
-      WHERE p.type = 'ollama' AND m.api_model_id = ? AND m.is_enabled = 1`).get(STANDARD_WRITER_MODEL.tag) as { o: number | null; r: number | null } | undefined;
-    const arch = row ? await fetchModelArchInfo(baseUrl, STANDARD_WRITER_MODEL.tag) : null;
-    const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
-    return typeof kv === 'number' ? kv * await writerJobWindowTokens(row?.o ?? row?.r ?? null) : 0;
-  } catch { return 0; }
-}
-
 // ── Main calculation ──────────────────────────────────────────────────
 
 export async function computeRecommendedNumCtx(
@@ -321,7 +300,7 @@ export async function computeRecommendedNumCtx(
   // v3.5 (fix round 1, owner ruling): on the Dojo's own box a model is not sized into the room the Dojo's
   // writer needs for its largest job, so an agent's window and the writer's working memory both fit.
   const otherResidentWeightsBytes = otherResidentWeights(apiModelId, installed, enabledOllamaApiModelIds())
-    + (isLocalOllamaBaseUrl(baseUrl) && !STANDARD_TAGS.includes(apiModelId) ? await writerWorkingBytes(baseUrl) : 0);
+    + (isLocalOllamaBaseUrl(baseUrl) && !STANDARD_TAGS.includes(apiModelId) ? await dojoWorkingBytes(baseUrl) : 0);
   const availableBytes = kvBudgetBytes({
     totalRamBytes, weightsBytes, otherResidentWeightsBytes,
   });
