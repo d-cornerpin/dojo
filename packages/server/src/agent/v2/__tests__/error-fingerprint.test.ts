@@ -38,6 +38,15 @@ describe('fingerprint(toolName, errorText)', () => {
     expect(fingerprint('t', 'HTTP 403 Forbidden')).toContain('403');
   });
 
+  it('a status written as HTTP/1.1, "Error 404" or "(403)" stays apart from another status', () => {
+    expect(fingerprint('t', 'HTTP/1.1 403 Forbidden')).not.toBe(fingerprint('t', 'HTTP/1.1 500 Forbidden'));
+    expect(fingerprint('t', 'Error 404')).not.toBe(fingerprint('t', 'Error 500'));
+    expect(fingerprint('t', 'API error (403)')).not.toBe(fingerprint('t', 'API error (500)'));
+    // control: differing only by an id or a count still merges
+    expect(fingerprint('t', 'HTTP/1.1 403 for item 18f3a9c2d4e5b601 after 3 tries')).toBe(fingerprint('t', 'HTTP/1.1 403 for item 77aa88bb99cc0011 after 12 tries'));
+    expect(fingerprint('t', 'Error 404 on page 7 (retry 2)')).toBe(fingerprint('t', 'Error 404 on page 19 (retry 5)'));
+  });
+
   it('content types and slashed phrases are not paths: text/html stays apart from application/json', () => {
     expect(fingerprint('t', 'Expected application/json but got text/html')).toContain('text/html');
     expect(fingerprint('t', 'got text/html')).not.toBe(fingerprint('t', 'got application/json'));

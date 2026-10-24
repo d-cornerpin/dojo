@@ -18,7 +18,9 @@ export function canonicalToolName(toolName: string): string {
   return toolName.startsWith('user_') ? toolName.slice('user_'.length) : toolName;
 }
 
-type Mask = [RegExp, string | ((match: string, word?: string, gap?: string, num?: string) => string)];
+type Mask = [RegExp, string | ((match: string, gap?: string, num?: string, paren?: string) => string)];
+
+const isStatus = (n: string): boolean => /^[1-5]\d\d$/.test(n);
 
 const MASKS: Mask[] = [
   [/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '<email>'],
@@ -33,9 +35,14 @@ const MASKS: Mask[] = [
   // 24+ run of letters and digits (API keys). Neither is part of what an error means.
   [/\b(?=[a-z0-9_-]*\d)[a-z0-9_-]{12,}\b/gi, '<id>'],
   [/\b[A-Za-z0-9]{24,}\b/g, '<id>'],
-  // A number is masked unless it is an HTTP status.
-  [/\b(?:(http|status|code)([\s:=/]*))?(\d+(?:\.\d+)?)/gi,
-    (_m, word, gap, num) => (word && num && /^\d{3}$/.test(num) ? `${word}${gap}${num}` : `${word ?? ''}${gap ?? ''}<n>`)],
+  // A number is masked unless it is a status: 100-599 standing alone right after http/<version>, http,
+  // error, status or code, or alone in parentheses. Anything else (counts, ids, versions) is masked.
+  [/\b(?:http\/\d(?:\.\d)?|http|error|status|code)([\s:=/]*)(\d+(?:\.\d+)?)|\((\d+)\)|\d+(?:\.\d+)?/gi,
+    (m, _gap, num, paren) => {
+      if (num !== undefined) return isStatus(num) ? m : `${m.slice(0, m.length - num.length)}<n>`;
+      if (paren !== undefined) return isStatus(paren) ? m : '(<n>)';
+      return '<n>';
+    }],
 ];
 
 // The first 200 characters of the masked text are the fingerprint; past that is detail, not identity.
