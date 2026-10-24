@@ -1869,7 +1869,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // Structure only. Engine never inspects evidence content; that is PM's job.
     // t193 (dec 27): ONE gate for both close doors — `complete_step` calls it too.
     if (status === 'complete' && !callerIsPM) {
-      const refused = closeEvidenceGate(agentId, taskId, args) ?? remainderGate(agentId, taskId, args);
+      const refused = closeEvidenceGate(agentId, taskId, args) ?? remainderGate(taskId, args);
       if (refused) return refused;
     }
 
@@ -3460,7 +3460,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 
     // t193 (owner decision 27): the same result + evidence as `complete`, through the same gate;
     // the step's notes are recorded as the status door records them (a Key-1 filing drops them).
-    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"') ?? remainderGate(agentId, taskId, args, 'action="complete_step"');
+    const stepRefused = closeEvidenceGate(agentId, taskId, args, 'action="complete_step"') ?? remainderGate(taskId, args, 'action="complete_step"');
     if (stepRefused) return stepRefused;
     if (notes && notes.trim()) {
       writeTaskLog({
@@ -3958,7 +3958,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   }
 
   if (markComplete) {
-    { const no = isPMAgent(agentId) ? null : remainderGate(agentId, taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
+    { const no = isPMAgent(agentId) ? null : remainderGate(taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
     // Stop the schedule AND mark the task as complete (terminal state)
     const schedDoneRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),

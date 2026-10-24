@@ -65,7 +65,7 @@ function namedRemainder(args: Record<string, unknown>): { disposition: string; r
  * `takesRemainder` is false at a door that has no `remainder` argument (the schedule door), whose
  * refusal therefore names the door that does.
  */
-export function remainderGate(agentId: string, taskId: string, args: Record<string, unknown>, door = 'status="complete"', takesRemainder = true): string | null {
+export function remainderGate(taskId: string, args: Record<string, unknown>, door = 'status="complete"', takesRemainder = true): string | null {
   const f = closeFacts(taskId);
   if (!f || (takesRemainder && namedRemainder(args))) return null;
   const { unit } = f.measure;
