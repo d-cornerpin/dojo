@@ -521,6 +521,7 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     'google/auth.ts': 5,
     'google/client.ts': 1,
     'google/tools-slides.ts': 1,
+    'inspect/source-remote.ts': 1, // v3.5 dojo_inspect: the one GET door, wired through openAgentCall
     'memory/embeddings.ts': 2,
     'microsoft/auth.ts': 4,
     'microsoft/client.ts': 1,

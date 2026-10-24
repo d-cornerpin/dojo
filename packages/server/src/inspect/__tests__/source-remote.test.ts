@@ -149,3 +149,23 @@ describe('searchSource', () => {
     expect(out).toContain(pointerLine());
   });
 });
+
+describe("the agent's stop reaches every GitHub call (agent/__tests__/no-transport-is-born-stop-blind.test.ts)", () => {
+  it('a call made for an agent carries that agent\'s stop, and a stopped agent dials nothing', async () => {
+    fetchMock.mockResolvedValueOnce(text('one\n'));
+    await readSourceFile('README.md', undefined, undefined, 'agent-inspect-stop');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+
+    const { stoppedAgents } = await import('../../agent/shared-state.js');
+    stoppedAgents.add('agent-inspect-stop');
+    try {
+      fetchMock.mockClear();
+      expect(await readSourceFile('README.md', undefined, undefined, 'agent-inspect-stop')).toMatch(/^Stopped: you pressed stop/);
+      token.current = 'synthetic-connection-value';
+      expect(await searchSource('taskMovedAtSql', undefined, 'agent-inspect-stop')).toMatch(/^Stopped: you pressed stop/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      stoppedAgents.delete('agent-inspect-stop');
+    }
+  });
+});

@@ -23,6 +23,7 @@ import { DOJO_REPORT_REPO_DEFAULT } from '../report/repo.js';
 import { getGithubToken } from '../github/account.js';
 import { GITHUB_API, ISSUE_HTTP_TIMEOUT_MS } from '../github/issues.js';
 import { readRefusal, githubsWords } from '../github/refusal.js';
+import { openAgentCall, STOPPED_BY_USER } from '../agent/abortable-call.js';
 import { redactText } from './redact.js';
 
 export interface SourceRef { owner: string; repo: string; sha: string; version: string; url: string }
@@ -73,15 +74,21 @@ function unreachable(ref: SourceRef, what: string, err: unknown): string {
   return `GitHub could not be reached (${why}), so ${what}. Open it in a browser at ${ref.url}, or try again in a minute.\n\n${pointerLine(ref)}`;
 }
 
-type Got = { ok: true; body: string } | { ok: false; down: false; status: number; words: string } | { ok: false; down: true; error: unknown };
+type Got = { ok: true; body: string } | { ok: false; down: false; status: number; words: string } | { ok: false; down: true; error: unknown; stopped: boolean };
 
-async function get(url: string, headers: Record<string, string> = {}): Promise<Got> {
+/** One GET. Made for an agent, it rides that agent's stop (`openAgentCall`) with the clock composed. */
+async function get(url: string, agentId: string | undefined, headers: Record<string, string> = {}): Promise<Got> {
+  const clock = AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS);
+  const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn', clock);
   try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(ISSUE_HTTP_TIMEOUT_MS) });
+    if (slot?.refused) return { ok: false, down: true, error: STOPPED_BY_USER, stopped: true };
+    const res = await fetch(url, { headers, signal: slot?.signal ?? clock });
     if (res.ok) return { ok: true, body: await res.text() };
     return { ok: false, down: false, status: res.status, words: githubsWords(await readRefusal(res)) };
   } catch (error) {
-    return { ok: false, down: true, error };
+    return { ok: false, down: true, error, stopped: slot?.cutByStop() ?? false };
+  } finally {
+    slot?.release();
   }
 }
 
@@ -98,12 +105,13 @@ function splitLines(body: string): string[] {
 }
 
 /** One file at the running commit, numbered; the asked range, or the whole file. */
-export async function readSourceFile(path: string, from?: number, to?: number): Promise<string> {
+export async function readSourceFile(path: string, from?: number, to?: number, agentId?: string): Promise<string> {
   const ref = sourceRef();
   const p = repoPath(path);
   if (p === null) return `${REFUSED_PATH(path)}\n\n${pointerLine(ref)}`;
-  const got = await get(rawUrl(ref, p));
+  const got = await get(rawUrl(ref, p), agentId);
   if (!got.ok) {
+    if (got.down && got.stopped) return STOPPED_BY_USER;
     if (got.down) return unreachable(ref, `${p} was not read; it is at ${blobUrl(ref, p)}`, got.error);
     if (got.status === 404) return `No file at ${p} in the commit this box runs. Search for it with code_search, or browse ${ref.url}.\n\n${pointerLine(ref)}`;
     return `GitHub refused the read of ${p} (HTTP ${got.status}). ${got.words} It is at ${blobUrl(ref, p)}.\n\n${pointerLine(ref)}`;
@@ -124,7 +132,7 @@ const SEARCH_PER_PAGE = 100;
  * is then read at the running commit and the matching lines are shown from THAT copy: the line
  * numbers are the running code's, and a hit that has since moved says so.
  */
-export async function searchSource(pattern: string, pathPrefix?: string): Promise<string> {
+export async function searchSource(pattern: string, pathPrefix?: string, agentId?: string): Promise<string> {
   const ref = sourceRef();
   const token = getGithubToken();
   if (!token) {
@@ -139,8 +147,9 @@ export async function searchSource(pattern: string, pathPrefix?: string): Promis
   const paths: string[] = [];
   let total = 0; let stopped = '';
   for (let page = 1; ; page++) {
-    const got = await get(`${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=${SEARCH_PER_PAGE}&page=${page}`, headers);
+    const got = await get(`${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=${SEARCH_PER_PAGE}&page=${page}`, agentId, headers);
     if (!got.ok) {
+      if (got.down && got.stopped) return STOPPED_BY_USER;
       if (paths.length === 0 && got.down) return unreachable(ref, 'the search did not run', got.error);
       const why = got.down ? 'GitHub stopped answering before the last page.' : `GitHub refused the search (HTTP ${got.status}). ${got.words}`;
       if (paths.length === 0) return `${why} Browse the source at ${ref.url}.\n\n${pointerLine(ref)}`;
@@ -158,7 +167,7 @@ export async function searchSource(pattern: string, pathPrefix?: string): Promis
   if (paths.length === 0) return `No match for "${pattern}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
   const terms = pattern.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
   const files = await Promise.all([...new Set(paths)].map(async (p) => {
-    const got = await get(rawUrl(ref, p));
+    const got = await get(rawUrl(ref, p), agentId);
     if (!got.ok) return `${p}\n  (named by the search; not readable at this commit: ${!got.down && got.status === 404 ? 'the file is not in it' : 'GitHub did not answer'})`;
     const hits = splitLines(redactText(got.body))
       .map((l, i) => ({ l, n: i + 1 }))
