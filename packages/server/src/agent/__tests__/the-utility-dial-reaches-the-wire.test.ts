@@ -293,6 +293,21 @@ describe('the Dojo\'s standard writer is kept resident on the wire', () => {
     expect(bodies[0].keep_alive).toBe(-1);
   });
 
+  it('I-1: an AGENT TURN on the writer\'s row is not pinned resident', async () => {
+    await callModel({ agentId: 'a-fixture', modelId: 'm-std-writer', systemPrompt: '', messages: [{ role: 'user', content: 'hello' }], tools: false });
+    expect(bodies[0].keep_alive).toBeUndefined();
+  });
+
+  it('I-1: another Ollama provider\'s copy of the writer\'s tag (a second host) is never pinned, even for a writer job', async () => {
+    mockDb.current!.prepare(`INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
+      VALUES ('lan-ollama', 'LAN', 'ollama', ?, 'none', 1, datetime('now', '+1 minute'), datetime('now'))`).run(stubUrl);   // reachable here; what matters is that it is not the Dojo's own provider row
+    mockDb.current!.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+      VALUES ('m-lan-writer', 'lan-ollama', 'LAN writer', ?, '["chat"]', 262144, 4096, 1, datetime('now'), datetime('now'))`).run(STANDARD_WRITER_MODEL.tag);
+    clearClientCache();
+    await callModel({ agentId: 'a-fixture', modelId: 'm-lan-writer', systemPrompt: '', messages: [{ role: 'user', content: 'x'.repeat(1_200) }], tools: false, purpose: 'ask_title' });
+    expect(bodies[0].keep_alive).toBeUndefined();
+  });
+
   it('any other local model keeps Ollama\'s own keep-alive (nothing is sent)', async () => {
     await dial('ask_title');
     expect(bodies[0].keep_alive).toBeUndefined();

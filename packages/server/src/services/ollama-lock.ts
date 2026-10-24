@@ -22,7 +22,6 @@
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getDb } from '../db/connection.js';
-import { STANDARD_TAGS } from './local-standard.js';
 
 const logger = createLogger('ollama-lock');
 
@@ -132,11 +131,11 @@ class OllamaModelLock {
    * census row 8's first clause was that it passed the raw one, so a waiter gave up at 90s on a
    * call entitled to 300. See `sameModelQueueTimeoutMs`'s own doc.
    */
-  async acquire(providerId: string, modelName: string, declaredFirstChunkMs?: number): Promise<void> {
-    // v3.5: the Dojo's two standard models are RESIDENT (keep_alive -1, sized for a 16 GB box beside
-    // an agent's model), so they hold no slot: a decision or writer call never waits behind an agent's
-    // turn and never swaps the agent's model out. `release` mirrors this.
-    if (STANDARD_TAGS.includes(modelName)) return;
+  async acquire(providerId: string, modelName: string, declaredFirstChunkMs?: number, pinned = false): Promise<void> {
+    // v3.5: an ENGINE call on the Dojo's own resident pair (`pinned`, decided by the caller from the
+    // call and the local provider's own row — never by tag) holds no slot: it never waits behind an
+    // agent's turn and the lock never swaps the agent's model for it. `release` mirrors this.
+    if (pinned) return;
     // Re-read config on each acquire (single DB read, ~0.1ms)
     this.loadConfig();
 
@@ -238,8 +237,8 @@ class OllamaModelLock {
   }
 
   /** Release a slot after an Ollama call completes (success or error). */
-  release(providerId: string, modelName: string): void {
-    if (STANDARD_TAGS.includes(modelName)) return;   // pinned: it took no slot (see `acquire`)
+  release(providerId: string, modelName: string, pinned = false): void {
+    if (pinned) return;   // it took no slot (see `acquire`)
     const slot = this.slots.find(s => s.providerId === providerId && s.modelName === modelName);
     if (!slot) {
       logger.warn('Ollama lock release: no slot found', { providerId, modelName });

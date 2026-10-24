@@ -916,7 +916,7 @@ export function contractForConfiguredModel(modelId: string | null | undefined): 
 //   • `done_reason` / `done: true` instead of `finish_reason`
 
 import { getOllamaLock } from '../services/ollama-lock.js';
-import { STANDARD_TAGS } from '../services/local-standard.js';
+import { isStandardModelRow } from '../services/local-standard.js';
 
 interface NativeOllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -1181,6 +1181,7 @@ async function callOllamaModel(
   // declared — see `utility-dial.ts` for why this keys off the caller's declaration and never off
   // `tools === false`. When it IS a utility dial, three things change and nothing else does.
   const dial = utilityDial(params.purpose);
+  const pinned = !!dial && isStandardModelRow(modelId);   // an engine job on the local provider's own row of the pair
   const dialOutputCap = dial ? utilityOutputCap(dial, params.utilityTargetTokens) : null;
   const dialNumCtxInput = dial
     ? {
@@ -1210,8 +1211,8 @@ async function callOllamaModel(
     // their AGENT's turns; inheriting it here is what spent 4,156 output tokens of reasoning on a
     // 60-character ticket title. The engine's own artifacts are not the place for deliberation.
     think: dial ? false : modelInfo.thinkingEnabled,
-    // v3.5: the Dojo's two standard models stay resident; they take no lock slot (`services/ollama-lock.ts`).
-    ...(STANDARD_TAGS.includes(ollamaModelName) ? { keep_alive: -1 } : {}),
+    // v3.5: an engine job on the Dojo's own resident writer stays loaded and takes no lock slot (I-1: the call's, not the tag's).
+    ...(pinned ? { keep_alive: -1 } : {}),
   };
   if (nativeTools && nativeTools.length > 0) {
     requestBody.tools = nativeTools;
@@ -1362,7 +1363,7 @@ async function callOllamaModel(
   // `bounds` is therefore computed above this line rather than below it, and the lock is handed
   // the identical number the watchdog will arm. The two cannot drift again without someone
   // editing one expression that both read.
-  await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs);
+  await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs, pinned);
 
   const startTime = Date.now();
 
@@ -1639,7 +1640,7 @@ async function callOllamaModel(
       provider: classifyProviderError(err),
     });
   } finally {
-    lock.release(modelInfo.providerId, ollamaModelName);
+    lock.release(modelInfo.providerId, ollamaModelName, pinned);
   }
 }
 

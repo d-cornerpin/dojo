@@ -1,6 +1,8 @@
 // v3.5 A3, REVIEW FOCUS 2 — A LONG AGENT TURN HOLDS A LOCAL AGENT MODEL WHEN A DECISION CALL ARRIVES.
-// The Dojo's two standard models are resident (keep_alive -1) and take no slot of the Ollama lock, so a
-// decision call or a writer call never queues behind an agent's turn and never swaps its model out.
+// The ENGINE's own calls on the Dojo's two standard models (the caller says so: `pinned`) are resident
+// and take no slot of the Ollama lock, so they never queue behind an agent's turn and the lock never
+// swaps the agent's model for them. Fix round 1 (I-1): the exemption is the CALL's, never the tag's —
+// an agent whose own model carries the writer's tag keeps the normal lock.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -38,13 +40,13 @@ describe('the two standard models take no lock slot', () => {
 
     let decided = false;
     let wrote = false;
-    void lock.acquire(PROVIDER, STANDARD_DECISION_MODEL.tag).then(() => { decided = true; });
-    void lock.acquire(PROVIDER, STANDARD_WRITER_MODEL.tag).then(() => { wrote = true; });
+    void lock.acquire(PROVIDER, STANDARD_DECISION_MODEL.tag, undefined, true).then(() => { decided = true; });
+    void lock.acquire(PROVIDER, STANDARD_WRITER_MODEL.tag, undefined, true).then(() => { wrote = true; });
     await settle();
     expect(decided).toBe(true);
     expect(wrote).toBe(true);
 
-    // The agent's model still owns the provider's only slot: it was not swapped out.
+    // The agent's model still owns the provider's only slot: the lock did not swap it.
     const status = lock.getStatus();
     expect(status.slots.map((s) => s.modelName)).toEqual([AGENT_MODEL]);
     expect(status.slots[0].activeRequests).toBe(1);
@@ -68,9 +70,23 @@ describe('the two standard models take no lock slot', () => {
     const { STANDARD_DECISION_MODEL } = await import('../local-standard.js');
     const lock = getOllamaLock();
     await lock.acquire(PROVIDER, AGENT_MODEL);
-    await lock.acquire(PROVIDER, STANDARD_DECISION_MODEL.tag);
-    lock.release(PROVIDER, STANDARD_DECISION_MODEL.tag);
+    await lock.acquire(PROVIDER, STANDARD_DECISION_MODEL.tag, undefined, true);
+    lock.release(PROVIDER, STANDARD_DECISION_MODEL.tag, true);
     const status = lock.getStatus();
     expect(status.slots).toEqual([{ providerId: PROVIDER, modelName: AGENT_MODEL, activeRequests: 1 }]);
+  });
+
+  it('I-1: an AGENT TURN on the writer\'s tag is not pinned — a second one queues behind the first', async () => {
+    const { getOllamaLock } = await import('../ollama-lock.js');
+    const { STANDARD_WRITER_MODEL } = await import('../local-standard.js');
+    const lock = getOllamaLock();
+    await lock.acquire(PROVIDER, STANDARD_WRITER_MODEL.tag, 5_000);
+    let second = false;
+    const p = lock.acquire(PROVIDER, STANDARD_WRITER_MODEL.tag, 5_000).then(() => { second = true; });
+    await settle();
+    expect(second).toBe(false);
+    lock.release(PROVIDER, STANDARD_WRITER_MODEL.tag);
+    await p;
+    expect(second).toBe(true);
   });
 });
