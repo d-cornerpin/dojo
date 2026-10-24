@@ -92,6 +92,9 @@ import { runMigrations } from '../../db/migrations.js';
 import { compileDiagnosticReport } from '../diagnostic.js';
 import { runAutoFixes } from '../auto-fix.js';
 import { selectHealerApprovalRouting, evaluateScratchZoneAutoApprove } from '../approval-routing.js';
+// t265: ONE instance of the recovery module, loaded here at file load, for the single clause
+// whose subject is NOT the restart (the negative control below). See that clause for why.
+import { rehydrateInjuredAgents as rehydrateHoisted } from '../injury-recovery.js';
 
 const SRC = path.join(__dirname, '..', '..');
 const read = (r: string): string => fs.readFileSync(path.join(SRC, r), 'utf8');
@@ -220,10 +223,35 @@ describe('SWEEP CORE-2 item 2 — the pending dispatch survives a restart THROUG
     ).toBe(1);
   });
 
+  // t265 — WHY THIS CLAUSE NO LONGER RE-IMPORTS THE MODULE.
+  //
+  // This clause timed out at 30s in full-suite runs under heavy load (twice running) and passed
+  // 13/13 alone. Nothing in it waits on the clock: the timers are fake, the 60s is virtual, the
+  // body is two UPDATE/SELECTs. The only real-time cost it carried was `restartAndDrain`'s COLD
+  // `await import('../injury-recovery.js')` after `vi.resetModules()` — the exact exposure t119
+  // root-caused (a cold dynamic import of a multi-module graph inside the measured window can be
+  // left pending by vite-node's module runner under a concurrent suite). t119 kept that import
+  // dynamic because for the RESTART clauses a fresh registry is the subject. Here it is not: the
+  // question this clause asks is "does the sweep's SELECTION leave a healthy agent alone", which
+  // is a property of the rehydrate query against the DB, not of module-registry mechanics. So it
+  // uses the instance loaded at file load. That instance is untouched by any other clause (every
+  // other clause imports its own fresh one), so its timer registries start empty.
+  //
+  // It is also made a real control. It used to assert only `CONTROL === 0` after injuring the
+  // other agent — which a rehydrate that did NOTHING satisfies equally well. It now asserts the
+  // injured agent WAS re-armed in the same run, so `CONTROL === 0` can only mean "the sweep ran,
+  // armed the injured one, and left the healthy one alone".
   it('NEGATIVE CONTROL: a healthy agent is not dragged into recovery', async () => {
     injure(INJURED, null);
-    await restartAndDrain();
-    expect(attemptsOf(CONTROL)).toBe(0);
+    vi.useFakeTimers();
+    try {
+      rehydrateHoisted();
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(attemptsOf(INJURED), 'the sweep ran and armed the injured agent (control is live)').toBe(1);
+    expect(attemptsOf(CONTROL), 'the healthy agent was not dragged in').toBe(0);
   });
 
   it('the unreachable fallback is gone WITH its cause — the filter no longer contradicts it', () => {
