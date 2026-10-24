@@ -57,6 +57,8 @@ function mailbox(opts: { size?: number; listError?: string; archiveId?: string; 
       return ok({ value: all });
     }
     if (endpoint === 'https://graph.microsoft.com/v1.0/page2') return ok({ value: [...ids(size).map((m) => ({ ...m, parentFolderId: 'inbox-id' })), ...(opts.elsewhere ?? [])].slice(25) });
+    if (endpoint.startsWith('me/mailFolders/sentitems')) return ok({ id: 'sent-id' });
+    if (endpoint.startsWith('me/mailFolders/drafts')) return ok({ id: 'drafts-id' });
     if (endpoint.startsWith('me/mailFolders/archive')) return ok({ id: opts.archiveId ?? 'AAMk-archive-id' });
     if (endpoint.startsWith('me/mailFolders/deleteditems')) return ok({ id: 'AAMk-deleted-id' });
     return fail(`unexpected read ${endpoint}`);
@@ -124,10 +126,31 @@ describe('E20: outlook_move_to_folder to the archive moves the conversation', ()
     expect(moved.some((u) => /sent1|draft1/.test(u))).toBe(false);
   });
 
-  it('a conversation_id given by itself names no folder, so it moves every message of it', async () => {
+  it('a conversation_id given by itself to the archive or deleteditems leaves Sent Items and Drafts alone', async () => {
+    for (const folder of ['archive', 'deleteditems']) {
+      vi.mocked(msGraphRead).mockReset(); vi.mocked(msGraphWrite).mockReset();
+      mailbox({ size: 3, elsewhere: sentAndDraft });
+      const out = await run({ conversation_id: 'conv1', folder_id: folder });
+      const moved = batchRequests(batches()[0]).map((r) => r.url);
+      expect(moved, folder).toEqual(['/me/messages/c1/move', '/me/messages/c2/move', '/me/messages/c3/move']);
+      expect(out).toMatch(/2 .*other folders.*left/i);
+    }
+  });
+
+  it('a conversation_id given by itself to any OTHER folder still moves every message', async () => {
     mailbox({ size: 3, elsewhere: sentAndDraft });
-    await run({ conversation_id: 'conv1', folder_id: 'archive' });
+    await run({ conversation_id: 'conv1', folder_id: 'AAMk-project-folder' });
     expect(batchRequests(batches()[0])).toHaveLength(5);
+  });
+
+  it('if Sent Items and Drafts cannot be identified, nothing is moved and it says so', async () => {
+    mailbox({ size: 3, elsewhere: sentAndDraft });
+    const base = vi.mocked(msGraphRead).getMockImplementation()!;
+    vi.mocked(msGraphRead).mockImplementation((async (e: string, ...rest: unknown[]) =>
+      e.startsWith('me/mailFolders/sentitems') ? fail('throttled') : (base as (...a: unknown[]) => unknown)(e, ...rest)) as never);
+    const out = await run({ conversation_id: 'conv1', folder_id: 'archive' });
+    expect(out).toMatch(/^Error.*nothing was moved/i);
+    expect(writes()).toHaveLength(0);
   });
 
   it('this_message_only moves the one message and looks nothing up', async () => {

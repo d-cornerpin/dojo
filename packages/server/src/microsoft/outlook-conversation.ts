@@ -5,8 +5,9 @@
 // the inbox and the thread came back. Gmail already archives the whole conversation by default
 // (google/gmail-archive.ts); Outlook's name for the same idea is a message's `conversationId`.
 //
-//   conversation_id          -> every message of that conversation, to any folder (it names no
-//                               folder to compare against).
+//   conversation_id          -> every message of that conversation; to the archive or deleted
+//                               items it names no folder to compare against, so Sent Items and
+//                               Drafts are left alone instead (Gmail parity: the sent copy stays).
 //   message_id + the archive or deleted-items folder, no `this_message_only`
 //                            -> the message's conversation, the messages that sit in the SAME
 //                               folder as it (Gmail parity: archiving takes the thread out of the
@@ -44,6 +45,15 @@ async function isPutAwayFolder(folderId: string, ctx: OutlookCallContext): Promi
   return ids.includes(folderId);
 }
 
+/** The ids of the Sent Items and Drafts folders (once per call); null if Graph would not say. */
+async function sentAndDraftFolders(ctx: OutlookCallContext): Promise<Set<string> | null> {
+  const ids = await Promise.all(['sentitems', 'drafts'].map(async (name) => {
+    const r = await msGraphRead(`me/mailFolders/${name}?$select=id`, ctx.agentId, ctx.agentName, 'outlook_move_to_folder:folder_lookup', { name }, ctx.slot);
+    return r.ok ? (r.data as { id?: string } | null)?.id : undefined;
+  }));
+  return ids.every(Boolean) ? new Set(ids as string[]) : null;
+}
+
 async function conversationOf(messageId: string, ctx: OutlookCallContext): Promise<{ ok: true; id: string; folder: string } | { ok: false; error: string }> {
   const found = await msGraphRead(
     `me/messages/${encodeURIComponent(messageId)}?$select=conversationId,parentFolderId`,
@@ -79,13 +89,13 @@ async function listConversation(conversationId: string, ctx: OutlookCallContext)
   return { ok: true, found };
 }
 
-/** `sameFolder`: move only the messages in that folder (the named message's); absent = every message. */
-async function moveConversation(conversationId: string, folderId: string, ctx: OutlookCallContext, sameFolder?: string): Promise<string> {
+/** `include`: which messages (by their folder id) move; absent = every message. */
+async function moveConversation(conversationId: string, folderId: string, ctx: OutlookCallContext, include?: (folder: string | undefined) => boolean): Promise<string> {
   const listed = await listConversation(conversationId, ctx);
   if (!listed.ok) {
     return `Error: could not list the conversation (${listed.error}), so nothing was moved. Retry, or pass message_id with this_message_only=true to move just one message.`;
   }
-  const ids = listed.found.filter((m) => !sameFolder || m.folder === sameFolder).map((m) => m.id);
+  const ids = listed.found.filter((m) => !include || include(m.folder)).map((m) => m.id);
   const left = listed.found.length - ids.length;
   if (ids.length === 0) return `Error: that conversation has no messages to move (conversation_id ${conversationId}); nothing was moved.`;
 
@@ -121,11 +131,16 @@ export async function moveToFolder(args: Record<string, unknown>, ctx: OutlookCa
   if (!messageId && !given) return 'Error: pass message_id (one email) or conversation_id (a whole conversation).';
   if (messageId && given) return 'Error: pass message_id or conversation_id, not both.';
 
-  if (given) return moveConversation(given, folderId, ctx);
+  if (given) {
+    if (!(await isPutAwayFolder(folderId, ctx))) return moveConversation(given, folderId, ctx);
+    const own = await sentAndDraftFolders(ctx);
+    if (!own) return 'Error: could not identify the Sent Items and Drafts folders (so they cannot be left alone), and nothing was moved. Retry, or move one message with message_id and this_message_only=true.';
+    return moveConversation(given, folderId, ctx, (f) => !f || !own.has(f));
+  }
   if (messageId && args.this_message_only !== true && await isPutAwayFolder(folderId, ctx)) {
     const found = await conversationOf(messageId, ctx);
     if (!found.ok) return found.error;
-    return moveConversation(found.id, folderId, ctx, found.folder);
+    return moveConversation(found.id, folderId, ctx, (f) => f === found.folder);
   }
 
   const result = await msGraphWrite('POST', `me/messages/${encodeURIComponent(messageId!)}/move`, { destinationId: folderId },
