@@ -72,4 +72,15 @@ describe('the assignment notice', () => {
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox' }, unit: 'messages' }), id);
     expect(notice(id)).toContain('gmail_search "in:inbox" could not be read yet.');
   });
+
+  it('a task on a planned project carries its plan step after the instructions', () => {
+    const plan = { approach: 'Count, then label in pages.', steps: [
+      { title: 'Count', how: 'gmail_search, read the total', done: 'the count is noted' },
+      { title: 'Label in pages', how: 'gmail_label with message_ids per batch', done: 'the search returns 0' },
+    ] };
+    const { projectId, taskIds } = createProject({ title: 'Inbox', level: 2, createdBy: CREATOR, origin: ORIGIN, plan,
+      tasks: [{ title: 'Count', stepNumber: 1, assignedTo: WORKER }, { title: 'Label in pages', stepNumber: 2, assignedTo: WORKER }] });
+    const text = notice(taskIds[1], 'Label in pages', projectId);
+    expect(text).toContain('Instructions:\nDo the thing\nPlan step 2 of 2 — Label in pages: gmail_label with message_ids per batch (done when: the search returns 0)');
+  });
 });

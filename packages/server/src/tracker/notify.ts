@@ -24,6 +24,7 @@ import { insertEngineEvent, claimTrackerNoticeForTask } from '../memory/message-
 import { isDreamerAgent, isPrimaryAgent } from '../config/platform.js';
 import { readMeasureFacts } from '../work/measure-view.js';
 import { describeMeasure } from '../work/measure.js';
+import { planStepLineOf } from '../work/plan-store.js';
 
 const logger = createLogger('tracker:notify');
 
@@ -162,6 +163,7 @@ export function injectTaskAssignmentNotification(
     `ID: ${taskId}`,
     `Priority: ${priority ?? 'normal'}`,
     description ? `\nInstructions:\n${description}` : '',
+    planStepLineOf(taskId) ?? '',   // v3.5 plan before project: the step of its project's plan this task is
     projectId ? `Project: ${projectId}` : '',
     `Assigned by: ${creatorName}`,
     // Ticket stamps (2026-07-22): the assignee starts with the CONNECTION,
