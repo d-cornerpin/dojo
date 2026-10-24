@@ -186,13 +186,27 @@ describe('G22: the technical detail of a full-disk update is one plain line', ()
     expect(r.status).toBe(507);
   }, 60_000);
 
-  it('curl is told to keep its progress meter to itself (-sS: silent, errors still printed)', async () => {
+  it('the download keeps curl\'s progress meter: it is the only output the idle bound can hear', async () => {
     standInCurlRaw(23, LEG6_STDERR);
     stubVolume(100);
     const { applyUpdate } = await import('../../gateway/routes/update.js');
     await applyUpdate('stable');
     const argv = fs.readFileSync(path.join(work, 'curl-args'), 'utf8').trim().split(/\s+/);
-    expect(argv).toContain('-sS');
+    // The body goes to a file (-o), so curl's progress meter on stderr is the ONLY thing the download
+    // prints; silence it (-s, -sS, --silent, --no-progress-meter) and a healthy download longer than
+    // the idle window is killed as "quiet" (t114).
+    const silencing = argv.filter((a) => /^-[A-Za-z]*s[A-Za-z]*$/.test(a) || a === '--silent' || a === '--no-progress-meter');
+    expect(silencing, 'the download argv silences curl\'s progress meter').toEqual([]);
+
+    // And the consequence, driven through the real idle bound at second scale: a curl that prints
+    // progress as the argv allows (the meter, unless silenced) for 3 s survives a 1 s idle window.
+    const meter = silencing.length === 0;
+    const script = meter ? 'for i in 1 2 3 4 5 6; do echo "  12.3%" 1>&2; sleep 0.5; done' : 'sleep 3';
+    const { attachIdleBound } = await import('../../child-idle-bound.js');
+    const { spawn } = await import('node:child_process');
+    await expect(attachIdleBound(spawn('/bin/sh', ['-c', script]), { idleMs: 1_000, ceilingMs: 30_000 })).resolves.toBeDefined();
+    const silentRun = attachIdleBound(spawn('/bin/sh', ['-c', 'sleep 3']), { idleMs: 1_000, ceilingMs: 30_000 });
+    await expect(silentRun, 'CONTROL: a silent child IS killed by the same bound').rejects.toBeDefined();
   }, 60_000);
 });
 
