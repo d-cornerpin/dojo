@@ -26,6 +26,7 @@ import { estimateTokens, estimateTokensFromChars } from './budget.js';
 import { messageTokens } from './lanes.js';
 import { mediaNoteText } from './kept-row-view.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { attachmentFenceOf, attachmentFenceTokens } from '../agent/attachment-fence.js';
 
 type Attachment = { filename: string; mimeType: string; size: number; category: string };
 
@@ -52,10 +53,11 @@ function attachmentTokens(att: Attachment, vision: boolean, roomTokens: number):
 
 /** `rows` with each row whose attachments this turn will inject charged their cost (`attachmentTokens`). */
 export function chargeTurnAttachments(agentId: string, modelId: string, rows: Message[], roomTokens: number): Message[] {
-  const recent = getDb().prepare(`SELECT id, attachments FROM messages WHERE agent_id = ? AND role = 'user' AND attachments IS NOT NULL
-    ORDER BY created_at DESC, rowid DESC LIMIT 10`).all(agentId) as Array<{ id: string; attachments: string }>;
+  const recent = getDb().prepare(`SELECT id, attachments, inbound_meta FROM messages WHERE agent_id = ? AND role = 'user' AND attachments IS NOT NULL
+    ORDER BY created_at DESC, rowid DESC LIMIT 10`).all(agentId) as Array<{ id: string; attachments: string; inbound_meta: string | null }>;
   if (recent.length === 0) return rows;
   const byId = new Map(recent.map((r) => [r.id, r.attachments]));
+  const metaOf = new Map(recent.map((r) => [r.id, r.inbound_meta]));
   let turnStart = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (rows[i].role === 'assistant' && !/"type":"tool_use"/.test(rows[i].content)) { turnStart = i + 1; break; }
@@ -67,7 +69,10 @@ export function chargeTurnAttachments(agentId: string, modelId: string, rows: Me
     if (!json) return m;
     let atts: Attachment[];
     try { atts = JSON.parse(json) as Attachment[]; } catch { return m; }
-    const charge = atts.filter((a) => a.category === 'image' || a.category === 'pdf').reduce((t, a) => t + attachmentTokens(a, vision, roomTokens), 0);
+    // v3.5 K33: a contact's image or PDF is injected inside its fence; its head and end are in the charge too.
+    const fence = attachmentFenceOf(metaOf.get(m.id), m.id);
+    const fenceTokens = fence ? attachmentFenceTokens(fence) : 0;
+    const charge = atts.filter((a) => a.category === 'image' || a.category === 'pdf').reduce((t, a) => t + attachmentTokens(a, vision, roomTokens) + fenceTokens, 0);
     return charge > 0 ? { ...m, attachmentTokens: charge } as Message : m;
   });
 }

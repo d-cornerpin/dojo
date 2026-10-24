@@ -34,6 +34,7 @@ import { storedRowCost, replayedReasoningTokens } from './budget.js';
 import { messageTokens } from './lanes.js';
 import { toolResultView, POINTER_VIEW_CHARS, POINTER_LABEL_ROOM_CHARS } from './tool-result-view.js';
 import { getDb } from '../db/connection.js';
+import { attachmentBrackets, defangExternalMarkers } from '../tools/external-content.js';
 
 /** The handle `tool_result_read` takes for a whole stored row (`msg:<message id>`), or for one text block of a
  *  structured row (`msg:<message id>#<block index>`). */
@@ -136,7 +137,19 @@ export function attachmentsWithinRoom(messages: Array<{ role: string; content: u
   for (const m of messages) {
     if (m.role !== 'user' || !Array.isArray(m.content)) continue;
     const over = (b: StoredBlock): boolean => isMedia(b) && mediaTokens(b) > roomTokens;
-    if ((m.content as StoredBlock[]).some(over)) m.content = (m.content as StoredBlock[]).map((b) => (over(b) ? oversizeMediaNote(b) : b));
+    const blocks = m.content as StoredBlock[];
+    if (!blocks.some(over)) continue;
+    // v3.5 K33: a contact's attachment is bracketed by its fence (`agent/attachment-fence.ts`). Its note is the
+    // engine's, so it goes OUTSIDE the fence; the sender's file name stays inside it, and an empty fence goes.
+    const { around } = attachmentBrackets(blocks);
+    const dropped = new Set(blocks.flatMap((b, i) => (over(b) && around[i] ? [i - 1, i + 1] : [])));
+    m.content = blocks.flatMap((b, i): StoredBlock[] => {
+      const fence = around[i];
+      if (dropped.has(i) || !over(b)) return dropped.has(i) ? [] : [b];
+      if (!fence) return [oversizeMediaNote(b)];
+      const note = oversizeMediaNote({ ...b, title: undefined });
+      return typeof b.title === 'string' ? [note, { type: 'text', text: fence.head }, { type: 'text', text: defangExternalMarkers(`File name: ${b.title}`) }, { type: 'text', text: fence.end }] : [note];
+    });
   }
 }
 

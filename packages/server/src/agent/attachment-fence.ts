@@ -14,6 +14,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { InboundMeta } from '@dojo/shared';
 import { fenceAttachment, fenceExternal, type ExternalKind } from '../tools/external-content.js';
 import { isOwnerIMessageRecipient } from '../services/safe-senders.js';
+import { estimateTokens } from '../memory/budget.js';
 
 export interface AttachmentFence { readonly kind: ExternalKind; readonly from: string; readonly rowId: string; drawn: number }
 
@@ -39,6 +40,13 @@ export function attachmentFenceOf(inboundMeta: string | null | undefined, rowId:
   if (meta.channel === 'dashboard' || meta.channel === 'voice' || meta.relation === 'owner') return null;
   if ((meta.channel === 'imessage' || meta.channel === 'sms') && isOwnerIMessageRecipient(meta.sender)) return null;
   return { kind: KIND_OF[meta.channel ?? ''] ?? 'document', from: `an attachment from ${meta.sender ?? 'a contact'}`, rowId, drawn: 0 };
+}
+
+/** What one attachment's fence (its head and its end) costs the model: two text blocks, priced as the fit prices
+ *  text (`memory/turn-attachments.ts` adds it to the attachment's charge, so the fit stays honest). */
+export function attachmentFenceTokens(fence: AttachmentFence): number {
+  const { head, end } = fenceAttachment(fence.kind, fence.from, '00000000');   // every code is 8 hex: the same length
+  return estimateTokens(JSON.stringify([{ type: 'text', text: head }, { type: 'text', text: end }]));
 }
 
 /** One attachment's blocks: bracketed by its own fence when it came from outside. */
