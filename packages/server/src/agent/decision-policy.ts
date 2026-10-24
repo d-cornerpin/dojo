@@ -2,7 +2,7 @@
 // v3.5 B3 — RULE → SHADOW → MODEL, PER QUESTION. Owner, 2026-10-19: "the Dojo switches a question
 // itself once the model proves better."
 //
-//   rule   — no decision model on this box, or the owner pinned it (`decision_mode.<purpose>.<question>`)
+//   rule   — no decision model on this box, or the owner held it to the rule (`decision_mode.<purpose>.<question>` = rule)
 //   model  — the score says the model is better AND its whole 95 % range sits above the rule's
 //            (`modelCI[0] > ruleCI[1]`): measured, never a typed threshold
 //   shadow — otherwise: the model answers, the rule decides, both are logged. A question in `model`
@@ -16,22 +16,20 @@ import type { DiagnosticItem } from '../healer/diagnostic.js';
 import { summaryCheckLine } from '../memory/summary-check.js';
 
 export type Mode = 'rule' | 'shadow' | 'model';
-const MODES: readonly Mode[] = ['rule', 'shadow', 'model'];
 
-function pinned(purpose: string, question: string): Mode | null {
+/** The owner may hold a question to the RULE; he may not pin it to the model or to shadow (fix round 1
+ *  ruling: the Dojo flips each question itself once the model proves better). */
+function pinnedToRule(purpose: string, question: string): boolean {
   try {
-    const v = (getDb().prepare('SELECT value FROM config WHERE key = ?').get(`decision_mode.${purpose}.${question}`) as { value: string } | undefined)?.value;
-    return v && (MODES as readonly string[]).includes(v) ? v as Mode : null;
-  } catch { return null; }
+    return (getDb().prepare('SELECT value FROM config WHERE key = ?').get(`decision_mode.${purpose}.${question}`) as { value: string } | undefined)?.value === 'rule';
+  } catch { return false; }
 }
 
 const modelProvenBetter = (s: QuestionScore | null): boolean =>
   !!s && s.modelAcc > s.ruleAcc && s.modelCI[0] > s.ruleCI[1];
 
 export function modeFor(purpose: string, question: string): Mode {
-  if (!getDecisionProvider()) return 'rule';
-  const pin = pinned(purpose, question);
-  if (pin) return pin;
+  if (!getDecisionProvider() || pinnedToRule(purpose, question)) return 'rule';
   return modelProvenBetter(scoreQuestion(purpose, question)) ? 'model' : 'shadow';
 }
 

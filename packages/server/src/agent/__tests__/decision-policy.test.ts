@@ -71,6 +71,15 @@ describe('modeFor', () => {
     expect(modeFor('p', 'q')).toBe('rule');
   });
 
+  it('RULING (fix round 1): the owner cannot pin a question to the model, or to shadow — the Dojo flips it itself', () => {
+    seed('p', 'q', 10, 6, 8);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_mode.p.q', 'model')").run();
+    expect(modeFor('p', 'q')).toBe('shadow');
+    seed('p', 'q2', 60, 30, 58);
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_mode.p.q2', 'shadow')").run();
+    expect(modeFor('p', 'q2')).toBe('model');
+  });
+
   it('demotion: a question in model mode returns to shadow when the ranges overlap again', () => {
     seed('p', 'q', 60, 30, 58);
     expect(modeFor('p', 'q')).toBe('model');

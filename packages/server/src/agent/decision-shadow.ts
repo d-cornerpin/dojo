@@ -91,9 +91,11 @@ export function scoreQuestion(purpose: string, question: string): QuestionScore 
   let ruleRight = 0;
   let modelRight = 0;
   const buckets = new Map<number, { n: number; right: number }>();
+  let n = 0;   // the rows actually judged (a model answer that does not parse is not one)
   for (const r of rows) {
     let v: { said: string; p: number };
     try { v = verdictOf(JSON.parse(r.model_said) as Answer); } catch { continue; }
+    n++;
     const right = v.said === r.truth;
     if (r.rule_said === r.truth) ruleRight++;
     if (right) modelRight++;
@@ -101,7 +103,6 @@ export function scoreQuestion(purpose: string, question: string): QuestionScore 
     const cur = buckets.get(b) ?? { n: 0, right: 0 };
     buckets.set(b, { n: cur.n + 1, right: cur.right + (right ? 1 : 0) });
   }
-  const n = rows.length;
   if (n === 0) return null;
   let weakest = -1;
   for (const [b, s] of buckets) {

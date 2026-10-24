@@ -30,8 +30,9 @@ export interface DecideOpts { purpose: string; agentId?: string; timeoutMs?: num
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
-/** The plan's default: a decision is asked beside a rule that answers in microseconds, so it may cost
- *  a reply floor at most this long before the rule decides alone. Callers pass their own. */
+/** PROVISIONAL (orchestrator ruling, fix round 1): the plan's figure, with no measurement behind it yet.
+ *  It is REPLACED by Wave 2's B5 dev-box measurement of decide() latency (the cost rows already carry
+ *  `latency_ms` per purpose). Callers pass their own. */
 const DEFAULT_TIMEOUT_MS = 1_500;
 /** Failures are logged once per class per minute: a down Ollama on a busy box is one line, not one per turn. */
 const LOG_EVERY_MS = 60_000;
