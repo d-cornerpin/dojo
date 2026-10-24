@@ -91,7 +91,8 @@ describe('ensureStandardModels', () => {
     expect(writerId).toBeTruthy();
     expect(decisionId).toBeTruthy();
     expect(systemTier()).toEqual([writerId]);
-    expect(configValue('compaction_model_id')).toBe(writerId);
+    // Owner ruling 2026-10-24 ("The agents model."): the install never picks the summary writer; each agent's own model writes.
+    expect(configValue('compaction_model_id')).toBeUndefined();
     expect(configValue('decision_model_id')).toBe(decisionId);
     expect(roleKeys()).toEqual(before);
 
@@ -110,7 +111,7 @@ describe('ensureStandardModels', () => {
     expect(ollama.pulls).toEqual([]);
     expect(systemTier()).toEqual([standardModelRowId('writer')]);
     expect(configValue('decision_model_id')).toBe(standardModelRowId('decision'));
-    expect(configValue('compaction_model_id')).toBe(standardModelRowId('writer'));
+    expect(configValue('compaction_model_id')).toBeUndefined();
   });
 
   it("never overwrites a summary writer the owner picked", async () => {
@@ -124,7 +125,7 @@ describe('ensureStandardModels', () => {
   it('the engine answers with the writer afterwards: the system tier and the first summary writer', async () => {
     await ensureStandardModels();
     expect(getSystemModel()).toBe(standardModelRowId('writer'));
-    expect(summaryWriterCandidates()[0]).toBe(standardModelRowId('writer'));
+    expect(summaryWriterCandidates()[0]).toBe(standardModelRowId('writer'));   // an auto-routed agent: the writer as the fallback
   });
 
   it('getSystemModel answers the writer even when the tier row was lost', async () => {

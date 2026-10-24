@@ -191,8 +191,8 @@ function notAnswering(modelId: string, agentId?: string): boolean {
  * Every writer a summary of this agent's conversation MAY go to, in order (ruling R-V333-12, round 4:
  * the fallback never sends a conversation to a provider that would not have received it before):
  *   1. the owner's Settings writer, when one is set and usable;
- *   2. v3.5 (owner 2026-10-20): the Dojo's standard writer — local, so it sends the conversation nowhere new;
- *   3. the agent's own model, then the other text models on the agent's own provider;
+ *   2. the agent's own model, then its provider's other text models (owner 2026-10-24: "The agents model.");
+ *   3. the Dojo's standard writer — the FALLBACK when the agent's model cannot be reached; local, nowhere new;
  *   4. ONLY when the owner set no Settings writer — exactly as before t140 — the cheapest text model.
  * An auto-routed agent has no own model: its list is the Settings writer, the standard writer, else the cheapest.
  */
@@ -214,8 +214,8 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const ownProviderModels = ownProvider ? usable.filter((u) => u.provider === ownProvider).map((u) => u.id) : [];
   const list = [
     ...(explicit ? [explicit] : []),
-    ...[standardModelRowId('writer') ?? ''].filter(isUsable),
     ...(own ? [own, ...ownProviderModels] : []),
+    ...[standardModelRowId('writer') ?? ''].filter(isUsable),
     ...(explicit ? [] : usable.map((u) => u.id)),
   ];
   return [...new Set(list)];

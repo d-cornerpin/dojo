@@ -1,6 +1,8 @@
-// v3.5 A5 — OWNER RULING 2026-10-20: "The default should be the small writer at setup." The summary
-// writers are: the person's Settings pick first, then the Dojo's standard writer, then the rest. The
-// "cheapest enabled" default is replaced by the writer, and the decision model never writes.
+// v3.5 — OWNER RULING 2026-10-24 ("The agents model."), replacing the 2026-10-20 "small writer is the
+// default": with no Summarization model picked in Settings, each agent's OWN model writes its summaries, as in
+// v3.4; the Dojo's small local writer is only the FALLBACK when the agent's model cannot be reached. The order:
+// the Settings pick, then the agent's own model and provider, then the standard writer, then the rest. The
+// decision model never writes.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -14,7 +16,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { summaryWriterCandidates } from '../summary-writer-health.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -26,6 +28,7 @@ const model = (id: string, provider: string, api: string, caps: string[], cost: 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
+  __resetSummaryWriterHealthForTests();
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run();
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('cloud', 'Cloud', 'anthropic', NULL, 'api_key', 1)").run();
   // Free and sorted first by id: before v3.5 this was "the cheapest", and it wrote the summaries.
@@ -36,15 +39,24 @@ beforeEach(() => {
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
-describe('the summary writer defaults to the Dojo\'s standard writer', () => {
-  it('with no Settings pick, the standard writer is first — not the cheapest model', () => {
-    expect(summaryWriterCandidates()[0]).toBe('std-writer');
-    expect(summaryWriterCandidates('big-cloud')[0]).toBe('std-writer');
+describe("the agent's own model writes its summaries", () => {
+  it("with no Settings pick, the agent's own model is first, its provider's models next, then the standard writer", () => {
+    expect(summaryWriterCandidates('big-cloud').slice(0, 3)).toEqual(['big-cloud', 'aaa-free-cloud', 'std-writer']);
   });
 
-  it("with a Settings pick, the person's pick is first and the writer second", () => {
-    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'big-cloud')").run();
-    expect(summaryWriterCandidates().slice(0, 2)).toEqual(['big-cloud', 'std-writer']);
+  it("the agent's model cannot be reached → the standard writer writes", () => {
+    noteDidNotAnswerInTurn('big-cloud');
+    expect(eligibleSummaryWriters('big-cloud', 'agent-a')[0]).toBe('std-writer');
+  });
+
+  it('an explicit Settings pick wins over the agent\'s own model and the standard writer', () => {
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'aaa-free-cloud')").run();
+    expect(summaryWriterCandidates('big-cloud')[0]).toBe('aaa-free-cloud');
+    expect(summaryWriterCandidates('big-cloud').indexOf('big-cloud')).toBeLessThan(summaryWriterCandidates('big-cloud').indexOf('std-writer'));
+  });
+
+  it('an auto-routed agent (no own model): the standard writer, as the fallback', () => {
+    expect(summaryWriterCandidates()[0]).toBe('std-writer');
   });
 
   it('the decision model never writes a summary', () => {

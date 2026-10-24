@@ -183,8 +183,8 @@ function registerModelRow(providerId: string, which: Which, info: { contextWindo
   return id;
 }
 
-/** The assignments the pair carries. The writer owns the `system` tier outright; the summary writer
- *  is set to it only when the owner has not picked one (a person's pick is never overwritten). */
+/** The assignments the pair carries. The writer owns the `system` tier outright. The summary writer is never
+ *  set here (owner ruling 2026-10-24, "The agents model."): each agent's own model writes its summaries. */
 function assign(writerId: string | null, decisionId: string | null): void {
   const db = getDb();
   const upsert = db.prepare(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
@@ -193,8 +193,6 @@ function assign(writerId: string | null, decisionId: string | null): void {
     if (writerId) {
       db.prepare('DELETE FROM router_tier_models WHERE tier_id = ?').run('system');
       db.prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)').run('system', writerId);
-      const pick = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
-      if (!pick) upsert.run('compaction_model_id', writerId);
     }
     if (decisionId) upsert.run('decision_model_id', decisionId);
   })();
