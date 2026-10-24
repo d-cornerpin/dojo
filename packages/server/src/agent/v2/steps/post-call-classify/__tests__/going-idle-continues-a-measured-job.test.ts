@@ -300,8 +300,10 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139 })]);
-    // The continuation keeps the owner's conversation (the driver's C3 stash, the one writer of that record).
-    expect(stash).toHaveBeenCalledTimes(1);
+    // RULING 2 (pre-review): the continuation is NOT a human continuation (no C3 stash), so its
+    // progress lines are never promoted to the owner as answers; he hears the result, the stall
+    // (through the PM) or a question/blocker (`continued-job-progress.ts`).
+    expect(stash).not.toHaveBeenCalled();
   });
 
   it('no measure, nothing touched, no reply: the menu (today\'s text until the text wave), no park', async () => {

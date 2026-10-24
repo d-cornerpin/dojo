@@ -542,7 +542,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // Closures over driver state, passed as VALUES so they keep the bindings they
         // closed over (CUT 2's `stopStatusHeartbeat` precedent).
         reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
-        persistAndBroadcastSystemRow, startAckRepliedNow, stashContinuationIfHuman,
+        persistAndBroadcastSystemRow, startAckRepliedNow,
       });
       turnCtx.state = classified.state;
       if (classified.directive === 'exit') break;

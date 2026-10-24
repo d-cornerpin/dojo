@@ -373,7 +373,9 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
   it('ONE demotion rule in this file, not two — the helper is shared with the RC-5.3 arm', () => {
     const src = sourceOf('../closeout-floors.ts');
     expect((src.match(/type: 'chat:workingnote'/g) ?? []).length).toBe(1);
-    expect((src.match(/demoteToWorkingNote\(/g) ?? []).length).toBe(3);  // 1 declaration + 2 calls
+    // 1 declaration + 3 calls (v3.5 D1 pre-review ruling 2 added the third: a continued job's progress
+    // line, through the SAME helper — which is what this clause protects).
+    expect((src.match(/demoteToWorkingNote\(/g) ?? []).length).toBe(4);
   });
 });
 

@@ -86,7 +86,8 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
     // The park, as the engine's other checkpoints do it: a pending PM verdict rides to the agent,
     // the job's own task is marked in flight (the activity line) and carried, then the one park door.
     deliverPendingCirclingVerdict(agentId);
-    ctx.stashContinuationIfHuman();   // the C3 stash every engine auto-continue makes: the continuation keeps a human conversation
+    // NO C3 stash (pre-review ruling 2): a continued job is not a human continuation, so its progress lines
+    // are never promoted to the owner as answers; what reaches him is `continued-job-progress.ts`'s rule.
     try { noteEngineCheckpoint(agentId, 'job-continues', [task.id]); } catch (err) {
       logger.warn('v2: job-continues checkpoint note failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
     }

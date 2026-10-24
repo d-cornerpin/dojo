@@ -100,7 +100,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     const continued = db().prepare(`SELECT payload FROM work_events WHERE work_id = ? AND kind = 'continued'`).all(id) as Array<{ payload: string }>;
     expect(continued.map((r) => JSON.parse(r.payload))).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 2 })]);
     expect(handleMessage).not.toHaveBeenCalled();   // the continuation never runs before the turn is over
-    expect(stash).toHaveBeenCalledTimes(1);          // and it keeps the owner's conversation (the C3 stash)
+    expect(stash).not.toHaveBeenCalled();            // not a human continuation: its progress lines are not answers to him
 
     // The park's own timer starts the next turn, from the wake, carrying the job.
     await vi.advanceTimersByTimeAsync(1000);

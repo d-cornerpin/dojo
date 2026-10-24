@@ -119,7 +119,6 @@ export interface PostCallClassifyContext {
   ) => Promise<void>;
   readonly persistAndBroadcastSystemRow: (content: string) => void;
   readonly startAckRepliedNow: () => boolean;
-  readonly stashContinuationIfHuman: () => void;   // v3.5 D1: the C3 stash, when the turn parks its job
 }
 
 /**

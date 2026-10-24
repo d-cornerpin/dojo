@@ -22,6 +22,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
+import { continuedJobStillGoing } from './continued-job-progress.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -152,6 +153,10 @@ export function runCloseoutFloors(
     persistedContent = null;
   }
 
+  // v3.5 D1 (pre-review ruling 2): a continued job's text while it is still going is progress — kept, not sent.
+  if (persistedContent?.trim() && continuedJobStillGoing(state, ctx)) {
+    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }); persistedContent = null;
+  }
   // ── RC-5.3: proactive-send budget (backoff on unanswered background chatter) ──
   // A settled-context wake (no human waiting, not a deliberate surface) that produces
   // a terminal user-facing reply is an UNPROMPTED ping. Production fired ~10 of these
