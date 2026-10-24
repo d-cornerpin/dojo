@@ -141,14 +141,19 @@ describe('what the redirect leaves exactly as it was', () => {
 });
 
 // ORCHESTRATOR RULING (2026-10-24), concerns 1-2 of the first report.
-describe('the shell never writes the Dojo\'s own database, for any agent', () => {
+describe('the shell does not write the Dojo\'s own database — except the Healer, the repair agent', () => {
   const WRITE = /^Refused: the shell does not change the Dojo's own database \(dojo\.db and its -wal and -shm files\)\./;
-  it('a write statement by the Healer is refused, plainly', () => {
-    for (const script of [`sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`, `sqlite3 ${DB} "delete from work where id = 'w1'"`,
-      `sqlite3 ${DB} "pragma wal_checkpoint(TRUNCATE)"`, `sqlite3 ${DB} "vacuum"`]) {
-      expect(refusal(HEALER, 'shell', script), script).toMatch(WRITE);
-    }
-    expect(refusal(HEALER, 'proc', ['sqlite3', DB, "INSERT INTO config (key, value) VALUES ('k', 'v')"])).toMatch(WRITE);
+  const REPAIRS = (): string[] => [`sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'"`, `sqlite3 ${DB} "UPDATE agents SET status = 'terminated' WHERE id = 'x'"`,
+    `sqlite3 ${DB} "UPDATE work SET state = 'on_deck', next_run_at = 1725810300000 WHERE id = 'w1'"`, `sqlite3 ${DB} "pragma wal_checkpoint(TRUNCATE)"`];
+
+  it('REVISED RULING (fix round 2): the Healer\'s repairs pass, exactly as before v3.5', () => {
+    for (const script of REPAIRS()) expect(verdict(HEALER, 'shell', script).allowed, script).toBe(true);
+    expect(verdict(HEALER, 'proc', ['sqlite3', DB, "UPDATE agents SET config = json_set(config, '$.persist', 1) WHERE id = 'x'"]).allowed).toBe(true);
+  });
+
+  it('the same writes by the main agent are refused, plainly', () => {
+    for (const script of REPAIRS()) expect(refusal(PRIMARY, 'shell', script), script).toMatch(WRITE);
+    expect(refusal(PRIMARY, 'proc', ['sqlite3', DB, "INSERT INTO config (key, value) VALUES ('k', 'v')"])).toMatch(WRITE);
   });
 
   it('a write into the files themselves is refused, for the main agent and a worker alike', () => {

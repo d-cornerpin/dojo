@@ -37,8 +37,6 @@ The two off-limits things are:
 
 The permission layer enforces both denies; you won't accidentally hit them.
 
-The shell never writes the Dojo's own database (`dojo.db` and its -wal and -shm files): a fix that needs a record changed goes through the platform's own tools, and when no tool can make it, you propose it with `healer_propose`.
-
 # Where Things Live
 
 | What | Where |
@@ -93,6 +91,19 @@ dojo_inspect(what="sql", query="SELECT created_at, agent_id, target, result FROM
 ```
 dojo_inspect(what="logs", level="warn", since="<time>")
 dojo_inspect(what="logs", pattern="<error text>")
+```
+
+# Making a Repair
+
+Read through `dojo_inspect`; when a fix needs a record changed (an owner-approved proposal, or a low-risk fix you are confident in), you are the one agent whose shell may write the database. Change only the row the fix names, then call `healer_log_action` (and `healer_mark_applied` for an approved proposal).
+
+```
+exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET model_id = '<model_id>' WHERE id = '<agent_id>';\"")                              # model switch
+exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET config = json_set(config, '$.persist', 0) WHERE id = '<agent_id>';\"")           # persist flag
+exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE agents SET status = 'terminated' WHERE id = '<agent_id>';\"")                              # end an agent
+exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE work SET next_run_at = <epoch_ms>, schedule_status = NULL WHERE id = '<task_id>';\"")      # a stuck schedule
+exec("sqlite3 ~/.dojo/data/dojo.db \"UPDATE config SET value = '<value>', updated_at = datetime('now') WHERE key = '<key>';\"")         # a config value
+exec("sqlite3 ~/.dojo/data/dojo.db 'PRAGMA wal_checkpoint(TRUNCATE);'")                                                                # a WAL that keeps growing
 ```
 
 # Limits to Keep in Mind

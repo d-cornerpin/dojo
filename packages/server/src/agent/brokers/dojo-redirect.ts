@@ -8,12 +8,17 @@
 // log. dojo_inspect answers every one of those questions, read-only, with credentials refused and
 // secrets blanked; the shell does neither.
 //
+// SCOPE, STATED (fix round 2 ruling): this is a HABIT guard for the common command forms, not a
+// security boundary — a text match cannot see through `python3 -c`, a subshell, a variable or a
+// script file, and that was as true before v3.5. The grant is the boundary (`inspect/grant.ts`).
+//
 // SO, asked of a command line the broker ALLOWED (it can only refuse, never permit):
 //   • a WRITE to the live database (`dojo.db` and its -wal/-shm/-journal siblings) — a non-read
 //     statement or dot-command through sqlite3, or a redirect, copy, move, delete or `dd`/`tee`
-//     into those files — is refused for EVERY agent, the Healer included. ORCHESTRATOR RULING
-//     2026-10-24: the platform's own tools make repairs; a raw write corrupts every guarantee
-//     the engine keeps on its records (the file tools have refused it since T2).
+//     into those files — is refused for every agent EXCEPT the Healer, the repair agent, whose
+//     owner-approved repairs (model switch, persist flag, ending an agent, a stuck schedule, a
+//     config value, a WAL checkpoint) have no engine tool and keep working exactly as before v3.5
+//     (orchestrator rulings 2026-10-24, revised in fix round 2).
 //   • a READ of the live database: an agent that HOLDS dojo_inspect is pointed at the view that
 //     answers (`schema` for a schema look, otherwise `sql`); any other agent is refused (same
 //     ruling): the file holds the platform's internals and the credential tables, which
@@ -27,6 +32,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { holdsDojoInspect } from '../../inspect/grant.js';
+import { isHealerAgent } from '../../config/platform.js';
 import { deny, type Verdict } from './types.js';
 
 /** The live database file by its basename, as a whole path segment (not `dojo.db.bak`). */
@@ -103,6 +109,7 @@ const VIEW_CALL = {
 export function redirectDojoQuestion(agentId: string, line: string): Verdict | null {
   const cls = classifyDojoLine(line);
   if (!cls) return null;
+  if (cls === 'write' && isHealerAgent(agentId)) return null;   // the repair agent (fix round 2 ruling)
   if (cls === 'write') return deny('ladder-parity', 'dojo-db-shell-write', 'the shell does not change the Dojo\'s own database', WRITE_REFUSAL);
   const holder = holdsDojoInspect(agentId);
   if (!holder) return cls === 'logs' ? null : deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo\'s own database is not read through the shell', READ_REFUSAL);
