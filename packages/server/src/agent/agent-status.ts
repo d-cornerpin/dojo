@@ -141,7 +141,7 @@ export function clearAgentLastError(agentId: string): void {
  */
 export function terminateDuplicateAgentsByName(name: string, keepId: string): number {
   const clones = getDb()
-    .prepare('SELECT id FROM agents WHERE name = ? AND id != ?')
+    .prepare('SELECT id FROM agents WHERE name = ? COLLATE NOCASE AND id != ?')
     .all(name, keepId) as Array<{ id: string }>;
   for (const clone of clones) writeAgentStatus(clone.id, 'terminated');
   return clones.length;

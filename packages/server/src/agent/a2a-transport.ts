@@ -14,6 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { liveAgentsNamed, liveAgentNamesNear } from './tool-helpers.js';
 // t114 (census U3): the liveness fact every other reaper in the tree guards on, and the
 // patience ladder that scales a grant by the assignee's own declared model speed.
 import { activeRuns } from './shared-state.js';
@@ -400,7 +401,7 @@ const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(
   'AWAITING_REPLY', 'SEMANTIC_DUPLICATE',
 ]);
 
-function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal): void {
+function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal, extra: Record<string, unknown> = {}): void {
   const say = DROPS_THE_SENDER_IS_TOLD_ABOUT.has(reason)
     ? logger.info.bind(logger)
     : logger.warn.bind(logger);
@@ -411,6 +412,7 @@ function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal): void {
     intent: envelope.intent,
     reason,
     payloadPreview: envelope.payload.slice(0, 200),
+    ...extra,
   });
 }
 
@@ -559,11 +561,12 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   let target = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(envelope.toAgent) as
     | { id: string; name: string; status: string } | undefined;
   if (!target) {
-    target = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1")
-      .get(envelope.toAgent) as { id: string; name: string; status: string } | undefined;
+    // E21: a name is matched without regard to case; two live rows differing only by case resolve
+    // to the newest, the same one `send_to_agent` reports.
+    target = liveAgentsNamed(envelope.toAgent)[0];
   }
   if (!target) {
-    logDrop(envelope, 'AGENT_NOT_FOUND');
+    logDrop(envelope, 'AGENT_NOT_FOUND', { liveAgentsNearThatName: liveAgentNamesNear(envelope.toAgent) });
     return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
   }
   if (target.status === 'terminated') {

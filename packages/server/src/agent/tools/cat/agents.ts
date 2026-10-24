@@ -45,7 +45,7 @@ import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } 
 import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
 import { toolDefinitionsByName } from '../definitions.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
-import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from '../../tool-helpers.js';
+import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, liveAgentsNamed, liveAgentNamesNear } from '../../tool-helpers.js';
 
 import { auditLog, agentCanSelfCompleteById, toolsLogger as logger } from '../util.js';
 import { activeRuns } from '../../shared-state.js';
@@ -625,9 +625,13 @@ export const agentsHandlers: ToolHandlerMap = {
             // Check if target is injured, healer bypass
             const sendDb = getDb();
             let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
+            // E21: a name is matched without regard to case. When two live agents differ only by
+            // capital letters the newest is the one reached, and the sender is told below.
+            let sameNameLive: Array<{ id: string; name: string }> = [];
             if (!targetCheck) {
-              targetCheck = sendDb.prepare("SELECT id, name, status, created_at FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1")
-                .get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
+              const named = liveAgentsNamed(agentRef);
+              targetCheck = named[0];
+              if (named.length > 1) sameNameLive = named;
             }
             if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
               // v2.9.20, spawn-race auto-recover. When a newly-spawned
@@ -760,6 +764,11 @@ export const agentsHandlers: ToolHandlerMap = {
                       `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
                       `End your turn now; you will be woken when they answer.`
                     : ' No response expected (read-only context).');
+                // E21: two live agents that differ only by capital letters cannot be told apart by a
+                // name; the message went to the newest, and the sender must not have to guess which.
+                if (sameNameLive.length > 1) {
+                  content += ` NOTE: ${sameNameLive.length} live agents are named "${agentRef}" (differing only by capital letters): ${sameNameLive.map((a) => `"${a.name}" (${a.id})`).join(', ')}. The message went to the newest, "${sameNameLive[0].name}" (${sameNameLive[0].id}); pass an agent id to reach a different one.`;
+                }
                 // A2A busy signal (owner request 2026-07-23): the transport knows the
                 // recipient's live state; telling the SENDER prevents the weak-model
                 // re-send/escalate reflex when a queued-behind-busy reply reads as
@@ -854,7 +863,7 @@ export const agentsHandlers: ToolHandlerMap = {
                       : `Message not sent: you already have an open ${intent} awaiting a reply from "${agentRef}" on thread ${result.threadId.slice(0, 8)}, and they have not answered yet. Re-asking does not speed it up. End your turn; you will be woken when they reply. (If this is genuinely new, unrelated work, start a fresh thread by omitting thread_id.)`;
                     break;
                   case 'AGENT_NOT_FOUND':
-                    content = `No agent found with ID or name "${agentRef}".`;
+                    content = `No agent found with ID or name "${agentRef}"; live agents: ${liveAgentNamesNear(String(agentRef)).join(', ') || '(none)'}.`;
                     isError = true;
                     break;
                   default:

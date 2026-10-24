@@ -131,7 +131,7 @@ function significantTokens(name: string): string[] {
   return rawTokens(name).slice(1);
 }
 
-function editDistance(a: string, b: string): number {
+export function editDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
