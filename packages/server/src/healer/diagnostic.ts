@@ -13,6 +13,7 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { getDecisionScoreItems } from '../agent/decision-policy.js';
 import { HEALER_WORKING_STUCK_MINUTES, DORMANT_THRESHOLD_DAYS } from '../agent/stuck-thresholds.js';
 // SWEEP CORE-2 item 2: the ONE budget owner and the ONE spend reader. See getBudgetStatus.
 import { getBudgets } from '../costs/budget.js';
@@ -979,6 +980,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget'),
     ...capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check'),
     ...capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback'),
+    ...getDecisionScoreItems(),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
   ];
 
   // Sort: critical first, then warning, then info
