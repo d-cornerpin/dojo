@@ -54,6 +54,7 @@ import {
 import { coerceNumberArg } from '../pagination.js';
 import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure, closeWithMeasure, isCompleteStatus, remeasureProject } from './measure-door.js';   // v3.5 DONE IS MEASURED
 import { checkPlan, tasksFromPlan, PLAN_REFUSAL_PREFIX } from '../../../work/plan.js';   // v3.5 PLAN BEFORE PROJECT
+import { scaleFactsForAgent } from '../../../tools/scale-facts.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 // v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
@@ -131,7 +132,7 @@ const tableOfHandlers: ToolHandlerMap = {
         tasks: taskInputs,
         plan: args.plan,
         allow_duplicate: args.allow_duplicate as boolean | undefined,
-      }, { taskMeasures: measures.map((m) => m.reading) });
+      }, { taskMeasures: measures.map((m) => m.reading), scaleFacts: scaleFactsForAgent(agentId) });
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="project")');
     }

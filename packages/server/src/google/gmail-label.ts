@@ -59,7 +59,7 @@ export async function executeGmailLabel(
 }
 
 /** Gmail's documented maximum ids per `messages.batchModify` call. */
-const BATCH_MODIFY_IDS = 1000;
+export const BATCH_MODIFY_IDS = 1000;
 
 const idList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []);
 const unique = (xs: string[]): string[] => [...new Set(xs)];

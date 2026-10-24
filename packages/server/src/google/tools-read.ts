@@ -34,6 +34,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    scale: { pages: { arg: 'max_results', pageSize: 500, tokenArg: 'page_token' }, note: 'one call returns up to {pageSize} results (max_results); page_token continues the same query' },   // 500: Gmail page maximum
     concurrency: 'safe',
     maxResultTokens: 3000,
   },

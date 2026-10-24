@@ -849,7 +849,7 @@ function findRecentNearDuplicateProject(
   return null;
 }
 
-export function trackerCreateProject(agentId: string, args: Record<string, unknown>, opts: { taskMeasures?: Array<MeasureReading | undefined> } = {}): string {
+export function trackerCreateProject(agentId: string, args: Record<string, unknown>, opts: { taskMeasures?: Array<MeasureReading | undefined>; scaleFacts?: string } = {}): string {
   try {
     const title = args.title as string;
     if (!title) return 'Error: title is required';
@@ -862,7 +862,8 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // caller passed its own, so a project always has a task for the PM to poke (the old zero-task
     // gate is this gate: a valid plan has at least one step).
     const planned = checkPlan(args.plan);
-    if (!planned.ok) return planRefusal(planned.error);
+    const scale = opts.scaleFacts ? `\n\n${opts.scaleFacts}` : '';   // what the agent's tools do in one call, in front of it as it plans
+    if (!planned.ok) return planRefusal(planned.error) + scale;
     const plan = planned.plan;
     const description = renderPlan(plan);
     const given = args.tasks as Array<{ title: string; description?: string; goal?: string; assignedTo?: string; priority?: 'high' | 'normal' | 'low'; stepNumber?: number; dependsOn?: string[]; phase?: number }> | undefined;
@@ -997,7 +998,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       });
     }
 
-    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.\n\n${description}${taskSummary}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
+    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.\n\n${description}${taskSummary}${scale}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCreateProject failed', { error: msg }, agentId);

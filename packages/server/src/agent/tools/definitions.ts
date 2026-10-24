@@ -414,6 +414,7 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path'],
     },
+    scale: { note: 'one call lists every entry of a directory, with sizes' },
   },
   {
     name: 'share_file',

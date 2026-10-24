@@ -431,6 +431,7 @@ export const formsToolDefinitions: ToolDefinition[] = [
       },
       required: ['form_id'],
     },
+    scale: { pages: { arg: 'page_size', pageSize: 5000, tokenArg: 'page_token' }, note: 'one call returns up to {pageSize} responses (page_size); page_token continues the same form' },   // 5000: Forms documented page maximum
     concurrency: 'safe',
     maxResultTokens: 8000,
   },

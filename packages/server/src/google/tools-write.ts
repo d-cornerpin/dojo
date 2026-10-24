@@ -5,7 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
-import { executeGmailLabel } from './gmail-label.js';
+import { executeGmailLabel, BATCH_MODIFY_IDS } from './gmail-label.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import {
   type LocalAttachment,
@@ -150,6 +150,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    scale: { batch: { arg: 'message_ids', max: BATCH_MODIFY_IDS }, note: 'one call labels up to {max} messages (message_ids), or several conversations (thread_ids)' },
   },
   {
     name: 'gmail_create_label',

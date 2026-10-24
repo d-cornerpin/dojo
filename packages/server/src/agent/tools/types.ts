@@ -60,6 +60,7 @@
  * the CALLER names the recipient — `complete_task` delivers to whoever spawned
  * the agent, which the caller does not choose, so it declares nothing.
  */
+import type { ToolScale } from '../../tools/scale-facts.js';
 export type EffectKind =
   | 'fs_read'
   | 'fs_write'
@@ -335,4 +336,5 @@ export interface ToolDefinition {
    * approximate enforcement on character count.
    */
   maxResultTokens?: number;
+  scale?: ToolScale;   // v3.5: what ONE call can do (several ids, a page); a sibling of input_schema, never on the wire
 }

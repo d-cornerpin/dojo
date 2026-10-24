@@ -25,6 +25,8 @@ vi.mock('../pm-agent.js', () => ({ ensurePMAgentRunning: () => {}, noteTransitio
 vi.mock('../notify.js', () => ({ injectTaskAssignmentNotification: () => {}, claimAssignmentNoticeForTerminalTask: () => false }));
 const { countMeasure } = vi.hoisted(() => ({ countMeasure: vi.fn() }));
 vi.mock('../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../work/measure.js')>()), countMeasure }));
+// A2: the tools this agent holds. The facts themselves are read from the real definitions.
+vi.mock('../../agent/tools/surface.js', () => ({ getFilteredTools: () => [{ name: 'gmail_search' }, { name: 'gmail_label' }, { name: 'get_current_time' }] }));
 vi.mock('../../agent/access/read.js', async (orig) => ({
   ...(await orig<typeof import('../../agent/access/read.js')>()),
   toolCategoryGranted: () => true,
@@ -75,6 +77,7 @@ beforeEach(() => {
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
     VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
   countMeasure.mockReset();
+  countMeasure.mockResolvedValue({ ok: true, count: 1 });
 });
 
 describe('a project opens with its plan', () => {
@@ -164,6 +167,22 @@ describe('a project does not open without its plan', () => {
     expect(out.content).toMatch(/^Refused: a project opens with its plan/);
     expect(out.content).toContain('plan.steps[0].measure');
     expect(projects()).toBe(0);
+  });
+});
+
+describe('the agent sees what its tools do at scale exactly when it plans (A2)', () => {
+  const SCALE = /What your tools do at scale:\ngmail_search: one call returns up to 500 results[^\n]*\ngmail_label: one call labels up to 1,000 messages \(message_ids\)/;
+
+  it('the result of opening a project ends with the facts for the tools the agent holds, and none for tools that have none', async () => {
+    const out = await open({ title: 'Clean the mailbox', plan: MAILBOX_PLAN });
+    expect(out.content).toMatch(SCALE);
+    expect(out.content).not.toContain('get_current_time:');
+  });
+
+  it('the refusal carries them too, so the next plan is written with them in view', async () => {
+    const out = await open({ title: 'Clean the mailbox' });
+    expect(out.content).toMatch(/^Refused: a project opens with its plan/);
+    expect(out.content).toMatch(SCALE);
   });
 });
 
