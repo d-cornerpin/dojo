@@ -63,6 +63,7 @@ function measureText(taskId: string, touched: number, byTool: Array<{ tool: stri
     .get(taskId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null; measure_at: number | null } | undefined;
   let parsed: ReturnType<typeof parseMeasure> | null = null;
   try { parsed = r?.measure_json ? parseMeasure(JSON.parse(r.measure_json)) : null; } catch { parsed = null; }
+  if (r?.measure_json && !parsed?.ok) return 'could not be read (measure unparsable)';   // a measure IS set; it cannot be understood
   if (!r || !parsed?.ok) return touched > 0 ? `none set; ledger shows ${fmt(touched)} items touched by ${byTool.map((b) => b.tool).join(', ')}` : 'none set';
   const name = describeMeasure(parsed.measure);
   if (r.measure_remaining === null) {
