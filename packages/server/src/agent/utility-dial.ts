@@ -30,7 +30,7 @@
 // the message array, its order and the system prompt are untouched, so the prefix cache is unaffected.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { estimateTokensFromChars } from '../memory/budget.js';
+import { effectiveDivisor } from '../memory/budget.js';
 
 /** The engine's own artifacts. One name per thing the engine asks a model to produce for itself. */
 export type UtilityPurpose =
@@ -206,6 +206,7 @@ export interface UtilityNumCtxInput {
    * own default, which on a modern small model can be the full trained context.
    */
   readonly configuredNumCtx: number | null;
+  readonly charsPerToken?: number | null;   // t268: chars per token of this provider on this traffic (`services/token-density.ts`, B5 measured ~2.5); absent = the asserted 4
 }
 
 /**
@@ -223,8 +224,7 @@ export interface UtilityNumCtxInput {
  *     worse of the two outcomes. The caller is told by a warn at the call site.
  */
 export function utilityNumCtx(input: UtilityNumCtxInput): number {
-  const inputTokens = estimateTokensFromChars(Math.max(0, input.inputChars))
-    + imageTokenAllowance(input.imageBase64Lengths ?? []);
+  const inputTokens = Math.ceil(Math.max(0, input.inputChars) / effectiveDivisor(input.charsPerToken)) + imageTokenAllowance(input.imageBase64Lengths ?? []);
   const needed = inputTokens + Math.max(0, input.outputTokens) + NUM_CTX_MARGIN_TOKENS;
   const blocks = Math.ceil(needed / NUM_CTX_BLOCK) * NUM_CTX_BLOCK;
   const atLeastFloor = Math.max(MIN_UTILITY_NUM_CTX, blocks);
