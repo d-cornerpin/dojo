@@ -702,7 +702,7 @@ function refuseAndCondense(
       const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as
         { model_id: string | null } | undefined)?.model_id ?? input.modelId;
       return checkAndCompact(input.agentId, configured, input.contextWindow,
-        { ...forcedCompactionOptions(turnPatienceMs(input.agentId, input.modelId)), dialedModelId: input.modelId });
+        { ...forcedCompactionOptions(turnPatienceMs(input.agentId, input.modelId)), dialedModelId: input.modelId, waitIfBusy: true, untilItFits: true });
     })
     .catch((condenseErr: unknown) => {
       logger.warn('the condense started by a size refusal failed', {

@@ -19,6 +19,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
 import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
+import { foldOldestProtectedGroup, recordingForcedPass } from './forced-pass-progress.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
   createLeafSummary,
@@ -361,13 +362,11 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 // ── Main Entry Point ──
 
-
 export interface CheckAndCompactOptions {
   force?: boolean;
   waitIfBusy?: boolean;   // t178: the OWNER's compact-now queues behind a running pass
-  // STRIP (t140 round 6, H3): `maxChunksPerRun`, v2.5.12's per-call cap on leaf chunks. Its last
-  // two callers (the routine condense, round 5; the forced pass, round 6) are bounded by what is
-  // leaving and by the turn's patience instead, so the option had no reader left.
+  untilItFits?: boolean;   // v3.5 D18 r2: a boundary refusal's pass; nothing else to fold folds the protected part's oldest exchange
+  // STRIP (t140 r6, H3): `maxChunksPerRun` (bounded by what is leaving and by the turn's patience now).
   // v2.5.14, Optional abort signal for cancellation. Used by the
   // background condense in the v2 pre-call gate so a hung summarizer LLM call
   // can actually be cancelled instead of running until the SDK's
@@ -429,7 +428,7 @@ export async function checkAndCompact(
   if (options?.force) forcedPassAt.set(agentId, Date.now());
   const result = await withLock(
     `compact:${agentId}`,
-    () => runCheckAndCompact(agentId, modelId, contextWindow, options),
+    () => (options?.force ? recordingForcedPass(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options)) : runCheckAndCompact(agentId, modelId, contextWindow, options)),
     { ifBusy: options?.waitIfBusy ? 'wait' : 'skip' },
   );
   if (result === undefined) {
@@ -524,10 +523,11 @@ async function runCheckAndCompact(
     // chunking, returns early when every summary fits, and a pass that reclaims nothing arms the
     // 15-minute backoff through `notePassOutcome`.
     if (guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
+      if (options?.untilItFits) return foldOldestProtectedGroup({ agentId, protectedFromSeq: view.protectedFromSeq, condensed: await condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options),
+        fold: async (throughSeq) => (await leavingViewPass(agentId, modelId, contextWindow, { cause: 'out-of-view', throughSeq, rowsLeaving: 0 }, options)).leafCreated });   // D18 r2: never a dead end
       return condenseOnlyPass(agentId, modelId, turnModelId, contextWindow, budget, force, guardUncompactedCount, options);
     }
 
-    // Full reactive compaction
     logger.info('Running full reactive compaction', {
       assembledTokens: totalTokens,
       budgetTokens: budget,

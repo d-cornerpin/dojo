@@ -54,7 +54,7 @@ const told = new Set<string>();
  * `brakedBefore`: the brake already bound a forced pass when the gate asked, so the pass was skipped
  * rather than run (asked by the caller before it called `checkAndCompact`).
  */
-export function parkAfterForcedPass(agentId: string, reason: string, brakedBefore: boolean): void {
+export function parkAfterForcedPass(agentId: string, reason: string, brakedBefore: boolean, opts: { quiet?: boolean } = {}): void {
   const msLeft = compactionBrakeMsLeft(agentId);
   if (msLeft === null) {
     endFullContextWait(agentId);
@@ -62,7 +62,8 @@ export function parkAfterForcedPass(agentId: string, reason: string, brakedBefor
     return;
   }
   // A pass that RAN in this very gate and left the brake on, after a wait for it, is the expiry's pass failing.
-  if (!brakedBefore && waiting.has(agentId)) tellStuckOnce(agentId);
+  // `quiet` (v3.5 D18 r2): the over-budget door, whose failing pass tells the owner through the compaction card.
+  if (!opts.quiet && !brakedBefore && waiting.has(agentId)) tellStuckOnce(agentId);
   waiting.add(agentId);
   logger.info('Context is full and compaction is braked: the wake waits for the brake to let go', { msLeft }, agentId);
   parkJob(agentId, reason, 'timer', msLeft);

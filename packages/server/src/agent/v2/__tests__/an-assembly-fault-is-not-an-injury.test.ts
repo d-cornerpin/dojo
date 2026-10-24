@@ -38,6 +38,8 @@ const seen = vi.hoisted(() => ({
   reruns: 0,
   condenses: 0,
   condenseFails: false,
+  /** Fix round 2: whether the scripted pass makes progress (a summary written) or buys nothing. */
+  progress: true,
   toolPayload: 0,
 }));
 vi.mock('../../../gateway/ws.js', () => ({
@@ -56,10 +58,19 @@ vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
 }));
 vi.mock('../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  checkAndCompact: async () => {
-    seen.condenses++;
-    if (seen.condenseFails) throw new Error('the summary writer did not answer');
-    return { compacted: true };
+  // Fix round 2: the scripted pass RECORDS its outcome as the real one does (forced-pass-progress.ts and
+  // the brake), so a pass that bought nothing or threw arms the brake the park waits for.
+  checkAndCompact: async (agentId: string) => {
+    const [{ recordingForcedPass }, { notePassOutcome }] = await Promise.all([
+      import('../../../memory/forced-pass-progress.js'), import('../../../memory/compaction-brakes.js'),
+    ]);
+    return recordingForcedPass(agentId, async () => {
+      seen.condenses++;
+      if (seen.condenseFails) throw new Error('the summary writer did not answer');
+      const result = { leafCreated: seen.progress ? 1 : 0, condensedCreated: 0, tokensReclaimed: 0 };
+      notePassOutcome(agentId, true, result);
+      return result;
+    });
   },
 }));
 vi.mock('../../../tools/tool-docs.js', async (importOriginal) => ({
@@ -72,6 +83,7 @@ import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
 import { clearErrors } from '../../errors.js';
 import { pendingWakeups } from '../../shared-state.js';
+import { compactionBrakeMsLeft } from '../../../memory/compaction-brakes.js';
 import {
   validateAtProviderBoundary, AssemblyValidationError, assemblyTokens, type ValidatedMessage,
 } from '../../../memory/assembly-validation.js';
@@ -88,7 +100,7 @@ const SYSTEM = 'You keep the dock ledger. '.repeat(40);
 
 const db = (): Database.Database => mockDb.current!;
 
-beforeEach(() => {
+beforeEach(async () => {
   const d = new Database(':memory:');
   d.pragma('foreign_keys = ON');
   mockDb.current = d;
@@ -102,7 +114,10 @@ beforeEach(() => {
   seen.reruns = 0;
   seen.condenses = 0;
   seen.condenseFails = false;
+  seen.progress = true;
   seen.toolPayload = 0;
+  (await import('../../../memory/compaction-brakes.js')).__resetBrakesForTests();
+  (await import('../../../memory/forced-pass-progress.js')).__resetForcedPassProgressForTests();
   pendingWakeups.clear();
   __resetStarvedWindowsForTests();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
@@ -167,7 +182,7 @@ describe('D18: the first over-budget refusal condenses and re-assembles once; it
 });
 
 describe('D18 fix round 1: the woken re-assembly still over while instructions and tools fit', () => {
-  it('the full-context-wait park again: condense, one wake — never the card, never paused, never a text', async () => {
+  it('a pass that made progress: the full-context-wait park again, one wake — never the card, never paused, never a text', async () => {
     await recover(await boundaryRefusal(), 7);
     pendingWakeups.clear();   // the drain served the wake: turn 8 is the re-assembly
     await recover(await boundaryRefusal(), 8);
@@ -181,13 +196,25 @@ describe('D18 fix round 1: the woken re-assembly still over while instructions a
     expect(seen.condenses).toBe(2);
   });
 
-  it('the condense FAILED: still the full-context-wait park, no card, no text', async () => {
+  // Fix round 2: these two asserted another IMMEDIATE wake, which is the silent loop. A pass that bought
+  // nothing, or threw, arms the brake, and the park waits for it.
+  it('fix round 2: a pass that bought NOTHING arms the brake, and the park waits for it — no immediate wake', async () => {
+    seen.progress = false;
+    await recover(await boundaryRefusal(), 7);
+    expect(compactionBrakeMsLeft(AGENT), 'the brake is on').not.toBeNull();
+    expect(pendingWakeups.has(AGENT), 'no wake at once into the same refusal').toBe(false);
+    expect(windowCards()).toEqual([]);
+    expect(seen.texts).toEqual([]);
+  });
+
+  it('the condense FAILED: the brake arms and the park waits for it; no card, no text', async () => {
     seen.condenseFails = true;
     await recover(await boundaryRefusal(), 7);
     expect(windowCards()).toEqual([]);
     expect(agent().status).not.toBe('paused');
     expect(agent().status).not.toBe('error');
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(compactionBrakeMsLeft(AGENT)).not.toBeNull();
+    expect(pendingWakeups.has(AGENT)).toBe(false);
     expect(seen.texts).toEqual([]);
   });
 });

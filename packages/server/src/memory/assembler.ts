@@ -2479,7 +2479,7 @@ function pruneOldImageBlocksInPlace(
  *  that renders nothing (`role='system'`, e.g. the "Memory Compacted" divider) rides with the group before
  *  it — as its own NEWEST group it took the "newest group always rides" safety, and the real newest row
  *  (a large result) was cut and folded out of the agent's sight. */
-function groupTail(messages: Message[]): Array<{ messages: Message[]; tokens: number }> {
+export function groupTail(messages: Message[]): Array<{ messages: Message[]; tokens: number }> {
   const groups: Array<{ messages: Message[]; tokens: number }> = [];
   let i = 0;
   while (i < messages.length) {

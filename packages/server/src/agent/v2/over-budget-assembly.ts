@@ -15,9 +15,11 @@
 //     condense, and the boundary starts one with every size refusal (it rides the error:
 //     `refusedDial.condensed`). So the step waits for it to land, then parks the job through the
 //     existing full-context-wait door (`parkAfterForcedPass`, t211 D7b): ONE wake, whose turn is ONE
-//     re-assembly — or, when the compaction brake binds (the pass was skipped or reclaimed nothing),
-//     the wake at the brake's expiry. The same on a repeat refusal and when the condense failed. Never
-//     the card, never an injury, and this step sends the owner nothing.
+//     re-assembly — or, when the compaction brake binds, the wake at the brake's expiry. Fix round 2:
+//     every forced pass records its outcome and always has a next step (`memory/forced-pass-progress.ts`),
+//     so the rounds CONVERGE: a no-progress pass arms the brake (the park waits), a pass with nothing
+//     outside the protected part folds its oldest group, a throw is told once through the compaction
+//     card. Never the WINDOW_TOO_SMALL card, never an injury, never the "stuck" text.
 //   · THE INSTRUCTIONS AND TOOLS TRULY OVERFLOW (system prompt + tool payload + output reserve exceed the
 //     assembly budget): no condense can help. The owner gets the existing WINDOW_TOO_SMALL card, and the
 //     agent rides the platform's existing lock for "none of its models can hold it" (`honest-stop.ts`,
@@ -62,7 +64,7 @@ export async function tryOverBudgetAssemblyRecovery(state: AgentTurnState, error
     const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
     await condensed;   // resolves whether the pass ran, was skipped or failed (its own catch logs a failure)
     logger.warn('over-budget assembly: the conversation outgrew the window; condensed, the next turn re-assembles', { agentId, turnNumber, modelId }, agentId);
-    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore);
+    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore, { quiet: true });
     return true;
   }
 
