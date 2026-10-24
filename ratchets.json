@@ -9187,6 +9187,27 @@
       "to": 317,
       "by": "t252 fix round 2 (v3.5, 2026-10-24): the update raises Ollama's model limit (owner decision) and the install card ends when the pair is already in (N4)",
       "why": "+2: one line in the once-per-version update hook calling the new services/ollama-model-limit.ts (the owner's 'Dojo raises the limit'; everything it does lives in that new focused file), and the N4 branch of the health-check retry (both models already in and registered: the card ends). The doc comment was rewritten at the same length."
+    },
+    {
+      "path": "packages/server/src/memory/embeddings.ts",
+      "from": 332,
+      "to": 336,
+      "by": "t252 fix round 4 (v3.5, 2026-10-24): the model-limit restart never cuts a running call or a download",
+      "why": "+4: an embedding on this box's Ollama is in-flight work the model-limit restart must not cut (fix round 4, NB-1): one import, one line that begins the work (with its reason inline), and the try/finally that ends it on every exit of the Ollama branch. All the logic lives in the NEW focused file services/ollama-quiet.ts."
+    },
+    {
+      "path": "packages/server/src/services/local-standard.ts",
+      "from": 317,
+      "to": 319,
+      "by": "t252 fix round 4 (v3.5, 2026-10-24): the model-limit restart never cuts a running call or a download",
+      "why": "+2: the standard-models install is counted as in-flight local work as one unit (fix round 4, NB-1), so the model-limit restart never lands between its pulls and its checks: one import and a one-line reason; the single-flight line was rewritten in place. The tracking lives in the NEW services/ollama-quiet.ts."
+    },
+    {
+      "path": "packages/server/src/services/ollama-lock.ts",
+      "from": 466,
+      "to": 467,
+      "by": "t252 fix round 4 (v3.5, 2026-10-24): the model-limit restart never cuts a running call or a download",
+      "why": "+1 over the pin (the file stood at 465 under a 466 pin; +3 lines, -1 by folding a comment into its line): the lock waits out the model-limit restart's hold and counts its pinned calls (fix round 4, NB-1): one import, one line in acquire, one wake call in release. The state and the hold live in the NEW services/ollama-quiet.ts."
     }
   ],
   "maxNewFileLines": 400,
@@ -9400,7 +9421,7 @@
     "packages/server/src/memory/compaction.ts": 1329,
     "packages/server/src/memory/condense-until-fits.ts": 423,
     "packages/server/src/memory/deliveries-lane.ts": 257,
-    "packages/server/src/memory/embeddings.ts": 332,
+    "packages/server/src/memory/embeddings.ts": 336,
     "packages/server/src/memory/fts-health.ts": 536,
     "packages/server/src/memory/integration-status-lane.ts": 461,
     "packages/server/src/memory/lanes.ts": 1330,
@@ -9447,9 +9468,9 @@
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
-    "packages/server/src/services/local-standard.ts": 317,
+    "packages/server/src/services/local-standard.ts": 319,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
-    "packages/server/src/services/ollama-lock.ts": 466,
+    "packages/server/src/services/ollama-lock.ts": 467,
     "packages/server/src/services/outlook-watcher.ts": 520,
     "packages/server/src/services/safe-senders.ts": 291,
     "packages/server/src/services/teams-watcher.ts": 464,
