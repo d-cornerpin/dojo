@@ -62,7 +62,7 @@ async function spawnIdleBounded(
  */
 function curlDownloadArgv(url: string, dest: string): string[] {
   return [
-    '-L', '--fail',
+    '-L', '--fail', '-sS',   // -sS: no progress meter on stderr, errors still printed (the owner reads that line)
     '--connect-timeout', '30',
     '--speed-limit', '1024', '--speed-time', '60',
     '-o', dest,

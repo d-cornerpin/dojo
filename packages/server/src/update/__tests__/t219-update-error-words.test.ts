@@ -38,6 +38,16 @@ function standInCurl(code: number, stderr: string): void {
   process.env.PATH = `${bin}:${savedPath ?? ''}`;
 }
 
+/** A `curl` that replays `stderr` byte for byte (carriage returns and all), records its argv, exits `code`. */
+function standInCurlRaw(code: number, stderr: string): void {
+  const bin = path.join(work, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(work, 'curl-stderr'), stderr);
+  fs.writeFileSync(path.join(bin, 'curl'),
+    `#!/bin/sh\ntouch "${path.join(work, 'curl-ran')}"\necho "$@" > "${path.join(work, 'curl-args')}"\ncat "${path.join(work, 'curl-stderr')}" >&2\nexit ${code}\n`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${savedPath ?? ''}`;
+}
+
 /** Report the volume as having `freeAfterCurl` once the stand-in curl has run, plenty before. */
 function stubVolume(freeAfterCurl: number): void {
   const real = fs.statfsSync.bind(fs);
@@ -119,6 +129,71 @@ describe('a download that fails is described in words, never as an object', () =
     expect(childFailureText({ stdout: '', stderr: '', code: 7 })).toBe('exited with code 7');
     expect(childFailureText({ stdout: '', stderr: '', signal: 'SIGKILL' })).toBe('stopped by SIGKILL');
   });
+});
+
+/**
+ * What a real full-disk download printed (t217 leg 6, quoted in the t236 installer report): curl's
+ * progress meter, its `\r`-separated redraws, a warning about the file it could not write, and the
+ * cause on the last line. Built with real carriage returns, as the pipe delivers them.
+ */
+const LEG6_STDERR = [
+  '  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current',
+  '                                 Dload  Upload   Total   Spent    Left  Speed',
+  '  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0',
+  '  0 20.8M    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0',
+  'Warning: Failed to create the file /Volumes/Test/dojo-platform: No space left on device',
+  '  0 20.8M    0 16384    0     0   9531      0  0:38:07  0:00:01  0:38:06  9531',
+  'curl: (23) Failure writing output to destination, passed 16384 returned 337',
+].join('\r\n').replace(/\r\n(?=  0 )/g, '\r');
+
+const LEG6_LINE = 'curl: (23) Failure writing output to destination, passed 16384 returned 337';
+
+describe('G22: the technical detail of a full-disk update is one plain line', () => {
+  it('curl\'s own error line is the detail, not the progress meter around it', async () => {
+    const { childFailureText } = await import('../child-failure.js');
+    expect(childFailureText({ stdout: '', stderr: LEG6_STDERR, code: 23 })).toBe(LEG6_LINE);
+  });
+
+  it('a plain "No space left on device" stderr is that line', async () => {
+    const { childFailureText } = await import('../child-failure.js');
+    expect(childFailureText({ stdout: '', stderr: 'No space left on device\n', code: 1 })).toBe('No space left on device');
+  });
+
+  it('a child with only an exit code is "exited with code 1"', async () => {
+    const { childFailureText } = await import('../child-failure.js');
+    expect(childFailureText({ stdout: '', stderr: '', code: 1 })).toBe('exited with code 1');
+  });
+
+  it('with no recognised tool line, the stderr tail has its meter rows removed and starts at a whole word', async () => {
+    const { childFailureText } = await import('../child-failure.js');
+    const tail = `${LEG6_STDERR.split('\r\n')[0]}\r  0 20.8M 0 0 0 0 0 0 --:--:-- --:--:-- --:--:-- 0\r${'/Users/someone/long/path/segment '.repeat(30)}final words`;
+    const said = childFailureText({ stdout: '', stderr: tail, code: 1 });
+    expect(said).not.toMatch(/--:--:--|Dload|20\.8M/);
+    expect(said).toMatch(/final words$/);
+    expect(said.length).toBeLessThanOrEqual(305);
+    expect(said).not.toMatch(/\n|\r/);
+    expect(said.replace(/^…/, '')).toMatch(/^\//);   // starts at a whole path, never mid-word
+  });
+
+  it('through applyUpdate on a full volume, the sentence carries that one line and none of the meter', async () => {
+    standInCurlRaw(23, LEG6_STDERR);
+    stubVolume(100);
+    const { applyUpdate } = await import('../../gateway/routes/update.js');
+    const r = await applyUpdate('stable');
+    expect(r.message).toMatch(/ran out of disk space/i);
+    expect(r.message).toContain(`(Technical detail: ${LEG6_LINE})`);
+    expect(r.message).not.toMatch(/20\.8M|--:--:--|Dload/);
+    expect(r.status).toBe(507);
+  }, 60_000);
+
+  it('curl is told to keep its progress meter to itself (-sS: silent, errors still printed)', async () => {
+    standInCurlRaw(23, LEG6_STDERR);
+    stubVolume(100);
+    const { applyUpdate } = await import('../../gateway/routes/update.js');
+    await applyUpdate('stable');
+    const argv = fs.readFileSync(path.join(work, 'curl-args'), 'utf8').trim().split(/\s+/);
+    expect(argv).toContain('-sS');
+  }, 60_000);
 });
 
 describe('one reader turns any child failure into its text', () => {

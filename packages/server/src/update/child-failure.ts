@@ -15,9 +15,39 @@ const asObject = (err: unknown): Record<string, unknown> | null =>
 const asText = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 /**
- * What a failed child said, in words: its message if it has one, else the tail of its stderr,
- * else "exited with code N" / "stopped by SIGNAL". Accepts an Error, a `ChildRunFailure`, or a
- * string; never returns an object's `toString()`.
+ * The tools' OWN error lines, best first. A download or an unpack that dies prints its cause as
+ * one line of its own, amid a progress meter and warnings; that line is the owner's detail.
+ * Unanchored on purpose: the same text arrives with its line breaks collapsed.
+ */
+const TOOL_ERROR_LINES: readonly RegExp[] = [
+  /curl: \(\d+\) [^\r\n]*/g,
+  /(?:unzip|rsync): [^\r\n]*/g,
+  /(?:[\w-]+: )?No space left on device/gi,
+];
+
+/** curl's progress meter: its two header rows and the rows of bare numbers, sizes and times. */
+const isMeterFragment = (s: string): boolean =>
+  /^(?:%\s+Total\b|Dload\s+Upload\b)/.test(s) || /^[\d\s.kMGTPB:%-]*$/.test(s);
+
+/** What a failed child said on its own, in one line: a recognised tool error, else its stderr tail. */
+function saidOnItsOwn(stderr: string, stdout: string): string {
+  const lines = (text: string) => text.split(/[\r\n]+/).map((l) => l.trim()).filter((l) => l && !isMeterFragment(l));
+  const own = lines(stderr);
+  const everything = [...own, ...lines(stdout)].join('\n');
+  for (const re of TOOL_ERROR_LINES) {
+    const found = everything.match(re);
+    if (found) return found[found.length - 1].trim().replace(/\s+/g, ' ');
+  }
+  const tail = own.join(' ').replace(/\s+/g, ' ');
+  // A tail that must be cut starts at a word, never in the middle of a path.
+  return tail.length > TAIL_CHARS ? `\u2026${tail.slice(-TAIL_CHARS).replace(/^\S*\s/, '')}` : tail;
+}
+
+/**
+ * What a failed child said, in words: its message if it has one, else one line of what it
+ * printed (a recognised tool error line, or the tail of its stderr with any progress meter
+ * removed), else "exited with code N" / "stopped by SIGNAL". Accepts an Error, a
+ * `ChildRunFailure`, or a string; never returns an object's `toString()`.
  */
 export function childFailureText(err: unknown): string {
   if (typeof err === 'string') return err.trim() || 'failed with no explanation';
@@ -25,8 +55,8 @@ export function childFailureText(err: unknown): string {
   if (!o) return err === null || err === undefined ? 'failed with no explanation' : String(err);
   const message = asText(o.message);
   if (message) return message;
-  const stderr = asText(o.stderr).replace(/\s+/g, ' ');
-  if (stderr) return stderr.length > TAIL_CHARS ? `…${stderr.slice(-TAIL_CHARS)}` : stderr;
+  const said = saidOnItsOwn(asText(o.stderr), asText(o.stdout));
+  if (said) return said;
   if (typeof o.signal === 'string' && o.signal) return `stopped by ${o.signal}`;
   if (typeof o.code === 'number') return `exited with code ${o.code}`;
   if (typeof o.code === 'string' && o.code) return `failed (${o.code})`;
