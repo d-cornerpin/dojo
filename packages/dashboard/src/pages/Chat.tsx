@@ -794,7 +794,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const stored = localStorage.getItem('dojo_wordy_mode');
     return stored === 'true';
   });
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   // "Stick to bottom" behaviour (Claude-style). Pinned = the view follows new
   // content. When the user scrolls up to read history we UNPIN: auto-scroll
@@ -808,6 +807,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // un-pin (and re-show the button) on the intermediate positions of a multi-
   // frame jump, or a deep jump that lands on a partial layout would flip back.
   const jumpingRef = useRef(false);
+  // Where the page's OWN last scroll put the view: an event reporting exactly that is our echo,
+  // not the owner reading upward, so it never moves the pin however far the layout has grown since.
+  const programmaticTopRef = useRef<number | null>(null);
   const NEAR_BOTTOM_PX = 80; // within this of the bottom counts as "at the bottom"
 
   useEffect(() => {
@@ -866,6 +868,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     lastMessageSigRef.current = null;
     pinnedToBottomRef.current = true;
     jumpingRef.current = false;
+    programmaticTopRef.current = null;
   }, [AGENT_ID]);
 
   // Auto-scroll — fires on (a) new message appended and (b) the last
@@ -874,15 +877,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // down if they scrolled up to read history. v2.5.45.
   const lastMessageIdRef = useRef<string | null>(null);
   const lastMessageSigRef = useRef<string | null>(null);
-  const scrollToBottom = useCallback((instant?: boolean) => {
-    if (instant) {
-      // Instant scroll — used on initial load and during streaming chunks
-      // (smooth-animating every chunk would queue jank).
-      const container = messagesContainerRef.current;
-      if (container) container.scrollTop = container.scrollHeight;
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+  // Every follow-the-newest scroll is instant and goes through here. The old smooth `scrollIntoView`
+  // reported each animation step to the listener and landed where the bottom WAS when it began, so
+  // growth during it (the next message, a streamed chunk) left the chat un-pinned (#23).
+  const scrollToBottom = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    programmaticTopRef.current = container.scrollTop; // read back: the browser clamps it
   }, []);
 
   // Reliable "jump to the true bottom" for the jump-to-latest button. A single
@@ -898,13 +900,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
     jumpingRef.current = true;
     pinnedToBottomRef.current = true;
     setPinnedToBottom(true);
-    const go = () => { const c = messagesContainerRef.current; if (c) c.scrollTop = c.scrollHeight; };
+    const go = () => scrollToBottom();
     go();
     requestAnimationFrame(go);
     requestAnimationFrame(() => requestAnimationFrame(go));
     setTimeout(go, 90);
     setTimeout(() => { go(); jumpingRef.current = false; }, 320);
-  }, []);
+  }, [scrollToBottom]);
 
   useEffect(() => {
     const last = messages.length > 0 ? messages[messages.length - 1] : null;
@@ -923,14 +925,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // button is already showing.
       if (pinnedToBottomRef.current) scrollToBottom();
     } else {
-      // Same message growing (streaming chunk): only follow if user is
-      // near the bottom. ~80px slack so a slight scroll-up doesn't break
-      // the follow behavior, but reading older history isn't disturbed.
-      const container = messagesContainerRef.current;
-      if (container) {
-        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
-        if (nearBottom) scrollToBottom(true);
-      }
+      // Same message growing (streaming chunk): follow while pinned (the pin is the one statement
+      // of "at the bottom"; a second 80 px test here stopped following on any bigger chunk).
+      if (pinnedToBottomRef.current) scrollToBottom();
     }
   }, [messages, scrollToBottom]);
 
@@ -1012,12 +1009,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
         // after a single rAF (long message lists, images, attachments).
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            scrollToBottom(true);
+            scrollToBottom();
           });
         });
         // Fallback: catch any remaining layout shifts (lazy images, etc.)
-        setTimeout(() => scrollToBottom(true), 150);
-        setTimeout(() => scrollToBottom(true), 500);
+        setTimeout(() => scrollToBottom(), 150);
+        setTimeout(() => scrollToBottom(), 500);
       }
       setLoading(false);
     };
@@ -1082,7 +1079,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // While a jump-to-latest is settling, don't un-pin on an intermediate
       // (still-above-bottom) position — that's what made a deep jump bounce to a
       // partial floor and the button flicker back.
-      if (!jumpingRef.current && nearBottom !== pinnedToBottomRef.current) {
+      const ownEcho = programmaticTopRef.current !== null
+        && Math.abs(container.scrollTop - programmaticTopRef.current) <= 1;
+      programmaticTopRef.current = null; // one scroll, one event: whatever this was, it is spent
+      if (!jumpingRef.current && !ownEcho && nearBottom !== pinnedToBottomRef.current) {
         pinnedToBottomRef.current = nearBottom;
         setPinnedToBottom(nearBottom);
       }
@@ -1833,7 +1833,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     localStorage.setItem('dojo_wordy_mode', String(next));
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        scrollToBottom(true);
+        scrollToBottom();
       });
     });
   };
@@ -2095,7 +2095,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
         </div>
         )}
         {showWorkingUi && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
-        <div ref={messagesEndRef} />
       </div>
     </Dojo3Stage>
     </PresenceProvider>
