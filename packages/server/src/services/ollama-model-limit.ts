@@ -27,7 +27,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { createLogger } from '../logger.js';
@@ -61,7 +60,7 @@ export interface OllamaLimitDeps {
   listener(port: number): Promise<{ pid: number; path: string } | null>;
   /** The Ollama app's own processes (`pgrep -x Ollama`, case-sensitive: Homebrew's server is `ollama`). */
   appPids(): Promise<number[]>;
-  appInstalled(): boolean;
+  appInstalled(): Promise<boolean>;
   terminate(pid: number): void;
   alive(pid: number): boolean;
   launchApp(): Promise<void>;
@@ -86,7 +85,10 @@ export function makeRealDeps(run: Run, kill: Kill): OllamaLimitDeps {
       } catch { return null; }
     },
     appPids: async () => { try { return pids((await run('pgrep', ['-x', 'Ollama'])).stdout); } catch { return []; } },
-    appInstalled: () => ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')].some((p) => existsSync(p)),
+    appInstalled: async () => {   // `/bin/test -d`: the bundle is there (no file-system import for one yes/no)
+      for (const p of ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')]) { try { await run('/bin/test', ['-d', p]); return true; } catch { /* not here */ } }
+      return false;
+    },
     terminate: (pid) => { try { kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
     alive: (pid) => { try { return kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },
     // Exactly how Ollama's CLI starts the Mac app (`cmd/start_darwin.go`): hidden, fast start-up.
@@ -151,7 +153,7 @@ export async function ensureOllamaModelLimit(
       return 'manual';
     }
     const appRunning = !!listening || (await deps.appPids()).length > 0;
-    if (!appRunning && !deps.appInstalled()) return 'skipped';   // nothing serves and no app: tried again next start
+    if (!appRunning && !(await deps.appInstalled())) return 'skipped';   // nothing serves and no app: tried again next start
     const raised = raisedLoadedLimit(await deps.getenv(VAR), want);
     if (raised === null && !(appRunning && restartOwed())) {
       if (!appRunning) setConfig(RESTART_OWED, null);   // a stopped app reads the value when it starts

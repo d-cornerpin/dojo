@@ -54,7 +54,7 @@ function fakeDeps(env: Record<string, string>, o: {
     setenv: async (k, v) => { if (o.failSet) throw new Error('launchctl: permission denied'); env[k] = v; d.sets.push(`${k}=${v}`); },
     listener: async () => (server && living.has(502) ? { pid: 502, path: server } : null),
     appPids: async () => [...(o.appPids ?? (server === APP_SERVER ? [501] : []))].filter((p) => living.has(p)),
-    appInstalled: () => o.installed ?? server === APP_SERVER,
+    appInstalled: async () => o.installed ?? server === APP_SERVER,
     terminate: (pid) => { d.terms.push(pid); d.log.push('term'); if (!o.neverQuits) living.delete(pid); },
     alive: (pid) => living.has(pid),
     launchApp: async () => { d.log.push('launch'); await o.launchGate; d.launches++; living.add(501); living.add(502); },
