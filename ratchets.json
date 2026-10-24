@@ -9012,6 +9012,20 @@
       "to": 2920,
       "by": "t250 (2026-10-23): v3.5 done-is-measured, `measure` and `remainder` on the wire (Task A4)",
       "why": "+3: three property lines, the plan's schema fields: `measure` on work_open's top level and inside each `tasks[]` item, and `measure` + `remainder` on work_update (two lines). The two schema objects themselves live once in `agent/work-verb-schema.ts` (`WORK_MEASURE_PROP`, `WORK_REMAINDER_PROP`), on the existing import line, so this file carries only the references. The wire cost is measured in `agent/__tests__/work-verb-schema.test.ts` (work_open +1,586, work_update +1,278 chars). From 2,920 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1678,
+      "to": 1680,
+      "by": "t250 (2026-10-23): v3.5 fix round 2, complete_task holds the measure",
+      "why": "+2: one import and one line at complete_task's door, which refuses to end an apprentice whose measured task still has items left (orchestrator ruling: every way to mark a task complete). The judgement, the re-read and the task resolution live in `agent/tools/cat/measure-door.ts` and `agent/agent-task.ts`; the resolver moved OUT of `agent/spawner.ts`, which shrank. REFUSED: judging inside completeAgent, which ends the agent before any refusal could reach it. From 1,680 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 1015,
+      "to": 1016,
+      "by": "t250 (2026-10-23): v3.5 fix round 2, the measured close at the one status writer",
+      "why": "+1: one import. The writer's refusal joins the existing `??` chain on the same line (`blockedDisposalRefusal ?? takeoverRefusal ?? measuredCloseRefusal`), and its body lives in the new `work/measure-close-gate.ts`. It is HERE because this is the tracker's one status writer, the only place every close crosses (the same reason t129's gate sits here). From 1,016 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9087,7 +9101,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1678,
+    "packages/server/src/agent/tools/cat/agents.ts": 1680,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
@@ -9321,7 +9335,7 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/row-authority.ts": 398,
     "packages/server/src/work/store.ts": 2264,
-    "packages/server/src/work/tracker-store.ts": 1015,
+    "packages/server/src/work/tracker-store.ts": 1016,
     "packages/server/src/work/tracker-view.ts": 700,
     "packages/server/src/work/validation-drive.ts": 1313,
     "packages/server/src/work/work-reaper.ts": 694,
