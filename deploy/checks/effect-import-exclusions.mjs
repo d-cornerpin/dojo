@@ -175,7 +175,7 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
       + 'command being authorized. It asks sudo itself one question ("would you prompt for a password?") '
       + 'and `true` is a no-op, deliberately, because probing with the REAL command would RUN it when the '
       + 'answer is yes. ROUTING IT THROUGH `agent/effects/proc.ts` WAS TRIED AND IS WRONG, for RULING '
-      + 'P5-R12\'s stated reason: `execFileAuthorized` calls `requireAuthorized({op:\'proc\', '
+      + 'P5-R12\'s stated reason: `spawnAuthorized` calls `requireAuthorized({op:\'proc\', '
       + 'program:\'sudo\'})`, and the per-call capability the gate loop resolved names the program the '
       + 'AGENT asked for (`/bin/zsh`, or its argv[0]) — never `sudo`. The call would either fail on every '
       + 'box or force a capability for a program no agent requested, recording an agent-facing proc site '
