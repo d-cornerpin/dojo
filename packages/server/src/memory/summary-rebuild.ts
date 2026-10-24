@@ -47,7 +47,6 @@ import {
   updateSummaryContent,
 } from './dag.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
-import { eligibleSummaryWriters } from './summary-writer-health.js';
 import { rebuildLegacyMixedNotes, type LegacyRebuildStats } from './legacy-notes-rebuild.js';
 import { rebuildGuard, waitReason } from './rebuild-signals.js';
 import { refreshEmbedding } from './embeddings.js';
@@ -423,16 +422,13 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
     // Anything flagged resets the streak: the write boundary is not yet provably holding.
     recordCleanStock(flagged.length, stockScanned);
 
-    const modelId = opts?.modelId ?? resolveSummaryWriterModel('summary-rebuild');
-    if (!modelId) {
-      logger.warn('Summary rebuild: no text-capable model available, retrying next night', { flagged: flagged.length });
-      return { ...empty, flaggedBefore: flagged.length, remainingAfter: flagged.length };
-    }
-
+    // Owner ruling 2026-10-24 ("The agents model."): each flag's writer is resolved for ITS agent — the Settings pick,
+    // else that agent's own model, else the small writer (t144: a writer not answering is passed over, never dialled).
+    const own = (agentId: string): string | undefined => (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
     const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
     for (const flag of flagged) {
-      // t144: paced by the writer, not a count — a writer that stopped answering ends the pass.
-      if (!eligibleSummaryWriters(modelId, flag.agentId).includes(modelId) && stats.rebuilt + stats.placeholders + stats.skipped > 0) break;
+      const modelId = opts?.modelId ?? resolveSummaryWriterModel(flag.agentId, own(flag.agentId), { background: true });
+      if (!modelId) { stats.skipped++; continue; }   // no writer answering for this agent: a later night
       try {
         const outcome = await rebuildOneSummary(flag, modelId);
         if (outcome === 'rebuilt') stats.rebuilt++;
@@ -449,7 +445,7 @@ async function runContaminationPass(empty: SummaryRebuildStats, opts?: { modelId
     }
 
     stats.remainingAfter = findContaminatedSummaries().length;
-    logger.info('Summary rebuild nightly batch done', { ...stats, modelId });
+    logger.info('Summary rebuild nightly batch done', { ...stats });
     if (stats.remainingAfter === 0) {
       // The streak starts at the FIRST run that both scanned a real stock and found it
       // clean — this run repaired its way there, so it counts.
