@@ -184,9 +184,11 @@ const T193_STEP_PHRASE = ' and for action="complete_step"';
 // on work_update (action="edit"); `remainder` on work_update (a close of a measured task with items
 // left). The guard undoes exactly those three insertions and must land back on t193's bytes; every
 // earlier rung below is then asserted on that pre-t250 view, unchanged.
-//   work_open   6,338 → 7,924  (+1,586: the measure object twice, top level and tasks[])
-//   work_update 8,788 → 10,066 (+1,278: the measure object and the remainder object)
-const T250_BASELINE_CHARS = { work_open: 7924, work_update: 10066 };
+//   work_open   6,338 → 7,942  (+1,604: the measure object twice, top level and tasks[])
+//   work_update 8,788 → 10,075 (+1,287: the measure object and the remainder object)
+// (Fix round 1: +9 per measure object — "counts it when you set it and again when you close; your
+// task board shows the last count", the turn-end count dropped until Task D1 makes it true.)
+const T250_BASELINE_CHARS = { work_open: 7942, work_update: 10075 };
 type Schema = { properties: Record<string, unknown> };
 function withoutT250(schema: Record<string, unknown>): Record<string, unknown> {
   const out = structuredClone(schema) as Schema;
@@ -218,6 +220,8 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     expect(pu.measure).toBe(WORK_MEASURE_PROP);
     expect(pu.remainder).toBe(WORK_REMAINDER_PROP);
     expect((WORK_MEASURE_PROP.properties as { tool: { enum: string[] } }).tool.enum).toEqual(['gmail_search']);
+    // Fix round 1: the wire says only what is true at this head. The turn-end count is Task D1's.
+    expect(String(WORK_MEASURE_PROP.description)).not.toMatch(/end of each of your turns/);
     expect((WORK_REMAINDER_PROP.properties as { disposition: { enum: string[] } }).disposition.enum).toEqual(['skipped', 'blocked']);
   });
 

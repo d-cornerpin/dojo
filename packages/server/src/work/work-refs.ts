@@ -26,6 +26,10 @@
 
 import { getDb } from '../db/connection.js';
 
+/** The doomed set as a SELECT of ids (`purge-sweep.ts`: every row of an agent, of any count), for a
+ *  caller whose set is a predicate rather than a list it already holds. */
+export interface WorkIdSelect { sql: string; params: readonly unknown[] }
+
 /**
  * Clear every reference into `workIds` so the rows can be deleted. Does NOT delete the work rows
  * themselves — the caller owns that, because each caller's predicate differs (by id, by parent,
@@ -37,15 +41,18 @@ import { getDb } from '../db/connection.js';
  * A no-op on an empty list, deliberately — a caller that resolved nothing must not turn into a
  * statement with an empty `IN ()` that matches differently than intended.
  */
-export function clearReferencesToWork(workIds: readonly string[]): void {
-  if (workIds.length === 0) return;
+export function clearReferencesToWork(workIds: readonly string[] | WorkIdSelect): void {
+  const sel = Array.isArray(workIds)
+    ? { sql: (workIds as readonly string[]).map(() => '?').join(','), params: workIds as readonly unknown[] }
+    : workIds as WorkIdSelect;
+  if (Array.isArray(workIds) && workIds.length === 0) return;
   const db = getDb();
-  const ph = workIds.map(() => '?').join(',');
+  const { sql: ph, params } = sel;
   // Order is irrelevant among these five — none references another — but the deletes come first
   // so a reader sees "remove what is owned, then release what merely points".
-  db.prepare(`DELETE FROM work_events WHERE work_id IN (${ph})`).run(...workIds);
-  db.prepare(`DELETE FROM adjudications WHERE work_id IN (${ph})`).run(...workIds);
-  db.prepare(`DELETE FROM work_ledger WHERE work_id IN (${ph})`).run(...workIds);
-  db.prepare(`UPDATE techniques SET build_project_id = NULL WHERE build_project_id IN (${ph})`).run(...workIds);
-  db.prepare(`UPDATE work SET parent_id = NULL WHERE parent_id IN (${ph})`).run(...workIds);
+  db.prepare(`DELETE FROM work_events WHERE work_id IN (${ph})`).run(...params);
+  db.prepare(`DELETE FROM adjudications WHERE work_id IN (${ph})`).run(...params);
+  db.prepare(`DELETE FROM work_ledger WHERE work_id IN (${ph})`).run(...params);
+  db.prepare(`UPDATE techniques SET build_project_id = NULL WHERE build_project_id IN (${ph})`).run(...params);
+  db.prepare(`UPDATE work SET parent_id = NULL WHERE parent_id IN (${ph})`).run(...params);
 }

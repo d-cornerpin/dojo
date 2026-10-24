@@ -1,7 +1,7 @@
 // ── PURGING AN AGENT TAKES ITS WORK WITH IT (BACKLOG WAVE-1A) ────────────────────────────
 //
 // ── WHY THIS IS A MODULE AND NOT A LINE IN THE ROUTE ──
-// The delete is two statements; the ORDER is the reason this has a file. Four things reference
+// The delete is two statements; the ORDER is the reason this has a file. Several things reference
 // `work(id)`, all `NO ACTION`, and the server runs with `foreign_keys = ON` — so a naive
 // `DELETE FROM work WHERE agent_id = ?` FAILS the moment the agent owns both a parent and its
 // child. That knowledge belongs with the rows, not inlined in an HTTP handler, and it is needed
@@ -15,6 +15,7 @@
 // is the tree's standing instruction not to grow it.
 
 import { getDb } from '../db/connection.js';
+import { clearReferencesToWork } from './work-refs.js';
 import { withUnit } from '../db/unit.js';
 
 /**
@@ -35,7 +36,7 @@ import { withUnit } from '../db/unit.js';
  *
  * ── THE ORDER, WHICH IS FK-DRIVEN ──
  *   1. `work_events.work_id`         — deleted with their row.
- *   2. `adjudications.work_id`, `work_ledger.work_id` — same.
+ *   2. `adjudications.work_id`, `work_ledger.work_id` — same (all of them: `work-refs.ts`, the one list).
  *   3. `techniques.build_project_id` — NULLED, never deleted. A technique outlives the project
  *                                      that built it; the column is nullable for that reason.
  *   4. `work.parent_id` (SELF)       — NULLED on every row pointing INTO the doomed set,
@@ -63,12 +64,7 @@ export function deleteAllWorkForAgent(agentId: string): number {
   const db = getDb();
   let removed = 0;
   withUnit(() => {
-    const doomed = 'SELECT id FROM work WHERE agent_id = ?';
-    db.prepare(`DELETE FROM work_events WHERE work_id IN (${doomed})`).run(agentId);
-    db.prepare(`DELETE FROM adjudications WHERE work_id IN (${doomed})`).run(agentId);
-    db.prepare(`DELETE FROM work_ledger WHERE work_id IN (${doomed})`).run(agentId);
-    db.prepare(`UPDATE techniques SET build_project_id = NULL WHERE build_project_id IN (${doomed})`).run(agentId);
-    db.prepare(`UPDATE work SET parent_id = NULL WHERE parent_id IN (${doomed})`).run(agentId);
+    clearReferencesToWork({ sql: 'SELECT id FROM work WHERE agent_id = ?', params: [agentId] });   // the one list, by predicate
     removed = db.prepare('DELETE FROM work WHERE agent_id = ?').run(agentId).changes;
   });
   return removed;

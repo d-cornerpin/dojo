@@ -69,7 +69,10 @@ const MIGRATION = liveCheckMigration();
  *  (`agent/v2/floor-ghost.ts`). It is kept as a list rather than deleted because the arm's
  *  value is the EXACT equality: an empty list is the assertion that every declared kind has a
  *  real writer, and the next person who declares one without a consumer meets this test. */
-const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [];
+// v3.5 (orchestrator ruling, fix round 1): `continued` and `stalled` are declared in migration 200b
+// so the release rebuilds work_events ONCE; their writer is Task D1's. The commit that lands D1's
+// writer deletes them here, or ARM 3 goes red, exactly as `floor_ghosted`'s did.
+const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = ['continued', 'stalled'];
 
 // ── the source walk ────────────────────────────────────────────────────────────────────
 
@@ -340,7 +343,7 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
     // T4-SCHEMA's hand-forward, discharged: the commit that writes the first `floor_ghosted`
     // row deletes the exemption, or this test goes red. Both halves are asserted here so the
     // discharge is a fact rather than a claim in a report.
-    expect(DECLARED_WITHOUT_WRITER).toEqual([]);
+    expect(DECLARED_WITHOUT_WRITER).not.toContain('floor_ghosted');
     expect(isWorkEventKind('floor_ghosted')).toBe(true);
     expect(writtenKinds().kinds.has('floor_ghosted')).toBe(true);
     // …and it is written from the OR2 ghost path, not from some incidental site.
@@ -351,10 +354,10 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
 });
 
 describe('the list itself', () => {
-  it('is sorted, unique, and 28 values — the CHECK is diffed against it by humans', () => {
+  it('is sorted, unique, and 30 values — the CHECK is diffed against it by humans', () => {
     expect([...WORK_EVENT_KINDS]).toEqual(sorted(WORK_EVENT_KINDS));
     expect(new Set(WORK_EVENT_KINDS).size).toBe(WORK_EVENT_KINDS.length);
-    expect(WORK_EVENT_KINDS.length).toBe(28);
+    expect(WORK_EVENT_KINDS.length).toBe(30);
   });
 
   it('`isWorkEventKind` answers for every member and refuses a near-miss', () => {

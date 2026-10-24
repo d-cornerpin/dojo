@@ -23,7 +23,7 @@ import type { ExecuteContext } from './index.js';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { chargeEffortCalls } from '../../../../tracker/effort-ledger.js';
-import { recordCallsTouched } from '../../../../work/ledger-store.js';
+import { recordCallsTouched, type RoundResult } from '../../../../work/ledger-store.js';
 
 /**
  * T79c: resolve "the agent's CURRENT claimed task" for the durable effort meter.
@@ -64,7 +64,7 @@ export function resolveCurrentClaimedTaskId(agentId: string): string | null {
   return row?.id ?? null;
 }
 
-export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: ExecuteContext): AgentTurnState {
+export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: ExecuteContext, roundResults: ReadonlyArray<RoundResult> = []): AgentTurnState {
   const { agentId, turnCtx, result, counterparty, counterpartyIsAgentSender, engineStartAckDeliveredThisTurn } = ctx;
 
   // ── Runtime tracker nudge (v2.5.40) ──
@@ -179,7 +179,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
     const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
     if (claimedTaskId) {
       chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter); // t172: the calls, so a repeat can be told from a new one
-      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, state.toolResults); // v3.5: the items they touched, same task
+      recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults); // v3.5: the items THIS round's successes touched
     }
   }
   // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that

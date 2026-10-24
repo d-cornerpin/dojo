@@ -52,7 +52,7 @@ import {
   trackerApplyUserVerdict, trackerApplyUserValidation, trackerResolveMissedRuns,
 } from '../../../tracker/tools.js';
 import { coerceNumberArg } from '../pagination.js';
-import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure } from './measure-door.js';   // v3.5 DONE IS MEASURED
+import { readMeasureArg, remeasureTask, closeTargetOf, editWithMeasure, closeWithMeasure, isCompleteStatus, remeasureProject } from './measure-door.js';   // v3.5 DONE IS MEASURED
 import type { ToolHandlerMap } from '../handler.js';
 
 // v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
@@ -400,8 +400,7 @@ const tableOfHandlers: ToolHandlerMap = {
     if (args.priority !== undefined) updateArgs.priority = args.priority;
     if (args.user_quote !== undefined) updateArgs.user_quote = args.user_quote;
     if (args.remainder !== undefined) updateArgs.remainder = args.remainder;
-    if (args.status === 'complete') await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));
-    content = trackerUpdateStatus(agentId, updateArgs);
+    content = await closeWithMeasure(agentId, isCompleteStatus(args.status) ? closeTargetOf(agentId, args.task_id) : null, args, () => trackerUpdateStatus(agentId, updateArgs));
     return { content, isError: isError || content.startsWith('Refused:') };
   },
 
@@ -718,15 +717,14 @@ const tableOfHandlers: ToolHandlerMap = {
     // trackerCompleteStep resolves the obvious task when exactly one is in
     // progress for this agent, and rejects-with-guidance otherwise, so we
     // pass whatever the model sent (possibly undefined) straight through.
-    await remeasureTask(agentId, closeTargetOf(agentId, args.task_id ?? args.taskId));
-    content = trackerCompleteStep(agentId, {
+    content = await closeWithMeasure(agentId, closeTargetOf(agentId, args.task_id ?? args.taskId), args, () => trackerCompleteStep(agentId, {
       taskId: (args.task_id ?? args.taskId) as string | undefined,
       notes: args.notes as string | undefined,
       // t193 (owner decision 27): the same close-out proof as status="complete".
       result: args.result,
       evidence: args.evidence,
       remainder: args.remainder,
-    });
+    }));
     return { content, isError: content.startsWith('Refused:') };
   },
 
@@ -869,13 +867,14 @@ const tableOfHandlers: ToolHandlerMap = {
       { name: 'reason', value: args.reason, type: 'string' },
     ]);
     if (tcpErr) { content = tcpErr; isError = true; return { content, isError }; }
+    await remeasureProject(agentId, args.project_id, args.status);
     content = trackerCloseProject(agentId, {
       project_id: args.project_id as string,
       status: args.status as string | undefined,
       reason: args.reason as string,
       user_quote: args.user_quote,
     });
-    return { content, isError };
+    return { content, isError: content.startsWith('Refused:') };
   },
 
   async "work_schedule:pause"({ agentId, args }) {
@@ -883,8 +882,9 @@ const tableOfHandlers: ToolHandlerMap = {
     let isError = false;
     const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
+    if (args.mark_complete === true) await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));
     content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
-    return { content, isError };
+    return { content, isError: content.startsWith('Refused:') };
   },
 
   async "work_schedule:resume"({ agentId, args }) {

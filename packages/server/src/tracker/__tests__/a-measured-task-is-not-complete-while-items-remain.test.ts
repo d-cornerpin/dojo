@@ -199,8 +199,13 @@ describe('a measured task is not complete while items remain', () => {
 
     // At zero, the measured run closes byte-for-byte the way the unmeasured twin's does.
     countMeasure.mockResolvedValueOnce({ ok: true, count: 0 });
+    // Each close also starts the run's settlement off the call's own stack; let it finish before
+    // the next close, so the two twins are compared in the same settled state (a race otherwise).
+    const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0)); };   // eslint-disable-line no-await-in-loop
     const a = await call('work_update:status', { task_id: measured, status: 'complete', ...CLOSE });
+    await settle();
     const b = await call('work_update:status', { task_id: plain, status: 'complete', ...CLOSE });
+    await settle();
     expect(a.content.replaceAll(measured, 'ID').replaceAll(measured.slice(0, 8), 'ID')).toBe(b.content.replaceAll(plain, 'ID').replaceAll(plain.slice(0, 8), 'ID'));
     expect(a.content).not.toMatch(/^Refused/);
     const [ra, rb] = [readWork(measured), readWork(plain)];

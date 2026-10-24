@@ -56,6 +56,7 @@ import { estimateTokens, estimateTokensFromChars, CHARS_PER_TOKEN } from './budg
 import { laneLimit, renderTokens, POST_BUDGET_LANES } from './lanes.js';
 import { recordedInstant } from './message-stamp.js';
 import { readMeasureFacts, formatMeasureLine, type MeasureFacts } from '../work/measure-view.js';
+import { MEASURE_TOOLS } from '../work/measure.js';
 import { conversationLabel } from './party-label.js';
 import {
   capLabel, originLabel, spend, laterSection, readLaterMessages,
@@ -688,7 +689,8 @@ export function activeTasksWorstCaseTokens(): number {
   const party = 'l'.repeat(labelCap + 10);
   // v3.5: the widest Progress line, by CALLING its formatter on each of its shapes with every term
   // over the title width and every count at 10 digits, and keeping the longest.
-  const flooded = { tool: 'gmail_search', args: { query: 'q'.repeat(titleCap + 10) }, unit: 'u'.repeat(titleCap + 10) } as const;
+  const longestTool = [...MEASURE_TOOLS].sort((a, b) => b.length - a.length)[0];
+  const flooded = { tool: longestTool, args: { query: 'q'.repeat(titleCap + 10) }, unit: 'u'.repeat(titleCap + 10) };
   const widestMeasure = ([
     { measure: flooded, initial: longest, remaining: longest, at: widestInstant, touched: longest },
     { measure: flooded, initial: longest, remaining: null, at: widestInstant, touched: longest },

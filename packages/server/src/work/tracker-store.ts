@@ -506,9 +506,9 @@ export function bumpWorkAttempts(id: string): number {
  * stays one level deep.
  *
  * ── WHY IT ROUTES THROUGH `work-refs.ts` (W2-B item C) ──
- * This swept two of the FOUR things that reference `work(id)` — `work_events` and
+ * This swept two of the four things that then referenced `work(id)` — `work_events` and
  * `adjudications` — and left `techniques.build_project_id` and the self-reference
- * `work.parent_id` alone. All four are `NO ACTION`, so the consequence was not a stranded row
+ * `work.parent_id` alone. All of them are `NO ACTION`, so the consequence was not a stranded row
  * but a RAISE: measured with `foreign_keys = ON`, deleting a project with a grandchild
  * occurrence, or one whose own row or whose child had built a technique, threw
  * `FOREIGN KEY constraint failed` and the whole delete failed in front of the user. The
@@ -517,7 +517,7 @@ export function bumpWorkAttempts(id: string): number {
  * defect); the technique half was patched at none, and a technique is built BY a project, so
  * that reference is the normal case for the table.
  *
- * `clearReferencesToWork` is the tree's one list of the four, and `work-refs.ts`'s header
+ * `clearReferencesToWork` is the tree's one list of them, and `work-refs.ts`'s header
  * already records that three call sites had three different ideas of it. This was the third.
  *
  * ── WHY IT IS CALLED TWICE, AND IN THIS ORDER ──
@@ -533,9 +533,9 @@ export function deleteTrackerRow(id: string): number {
   withUnit(() => {
     const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
       Array<{ id: string }>).map(r => r.id);
-    clearReferencesToWork(children);         // all four for the children — see `work-refs.ts`
+    clearReferencesToWork(children);         // every reference, for the children — see `work-refs.ts`
     db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
-    clearReferencesToWork([id]);             // all four for the row itself
+    clearReferencesToWork([id]);             // every reference, for the row itself
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
   });
   return changes;

@@ -136,4 +136,15 @@ describe('migration 200b: the measured event kind', () => {
     db.prepare("INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, created_at) VALUES ('w-ev', 'done', 'upheld', 'pm', 1)").run();
     expect(db.prepare("SELECT event_seq FROM adjudications WHERE work_id = 'w-ev'").get()).toEqual({ event_seq: 14 });
   });
+
+  it('fix round 1 (ruling): the ONE rebuild of the release also carries D1\'s `continued` and `stalled`', async () => {
+    const db = mockDb.current!;
+    seedWorkRow(db);
+    for (const k of ['measured', 'continued', 'stalled']) expect(() => insertEvent(db, k)).not.toThrow();
+    const { WORK_EVENT_KINDS } = await import('../../work/event-kinds.js');
+    expect(WORK_EVENT_KINDS).toEqual(expect.arrayContaining(['measured', 'continued', 'stalled']));
+    // ONE rebuild: no later migration rebuilds work_events for another kind.
+    const rebuilders = fs.readdirSync(MIGRATIONS).filter((f) => f > '200' && /CHECK\s*\(\s*kind\s+IN/i.test(fs.readFileSync(path.join(MIGRATIONS, f), 'utf-8')));
+    expect(rebuilders).toEqual([FILE_B]);
+  });
 });

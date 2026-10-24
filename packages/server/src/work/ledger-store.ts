@@ -34,15 +34,21 @@ export function ledgerTotals(workId: string): { touched: number; lastAt: number 
   return { touched: t.n, lastAt: t.last, byTool };
 }
 
-/** The ledger charge for one iteration's calls (agent/v2/steps/execute/tracker-counting.ts, beside
- *  the effort charge, to the same task): the items each SUCCESSFUL call touched. Errors touch nothing. */
+/** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
+export interface RoundResult { toolCallId: string; isError: boolean; errorCode?: string }
+
+/** The ledger charge for one round's calls (agent/v2/steps/execute/tracker-counting.ts, beside the
+ *  effort charge, to the same task): the items each call touched, ONLY when this round holds that
+ *  call's result and it succeeded. Success is the result's own flags (`isError`, a structural
+ *  `errorCode`), never its words: a refusal reads "Refused: …" as often as "Error: …". */
 export function recordCallsTouched(
   workId: string,
   calls: ReadonlyArray<{ id: string; name: string; arguments?: Record<string, unknown> }>,
-  results: ReadonlyArray<{ toolCallId: string; isError: boolean }>,
+  roundResults: ReadonlyArray<RoundResult>,
 ): void {
   for (const tc of calls) {
-    if (results.some((tr) => tr.toolCallId === tc.id && tr.isError)) continue;
+    const r = roundResults.find((x) => x.toolCallId === tc.id);
+    if (!r || r.isError || r.errorCode) continue;
     const keys = itemKeysOf(tc.name, tc.arguments ?? {});
     if (keys.length > 0) recordTouched(workId, tc.name, keys);
   }

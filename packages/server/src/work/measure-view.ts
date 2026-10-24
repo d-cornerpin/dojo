@@ -47,9 +47,3 @@ export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string
   if (f.remaining === null) return `${head} could not be read at ${recordedInstant(f.at)} (${start} at start)`;
   return `${head} returned ${n(f.remaining)} remaining (of ${start} at start), measured ${recordedInstant(f.at)}`;
 }
-
-/** The Progress line for a task, or null when it has neither a measure nor a touched item. */
-export function measureLine(taskId: string): string | null {
-  const f = readMeasureFacts(taskId);
-  return f ? formatMeasureLine(f) : null;
-}

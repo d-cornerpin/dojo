@@ -33,7 +33,7 @@
 // FA-T2: a status change disarms the floor ONLY when its status argument
 // ADVANCES the task to an active state. These are the canonical active statuses
 // plus the weak-model synonyms the status normalizer accepts for them (kept in
-// sync with STATUS_SYNONYMS in tracker/tools.ts). A transition to
+// sync with STATUS_SYNONYMS in tracker/task-status-words.ts). A transition to
 // complete / fallen / paused / blocked, an update with no status (a bare
 // reassign/repriority), or an unrecognized value is NOT advancing and does not
 // disarm, it falls through to the hasRecentlyTendedTask DB check. That is safe

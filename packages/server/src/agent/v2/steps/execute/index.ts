@@ -267,7 +267,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     return requestExit(state, 'stopped-mid-batch') as ExecuteOutcome;
   }
 
-  state = countTrackerWorkThisIteration(state, ctx);
+  state = countTrackerWorkThisIteration(state, ctx, turnToolResults);
   state = await runTrackerFloors(state, ctx);
 
   // ── complete_task / fire-and-forget generator exit conditions (Part XIX) ──

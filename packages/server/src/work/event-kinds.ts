@@ -69,6 +69,9 @@ export const WORK_EVENT_KINDS = [
   'claim_turn',
   'claim_upheld',
   'compile_resolved',
+  // v3.5 Task D1 (migration 200b, folded into the release's one rebuild): the engine continued a
+  // turn that ended mid-job. Declared before its writer lands, named in the conformance exemption.
+  'continued',
   'floor_ghosted',
   'join_complete',
   'join_opened',
@@ -95,6 +98,8 @@ export const WORK_EVENT_KINDS = [
   'poke_remediation',
   'rearm_refused',
   'revert_reset',
+  // v3.5 Task D1 (migration 200b): a continued turn came back with no momentum. As `continued`.
+  'stalled',
   'transition',
   'user_verdict_cleared',
   'user_verdict_requested',

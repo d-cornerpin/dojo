@@ -55,7 +55,9 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
-import { applyMeasureToTask, remainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
+import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
+import { normalizeTaskStatus } from './task-status-words.js';
+import { claimedTasksOf } from './claimed-tasks.js';
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { inFlightOccurrence, skipOpenOccurrencesAsComplete, runDeliverableEvidence } from '../work/occurrences.js';
@@ -957,6 +959,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // user reported). Mirror work_open(kind="task"): default the goal from the
     // caller-provided goal (if any), else the task's description, else its
     // title. Only fill when empty, never overwrite a real goal.
+    const measureLines = result.taskIds.map((id, i) => { const m = opts.taskMeasures?.[i]; return m ? applyMeasureToTask(id, m) : null; });   // v3.5
     for (let i = 0; i < result.taskIds.length; i++) {
       const id = result.taskIds[i];
       const t = getTask(id);
@@ -986,8 +989,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         const t = getTask(id);
         const step = t?.stepNumber !== null ? ` (step ${t?.stepNumber})` : '';
         const status = t?.status ?? 'on_deck';
-        const m = opts.taskMeasures?.[i];
-        return `  ${i + 1}. "${t?.title ?? 'Unknown'}", ID: ${id}${step} [${status}]${m ? ` ${applyMeasureToTask(id, m)}` : ''}`;
+        return `  ${i + 1}. "${t?.title ?? 'Unknown'}", ID: ${id}${step} [${status}]${measureLines[i] ? ` ${measureLines[i]}` : ''}`;
       });
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
@@ -1278,6 +1280,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       // over. A row is announced complete, or it is announced twice.
       goal,
     });
+    const measureSet = opts.measure ? applyMeasureToTask(taskId, opts.measure) : null;   // v3.5: kept on every later return
 
     // T34: the view `createTask` just put on the wire. Everything below this line — the on_deck
     // transition, the fire time, the group — changes the row AFTER that frame, so the settle
@@ -1412,7 +1415,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       ``,
       `Task created successfully.`,
     ];
-    if (opts.measure) parts.push(applyMeasureToTask(taskId, opts.measure));
+    if (measureSet) parts.push(measureSet);
     if (projectId) parts.push(`Project: ${projectId}`);
     if (assignedTo) parts.push(`Assigned to: ${assignedTo}`);
     if (assignedToGroup) parts.push(`Assigned to group: ${assignedToGroup}`);
@@ -1704,21 +1707,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const rawStatus = args.status as string | undefined;
     let status: string | undefined = rawStatus;
     if (rawStatus !== undefined) {
-      const CANONICAL_STATUSES = ['on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen', 'cancelled'];
-      const STATUS_SYNONYMS: Record<string, string> = {
-        done: 'complete', finished: 'complete', completed: 'complete', complete: 'complete',
-        in_progress: 'in_progress', inprogress: 'in_progress', working: 'in_progress',
-        active: 'in_progress', doing: 'in_progress', started: 'in_progress', wip: 'in_progress',
-        on_deck: 'on_deck', ondeck: 'on_deck', todo: 'on_deck', to_do: 'on_deck',
-        queued: 'on_deck', backlog: 'on_deck', pending: 'on_deck',
-        paused: 'paused', pause: 'paused', on_hold: 'paused', hold: 'paused', waiting: 'paused', parked: 'paused',
-        blocked: 'blocked', block: 'blocked', stuck: 'blocked', stalled: 'blocked',
-        fallen: 'fallen', failed: 'fallen', fail: 'fallen',
-        cancelled: 'cancelled', canceled: 'cancelled', cancel: 'cancelled',
-        abandoned: 'cancelled', dropped: 'cancelled', wontfix: 'cancelled',
-      };
-      const key = rawStatus.trim().toLowerCase().replace(/[\s-]+/g, '_');
-      const mapped = CANONICAL_STATUSES.includes(key) ? key : STATUS_SYNONYMS[key];
+      const mapped = normalizeTaskStatus(rawStatus);
       if (!mapped) {
         return (
           `Error: "${rawStatus}" is not a recognized task status. Use one of: on_deck, in_progress, paused, complete, blocked, fallen, cancelled. ` +
@@ -3423,10 +3412,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       // a behavioral run (sig a5307041). Resolve to the agent's ONE obvious
       // in-progress task when exactly one exists; never auto-pick when there
       // are multiple candidates (that would silently complete the wrong task).
-      const db0 = getDb();
-      const candidates = db0.prepare(
-        `SELECT w.id AS id, w.title AS title FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'`,
-      ).all(agentId) as Array<{ id: string; title: string }>;
+      const candidates = claimedTasksOf(agentId);
       if (candidates.length === 1) {
         rawTaskId = candidates[0].id;
       } else if (candidates.length === 0) {
@@ -3644,6 +3630,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
   { const no = taskWriteRefusal(agentId, projectId, 'close'); if (no) return no; }   // t193 (dec 3): the project's editors close it.
   const userQuote = typeof args.user_quote === 'string' ? args.user_quote : null;
   { const no = projectCloseRefusal(agentId, projectId, project.title, status, reason, userQuote); if (no) return no; }   // t193 (dec 29)
+  { const no = status === 'complete' && !isPMAgent(agentId) ? projectRemainderGate(projectId) : null; if (no) return no; }   // v3.5: measured work left
 
   try {
     const result = closeProjectAndOpenTasks({
@@ -3971,6 +3958,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   }
 
   if (markComplete) {
+    { const no = isPMAgent(agentId) ? null : remainderGate(agentId, taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
     // Stop the schedule AND mark the task as complete (terminal state)
     const schedDoneRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),

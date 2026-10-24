@@ -7,9 +7,11 @@
 import { getDb } from '../../../db/connection.js';
 import { parseMeasure, countMeasure, type Measure } from '../../../work/measure.js';
 import { recordMeasured } from '../../../work/ledger-store.js';
-import { editMeasure, type MeasureReading } from '../../../tracker/measure-gate.js';
-import { resolveTaskId } from '../../../tracker/schema.js';
-import { taskScope } from '../../../work/tracker-view.js';
+import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTasksOf, type MeasureReading } from '../../../tracker/measure-gate.js';
+import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
+import { claimedTasksOf } from '../../../tracker/claimed-tasks.js';
+import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
+import { isPMAgent } from '../../../config/platform.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
 
@@ -37,27 +39,59 @@ export async function readMeasureArg(agentId: string, raw: unknown): Promise<{ r
   return { reading: { measure: parsed.measure, count: await countMeasure(parsed.measure, agentId, agentNameOf(agentId)), at: Date.now() } };
 }
 
-/** A close of a measured task re-reads its measure first; the close door judges that reading. */
+/** A close of a measured task re-reads its measure first; the close door judges that reading.
+ *  Held to the same wall as when it was set: a read the agent may no longer make is not made, and is
+ *  recorded as a reading that could not be taken (which never refuses the close). Never for the PM,
+ *  whose closes the measure does not judge. */
 export async function remeasureTask(agentId: string, taskId: string | null): Promise<void> {
-  if (!taskId) return;
+  if (!taskId || isPMAgent(agentId)) return;
   const row = getDb().prepare('SELECT measure_json FROM work WHERE id = ?').get(taskId) as { measure_json: string | null } | undefined;
   if (!row?.measure_json) return;
   let raw: unknown;
   try { raw = JSON.parse(row.measure_json); } catch { return; }
   const parsed = parseMeasure(raw);
   if (!parsed.ok) return;
-  recordMeasured(taskId, await countMeasure(parsed.measure, agentId, agentNameOf(agentId)), Date.now());
+  const refused = await refusalFor(agentId, parsed.measure);
+  recordMeasured(taskId, refused ? { ok: false, error: refused } : await countMeasure(parsed.measure, agentId, agentNameOf(agentId)), Date.now());
+}
+
+/** Is this status argument a close? The status door's own reading of the word, never a second copy. */
+export const isCompleteStatus = (raw: unknown): boolean => normalizeTaskStatus(raw) === 'complete';
+
+// A close LANDS as a transition (the task, or its run, moved) or as a filed close request (the
+// two-key `validation_requested` an agent's close becomes). A refused or no-op close writes neither.
+const lastTransitionId = (taskId: string): number => (getDb().prepare(
+  `SELECT COALESCE(MAX(id), 0) AS n FROM work_events WHERE kind IN ('transition', 'validation_requested')
+     AND (work_id = ? OR work_id IN (SELECT id FROM work WHERE parent_id = ?))`,
+).get(taskId, taskId) as { n: number }).n;
+
+/** status="complete" / complete_step: re-read, run the synchronous door, and record a named remainder
+ *  only once the close has LANDED (the task or its run moved), never on a close refused later. */
+export async function closeWithMeasure(agentId: string, taskId: string | null, args: Record<string, unknown>, close: () => string): Promise<string> {
+  await remeasureTask(agentId, taskId);
+  const note = taskId ? namedRemainderNote(taskId, args) : null;
+  const mark = note && taskId ? lastTransitionId(taskId) : 0;
+  const content = close();
+  if (note && taskId && lastTransitionId(taskId) > mark) recordNamedRemainder(agentId, taskId, note);
+  return content;
+}
+
+/** close_project(status="complete"): every measured task it would close is re-read first. */
+export async function remeasureProject(agentId: string, rawProjectId: unknown, status: unknown): Promise<void> {
+  if (typeof rawProjectId !== 'string' || !isCompleteStatus(status)) return;
+  const r = resolveProjectId(rawProjectId, agentId);
+  if (!r.ok) return;
+  for (const t of measuredOpenTasksOf(r.id)) await remeasureTask(agentId, t.id);   // eslint-disable-line no-await-in-loop -- one mailbox at a time
 }
 
 /** The task a close names: its id, or (complete_step without one) the agent's one claimed task —
- *  the same pick `trackerCompleteStep` makes, so the reading lands on the row that door judges. */
+ *  the same query `trackerCompleteStep` asks (`claimedTasksOf`), so the reading lands on the row it judges. */
 export function closeTargetOf(agentId: string, raw: unknown): string | null {
   if (typeof raw === 'string' && raw) {
     const r = resolveTaskId(raw, agentId);
     return r.ok ? r.id : null;
   }
-  const rows = getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'`)
-    .all(agentId) as Array<{ id: string }>;
+  const rows = claimedTasksOf(agentId);
   return rows.length === 1 ? rows[0].id : null;
 }
 

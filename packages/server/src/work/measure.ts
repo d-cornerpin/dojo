@@ -14,6 +14,9 @@ const COUNTERS: Record<Measure['tool'], Counter> = {
   user_gmail_search: (m, agentId, agentName) => countGmailSearch(m.args, agentId, agentName, 'user'),
 };
 
+/** Every tool the engine can count, for readers that must size a line around the longest name. */
+export const MEASURE_TOOLS = Object.keys(COUNTERS) as Array<Measure['tool']>;
+
 export function parseMeasure(raw: unknown): { ok: true; measure: Measure } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'measure must be an object {tool, args, unit}' };
   const o = raw as Record<string, unknown>;

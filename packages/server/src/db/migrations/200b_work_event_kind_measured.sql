@@ -1,10 +1,13 @@
--- 200b (v3.5, DONE IS MEASURED): `measured` JOINS THE DECLARED work_events KINDS — each reading
--- of a task's measure (migration 200) is a RECORD on the task's own spine: what the measure
--- returned, when, and whether it could be read at all, so the PM and the owner see the trend and
--- an outage is on the record rather than a guess.
+-- 200b (v3.5, DONE IS MEASURED): THREE KINDS JOIN THE DECLARED work_events KINDS, in ONE rebuild
+-- for the whole release (orchestrator ruling, so a box copies its work_events once, not twice):
+--   measured   each reading of a task's measure (migration 200): what it returned, when, and whether
+--              it could be read at all, so the PM and the owner see the trend and an outage is on the
+--              record rather than a guess;
+--   continued  the engine continued a turn that ended mid-job (v3.5 Task D1);
+--   stalled    a continued turn came back with no momentum (v3.5 Task D1).
 --
 -- THE LIST ONLY GROWS HERE, so there is no quarantine step: every row that satisfied 189's CHECK
--- satisfies this one. `work/event-kinds.ts` carries the same 28 values and
+-- satisfies this one. `work/event-kinds.ts` carries the same 30 values and
 -- `work/__tests__/work-event-kinds-conformance.test.ts` asserts the two are set-equal in both
 -- directions, so neither can move alone.
 --
@@ -20,10 +23,10 @@ CREATE TABLE work_events_new (
   work_id TEXT NOT NULL REFERENCES work(id),
   kind TEXT NOT NULL CHECK (kind IN (
     'activity','audit','child_settled','claim_rejected','claim_turn','claim_upheld',
-    'compile_resolved','floor_ghosted','join_complete','join_opened','measured','occurrence_fired',
-    'occurrence_released','occurrence_settled','opened','override_request','override_resolved',
-    'owed_interrupt','person_told','poke','poke_remediation','rearm_refused','revert_reset',
-    'transition','user_verdict_cleared','user_verdict_requested','validation_escalated',
+    'compile_resolved','continued','floor_ghosted','join_complete','join_opened','measured',
+    'occurrence_fired','occurrence_released','occurrence_settled','opened','override_request',
+    'override_resolved','owed_interrupt','person_told','poke','poke_remediation','rearm_refused',
+    'revert_reset','stalled','transition','user_verdict_cleared','user_verdict_requested','validation_escalated',
     'validation_requested'
   )),
   payload TEXT,
