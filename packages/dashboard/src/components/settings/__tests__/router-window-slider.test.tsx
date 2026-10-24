@@ -33,6 +33,7 @@ vi.mock('../../../lib/api', async () => {
 
 import * as api from '../../../lib/api';
 import { RouterTab } from '../RouterTab';
+import { ToastProvider } from '../../../hooks/useToast';   // the Router tab shows a refused tier save as a toast (t252)
 
 const slider = (): HTMLInputElement => screen.getByLabelText(/Context window for automatic choice/i) as HTMLInputElement;
 
@@ -44,7 +45,7 @@ beforeEach(() => {
 describe('the Router tab\'s window slider', () => {
   it('its top is the floor, its value is the router window, its low end is the measured one', async () => {
     reply.window = { tokens: 64_000, floorTokens: 128_000, floorModelName: 'Dock Standard', minTokens: 21_500, minAgentName: 'Dock Desk' };
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
     expect(slider().max).toBe('128000');
     expect(slider().min).toBe('21500');
@@ -52,14 +53,14 @@ describe('the Router tab\'s window slider', () => {
   });
 
   it('the readout names the smallest model on the router, and which agent sets the low end', async () => {
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
     expect(screen.getByText(/128k — the smallest model on the router is Dock Standard \(128k\)/)).toBeTruthy();
     expect(screen.getByText(/Dock Desk/)).toBeTruthy();
   });
 
   it('releasing the slider saves router.context_window through the settings door', async () => {
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
     fireEvent.change(slider(), { target: { value: '40000' } });
     fireEvent.mouseUp(slider());
@@ -68,7 +69,7 @@ describe('the Router tab\'s window slider', () => {
 
   it('fix round 1: an auto agent that needs more room than the smallest model has is named, and the section says it cannot run', async () => {
     reply.window = { tokens: 8_000, floorTokens: 8_000, floorModelName: 'Dock Small', minTokens: 21_500, minAgentName: 'Dock Desk' };
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
     expect(screen.getByText(/Dock Desk needs more room than Dock Small has; it cannot run on automatic until that model is raised or taken off the router/)).toBeTruthy();
     expect(screen.queryByText(/The lowest setting/), 'no "lowest setting" above the top').toBeNull();
@@ -76,14 +77,14 @@ describe('the Router tab\'s window slider', () => {
 
   it('fix round 1: an agent that could not be measured is named as such', async () => {
     reply.window = { tokens: 64_000, floorTokens: 128_000, floorModelName: 'Dock Standard', minTokens: 21_500, minAgentName: 'Dock Desk', unmeasuredAgentNames: ['Yard Planner'] };
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(slider()).toBeTruthy());
     expect(screen.getByText(/Could not measure Yard Planner/)).toBeTruthy();
   });
 
   it('with no models on the three tiers the section says so and shows no slider', async () => {
     reply.window = null;
-    render(<RouterTab />);
+    render(<ToastProvider><RouterTab /></ToastProvider>);
     await waitFor(() => expect(screen.getByText(/No models are on the light, standard or heavy tier yet/i)).toBeTruthy());
     expect(screen.queryByLabelText(/Context window for automatic choice/i)).toBeNull();
   });

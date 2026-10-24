@@ -166,7 +166,7 @@ export function standardProgressLines(): readonly string[] {
   return progressLines;
 }
 
-function registerModelRow(providerId: string, which: Which, info: { contextWindow: number; maxOutputTokens: number } | null): string {
+function registerModelRow(providerId: string, which: Which, info: { contextWindow: number | null; maxOutputTokens: number | null } | null): string {
   const db = getDb();
   const tag = TAG[which];
   const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, tag) as { id: string } | undefined;
@@ -180,7 +180,7 @@ function registerModelRow(providerId: string, which: Which, info: { contextWindo
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 1, datetime('now'), datetime('now'))
-  `).run(id, providerId, tag, tag, JSON.stringify(CAPABILITIES[which]), info?.contextWindow ?? 32000, info?.maxOutputTokens ?? 8192);   // discovery's defaults when /api/show is silent
+  `).run(id, providerId, tag, tag, JSON.stringify(CAPABILITIES[which]), info?.contextWindow ?? null, info?.maxOutputTokens ?? null);   // M41: what Ollama did not report is stored as not set
   return id;
 }
 
