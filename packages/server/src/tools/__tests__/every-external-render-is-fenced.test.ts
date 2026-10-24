@@ -67,7 +67,7 @@ describe('K33 — tool reads: derived from the definitions, every one decided', 
   it('the one tool door turns the marked span into the fence BEFORE admission and the platform\'s own lines', () => {
     const door = read(path.join(SRC, 'agent/tools/index.ts'));   // raw: a glob in a string can fool the comment stripper here
     const inner = door.slice(door.indexOf('async function executeToolInner('));
-    const fence = inner.indexOf('content = fenceOutsideSpan(name, args, content, isError, toolCall);');
+    const fence = inner.indexOf('content = fenceOutsideSpan(name, args, content, toolCall);');
     expect(fence, 'the door does not convert the marked span').toBeGreaterThan(0);
     expect(fence, 'the fence must come before admission (the kept whole is stored fenced)').toBeLessThan(inner.indexOf('admitToolResult(name, id, content, isError)'));
     expect(fence, 'and before the unknown-args warning is added').toBeLessThan(inner.indexOf('content = `${unknownArgsWarning}'));
@@ -109,16 +109,31 @@ const PRODUCERS: ReadonlyArray<{ file: string; calls: RegExp; what: string }> = 
   { file: 'twilio/call-session.ts', calls: /callUtteranceText\(otherPartyNumber/, what: 'the other party on a live call' },
   { file: 'services/teams-watcher.ts', calls: /teamsInboundContent\(/, what: 'an inbound Teams message' },
   { file: 'gateway/routes/twilio.ts', calls: /voicemailNoticeContent\(/, what: 'a voicemail' },
-  { file: 'services/gmail-watcher.ts', calls: /fencedMailBlock\(/, what: 'the Gmail watcher notice' },
-  { file: 'services/outlook-watcher.ts', calls: /fencedMailBlock\(/, what: 'the Outlook watcher notice' },
+  { file: 'services/gmail-watcher.ts', calls: /mailNoticeContent\(/, what: 'the Gmail watcher notice' },
+  { file: 'services/outlook-watcher.ts', calls: /mailNoticeContent\(/, what: 'the Outlook watcher notice' },
   { file: 'agent/a2a-transport.ts', calls: /a2aPayloadForModel\(target\.id/, what: 'an agent report to the main agent' },
   { file: 'vault/maintenance.ts', calls: /fenceExternal\('archive'/, what: 'each Dreamer archive' },
-  { file: 'tools/inbound-fences.ts', calls: /fenceExternal\('chat message'[\s\S]*fenceExternal\('voicemail'/, what: 'the builders the Teams and voicemail producers call' },
+  { file: 'tools/inbound-fences.ts', calls: /fenceExternal\('chat message'[\s\S]*fenceExternal\('voicemail'[\s\S]*fenceExternal\('email'[\s\S]*fencedMailBlock\(/, what: 'the builders the Teams, voicemail and mail producers call' },
+  // Fix round 4 (ruling 3): a contact's image or PDF (iMessage, MMS) is bracketed by its fence.
+  { file: 'agent/runtime.ts', calls: /const fence = attachmentFenceOf\(dbMsg\.inbound_meta, dbMsg\.id\)/, what: 'a contact\'s received image or PDF (injectAttachmentBlocks)' },
 ];
 
 describe('K33 — inbound producers', () => {
   it.each(PRODUCERS.map((p) => [p.file, p.what, p.calls] as const))('%s fences %s', (file, _what, calls) => {
     expect(code(path.join(SRC, file))).toMatch(calls);
+  });
+
+  // Fix round 4 (ruling 2): the dashboard badge reads the sender's display name from the stored
+  // record, so the model-facing SOURCE line never needs to carry it outside the fence.
+  it('the Teams watcher stamps the sender\'s display name in the message record', () => {
+    expect(code(path.join(SRC, 'services/teams-watcher.ts'))).toMatch(/const inboundMetaObj = \{[^}]*\bsenderName,[^}]*\}/);
+  });
+
+  // Fix round 4 (ruling 4): no producer names a sender by its raw From header outside the fence.
+  it('no source file writes the raw From header into a [DIRECT MESSAGE] sentence', () => {
+    const writers = walk(SRC).filter((f) => /\[DIRECT MESSAGE\] \$\{/.test(code(f))).map((f) => path.relative(SRC, f));
+    expect(writers, 'the one mail-notice builder writes the sentence').toEqual(['tools/inbound-fences.ts']);
+    expect(code(path.join(SRC, 'tools/inbound-fences.ts')).match(/\[DIRECT MESSAGE\] \$\{[^}]*\}/g)).toEqual(['[DIRECT MESSAGE] ${m.fromAddr}']);
   });
 
   it('a new producer of inbound channel text cannot reach the model unfenced', () => {

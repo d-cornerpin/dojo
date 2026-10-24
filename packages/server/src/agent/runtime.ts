@@ -418,6 +418,7 @@ import { contextOverflowSince } from '../memory/compaction.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
+import { attachmentFenceOf, bracketed, droppedAttachmentNote } from './attachment-fence.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
 // so v2/recovery.ts and v1 catch share the same per-agent streak tracking.
@@ -1296,18 +1297,6 @@ export interface AttachmentResizeEvent {
   finalSize?: number;
 }
 
-// A dropped attachment must be visible to the model as a fact, not a silent
-// gap: the persisted pointer text says an attachment exists, so an empty hole
-// here makes the model hallucinate contents or deny the attachment was sent.
-// The skip behavior itself stays (a broken file must never kill the turn);
-// this note is what makes the skip honest.
-function droppedAttachmentNote(kind: string, filename: string, reason: string): Anthropic.ContentBlockParam {
-  return {
-    type: 'text',
-    text: `[Engine note: the attached ${kind} "${filename}" ${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the user asks about it, say it failed to load and ask them to re-send it.]`,
-  };
-}
-
 // Transform messages with image/PDF attachments into content block arrays for the model
 export function injectAttachmentBlocks(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
@@ -1331,10 +1320,10 @@ export function injectAttachmentBlocks(
   // attachments. Oldest-first here makes identical-content matches resolve in
   // chronological order (oldest message → oldest row), so the right files attach.
   const recentDbMsgs = (db.prepare(`
-    SELECT id, content, attachments FROM messages
+    SELECT id, content, attachments, inbound_meta FROM messages
     WHERE agent_id = ? AND role = 'user' AND attachments IS NOT NULL
     ORDER BY created_at DESC, rowid DESC LIMIT 10
-  `).all(agentId) as Array<{ id: string; content: string; attachments: string }>).reverse();
+  `).all(agentId) as Array<{ id: string; content: string; attachments: string; inbound_meta: string | null }>).reverse();
 
   if (recentDbMsgs.length === 0) return freshResizes;
 
@@ -1409,6 +1398,7 @@ export function injectAttachmentBlocks(
     const pdfAttachments = attachments.filter(a => a.category === 'pdf');
 
     if (imageAttachments.length === 0 && pdfAttachments.length === 0) continue;
+    const fence = attachmentFenceOf(dbMsg.inbound_meta, dbMsg.id);   // v3.5 K33: a contact's file is fenced (attachment-fence.ts)
 
     // Convert to content block array
     const blocks: Anthropic.ContentBlockParam[] = [];
@@ -1426,22 +1416,22 @@ export function injectAttachmentBlocks(
     for (const img of imageAttachments) {
       try {
         if (!fs.existsSync(img.path)) {
-          blocks.push(droppedAttachmentNote('image', img.filename, 'is missing on disk'));
+          blocks.push(droppedAttachmentNote(fence, 'image', img.filename, 'is missing on disk'));
           continue;
         }
         const result = rectifyAttachment(img);
         if (!result || !result.kept || !result.data || !result.mediaType) {
-          blocks.push(droppedAttachmentNote('image', img.filename, 'could not be processed'));
+          blocks.push(droppedAttachmentNote(fence, 'image', img.filename, 'could not be processed'));
           continue;
         }
-        blocks.push({
+        blocks.push(...bracketed(fence, {
           type: 'image',
           source: {
             type: 'base64',
             media_type: result.mediaType,
             data: result.data.toString('base64'),
           },
-        });
+        }));
         if (result.freshlyApplied && result.agentNote) {
           // Surface fresh rectifications so the loop can persist a
           // one-shot system note for the user. The rectifier already
@@ -1452,7 +1442,7 @@ export function injectAttachmentBlocks(
           });
         }
       } catch {
-        blocks.push(droppedAttachmentNote('image', img.filename, 'could not be read'));
+        blocks.push(droppedAttachmentNote(fence, 'image', img.filename, 'could not be read'));
       }
     }
 
@@ -1463,11 +1453,11 @@ export function injectAttachmentBlocks(
     for (const pdf of pdfAttachments) {
       try {
         if (!fs.existsSync(pdf.path)) {
-          blocks.push(droppedAttachmentNote('PDF', pdf.filename, 'is missing on disk'));
+          blocks.push(droppedAttachmentNote(fence, 'PDF', pdf.filename, 'is missing on disk'));
           continue;
         }
         const data = fs.readFileSync(pdf.path).toString('base64');
-        blocks.push({
+        blocks.push(...bracketed(fence, {
           type: 'document',
           source: {
             type: 'base64',
@@ -1475,9 +1465,9 @@ export function injectAttachmentBlocks(
             data,
           },
           title: pdf.filename,
-        } as Anthropic.ContentBlockParam);
+        } as Anthropic.ContentBlockParam));
       } catch {
-        blocks.push(droppedAttachmentNote('PDF', pdf.filename, 'could not be read'));
+        blocks.push(droppedAttachmentNote(fence, 'PDF', pdf.filename, 'could not be read'));
       }
     }
 

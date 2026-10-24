@@ -187,7 +187,7 @@ export class BrowserSession {
       await this.page.click(selector, { timeout: 5000 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return `Error clicking "${selector}": ${msg}`;
+      return `Error clicking "${selector}": ${outsideSpan(msg)}`;   // v3.5 K33: Playwright quotes the page's HTML
     }
 
     // Wait for potential navigation/ajax
@@ -213,7 +213,7 @@ export class BrowserSession {
       return `Typed "${text.length > 100 ? text.slice(0, 100) + '...' : text}" into ${selector}`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return `Error typing into "${selector}": ${msg}`;
+      return `Error typing into "${selector}": ${outsideSpan(msg)}`;   // v3.5 K33: Playwright quotes the page's HTML
     }
   }
 

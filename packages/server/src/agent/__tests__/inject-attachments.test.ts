@@ -45,6 +45,7 @@ beforeEach(() => {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       attachments TEXT,
+      inbound_meta TEXT,   -- v3.5 K33: read to tell a contact's attachment from the owner's
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);

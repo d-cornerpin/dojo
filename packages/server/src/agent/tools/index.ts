@@ -615,7 +615,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   // again is never the advice. It replaced the Phase-3 cap here, which threw the rest away.
   // v3.5 K33: the span a read marked as other people's text becomes ONE fence here — before
   // admission, so a kept whole is stored fenced, and before the platform adds its own lines.
-  content = fenceOutsideSpan(name, args, content, isError, toolCall);
+  content = fenceOutsideSpan(name, args, content, toolCall);
   const admitted = admitToolResult(name, id, content, isError);
   content = admitted.content;
   const keptWhole = admitted.keptWhole;

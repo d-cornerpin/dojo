@@ -271,13 +271,7 @@ async function pollForNewMessages(): Promise<void> {
         }
         body = body.slice(0, 1000);
 
-        const chatLabel = chat.topic
-          ? `"${chat.topic}"`
-          : chat.chatType === 'oneOnOne'
-            ? `1:1 chat with ${senderName}`
-            : 'group chat';
-
-        const content = teamsInboundContent(senderLabel, `${chatLabel} (${chat.chatType})`, msg.createdDateTime, body, chat.id);
+        const content = teamsInboundContent({ senderEmail, senderName, chatTopic: chat.topic ?? null, chatType: chat.chatType, time: msg.createdDateTime, body, chatId: chat.id });
 
         const msgId = uuidv4();
         // P5: conversation identity = the Teams chat id (thread-true).
@@ -305,6 +299,7 @@ async function pollForNewMessages(): Promise<void> {
           accountKind: 'agent' as const,
           authorized: isDm && isSenderAuthorized('teams', senderEmail, 'agent'),
           sender: senderEmail,
+          senderName,   // v3.5 K33: the badge's name; the model reads it inside the fence only
           chatId: chat.id,
           chatType: (isDm ? 'dm' : 'group') as 'dm' | 'group',
           recipientAddress: senderEmail ?? undefined,

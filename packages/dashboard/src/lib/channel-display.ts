@@ -16,6 +16,8 @@ export function withoutFence(content: string): string {
   return unfenceExternal(content);
 }
 
+export { inboundSenderName } from './inbound-sender-name';   // v3.5 K33 fix round 4: the badge's name
+
 const CHANNEL_EMOJI: Record<ChannelKind, string> = {
   imessage: '\u{1F4AC}',     // speech balloon
   phone: '\u{260E}\u{FE0F}', // telephone

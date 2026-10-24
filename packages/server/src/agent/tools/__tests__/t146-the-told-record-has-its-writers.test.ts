@@ -115,8 +115,9 @@ describe('§3 one reader of "who is the owner on iMessage"', () => {
     // shared corpus walks by path — guard-corpus-census).
     expect(filesMatching(/\bisOwnerIMessageRecipient\s*\(/).map((f) => f.slice(f.lastIndexOf('/') + 1)))
       // v3.5 K33: the SMS door and the inbound-fence builders (live calls) ask the same rule (is this
-      // the owner, whose words are not fenced).
-      .toEqual(['refusal-gates.ts', 'safe-senders.ts', 'inbound-fences.ts', 'sms-inbound.ts', 'validation-drive.ts']);
+      // the owner, whose words are not fenced); fix round 4: so does the attachment fence (an MMS from
+      // the owner's own number is his, as its text is).
+      .toEqual(['attachment-fence.ts', 'refusal-gates.ts', 'safe-senders.ts', 'inbound-fences.ts', 'sms-inbound.ts', 'validation-drive.ts']);
     expect(filesMatching(/\bownerIMessageRecord\s*\(/)).toEqual(['services/imessage-bridge.ts', 'services/safe-senders.ts']);
   });
 

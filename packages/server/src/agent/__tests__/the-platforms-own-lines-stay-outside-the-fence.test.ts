@@ -62,7 +62,7 @@ function inside(out: string, text: string): void {
   const at = out.indexOf(text);
   expect(fenceRanges(out).some((r) => at >= r.bodyStart && at < r.bodyEnd), `"${text}" is not inside a fence:\n${out}`).toBe(true);
 }
-const door = (name: string, args: Record<string, unknown>, content: string): string => fenceOutsideSpan(name, args, content, false, {});
+const door = (name: string, args: Record<string, unknown>, content: string): string => fenceOutsideSpan(name, args, content, {});
 const run = async (name: string, args: Record<string, unknown>): Promise<string> =>
   toolResultOf(await executeTool(AGENT, { id: `tc-${name}-${Math.random()}`, name, arguments: args } as ToolCall)).content;
 
@@ -213,6 +213,20 @@ describe('K33 fix round 2 — the platform\'s own lines stay outside the fence',
     const out = door('web_browse', { action: 'screenshot' }, await sessionOn(fakePage).screenshot(AGENT));
     inside(out, TITLE);
     outside(out, 'Pick a fallback vision model in Settings');
+  });
+
+  // Fix round 4 (ruling 5): Playwright's click and type errors quote the target element's HTML,
+  // which the page's author wrote. The door fences what a result marks even when it is an error.
+  it('web_browse click and type: an error quoting the page\'s HTML is inside a fence; "Error clicking" is the platform\'s', async () => {
+    const html = `<button title="${TITLE}">Go</button>`;
+    const page = { ...fakePage,
+      click: async () => { throw new Error(`locator.click: Timeout 5000ms exceeded.\nCall log:\n  - locator resolved to ${html}`); },
+      fill: async () => { throw new Error(`locator.fill: Error: Element is not an <input>\n  - locator resolved to ${html}`); } };
+    for (const [out, platform] of [[await sessionOn(page).click('#go'), 'Error clicking "#go": '], [await sessionOn(page).type('#go', 'x'), 'Error typing into "#go": ']] as const) {
+      const fenced = fenceOutsideSpan('web_browse', { action: 'click' }, out, {});
+      inside(fenced, TITLE);
+      outside(fenced, platform);
+    }
   });
 
   it('gmail_read: each sender-chosen attachment filename is inside a fence; the download hint is outside', async () => {

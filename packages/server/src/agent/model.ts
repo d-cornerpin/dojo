@@ -48,6 +48,8 @@ import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfi
 export const MIN_BINDABLE_MAX_OUTPUT_TOKENS = 256;
 import type { ToolCall } from '@dojo/shared';
 import { attachmentBrackets, defangExternalMarkers } from '../tools/external-content.js';
+/** v3.5 K33: an attachment's text (an extracted PDF) inside the fence that brackets it, if any. */
+const withinFence = (fence: { head: string; end: string } | null | undefined, text: string): string => (fence ? `${fence.head}\n${defangExternalMarkers(text)}\n${fence.end}` : text);
 
 const logger = createLogger('model');
 
@@ -966,6 +968,7 @@ export async function buildNativeOllamaMessages(
 
       if (toolResults.length > 0) {
         const pendingOllamaImages: string[] = []; // base64 data for images
+        const fencedImages: NativeOllamaMessage[] = []; // v3.5 K33: each after the whole run of tool messages
 
         for (const tr of toolResults) {
           const toolUseId = tr.tool_use_id as string;
@@ -987,7 +990,7 @@ export async function buildNativeOllamaMessages(
               const source = img.source as Record<string, unknown> | undefined;
               if (source?.type !== 'base64' || typeof source.data !== 'string') return;
               const fence = around[i];
-              if (fence) native.push({ role: 'user', content: `${fence.head}\n(the image attached to this message)\n${fence.end}`, images: [source.data] } as unknown as typeof native[0]);
+              if (fence) fencedImages.push({ role: 'user', content: `${fence.head}\n(the image attached to this message)\n${fence.end}`, images: [source.data] });
               else pendingOllamaImages.push(source.data as string);
             });
           } else {
@@ -996,6 +999,7 @@ export async function buildNativeOllamaMessages(
         }
 
         // Ollama supports images in user messages via the 'images' field
+        native.push(...fencedImages);
         if (pendingOllamaImages.length > 0) {
           native.push({
             role: 'user',
@@ -1012,8 +1016,10 @@ export async function buildNativeOllamaMessages(
         continue;
       }
 
-      // Regular user message: text + optional images + documents
-      const textBlocks = blocks.filter(b => b.type === 'text');
+      // Regular user message: text + optional images + documents (a contact's bracketed by its fence, v3.5 K33)
+      const { around, isBracket } = attachmentBrackets(blocks as Array<{ type: string; text?: unknown }>);
+      const fenceOf = new Map(blocks.map((b, i) => [b, around[i]]));
+      const textBlocks = blocks.filter((b, i) => b.type === 'text' && !isBracket[i]);
       const imageBlocks = blocks.filter(b => b.type === 'image');
       const documentBlocks = blocks.filter(b => b.type === 'document');
 
@@ -1043,7 +1049,7 @@ export async function buildNativeOllamaMessages(
             const extracted = await extractPdfText(source.data);
             const header = `[PDF attachment: ${title}, ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
             const footer = `[end of ${title}]`;
-            textParts.push(`${header}\n${extracted.text}\n${footer}`);
+            textParts.push(withinFence(fenceOf.get(doc), `${header}\n${extracted.text}\n${footer}`));
 
             if (extracted.truncated) {
               broadcast({
@@ -1074,10 +1080,13 @@ export async function buildNativeOllamaMessages(
       }
 
       const images: string[] = [];
+      const fencedImages: NativeOllamaMessage[] = [];
       for (const img of imageBlocks) {
         const source = img.source as Record<string, unknown> | undefined;
+        const fence = fenceOf.get(img);
         if (source && source.type === 'base64' && typeof source.data === 'string') {
-          images.push(source.data);
+          if (fence) fencedImages.push({ role: 'user', content: `${fence.head}\n(the image attached to this message)\n${fence.end}`, images: [source.data] });
+          else images.push(source.data);
         }
       }
 
@@ -1086,7 +1095,7 @@ export async function buildNativeOllamaMessages(
         content: textParts.join('\n\n'),
       };
       if (images.length > 0) userMsg.images = images;
-      native.push(userMsg);
+      native.push(userMsg, ...fencedImages);
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string') {
         native.push({ role: 'assistant', content: m.content });
@@ -1787,10 +1796,24 @@ export async function buildOpenAIMessages(
             const imageBlks = contentBlocks.flatMap((b, i) => (b.type === 'image' ? [{ b, fence: around[i] }] : []));
             const docBlks = contentBlocks.flatMap((b, i) => (b.type === 'document' ? [{ b, fence: around[i] }] : []));
 
+            // Inline PDF text for non-vision document blocks — inside the tool message itself (v3.5 K33
+            // round 4: a user message between tool results breaks the order OpenAI-compatible APIs require).
+            const pdfTexts: string[] = [];
+            for (const { b: doc, fence } of docBlks) {
+              const source = doc.source as Record<string, unknown> | undefined;
+              if (source?.type === 'base64' && typeof source.data === 'string') {
+                try {
+                  const { extractPdfText } = await import('../services/pdf-extract.js');
+                  const extracted = await extractPdfText(source.data as string);
+                  const title = (doc.title as string) ?? 'document';
+                  pdfTexts.push(withinFence(fence, `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`));
+                } catch { /* PDF extraction failed, skip */ }
+              }
+            }
             openaiMessages.push({
               role: 'tool',
               tool_call_id: tr.tool_use_id as string,
-              content: textParts || '[Image loaded, see below]',
+              content: [textParts, ...pdfTexts].filter(Boolean).join('\n') || '[Image loaded, see below]',
             });
 
             // Queue images to be emitted as a user message after tool results
@@ -1804,23 +1827,6 @@ export async function buildOpenAIMessages(
                   image_url: { url: `data:${mediaType};base64,${source.data}` },
                 });
                 if (fence) pendingImages.push({ type: 'text', text: fence.end });
-              }
-            }
-
-            // Inline PDF text for non-vision document blocks
-            for (const { b: doc, fence } of docBlks) {
-              const source = doc.source as Record<string, unknown> | undefined;
-              if (source?.type === 'base64' && typeof source.data === 'string') {
-                try {
-                  const { extractPdfText } = await import('../services/pdf-extract.js');
-                  const extracted = await extractPdfText(source.data as string);
-                  const title = (doc.title as string) ?? 'document';
-                  const pdf = `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`;
-                  openaiMessages.push({
-                    role: 'user',
-                    content: fence ? `${fence.head}\n${defangExternalMarkers(pdf)}\n${fence.end}` : pdf,
-                  });
-                } catch { /* PDF extraction failed, skip */ }
               }
             }
           } else {
@@ -1851,8 +1857,10 @@ export async function buildOpenAIMessages(
         continue;
       }
 
-      // Regular user message, text + optional images + optional PDFs
-      const textBlocks = blocks.filter(b => b.type === 'text');
+      // Regular user message, text + optional images + optional PDFs (a contact's bracketed by its fence, v3.5 K33)
+      const { around, isBracket } = attachmentBrackets(blocks as Array<{ type: string; text?: unknown }>);
+      const fenceOf = new Map(blocks.map((b, i) => [b, around[i]]));
+      const textBlocks = blocks.filter((b, i) => b.type === 'text' && !isBracket[i]);
       const imageBlocks = blocks.filter(b => b.type === 'image');
       const documentBlocks = blocks.filter(b => b.type === 'document');
 
@@ -1876,7 +1884,7 @@ export async function buildOpenAIMessages(
             const extracted = await extractPdfText(source.data);
             const header = `[PDF attachment: ${title}, ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
             const footer = `[end of ${title}]`;
-            textContent = (textContent ? textContent + '\n\n' : '') + `${header}\n${extracted.text}\n${footer}`;
+            textContent = (textContent ? textContent + '\n\n' : '') + withinFence(fenceOf.get(doc), `${header}\n${extracted.text}\n${footer}`);
 
             if (extracted.truncated) {
               broadcast({
@@ -1928,12 +1936,15 @@ export async function buildOpenAIMessages(
           continue;
         }
         const mediaType = (source.media_type as string) || 'image/jpeg';
+        const fence = fenceOf.get(img);
+        if (fence) parts.push({ type: 'text', text: fence.head });
         parts.push({
           type: 'image_url',
           image_url: {
             url: `data:${mediaType};base64,${source.data}`,
           },
         });
+        if (fence) parts.push({ type: 'text', text: fence.end });
       }
 
       if (parts.length === 0) {

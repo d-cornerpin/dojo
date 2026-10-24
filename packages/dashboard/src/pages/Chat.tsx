@@ -4,7 +4,7 @@ import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResul
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool, parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
-import { inboundBadge, outboundBadge, withoutFence } from '../lib/channel-display';
+import { inboundBadge, inboundSenderName, outboundBadge, withoutFence } from '../lib/channel-display';
 import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
@@ -96,6 +96,7 @@ interface ChatMessage {
   /** Canonical attribution from the server (deriveOrigin). The visibility
    *  classifier reads this to decide what shows in regular mode. */
   origin?: MessageOrigin;
+  inboundMeta?: string | null;   // the stored routing record (v3.5 K33: the Teams badge's name)
   /** The conversation this turn served, stamped on the agent's own
    *  assistant/tool rows (migration 076 / loop C15). A human conversation key
    *  ('owner', 'imessage:…', …) means the user triggered the turn; null means a
@@ -207,21 +208,17 @@ const WorkingNoteBubble = ({ text }: { text: string }) => {
 
 // ── Message Bubble Renderers ──
 
-// Inbound channel framing (the [SOURCE: IMESSAGE/PHONE/SMS/TEAMS/EMAIL ...]
-// header + the phone Call SID trailer) is parsed and stripped by the canonical
-// helpers in @dojo/shared (parseInboundChannel / stripInboundChannelMarker); the
-// badge wording lives in ../lib/channel-display (inboundBadge). UserBubble uses
-// them so every channel is handled and the logic cannot drift across chat pages.
-// Attachment-pointer stripping is in ../lib/attachment-tags.
+// Inbound channel framing (the [SOURCE: IMESSAGE/PHONE/SMS/TEAMS/EMAIL ...] header + the phone Call SID
+// trailer) is parsed and stripped by the canonical helpers in @dojo/shared (parseInboundChannel /
+// stripInboundChannelMarker); the badge wording lives in ../lib/channel-display (inboundBadge), so
+// every channel is handled and the logic cannot drift across chat pages. Attachment pointers: ../lib/attachment-tags.
 
 const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  // Inbound channel (iMessage / phone / SMS / Teams / email): show ONE clean
-  // badge and strip the [SOURCE: ...] framing (+ phone trailer). Driven by the
-  // canonical parser (@dojo/shared) so all chat pages agree and every channel is
-  // covered (V3). Wordy mode shows the raw content (markers included) for debug.
+  // Inbound channel (iMessage / phone / SMS / Teams / email): ONE clean badge, the [SOURCE: ...] framing
+  // (+ phone trailer) stripped, via the canonical parser (V3). Wordy mode shows the raw content for debug.
   const inbound = parseInboundChannel(msg.content);
   const fromVoice = msg.source === 'voice';
-  const badge = inbound ? inboundBadge(inbound.channel, inbound.sender) : null;
+  const badge = inbound ? inboundBadge(inbound.channel, inboundSenderName(msg.inboundMeta, inbound.sender)) : null;
 
   // v3.5 K33: the owner sees other people's text as it arrived, without the agent's fence lines.
   let displayContent = withoutFence(msg.content);
@@ -997,6 +994,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: m.attachments,
             source: m.source ?? null,
             origin: m.origin,
+            inboundMeta: m.inboundMeta ?? null,
             conversationId: m.conversationId,
             displayKind: m.displayKind ?? null,
           })),
@@ -1047,6 +1045,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         attachments: m.attachments,
         source: m.source ?? null,
         origin: m.origin,
+        inboundMeta: m.inboundMeta ?? null,
         conversationId: m.conversationId,
         displayKind: m.displayKind ?? null,
       }));
@@ -1418,6 +1417,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: e.message.attachments,
             source: e.message.source ?? null,
             origin: e.message.origin,
+            inboundMeta: e.message.inboundMeta ?? null,
             conversationId: e.message.conversationId,
           },
         ];

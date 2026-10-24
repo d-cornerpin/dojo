@@ -313,8 +313,7 @@ export function formatDivider(label: string): string {
 export const NEW_SESSION_DIVIDER_LABEL = 'New Session';
 export const NEW_SESSION_DIVIDER = formatDivider(NEW_SESSION_DIVIDER_LABEL);
 
-// Inbound channel source markers, per channel. Capturing group 1 is the
-// raw sender label where one exists.
+// Inbound channel source markers, per channel. Capturing group 1 is the raw sender label where one exists.
 const INBOUND_CHANNEL_RES: ReadonlyArray<{ channel: ChannelKind; re: RegExp }> = [
   { channel: 'imessage', re: /^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/i },
   { channel: 'phone', re: /^\[SOURCE: PHONE CALL FROM ([^\]]+)\]/i },
@@ -369,6 +368,7 @@ export interface InboundMeta {
   accountKind?: 'agent' | 'user';
   authorized?: boolean;
   sender?: string | null;
+  senderName?: string;   // v3.5 K33: a Teams sender's display name, for the badge (the model reads it inside the fence only)
   /**
    * The sender's relationship to the owner, stamped by the producer when it
    * knows it (e.g. the iMessage bridge knows is_primary). Lets the origin

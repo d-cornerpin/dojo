@@ -138,12 +138,13 @@ type ContentBlock = { type: string; text?: string };
  * one fence; every line the tool wrote itself — its header, paging and continue lines, remedies,
  * notices — stays outside, as do the lines the door adds after this (the kept-result pointer, the
  * unknown-args warning). A tool that marked nothing returned only its own words and is not fenced;
- * an unregistered tool's marks are simply removed. An image or PDF the read attached is bracketed by
- * a head note before it and the end after it.
+ * an unregistered tool's marks are simply removed. An error is held to the same rule (fix round 4: a
+ * Playwright error quotes the page's HTML). An image or PDF the read attached is bracketed by a head
+ * note before it and the end after it.
  */
-export function fenceOutsideSpan(toolName: string, args: Record<string, unknown>, content: string, isError: boolean, toolCall: object): string {
+export function fenceOutsideSpan(toolName: string, args: Record<string, unknown>, content: string, toolCall: object): string {
   const read = outsideReadOf(toolName);
-  const from = read && !isError ? read.from(args) : null;
+  const from = read ? read.from(args) : null;   // an error that quotes outside text (a page's HTML) marks it too
   if (!read || from === null) return stripOutsideMarks(content);
   const call = toolCall as { __contentBlocks?: ContentBlock[] };
   if (Array.isArray(call.__contentBlocks)) {

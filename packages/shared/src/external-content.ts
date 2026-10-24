@@ -17,6 +17,8 @@
 // who wrote it — the owner's own calendar and documents are fenced too.
 // ════════════════════════════════════════════════════════════════════════════
 
+import { OPENERS, CLOSERS, INVISIBLE, defangExternalMarkers } from './external-defang.js';
+
 export const EXTERNAL_KINDS = [
   'email', 'web page', 'search result', 'document', 'transcript',
   'text message', 'voicemail', 'chat message', 'agent report', 'archive', 'calendar event',
@@ -46,44 +48,8 @@ export function fenceEnd(kind: ExternalKind, code: string): string {
   return `[END EXTERNAL ${kind} ${code}]`;
 }
 
-// ── The second line of defence: marker-SHAPED text in a body loses its bracket. ────────────────
-/** Any opening bracket a reader could take for a marker's: ASCII, full-width, and the CJK/math kin. */
-const OPENERS = /[[［【〔〖〘〚⟦⟨⦃⦅⦇⦉⦋⦍⦏⦑⦓⦕⦗]/g;
-const CLOSERS = /[\]］】〕〗〙〛⟧⟩⦄⦆⦈⦊⦌⦎⦐⦒⦔⦖⦘]/g;
-/** Characters a reader does not see: soft hyphen, joiners and marks, bidi embeddings, overrides and
- *  ISOLATES, the Mongolian and Khmer invisibles, Hangul fillers, variation selectors (both planes)
- *  and the TAG characters (the known "ASCII smuggling" carrier). */
-const INVISIBLE = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
-/** Cyrillic and Greek letters that look like the Latin letters of a marker, folded to them. */
-const CONFUSABLE: Readonly<Record<string, string>> = {
-  '\u0410': 'A', '\u0412': 'B', '\u0415': 'E', '\u0405': 'S', '\u0406': 'I', '\u0408': 'J', '\u041A': 'K', '\u041C': 'M', '\u041D': 'H', '\u041E': 'O', '\u0420': 'P', '\u0421': 'C', '\u0422': 'T', '\u0425': 'X', '\u04AE': 'Y',
-  '\u0430': 'a', '\u0435': 'e', '\u0455': 's', '\u0456': 'i', '\u0458': 'j', '\u043E': 'o', '\u0440': 'p', '\u0441': 'c', '\u0445': 'x', '\u0443': 'y', '\u04BB': 'h', '\u0501': 'd', '\u0578': 'n',
-  '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H', '\u0399': 'I', '\u039A': 'K', '\u039C': 'M', '\u039D': 'N', '\u039F': 'O', '\u03A1': 'P', '\u03A4': 'T', '\u03A5': 'Y', '\u03A7': 'X',
-  '\u03B1': 'a', '\u03B5': 'e', '\u03B9': 'i', '\u03BA': 'k', '\u03BD': 'v', '\u03BF': 'o', '\u03C1': 'p', '\u03C4': 't', '\u03C5': 'u', '\u03C7': 'x',
-};
-/** Small capitals (U+1D00 block and kin) as the capitals they imitate (fix round 3, N7). */
-const SMALL_CAPS: Readonly<Record<string, string>> = {
-  '\u1D00': 'A', '\u0299': 'B', '\u1D04': 'C', '\u1D05': 'D', '\u1D07': 'E', '\uA730': 'F', '\u0262': 'G', '\u029C': 'H', '\u026A': 'I',
-  '\u1D0A': 'J', '\u1D0B': 'K', '\u029F': 'L', '\u1D0D': 'M', '\u0274': 'N', '\u1D0F': 'O', '\u1D18': 'P', '\u0280': 'R', '\uA731': 'S',
-  '\u1D1B': 'T', '\u1D1C': 'U', '\u1D20': 'V', '\u1D21': 'W', '\u028F': 'Y', '\u1D22': 'Z', '\u13AC': 'E', '\u13AA': 'A', '\u13DF': 'C',
-};
-/** Invisible characters dropped; combining marks stripped (decompose, drop every mark); width and
- *  compatibility forms folded; look-alike letters mapped to Latin; whitespace collapsed. */
-const fold = (s: string): string => s.replace(INVISIBLE, '').normalize('NFKD').replace(/\p{M}/gu, '').normalize('NFKC')
-  .replace(/./gu, (c) => CONFUSABLE[c] ?? SMALL_CAPS[c] ?? c).replace(/\s+/g, ' ');
-/** What follows the bracket in anything marker-shaped, once folded: `/`, `END OF THE`, … EXTERNAL. */
-const MARKER_TAIL = /^[\s/\\|*_:.-]*(?:(?:end|close|closing|stop)[\s_-]*(?:of[\s_-]*)?(?:the[\s_-]*)?)?external(?![a-z])/i;
-
-/** Turn the opening bracket of anything marker-shaped in `body` into "(". Nothing else changes.
- *  The test reads the rest of the bracket's LINE with invisibles dropped first, so no padding or
- *  invisible run can push the word out of view. */
-export function defangExternalMarkers(body: string): string {
-  return body.replace(OPENERS, (bracket, offset: number) => {
-    const lineEnd = body.indexOf('\n', offset);
-    const rest = body.slice(offset + 1, lineEnd === -1 ? body.length : lineEnd);
-    return MARKER_TAIL.test(fold(rest)) ? '(' : bracket;
-  });
-}
+// The second line of defence (marker-SHAPED text in a body loses its bracket): ./external-defang.ts.
+export { defangExternalMarkers };
 
 /** One line, no brackets of any width; an empty source is named as unknown rather than left blank. */
 function cleanSource(from: string): string {
@@ -94,10 +60,11 @@ function cleanSource(from: string): string {
 /**
  * Fence `body` as outside text of `kind` from `from`, under a fresh code. `addressedToAgent`: the
  * text was sent TO the agent (its own mailbox, a direct message), so it may be answered — but still
- * never obeyed because it says so.
+ * never obeyed because it says so. `code`: a caller that re-renders the same text on every model call
+ * passes a code it keeps stable and unpredictable (agent/attachment-fence.ts), so the prompt cache holds.
  */
-export function fenceExternal(kind: ExternalKind, from: string, body: string, opts: { addressedToAgent?: boolean } = {}): string {
-  const code = newFenceCode();
+export function fenceExternal(kind: ExternalKind, from: string, body: string, opts: { addressedToAgent?: boolean; code?: string } = {}): string {
+  const code = opts.code ?? newFenceCode();
   return `${fenceHead(kind, code, from, opts.addressedToAgent)}\n${defangExternalMarkers(body)}\n${fenceEnd(kind, code)}`;
 }
 
@@ -150,8 +117,7 @@ export function fenceMarkedSpan(content: string, kind: ExternalKind, from: strin
 const ATTACHMENT_NOTE = ' The attachment that follows is that content.';
 
 /** The head note and end the door puts on either side of an attachment block. */
-export function fenceAttachment(kind: ExternalKind, from: string): { head: string; end: string } {
-  const code = newFenceCode();
+export function fenceAttachment(kind: ExternalKind, from: string, code = newFenceCode()): { head: string; end: string } {
   return { head: `${fenceHead(kind, code, from)}${ATTACHMENT_NOTE}`, end: fenceEnd(kind, code) };
 }
 
