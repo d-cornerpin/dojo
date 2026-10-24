@@ -24,7 +24,7 @@ import { extractFromConversation, storeExtractedMemories } from '../../vault/ext
 import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
 import { getDb } from '../../db/connection.js';
-import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('vault-routes');
 
@@ -235,11 +235,11 @@ vaultRouter.put('/dream/config', async (c) => {
   const body = await c.req.json();
   // 32K main-model floor (owner decision 13): this is the dreamer's MAIN model; refuse before any write.
   const { getDreamerAgentId } = await import('../../config/platform.js');
-  const tooSmall = refuseSmallMainModel(
-    typeof body.modelId === 'string' ? body.modelId : null,
-    (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id,
-  );
-  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+  // v3.5: then the memory fit — a local model that will not fit in this box's memory is refused too.
+  const newModel = typeof body.modelId === 'string' ? body.modelId : null;
+  const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id;
+  const refused = refuseSmallMainModel(newModel, current) ?? await refuseUnfitLocalModel(newModel, current);
+  if (refused) return c.json({ ok: false, error: refused }, 400);
   setDreamingConfig({
     modelId: body.modelId,
     dreamTime: body.dreamTime,

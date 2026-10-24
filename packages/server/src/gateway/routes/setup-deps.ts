@@ -22,7 +22,7 @@ import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 // t202 D10: the owner's 32K floor for an agent's MAIN model.
-import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('setup-deps');
 
@@ -466,8 +466,9 @@ setupDepsRouter.post('/provision-agent', async (c) => {
 
   // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
   // Re-running setup on the model an existing agent already has is not a change and never refused.
-  const tooSmall = refuseSmallMainModel(modelId, existing?.model_id ?? null);
-  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+  // v3.5: and a local model that will not fit in this box's memory is refused the same way.
+  const refused = refuseSmallMainModel(modelId, existing?.model_id ?? null) ?? await refuseUnfitLocalModel(modelId, existing?.model_id ?? null);
+  if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (existing) {
     // Update name and model

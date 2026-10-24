@@ -4,6 +4,7 @@
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
+import { refuseUnfitLocalModel } from '../../agent/local-model-fit.js';
 import { createLogger } from '../../logger.js';
 import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
@@ -115,6 +116,14 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
   // routine (`services/local-standard.ts`). Refused here so no door can point it elsewhere.
   if (tierId === 'system') {
     return c.json({ ok: false, error: "The Dojo's writer is fixed; it is installed by setup." }, 409);
+  }
+
+  // v3.5 (owner ruling 2026-10-19, "an agent or anything else"): a local model ADDED to a tier must fit in
+  // this box's memory. Models already in the tier are not re-judged (re-saving is never refused).
+  const current = new Set((db.prepare('SELECT model_id FROM router_tier_models WHERE tier_id = ?').all(tierId) as Array<{ model_id: string }>).map((r) => r.model_id));
+  for (const { modelId } of body.models as Array<{ modelId: string }>) {
+    const refused = current.has(modelId) ? null : await refuseUnfitLocalModel(modelId);
+    if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 
   try {

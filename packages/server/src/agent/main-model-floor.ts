@@ -23,6 +23,8 @@
 
 import { getDb } from '../db/connection.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
+// v3.5: the memory-fit gate is asked at every door this floor guards (`local-model-fit.ts`).
+export { refuseUnfitLocalModel } from './local-model-fit.js';
 
 /** The owner's floor, in tokens. "32K" models are advertised as 32,000 or 32,768; both pass. */
 export const MAIN_MODEL_MIN_WINDOW = 32_000;
@@ -92,3 +94,10 @@ export function passesMainModelFloor(modelId: string): boolean {
 export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
   'healer_model_id', 'dreaming_model_id', 'pm_agent_model', 'trainer_agent_model', 'imaginer_brain_model',
 ];
+
+/**
+ * v3.5: the config keys through which a person picks a LOCAL model the memory-fit gate judges — the
+ * service agents' main models above, and the summary writer (owner ruling 2026-10-19, "an agent or
+ * anything else"; the Summarization Model card invites a larger model).
+ */
+export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'compaction_model_id'];

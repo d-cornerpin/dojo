@@ -81,7 +81,7 @@ import { writeGrants } from '../../access/materialize.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
-import { refuseSmallMainModel } from '../../main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../main-model-floor.js';
 
 // ── P4: mandatory squad resolution for agent spawns ──
 // Every agent-spawned agent lands in a squad so the owner can see which spawned
@@ -1102,8 +1102,8 @@ export const agentsHandlers: ToolHandlerMap = {
         if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
         if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
         resolvedModel = model;
-        const tooSmall = refuseSmallMainModel(model.id, target.model_id);
-        if (tooSmall) { content = `Error: ${tooSmall}`; isError = true; return { content, isError }; }
+        const refused = refuseSmallMainModel(model.id, target.model_id) ?? await refuseUnfitLocalModel(model.id, target.model_id);
+        if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 
       // Identity (name / system_prompt): forbidden on the primary agent.

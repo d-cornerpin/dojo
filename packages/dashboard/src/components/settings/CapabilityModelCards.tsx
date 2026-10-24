@@ -145,6 +145,7 @@ export const CapabilityModelCard = ({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const toast = useToast();
 
   const matchingModels = models.filter(m => m.isEnabled && (matchFn ? matchFn(m) : !!capability && m.capabilities.includes(capability)));
   const hasAnyOption = matchingModels.length > 0 || extraOptions.length > 0;
@@ -160,8 +161,9 @@ export const CapabilityModelCard = ({
 
   const handleSave = async () => {
     setSaving(true);
-    await api.setSetting(settingKey, selectedId);
+    const res = await api.setSetting(settingKey, selectedId);
     setSaving(false);
+    if (!res.ok) { toast.error(res.error ?? 'The model could not be saved.'); return; }   // e.g. the memory-fit refusal (v3.5)
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -423,7 +425,7 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
       // v2.3.19 — reload so the provider-isolation banner reflects the new
       // model selection without requiring a page refresh.
       await reloadConfig();
-    }
+    } else toast.error(result.error ?? 'The Healer settings could not be saved.');   // e.g. the 32K floor or the memory fit
     setSaving(false);
   };
 

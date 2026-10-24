@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
+import { useToast } from '../../hooks/useToast';
 import { RouterConfig } from '../RouterConfig';
 import { RouterTest } from '../RouterTest';
 import { RouterWindowSection, type RouterWindowData } from './RouterWindowSection';
@@ -28,6 +29,7 @@ interface RouterConfigData {
 }
 
 export const RouterTab = () => {
+  const toast = useToast();
   const [config, setConfig] = useState<RouterConfigData | null>(null);
   const [routerWindow, setRouterWindow] = useState<RouterWindowData | null>(null);   // v3.5 N42
   const [loading, setLoading] = useState(true);
@@ -63,7 +65,8 @@ export const RouterTab = () => {
     tierId: string,
     models: Array<{ modelId: string; priority: number }>,
   ) => {
-    await api.updateTierModels(tierId, models);
+    const res = await api.updateTierModels(tierId, models);
+    if (!res.ok) toast.error(res.error ?? 'The tier could not be saved.');   // e.g. the memory-fit refusal (v3.5)
     await loadConfig();
   };
 

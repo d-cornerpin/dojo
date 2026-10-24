@@ -26,7 +26,7 @@ import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
-import { refuseSmallMainModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
@@ -2332,12 +2332,12 @@ configRouter.put('/settings/:key', async (c) => {
     return c.json({ ok: false, error: 'value string is required' }, 400);
   }
 
-  // 32K main-model floor (owner decision 13): these keys name a service agent's MAIN model.
-  // Refused before any write; re-saving the value already stored is never refused.
-  if (MAIN_MODEL_SETTING_KEYS.includes(key)) {
+  // The 32K main-model floor (owner decision 13) for a service agent's MAIN model, and (v3.5) the memory
+  // fit for every local-model key. Refused before any write; re-saving the stored value never is.
+  if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
-    const tooSmall = refuseSmallMainModel(body.value, current);
-    if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+    const refused = (MAIN_MODEL_SETTING_KEYS.includes(key) ? refuseSmallMainModel(body.value, current) : null) ?? await refuseUnfitLocalModel(body.value, current);
+    if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 
   // UX-REPAIR T50 — THE DECISIVE RENAME DOOR, and the one nobody would guess.

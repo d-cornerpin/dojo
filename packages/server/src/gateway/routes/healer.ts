@@ -9,7 +9,7 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
 import { routeFailure } from './route-failure.js';
-import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
+import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 
 const logger = createLogger('healer-routes');
 
@@ -28,11 +28,11 @@ healerRouter.post('/config', async (c) => {
 
   // 32K main-model floor (owner decision 13): this is the healer's MAIN model; refuse before any write.
   const { getHealerAgentId } = await import('../../config/platform.js');
-  const tooSmall = refuseSmallMainModel(
-    typeof body.modelId === 'string' ? body.modelId : null,
-    (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id,
-  );
-  if (tooSmall) return c.json({ ok: false, error: tooSmall }, 400);
+  // v3.5: then the memory fit — a local model that will not fit in this box's memory is refused too.
+  const newModel = typeof body.modelId === 'string' ? body.modelId : null;
+  const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id;
+  const refused = refuseSmallMainModel(newModel, current) ?? await refuseUnfitLocalModel(newModel, current);
+  if (refused) return c.json({ ok: false, error: refused }, 400);
 
   setHealerConfig({
     modelId: body.modelId,

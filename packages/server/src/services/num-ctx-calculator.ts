@@ -35,6 +35,7 @@
 import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
+import { kvBytesPerTokenOf } from './kv-bytes.js';
 
 // Detect whether an Ollama base URL points at the host machine we're
 // running on. Localhost → use os.totalmem(). Remote → use the user-entered
@@ -52,13 +53,10 @@ export function isLocalOllamaBaseUrl(baseUrl: string | null | undefined): boolea
 
 const logger = createLogger('num-ctx-calc');
 
-// Bytes per element in the KV cache. fp16 = 2 bytes.
-const KV_BYTES_PER_ELEMENT = 2;
-
 // Floor and ceiling for the computed recommendation. 2048 is the smallest
 // worth running any modern chat model at; 2M tokens is a sanity ceiling
 // that matches the PATCH endpoint's validation cap.
-const MIN_RECOMMENDED_NUM_CTX = 2048;
+export const MIN_RECOMMENDED_NUM_CTX = 2048;
 const MAX_RECOMMENDED_NUM_CTX = 2_097_152;
 
 const GIB = 1024 ** 3;
@@ -172,7 +170,7 @@ interface OllamaTagsResponse {
   models?: Array<{ name: string; size: number }>;
 }
 
-async function fetchModelArchInfo(
+export async function fetchModelArchInfo(
   baseUrl: string,
   apiModelId: string,
 ): Promise<{ modelInfo: Record<string, unknown>; archField: string } | null> {
@@ -281,37 +279,11 @@ export async function computeRecommendedNumCtx(
   const mi = arch.modelInfo;
   const archField = arch.archField;
 
-  const blockCount = mi[`${archField}.block_count`];
-  const headCount = mi[`${archField}.attention.head_count`];
-  const headCountKvRaw = mi[`${archField}.attention.head_count_kv`];
-  const embeddingLength = mi[`${archField}.embedding_length`];
   const modelContextRaw = mi[`${archField}.context_length`];
-
-  if (typeof blockCount !== 'number' ||
-      typeof headCount !== 'number' ||
-      typeof embeddingLength !== 'number') {
-    return {
-      reason: `missing required arch fields (block_count, head_count, embedding_length) for ${archField}`,
-    };
-  }
-  if (headCount === 0) {
-    return { reason: 'head_count is zero' };
-  }
-
-  // Missing head_count_kv → fall back to full attention (head_count). This
-  // is the safe direction: we'd rather recommend a smaller num_ctx than
-  // an impossibly large one. Modern GQA models that omit this field will
-  // still get a workable (if conservative) recommendation.
-  const headCountKv = typeof headCountKvRaw === 'number' && headCountKvRaw > 0
-    ? headCountKvRaw
-    : headCount;
-
-  const headDim = embeddingLength / headCount;
-  const kvBytesPerToken = 2 /* K + V */ * blockCount * headCountKv * headDim * KV_BYTES_PER_ELEMENT;
-
-  if (!Number.isFinite(kvBytesPerToken) || kvBytesPerToken <= 0) {
-    return { reason: 'computed kv_bytes_per_token is non-positive or NaN' };
-  }
+  // The per-token KV arithmetic (fp16, GQA-aware) lives in `kv-bytes.ts`, shared with the fit gate.
+  const kv = kvBytesPerTokenOf(mi, archField);
+  if (typeof kv !== 'number') return kv;
+  const kvBytesPerToken = kv;
 
   const installed = await fetchInstalledModels(baseUrl);
   if (installed === null) {

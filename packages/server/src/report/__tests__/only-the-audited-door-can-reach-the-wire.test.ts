@@ -228,6 +228,8 @@ const AUDITED_DOORS: readonly string[] = ['github/device-flow.ts', 'github/issue
  */
 const EGRESS_IN_CLOSURE: readonly string[] = [
   'agent/model.ts',                     // fetch(, import 'undici'
+  'agent/local-model-fit.ts',           // fetch( — v3.5, reached through the model-selection doors (update_agent among them):
+                                        // one GET of the local Ollama's /api/tags; no exported function takes content to send.
   'agent/net-guard.ts',                 // import 'node:net'
   'agent/site-snapshot.ts',             // fetch(
   'agent/tools/definitions.ts',         // fetch(

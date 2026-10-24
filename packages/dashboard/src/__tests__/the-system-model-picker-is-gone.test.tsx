@@ -14,6 +14,12 @@ vi.mock('../lib/api', async () => {
   return stub;
 });
 
+vi.mock('../hooks/useToast', async () => {
+  const { fakeToast } = await import('./helpers/frames');
+  const stub = fakeToast();
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: unknown }) => children, ToastContainer: () => null };
+});
+
 import { ModelsTab } from '../components/settings/ModelsTab';
 import * as RouterConfigModule from '../components/RouterConfig';
 
