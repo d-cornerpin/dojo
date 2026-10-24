@@ -17,6 +17,7 @@ vi.mock('../accounts.js', () => ({
 
 import { googleRead, googleWrite } from '../client.js';
 import { executeGoogleWriteTool } from '../tools-write.js';
+import { remedyNote } from '../../tools/error-remedies.js';
 
 const ok = (data: unknown = {}) => ({ ok: true, data, error: undefined, apiEndpoint: 'x' });
 const run = (args: Record<string, unknown>, tool = 'gmail_label') =>
@@ -78,7 +79,9 @@ describe('gmail_label message_ids — batchModify in chunks of 1,000', () => {
 
   it('the invalid-label remedy is kept on the batch path, with the user_ prefix when called as user_', async () => {
     vi.mocked(googleWrite).mockResolvedValue({ ok: false, data: null, error: 'Invalid label: Junk', apiEndpoint: 'x' } as never);
-    const out = await run({ message_ids: ['m1'], add_labels: ['Junk'] }, 'user_gmail_label');
+    const failed = await run({ message_ids: ['m1'], add_labels: ['Junk'] }, 'user_gmail_label');
+    // K37: the remedy is appended by the engine from tools/error-remedies.ts, not inline.
+    const out = failed + remedyNote('user_gmail_label', failed);
     expect(out).toMatch(/user_gmail_list_labels/);
     expect(out).toMatch(/NOT changed/i);
   });
