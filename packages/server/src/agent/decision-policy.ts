@@ -13,6 +13,7 @@ import { getDb } from '../db/connection.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { scoreQuestion, type QuestionScore } from './decision-shadow.js';
 import type { DiagnosticItem } from '../healer/diagnostic.js';
+import { summaryCheckLine } from '../memory/summary-check.js';
 
 export type Mode = 'rule' | 'shadow' | 'model';
 const MODES: readonly Mode[] = ['rule', 'shadow', 'model'];
@@ -45,7 +46,8 @@ export function getDecisionScoreItems(): DiagnosticItem[] {
   try {
     questions = getDb().prepare('SELECT DISTINCT purpose, question FROM decision_shadow ORDER BY purpose, question').all() as typeof questions;
   } catch { return []; }
-  if (questions.length === 0) return [];
+  const summaries = summaryCheckLine();   // B4: the summary check's running numbers ride the same section
+  if (questions.length === 0 && !summaries) return [];
   const lines = questions.map(({ purpose, question }) => {
     const s = scoreQuestion(purpose, question);
     const mode = modeFor(purpose, question);
@@ -57,6 +59,6 @@ export function getDecisionScoreItems(): DiagnosticItem[] {
     severity: 'info',
     code: 'decision_score',
     title: 'The decision model, scored against the rules it shadows',
-    detail: `${lines.join('; ')}. ${SWITCH_SENTENCE}`,
+    detail: [lines.length > 0 ? `${lines.join('; ')}. ${SWITCH_SENTENCE}` : '', summaries ?? ''].filter(Boolean).join(' '),
   }];
 }

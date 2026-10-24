@@ -36,11 +36,14 @@ describe('migration 201', () => {
     expect(columns()).toEqual(['id', 'purpose', 'question', 'agent_id', 'turn_id', 'rule_said', 'model_said', 'truth', 'truth_src', 'created_at', 'truth_at']);
     expect(indexes()).toEqual(['idx_decision_shadow_q', 'idx_decision_shadow_turn']);
     expect(db().prepare('SELECT COUNT(*) AS n FROM decision_shadow').get()).toEqual({ n: 0 });
+    expect(db().prepare('SELECT COUNT(*) AS n FROM summary_checks').get()).toEqual({ n: 0 });
+    expect((db().prepare('PRAGMA table_info(summary_checks)').all() as Array<{ name: string }>).map((r) => r.name))
+      .toEqual(['id', 'agent_id', 'writer_model_id', 'outcome', 'invented', 'dropped', 'stated_current', 'created_at']);
     expect(db().prepare('SELECT COUNT(*) AS n FROM _migrations WHERE name = ?').get(FILE)).toEqual({ n: 1 });
   });
 
   it('a pre-201 lived-in body applies it and keeps every row it had', () => {
-    db().exec('DROP TABLE decision_shadow;');
+    db().exec('DROP TABLE decision_shadow; DROP TABLE summary_checks;');
     db().prepare('DELETE FROM _migrations WHERE name = ?').run(FILE);
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-x')").run();
     db().prepare("INSERT INTO agents (id, name, status, config) VALUES ('agent-a', 'A', 'idle', '{}')").run();

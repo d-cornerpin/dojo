@@ -228,6 +228,10 @@ const AUDITED_DOORS: readonly string[] = ['github/device-flow.ts', 'github/issue
  */
 const EGRESS_IN_CLOSURE: readonly string[] = [
   'agent/model.ts',                     // fetch(, import 'undici'
+  'agent/decide.ts',                    // fetch( — v3.5, reached through memory/summarize.ts (every summary is checked).
+                                        // It DOES carry caller content (`state`), but only to the box's OWN Ollama:
+                                        // `getDecisionProvider` takes the provider row only when its base URL is local
+                                        // (`isLocalOllamaBaseUrl`), so nothing it sends leaves this machine.
   'agent/local-model-fit.ts',           // fetch( — v3.5, reached through the model-selection doors (update_agent among them):
                                         // one GET of the local Ollama's /api/tags; no exported function takes content to send.
   'agent/net-guard.ts',                 // import 'node:net'

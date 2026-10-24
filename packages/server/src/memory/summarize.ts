@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from './budget.js';
 import type { ProviderErrorFacts } from '../agent/provider-error.js';
 import { isContextOverflowError } from '../agent/context-overflow.js';
+import { writeThenCheck, rewriteInstruction } from './summary-check.js';
 import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writer-health.js';
 import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
@@ -235,7 +236,8 @@ function unusableOutput(text: string, abortSignal?: AbortSignal): string | null 
  *  writer that timed out, answered empty or errored is passed over for a few minutes
  *  (`summary-writer-health.ts`). One wrapper rather than a line at each return below. */
 export async function generateSummary(params: Parameters<typeof writeSummary>[0]): Promise<SummaryResult> {
-  return settleSummaryCall(await writeSummary(params), params.agentId, params.modelId, params.abortSignal);
+  // v3.5 B4: written, then checked against its source before anything keeps it (`summary-check.ts`).
+  return writeThenCheck(params, async (p) => settleSummaryCall(await writeSummary(p), p.agentId, p.modelId, p.abortSignal));
 }
 
 async function writeSummary(params: {
@@ -250,8 +252,9 @@ async function writeSummary(params: {
   // beyond a sane wall-clock) can actually be cancelled rather than
   // continuing in the background.
   abortSignal?: AbortSignal;
+  checkFeedback?: string;   // v3.5 B4: the rewrite after a failed accuracy check names what failed
 }): Promise<SummaryResult> {
-  const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal } = params;
+  const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal, checkFeedback } = params;
 
   // Need a model to summarize with.
   // PHASE-3 T5: this used to return `truncateDeterministic(content)` — the RAW chunk,
@@ -262,7 +265,7 @@ async function writeSummary(params: {
     return { ok: false, reason: 'no summarizer model configured for this agent' };
   }
 
-  const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId);
+  const systemPrompt = getDepthPrompt(depth, targetTokens, previousContext, agentId) + rewriteInstruction(checkFeedback);
   const tooBig = refuseWhatTheWriterCannotHold(modelId, systemPrompt, content, agentId);
   if (tooBig) return tooBig;
 

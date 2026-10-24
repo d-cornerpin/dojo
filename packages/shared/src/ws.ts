@@ -368,7 +368,10 @@ export interface ChatErrorEvent {
     | 'WINDOW_TOO_SMALL'
     // t202 D10. An agent that was ALREADY on a model under the 32K main-model floor when the
     // floor was introduced. Nothing is stopped or changed; the person is told once.
-    | 'MAIN_MODEL_SMALL';
+    | 'MAIN_MODEL_SMALL'
+    // v3.5 B4. This box's summary writer wrote summaries that failed the accuracy check twice; the
+    // rows stayed whole. Told once per writer model, with a pointer to the Summarization Model card.
+    | 'SUMMARY_CHECK_FAILING';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
   /** v3.5 N42 r2: an owner card whose words can change while it stands (the no-fit card names the router's
