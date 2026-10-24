@@ -9208,6 +9208,20 @@
       "to": 467,
       "by": "t252 fix round 4 (v3.5, 2026-10-24): the model-limit restart never cuts a running call or a download",
       "why": "+1 over the pin (the file stood at 465 under a 466 pin; +3 lines, -1 by folding a comment into its line): the lock waits out the model-limit restart's hold and counts its pinned calls (fix round 4, NB-1): one import, one line in acquire, one wake call in release. The state and the hold live in the NEW services/ollama-quiet.ts."
+    },
+    {
+      "path": "packages/server/src/db/migration-checksums.ts",
+      "from": 383,
+      "to": 387,
+      "by": "t252 rebase onto v35 (2026-10-24)",
+      "why": "+4, a merge correction, no new code: both v35 (the 200b row, +7 over the 376 base) and t252 (the two compact 201 rows, +4) raised this pin to 383 independently, so the rebased file holds both sides: 376 + 7 + 4 = 387. Every KNOWN_DIVERGENCES entry is kept, as the orchestrator ruled. From 387 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1086,
+      "to": 1088,
+      "by": "t252 rebase onto v35 (2026-10-24)",
+      "why": "+2, a merge correction, no new code: v35 (t258's recurring tool errors, +2) and t252 (B3's decision-score section, +2) each raised the 1,084 pin to 1,086 independently; the rebased file holds both: 1,084 + 2 + 2 = 1,088. From 1,088 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9389,7 +9403,7 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 383,
+    "packages/server/src/db/migration-checksums.ts": 387,
     "packages/server/src/gateway/routes/agents.ts": 1041,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
@@ -9409,7 +9423,7 @@
     "packages/server/src/google/tools-write.ts": 2007,
     "packages/server/src/healer/approval-routing.ts": 513,
     "packages/server/src/healer/auto-fix.ts": 519,
-    "packages/server/src/healer/diagnostic.ts": 1086,
+    "packages/server/src/healer/diagnostic.ts": 1088,
     "packages/server/src/healer/healer-agent.ts": 1165,
     "packages/server/src/healer/injury-recovery.ts": 1239,
     "packages/server/src/index.ts": 1328,
