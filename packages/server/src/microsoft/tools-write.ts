@@ -16,6 +16,7 @@ import {
   ATTACHMENTS_ROOT_FOLDER,
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
+import { moveToFolder } from './outlook-conversation.js';
 import { homeDir } from '../home.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
@@ -462,10 +463,12 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        message_id: { type: 'string', description: 'Outlook message ID to move.' },
-        folder_id: { type: 'string', description: 'Destination folder ID (from outlook_list_folders).' },
+        message_id: { type: 'string', description: 'Outlook message ID to move. A move to archive or deleteditems takes the message\'s whole conversation unless this_message_only is true.' },
+        conversation_id: { type: 'string', description: 'Move this whole conversation (the "Conversation:" id the mail reads print) instead of one message. Give this or message_id.' },
+        this_message_only: { type: 'boolean', description: 'true = move just this one message even to archive or deleteditems.' },
+        folder_id: { type: 'string', description: 'Destination folder ID (from outlook_list_folders), or archive / deleteditems.' },
       },
-      required: ['message_id', 'folder_id'],
+      required: ['folder_id'],
     },
   },
   // ── Microsoft To Do (Tasks) ──
@@ -1517,16 +1520,8 @@ export async function executeMicrosoftWriteTool(
       return `Outlook folder "${data?.displayName ?? folderName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
     }
 
-    case 'outlook_move_to_folder': {
-      const messageId = encodeURIComponent(args.message_id as string);
-      const folderId = args.folder_id as string;
-      const result = await msGraphWrite('POST', `me/messages/${messageId}/move`, { destinationId: folderId }, agentId, agentName, 'outlook_move_to_folder', {
-        messageId: args.message_id, folderId,
-      }, slot);
-      if (!result.ok) return `Error moving email: ${result.error}`;
-      const data = result.data as { id?: string };
-      return `Email moved to folder ${folderId}${data?.id ? ` (new message ID: ${data.id})` : ''}`;
-    }
+    case 'outlook_move_to_folder':
+      return moveToFolder(args, { agentId, agentName, slot });
 
     case 'outlook_download_attachment': {
       const messageId = encodeURIComponent(args.message_id as string);

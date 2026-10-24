@@ -7,6 +7,7 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
+import { conversationLine } from './outlook-conversation.js';
 
 // ── Tool Definitions ──
 
@@ -588,7 +589,7 @@ export interface MsAgendaFetchItem {
 
 /** Normalized email row (metadata only) for search rendering. */
 export interface MsMailFetchItem {
-  id: string;
+  id: string; conversationId?: string;
   from: string;
   to: string;
   subject: string;
@@ -671,18 +672,18 @@ export async function searchMailForAccountMs(
   agentName: string,
 ): Promise<{ ok: true; items: MsMailFetchItem[] } | { ok: false; error: string }> {
   const result = await msGraphRead(
-    `me/messages?$search="${encodeURIComponent(escapeGraphSearch(query))}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
+    `me/messages?$search="${encodeURIComponent(escapeGraphSearch(query))}"&$top=${maxResults}&$select=id,conversationId,from,subject,receivedDateTime,bodyPreview,isRead`,
     agentId, agentName, 'outlook_search', { query, maxResults }, accountId,
   );
   if (!result.ok) return { ok: false, error: graphSearchSyntaxHelp(result.error) ?? result.error ?? 'unknown error' };
 
-  const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
+  const data = result.data as { value?: Array<{ id: string; conversationId?: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
   const { formatTimeForAgent } = await import('../services/format-time.js');
   const items: MsMailFetchItem[] = (data?.value ?? []).map(m => {
     const fromName = m.from?.emailAddress?.name ?? '';
     const fromAddr = m.from?.emailAddress?.address ?? '';
     return {
-      id: m.id,
+      id: m.id, conversationId: m.conversationId,
       from: `${fromName} <${fromAddr}>`,
       to: '',
       subject: m.subject,
@@ -754,11 +755,9 @@ export async function executeMicrosoftReadTool(
         // fixed 2026-07-07, outlook_inbox and the merged email_search already
         // had the correct sense).
         const unread = m.read ? '' : ' [UNREAD]';
-        if (verbose) {
-          return `${unread.trim()}ID: ${m.id}\nFrom: ${m.from}\nSubject: ${m.subject}\nDate: ${m.dateDisplay}\nPreview: ${m.snippet}`;
-        }
+        if (verbose) return `${unread.trim()}ID: ${m.id}\nFrom: ${m.from}\nSubject: ${m.subject}\nDate: ${m.dateDisplay}\nPreview: ${m.snippet}${conversationLine(m.conversationId)}`;
         // Compact: one line per email — drop preview body, keep date+sender+subject+unread.
-        return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}`;
+        return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}${conversationLine(m.conversationId, '\n  ')}`;
       });
 
       const header = `Found ${fetched.items.length} email(s)${inAcct}:\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
@@ -769,13 +768,13 @@ export async function executeMicrosoftReadTool(
     case 'outlook_read': {
       const messageId = encodeURIComponent(args.message_id as string);
       const result = await msGraphRead(
-        `me/messages/${messageId}?$select=id,from,toRecipients,ccRecipients,subject,receivedDateTime,body,hasAttachments`,
+        `me/messages/${messageId}?$select=id,conversationId,from,toRecipients,ccRecipients,subject,receivedDateTime,body,hasAttachments`,
         agentId, agentName, 'outlook_read', { messageId: args.message_id }, slot,
       );
       if (!result.ok) return `Error reading email: ${result.error}`;
 
       const m = result.data as {
-        id: string;
+        id: string; conversationId?: string;
         from: { emailAddress: { name: string; address: string } };
         toRecipients: Array<{ emailAddress: { name: string; address: string } }>;
         ccRecipients?: Array<{ emailAddress: { name: string; address: string } }>;
@@ -804,7 +803,7 @@ export async function executeMicrosoftReadTool(
       );
 
       const { formatTimeForAgent: fmtTime1 } = await import('../services/format-time.js');
-      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${fmtTime1(m.receivedDateTime)}\n\n${pagedBody}`;
+      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${fmtTime1(m.receivedDateTime)}\n\n${pagedBody}${conversationLine(m.conversationId, '\n\n')}`;
       if (m.hasAttachments) output += '\n\nAttachments: yes';
       return output;
     }
@@ -814,18 +813,18 @@ export async function executeMicrosoftReadTool(
       const unreadOnly = args.unread_only === true;
       const filter = unreadOnly ? "&$filter=isRead eq false" : '';
       const result = await msGraphRead(
-        `me/mailFolders/inbox/messages?$top=${maxResults}${filter}&$orderby=receivedDateTime desc&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
+        `me/mailFolders/inbox/messages?$top=${maxResults}${filter}&$orderby=receivedDateTime desc&$select=id,conversationId,from,subject,receivedDateTime,bodyPreview,isRead`,
         agentId, agentName, 'outlook_inbox', { maxResults, unreadOnly }, slot,
       );
       if (!result.ok) return `Error fetching inbox: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
+      const data = result.data as { value?: Array<{ id: string; conversationId?: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
       if (!data?.value || data.value.length === 0) return unreadOnly ? 'No unread messages in inbox.' : 'Inbox is empty.';
 
       const { formatTimeForAgent: fmtTime2 } = await import('../services/format-time.js');
       const emails = data.value.map(m => {
         const unread = m.isRead ? '' : ' [UNREAD]';
-        return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${fmtTime2(m.receivedDateTime)}`;
+        return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${fmtTime2(m.receivedDateTime)}${conversationLine(m.conversationId, ' | ')}`;
       });
 
       return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.value.length} messages):\n\n${emails.join('\n')}`;
