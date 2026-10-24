@@ -42,13 +42,11 @@ import { kvBytesPerTokenOf } from './kv-bytes.js';
 // host_ram_gb from the provider row (or skip if unset).
 export function isLocalOllamaBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // default Ollama baseUrl is localhost:11434
-  const lower = baseUrl.toLowerCase();
-  return (
-    lower.includes('localhost') ||
-    lower.includes('127.0.0.1') ||
-    lower.includes('[::1]') ||
-    lower.includes('0.0.0.0')
-  );
+  // v3.5 (I-d-1): the PARSED hostname decides, never a substring — `http://localhost@gpu-box` is
+  // gpu-box. Exactly localhost, 127.0.0.0/8 or ::1; anything that does not parse is not this machine.
+  let host: string;
+  try { host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`).hostname.toLowerCase(); } catch { return false; }
+  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
 const logger = createLogger('num-ctx-calc');
