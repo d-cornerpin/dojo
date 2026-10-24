@@ -354,7 +354,7 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
   // (`summary-writer-health.ts`). A BACKGROUND fold with none left dials nothing (round 6: no writer
   // answering, no dial). A forced pass still gets the first in order: it has its own brake, and "no
   // writer" there would be a false defect.
-  const all = summaryWriterCandidates(preferredModelId);
+  const all = summaryWriterCandidates(preferredModelId, agentId);
   const pick = eligibleSummaryWriters(preferredModelId, agentId)[0] ?? (opts?.background ? null : all[0] ?? null);
   if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
   return pick;
@@ -1138,8 +1138,9 @@ export async function runLeafCompaction(
       // one, because the rows would then be marked done.
       if (!summary.ok) {
         if (summary.tooBig) {   // t149 F4: not dialled — more than it can hold: halved, a single row is left for a writer that can
-          if (chunk.length > 1) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
+          if (chunk.length > 1 && !summary.noRoom) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
           else if (opts?.left) opts.left.tooBig = true;
+          if (summary.noRoom) break;   // t268 N-B: this writer cannot run now; the next writer takes the rest whole
           continue;
         }
         (summary.checkFailed ? logger.debug : logger.warn)('SUMMARY_REFUSED leaf chunk left uncompacted', {   // v3.5: a refused span was logged once (summary_check_failed)

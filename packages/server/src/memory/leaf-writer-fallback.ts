@@ -48,8 +48,8 @@ export async function leafWithWriterFallback(
 }
 
 /** A condensation call that does not hold on `params.modelId` is offered to each next eligible writer, until one holds it. */
-export async function generateOnAWriterThatHolds(params: Parameters<typeof generateSummary>[0]): Promise<SummaryResult> {
-  let result = await generateSummary(params);
+export async function generateOnAWriterThatHolds(params: Parameters<typeof generateSummary>[0], first?: SummaryResult): Promise<SummaryResult> {
+  let result = first ?? await generateSummary(params);
   if (result.ok || !result.tooBig) return result;
   for (const writer of eligibleSummaryWriters(configuredModel(params.agentId), params.agentId)) {
     if (writer === params.modelId) continue;
@@ -57,4 +57,11 @@ export async function generateOnAWriterThatHolds(params: Parameters<typeof gener
     if (result.ok || !result.tooBig) return result;
   }
   return result;
+}
+
+/** t268 N-B: a batch its writer cannot hold is the caller's to halve — but a writer with no room NOW holds nothing,
+ *  so the batch passes whole to the next writer that holds it. */
+export async function generateOrPassOn(params: Parameters<typeof generateSummary>[0]): Promise<SummaryResult> {
+  const result = await generateSummary(params);
+  return !result.ok && result.noRoom ? generateOnAWriterThatHolds(params, result) : result;
 }

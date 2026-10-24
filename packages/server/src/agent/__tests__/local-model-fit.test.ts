@@ -374,6 +374,19 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
   });
 
+  // Fix round 4 (N-E): an auto-routed agent's summaries walk its router's standard-tier chain, so the writer placed in
+  // a tier of that chain has them assigned exactly as a fixed-model writer does.
+  it('the writer placed in a router tier an auto-routed agent walks is reserved like a fixed-model writer', async () => {
+    db().prepare("DELETE FROM router_tier_models WHERE model_id = 'm-writer'").run();
+    db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('heavy', 'm-writer', 5)").run();
+    expect(await writerReservedWindowTokens(null), 'no auto-routed agent: nobody walks that tier for summaries').toBe(MIN_UTILITY_NUM_CTX);
+    db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-auto', 'Auto', 'auto', 'idle', '{}')").run();
+    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
+    db().prepare("DELETE FROM router_tier_models WHERE model_id = 'm-writer'").run();
+    db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('system', 'm-writer', 0)").run();
+    expect(await writerReservedWindowTokens(null), 'the system tier (titles, openers) is not a tier a summary walks').toBe(MIN_UTILITY_NUM_CTX);
+  });
+
   it('the explicit Summarization pick: its summary job\'s window', async () => {
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
     expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));

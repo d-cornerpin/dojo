@@ -18,6 +18,7 @@ vi.mock('../../db/connection.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { summaryWriterCandidates, eligibleSummaryWriters, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { updateRateLimits, clearRateLimits } from '../../router/rate-limits.js';
 
 const db = (): Database.Database => mockDb.current!;
 const model = (id: string, provider: string, api: string, caps: string[], cost: number): void => {
@@ -37,7 +38,7 @@ beforeEach(() => {
   model('std-writer', 'ollama-local', STANDARD_WRITER_MODEL.tag, ['chat'], 0);
   model('std-decision', 'ollama-local', STANDARD_DECISION_MODEL.tag, ['decision'], 0);
 });
-afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { clearRateLimits(); mockDb.current?.close(); mockDb.current = null; });
 
 describe("the agent's own model writes its summaries", () => {
   it("with no Settings pick, the agent's own model is first, its provider's models next, then the standard writer", () => {
@@ -69,6 +70,19 @@ describe("the agent's own model writes its summaries", () => {
 
     it('its summaries go to the model a standard-tier request gets', () => {
       for (const m of [undefined, 'auto', '__auto__']) expect(summaryWriterCandidates(m)[0]).toBe('std-tier');
+    });
+
+    // Fix round 4 (N-E): the walk is the router's own, through its standing filters and the budget.
+    it('a standard-tier model the router passes over now (rate-limited, or over the budget) is passed over for summaries too', () => {
+      updateRateLimits('std-tier', { 'x-ratelimit-remaining': '0', 'retry-after': '60' });
+      expect(summaryWriterCandidates('auto', 'agent-auto')[0]).toBe('heavy-tier');
+      clearRateLimits();
+      expect(summaryWriterCandidates('auto', 'agent-auto')[0]).toBe('std-tier');
+      db().prepare("INSERT INTO budgets (id, scope, limit_usd, period) VALUES ('agent_agent-auto', 'agent-auto', 0.005, 'daily')").run();
+      expect(summaryWriterCandidates('auto', 'agent-auto')[0], 'std-tier (~$0.004 a request) is within it; heavy-tier is not').toBe('std-tier');
+      db().prepare("UPDATE budgets SET limit_usd = 0.001 WHERE id = 'agent_agent-auto'").run();
+      const order = summaryWriterCandidates('auto', 'agent-auto');
+      expect(order[0], 'no tier model is within the budget: the small writer is next').toBe('std-writer');
     });
 
     it('that model unreachable: the router\'s own fallback, then the small writer', () => {

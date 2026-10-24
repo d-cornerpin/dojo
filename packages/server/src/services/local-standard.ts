@@ -8,8 +8,8 @@
 //
 //   · the DECISION model answers yes/no, which-one and how-much questions through Ollama's
 //     `/v1/systemone` (`agent/decide.ts` is its only caller);
-//   · the WRITER writes titles, project names, voice openers and memory summaries: it is the
-//     `system` router tier and, at setup, the summary writer (`compaction_model_id`).
+//   · the WRITER writes titles, project names and voice openers (the `system` router tier), and a memory
+//     summary only when the agent's own model cannot be reached (owner 2026-10-24); setup never picks it.
 //
 // The role agents (PM, Healer, Dreamer, Trainer, Imaginer) keep their own model keys; nothing here
 // reads or writes them.

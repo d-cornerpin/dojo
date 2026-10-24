@@ -16,9 +16,9 @@
 // t207 (D9): the mark is PERSISTED (`healer_state`), so a restart does not forget an unreachable writer;
 // and "answered" means a SUMMARY call: round 7's re-arm on any call (a chat turn) is gone.
 // The order (`summaryWriterCandidates`): the Settings choice, the agent's own model (an auto agent's: its router's
-// pick), the Dojo's writer, then (no Settings choice) the cheapest. Eligible = that order without broken or
-// not-answering ones; none left: nothing dialled, placeholder notes stay, labelled. A call the OWNER stopped,
-// or cut by the turn's patience, is not the writer's failure.
+// pick), the Dojo's writer, then (no Settings choice) the cheapest. Eligible = that order without broken,
+// not-answering or (t268 N-B) no-room ones; none left: nothing dialled, placeholder notes stay, labelled. A call
+// the OWNER stopped, or cut by the turn's patience, is not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -28,19 +28,19 @@ import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { standardModelRowId } from '../services/local-standard.js';
-import { standardTierChain } from '../router/tier-chain.js';
+import { standardTierChain } from '../router/standing-filters.js';
+import { writerHadNoRoom, writerMayRunAgain } from './writer-no-room.js';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
 
 /** The abort reason a fold gives a summary call when the owner pressed Stop. */
 export const FOLD_STOPPED_BY_OWNER = 'fold-stopped-by-owner';
-/** The turn's patience ran out while the call was still open (round 5: the dialed model's own
- *  declared patience, see `out-of-view-fold.ts`). Not a failure — no card — but the turn will not
- *  wait on that writer again until it answers (`noteDidNotAnswerInTurn`). */
+/** The turn's patience ran out while the call was still open (round 5: the dialed model's own declared patience,
+ *  `out-of-view-fold.ts`). No failure, no card, but no turn waits on that writer again until it answers. */
 export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
-/** Abort reasons that say nothing about the writer. Any other abort (e.g. a forced pass cut by the turn's patience) still marks
- *  the writer as not answering, so the next turn does not wait on it again (t220 changes only the provider-health and log side). */
+/** Abort reasons that say nothing about the writer. Any other abort (a forced pass cut by the turn's patience) still
+ *  marks the writer as not answering, so the next turn does not wait on it again (t220: provider-health and log only). */
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
 
 /** Per agent: the moment (same ordinal as the marks) a person last wrote to it. */
@@ -101,11 +101,10 @@ function providerKey(modelId: string): string {
 }
 
 /**
- * t149 F4 — WHAT A WRITER CAN HOLD. The messages a tool-less summary call to `modelId` may carry,
- * beside a system prompt of `systemPromptTokens`: the provider boundary's own budget
- * (`assembly-validation.ts`, `validateAtProviderBoundary`) for that model's window and output cap.
- * A call over it is repaired or refused at the boundary, so the writer is not dialled with it.
- * A model with no declared window is not refused here.
+ * t149 F4 — WHAT A WRITER CAN HOLD. The messages a tool-less summary call to `modelId` may carry, beside a system
+ * prompt of `systemPromptTokens`: the provider boundary's own budget (`assembly-validation.ts`,
+ * `validateAtProviderBoundary`) for that model's window and output cap. A call over it is repaired or refused at the
+ * boundary, so the writer is not dialled with it. A model with no declared window is not refused here.
  */
 export function summaryRoom(modelId: string, systemPromptTokens = 0): number {
   try {
@@ -164,7 +163,7 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
   if (!ok && !abortBlamesWriter(abortSignal)) return;
   const key = providerKey(modelId);
   if (ok) {
-    if (clearMark(key)) logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key });
+    if (clearMark(key)) { writerMayRunAgain(); logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key }); }   // t268 N-B: and a writer with no room is tried again
     return;
   }
   markNotAnswering(key);
@@ -194,9 +193,9 @@ function notAnswering(modelId: string, agentId?: string): boolean {
  *   2. the agent's own model, then its provider's other text models (owner 2026-10-24: "The agents model.");
  *   3. the Dojo's standard writer — the FALLBACK when the agent's model cannot be reached; local, nowhere new;
  *   4. ONLY when the owner set no Settings writer — exactly as before t140 — the cheapest text model.
- * An auto-routed agent's own model is its router's standard-tier pick, in the router's order (owner 2026-10-24).
+ * An auto-routed agent's own model is its router's standard-tier pick, in the router's order and through its filters.
  */
-export function summaryWriterCandidates(preferredModelId?: string): string[] {
+export function summaryWriterCandidates(preferredModelId?: string, agentId?: string): string[] {
   const db = getDb();
   const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%' AND m.capabilities NOT LIKE '%decision%'";   // the decision model writes nothing
   const usable = (db.prepare(
@@ -209,7 +208,7 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const explicitId = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
   const explicit = isUsable(explicitId) ? explicitId : undefined;
   const fixed = preferredModelId && preferredModelId !== 'auto' && preferredModelId !== '__auto__' ? preferredModelId : undefined;
-  const routed = fixed ? [] : standardTierChain().filter(isUsable);
+  const routed = fixed ? [] : standardTierChain(agentId).filter(isUsable);
   const own = isUsable(fixed) ? fixed : routed[0];
   const ownProviderModels = fixed ? usable.filter((u) => own && u.provider === usable.find((x) => x.id === own)?.provider).map((u) => u.id) : routed;
   const list = [
@@ -223,21 +222,22 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
 
 /** The writers anything may dial now for `agentId`, turn or background: no open breaker, answering. */
 export function eligibleSummaryWriters(preferredModelId?: string, agentId?: string): string[] {
-  return summaryWriterCandidates(preferredModelId).filter((id) => !writerPassedOver(id, agentId));
+  return summaryWriterCandidates(preferredModelId, agentId).filter((id) => !writerPassedOver(id, agentId));
 }
 
 /** Was this writer passed over — its provider's breaker open, or it has not answered since it failed? */
 export function writerPassedOver(modelId: string, agentId?: string): boolean {
-  return !!writerBreaker(modelId) || notAnswering(modelId, agentId);
+  return !!writerBreaker(modelId) || notAnswering(modelId, agentId) || (!!agentId && writerHadNoRoom(agentId) && modelId === standardModelRowId('writer'));
 }
 
-/** A person's fresh message started this agent's turn: its failed writers get one more try, for it. */
+/** A person's fresh message started this agent's turn: its failed writers (and a writer with no room) get one more try, for it. */
 export function noteAPersonSpoke(agentId: string): void {
   personSpokeAt.set(agentId, nextMoment());
+  writerMayRunAgain(agentId);
 }
 
 /** Test-only reset: who was last written to, and the marks in the test's own database. */
 export function __resetSummaryWriterHealthForTests(): void {
-  personSpokeAt.clear();
+  personSpokeAt.clear(); writerMayRunAgain();
   try { getDb().prepare('DELETE FROM healer_state WHERE scope = ?').run(MARK_SCOPE); } catch { /* no database in this test */ }
 }

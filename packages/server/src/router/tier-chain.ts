@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // THE ROUTER'S TIERS AND THEIR FALLBACK ORDER (moved out of `router/selector.ts` by t268 so the summary writers
 // can read the same order without importing the router's selection graph: one owner of one rule). A leaf: it
-// reads the database and nothing else.
+// reads the database and nothing else. Its standing filters live beside it in `standing-filters.ts`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -35,6 +35,5 @@ export function getTierModels(tierId: string): TierModelRow[] {
   `).all(tierId) as TierModelRow[];
 }
 
-/** v3.5 (t268, owner 2026-10-24, "The agents model."): what an auto-routed agent's ordinary (standard-tier) request
- *  walks, in the router's own order — its "own model" for summaries. */
-export const standardTierChain = (): string[] => [...new Set(TIER_FALLBACK.standard.flatMap((t) => getTierModels(t).map((m) => m.model_id)))];
+/** Every enabled model a standard-tier request may walk to, in the router's order, before any filter of the moment. */
+export const standardTierModels = (): string[] => [...new Set(TIER_FALLBACK.standard.flatMap((t) => getTierModels(t).map((m) => m.model_id)))];

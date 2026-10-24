@@ -5,13 +5,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { TIER_FALLBACK, getTierModels, type TierModelRow } from './tier-chain.js';   // t268: the one owner of the tier order
+import { standingSkip, estimateRequestCost, type RoutedSkip } from './standing-filters.js';   // t268: and of its standing filters
 import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
-import { mayDialProvider } from '../providers/billing-breaker.js';
-import { isRateLimited } from './rate-limits.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
-import { getModelCapabilities } from '../services/capabilities.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import type { DimensionScore } from './types.js';
 // T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
@@ -35,16 +33,6 @@ export interface SelectedModel {
  */
 export function getSystemModel(): string | null {
   return standardModelRowId('writer') ?? getTierModels('system')[0]?.model_id ?? null;
-}
-
-function estimateRequestCost(model: TierModelRow): number {
-  // Rough estimate: 2k input, 1k output per request. D-H: an unknown (NULL) price estimates as $0,
-  // matching how the biller records it, so near the budget wall an unpriced model is not over-gated
-  // as if it were the Sonnet premium (the "price unknown" state stays visible via the dashboard flag
-  // and the biller's once-per-model warn). Explicit prices are used as-is.
-  const inputCost = ((model.input_cost_per_m ?? 0) / 1_000_000) * 2000;
-  const outputCost = ((model.output_cost_per_m ?? 0) / 1_000_000) * 1000;
-  return inputCost + outputCost;
 }
 
 /** t148: the estimate `selectModel` skips each reachable model on, so a budget stop is judged by the same number. */
@@ -136,45 +124,8 @@ function passesStandingFilters(model: TierModelRow, required: string[], agentId?
   return standingSkip(model, required, agentId) === null;
 }
 
-/** Why the standing filters turn a candidate away; `null` when they do not. */
-function standingSkip(model: TierModelRow, required: string[], agentId?: string): RoutedSkip | null {
-  // ── v3.2.3 LAYER 3: DO NOT OFFER A PROVIDER THAT IS OUT OF MONEY ──
-  // The incident's auto-router kept ranking the CHEAPEST model first, which was the
-  // one answering 402 — so every turn paid a full round trip to a wall before falling
-  // back. The public report measured that tax at +15-20 s per turn. A provider whose
-  // breaker is OPEN is not a candidate: the owner has been carded and nothing here can
-  // change the answer. It comes back the moment they clear it or a call succeeds.
-  if (!mayDialProvider(model.provider_id)) {
-    logger.debug('Model skipped: its provider is circuit-broken (permanent failure)', {
-      modelId: model.model_id, providerId: model.provider_id,
-    }, agentId);
-    return 'provider_down';
-  }
-
-  // Skip models lacking required capabilities (e.g., tools, vision)
-  if (required.length > 0) {
-    const caps = getModelCapabilities(model.model_id);
-    // Only filter if the model has known capabilities (non-empty).
-    // Models with no capability data (empty) are allowed through
-    // since we don't want a missing probe to block selection.
-    if (caps.length > 0 && required.some(req => !caps.includes(req as never))) {
-      logger.debug('Model lacks required capabilities, skipping', {
-        modelId: model.model_id, required, caps,
-      }, agentId);
-      return 'capability';
-    }
-  }
-
-  // Skip rate-limited models
-  if (isRateLimited(model.model_id)) {
-    logger.debug('Model rate-limited, skipping', { modelId: model.model_id }, agentId);
-    return 'rate_limit';
-  }
-  return null;
-}
-
-/** t140 round 7 (H2'): why `selectModel` would not offer a model now. */
-export type RoutedSkip = 'provider_down' | 'capability' | 'rate_limit' | 'budget' | 'excluded';
+/** t140 round 7 (H2'): why `selectModel` would not offer a model now (t268: declared in `standing-filters.ts`). */
+export type { RoutedSkip };
 
 /** t140 round 7 — every model `selectModel` could walk to from `tier`, with the filter turning it away
  *  now (`null`: offered). Its predicates, in its order: the owner is told the cause the router acted on. */

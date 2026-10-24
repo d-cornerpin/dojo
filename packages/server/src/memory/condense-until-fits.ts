@@ -81,8 +81,8 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
-import { generateSummary, condensedSummaryInput } from './summarize.js';
-import { generateOnAWriterThatHolds } from './leaf-writer-fallback.js';
+import { condensedSummaryInput } from './summarize.js';
+import { generateOnAWriterThatHolds, generateOrPassOn } from './leaf-writer-fallback.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
@@ -309,10 +309,10 @@ async function condenseLevel(
     try {
       const args = { content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
       // A pair (or more) the writer cannot hold is halved first; a pair that still does not hold goes to a writer that can.
-      const summary = await (batch.length > 2 ? generateSummary(args) : generateOnAWriterThatHolds(args));
+      const summary = await (batch.length > 2 ? generateOrPassOn(args) : generateOnAWriterThatHolds(args));
       calls += 1;
       if (!summary.ok && summary.stopped) { stage ??= 'bounded_without_progress'; detail ??= 'stopped by the owner'; break; }   // a Stop is a stop
-      if (!summary.ok && summary.tooBig && batch.length > 2) {   // t149: not dialled, more than the writer holds: halve it
+      if (!summary.ok && summary.tooBig && !summary.noRoom && batch.length > 2) {   // t149: not dialled, more than the writer holds: halve it
         batches.unshift(batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))); continue;
       }
       if (!summary.ok) {

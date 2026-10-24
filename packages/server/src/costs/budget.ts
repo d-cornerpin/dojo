@@ -5,7 +5,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getDailySpend } from './tracker.js';
+import { getDailySpend, agentPeriodSpend } from './spend.js';   // t268: the spend readers' leaf
+export { exceededBudget } from './spend.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { windowOf, latestToldAt, endBudgetCard, endBudgetCardOnChange } from './budget-cards.js';
 import { ownerWords } from './budget-words.js';
@@ -40,12 +41,6 @@ const logger = createLogger('budget');
 // (t138 witness). One reader now, one window per period.
 // The windows, and the budget's owner card, live in ./budget-cards.ts (light: the scheduler tick loads it).
 
-function agentPeriodSpend(agentId: string, period: string): number {
-  return (getDb().prepare(`
-    SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_records
-    WHERE agent_id = ? AND created_at >= datetime('now', ?)
-  `).get(agentId, windowOf(period).sqlite) as { total: number }).total;
-}
 
 interface BudgetScope {
   /** `global` or the agent id. */
@@ -253,36 +248,12 @@ export function checkBudget(agentId: string, estimatedCost: number): BudgetCheck
 // turn is stopped, and "does it still?" when a limit is raised or a window turns over, so the
 // lock lifts on the real event and never on a timer.
 
-export interface ExceededBudget {
-  budgetId: string;
-  scope: 'global' | 'agent';
-  period: string;
-  spend: number;
-  limitUsd: number;
-}
+export type { ExceededBudget } from './spend.js';
 
 /** The pre-call estimate the pinned-model wall (agent/model.ts) charges: one call's worth, flat. A routed
  *  model is judged by the router's own per-model estimate instead (router/selector.ts, `routedCandidateCosts`). */
 export const WALL_ESTIMATE_USD = 0.01;
 
-export function exceededBudget(agentId: string, estimatedCost: number): ExceededBudget | null {
-  const db = getDb();
-  const globalBudget = db.prepare(`SELECT limit_usd FROM budgets WHERE id = 'global_daily'`).get() as { limit_usd: number } | undefined;
-  if (globalBudget) {
-    const spend = getDailySpend();
-    if (spend + estimatedCost > globalBudget.limit_usd) {
-      return { budgetId: 'global_daily', scope: 'global', period: 'daily', spend, limitUsd: globalBudget.limit_usd };
-    }
-  }
-  const agentBudget = db.prepare('SELECT limit_usd, period FROM budgets WHERE id = ?').get(`agent_${agentId}`) as { limit_usd: number; period: string } | undefined;
-  if (agentBudget) {
-    const spend = agentPeriodSpend(agentId, agentBudget.period);
-    if (spend + estimatedCost > agentBudget.limit_usd) {
-      return { budgetId: `agent_${agentId}`, scope: 'agent', period: agentBudget.period, spend, limitUsd: agentBudget.limit_usd };
-    }
-  }
-  return null;
-}
 
 // ── Budget CRUD ──
 

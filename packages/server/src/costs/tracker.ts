@@ -9,6 +9,7 @@ import { createLogger } from '../logger.js';
 import { checkAlertsAfterCost } from './budget.js';
 import { recalibrateFromLedgerRow } from './ledger-calibration.js';
 import { CHARS_PER_TOKEN } from '../memory/budget.js';
+import { invalidateDailySpendCache } from './spend.js';
 
 const logger = createLogger('costs');
 
@@ -584,29 +585,5 @@ export function getCacheStats(limit = 200): CacheStats {
   };
 }
 
-// ── Daily Spend (cached for 5 seconds to avoid redundant SUM queries) ──
-
-let dailySpendCache: { value: number; cachedAt: number } = { value: 0, cachedAt: 0 };
-const DAILY_SPEND_CACHE_MS = 5000;
-
-export function getDailySpend(): number {
-  const now = Date.now();
-  if (now - dailySpendCache.cachedAt < DAILY_SPEND_CACHE_MS) {
-    return dailySpendCache.value;
-  }
-
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT COALESCE(SUM(cost_usd), 0) as total
-    FROM cost_records
-    WHERE created_at >= datetime('now', '-1 day')
-  `).get() as { total: number };
-
-  dailySpendCache = { value: row.total, cachedAt: now };
-  return row.total;
-}
-
-/** Invalidate the daily spend cache (call after recording a cost) */
-export function invalidateDailySpendCache(): void {
-  dailySpendCache.cachedAt = 0;
-}
+// ── Daily Spend: `costs/spend.ts` (t268: a leaf, so the router's standing filters can judge the budget) ──
+export { getDailySpend, invalidateDailySpendCache } from './spend.js';
