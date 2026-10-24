@@ -23,16 +23,31 @@
 //      TCP/TLS connection goes through `net.Socket.prototype.connect` (fetch/undici, http, https,
 //      tls), so that one door is netted: a loopback host or a local socket path passes; anything
 //      else is refused before a packet leaves. A test that needs a server starts its own locally.
+//   3. THE iMESSAGE NET (v3.5 E19b) — no process may start the REAL `imsg` or `osascript`. A real
+//      `imsg send` or Messages AppleScript texts a real phone, and a developer box has both
+//      installed; until now only each file's own `child_process` mock stood in the way, and a mock
+//      that missed a call would have sent for real. The program a call starts (the same reading as
+//      the CLI net: wrappers, `sh -c` lines, `shell: true`) is resolved to the file that would run,
+//      on the PATH that child will get. It may run only if it is a STAND-IN a test planted: a file
+//      in a scratch directory (the OS temp dir, the run's test-home root) or checked in under this
+//      package. Anything else — `/usr/bin/osascript`, `/opt/homebrew/bin/imsg`, a copy in a home's
+//      `.dojo/bin` — is refused loudly, by name. An absolute path to a real one written inside a
+//      shell line (`$(/usr/bin/osascript …)`) is refused too; a name a running shell resolves
+//      finds the net's own refusing stand-ins first (`test-net-stand-in/imsg`, `…/osascript`).
+//      A test stubs the transport, or puts its own stand-in first on `process.env.PATH`.
 // ════════════════════════════════════════
 'use strict';
 
 const childProcess = require('node:child_process');
+const fs = require('node:fs');
 const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 const { syncBuiltinESMExports } = require('node:module');
 
 const AGENT_CLI_NET_MESSAGE = 'TEST NET: a test tried to start the real Claude CLI / Agent SDK. Script the in-tree transport (providers/anthropic-sdk.js) instead.';
 const NETWORK_NET_MESSAGE = 'TEST NET: a test tried to reach the network';
+const MESSAGES_NET_MESSAGE = 'TEST NET: a test tried to run the real iMessage program (imsg or osascript), which texts a real phone. Stub the transport, or put a stand-in from a scratch directory first on process.env.PATH.';
 
 /**
  * Is `host` this machine? Round 6 (final review M3): LITERAL loopback only — a 127.0.0.0/8 address,
@@ -77,21 +92,79 @@ if (!globalThis.__dojoTestNetsLoaded) {
     .filter(Boolean);
   const isTheCli = (program) => typeof program === 'string' && CLI_PROGRAM.test(path.basename(program));
 
+  /** The options object of a child_process call, if it has one. */
+  const optionsOf = (args) => args.find((a) => a && typeof a === 'object' && !Array.isArray(a));
+
+  /** Every program this child_process call would start: the file itself, the program behind a
+   *  wrapper (`env x`, `nohup x`), and each command of a shell line (`sh -c …`, `shell: true`). */
+  const programsStarted = (fn, args) => {
+    if (fn === 'exec' || fn === 'execSync') return programsOn(args[0]);
+    const file = args[0];
+    if (typeof file !== 'string') return [];
+    const argv = Array.isArray(args[1]) ? args[1].map(String) : [];
+    const found = [file];
+    if (WRAPPERS.test(path.basename(file))) found.push(programOf(argv));
+    if (SHELLS.test(path.basename(file))) {
+      const i = argv.findIndex((a) => a === '-c' || a === '/c' || a === '-Command');
+      if (i >= 0 && typeof argv[i + 1] === 'string') found.push(...programsOn(argv[i + 1]));
+    }
+    const options = optionsOf(args);
+    if (options && options.shell) found.push(...programsOn([file, ...argv].join(' ')));
+    return found.filter(Boolean);
+  };
+
   /** Would this child_process call start the CLI? */
   const startsTheCli = (fn, args) => {
     const strings = args.flatMap((a) => (Array.isArray(a) ? a : [a])).filter((a) => typeof a === 'string');
     if (CLI_PACKAGE.test(strings.join(' '))) return true;   // node running the SDK's own CLI script
-    if (fn === 'exec' || fn === 'execSync') return programsOn(args[0]).some(isTheCli);
-    const file = args[0];
-    if (isTheCli(file)) return true;
-    const argv = Array.isArray(args[1]) ? args[1] : [];
-    if (typeof file === 'string' && WRAPPERS.test(path.basename(file)) && isTheCli(programOf(argv.map(String)))) return true;
-    const options = args.find((a) => a && typeof a === 'object' && !Array.isArray(a));
-    if (typeof file === 'string' && SHELLS.test(path.basename(file))) {
-      const i = argv.findIndex((a) => a === '-c' || a === '/c' || a === '-Command');
-      if (i >= 0 && typeof argv[i + 1] === 'string') return programsOn(argv[i + 1]).some(isTheCli);
+    return programsStarted(fn, args).some(isTheCli);
+  };
+
+  // ── 3. THE iMESSAGE NET ─────────────────────────────────────────────────────────────────────
+  const MESSAGES_PROGRAM = /^(imsg|osascript)$/i;
+  const realPath = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+  const within = (file, dir) => file === dir || file.startsWith(dir + path.sep);
+  /** Where a test may plant a stand-in: a scratch directory, or this package's own checked-in files. */
+  const standInRoots = () => [os.tmpdir(), process.env.DOJO_TEST_HOME_ROOT, __dirname].filter(Boolean).map(realPath);
+  /** A planted stand-in — never the net's own (reaching that means nothing stubbed the call). */
+  const isPlantedStandIn = (file) => !within(file, realPath(STAND_IN_DIR))
+    && !file.includes(`${path.sep}node_modules${path.sep}`)
+    && standInRoots().some((root) => within(file, root));
+  /** The file a program name would run on `pathList`, or null when nothing by that name exists. */
+  const resolveOn = (program, pathList, cwd) => {
+    if (program.includes('/')) return realPath(path.resolve(cwd ?? process.cwd(), program));
+    for (const dir of String(pathList ?? '').split(path.delimiter)) {
+      if (!dir) continue;
+      const candidate = path.join(dir, program);
+      try { fs.accessSync(candidate, fs.constants.X_OK); if (fs.statSync(candidate).isFile()) return realPath(candidate); } catch { /* not here */ }
     }
-    if (options && options.shell && typeof file === 'string') return programsOn([file, ...argv].join(' ')).some(isTheCli);
+    return null;
+  };
+  /** The shell line(s) a call hands to a shell, where an absolute path may hide inside `$(…)`. */
+  const shellLines = (fn, args) => {
+    if (fn === 'exec' || fn === 'execSync') return [String(args[0])];
+    const argv = Array.isArray(args[1]) ? args[1].map(String) : [];
+    const lines = argv.filter((_, i) => i > 0 && ['-c', '/c', '-Command'].includes(argv[i - 1]));
+    if (optionsOf(args)?.shell) lines.push([args[0], ...argv].join(' '));
+    return lines;
+  };
+  /** Would this child_process call start the REAL imsg or osascript? */
+  const startsARealMessagesProgram = (fn, args) => {
+    const options = optionsOf(args);
+    // The PATH the child will really get: a handed environment is given the stand-in first below.
+    const pathList = options && options.env && typeof options.env === 'object' ? withTheStandIn(options.env.PATH) : process.env.PATH;
+    const cwd = options && typeof options.cwd === 'string' ? options.cwd : undefined;
+    for (const program of programsStarted(fn, args)) {
+      if (!MESSAGES_PROGRAM.test(path.basename(program))) continue;
+      const file = resolveOn(program, pathList, cwd);
+      // A name found nowhere starts nothing; a path always resolves, so a path is judged as written.
+      if (file !== null && !isPlantedStandIn(file)) return true;
+    }
+    for (const line of shellLines(fn, args)) {
+      for (const [, token] of line.matchAll(/(\/[^\s'"`;|&()<>$]*\/(?:imsg|osascript))(?=$|[\s'"`;|&()<>])/gi)) {
+        if (fs.existsSync(token) && !isPlantedStandIn(realPath(token))) return true;
+      }
+    }
     return false;
   };
 
@@ -116,10 +189,9 @@ if (!globalThis.__dojoTestNetsLoaded) {
   for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
     const real = childProcess[name];
     childProcess[name] = function netted(...args) {
-      if (startsTheCli(name, args)) {
-        const line = args.flatMap((a) => (Array.isArray(a) ? a : [a])).filter((a) => typeof a === 'string').join(' ');
-        throw new Error(`${AGENT_CLI_NET_MESSAGE} (child_process.${name}: ${line.slice(0, 120)})`);
-      }
+      const line = () => args.flatMap((a) => (Array.isArray(a) ? a : [a])).filter((a) => typeof a === 'string').join(' ').slice(0, 120);
+      if (startsTheCli(name, args)) throw new Error(`${AGENT_CLI_NET_MESSAGE} (child_process.${name}: ${line()})`);
+      if (startsARealMessagesProgram(name, args)) throw new Error(`${MESSAGES_NET_MESSAGE} (child_process.${name}: ${line()})`);
       carryTheNets(args);
       return real.apply(this, args);
     };
@@ -150,4 +222,4 @@ if (!globalThis.__dojoTestNetsLoaded) {
   };
 }
 
-module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE, isThisMachine, STAND_IN_DIR };
+module.exports = { AGENT_CLI_NET_MESSAGE, NETWORK_NET_MESSAGE, MESSAGES_NET_MESSAGE, isThisMachine, STAND_IN_DIR };

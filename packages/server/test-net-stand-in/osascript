@@ -1,0 +1,6 @@
+#!/bin/sh
+# THE TEST NET STAND-IN (v3.5 E19b). The test nets (vitest.test-nets.cjs) put this directory FIRST
+# on the PATH of every process the suite starts, so a shell that resolves "osascript" by name runs this,
+# never the real program (a real one texts a real phone). It refuses, loudly, by name.
+echo "TEST NET: a test tried to run the real iMessage program (imsg or osascript), which texts a real phone. Stub the transport, or put a stand-in from a scratch directory first on process.env.PATH. (a shell resolved \"osascript\")" >&2
+exit 97

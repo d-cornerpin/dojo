@@ -117,9 +117,12 @@ Object.defineProperty(os, 'homedir', {
 //      call that starts the Claude CLI or the Agent SDK's CLI, loudly; and no connection may leave
 //      this machine. That file is loaded here AND carried into every Node process the suite starts
 //      (NODE_OPTIONS `--require`), so a process a test starts is netted too.
-// `src/__tests__/t140-no-test-reaches-a-real-agent-cli.test.ts` and
-// `src/__tests__/t140-the-test-nets-reach-every-process.test.ts` plant each attempt and assert it
-// fails loudly.
+//   4. THE iMESSAGE NET (v3.5 E19b) — same file: no process may start the REAL `imsg` or
+//      `osascript` (a real send texts a real phone); only a stand-in a test planted may run.
+// `src/__tests__/t140-no-test-reaches-a-real-agent-cli.test.ts`,
+// `src/__tests__/t140-the-test-nets-reach-every-process.test.ts` and
+// `src/__tests__/no-test-can-run-the-real-imessage-programs.test.ts` plant each attempt and assert
+// it fails loudly.
 // ════════════════════════════════════════
 
 import { createRequire } from 'node:module';
