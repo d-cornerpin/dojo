@@ -11,6 +11,7 @@
 // (`ollama_max_concurrent_models`, the agent models the lock lets load at once). The setup "start" fallback
 // that runs `ollama serve` itself passes the same value (`gateway/routes/setup-deps.ts`).
 //
+// WHEN (fix round 3 ruling): at setup and at EVERY Dojo start — `launchctl setenv` does not survive a reboot.
 // HOW: the Ollama app reads its environment from launchd (docs: "If Ollama is run as a macOS application,
 // environment variables should be set using launchctl" and the app restarted). So: `launchctl setenv`, and the
 // app is restarted ONCE when the value changed — never when it is already right. The owner is told on a card
@@ -20,6 +21,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createLogger } from '../logger.js';
+import { getDb } from '../db/connection.js';
 import { isTestRun } from '../home.js';
 import { STANDARD_TAGS } from './local-standard.js';
 import { getOllamaLock, getOllamaMaxConcurrent } from './ollama-lock.js';
@@ -48,6 +50,9 @@ const REAL: OllamaLimitDeps = {
   },
 };
 
+const toldValue = (): string | null =>
+  (getDb().prepare("SELECT value FROM config WHERE key = 'ollama_limit_told'").get() as { value: string } | undefined)?.value ?? null;
+
 /** The limit the Dojo needs: the embedder + the pair + the lock's agent slots (see the header). */
 export function desiredOllamaMaxLoaded(): number {
   getOllamaLock().reloadConfig();
@@ -65,8 +70,14 @@ export async function ensureOllamaModelLimit(
     await deps.setenv(VAR, want);
     if (await deps.appRunning()) await deps.restartApp();   // ONCE: only because the value changed
     ownerConditionCleared('ollama-limit-failed');
-    ownerConditionCleared('ollama-limit-set');               // a changed value is told afresh
-    if (tellOwnerOnce('ollama-limit-set')) ownerCardFrame(OLLAMA_LIMIT_SET_WORDS, 'warning');
+    // Told ONCE per value (fix round 3): a reboot loses the variable and every start re-applies it, but the
+    // owner hears about it only when the value is new to him, not at every boot.
+    if (toldValue() !== want) {
+      ownerConditionCleared('ollama-limit-set');
+      if (tellOwnerOnce('ollama-limit-set')) ownerCardFrame(OLLAMA_LIMIT_SET_WORDS, 'warning');
+      getDb().prepare(`INSERT INTO config (key, value, updated_at) VALUES ('ollama_limit_told', ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(want);
+    }
     logger.info('Raised Ollama\'s loaded-model limit', { value: want });
     return 'set';
   } catch (err) {

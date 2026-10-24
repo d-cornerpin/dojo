@@ -286,7 +286,7 @@ export function startStandardInstall(): void {
 
 /**
  * The update hook (the once-per-version pattern of `prompt/shipped-souls.ts`): the first boot of a version
- * raises Ollama's model limit (owner decision 2026-10-24) and installs or repairs the pair. Stamped only when
+ * installs or repairs the pair (Ollama's model limit is re-applied at every start, below). Stamped only when
  * both are installed, so an unfinished install is tried again at the next boot. A box that never set up a
  * local Ollama is left to setup. Returns whether a run happened.
  */
@@ -295,7 +295,6 @@ export async function ensureStandardModelsOncePerVersion(version: string): Promi
   const db = getDb();
   const seen = (db.prepare("SELECT value FROM config WHERE key = 'standard_models_version'").get() as { value: string } | undefined)?.value;
   if (seen === version || !localOllamaProvider()) return false;
-  await (await import('./ollama-model-limit.js')).ensureOllamaModelLimit();   // never throws; says so on a card
   const s = await ensureStandardModels();
   if (s.decision === 'installed' && s.writer === 'installed') {
     db.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('standard_models_version', ?, datetime('now'))
@@ -308,6 +307,7 @@ export async function ensureStandardModelsOncePerVersion(version: string): Promi
 
 /** The boot hook: background, never fatal. */
 export async function ensureStandardModelsAtBoot(): Promise<void> {
+  await (await import('./ollama-model-limit.js')).ensureOllamaModelLimit();   // every start: launchctl's variable dies with a reboot
   try {
     const { getCurrentVersion } = await import('../gateway/routes/update.js');
     await ensureStandardModelsOncePerVersion(getCurrentVersion());

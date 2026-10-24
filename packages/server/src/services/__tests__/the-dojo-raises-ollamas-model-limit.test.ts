@@ -77,6 +77,27 @@ describe('the Dojo raises Ollama\'s model limit', () => {
     expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_LIMIT_FAILED_WORDS]);
   });
 
+  it('fix round 3: EVERY boot re-applies it — after a reboot (unset) it is set and the app restarted once, but the owner is told only the first time', async () => {
+    const env: Record<string, string> = {};
+    const first = fakeDeps(env);
+    expect(await ensureOllamaModelLimit(first, 'darwin')).toBe('set');
+    expect(first.restarts).toBe(1);
+    delete env.OLLAMA_MAX_LOADED_MODELS;   // the Mac rebooted: launchctl's variable is gone
+    const afterReboot = fakeDeps(env);
+    expect(await ensureOllamaModelLimit(afterReboot, 'darwin')).toBe('set');
+    expect(afterReboot.sets).toEqual(['OLLAMA_MAX_LOADED_MODELS=4']);
+    expect(afterReboot.restarts).toBe(1);
+    expect(frames.list.map((f) => f.error)).toEqual([OLLAMA_LIMIT_SET_WORDS]);   // once, not at every boot
+  });
+
+  it('fix round 3: a boot with it already right does nothing at all', async () => {
+    const deps = fakeDeps({ OLLAMA_MAX_LOADED_MODELS: '4' });
+    expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('already');
+    expect(deps.sets).toEqual([]);
+    expect(deps.restarts).toBe(0);
+    expect(frames.list).toEqual([]);
+  });
+
   it('not a Mac: nothing is done', async () => {
     const deps = fakeDeps({});
     expect(await ensureOllamaModelLimit(deps, 'linux')).toBe('skipped');
