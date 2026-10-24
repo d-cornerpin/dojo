@@ -26,7 +26,7 @@ import { createRequire } from 'node:module';
 import { getDbPath } from '../db/connection.js';
 import { spawnAuthorized } from '../agent/effects/proc.js';
 import { currentCapability } from '../agent/effects/capability.js';
-import { stoppedAgents } from '../agent/shared-state.js';
+import { isStopFenced } from '../agent/shared-state.js';
 import { STOPPED_BY_USER } from '../agent/abortable-call.js';
 
 /** One output column: its name as written, and the table column it comes from (null for an expression). */
@@ -79,7 +79,7 @@ export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promi
     child.once('error', (e) => resolve({ error: e.message }));
     child.once('close', (_code, signal) => {
       if (signal) {
-        resolve({ ended: agentId && stoppedAgents.has(agentId) ? STOPPED_BY_USER : `The query was ended before it finished (${signal}).` });
+        resolve({ ended: agentId && isStopFenced(agentId) ? STOPPED_BY_USER : `The query was ended before it finished (${signal}).` });
         return;
       }
       try { resolve(JSON.parse(Buffer.concat(out).toString('utf-8')) as ReadOutcome); } catch {
