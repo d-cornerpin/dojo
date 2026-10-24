@@ -25,6 +25,9 @@ import { appendAuditEntry } from './audit-trail.js';
 
 const permits = new Set<string>();
 
+/** "1 message", "5 messages": a count of the measure's unit, in the owner's words. */
+export const countOf = (n: number, unit: string): string => `${n} ${n === 1 && /[^s]s$/.test(unit) ? unit.slice(0, -1) : unit}`;
+
 /** Run `close` with this task's named remainder honoured by the writer. Synchronous on purpose:
  *  the permit cannot outlive the call it was granted for. */
 export function withNamedRemainder<T>(taskId: string, close: () => T): T {
@@ -66,7 +69,7 @@ export function measuredCloseRefusal(
 export function recordOwnerRemainder(id: string, status: string, input: { by: string }): void {
   if (status !== 'complete' || input.by !== 'owner') return;
   const r = lastReading(id);
-  if (r && r.left > 0) appendAuditEntry(id, 'owner', { entryKind: 'observation', note: `Closed by the owner with ${r.left} ${r.unit} left.` });
+  if (r && r.left > 0) appendAuditEntry(id, 'owner', { entryKind: 'observation', note: `Closed by the owner with ${countOf(r.left, r.unit)} left.` });
 }
 
 /** The run word a run that ended with its task's measure still listing items carries on its settle
@@ -87,28 +90,35 @@ export function runItemsLeft(occurrenceId: string): { taskId: string; left: numb
   return r && r.left > 0 ? { taskId: occ.p, left: r.left, unit: r.unit } : null;
 }
 
-/** The writer's pending-close-request rule, for a run: a close request the agent filed on the task
- *  during THIS run crossed the agent's door, which re-read and judged it (named remainder or zero).
- *  The PM's Key 2 on it settles the run after the request is spent, so "pending" is asked as "filed
- *  since the run opened, and not thrown back". */
+/** The writer's pending-close-request rule (`pendingCloseRequestExpr`), for a run: a close request
+ *  the agent filed on the task during THIS run (event-id order: after the run's first event) crossed
+ *  the agent's door, which re-read and judged it (named remainder or zero). It counts while pending,
+ *  and once the PM's Key 2 answered it with the close, since the run is settled after that; a
+ *  throw-back (a rejection, a reopen) answers it the other way. */
 function closeRequestedThisRun(taskId: string, occurrenceId: string): boolean {
-  const row = getDb().prepare(
-    `SELECT MAX(e.id) AS req FROM work_events e
-      WHERE e.work_id = ? AND e.kind = 'validation_requested'
-        AND json_extract(e.payload, '$.requested_state') = 'done'
-        AND e.created_at >= (SELECT opened_at FROM work WHERE id = ?)`,
-  ).get(taskId, occurrenceId) as { req: number | null };
-  if (row.req === null) return false;
-  const thrownBack = getDb().prepare(
-    "SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'claim_rejected' AND id > ? LIMIT 1",
-  ).get(taskId, row.req);
-  return !thrownBack;
+  const db = getDb();
+  const r = db.prepare(
+    `SELECT ${pendingCloseRequestExpr('w')} AS pending,
+            (SELECT MAX(e.id) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_requested'
+               AND json_extract(e.payload, '$.requested_state') = 'done') AS req,
+            (SELECT MIN(e.id) FROM work_events e WHERE e.work_id = ?) AS run_start
+       FROM work w WHERE w.id = ?`,
+  ).get(occurrenceId, taskId) as { pending: number; req: number | null; run_start: number | null } | undefined;
+  if (!r || r.req === null || r.run_start === null || r.req < r.run_start) return false;
+  if (r.pending === 1) return true;
+  const answer = db.prepare(
+    `SELECT kind, json_extract(payload, '$.to') AS to_state FROM work_events
+      WHERE work_id = ? AND id > ? AND (kind = 'claim_rejected' OR (kind = 'transition'
+        AND json_extract(payload, '$.to') IN ('done', 'failed', 'abandoned', 'open')))
+      ORDER BY id LIMIT 1`,
+  ).get(taskId, r.req) as { kind: string; to_state: string | null } | undefined;
+  return answer?.kind === 'transition' && answer.to_state === 'done';
 }
 
 /** The remainder of a run recorded incomplete, on its task's own record (the PM and the owner read it). */
 export function recordRunRemainder(occurrenceId: string, left: { taskId: string; left: number; unit: string }): void {
   appendAuditEntry(left.taskId, 'scheduler', {
     entryKind: 'observation',
-    note: `A run ended with ${left.left} ${left.unit} left by its measure; it is recorded incomplete, not complete, and the schedule moves on (run ${occurrenceId.slice(0, 8)}).`,
+    note: `A run ended with ${countOf(left.left, left.unit)} left by its measure; it is recorded incomplete, not complete, and the schedule moves on (run ${occurrenceId.slice(0, 8)}).`,
   });
 }

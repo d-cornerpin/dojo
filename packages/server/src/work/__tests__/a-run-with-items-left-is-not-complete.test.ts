@@ -316,6 +316,18 @@ describe('fix round 4: the owner\'s run history reads an incomplete run as "Inco
     expect(row.statusLabel).toBe('Incomplete — 5 messages left');
     expect(row.error).toBeNull();
   });
+
+  it('one item left reads in the singular', async () => {
+    seedSchedule(W, 'reminder');
+    declareDeliverableOnSchedule(W);
+    measure(1);
+    claim();
+    seedTurn(4621);
+    deliverInRun('d-real', 'agent-text', 4621);
+    expect(await onTaskRunComplete(W, 'complete', 'closed on that delivery')).toBe(true);
+    expect(listOccurrenceRuns(W)[0].statusLabel).toBe('Incomplete — 1 message left');
+    expect(remainderOnTask()).toEqual([expect.stringContaining('A run ended with 1 message left')]);
+  });
 });
 
 describe('fix round 4 (minor): a run close honours a close request filed in this run, as the task close does', () => {
@@ -336,6 +348,23 @@ describe('fix round 4 (minor): a run close honours a close request filed in this
     fileCloseRequest();
     expect(await onTaskRunComplete(W, 'complete', '(PM validated this run)')).toBe(true);
     expect(settledRunStatus(run)).toBe('complete');
+  });
+
+  it('a request the PM\'s Key 2 already answered with the close (it is no longer pending) still counts', async () => {
+    measure(5);
+    const run = claim();
+    fileCloseRequest();
+    db().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'transition', ?, 'pm', ?)").run(W, JSON.stringify({ from: 'claimed', to: 'done', by: 'pm' }), Date.now());
+    expect(await onTaskRunComplete(W, 'complete', '(PM validated this run)')).toBe(true);
+    expect(settledRunStatus(run)).toBe('complete');
+  });
+
+  it('CONTROL: a request filed BEFORE this run opened (event order) does not count', async () => {
+    measure(5);
+    fileCloseRequest();
+    const run = claim();
+    expect(await onTaskRunComplete(W, 'complete', 'swept')).toBe(true);
+    expect(settledRunStatus(run)).toBe('incomplete');
   });
 
   it('CONTROL: a request the PM threw back does not count; the run is incomplete', async () => {

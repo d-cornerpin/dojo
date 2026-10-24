@@ -51,7 +51,7 @@
 // (single-writer clause (a)). It does not write `work.state` — every close goes through
 // `transition()` in `store.ts` (clause (b)).
 
-import { runItemsLeft, recordRunRemainder, RUN_STATUS_INCOMPLETE } from './measure-close-gate.js';
+import { runItemsLeft, recordRunRemainder, RUN_STATUS_INCOMPLETE, countOf } from './measure-close-gate.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
@@ -597,7 +597,7 @@ export function settleOccurrence(
     }
   }
   // v3.5: AFTER the deliverable gate (owed is still refused, a spent ladder still UNDELIVERED with the alert); only a run it would record complete is INCOMPLETE.
-  if (left && effectiveStatus === 'complete') { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${left.left} ${left.unit} left by the task's measure`; }
+  if (left && effectiveStatus === 'complete') { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${countOf(left.left, left.unit)} left by the task's measure`; }
 
   // T2: the settle and the run's own word are ONE unit. The event is the ONLY carrier
   // of the discriminator between "finished, reached nobody" and "never ran" (both land on

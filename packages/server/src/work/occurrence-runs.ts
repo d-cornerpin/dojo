@@ -26,7 +26,7 @@
 
 import { getDb } from '../db/connection.js';
 import { OCCURRENCE_KIND, OCCURRENCE_EVENT } from './occurrences.js';
-import { RUN_STATUS_INCOMPLETE } from './measure-close-gate.js';
+import { RUN_STATUS_INCOMPLETE, countOf } from './measure-close-gate.js';
 
 /** The status vocabulary the run history renders, unchanged from `task_runs.status`. The
  *  dashboard's own `statusColors` map is the enumeration: complete / running / skipped, with
@@ -107,7 +107,7 @@ function mapRun(r: OccurrenceRunRow): OccurrenceRun {
     completedAt: iso(r.closed_at),
     status,
     statusLabel: status === 'incomplete'
-      ? (r.items_left === null ? 'Incomplete' : `Incomplete — ${r.items_left} ${r.unit ?? 'items'} left`)
+      ? (r.items_left === null ? 'Incomplete' : `Incomplete — ${countOf(r.items_left, r.unit ?? 'items')} left`)
       : null,
     assignedTo: r.agent_id,
     agentName: r.agent_name,

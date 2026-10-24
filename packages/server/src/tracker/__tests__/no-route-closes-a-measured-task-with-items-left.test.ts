@@ -292,6 +292,59 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     });
   }
 
+  // fix round 5 (re-review 4): a FRAGMENT never verifies; a real reply survives case, curly quotes and newlines.
+  const verdictOn = async (owner: string, quote: string, over: Record<string, unknown> = {}): Promise<{ out: string; state: string }> => {
+    const id = await stalemated();
+    ownerSays(owner, over);
+    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: quote });
+    return { out, state: readWork(id).state };
+  };
+  for (const [owner, quote] of [
+    ['Do not close it.', 'close it'],
+    ['No.', 'o'],
+    ['No, don\'t mark it complete yet, there are 30 left.', 'mark it complete'],
+  ] as const) {
+    it(`a fragment is refused: owner "${owner}", quoted "${quote}"`, async () => {
+      const r = await verdictOn(owner, quote);
+      expect(r.out).toMatch(/measure-items-left/);
+      expect(r.state).toBe('claimed');
+    });
+  }
+  for (const [owner, quote] of [
+    ['Close it', 'close it'],
+    ['It’s fine, close it', "It's fine, close it"],
+    ['Close it.\nThe rest can wait', 'Close it. The rest can wait'],
+    ['Thanks for asking!\nclose it.', 'Close it'],
+  ] as const) {
+    it(`a real reply is accepted across case, curly quotes and newlines: ${JSON.stringify(owner)} / ${JSON.stringify(quote)}`, async () => {
+      const r = await verdictOn(owner, quote);
+      expect(r.out).not.toMatch(/^Error|Refused/);
+      expect(r.state).toBe('done');
+    });
+  }
+  it('the owner\'s own iMessage counts (the bridge stamps him as the owner)', async () => {
+    const r = await verdictOn('[SOURCE: IMESSAGE FROM Owner] Close it.', 'close it', {
+      channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550199', authorized: true, relation: 'owner' }),
+    });
+    expect(r.state).toBe('done');
+  });
+  const emailRow = (from: string): Record<string, unknown> => ({
+    channel: 'email', lane: 'owner',
+    inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: from, emailService: 'gmail' }),
+  });
+  const emailBody = (preview: string): string => `[SOURCE: GMAIL NOTIFICATION — agent@box (agent)]\n\n[DIRECT MESSAGE] x emailed you.\n\nFrom: x\nSubject: Re: verdict\nDate: today\nPreview: ${preview}\nMessage ID: 1\nUse \`gmail_read\` to read the full body.`;
+  it('an email reply from the owner\'s own mailbox is accepted', async () => {
+    db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
+    const r = await verdictOn(emailBody('Yes. Close it, I&#39;ll do the rest.'), "close it, I'll do the rest", emailRow('owner@home.example'));
+    expect(r.out).not.toMatch(/^Error|Refused/);
+    expect(r.state).toBe('done');
+  });
+  it('an email from anyone else is not the owner', async () => {
+    db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
+    const r = await verdictOn(emailBody('Close it.'), 'close it', emailRow('someone@else.example'));
+    expect(r.out).toMatch(/measure-items-left/);
+  });
+
   it('the owner\'s words from BEFORE the verdict was asked do not count', async () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 30 });
     const id = taskIdFrom(await call('work_open:task', { title: 'Sort the inbox', goal: 'g', measure: MEASURE }));

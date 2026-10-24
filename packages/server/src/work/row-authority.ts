@@ -134,7 +134,7 @@ const isEditor = (f: RowFacts, actorId: string): boolean =>
 //      that message, or in a later owner ask in the same conversation this turn serves.
 // All three, or it is not the owner asking.
 
-function normalizeQuote(s: string): string {
+export function normalizeQuote(s: string): string {
   return s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
     .replace(/\s+/g, ' ').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[.!?,;:]+$/g, '').trim();
 }
