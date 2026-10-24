@@ -9,6 +9,7 @@ const DB_DIR = path.join(homeDir(), '.dojo', 'data');
 const DB_PATH = path.join(DB_DIR, 'dojo.db');
 
 let db: Database.Database | null = null;
+let readOnlyDb: Database.Database | null = null;
 
 export function getDb(): Database.Database {
   if (db) return db;
@@ -53,7 +54,27 @@ export function getDb(): Database.Database {
   return db;
 }
 
+/**
+ * v3.5 inspect: the connection every `dojo_inspect` view reads through. A second handle on
+ * the same file, opened `readonly` with `query_only` on top, so a write is refused by SQLite
+ * itself and never depends on a parser of ours. WAL lets it read beside the engine's writer;
+ * the busy timeout bounds the rare wait on a checkpoint. Opened lazily, one per process, and
+ * only after `getDb()` has created the file and the WAL.
+ */
+export function getReadOnlyDb(): Database.Database {
+  if (readOnlyDb) return readOnlyDb;
+  getDb();
+  readOnlyDb = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+  readOnlyDb.pragma('query_only = 1');
+  readOnlyDb.pragma('busy_timeout = 2000');
+  return readOnlyDb;
+}
+
 export function closeDb(): void {
+  if (readOnlyDb) {
+    readOnlyDb.close();
+    readOnlyDb = null;
+  }
   if (db) {
     db.close();
     db = null;

@@ -21,7 +21,7 @@ export interface ScrubResult {
   placeholders: Array<{ label: string; hint: string }>;  // de-duped list safe to export in manifest
 }
 
-interface Pattern {
+export interface Pattern {
   name: string;
   regex: RegExp;
   label: (m: RegExpExecArray) => string;
@@ -31,7 +31,7 @@ interface Pattern {
 // Pattern ordering matters: longer / more specific patterns first so a
 // generic catch-all doesn't swallow something a labelled pattern would
 // have tagged more usefully.
-const PATTERNS: Pattern[] = [
+export const PATTERNS: Pattern[] = [
   {
     name: 'anthropic-key',
     regex: /\bsk-ant-[a-zA-Z0-9_-]{20,}/g,
