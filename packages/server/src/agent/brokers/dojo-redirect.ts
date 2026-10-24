@@ -14,11 +14,12 @@
 //
 // SO, asked of a command line the broker ALLOWED (it can only refuse, never permit):
 //   • a WRITE to the live database (`dojo.db` and its -wal/-shm/-journal siblings) — a non-read
-//     statement or dot-command through sqlite3, or a redirect, copy, move, delete or `dd`/`tee`
-//     into those files — is refused for every agent EXCEPT the Healer, the repair agent, whose
-//     owner-approved repairs (model switch, persist flag, ending an agent, a stuck schedule, a
-//     config value, a WAL checkpoint) have no engine tool and keep working exactly as before v3.5
-//     (orchestrator rulings 2026-10-24, revised in fix round 2).
+//     statement or dot-command, or a redirect, copy, move, delete, truncate or `dd`/`tee` into those
+//     files — is refused for every agent. The one exemption is the Healer's repair STATEMENTS through
+//     sqlite3 (model switch, persist flag, ending an agent, a stuck schedule, a config value, a WAL
+//     checkpoint), which have no engine tool and keep working exactly as before v3.5. A file-level
+//     write (and sqlite3's `.restore`, which replaces the whole file) is not a repair: refused for
+//     the Healer too (orchestrator rulings 2026-10-24, fix rounds 2 and 4).
 //   • a READ of the live database: an agent that HOLDS dojo_inspect is pointed at the view that
 //     answers (`schema` for a schema look, otherwise `sql`); any other agent is refused (same
 //     ruling): the file holds the platform's internals and the credential tables, which
@@ -66,8 +67,9 @@ const unquote = (w: string): string => w.replace(/^['"]+|['"]+$/g, '');
 const namesDb = (w: string): boolean => DOJO_DB.test(` ${unquote(w)}`) || DATA_GLOB.test(w);
 const namesLog = (w: string): boolean => DOJO_LOG.test(` ${unquote(w)}`);
 
-export type DojoLineClass = 'write' | 'schema' | 'sql' | 'logs';
-const RANK: Record<DojoLineClass, number> = { logs: 1, sql: 2, schema: 2, write: 3 };
+/** `repair`: a changing statement through sqlite3; `write`: any other write, the file-level ones included. */
+export type DojoLineClass = 'write' | 'repair' | 'schema' | 'sql' | 'logs';
+const RANK: Record<DojoLineClass, number> = { logs: 1, sql: 2, schema: 2, repair: 3, write: 4 };
 
 /** What one simple command does to the Dojo's own database or log, or null. */
 function classifySegment(segment: string, line: string): DojoLineClass | null {
@@ -79,7 +81,8 @@ function classifySegment(segment: string, line: string): DojoLineClass | null {
     if (WRITES_EVERY_OPERAND.has(program)) return 'write';
     if (WRITES_LAST_OPERAND.has(program) && operands.length > 1 && namesDb(operands[operands.length - 1])) return 'write';
     if (program === 'dd') return operands.some((w) => /^if=/.test(w) && namesDb(w)) ? 'sql' : null;
-    if (SQL_PROGRAMS.has(program)) return WRITE_STATEMENT.test(line) ? 'write' : SCHEMA_LOOK.test(line) ? 'schema' : 'sql';
+    if (SQL_PROGRAMS.has(program) && WRITE_STATEMENT.test(line)) return program === 'sqlite3' && !/\.restore\b/.test(line) ? 'repair' : 'write';
+    if (SQL_PROGRAMS.has(program)) return SCHEMA_LOOK.test(line) ? 'schema' : 'sql';
     if (CONTENT_READERS.has(program)) return 'sql';
   }
   return operands.some(namesLog) && CONTENT_READERS.has(program) ? 'logs' : null;
@@ -109,8 +112,8 @@ const VIEW_CALL = {
 export function redirectDojoQuestion(agentId: string, line: string): Verdict | null {
   const cls = classifyDojoLine(line);
   if (!cls) return null;
-  if (cls === 'write' && isHealerAgent(agentId)) return null;   // the repair agent (fix round 2 ruling)
-  if (cls === 'write') return deny('ladder-parity', 'dojo-db-shell-write', 'the shell does not change the Dojo\'s own database', WRITE_REFUSAL);
+  if (cls === 'repair' && isHealerAgent(agentId)) return null;   // the repair agent's statements (fix rounds 2 and 4)
+  if (cls === 'write' || cls === 'repair') return deny('ladder-parity', 'dojo-db-shell-write', 'the shell does not change the Dojo\'s own database', WRITE_REFUSAL);
   const holder = holdsDojoInspect(agentId);
   if (!holder) return cls === 'logs' ? null : deny('ladder-parity', 'dojo-db-shell-read', 'the Dojo\'s own database is not read through the shell', READ_REFUSAL);
   return deny(

@@ -7,8 +7,10 @@
 // command that reads the Dojo's database or its platform log is refused with the one call that
 // answers it, so the habit forms by itself. Driven on a scratch DOJO_HOME, never the live box.
 //
-// ORCHESTRATOR RULING 2026-10-24: a shell WRITE to the live database is refused for every agent,
-// the Healer included, and a shell READ of it is refused for an agent that does not hold the tool.
+// ORCHESTRATOR RULINGS 2026-10-24 (fix rounds 2 and 4): a shell WRITE to the live database is refused
+// for every agent except the Healer's repair STATEMENTS (sqlite3 against the live database); a
+// file-level write of the database files (rm, mv, cp over, truncate, a redirect) is refused for every
+// agent, the Healer included; and a shell READ of it is refused for an agent that does not hold the tool.
 // Untouched, each pinned below: any other command or file (another database, a backup, the other
 // files under ~/.dojo/logs) and a non-holder's read of the platform log.
 
@@ -162,6 +164,15 @@ describe('the shell does not write the Dojo\'s own database — except the Heale
       [WORKER, 'cat /tmp/x | tee ~/.dojo/data/dojo.db']] as const) {
       expect(refusal(agent, 'shell', script), script).toMatch(WRITE);
     }
+  });
+
+  it('fix round 4 RULING: the Healer\'s exemption is its repair statements only — a file-level write of the database files is refused for it too', () => {
+    for (const script of ['rm ~/.dojo/data/dojo.db-wal', `rm -f ${DB}-shm`, 'mv /tmp/x ~/.dojo/data/dojo.db', 'cp /tmp/x ~/.dojo/data/dojo.db',
+      'truncate -s 0 ~/.dojo/data/dojo.db-wal', 'echo x > ~/.dojo/data/dojo.db', 'echo x >> ~/.dojo/data/dojo.db', `dd if=/dev/zero of=${DB}-wal count=1`,
+      `sqlite3 ${DB} ".restore /tmp/old.db"`, `sqlite3 ${DB} "UPDATE agents SET model_id = 'auto' WHERE id = 'x'" && rm ${DB}-wal`]) {
+      expect(refusal(HEALER, 'shell', script), script).toMatch(WRITE);
+    }
+    expect(refusal(HEALER, 'proc', ['rm', `${DB}-wal`])).toMatch(WRITE);
   });
 });
 

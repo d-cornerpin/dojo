@@ -6,6 +6,9 @@
 // spawned a child with allow:['dojo_inspect'] and that child ran sql. Refused now at the agent
 // doors (spawn, update_agent) unless the granter holds the tool; the owner's dashboard grants it.
 // ORCHESTRATOR RULING: the main agent may delegate inspection explicitly. Scratch DOJO_HOME.
+// FIX ROUND 4 RULINGS: an agent edit is judged on what it LEAVES, not on the arrays it carries (a
+// blanked or partial stored grants object fell back to the derivation, which has no deny); and the
+// owner's "Oversight & Admin" switch withdraws dojo_inspect from the main agent and the Healer too.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -18,6 +21,7 @@ vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefine
 const PRIMARY = 'agent-main';
 const MGR = 'agent-sensei-spawner';
 const WORKER = 'agent-plain-worker';
+const HEALER = 'agent-healer-cfg';
 const SPAWNER_MANIFEST = { file_read: '*', file_write: '*', file_delete: 'none', exec_allow: ['*'], exec_deny: [], network_domains: '*', max_processes: 5, can_spawn_agents: true, can_assign_permissions: true, system_control: [] };
 
 let home: string;
@@ -46,7 +50,8 @@ beforeAll(async () => {
   add.run(PRIMARY, 'main', 'sensei', null);
   db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions, spawn_depth, created_by) VALUES (?, 'spawner', 'idle', '{}', 'sensei', ?, 1, ?)").run(MGR, JSON.stringify(SPAWNER_MANIFEST), PRIMARY);
   db.prepare("INSERT INTO agents (id, name, status, config, classification, spawn_depth, created_by) VALUES (?, 'worker', 'idle', '{}', 'apprentice', 1, ?)").run(WORKER, PRIMARY);
-  db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(PRIMARY);
+  db.prepare("INSERT INTO agents (id, name, status, config, classification, model_id, spawn_depth, created_by) VALUES (?, 'healer', 'idle', '{}', 'sensei', 'mdl', 1, ?)").run(HEALER, PRIMARY);
+  db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?), ('healer_agent_id', ?)").run(PRIMARY, HEALER);
   (await import('../../config/platform.js')).clearPlatformConfigCache();
   mod = {
     connection,
@@ -92,16 +97,18 @@ describe('an agent that does not hold dojo_inspect cannot grant it', () => {
     const upd = async (args: Record<string, unknown>) => mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: `call-upd-${Math.random()}`, name: 'update_agent', arguments: args }));
     try {
       expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(false);
-      for (const args of [{ agent_id: PRIMARY, tools: { deny: [] } }, { agent_id: PRIMARY, grants: { tools: { deny: [] } } }]) {
-        const r = await upd(args);
-        expect(r.isError, JSON.stringify(args)).toBe(true);
-        expect(r.content).toMatch(/cannot lift the deny on dojo_inspect/);
-        mod.access.forgetAccessGrants();
-        expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(false);
-      }
+      // Fix round 4: judged on what the edit LEAVES. The grants shape would lift the deny: refused.
+      // The `tools` shape writes only the old tools_policy column, which an agent with stored grants
+      // does not read — it lifts nothing, so it is not refused, and the deny still holds.
+      const lift = await upd({ agent_id: PRIMARY, grants: { tools: { deny: [] } } });
+      expect(lift.isError).toBe(true);
+      expect(lift.content).toMatch(/the owner withheld it from this agent; only the owner can give it back/);
+      await upd({ agent_id: PRIMARY, tools: { deny: [] } });
+      mod.access.forgetAccessGrants();
+      expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(false);
       const handOn = await upd({ agent_id: WORKER, tools: { allow: ['dojo_inspect'] } });
       expect(handOn.isError).toBe(true);
-      expect(handOn.content).toMatch(/cannot grant dojo_inspect/);
+      expect(handOn.content).toMatch(/only the owner or the main agent can grant/);
       await expect(spawn(PRIMARY, { toolsPolicy: { allow: ['dojo_inspect'], deny: [] } })).rejects.toThrow(/cannot grant dojo_inspect/);
     } finally {
       db.prepare('UPDATE agents SET permissions = NULL WHERE id = ?').run(PRIMARY);
@@ -160,5 +167,98 @@ describe('a holder, or the owner, grants it', () => {
     expect(res.status).toBe(200);
     mod.access.forgetAccessGrants();
     expect(mod.grant.holdsDojoInspect(WORKER)).toBe(true);
+  });
+});
+
+describe('fix round 4 RULING: an edit is judged on what it leaves', () => {
+  const db = () => mod.connection.getDb();
+  const upd = async (args: Record<string, unknown>) => mod.outcome.toolResultOf(await mod.tools.executeTool(PRIMARY, { id: `call-r4-${Math.random()}`, name: 'update_agent', arguments: args }));
+  const row = (id: string) => db().prepare('SELECT permissions, tools_policy, model_id FROM agents WHERE id = ?').get(id);
+  const forget = () => mod.access.forgetAccessGrants();
+  // The owner's withholding, stored the way the dashboard stores it: a whole grants object with the deny.
+  function withhold(id: string): void {
+    const owned = structuredClone(mod.access.getAccessGrants(id));
+    owned.tools.deny = ['dojo_inspect'];
+    db().prepare('UPDATE agents SET permissions = ?, model_id = NULL WHERE id = ?').run(JSON.stringify({ grants: owned }), id);
+    forget();
+    expect(mod.grant.holdsDojoInspect(id)).toBe(false);
+  }
+  const restore = (id: string) => { db().prepare('UPDATE agents SET permissions = NULL WHERE id = ?').run(id); forget(); };
+
+  it('blanking or replacing the stored grants through permissions cannot lift the owner\'s deny — on the main agent itself or the Healer; nothing changes', async () => {
+    for (const target of [PRIMARY, HEALER]) {
+      withhold(target);
+      try {
+        for (const grants of [null, {}, { tools: { allow: [] } }]) {
+          const before = row(target);
+          const r = await upd({ agent_id: target, permissions: { grants } });
+          expect(r.isError, `${target} ${JSON.stringify(grants)}: ${r.content}`).toBe(true);
+          expect(r.content).toMatch(/the owner withheld it from this agent; only the owner can give it back/);
+          expect(row(target)).toEqual(before);
+          forget();
+          expect(mod.grant.holdsDojoInspect(target)).toBe(false);
+        }
+        // "Change nothing": the unrelated half of a refused edit is not written either.
+        const both = await upd({ agent_id: target, model_id: 'mdl', permissions: { grants: null } });
+        expect(both.isError).toBe(true);
+        expect((row(target) as { model_id: string | null }).model_id).toBeNull();
+      } finally { restore(target); }
+    }
+  });
+
+  it('an unrelated edit to a denied agent still works and keeps the deny', async () => {
+    withhold(HEALER);
+    try {
+      const model = await upd({ agent_id: HEALER, model_id: 'mdl' });
+      expect(model.isError, model.content).toBe(false);
+      const manifest = await upd({ agent_id: HEALER, permissions: { max_processes: 3 } });
+      expect(manifest.isError, manifest.content).toBe(false);
+      const narrower = await upd({ agent_id: HEALER, grants: { tools: { deny: ['dojo_inspect', 'cost_summary'] } } });
+      expect(narrower.isError, narrower.content).toBe(false);
+      forget();
+      expect(mod.access.toolGrantsFor(HEALER).deny).toContain('dojo_inspect');
+      expect(mod.grant.holdsDojoInspect(HEALER)).toBe(false);
+    } finally { restore(HEALER); }
+  });
+
+  it('the owner\'s dashboard edit gives it back', async () => {
+    withhold(PRIMARY);
+    try {
+      const res = await mod.agentsRouter.request(`/${PRIMARY}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grants: { tools: { deny: [] } } }),
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      forget();
+      expect(mod.grant.holdsDojoInspect(PRIMARY)).toBe(true);
+    } finally { restore(PRIMARY); }
+  });
+
+  it('RULING: the owner switching "Oversight & Admin" off for the main agent or the Healer withdraws dojo_inspect too; on again, it is back', async () => {
+    const { TOOL_CATEGORIES } = await import('../../tools/categories.js');
+    const put = (id: string, categories: unknown) => mod.agentsRouter.request(`/${id}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grants: { tools: { categories } } }),
+    });
+    const offered = (id: string) => mod.surface.getFilteredTools(id).some((t) => t.name === 'dojo_inspect');
+    const call = async (id: string) => mod.outcome.toolResultOf(await mod.tools.executeTool(id, { id: `call-cat-${Math.random()}`, name: 'dojo_inspect', arguments: { what: 'schema', table: 'agents' } }));
+    for (const target of [PRIMARY, HEALER]) {
+      try {
+        const off = await put(target, TOOL_CATEGORIES.map((c) => c.label).filter((l) => l !== 'Oversight & Admin'));
+        expect(off.status, await off.clone().text()).toBe(200);
+        forget();
+        expect(mod.grant.holdsDojoInspect(target), target).toBe(false);
+        expect(offered(target), target).toBe(false);
+        const refused = await call(target);
+        expect(refused.isError, target).toBe(true);
+        expect(refused.errorCode).toBe('PERMISSION_DENIED');
+        // On again. (The route bounds every edit by the main agent's own grants, so a group the owner
+        // took from the main agent itself is not given back through it — older than this lane.)
+        if (target === HEALER) {
+          const on = await put(target, TOOL_CATEGORIES.map((c) => c.label));
+          expect(on.status, await on.clone().text()).toBe(200);
+          forget();
+          expect(offered(target), target).toBe(true);
+        }
+      } finally { restore(target); }
+    }
   });
 });

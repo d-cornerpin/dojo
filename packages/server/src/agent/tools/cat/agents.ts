@@ -76,7 +76,7 @@ import { TOOL_CATEGORIES } from '../../../tools/categories.js';
 // no-escalation rule and the one write; this module owns the wording a model
 // reads and the audit row ruling 4 requires.
 import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../access/authorize.js';
-import { inspectGrantRefusal, inspectDenyLiftRefusal } from '../../../inspect/grant.js';
+import { inspectGainRefusal } from '../../../inspect/grant.js';
 import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
 import { writeGrants } from '../../access/materialize.js';
 import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
@@ -1107,6 +1107,55 @@ export const agentsHandlers: ToolHandlerMap = {
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 
+      // ── UX-ACCESS A2 (ruling 4): THE EDIT DOOR FOR ACCESS ──
+      // Separate from the manifest block below on purpose. `can_assign_permissions`
+      // gates handing out MANIFEST scope; the no-escalation rule is what bounds a
+      // GRANT, and it bounds it against the caller's own holdings rather than
+      // against a boolean — which is the whole content of ruling 4. A caller
+      // holding `can_assign_permissions` still cannot grant a channel it does not
+      // hold, and a caller without it can still be refused for the same reason.
+      // THE ACCESS WRITES, ONE STEP — first run as a dry run, judged on what it leaves (v3.5 fix round 4).
+      const applyAccess = (changes: string[]): { content: string; isError: true; errorCode?: 'PERMISSION_DENIED' } | null => {
+        if (newGrants !== undefined) {
+          const targetGrants = getAccessGrants(target.id);
+          const resolution = resolveUpdateGrants(
+            newGrants, targetGrants, getAccessGrants(agentId), isPrimaryAgent(agentId),
+          );
+          if (!resolution.ok) {
+            auditLog(agentId, 'update_agent', target.id, 'denied', resolution.reason.slice(0, 400));
+            return { content: resolution.reason, isError: true, errorCode: 'PERMISSION_DENIED' as const };
+          }
+          const delta = grantsDelta(targetGrants, resolution.grants);
+          if (delta) {
+            writeGrants(target.id, resolution.grants);
+            auditLog(agentId, 'update_agent', target.id, 'success', `grants: ${delta}`);
+            changes.push(`access grants: ${delta}`);
+          }
+        }
+
+        // Permissions and tools policy (access control): gated by can_assign_permissions.
+        if (newPerms !== undefined || newTools !== undefined) {
+          const callerPerms = getAgentPermissions(agentId);
+          if (!callerPerms.can_assign_permissions) {
+            return { content: 'Permission denied: you do not have permission to change other agents\' permissions or tool policy.', isError: true };
+          }
+          if (newPerms !== undefined) {
+            const existingPermsRow = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(target.id) as { permissions: string };
+            const merged = { ...JSON.parse(existingPermsRow.permissions || '{}'), ...newPerms };
+            db.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(merged), target.id);
+            changes.push(`permissions: ${Object.keys(newPerms).join(', ')}`);
+          }
+          if (newTools !== undefined) {
+            const existingToolsRow = db.prepare('SELECT tools_policy FROM agents WHERE id = ?').get(target.id) as { tools_policy: string | null };
+            const mergedTools = { ...JSON.parse(existingToolsRow.tools_policy || '{}'), ...newTools };
+            db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(mergedTools), target.id);
+            changes.push(`tools policy: ${Object.keys(newTools).join(', ')}`);
+          }
+        }
+        return null;
+      };
+      const inspectRefused = [newGrants, newPerms, newTools].some((v) => v !== undefined) ? inspectGainRefusal(agentId, target.id, () => applyAccess([])) : null;
+      if (inspectRefused) return { content: inspectRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const };
       // Identity (name / system_prompt): forbidden on the primary agent.
       if (newName !== undefined || newPrompt !== undefined) {
         if (isPrimaryAgent(target.id)) {
@@ -1145,56 +1194,7 @@ export const agentsHandlers: ToolHandlerMap = {
           changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);
         }
       }
-
-      // ── UX-ACCESS A2 (ruling 4): THE EDIT DOOR FOR ACCESS ──
-      // Separate from the manifest block below on purpose. `can_assign_permissions`
-      // gates handing out MANIFEST scope; the no-escalation rule is what bounds a
-      // GRANT, and it bounds it against the caller's own holdings rather than
-      // against a boolean — which is the whole content of ruling 4. A caller
-      // holding `can_assign_permissions` still cannot grant a channel it does not
-      // hold, and a caller without it can still be refused for the same reason.
-      const g = (v: unknown) => (v as { tools?: { allow?: unknown; deny?: unknown } } | undefined)?.tools;
-      const inspectRefused = inspectGrantRefusal(agentId, g(newGrants)?.allow, newTools?.allow, g(newPerms?.grants)?.allow) ?? inspectDenyLiftRefusal(target.id, g(newGrants)?.deny, newTools?.deny, g(newPerms?.grants)?.deny);
-      if (inspectRefused) return { content: inspectRefused, isError: true, errorCode: 'PERMISSION_DENIED' as const };
-      if (newGrants !== undefined) {
-        const targetGrants = getAccessGrants(target.id);
-        const resolution = resolveUpdateGrants(
-          newGrants, targetGrants, getAccessGrants(agentId), isPrimaryAgent(agentId),
-        );
-        if (!resolution.ok) {
-          auditLog(agentId, 'update_agent', target.id, 'denied', resolution.reason.slice(0, 400));
-          return { content: resolution.reason, isError: true, errorCode: 'PERMISSION_DENIED' as const };
-        }
-        const delta = grantsDelta(targetGrants, resolution.grants);
-        if (delta) {
-          writeGrants(target.id, resolution.grants);
-          auditLog(agentId, 'update_agent', target.id, 'success', `grants: ${delta}`);
-          changes.push(`access grants: ${delta}`);
-        }
-      }
-
-      // Permissions and tools policy (access control): gated by can_assign_permissions.
-      if (newPerms !== undefined || newTools !== undefined) {
-        const callerPerms = getAgentPermissions(agentId);
-        if (!callerPerms.can_assign_permissions) {
-          content = 'Permission denied: you do not have permission to change other agents\' permissions or tool policy.';
-          isError = true;
-          return { content, isError };
-        }
-        if (newPerms !== undefined) {
-          const existingPermsRow = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(target.id) as { permissions: string };
-          const merged = { ...JSON.parse(existingPermsRow.permissions || '{}'), ...newPerms };
-          db.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(merged), target.id);
-          changes.push(`permissions: ${Object.keys(newPerms).join(', ')}`);
-        }
-        if (newTools !== undefined) {
-          const existingToolsRow = db.prepare('SELECT tools_policy FROM agents WHERE id = ?').get(target.id) as { tools_policy: string | null };
-          const mergedTools = { ...JSON.parse(existingToolsRow.tools_policy || '{}'), ...newTools };
-          db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(mergedTools), target.id);
-          changes.push(`tools policy: ${Object.keys(newTools).join(', ')}`);
-        }
-      }
-
+      const accessRefused = applyAccess(changes); if (accessRefused) return accessRefused;
       if (changes.length === 0) {
         content = `No changes: ${target.name} already matches the requested values.`;
       } else {
