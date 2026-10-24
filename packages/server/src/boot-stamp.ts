@@ -106,7 +106,7 @@ function devTreeSha(): string | null {
   return null;
 }
 
-function resolveSha(): { sha: string | null; shaSource: BootStamp['shaSource'] } {
+export function resolveSha(): { sha: string | null; shaSource: BootStamp['shaSource'] } {
   const env = process.env.DOJO_BUILD_SHA?.trim();
   if (env) return { sha: env, shaSource: 'env' };
   const packaged = packagedSha();
