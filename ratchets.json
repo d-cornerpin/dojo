@@ -9418,6 +9418,13 @@
       "to": 1683,
       "by": "t267 review fix (2026-10-24): v3.5 dojo_inspect grant door (review Critical 1)",
       "why": "+3: one import and the two-line refusal at update_agent's door, asked once over all three ways the call can store an allow list (grants, the older tools argument, a permissions patch carrying grants). The predicate and its sentence live in inspect/grant.ts, which the spawn door asks too. Without it, an allow naming dojo_inspect is a grant nobody judged. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1683,
+      "to": 1684,
+      "by": "t267 fix round 2 (2026-10-24): dojo_inspect deny-lift door (re-review Important 1)",
+      "why": "+1: a one-line reader of the three tool-grant shapes an update_agent call can carry, so the same statement asks both the grant refusal and the new deny-lift refusal (lifting a deny that withholds dojo_inspect is a grant only the owner makes). The predicates live in inspect/grant.ts. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9493,7 +9500,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1683,
+    "packages/server/src/agent/tools/cat/agents.ts": 1684,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
