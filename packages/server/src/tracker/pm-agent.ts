@@ -2489,7 +2489,8 @@ export async function runPokeCheck(): Promise<void> {
 
 /** v3.5 D1 (fix round 3): the check-in for a continued measured job, asked at its PARK — the boundary
  *  between its continued turns, never inside one. The same ladder, for this one task, with the
- *  assignee's turn read as ended (the park is the turn's last act; the continuation reads it). */
+ *  assignee's turn read as ended (the park is the turn's last act); a check-in due to the assignee is
+ *  handed to the continuation as a PM rider, which it reads before it acts (fix round 4). */
 export async function checkInAtThePark(taskId: string): Promise<void> {
   const task = getTask(taskId);
   if (task?.status === 'in_progress') await checkInOn([task], true);
@@ -2771,6 +2772,18 @@ async function checkInOn(inProgressTasks: Array<ReturnType<typeof listTasks>[num
       : basePokeMessage;
     const recipient = pokeType === 'escalate_primary' && !escalateToAssignee ? primaryId : task.assignedTo;
 
+    // v3.5 D1 (fix round 4): at the park the assignee's run is still active (the runtime holds it until the
+    // turn's `finally`), so a re-drive would meet the busy deferral below and never be sent. A check-in to the
+    // assignee there travels as the PM rider the circling verdict uses: read at the start of its NEXT turn (the
+    // continuation the park queued), never injected into the running one, and latched only once the row exists.
+    if (atThePark && recipient === task.assignedTo) {
+      if (!(await import('../work/engine-checkpoint-note.js')).handToTheNextTurn(recipient, pokeMessage, now)) continue;
+      recordPoke(task.id, pmId, pokeNumber, pokeType, recipient);
+      broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType } });
+      logger.info('PM check-in handed to the continuation at the park', { taskId: task.id, recipient, pokeType, pokeNumber });
+      continue;
+    }
+
     // Busy deferral (owner request 2026-07-23): a poke landing while the
     // assignee is mid-run queues up and then collides with that work, and to
     // the ladder the deferred serve reads like being ignored. If the assignee
@@ -2851,8 +2864,8 @@ function buildPokeMessage(
   const taskInfo = [
     `Task: ${task.title}`,
     `ID: ${task.id}`,
+    ...(loopFact ? [loopFact] : []),   // ahead of the stamps: a rider is read as a 400-char gist (fix round 4)
     ...(stampLine ? [stampLine] : []),
-    ...(loopFact ? [loopFact] : []),
     `Priority: ${task.priority}`,
     `Status: ${task.status}`,
     task.description ? `Description: ${task.description}` : null,

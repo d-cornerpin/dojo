@@ -69,7 +69,8 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
     parkJob(agentId, `job continues: ${remaining} remain`, 'timer');
     recordContinued(taskId, { remaining, touchedThisTurn, novelCallsThisTurn, turnNumber });
     // A continuation that touched no item: the PM's ladder is asked HERE, at the boundary between the
-    // job's turns (pokes never fire mid-turn), whether its check-in is due (fix round 3).
+    // job's turns (pokes never fire mid-turn), whether its check-in is due (fix round 3). A due check-in
+    // is handed to the continuation as a PM rider, read before it acts (fix round 4).
     if (touchedThisTurn === 0) {
       try { await (await import('../../../../tracker/pm-agent.js')).checkInAtThePark(taskId); } catch (err) {
         logger.warn('v2: check-in at the park failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);

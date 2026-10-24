@@ -109,14 +109,34 @@ const isDoorCall = (tc: Pick<ToolCall, 'name' | 'arguments'>): boolean =>
   toolOpKey(tc.name, tc.arguments) === 'work_update:status'
   && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
 
+/** The calls this TURN made, every pass of it, from the turn's own record: the assistant rows the post-call
+ *  step persists for each pass (`persist-assistant.ts`, one `tool_use` block per call, stamped with the
+ *  turn's number; the same rows `execute/tracker-floors.ts` tallies). Never `state.toolCalls`: each pass's
+ *  model call REPLACES that with the pass's own calls (`call-llm/index.ts`), so a door an earlier pass took
+ *  is gone from it by the pass that speaks (fix round 4). The results ride `state.toolResults`, which
+ *  execute APPENDS for the whole turn, and are joined by call id. */
+function callsThisTurn(agentId: string, turnNumber: number, db: Database): ToolCall[] {
+  const rows = db.prepare(`SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'`)
+    .all(agentId, turnNumber) as Array<{ content: string }>;
+  const calls: ToolCall[] = [];
+  for (const r of rows) {
+    try {
+      for (const b of JSON.parse(r.content) as Array<{ type?: string; id?: string; name?: string; input?: Record<string, unknown> }>) {
+        if (b.type === 'tool_use' && b.id && b.name) calls.push({ id: b.id, name: b.name, arguments: b.input ?? {} } as ToolCall);
+      }
+    } catch { /* not a block array */ }
+  }
+  return calls;
+}
+
 /** Does this turn speak to the owner whatever the job is doing? (fix round 2, ruling 1): an answer to a
  *  person who is waiting; a door call riding THIS pass (judged before it runs, so an attempt resolves
  *  toward answering); or a door call an EARLIER pass of this turn made that succeeded, on any task. */
-function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
+function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
   if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
   const ok = succeededIn(state.toolResults as unknown as Parameters<typeof succeededIn>[0]);
-  return state.toolCalls.some((tc) => isDoorCall(tc) && ok(tc));
+  return callsThisTurn(ctx.agentId, ctx.turnNumber, ctx.db).some((tc) => isDoorCall(tc) && ok(tc));
 }
 
 /** Is this pass the engine's continuation of a measured job that still has items left, with nothing
@@ -126,7 +146,7 @@ function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext
  *  task ("paused" waiting on him, "blocked"), or when the turn answers him: those speak under the
  *  existing rules for an engine turn. The stop rule (`job-continues.ts`) is a different question: the
  *  job itself keeps continuing unless its own task really leaves `claimed`. */
-export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
+export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
   if (!runCarriesJob(ctx.agentId)) return false;   // only the run the park's own wake started
   if (speaksThisTurn(state, ctx)) return false;
   const job = jobAtPassEndNow(state, ctx);

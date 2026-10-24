@@ -96,6 +96,7 @@ import { endJobCarry, registerTimerWake, beginJobRun, endJobRun, carryJobWork } 
 import { recordContinued } from '../../work/job-momentum.js';
 import { recordTouched } from '../../work/ledger-store.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import { activeRuns } from '../../agent/shared-state.js';
 
 const OWNER = 'owner@example.test';
 const MIN = 60_000;
@@ -122,6 +123,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  activeRuns.delete('helper');
   vi.useRealTimers();
   mockDb.current?.close();
   mockDb.current = null;
@@ -133,10 +135,11 @@ const pokes = (taskId: string): number => (db().prepare(
 const rungsSent = (taskId: string): number[] => (db().prepare(
   "SELECT json_extract(payload, '$.rung') AS r FROM work_events WHERE work_id = ? AND kind = 'poke' ORDER BY id",
 ).all(taskId) as Array<{ r: number }>).map((x) => x.r);
-/** What the PM sent about this task, to whoever it went to, oldest first. */
+/** What the PM sent about this task, to whoever it went to, oldest first: a re-drive names the task on
+ *  its row; the check-in at the park is a rider notice, which names it in its text (fix round 4). */
 const checkIns = (taskId: string): string[] => (db().prepare(
-  "SELECT content FROM messages WHERE lane = 'events' AND task_id = ? ORDER BY rowid",
-).all(taskId) as Array<{ content: string }>).map((r) => r.content);
+  "SELECT content FROM messages WHERE lane = 'events' AND (task_id = ? OR (origin_intent = 'agent_notice' AND instr(content, ?) > 0)) ORDER BY rowid",
+).all(taskId, `ID: ${taskId}`) as Array<{ content: string }>).map((r) => r.content);
 const sweepAt = async (at: number): Promise<void> => { vi.setSystemTime(at); await runPokeCheck(); await new Promise((r) => setTimeout(r, 15)); };
 
 
@@ -163,6 +166,7 @@ function aContinuedJob(now: number, ageMin: number, continuations: number): void
   carryJobWork('helper', [JOB]);
   registerTimerWake('helper');
   beginJobRun('helper', 'timer');
+  activeRuns.add('helper');   // the runtime holds the run until the turn's `finally`: the park runs inside it
   db().prepare("UPDATE agents SET status = 'working' WHERE id = 'helper'").run();
 }
 

@@ -205,9 +205,8 @@ function handOverOneVerdict(agentId: string): string | null {
     // t137 round 3 (review M4): the ROW is the delivery — it is what the next turn reads. A row
     // already written for THIS verdict (a post whose broadcast threw after the insert answers
     // null) counts as delivered, so the verdict is latched once and never handed over twice.
-    const noticeId = noticeRowFor(agentId, brief, circling.sinceEventId)
-      ?? postAgentNotice({ toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice', brief })
-      ?? noticeRowFor(agentId, brief, circling.sinceEventId);
+    const at = (db.prepare('SELECT created_at AS at FROM work_events WHERE id = ?').get(circling.sinceEventId) as { at: number } | undefined)?.at;
+    const noticeId = at === undefined ? null : handToTheNextTurn(agentId, brief, at);
     if (!noticeId) return null;
     // `rung: 2` matches the sweep's own urgent rung for a circling verdict; the `poke_type`
     // names this delivery's origin without changing what either reader checks.
@@ -217,17 +216,25 @@ function handOverOneVerdict(agentId: string): string | null {
   return null;
 }
 
-/** The rider notice already written for this verdict: same text (as `postAgentNotice` stores it),
- *  on this agent's events lane, written no earlier than the PM's verdict itself (floored to the
- *  second: `messages.created_at` is stored at second precision, `work_events` in ms — measured).
- *  Runs only while a verdict is pending — a checkpoint-time read, never a hot path. */
-function noticeRowFor(agentId: string, brief: string, sinceEventId: number): string | null {
+/** THE RIDER DOOR: `brief` to this agent's NEXT turn as a PM rider notice (above); the row id, or null if
+ *  unwritten. The ROW is the delivery: one already written for this brief since `sinceMs` counts, so a caller
+ *  latching on the answer latches once. Used by the circling verdict and the PM's check-in at a continued
+ *  job's park (`tracker/pm-agent.ts`, v3.5 D1 fix round 4): both reach a still-active run, never inject into it. */
+export function handToTheNextTurn(agentId: string, brief: string, sinceMs: number): string | null {
+  return noticeRowFor(agentId, brief, sinceMs)
+    ?? postAgentNotice({ toAgentId: agentId, fromName: 'PM', selfIntro: false, intent: 'agent_notice', brief })
+    ?? noticeRowFor(agentId, brief, sinceMs);
+}
+
+/** The rider already written for this brief: same text (as `postAgentNotice` stores it), on this agent's
+ *  events lane, no earlier than `sinceMs` floored to the second (`messages.created_at` is second-precise). */
+function noticeRowFor(agentId: string, brief: string, sinceMs: number): string | null {
   const row = getDb().prepare(
     `SELECT m.id AS id FROM messages m
       WHERE m.agent_id = ? AND m.lane = 'events' AND m.origin_intent = 'agent_notice'
         AND instr(m.content, ?) > 0
-        AND m.created_at >= (SELECT (e.created_at / 1000) * 1000 FROM work_events e WHERE e.id = ?)
+        AND m.created_at >= ?
       LIMIT 1`,
-  ).get(agentId, brief.replace(/\s+/g, ' ').trim(), sinceEventId) as { id: string } | undefined;
+  ).get(agentId, brief.replace(/\s+/g, ' ').trim(), Math.floor(sinceMs / 1000) * 1000) as { id: string } | undefined;
   return row?.id ?? null;
 }
