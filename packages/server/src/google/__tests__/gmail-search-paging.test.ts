@@ -51,6 +51,20 @@ describe('gmail_search paging', () => {
     expect(await search({})).not.toMatch(/next_page_token/);
   });
 
+  it('a page with no messages but a nextPageToken still prints the token, so a sweep does not stop early', async () => {
+    wire({ nextPageToken: 'NEXT789' });
+    const out = await search({});
+    expect(out).toContain('next_page_token: NEXT789');
+    expect(out).toContain('page_token="NEXT789"');
+  });
+
+  it('a page with no messages and no token is the end: no paging line', async () => {
+    wire({});
+    const out = await search({});
+    expect(out).toMatch(/No emails found/);
+    expect(out).not.toMatch(/next_page_token/);
+  });
+
   it('max_results: 500 is sent as maxResults=500', async () => {
     wire({ messages: [{ id: 'a', threadId: 't' }] });
     await search({ max_results: 500 });

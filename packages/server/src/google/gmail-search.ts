@@ -53,7 +53,8 @@ export async function searchMailForAccount(
   if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
 
   const data = result.data as { messages?: Array<{ id: string; threadId: string }>; nextPageToken?: string };
-  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [] };
+  // An empty page can still carry a nextPageToken; dropping it would end a sweep early.
+  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [], nextPageToken: data?.nextPageToken || undefined };
 
   const items: GoogleMailFetchItem[] = [];
   for (const msg of data.messages.slice(0, maxResults)) {
@@ -96,7 +97,10 @@ export async function executeGmailSearch(
   const others = await otherMailboxesCountSection({ provider: 'google', accountId: slot }, query, 0, agentId, agentName);
 
   const inAcct = acctLabel ? ` in ${acctLabel}` : '';
-  if (fetched.total === 0) return `No emails found matching that query${inAcct}.` + others;
+  const paging = fetched.nextPageToken
+    ? `\n\nnext_page_token: ${fetched.nextPageToken}\nMore results exist: re-call with page_token="${fetched.nextPageToken}"`
+    : '';
+  if (fetched.total === 0) return `No emails found matching that query${inAcct}${paging ? ' on this page' : ''}.${paging}` + others;
 
   const details: string[] = fetched.items.map(it => {
     if (verbose) {
@@ -108,9 +112,6 @@ export async function executeGmailSearch(
   });
 
   if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
-  const paging = fetched.nextPageToken
-    ? `\n\nnext_page_token: ${fetched.nextPageToken}\nMore results exist: re-call with page_token="${fetched.nextPageToken}"`
-    : '';
   const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.join(verbose ? '\n---\n' : '\n')}${paging}`;
   if (verbose) return header + others;
   return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
