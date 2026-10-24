@@ -9411,6 +9411,13 @@
       "to": 1959,
       "by": "t267 (2026-10-24): v3.5 text wave B, dojo_inspect on the wire (inspect plan C2)",
       "why": "+2: the plan's one standing line (\"use dojo_inspect first; the shell is for the outside world\"), pushed only for an agent that holds the tool, and its one-line comment. It sits with the other per-tool notes in generateToolsGuidance_v2, which is where the plan places it (Tools guidance). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1680,
+      "to": 1683,
+      "by": "t267 review fix (2026-10-24): v3.5 dojo_inspect grant door (review Critical 1)",
+      "why": "+3: one import and the two-line refusal at update_agent's door, asked once over all three ways the call can store an allow list (grants, the older tools argument, a permissions patch carrying grants). The predicate and its sentence live in inspect/grant.ts, which the spawn door asks too. Without it, an allow naming dojo_inspect is a grant nobody judged. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9486,7 +9493,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1680,
+    "packages/server/src/agent/tools/cat/agents.ts": 1683,
     "packages/server/src/agent/tools/cat/comms.ts": 914,
     "packages/server/src/agent/tools/cat/fs.ts": 846,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
