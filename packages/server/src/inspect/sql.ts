@@ -11,9 +11,10 @@
 // both ends, whole: a result too long for one view is kept whole by the tool layer (t200), which
 // shows its head and tail and the `tool_result_read` call that reads the rest.
 //
-// NOTHING IS HELD. The query runs in its own worker thread on its own read-only connection
-// (`sql-worker.ts`), so the engine's thread keeps serving while it runs, and in WAL mode the
-// engine's writer appends beside the reader's snapshot. The agent's stop ends a runaway query.
+// NOTHING IS HELD. The query runs in its own child process on its own read-only connection
+// (`sql-child.ts`), so the engine's thread keeps serving while it runs, and in WAL mode the
+// engine's writer appends beside the reader's snapshot. The agent's stop KILLS a runaway query,
+// which is what releases its CPU and its snapshot (a thread could not be stopped inside SQLite).
 // Every cell is redacted under the SOURCE column it was read from, never only its alias.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -21,7 +22,7 @@ import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
 import { isReadStatement } from '../db/read-only-door.js';
 import { columnNamesCredential, keyNamesCredential, redactCell, refuseDeniedSql, rowAgents } from './redact.js';
-import { readInWorker, type OutColumn } from './sql-worker.js';
+import { readInChild, type OutColumn } from './sql-child.js';
 
 const READ_ONLY = 'Refused: only a read runs here (a statement starting with SELECT, WITH or EXPLAIN). dojo_inspect never changes anything.';
 
@@ -35,11 +36,12 @@ function show(v: unknown): string {
 const redactionName = (c: OutColumn): string => (c.column && columnNamesCredential(c.column) ? c.column : c.name);
 
 /**
- * Run one read and render its rows. The checks and the compile run here; the query itself runs
- * in a worker (`sql-worker.ts`), so the engine's thread is never held, and the agent's stop ends it.
+ * Run one read and render its rows. The checks and the compile run here, on the same database
+ * the query runs on; the query itself runs in a child process (`sql-child.ts`) inside the
+ * current dojo_inspect call, so the engine's thread is never held and the agent's stop kills it.
  */
-export async function sql(args: { query: string }, opts: { agentId?: string; db?: Database.Database } = {}): Promise<string> {
-  const db = opts.db ?? getReadOnlyDb();
+export async function sql(args: { query: string }): Promise<string> {
+  const db: Database.Database = getReadOnlyDb();
   const query = (args.query ?? '').trim().replace(/;\s*$/, '');
   if (!isReadStatement(query)) return READ_ONLY;
   const refused = refuseDeniedSql(query, db);
@@ -51,7 +53,7 @@ export async function sql(args: { query: string }, opts: { agentId?: string; db?
     const msg = e instanceof Error ? e.message : String(e);
     return /read-only connection/.test(msg) ? READ_ONLY : `SQLite refused the statement: ${msg}`;
   }
-  const out = await readInWorker(query, query.replace(/^(\s+|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, ''), opts.agentId);
+  const out = await readInChild(query);
   if ('ended' in out) return out.ended;
   if ('error' in out) return `SQLite stopped the query: ${out.error}`;
   const names = out.columns.map(redactionName);

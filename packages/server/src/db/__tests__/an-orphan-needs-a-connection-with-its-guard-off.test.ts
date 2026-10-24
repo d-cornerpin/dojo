@@ -238,12 +238,11 @@ const DECLARED_OPENERS: Record<string, { readonly: boolean; reason: string }> = 
       + 'messages_fts shadow tables, which no foreign key points at, so it cannot delete a '
       + 'parent row; the transaction leaves the prior index intact if killed.',
   },
-  'inspect/sql-worker.ts': {
+  'inspect/sql-child.ts': {
     readonly: true,
-    reason: 'v3.5 dojo_inspect: each `sql` query runs in its own worker on a connection opened '
-      + 'readonly: true, fileMustExist: true, with query_only set, so a runaway query never holds '
-      + 'the engine thread and the stop button can end it. A readonly handle cannot write, so it '
-      + 'cannot strand a row.',
+    reason: 'v3.5 dojo_inspect: each `sql` query runs in its own CHILD PROCESS (through the toolbox '
+      + 'process door, so Stop kills it) on a connection opened readonly: true, fileMustExist: true, '
+      + 'with query_only set. A readonly handle cannot write, so it cannot strand a row.',
   },
   'memory/reader-pool.ts': {
     readonly: true,

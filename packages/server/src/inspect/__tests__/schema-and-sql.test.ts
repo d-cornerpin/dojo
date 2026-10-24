@@ -22,6 +22,7 @@ import type Database from 'better-sqlite3';
 import { toolResultView } from '../../memory/tool-result-view.js';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 const ACCESS = 'ya29.synthetic-google-access-value-0001';
 const APPROVAL = 'approval-synthetic-value-0002';
@@ -34,6 +35,10 @@ let mod: {
   connection: typeof import('../../db/connection.js');
   schema: typeof import('../schema.js').schema;
   sql: typeof import('../sql.js').sql;
+  readInChild: typeof import('../sql-child.js').readInChild;
+  turnState: typeof import('../../agent/turn-state.js');
+  cap: typeof import('../../agent/effects/capability.js');
+  runtime: typeof import('../../agent/runtime.js');
 };
 
 beforeAll(async () => {
@@ -51,7 +56,12 @@ beforeAll(async () => {
   main.transaction(() => {
     for (let i = 0; i < ROWS; i++) ins.run(`m-${i}`, i === 7 ? `the key is ${PASTED}` : `row ${i}`, 1792651631000 + i, 1792651631000 + i);
   })();
-  mod = { connection, schema: (await import('../schema.js')).schema, sql: (await import('../sql.js')).sql };
+  mod = {
+    connection, schema: (await import('../schema.js')).schema, sql: (await import('../sql.js')).sql,
+    readInChild: (await import('../sql-child.js')).readInChild,
+    turnState: await import('../../agent/turn-state.js'), cap: await import('../../agent/effects/capability.js'),
+    runtime: await import('../../agent/runtime.js'),
+  };
 }, 120_000);
 
 afterAll(() => {
@@ -59,6 +69,20 @@ afterAll(() => {
   vi.unstubAllEnvs();
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+const AGENT = 'agent-sql-test';
+/** Inside a dojo_inspect call whose capability names the node executable, as Part C will declare. */
+function asInspect<T>(body: () => Promise<T>, agent = AGENT): Promise<T> {
+  return mod.turnState.runWithToolCallId(agent, `call-${agent}`, async () => {
+    mod.cap.attachCallCapability(mod.cap.mintCallCapability({
+      agentId: agent, tool: 'dojo_inspect', callId: `call-${agent}`,
+      grants: [{ kind: 'proc', program: process.execPath, display: 'node' }],
+    }));
+    return body();
+  });
+}
+const q = (query: string, agent?: string): Promise<string> => asInspect(() => mod.sql({ query }), agent);
+const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 describe('schema', () => {
   it('lists every table with its row count and the meaning its migration gives it', () => {
@@ -102,23 +126,23 @@ describe('schema', () => {
 
 describe('sql', () => {
   it('runs a read and renders an aligned table with a header and the row count', async () => {
-    const out = await mod.sql({ query: "select id, role, content from messages where id in ('m-1', 'm-2') order by id" });
+    const out = await q("select id, role, content from messages where id in ('m-1', 'm-2') order by id");
     expect(out).toMatch(/^id {2}role {6}content$/m);
     expect(out).toMatch(/^m-1 assistant row 1$/m);
     expect(out).toMatch(/2 rows\./);
   });
 
   it('refuses a write with the sentence, before it reaches the connection — and the connection refuses it again', async () => {
-    for (const q of ['update work set title = 1', "delete from messages where id = 'm-1'", 'drop table work', "with x as (select 1) delete from messages where id = 'm-1'", 'pragma query_only = 0', "vacuum into '/tmp/x.db'"]) {
-      expect(await mod.sql({ query: q }), q).toMatch(/^Refused: only a read runs here/);
+    for (const stmt of ['update work set title = 1', "delete from messages where id = 'm-1'", 'drop table work', "with x as (select 1) delete from messages where id = 'm-1'", 'pragma query_only = 0', "vacuum into '/tmp/x.db'"]) {
+      expect(await q(stmt), stmt).toMatch(/^Refused: only a read runs here/);
     }
     expect(main.prepare("SELECT count(*) FROM messages WHERE id = 'm-1'").pluck().get()).toBe(1);
     expect(() => mod.connection.getReadOnlyDb().prepare("DELETE FROM messages WHERE id = 'm-1'").run()).toThrow(/read-only connection/);
   });
 
   it('allows EXPLAIN, and the extension loader is not reachable', async () => {
-    expect(await mod.sql({ query: "explain query plan select * from messages where id = 'm-1'" })).toMatch(/rows?\./);
-    expect(await mod.sql({ query: "select load_extension('x')" })).toMatch(/SQLite (refused the statement|stopped the query): not authorized/);
+    expect(await q("explain query plan select * from messages where id = 'm-1'")).toMatch(/rows?\./);
+    expect(await q("select load_extension('x')")).toMatch(/SQLite (refused the statement|stopped the query): not authorized/);
   });
 
   it('REVIEW FOCUS 2: no credential leaves, however the statement reaches for it', async () => {
@@ -134,13 +158,13 @@ describe('sql', () => {
       'select token as t, 0 as explain from destructive_approvals',
       "select rawtok as x from (select access_token as rawtok from 'google_accounts') t, (select 1 as explain) e",
       'explain select token from destructive_approvals',
-    ].map((query) => mod.sql({ query })));
+    ].map((query) => q(query)));
     expect(outs[0]).toMatch(/Refused: the statement reaches google_accounts/);
     expect(outs[2]).toMatch(/Refused: the statement reads destructive_approvals\.token/);
     expect(outs[4]).toContain('<redacted-credential>');
     for (const out of outs) for (const secret of [ACCESS, APPROVAL, PASTED, 'r-synthetic-value-0003']) expect(out).not.toContain(secret);
     for (const out of outs.slice(6)) expect(out).toMatch(/^Refused/);
-    expect(await mod.sql({ query: 'select agent_id, tool_name, status from destructive_approvals' })).toMatch(/1 row\./);
+    expect(await q('select agent_id, tool_name, status from destructive_approvals')).toMatch(/1 row\./);
   });
 
   it('REVIEW FOCUS 1: 100K rows come back whole, the view shows the head and a pointer, and the writer is never held', async () => {
@@ -165,7 +189,7 @@ describe('sql', () => {
     let ticks = 0;
     const timer = setInterval(() => { ticks++; }, 5);
     const t0 = Date.now();
-    const out = await mod.sql({ query: 'select id, content, created_at from messages order by seq' });
+    const out = await q('select id, content, created_at from messages order by seq');
     const t1 = Date.now();
     clearInterval(timer);
     // Fix round 1: the engine's own thread kept running while the query ran.
@@ -186,17 +210,47 @@ describe('sql', () => {
     expect(view.startsWith(out.slice(0, 200))).toBe(true);
   }, 120_000);
 
-  it('fix round 1 (B2-CRITICAL): a runaway query does not hold the engine thread, and the stop button ends it', async () => {
-    const { abortInFlight } = await import('../../agent/shared-state.js');
+  it('fix round 2 (B2-CRITICAL): Stop KILLS a runaway query — the process is gone, its snapshot released, the engine never held', async () => {
     let ticks = 0;
     const timer = setInterval(() => { ticks++; }, 5);
-    const run = mod.sql({ query: 'with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c' }, { agentId: 'agent-sql-stop' });
-    await new Promise((r) => setTimeout(r, 300));
+    let pid = 0;
+    const agent = 'agent-sql-stop';
+    const run = asInspect(() => mod.readInChild('select count(*) from messages a, messages b, messages c', (p) => { pid = p; }), agent);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(pid).toBeGreaterThan(0);
+    expect(alive(pid)).toBe(true);
+    // While it runs it holds a read snapshot: a full checkpoint cannot finish.
+    for (let i = 0; i < 20; i++) main.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, 'x')").run(`probe-a-${i}`);
+    expect((main.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>)[0].busy).toBe(1);
     const during = ticks;
-    abortInFlight('agent-sql-stop', 'user-stop', { scope: 'all' });
+    const stoppedAt = Date.now();
+    mod.runtime.stopAgent(agent);
     const out = await run;
+    const goneAfter = Date.now() - stoppedAt;
     clearInterval(timer);
     expect(during).toBeGreaterThan(10);
-    expect(out).toMatch(/^Stopped: you pressed stop/);
+    expect(out).toEqual({ ended: expect.stringMatching(/^Stopped: you pressed stop/) });
+    expect(alive(pid)).toBe(false);
+    expect(goneAfter).toBeLessThan(2000);
+    for (let i = 0; i < 20; i++) main.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, 'x')").run(`probe-b-${i}`);
+    expect((main.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>)[0].busy).toBe(0);
+    const shared = await import('../../agent/shared-state.js');
+    shared.stoppedAgents.delete(agent); shared.stopFencedRuns.delete(agent);
   }, 60_000);
+
+  it('fix round 2: a normal query still returns its rows through the child, and outside a dojo_inspect call nothing runs', async () => {
+    expect(await q("select id from messages where id = 'm-3'")).toMatch(/^m-3$/m);
+    expect(await mod.sql({ query: "select id from messages where id = 'm-3'" })).toMatch(/outside any authorized tool call/);
+  });
+
+  it("fix round 2: the child applies the read-only door's rules itself, whatever it is sent", async () => {
+    const copy = path.join(home, 'child-copy.db');
+    for (const stmt of ['pragma query_only = 0', `vacuum into '${copy}'`, `attach '${path.join(home, 'o.db')}' as o`,
+      "with x as (select 1) delete from config where key = 'platform_name'", '/* select */ delete from config']) {
+      const out = await asInspect(() => mod.readInChild(stmt));
+      expect(out, stmt).toEqual({ error: expect.stringMatching(/only a read runs here|readonly|read-only/) });
+    }
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+
 });
