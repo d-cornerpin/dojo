@@ -578,6 +578,19 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     expect(ask(), 'the message is kept, still the owner\'s open ask').toBe('open');
   });
 
+  it('v3.5 text wave (t257 parked): the notice in the agent\'s own chat and its last_error name the router window, never "pick a bigger model"', async () => {
+    await everyTierTooSmall();
+    await runV2Turn(AGENT);
+    const notice = (db().prepare(`SELECT content FROM messages WHERE agent_id = ? AND content LIKE '[System (platform notice):%'`).all(AGENT) as Array<{ content: string }>).map((r) => r.content);
+    const lastError = (db().prepare('SELECT last_error FROM agents WHERE id = ?').get(AGENT) as { last_error: string }).last_error;
+    expect(notice).toHaveLength(1);
+    for (const t of [notice[0], lastError]) {
+      expect(t).toMatch(/on automatic model choice it runs at the router's one .* window/);
+      expect(t).not.toMatch(/Pick a bigger model for this agent/);
+    }
+    expect(lastError.startsWith('[no_model_fits] ')).toBe(true);
+  });
+
   // v3.5 N42 (the owner's design): every automatic pick runs at ONE router window, the smallest tier
   // model's, so the tiny model is lifted only by taking it off the router (or raising it): a roomy model
   // on ONE tier beside it leaves the window where it was.

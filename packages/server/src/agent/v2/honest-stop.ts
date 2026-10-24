@@ -101,7 +101,7 @@ function budgetStop(agentId: string, freeDown = false): HonestStop {
   };
 }
 
-const noFit = (): HonestStop => ({ kind: 'no_model_fits', words: honestStopWords('no_model_fits'), budget: null });
+const noFit = (agentId: string): HonestStop => ({ kind: 'no_model_fits', words: noFitOwnerWords(agentId), budget: null });   // an auto agent's names the router window
 
 /** Is the pinned model's own window the one that refused? (Else a stand-in's did.) */
 async function pinnedWindowRefused(agentId: string, refusalWindow: number): Promise<boolean> {
@@ -117,7 +117,7 @@ export async function classifyHonestStop(agentId: string, error: unknown): Promi
   const codes = links.map((e) => (e instanceof AgentError ? e.code : undefined));
   if (codes.includes(FREE_FALLBACK_DOWN_CODE)) return budgetStop(agentId, true);
   if (codes.includes(BUDGET_STOP_CODE) || codes.includes('BUDGET_EXCEEDED')) return budgetStop(agentId);
-  if (codes.includes(NO_MODEL_FITS_CODE)) return noFit();
+  if (codes.includes(NO_MODEL_FITS_CODE)) return noFit(agentId);
   // The auto-router found no model at all, and the money limit is what filtered them out.
   if (codes.includes('NO_MODEL') && budgetStopFor(agentId)) return budgetStop(agentId);
 
@@ -128,10 +128,10 @@ export async function classifyHonestStop(agentId: string, error: unknown): Promi
     // A routed turn's per-pick refusals have their own exit (call-llm). The bare refusal that reaches
     // here is the FIRST assembly's, sized for the router window (v3.5 N42; t149 F5):
     // when no model of the agent's own holds it, no pick can — the same stop as a pinned agent.
-    if (row.model_id === 'auto') return (await agentFits(agentId)) ? null : noFit();
+    if (row.model_id === 'auto') return (await agentFits(agentId)) ? null : noFit(agentId);
     // The pinned model holds the agent, and the limit sent the call to a free stand-in that cannot.
     if (budgetStopFor(agentId) && !(await pinnedWindowRefused(agentId, refusal.policy.contextWindow))) return budgetStop(agentId);
-    return noFit();
+    return noFit(agentId);
   }
   return null;
 }
