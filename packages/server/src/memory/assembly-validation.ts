@@ -137,6 +137,8 @@ export class AssemblyValidationError extends Error {
     super(message);
     this.name = 'AssemblyValidationError';
   }
+  /** v3.5 D18: set on a SIZE refusal by `refuseAndCondense` — what was dialed, and the condense it started. */
+  refusedDial?: { modelId: string; systemPromptTokens: number; condensed: Promise<unknown> | null };
 }
 
 /**
@@ -478,9 +480,7 @@ export function repairAssembly(
   }
 
   const after = validateAssembly(kept, { ...opts, laneIds: keptLanes });
-  // Fix round 1 (review M1): only an array that WOULD fit without the conversation is refused as
-  // LIVE_CONVERSATION_PROTECTED (and condensed). One that would not fit even then — the system
-  // prompt and tools alone overflow the window — is UNREPAIRABLE: no condense can help it.
+  // Review M1: LIVE_CONVERSATION_PROTECTED only when it would fit without the tagged conversation (both condense, D18).
   const tailTokens = kept.reduce((t, m, i) => t + (keptLanes[i] === LIVE_CONVERSATION_LANE ? messageTokens(m) : 0), 0);
   if (keptLanes.includes(LIVE_CONVERSATION_LANE) && after.tokenTotal - tailTokens <= after.budgetTokens) {
     throw new AssemblyValidationError(
@@ -656,9 +656,8 @@ export async function validateAtProviderBoundary(
   try {
     repaired = repairAssembly(input.messages, opts);
   } catch (err) {
-    if (err instanceof AssemblyValidationError && err.code === 'LIVE_CONVERSATION_PROTECTED') {
-      refuseAndCondense(input, err, result);
-    }
+    // v3.5 D18: EVERY size refusal condenses (UNREPAIRABLE went to the injury path); a shape refusal does not.
+    if (err instanceof AssemblyValidationError && err.violations.some((v) => v.code === 'budget-exceeded')) refuseAndCondense(input, err, result);
     throw err;
   }
   input.messages.splice(0, input.messages.length, ...repaired.messages);
@@ -676,28 +675,29 @@ export async function validateAtProviderBoundary(
 /**
  * t140 — the refusal as a repairable-defect report, with the repair started: a durable sink
  * record under its own code (countable on a box, not just a rotated log line), a named log line,
- * and a FORCED condense against the dialed model's window, in the background because it dials a
- * model (skip-if-busy per agent, bounded by the forced pass's own limits). The caller re-throws.
+ * and a FORCED condense against the dialed window, in the background (it dials a model; skip-if-busy).
+ * The caller re-throws; the condense rides the error so recovery re-assembles only after it (D18).
+ * A system prompt that alone leaves no room (budget 0) is condensed for nothing: no condense helps.
  */
 function refuseAndCondense(
   input: BoundaryCheckInput, err: AssemblyValidationError, result: AssemblyValidation,
 ): void {
   appendDivergenceRecord({
     at: new Date().toISOString(), pid: process.pid, mode: ASSEMBLY_VALIDATION_MODE,
-    agentId: input.agentId, modelId: input.modelId, codes: ['live-conversation-protected'],
+    agentId: input.agentId, modelId: input.modelId, codes: [err.code.toLowerCase().replace(/_/g, '-')],
     violations: [err.message], tokenTotal: result.tokenTotal, budgetTokens: result.budgetTokens,
     overBy: result.overBy, messageCount: input.messages.length,
     checked: checkedCalls, diverged: divergentCalls,
   });
   logger.error(
-    `ASSEMBLY_VALIDATION_LIVE_CONVERSATION_PROTECTED tokens=${result.tokenTotal} ` +
+    `ASSEMBLY_VALIDATION_${err.code} tokens=${result.tokenTotal} ` +
     `budget=${result.budgetTokens} dropped=${err.droppedLaneIds.join('|') || 'none'}`,
     { agentId: input.agentId, modelId: input.modelId, contextWindow: input.contextWindow },
     input.agentId,
   );
   // Measured for the dialed model; WRITTEN by the summary writer resolved from the agent's
   // configured model (fix round 1, review I3), never by a dialed routed pick.
-  void Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
+  err.refusedDial = { modelId: input.modelId, systemPromptTokens: estimateTokens(input.systemPrompt), condensed: result.budgetTokens === 0 ? null : Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
     .then(([{ checkAndCompact, forcedCompactionOptions }, { getDb }, { turnPatienceMs }]) => {
       const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as
         { model_id: string | null } | undefined)?.model_id ?? input.modelId;
@@ -705,9 +705,9 @@ function refuseAndCondense(
         { ...forcedCompactionOptions(turnPatienceMs(input.agentId, input.modelId)), dialedModelId: input.modelId });
     })
     .catch((condenseErr: unknown) => {
-      logger.warn('the condense started by a live-conversation refusal failed', {
+      logger.warn('the condense started by a size refusal failed', {
         agentId: input.agentId,
         error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr),
       }, input.agentId);
-    });
+    }) };
 }

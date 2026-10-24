@@ -275,8 +275,9 @@ export async function recoverFromError(
     // `false` iff it never got the chance to (I2's bail cases).
   }
 
-  // 1. Context overflow — provider rejected because prompt too big.
-  //    Dreamer gets batch-resize; everyone else gets force-compact + wakeup.
+  // 0.9. v3.5 D18: the boundary's own over-budget refusal condenses and re-assembles once, or stops with the card.
+  if (await (await import('./over-budget-assembly.js')).tryOverBudgetAssemblyRecovery(state, error)) return;
+  // 1. Context overflow — provider rejected because prompt too big; Dreamer batch-resize, else force-compact + wakeup.
   if (await tryContextOverflowRecovery(state, fullErrText, message, code, cause)) {
     return;
   }

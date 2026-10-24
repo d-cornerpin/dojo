@@ -120,8 +120,11 @@ describe('the durable divergence sink', () => {
     const p = assemblyValidationSinkPath();
     expect(fs.existsSync(p)).toBe(true);
 
+    // v3.5 D18: a size refusal also writes its own refusal record (code `unrepairable`), as the
+    // live-conversation refusal always did; the divergence is still exactly one line.
     const lines = fs.readFileSync(p, 'utf8').trim().split('\n');
-    expect(lines).toHaveLength(1);
+    expect(lines.filter((l) => JSON.parse(l).codes.includes('budget-exceeded'))).toHaveLength(1);
+    expect(lines.filter((l) => JSON.parse(l).codes.includes('unrepairable'))).toHaveLength(1);
     const rec = JSON.parse(lines[0]);
     expect(rec.codes).toContain('budget-exceeded');
     expect(rec.agentId).toBe('zargo');
@@ -140,7 +143,7 @@ describe('the durable divergence sink', () => {
     await boundaryThatFails(oversized());
     const both = fs.readFileSync(assemblyValidationSinkPath(), 'utf8');
     expect(both.startsWith(first)).toBe(true);
-    expect(both.trim().split('\n')).toHaveLength(2);
+    expect(both.trim().split('\n')).toHaveLength(4);   // D18: divergence + refusal record per call
   });
 
   it('4. the record carries what the day-7 read needs, INCLUDING its own denominator', async () => {
@@ -170,8 +173,8 @@ describe('the durable divergence sink', () => {
     // a restart is exactly this: the module counters go to zero, the file does not
     __resetAssemblyValidationCounters();
     await boundaryThatFails(oversized());
-    const recs = readAssemblyValidationSink(assemblyValidationSinkPath());
-    expect(recs).toHaveLength(2);
+    const recs = readAssemblyValidationSink(assemblyValidationSinkPath()).filter((r) => r.codes.includes('budget-exceeded'));
+    expect(recs).toHaveLength(2);   // D18: the refusal records beside them are filtered out
     // and the second record's own denominator restarted at 1 — which is WHY the pid is on
     // the row: `checked` is per-process and must never be summed across processes
     expect(recs[1].checked).toBe(1);
