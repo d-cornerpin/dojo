@@ -9,9 +9,14 @@
 // Driven through the real doors: the refusal is the real boundary's (`validateAtProviderBoundary`),
 // recovery is `recoverFromError`, and the Healer is the real `onAgentInjured` with its real timers.
 // Only the condense (`checkAndCompact`, which dials a summary writer) is scripted.
-//   · the first refusal: one condense, then ONE wake for the re-assembly; no injury, no Healer.
-//   · the re-assembly still over: the WINDOW_TOO_SMALL card, status paused (never error), no
-//     re-run of any kind, no "stuck" text, and the Healer's attempt counter untouched.
+//   · a refusal whose instructions and tools FIT (measured as the no-fit release measures it): wait for
+//     the condense, then ONE wake for the re-assembly (the full-context-wait park) — again on a repeat,
+//     and when the condense failed. Never the card, never an injury, never an owner text.
+//   · a refusal whose instructions and tools truly overflow: the WINDOW_TOO_SMALL card, status paused
+//     (never error), no re-run of any kind, no "stuck" text, the Healer's counter untouched — and a
+//     config edit that does not make it fit does not release it.
+// (Fix round 1, orchestrator ruling: the plan's "still over after one condense ⇒ instructions and tools
+//  overflow" is not true; the card is shown only when the measurement says so.)
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -32,6 +37,8 @@ const seen = vi.hoisted(() => ({
   texts: [] as string[],
   reruns: 0,
   condenses: 0,
+  condenseFails: false,
+  toolPayload: 0,
 }));
 vi.mock('../../../gateway/ws.js', () => ({
   broadcast: (e: Record<string, unknown>) => { seen.cards.push(e); },
@@ -49,11 +56,15 @@ vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
 }));
 vi.mock('../../../memory/compaction.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  checkAndCompact: async () => { seen.condenses++; return { compacted: true }; },
+  checkAndCompact: async () => {
+    seen.condenses++;
+    if (seen.condenseFails) throw new Error('the summary writer did not answer');
+    return { compacted: true };
+  },
 }));
 vi.mock('../../../tools/tool-docs.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  measureAgentToolPayloadTokens: async () => 0,
+  measureAgentToolPayloadTokens: async () => seen.toolPayload,
 }));
 
 import { runMigrations } from '../../../db/migrations.js';
@@ -66,7 +77,6 @@ import {
 } from '../../../memory/assembly-validation.js';
 import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
 import { __resetStarvedWindowsForTests } from '../../../memory/window-starvation-card.js';
-import { __resetOverBudgetAssemblyForTests } from '../over-budget-assembly.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -91,9 +101,10 @@ beforeEach(() => {
   seen.texts.length = 0;
   seen.reruns = 0;
   seen.condenses = 0;
+  seen.condenseFails = false;
+  seen.toolPayload = 0;
   pendingWakeups.clear();
   __resetStarvedWindowsForTests();
-  __resetOverBudgetAssemblyForTests();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
@@ -155,11 +166,39 @@ describe('D18: the first over-budget refusal condenses and re-assembles once; it
   });
 });
 
-describe('D18: the re-assembly still over budget stops with the card', () => {
-  it('the card, status paused, zero re-runs, no stuck text, the Healer\'s counter unchanged', async () => {
+describe('D18 fix round 1: the woken re-assembly still over while instructions and tools fit', () => {
+  it('the full-context-wait park again: condense, one wake — never the card, never paused, never a text', async () => {
     await recover(await boundaryRefusal(), 7);
     pendingWakeups.clear();   // the drain served the wake: turn 8 is the re-assembly
     await recover(await boundaryRefusal(), 8);
+    expect(windowCards(), 'the instructions and tools fit: the card would be false').toEqual([]);
+    expect(agent().status).not.toBe('paused');
+    expect(agent().status).not.toBe('error');
+    expect(pendingWakeups.has(AGENT), 'one more wake: the next re-assembly').toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(seen.reruns, 'no Healer auto-wake').toBe(0);
+    expect(seen.texts, 'no owner text of any kind').toEqual([]);
+    expect(seen.condenses).toBe(2);
+  });
+
+  it('the condense FAILED: still the full-context-wait park, no card, no text', async () => {
+    seen.condenseFails = true;
+    await recover(await boundaryRefusal(), 7);
+    expect(windowCards()).toEqual([]);
+    expect(agent().status).not.toBe('paused');
+    expect(agent().status).not.toBe('error');
+    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(seen.texts).toEqual([]);
+  });
+});
+
+describe('D18 fix round 1: instructions and tools truly overflow the window', () => {
+  /** A tool surface that alone fills the window: measured, the agent cannot run on its model. */
+  const overflowingTools = (): void => { seen.toolPayload = 125_000; };
+
+  it('the card, status paused, zero re-runs, no stuck text, the Healer\'s counter unchanged', async () => {
+    overflowingTools();
+    await recover(await boundaryRefusal(), 7);
     expect(windowCards(), 'the owner is told what to change').toHaveLength(1);
     expect(agent().status, 'paused, never error').toBe('paused');
     expect(agent().last_error ?? '').toMatch(/^\[no_model_fits\]/);
@@ -168,15 +207,15 @@ describe('D18: the re-assembly still over budget stops with the card', () => {
     expect(seen.reruns, 'zero re-runs').toBe(0);
     expect(stuckTexts(), 'no "stuck" text').toEqual([]);
     expect(agent().recovery_attempts ?? 0).toBe(0);
-    expect(seen.condenses, 'one per refusal, the boundary\'s: the stop itself starts nothing').toBe(2);
   });
 
-  it('a refusal later in a turn that already dialed is a fresh chain: it condenses again, no card', async () => {
+  it('a config edit that does not make it fit does not release it', async () => {
+    overflowingTools();
     await recover(await boundaryRefusal(), 7);
-    pendingWakeups.clear();
-    await recover(await boundaryRefusal(), 8, 3);   // the re-assembly dialed; its third call grew past budget
-    expect(windowCards()).toEqual([]);
-    expect(agent().status).not.toBe('paused');
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(agent().status).toBe('paused');
+    const { noteModelsChanged } = await import('../honest-stop-lock.js');
+    await noteModelsChanged();
+    expect(agent().status, 'still unfit: still parked').toBe('paused');
+    expect(seen.reruns, 'not woken into the same refusal').toBe(0);
   });
 });

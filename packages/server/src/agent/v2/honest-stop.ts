@@ -83,7 +83,7 @@ export function budgetStopFor(agentId: string): ExceededBudget | null {
 }
 
 /** Whether a model of the agent's own can hold its instructions and tools right now (the fit, re-measured). */
-async function agentFits(agentId: string): Promise<boolean> {
+export async function agentFits(agentId: string): Promise<boolean> {
   const [{ anOwnModelHolds }, { measureAgentToolPayloadTokens }] = await Promise.all([
     import('./steps/call-llm/reassemble-for-fit.js'), import('../../tools/tool-docs.js'),
   ]);
