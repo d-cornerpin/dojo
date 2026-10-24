@@ -464,7 +464,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Outlook message ID to move. A move to archive or deleteditems takes the message\'s conversation (the messages in its folder) unless this_message_only is true.' },
-        conversation_id: { type: 'string', description: 'Move this whole conversation (the "Conversation:" id the mail reads print) instead of one message. Give this or message_id.' },
+        conversation_id: { type: 'string', description: 'Move this whole conversation (the "Conversation:" id the mail reads print) instead of one message. To archive or deleteditems, Sent Items and Drafts copies stay put. Give this or message_id.' },
         this_message_only: { type: 'boolean', description: 'true = move just this one message even to archive or deleteditems.' },
         folder_id: { type: 'string', description: 'Destination folder ID (from outlook_list_folders), or archive / deleteditems.' },
       },
