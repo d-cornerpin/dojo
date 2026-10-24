@@ -3,15 +3,18 @@
 //
 // The registry maps each countable read tool to its counter. Adding a provider (an Outlook search,
 // say) is one entry here plus one counter file beside that provider's client.
-import { countGmailSearch } from '../google/measure-count.js';
+// The counter is loaded when a count is made, never at import: a static import here put this module on a
+// cycle (google/client → … → the runtime → tracker/pm-agent → back here), so any module of the PM's graph that
+// read a measure's words saw a half-loaded registry, and a test seam on `countMeasure` stopped being reached.
+const gmail = async (): Promise<typeof import('../google/measure-count.js')> => import('../google/measure-count.js');
 
 export interface Measure { tool: 'gmail_search' | 'user_gmail_search'; args: { query: string; account?: string }; unit: string }
 export type MeasureCount = { ok: true; count: number } | { ok: false; error: string };
 type Counter = (m: Measure, agentId: string, agentName: string) => Promise<MeasureCount>;
 
 const COUNTERS: Record<Measure['tool'], Counter> = {
-  gmail_search: (m, agentId, agentName) => countGmailSearch(m.args, agentId, agentName, 'agent'),
-  user_gmail_search: (m, agentId, agentName) => countGmailSearch(m.args, agentId, agentName, 'user'),
+  gmail_search: async (m, agentId, agentName) => (await gmail()).countGmailSearch(m.args, agentId, agentName, 'agent'),
+  user_gmail_search: async (m, agentId, agentName) => (await gmail()).countGmailSearch(m.args, agentId, agentName, 'user'),
 };
 
 /** Every tool the engine can count, for readers that must size a line around the longest name. */

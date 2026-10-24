@@ -8,6 +8,7 @@
 import { getDb } from '../db/connection.js';
 import { ledgerNewItemsSince, ledgerTotals } from '../work/ledger-store.js';
 import { lastTurnEnd } from '../work/job-momentum.js';
+import { parseMeasure, describeMeasure } from '../work/measure.js';
 import { listTaskLog } from './task-log.js';
 
 /** Is this a measured job the engine has been continuing that touched NO new item since `sinceMs`
@@ -35,13 +36,11 @@ export function measuredLeftFact(taskId: string): string | null {
   const row = getDb().prepare('SELECT measure_json, measure_initial, measure_remaining FROM work WHERE id = ?')
     .get(taskId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null } | undefined;
   if (!row?.measure_json || row.measure_remaining === null || row.measure_remaining <= 0) return null;
-  let m: { tool?: unknown; args?: { query?: unknown }; unit?: unknown };
-  try { m = JSON.parse(row.measure_json) as typeof m; } catch { return null; }
-  if (typeof m.tool !== 'string' || typeof m.args?.query !== 'string') return null;
+  let parsed: ReturnType<typeof parseMeasure>;
+  try { parsed = parseMeasure(JSON.parse(row.measure_json)); } catch { return null; }
+  if (!parsed.ok) return null;
   const start = row.measure_initial === null ? '' : ` (of ${row.measure_initial.toLocaleString('en-US')} at the start)`;
-  // The words of `work/measure.ts describeMeasure`, read off the stored row. Importing the registry here (into
-  // the PM's module graph) stopped the measured-close suites' counter seam from being reached, so it is not imported.
-  return `Its measure (${m.tool} "${m.args.query}") still returns ${row.measure_remaining.toLocaleString('en-US')} ${typeof m.unit === 'string' ? m.unit : 'items'}${start}.`;
+  return `Its measure (${describeMeasure(parsed.measure)}) still returns ${row.measure_remaining.toLocaleString('en-US')} ${parsed.measure.unit}${start}.`;
 }
 
 /** The check-in handed to a continued job at its PARK (t261's short form). The PM rider is read as a
@@ -60,7 +59,7 @@ function measureNoneLeft(taskId: string): string {
 }
 
 /** What the validator judges a close on, from the records (orchestrator ruling, text wave): the measure,
- *  what the task's calls touched, and the remainder its agent named, if any. Read off the rows, like `measuredLeftFact`. */
+ *  what the task's calls touched, and the remainder its agent named, if any. */
 export function validationRecordLine(taskId: string): string {
   const touched = `${ledgerTotals(taskId).touched.toLocaleString('en-US')} items touched by its calls`;
   const left = measuredLeftFact(taskId) ?? measureNoneLeft(taskId);
