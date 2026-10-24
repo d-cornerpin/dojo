@@ -1,5 +1,4 @@
 import { closeoutReceipts } from './closeout-receipts.js';
-import { closeoutMeasure, stalledRetaskExample } from './closeout-measure.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -607,6 +606,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     });
   }
 
+  const { closeoutMeasure, stalledRetaskExample } = await import('./closeout-measure.js');   // lazy, like the two doors below: its import graph reaches the mailbox counter
   const measured = rows.map((r) => closeoutMeasure(r.id));   // v3.5 D2: the measured record and any stall, per task
   const taskLines = rows
     .map((r, i) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})${measured[i].lines}`)
