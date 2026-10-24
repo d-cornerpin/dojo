@@ -44,7 +44,7 @@ import {
 // config row, so it adds no cycle to this module.
 import { getOwnerName } from '../config/platform.js';
 import { takeoverRefusal } from './row-authority.js';
-import { measuredCloseRefusal } from './measure-close-gate.js';
+import { measuredCloseRefusal, recordOwnerRemainder } from './measure-close-gate.js';
 // SLOW-INFERENCE T79c: the durable effort meter's ADVANCE half. `effort-governor.ts` is a
 // leaf (imports only the DB connection), so importing it here creates no cycle with the
 // CHARGE half at `agent/v2/steps/execute/tracker-counting.ts` — see that module's header.
@@ -774,7 +774,7 @@ export function setTrackerStatus(
   // t129: the blocked-work disposal gate. HERE, and not one layer up in `tracker/schema.ts`,
   // because this function is "the tracker's one status writer" and that is the only place
   // every tracker status writer crosses — see the gate's own header below.
-  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input) ?? measuredCloseRefusal(id, status);   // t193 (dec 2); v3.5: nor measured work with items left
+  const disposal = blockedDisposalRefusal(id, status, input) ?? takeoverRefusal(id, to, input) ?? measuredCloseRefusal(id, status, input);   // t193 (dec 2); v3.5: nor measured work with items left
   if (disposal) {
     logger.warn(`status change refused (${disposal.reason})`, { workId: id, status, by: input.by, actorId: input.actorId });
     return disposal;
@@ -825,7 +825,7 @@ export function setTrackerStatus(
   // bookkeeping must never be able to fail or roll back a state change that has
   // already been decided.
   if (result.kind === 'applied') {
-    advanceBaseline(id);
+    advanceBaseline(id); recordOwnerRemainder(id, status, input);   // v3.5: what the owner closed with items left
   }
   return result;
 }

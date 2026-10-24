@@ -1,6 +1,7 @@
 import { closeoutReceipts } from './closeout-receipts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
+import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -2681,7 +2682,9 @@ export async function runPokeCheck(): Promise<void> {
     // task itself, complete, with the receipt basis recorded, and the normal
     // validation flow takes it from there. Engine-enforced, not nudged: the
     // neutral nudge was tried live and the floor model paused the task.
-    const deliveryEvidence = task.status === 'in_progress' && !leftAlone ? findDeliveryEvidenceForTask(task.id) : null;
+    // v3.5: a measured task whose measure still shows items left is not done, whatever was delivered:
+    // no close-out steer, no receipt close; the ordinary ladder drives it (`work/measure-close-gate.ts`).
+    const deliveryEvidence = task.status === 'in_progress' && !leftAlone && measuredItemsLeft(task.id) === 0 ? findDeliveryEvidenceForTask(task.id) : null;
     // Strike 2 requires a TANGIBLE handover on record (artifact or channel
     // delivery), not just an answered reply: the engine only ever closes a
     // task on evidence it can point at. Text-only deliveries keep getting

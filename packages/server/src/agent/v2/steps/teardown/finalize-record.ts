@@ -467,6 +467,7 @@ export async function finalizeTurnRecord(
           }, agentId);
         }
         if (ladder.standDownDue && ladder.taskId) {
+          await (await import('../../../tools/cat/measure-door.js')).remeasureTask(agentId, ladder.taskId);   // v3.5: judged on a fresh reading
           const { onTaskRunComplete } = await import('../../../../scheduler/runner.js');
           await onTaskRunComplete(
             ladder.taskId, 'complete',

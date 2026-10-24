@@ -799,6 +799,7 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
 export async function closeRunsThatDelivered(): Promise<number> {
   let closed = 0;
   for (const row of runsReadyToCloseOnDelivery()) {
+    await (await import('../agent/tools/cat/measure-door.js')).remeasureTask('scheduler', row.taskId);   // v3.5: the run is judged on a fresh reading
     logger.info('Scheduler: a run delivered — closing it on the message', {
       taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId,
       tool: row.tool, steered: row.steered,
@@ -2050,11 +2051,11 @@ export function forceResetStuckRecurringTask(taskId: string): void {
       resultDeliveryId: frDelivery,
       reason: 'stuck recurring task has no future runs left',
     });
-    if (!workSettled(frRes)) {
-      logger.warn('Scheduler: force-reset close refused by the work gate', { taskId, result: frRes });
-    }
-    noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: stuck recurring task had no next occurrence, schedule completed', { taskId });
-    logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
+    // v3.5: say what happened. A refused close (a measure with items left) leaves the task open, and
+    // a schedule already recorded `completed` is not patched again (no false movement every retry).
+    if (task.schedule_status !== 'completed') noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: stuck recurring task had no next occurrence, schedule completed', { taskId });
+    if (workSettled(frRes)) logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
+    else logger.warn('Scheduler: force-reset stuck recurring task — no future runs; its close was refused by the work gate, the task stays open', { taskId, title: task.title, result: frRes });
   }
 
   // Re-broadcast the fresh FULL task row so the kanban card reflects the

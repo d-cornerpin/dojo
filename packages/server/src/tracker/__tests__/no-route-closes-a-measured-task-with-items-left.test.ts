@@ -42,6 +42,8 @@ import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 import { fileAssignDeliverableCloseRequest } from '../tools.js';
 import { agentsHandlers } from '../../agent/tools/cat/agents.js';
+import { trackerRouter } from '../../gateway/routes/tracker.js';
+import { fileOverrideRequest } from '../../work/override-requests.js';
 
 const AGENT = 'agent-measured';
 const MEASURE = { tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' };
@@ -200,5 +202,44 @@ describe('the PM\'s own close', () => {
     await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE }, PM);
     expect(countMeasure.mock.calls.at(-1)![1]).toBe(AGENT);
     expect(readWork(id).measure_remaining).toBe(9);
+  });
+});
+
+describe('fix round 3 (NB1): THE OWNER CAN ALWAYS CLOSE HIS OWN TASK', () => {
+  const ownerNotes = (id: string): string[] => (db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'").all(id) as Array<{ payload: string }>)
+    .map((r) => r.payload).filter((p) => p.includes('Closed by the owner with'));
+
+  it('the writer never refuses by:"owner", and records what was left', async () => {
+    const id = await openMeasured(30);
+    const delivery = (db().prepare('SELECT id FROM deliveries ORDER BY rowid DESC LIMIT 1').get() as { id: string }).id;
+    const r = setTrackerStatus(id, 'complete', { by: 'owner', actorId: 'user', claim: 'authoritative', reason: 'the owner closed it', resultDeliveryId: delivery });
+    expect(r).not.toMatchObject({ reason: 'measure-items-left' });
+    expect(r.kind).toBe('applied');
+    expect(ownerNotes(id)).toEqual([expect.stringContaining('Closed by the owner with 30 messages left.')]);
+  });
+
+  it('the dashboard drag to complete returns 200', async () => {
+    const id = await openMeasured(30);
+    const res = await trackerRouter.request(`/tasks/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'complete' }) });
+    expect(res.status).toBe(200);
+    expect(readWork(id).state).toBe('done');
+  });
+
+  it('the owner approving a complete override closes the task', async () => {
+    const id = await openMeasured(30);
+    const reqId = fileOverrideRequest(id, { requestedBy: AGENT, requestedStatus: 'complete', justification: 'the rest are not mine to do' });
+    const res = await trackerRouter.request(`/override-requests/${reqId}/resolve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approve: true, reason: 'leave the rest' }) });
+    expect(res.status).toBe(200);
+    expect(readWork(id).state).toBe('done');
+  });
+
+  it('the owner\'s project close closes its measured tasks too', async () => {
+    countMeasure.mockResolvedValueOnce({ ok: true, count: 42 });
+    const out = await call('work_open:project', { title: 'Mailbox clean-up', level: 1, allow_duplicate: true, tasks: [{ title: 'Label the inbox', measure: MEASURE }] });
+    const project = /project_id=([0-9a-f-]{36})/.exec(out.content)![1];
+    const res = await trackerRouter.request(`/projects/${project}/close`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'complete', reason: 'good enough for me' }) });
+    expect(res.status).toBe(200);
+    const open = db().prepare("SELECT COUNT(*) AS n FROM work WHERE parent_id = ? AND state NOT IN ('done', 'failed', 'abandoned')").get(project) as { n: number };
+    expect(open.n).toBe(0);
   });
 });

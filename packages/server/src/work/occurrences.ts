@@ -51,6 +51,7 @@
 // (single-writer clause (a)). It does not write `work.state` — every close goes through
 // `transition()` in `store.ts` (clause (b)).
 
+import { runItemsLeft, recordRunRemainder, RUN_STATUS_INCOMPLETE } from './measure-close-gate.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
@@ -538,7 +539,9 @@ export function settleOccurrence(
   let effectiveStatus = runStatus;
   let effectiveDelivery = deliveryId;
   let gateNote: string | null = null;
-  if (runStatus === 'complete') {
+  const left = runStatus === 'complete' ? runItemsLeft(occurrenceId) : null;   // v3.5: not complete while its measure lists items
+  if (left) { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${left.left} ${left.unit} left by the task's measure`; }
+  if (effectiveStatus === 'complete') {
     const owed = occurrenceOwesDeliverable(occurrenceId);
     if (owed.owes) {
       const evidence = runDeliverableEvidence(occurrenceId);
@@ -620,6 +623,8 @@ export function settleOccurrence(
       to: 'abandoned', by: 'scheduler', actorId: 'scheduler',
       reason: runStatusInner === 'complete'
         ? 'the run for this occurrence finished with nothing delivered to a person'
+        : runStatusInner === RUN_STATUS_INCOMPLETE
+          ? `the run for this occurrence ended with ${gateNote}; it is recorded INCOMPLETE rather than complete`
         : runStatusInner === RUN_STATUS_UNDELIVERED
           ? 'the run for this occurrence ended and reached NOBODY: the task owes the person a '
             + 'user-visible message and none was ever sent. It is recorded UNDELIVERED rather '
@@ -648,6 +653,7 @@ export function settleOccurrence(
     appendWorkEvent(occurrenceId, OCCURRENCE_EVENT.settled, 'scheduler', {
       run_status: runStatusInner, summary: summary ?? null,
     });
+    if (left) recordRunRemainder(occurrenceId, left);
   }
   return result;
   });
