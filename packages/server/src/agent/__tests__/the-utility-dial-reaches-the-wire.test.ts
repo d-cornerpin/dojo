@@ -50,6 +50,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache } from '../model.js';
 import { utilityDial } from '../utility-dial.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -61,6 +62,7 @@ const RECOMMENDED_NUM_CTX = 28_672;
 const MAX_OUTPUT_TOKENS = 32_768;
 
 interface OllamaBody {
+  keep_alive?: number | string;
   think?: boolean;
   options?: { num_ctx?: number; num_predict?: number };
   messages?: Array<{ role: string; content: string }>;
@@ -266,5 +268,33 @@ describe('⚠ AN AGENT TURN ON THE SAME MODEL IS UNTOUCHED — the whole blast r
     expect(bodies[0].think).toBe(true);
     expect(bodies[0].options?.num_ctx).toBe(RECOMMENDED_NUM_CTX);
     expect(bodies[0].options?.num_predict).toBe(MAX_OUTPUT_TOKENS);
+  });
+});
+
+// v3.5 A3 — the Dojo's writer is RESIDENT: it takes no Ollama lock slot (services/ollama-lock.ts), so
+// it must also be kept loaded, or the first call after an agent's turn reloads it from disk.
+describe('the Dojo\'s standard writer is kept resident on the wire', () => {
+  beforeEach(() => {
+    mockDb.current!.prepare(`
+      INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window,
+                          max_output_tokens, thinking_enabled, num_ctx_recommended, is_enabled,
+                          created_at, updated_at)
+      VALUES ('m-std-writer', 'local-ollama', 'Standard writer', ?, '["chat"]', 262144,
+              ?, 1, ?, 1, datetime('now'), datetime('now'))
+    `).run(STANDARD_WRITER_MODEL.tag, MAX_OUTPUT_TOKENS, RECOMMENDED_NUM_CTX);
+    clearClientCache();
+  });
+
+  it('a writer call carries keep_alive -1', async () => {
+    await callModel({
+      agentId: 'a-fixture', modelId: 'm-std-writer', systemPrompt: '',
+      messages: [{ role: 'user', content: 'x'.repeat(1_200) }], tools: false, purpose: 'ask_title',
+    });
+    expect(bodies[0].keep_alive).toBe(-1);
+  });
+
+  it('any other local model keeps Ollama\'s own keep-alive (nothing is sent)', async () => {
+    await dial('ask_title');
+    expect(bodies[0].keep_alive).toBeUndefined();
   });
 });

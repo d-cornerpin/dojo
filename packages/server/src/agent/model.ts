@@ -916,6 +916,7 @@ export function contractForConfiguredModel(modelId: string | null | undefined): 
 //   • `done_reason` / `done: true` instead of `finish_reason`
 
 import { getOllamaLock } from '../services/ollama-lock.js';
+import { STANDARD_TAGS } from '../services/local-standard.js';
 
 interface NativeOllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -1209,6 +1210,8 @@ async function callOllamaModel(
     // their AGENT's turns; inheriting it here is what spent 4,156 output tokens of reasoning on a
     // 60-character ticket title. The engine's own artifacts are not the place for deliberation.
     think: dial ? false : modelInfo.thinkingEnabled,
+    // v3.5: the Dojo's two standard models stay resident; they take no lock slot (`services/ollama-lock.ts`).
+    ...(STANDARD_TAGS.includes(ollamaModelName) ? { keep_alive: -1 } : {}),
   };
   if (nativeTools && nativeTools.length > 0) {
     requestBody.tools = nativeTools;
