@@ -59,6 +59,13 @@ export function ledgerTouchedSince(workId: string, sinceMs: number): number {
   return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND last_at > ?').get(workId, sinceMs) as { n: number }).n;
 }
 
+/** v3.5 D1: items this task touched for the FIRST time after `sinceMs`. The turn end's momentum reads
+ *  this, not `ledgerTouchedSince`: re-touching what the task already touched is not progress, so a
+ *  loop over the same items cannot keep a job continuing (`post-call-classify/job-continues.ts`). */
+export function ledgerNewItemsSince(workId: string, sinceMs: number): number {
+  return (getDb().prepare('SELECT COUNT(*) AS n FROM work_ledger WHERE work_id = ? AND first_at > ?').get(workId, sinceMs) as { n: number }).n;
+}
+
 /** Store a reading of the task's measure. `remaining` null = the measure could not be read at `at`;
  *  `initial` is given only when the measure is set (a new measure is a new scope). */
 export function writeMeasured(workId: string, remaining: number | null, at: number, initial?: number): void {

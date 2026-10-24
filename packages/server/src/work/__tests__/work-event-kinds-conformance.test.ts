@@ -69,10 +69,10 @@ const MIGRATION = liveCheckMigration();
  *  (`agent/v2/floor-ghost.ts`). It is kept as a list rather than deleted because the arm's
  *  value is the EXACT equality: an empty list is the assertion that every declared kind has a
  *  real writer, and the next person who declares one without a consumer meets this test. */
-// v3.5 (orchestrator ruling, fix round 1): `continued` and `stalled` are declared in migration 200b
-// so the release rebuilds work_events ONCE; their writer is Task D1's. The commit that lands D1's
-// writer deletes them here, or ARM 3 goes red, exactly as `floor_ghosted`'s did.
-const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = ['continued', 'stalled'];
+// v3.5 (orchestrator ruling, fix round 1): `continued` and `stalled` were declared in migration 200b
+// so the release rebuilds work_events ONCE; Task D1 landed their writer (`work/job-momentum.ts`) and
+// deleted them here, exactly as `floor_ghosted`'s writer did.
+const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [];
 
 // ── the source walk ────────────────────────────────────────────────────────────────────
 
@@ -286,8 +286,9 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer;
     // 26 since UX-REPAIR ROUND 6 T25 landed `owed_interrupt`'s (`work/ask-settlement.ts`);
     // 27 since v3.3.3 t142 landed `person_told`'s (`work/validation-drive.ts:recordPersonTold`);
-    // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT).
-    expect(writtenKinds().kinds.size).toBe(28);
+    // 28 since v3.5 landed `measured`'s (`work/ledger-store.ts`, MEASURED_EVENT);
+    // 30 since v3.5 D1 landed `continued`'s and `stalled`'s (`work/job-momentum.ts`).
+    expect(writtenKinds().kinds.size).toBe(30);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {

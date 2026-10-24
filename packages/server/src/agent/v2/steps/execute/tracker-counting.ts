@@ -178,7 +178,7 @@ export function countTrackerWorkThisIteration(state: AgentTurnState, ctx: Execut
   if (chargeableCallsInThisIter.length > 0) {
     const claimedTaskId = resolveCurrentClaimedTaskId(agentId);
     if (claimedTaskId) {
-      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter); // t172: the calls, so a repeat can be told from a new one
+      chargeEffortCalls(claimedTaskId, chargeableCallsInThisIter, state.turnStartMs); // t172: the calls, so a repeat can be told from a new one; v3.5 D1: and this turn's new ones
       recordCallsTouched(claimedTaskId, chargeableCallsInThisIter, roundResults); // v3.5: the items THIS round's successes touched
     }
   }

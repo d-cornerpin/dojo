@@ -54,6 +54,13 @@ interface TaskCallLedger {
 }
 const ledgers = new Map<string, TaskCallLedger>();
 
+/** v3.5 D1: how many NEW calls (by the same rule as above) each task was charged in ONE turn, keyed by
+ *  that turn's start (`AgentTurnState.turnStartMs`), so the turn's end can ask "did this turn do
+ *  anything the task had not done before" (`novelCallsInTurn`). Kept apart from `ledgers` because a
+ *  task that advances mid-turn has still done what it did this turn. One entry per task, replaced by
+ *  the next turn that charges it. */
+const turnNovelty = new Map<string, { turnStartMs: number; novel: number }>();
+
 /**
  * Charge one iteration's chargeable calls to a task (t172) — the call the charge site makes.
  *
@@ -71,7 +78,7 @@ const ledgers = new Map<string, TaskCallLedger>();
  * call read as new that was a repeat — so a restart can delay a review, never invent one. Putting
  * it in storage would be a migration for a fact that is cheap to relearn within a few calls.
  */
-export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall[]): void {
+export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall[], turnStartMs?: number): void {
   if (calls.length === 0) return;
   const ledger = ledgers.get(taskId) ?? { seen: new Set<string>(), repeats: new Map(), novel: 0, repeated: 0 };
   const newlySeen = new Set<string>();
@@ -91,6 +98,16 @@ export function chargeEffortCalls(taskId: string, calls: readonly ChargeableCall
     if (prev) prev.n += 1; else ledger.repeats.set(sig, { label, n: 1 });
   }
   ledgers.set(taskId, ledger);
+  if (turnStartMs !== undefined) {
+    const t = turnNovelty.get(taskId);
+    turnNovelty.set(taskId, { turnStartMs, novel: (t?.turnStartMs === turnStartMs ? t.novel : 0) + newlySeen.size });
+  }
+}
+
+/** The new calls charged to this task by the turn that started at `turnStartMs` (0 when none). */
+export function novelCallsInTurn(taskId: string, turnStartMs: number): number {
+  const t = turnNovelty.get(taskId);
+  return t && t.turnStartMs === turnStartMs ? t.novel : 0;
 }
 
 /** The novelty facts the PM's review is judged on: what this task has done since it last advanced,

@@ -25,7 +25,8 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { argsForResult } from './args-for-result.js';
-import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { continueTheJob } from './job-continues.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -95,6 +96,11 @@ export async function runGoingIdle(
     }
   }
 
+  // v3.5 D1: a turn ending mid-job is parked and continued while it makes progress, whatever it said (`job-continues.ts`).
+  const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
+  const job = transitionedThisTurn ? null : await continueTheJob(state, ctx);
+  if (job) return requestExit(state, `job-${job}`);
+
   // ── v2.7.17: "going idle with in_progress task" detector ──
   // Broader sibling of the add-notes-stop nudge. Catches every case
   // where the agent ends a turn while a task assigned to them is
@@ -130,10 +136,7 @@ export async function runGoingIdle(
     // Also skip if the agent ALREADY transitioned a task this turn (any
     // status flip / step completion / project close), since that signals
     // they DID make a deliberate state choice and just happened to leave
-    // another task in_progress for legitimate reasons.
-    const transitionedThisTurn = state.toolResults.some(
-      tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
-    );
+    // another task in_progress for legitimate reasons (`transitionedThisTurn`, above).
 
     // ── Channel-awareness: enforce task bookkeeping only on a TASK-EXECUTION
     // turn, never on a CONVERSATION turn (attribution redesign §4.5). ──

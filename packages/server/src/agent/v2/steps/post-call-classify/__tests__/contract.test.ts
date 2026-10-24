@@ -342,7 +342,12 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // no tool call, twice in one turn. It reaches the SAME failure surface the
     // empty-response give-up already owns (toast + `reArmIfStrandedNoAnswer`), which is why
     // it is an exit and not a new mechanism.
-    expect(exitSites).toBe(8);
+    // ⚠ RE-DERIVED (v3.5 D1): EIGHT -> NINE. The ninth is the going-idle detector's job-turn-end
+    // exit (`going-idle.ts`, after `job-continues.ts` has either parked a job that made progress
+    // or recorded a continued turn that made none as stalled). Both arms END the turn, so the
+    // closure menu and the tracker close-out nudge that follow it never run on a job with items
+    // left. The continue count is UNCHANGED at sixteen: no re-entry was converted into it.
+    expect(exitSites).toBe(9);
     // The eighteen re-entries: three in the empty-response ladder and FIFTEEN floors that
     // hand the model one more round to put something right.
     //

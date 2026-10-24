@@ -61,11 +61,13 @@ import { servedOwnerMessageIds } from '../memory/served-ask.js';
 
 /** Why the checkpoint fired — one member per checkpoint site. (t137: the third member,
  *  `unattended-budget`, went with the continuation-cap trip that was its only call site.) */
-export type EngineCheckpointReason = 'turn-budget' | 'tool-loop';
+export type EngineCheckpointReason = 'turn-budget' | 'tool-loop' | 'job-continues';
 
 const REASON_TEXT: Record<EngineCheckpointReason, string> = {
   'turn-budget': 'the 15-minute turn-time budget parked this turn for a fresh continuation',
   'tool-loop': 'the 75-tool-call loop cap parked this turn for a fresh continuation',
+  // v3.5 D1 (`post-call-classify/job-continues.ts`): the turn ended mid-job and was making progress.
+  'job-continues': 'the turn ended mid-job while making progress; the engine parked it for a fresh continuation',
 };
 
 // t143 ROUND 2 (orchestrator ruling) — A PARK TOUCHES ONLY THE JOB'S OWN WORK.
@@ -87,10 +89,10 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
  * stranded on_deck step of a project it serves (the close-out gate's two dangler families) — and
  * carries the job's work to the continuation. Returns the number of tasks touched.
  */
-export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason): number {
+export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason, jobTaskIds: string[] = []): number {
   const db = getDb();
   const now = Date.now();
-  const tied = turnWorkIds(agentId);
+  const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];   // v3.5 D1: a job-continues park names the task whose progress it measured
   carryJobWork(agentId, tied, servedOwnerMessageIds(agentId));   // t145: the job's own ask rides the same record
   if (tied.length === 0) return 0;
   const ids = tied.map(() => '?').join(', ');
