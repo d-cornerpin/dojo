@@ -98,7 +98,7 @@ export async function runGoingIdle(
 
   // v3.5 D1: a turn ending mid-job is parked and continued while it makes progress, whatever it said (`job-continues.ts`).
   const transitionedThisTurn = state.toolResults.some(tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))));
-  const job = transitionedThisTurn ? null : await continueTheJob(state, ctx);
+  const job = transitionedThisTurn ? null : await continueTheJob(state, ctx, sc);
   if (job) return requestExit(state, `job-${job}`);
 
   // ── v2.7.17: "going idle with in_progress task" detector ──

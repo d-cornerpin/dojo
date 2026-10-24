@@ -37,6 +37,7 @@ import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
 import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
 import { armTimerWake, beginJobRun, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
+import { continuationContext } from '../../../../turn-state.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -128,6 +129,7 @@ beforeEach(() => {
   parkJob.mockClear();
   endJobRun(AGENT);
   endJobCarry(AGENT);
+  continuationContext.delete(AGENT);
 });
 
 describe('D1: a turn that ends mid-job is parked and continued', () => {
@@ -258,16 +260,48 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(menuSteers(out.state)).toHaveLength(1);
   });
 
-  it('no measure, one effectful call succeeded, no reply: parked with remaining null', async () => {
+  it('ORCHESTRATOR RULING 2: no measure, one effectful call succeeded (progress), no reply: TODAY\'s path — the menu and its "already ran" hint, no park', async () => {
     const id = await openTask(false);
     const send: ToolCall = { id: 'tc-send', name: 'gmail_send', arguments: { to: 'x@example.invalid', subject: 's', body: 'b' } } as ToolCall;
     const out = await runGoingIdle(ranCalls(freshTurn(), id, [send]), ctxFor(), scratch());
 
-    expect(out.directive).toBe('exit');
-    expect(parkJob).toHaveBeenCalledTimes(1);
-    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues', 'timer']);
-    expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: null, novelCallsThisTurn: 1 })]);
+    expect(parkJob).not.toHaveBeenCalled();
+    expect(events(id, 'continued')).toHaveLength(0);
+    expect(out.directive).toBe('continue');
+    expect(menuSteers(out.state)).toHaveLength(1);
+    expect(menuSteers(out.state)[0].content).toContain('gmail_send');
     expect(countMeasure).not.toHaveBeenCalled();
+  });
+
+  it('ORCHESTRATOR RULING 2: no measure, progress, already replied: no park, no `continued`', async () => {
+    const id = await openTask(false);
+    const send: ToolCall = { id: 'tc-send', name: 'gmail_send', arguments: { to: 'x@example.invalid', subject: 's', body: 'b' } } as ToolCall;
+    const out = await runGoingIdle(ranCalls(freshTurn(), id, [send]), ctxFor(), scratch('sent it'));
+    expect(parkJob).not.toHaveBeenCalled();
+    expect(events(id, 'continued')).toHaveLength(0);
+    expect(out.directive).toBe('proceed');
+  });
+
+  it('ORCHESTRATOR RULING 1: the owner\'s own job-starting turn — the reply stands, THEN the job is parked and continued', async () => {
+    const id = await openTask(true);
+    const state = ranCalls(freshTurn(), id, [labelCall(139)], ids(139));
+    countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
+    const sc = scratch('On it: 139 labelled so far, carrying on.');
+    const turnCtx = { agentId: AGENT, goingIdleDetectorRanThisTurn: false, conversationId: 'conv-owner' };
+    const out = await runGoingIdle(state, ctxFor({
+      triggerRow: { rowid: 1, content: 'please sort my inbox' }, turnCtx: turnCtx as never,
+      chosenConvKey: 'dashboard:owner', counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as never,
+    }), sc);
+
+    expect(out.directive).toBe('exit');   // the turn ends the way a replied turn ends; nothing is said in its place
+    expect(sc.persistedContent).toBe('On it: 139 labelled so far, carrying on.');
+    expect(systemRows()).toBe(0);
+    expect(menuSteers(out.state)).toHaveLength(0);
+    expect(parkJob).toHaveBeenCalledTimes(1);
+    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
+    expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139 })]);
+    // The continuation keeps the owner's conversation (the C3 stash every engine auto-continue writes).
+    expect(continuationContext.get(AGENT)).toMatchObject({ convKey: 'dashboard:owner', conversationId: 'conv-owner' });
   });
 
   it('no measure, nothing touched, no reply: the menu (today\'s text until the text wave), no park', async () => {

@@ -14,9 +14,9 @@ import type { WorkEventKind } from './event-kinds.js';
 export const CONTINUED_EVENT = 'continued' as const satisfies WorkEventKind;
 export const STALLED_EVENT = 'stalled' as const satisfies WorkEventKind;
 
-/** `remaining` is the measure's count (or its last stored reading), null when the task has no measure. */
-export interface ContinuedFacts { remaining: number | null; touchedThisTurn: number; novelCallsThisTurn: number; turnNumber: number }
-export interface StalledFacts { remaining: number | null; turnNumber: number }
+/** `remaining` is the measure's count (or its last stored reading). */
+export interface ContinuedFacts { remaining: number; touchedThisTurn: number; novelCallsThisTurn: number; turnNumber: number }
+export interface StalledFacts { remaining: number; turnNumber: number }
 
 export function recordContinued(taskId: string, f: ContinuedFacts): void {
   appendWorkEvent(taskId, CONTINUED_EVENT, 'engine', f);
