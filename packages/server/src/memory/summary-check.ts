@@ -25,6 +25,8 @@ import { randomUUID } from 'node:crypto';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { sourceParts, combineParts } from './summary-check-parts.js';
+import { localCharsPerToken } from '../services/token-density.js';
+import { getDecisionProvider } from '../agent/decision-provider.js';
 import { SUMMARY_CHECK_PURPOSE, actingQuestions, summaryCheckActs, type SummaryCheckQuestion } from './summary-check-ledger.js';
 
 const logger = createLogger('summary-check');
@@ -79,7 +81,7 @@ const failsAt = passMark;
  * question's line. When decide() returns null, `answers` is null and `ok` is true (never blocks).
  */
 export async function checkSummary(sourceRows: string, summary: string, agentId: string, timeoutMs?: number): Promise<SummaryCheck> {
-  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), JSON.stringify(QUESTIONS).length);
+  const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), QUESTIONS, localCharsPerToken(), getDecisionProvider()?.model ?? '');
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);

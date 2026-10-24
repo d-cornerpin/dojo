@@ -162,7 +162,7 @@ export const MIN_UTILITY_NUM_CTX = 2_048;
  * Slack above input+output, for the chat template's own wrapper tokens and a tokenizer that counts
  * differently from our estimator. 256 is ~1KB of text — cheap insurance against a truncated prompt.
  */
-const NUM_CTX_MARGIN_TOKENS = 256;
+export const NUM_CTX_MARGIN_TOKENS = 256;
 
 /**
  * ⚠ WHAT AN IMAGE COSTS THE WINDOW (t88 review M1). A caption prompt is a sentence, so a vision dial's

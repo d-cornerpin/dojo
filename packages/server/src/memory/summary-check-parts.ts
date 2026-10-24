@@ -3,34 +3,53 @@
 // (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { fencedState, type Answer } from '../agent/decide.js';
-import { CHARS_PER_TOKEN } from './budget.js';
+import { decideRequestBody, MAX_DECISION_BODY_BYTES, type Answer, type Question } from '../agent/decide.js';
+import { NUM_CTX_MARGIN_TOKENS } from '../agent/utility-dial.js';
 
 // ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
-// The window is `decisionWindowTokens()` — the same number `decide()` sends as `num_ctx` and the memory fit sets
-// aside. A part is as many whole rows (the `---` lines the callers join rows with) as fit beside the summary and
-// the questions; a single row larger than that is split by characters. Joined back with the same separator, the
-// parts are exactly the source.
+// The window is `decisionWindowTokens()` — the derived tag's real window, the number the memory fit sets aside.
+// t268 ruling 2: a part fits that window counted at this box's density (`charsPerToken`, B5 measured ~2.5, not
+// 4) less the template slack every window carries (`NUM_CTX_MARGIN_TOKENS`), AND Ollama's 64 KiB body limit
+// (measured: HTTP 413), counted in the bytes `decide()` really sends. A part is as many whole rows (the `---`
+// lines the callers join rows with) as fit beside the summary and the questions; a single row larger than that
+// is split by characters. Joined back with the same separator, the parts are exactly the source.
 const ROW_SEPARATOR = '\n---\n';
-/** The source's parts, or null when the summary alone leaves no room. `questionChars` is the questions' JSON. */
-export function sourceParts(source: string, summary: string, windowTokens: number, questionChars: number): string[] | null {
-  // v3.5 K33: decide() fences each text of the state, so the frame counted here is the fenced one.
-  const room = windowTokens * CHARS_PER_TOKEN - summary.length - questionChars - JSON.stringify(fencedState({ source_rows: '', summary: '', source_part: '' })).length;
-  if (room <= 0) return null;
-  if (source.length <= room) return [source];
+/** A text's bytes inside the JSON body (escapes included), without its quotes: additive over concatenation. */
+const bodyBytes = (t: string): number => Buffer.byteLength(JSON.stringify(t)) - 2;
+/** The source's parts, or null when the summary alone leaves no room. */
+export function sourceParts(
+  source: string, summary: string, windowTokens: number, questions: Record<string, Question>, charsPerToken: number, model: string,
+): string[] | null {
+  // Every byte of the request but the part, with `source_part` at its widest (no more parts than characters).
+  const frame = decideRequestBody(model, { source_rows: '', summary, source_part: `${source.length} of ${source.length}` }, questions);
+  const charRoom = Math.floor((windowTokens - NUM_CTX_MARGIN_TOKENS) * charsPerToken) - frame.length;
+  const byteRoom = MAX_DECISION_BODY_BYTES - Buffer.byteLength(frame);
+  if (charRoom <= 0 || byteRoom <= 0) return null;
+  const fits = (chars: number, bytes: number): boolean => chars <= charRoom && bytes <= byteRoom;
+  if (fits(source.length, bodyBytes(source))) return [source];
+  const sep = bodyBytes(ROW_SEPARATOR);
   const parts: string[] = [];
-  let current: string | null = null;
+  let current: { text: string; bytes: number } | null = null;
   for (const piece of source.split(ROW_SEPARATOR)) {
-    const joined: string = current === null ? piece : current + ROW_SEPARATOR + piece;
-    if (joined.length <= room) { current = joined; continue; }
-    if (current !== null) parts.push(current);
-    if (piece.length <= room) { current = piece; continue; }
-    // One row larger than the room: split by characters, the last slice carried on.
+    const bytes = bodyBytes(piece);
+    if (current && fits(current.text.length + ROW_SEPARATOR.length + piece.length, current.bytes + sep + bytes)) {
+      current = { text: current.text + ROW_SEPARATOR + piece, bytes: current.bytes + sep + bytes };
+      continue;
+    }
+    if (current) parts.push(current.text);
+    if (fits(piece.length, bytes)) { current = { text: piece, bytes }; continue; }
+    // One row larger than the room: split by characters (the longest slice that fits both), the last slice carried on.
     let rest = piece;
-    while (rest.length > room) { parts.push(rest.slice(0, room)); rest = rest.slice(room); }
-    current = rest;
+    while (!fits(rest.length, bodyBytes(rest))) {
+      let n = Math.min(rest.length, charRoom);
+      while (bodyBytes(rest.slice(0, n)) > byteRoom) n = Math.max(1, Math.min(n - 1, Math.floor((n * byteRoom) / bodyBytes(rest.slice(0, n)))));
+      if (n > 1 && /[\uD800-\uDBFF]/.test(rest[n - 1])) n--;   // never between the two halves of one character
+      parts.push(rest.slice(0, n));
+      rest = rest.slice(n);
+    }
+    current = { text: rest, bytes: bodyBytes(rest) };
   }
-  if (current !== null) parts.push(current);
+  if (current) parts.push(current.text);
   return parts;
 }
 

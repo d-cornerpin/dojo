@@ -19,7 +19,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { decide, type Question } from '../decide.js';
 import { getDecisionProvider } from '../decision-provider.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
-import { decisionWindowTokens, writerJobWindowTokens } from '../../services/dojo-working-memory.js';
+import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { holdWhenQuiet } from '../../services/ollama-quiet.js';
 import { fenceRanges, unfenceExternal } from '../../tools/external-content.js';
 
@@ -95,7 +95,7 @@ describe('decide()', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${BASE}/v1/systemone`);
     // v3.5 K33: the state reaches the model fenced (the next clause); unfenced it is what the caller passed.
-    expect({ ...calls[0].body, state: unfenceState(calls[0].body.state) }).toEqual({ model: STANDARD_DECISION_MODEL.tag, state: { reply: 'I will start on it now.' }, questions: QUESTIONS, keep_alive: -1, options: { num_ctx: await decisionWindowTokens() } });
+    expect({ ...calls[0].body, state: unfenceState(calls[0].body.state) }).toEqual({ model: STANDARD_DECISION_MODEL.tag, state: { reply: 'I will start on it now.' }, questions: QUESTIONS, keep_alive: -1 });
     expect(answers).toEqual({
       only_promises_to_start: { type: 'noul', noul: 0.91 },
       topic: { type: 'choice', choice: 'billing', probabilities: { billing: 0.85, other: 0.15 }, confidence: 0.7 },
@@ -103,12 +103,13 @@ describe('decide()', () => {
     });
   });
 
-  it('NB-4: it runs at the window the memory fit sets aside for the decision model — one number, one origin', async () => {
+  // t268 ruling 2 (edited: this clause asserted the `num_ctx` decide() sent, which B5 measured Ollama ignores).
+  it('NB-4/t268: no num_ctx is sent; before install makes the window tag, the window is the base tag\'s measured 8,192', async () => {
     install();
     await decide({ reply: 'x' }, QUESTIONS, { purpose: 'reply_claims' });
-    const window = await decisionWindowTokens();
-    expect((calls[0].body.options as { num_ctx: number }).num_ctx).toBe(window);
-    expect(window).toBe(await writerJobWindowTokens(null));   // the summary check reads the writer's job text
+    expect(calls[0].body).not.toHaveProperty('options');
+    expect(calls[0].body.model).toBe(STANDARD_DECISION_MODEL.tag);
+    expect(await decisionWindowTokens()).toBe(8_192);   // the derived tag's own test: services/__tests__/the-decision-model-runs-at-its-real-window
   });
 
   it('NB-1: while the Ollama app restarts for the model limit, the rule answers at once (null), nothing dialled', async () => {

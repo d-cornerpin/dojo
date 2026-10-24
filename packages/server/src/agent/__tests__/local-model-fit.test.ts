@@ -32,7 +32,7 @@ import { Hono } from 'hono';
 import { routerRouter } from '../../gateway/routes/router.js';
 import { configRouter } from '../../gateway/routes/config.js';
 import { pickDesktopReserve, ENGINE_RESERVE_BYTES } from '../../services/num-ctx-calculator.js';
-import { writerJobWindowTokens } from '../../services/dojo-working-memory.js';
+import { writerJobWindowTokens, decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
 
@@ -174,7 +174,11 @@ describe('fix round 2: the decision model\'s own working memory is reserved (it 
     const before = (await localModelFit('m-2b'))!.openBytes;
     ollama.show[STANDARD_DECISION_MODEL.tag] = arch(36);
     const after = (await localModelFit('m-2b'))!.openBytes;
-    expect(before - after).toBe(kvPerToken(36) * await writerJobWindowTokens(null));
+    // t268 ruling 2 (edited: it read the writer's job window, which the decision model never ran at — B5): the
+    // reserve is the window the decision model REALLY runs at, the one number `decisionWindowTokens()` answers.
+    expect(before - after).toBe(kvPerToken(36) * await decisionWindowTokens());
+    db().prepare("INSERT INTO config (key, value) VALUES ('decision_model_window', '27648')").run();   // the derived tag, made at install
+    expect(before - (await localModelFit('m-2b'))!.openBytes).toBe(kvPerToken(36) * 27_648);
     delete ollama.show[STANDARD_DECISION_MODEL.tag];
   });
 });

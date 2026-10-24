@@ -8,8 +8,8 @@
 //
 // The call is a separate request: the agent's own prompt is untouched (the cache tenet). The model is
 // resident (`keep_alive: -1`; it takes no Ollama lock slot, `services/ollama-lock.ts`), at the window the memory fit
-// sets aside for it (`num_ctx`, `services/dojo-working-memory.ts decisionWindowTokens`). An agent that
-// waits on a decision is the one whose stop cuts it (`openAgentCall`).
+// sets aside for it — the derived tag's (`services/decision-window.ts`; `/v1/systemone` ignores `num_ctx`, B5).
+// An agent that waits on a decision is the one whose stop cuts it (`openAgentCall`).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
@@ -17,7 +17,6 @@ import { recordCost } from '../costs/tracker.js';
 import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
-import { decisionWindowTokens } from '../services/dojo-working-memory.js';
 import { fenceExternal } from '../tools/external-content.js';
 
 const logger = createLogger('decide');
@@ -34,6 +33,9 @@ export interface DecideOpts { purpose: string; agentId?: string; timeoutMs?: num
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
 const MAX_QUESTIONS_PER_REQUEST = 64;
+/** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): any body over 64 KiB is
+ *  refused with HTTP 413 "text and schema must not exceed 64 KiB". A request over it is not dialled. */
+export const MAX_DECISION_BODY_BYTES = 64 * 1024;
 /** PROVISIONAL (orchestrator ruling, fix round 1): the plan's figure, with no measurement behind it yet.
  *  It is REPLACED by Wave 2's B5 dev-box measurement of decide() latency (the cost rows already carry
  *  `latency_ms` per purpose). Callers pass their own. */
@@ -42,7 +44,7 @@ const DEFAULT_TIMEOUT_MS = 1_500;
 const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
 
-type FailureClass = 'too_many_questions' | 'http' | 'timeout' | 'transport' | 'parse';
+type FailureClass = 'too_many_questions' | 'too_large' | 'http' | 'timeout' | 'transport' | 'parse';
 function fail(cls: FailureClass, purpose: string, detail?: string): null {
   const now = Date.now();
   if (now - (lastLogged.get(cls) ?? 0) >= LOG_EVERY_MS) {
@@ -64,6 +66,10 @@ export function fencedState(v: unknown, key = 'state'): unknown {
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fencedState(x, k)]));
   return v;
 }
+
+/** The request body exactly as `decide()` sends it (a caller sizing parts measures its bytes with this). */
+export const decideRequestBody = (model: string, state: unknown, questions: Record<string, Question>): string =>
+  JSON.stringify({ model, state: fencedState(state), questions, keep_alive: -1 });
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isProbs = (v: unknown): v is Record<string, number> =>
@@ -90,9 +96,8 @@ export async function decide(
   if (names.length === 0) return {};
   if (names.length > MAX_QUESTIONS_PER_REQUEST) return fail('too_many_questions', opts.purpose, String(names.length));
 
-  // Fix round 4 (NB-4): the window it runs at is the one the memory fit sets aside for it — one number, one
-  // origin (`decisionWindowTokens`); without it Ollama would size the call by the model file's own default.
-  const numCtx = await decisionWindowTokens();
+  const request = decideRequestBody(provider.model, state, questions);
+  if (Buffer.byteLength(request) > MAX_DECISION_BODY_BYTES) return fail('too_large', opts.purpose, `${Buffer.byteLength(request)} bytes`);
   // NB-1: while the Ollama app restarts to apply the model limit, the rule answers (no wait on a restart);
   // otherwise this call is in-flight work the restart waits for.
   if (localHeld()) return null;
@@ -106,7 +111,7 @@ export async function decide(
       resp = await fetch(`${provider.baseUrl}/v1/systemone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: provider.model, state: fencedState(state), questions, keep_alive: -1, options: { num_ctx: numCtx } }),
+        body: request,
         signal: slot?.signal ?? clock,
       });
     } catch (err) {

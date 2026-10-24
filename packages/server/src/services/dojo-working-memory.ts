@@ -2,7 +2,7 @@
 // v3.5 — THE DOJO'S OWN WORKING MEMORY ON ITS OLLAMA (fix rounds 1-2, orchestrator rulings).
 //
 // The KV cache the Dojo's writer holds for its largest job (a leaf summary: its chunk in, its summary
-// out), and the decision model's for the summary check that reads that same text. This room is set aside:
+// out), and the decision model's at the window it really runs at (t268: its derived tag). This room is set aside:
 // the window recommendation (`num-ctx-calculator.ts`) never sizes another local model into it, and the
 // memory-fit gate (`agent/local-model-fit.ts`) never offers it to an agent model.
 // ════════════════════════════════════════════════════════════════════════════
@@ -24,11 +24,25 @@ export async function writerJobWindowTokens(configuredNumCtx: number | null): Pr
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, getLeafTargetTokens()) });
 }
 
-/** The decision model's window, in tokens: the ONE number both the memory it is set aside (below) and the
- *  `num_ctx` `decide()` sends are (fix round 4, NB-4). The summary check hands it a job's source rows and
- *  the summary — exactly the text the writer's job window holds — so it is that window. */
+/** Where the derived decision tag's window is recorded (`services/decision-window.ts` writes it, at install). */
+export const DECISION_WINDOW_KEY = 'decision_model_window';
+/** MEASURED (B5, `overhaul-plans/v35-writer-measure.md` → "The num_ctx question"): `/v1/systemone` ignores
+ *  `num_ctx` in every form; the decision model's runner stays at its model file's own `-c 8192`. */
+export const BUILTIN_DECISION_WINDOW = 8_192;
+
+/** The derived decision tag's recorded window, or null while it has not been created on this box. */
+export function decisionTagWindow(): number | null {
+  try {
+    const v = Number((getDb().prepare("SELECT value FROM config WHERE key = 'decision_model_window'").get() as { value: string } | undefined)?.value);
+    return Number.isInteger(v) && v > 0 ? v : null;
+  } catch { return null; }
+}
+
+/** The decision model's window, in tokens: the window it REALLY runs at (t268 ruling 2) — the derived tag's
+ *  `PARAMETER num_ctx`, else the base tag's built-in one. The ONE number the memory set aside for it (below),
+ *  the derived tag and `decide()`'s sizing all are. */
 export async function decisionWindowTokens(): Promise<number> {
-  return writerJobWindowTokens(null);
+  return decisionTagWindow() ?? BUILTIN_DECISION_WINDOW;
 }
 
 /** The KV bytes the Dojo's writer holds for that job on this Ollama; 0 when no writer is installed or

@@ -31,7 +31,8 @@ const MISSING_CONDITION = 'standard-models';
 const logger = createLogger('local-standard');
 
 // Sizes are the registry's published download sizes for these tags (fetched 2026-10-19).
-export const STANDARD_DECISION_MODEL = { tag: 'tev1:4b-q4_K_M', bytes: 2_800_000_000 } as const;
+// `windowTag` (t268): the decision model at the window the Dojo reserves for it (`services/decision-window.ts`).
+export const STANDARD_DECISION_MODEL = { tag: 'tev1:4b-q4_K_M', windowTag: 'tev1-dojo:4b-q4_K_M', bytes: 2_800_000_000 } as const;
 export const STANDARD_WRITER_MODEL = { tag: 'qwen3.5:4b', bytes: 3_400_000_000 } as const;
 export const STANDARD_PAIR_BYTES = STANDARD_DECISION_MODEL.bytes + STANDARD_WRITER_MODEL.bytes;
 /** The tags Ollama keeps resident for the Dojo itself (`services/ollama-lock.ts` pins them). */
@@ -118,9 +119,7 @@ const installedTagsOf = (tags: { models?: Array<{ name: string }> }): Set<string
 
 const gb = (bytes: number): string => (bytes / 1e9).toFixed(1);
 
-function totalRamBytes(): number {
-  return os.totalmem();
-}
+const totalRamBytes = (): number => os.totalmem();
 
 function noteFor(s: Omit<StandardState, 'note'>): string {
   if (s.ollama !== 'running') {
@@ -155,7 +154,7 @@ export async function standardState(): Promise<StandardState> {
   const installed = installedTagsOf(tags);
   const ps = await ollamaJson<{ models?: Array<{ name: string; size?: number }> }>(baseUrl, '/api/ps');
   const residentBytes = (ps?.models ?? [])
-    .filter((m) => STANDARD_TAGS.includes(m.name))
+    .filter((m) => STANDARD_TAGS.includes(m.name) || m.name === STANDARD_DECISION_MODEL.windowTag)
     .reduce((sum, m) => sum + (typeof m.size === 'number' ? m.size : 0), 0);
   const base = { decision: presence('decision', installed), writer: presence('writer', installed), ollama: 'running' as const, residentBytes };
   return { ...base, note: noteFor(base) };
@@ -246,6 +245,7 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
     await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);   // sized now, not at the next boot's backfill
   }
   assign(ids.writer, ids.decision);
+  if (ids.decision) await (await import('./decision-window.js')).ensureDecisionWindowTag(provider.baseUrl);   // t268: its real window
   // Fix round 1 (I-2): an attempt that left a model missing is told once (the owner-card system); it ends when both are in.
   if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
   else if (tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
