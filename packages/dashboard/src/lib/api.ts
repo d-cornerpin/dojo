@@ -1808,6 +1808,8 @@ export interface TaskRun {
   startedAt: string | null;
   completedAt: string | null;
   status: string;
+  /** The owner-facing words when the status alone would mislead ("Incomplete — 5 messages left"). */
+  statusLabel?: string | null;
   assignedTo: string | null;
   agentName: string | null;
   resultSummary: string | null;

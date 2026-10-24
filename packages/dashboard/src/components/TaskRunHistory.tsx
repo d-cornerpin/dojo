@@ -17,6 +17,8 @@ const statusColors: Record<string, string> = {
   // colour. Neutral, the same weight the card's own "Cancelled" line carries.
   cancelled: 'glass-badge-gray',
   skipped: 'glass-badge-gray',
+  // v3.5: a run that ran and left items is not done and not an error; its label names what is left.
+  incomplete: 'glass-badge-gray',
 };
 
 const formatDuration = (start: string | null, end: string | null): string => {
@@ -82,7 +84,7 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
         <span className="w-28">Scheduled</span>
         <span className="w-28">Started</span>
         <span className="w-16">Duration</span>
-        <span className="w-16">Status</span>
+        <span className="w-40">Status</span>
         <span className="flex-1">Agent</span>
       </div>
 
@@ -96,9 +98,9 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
             <span className="w-28 text-xs text-ui/55">{formatTime(run.scheduledFor)}</span>
             <span className="w-28 text-xs text-ui/55">{formatTime(run.startedAt)}</span>
             <span className="w-16 text-xs text-ui/55 font-mono">{formatDuration(run.startedAt, run.completedAt)}</span>
-            <span className="w-16">
-              <span className={`glass-badge text-[10px] ${statusColors[run.status] ?? 'glass-badge-gray'} capitalize`}>
-                {run.status}
+            <span className="w-40">
+              <span className={`glass-badge text-[10px] ${statusColors[run.status] ?? 'glass-badge-gray'} whitespace-nowrap ${run.statusLabel ? '' : 'capitalize'}`}>
+                {run.statusLabel ?? run.status}
               </span>
             </span>
             <span className="flex-1 text-xs text-ui/55 truncate">{run.agentName ?? run.assignedTo ?? '--'}</span>

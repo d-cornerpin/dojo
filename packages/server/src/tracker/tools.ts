@@ -56,6 +56,7 @@ import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog, listTaskLog, getRecentObservations } from './task-log.js';
 import { applyMeasureToTask, remainderGate, projectRemainderGate, type MeasureReading } from './measure-gate.js';   // v3.5 DONE IS MEASURED
+import { ownerSaidSinceVerdictAsked } from './owner-words.js';   // v3.5: a verdict's owner exemption is verified
 import { normalizeTaskStatus } from './task-status-words.js';
 import { claimedTasksOf } from './claimed-tasks.js';
 import { taskReadWithNotes } from './task-notes-view.js';
@@ -5145,12 +5146,16 @@ export async function trackerApplyUserVerdict(
 
   // Force the status, clear the stalemate flag, validate immediately
   // (user is the ultimate authority). updateTask handles is_paused etc.
-  const updated = setTaskStatus(taskId, status as TrackerStatus, {
-    by: 'owner', actorId: 'user', claim: 'authoritative',
+  // v3.5 (t250 fix round 4, ruling): the owner's exemption from the measure is for a VERIFIED owner
+  // act. A close whose quote is not found in the owner's own words on record is judged as the PM's.
+  const ownerClose = status !== 'complete' || ownerSaidSinceVerdictAsked(taskId, userQuote);
+  const verdict = setTaskStatusResult(taskId, status as TrackerStatus, {
+    by: ownerClose ? 'owner' : 'pm', actorId: ownerClose ? 'user' : agentId, claim: 'authoritative',
     reason: `owner's verdict: ${userQuote.slice(0, 200)}`,
     resultDeliveryId: status === 'complete' ? deliveryForTaskClose(taskId) : null,
   });
-  if (!updated) return `Error: task ${taskId} was deleted before user verdict could land.`;
+  if (!workSettled(verdict.result)) return closeRefusalText(taskId, verdict.result, status);
+  if (!verdict.task) return `Error: task ${taskId} was deleted before user verdict could land.`;
 
   clearUserVerdict(taskId, 'user', 'owner gave the verdict');
   resetRevertCount(taskId, 'user', 'owner gave the verdict');

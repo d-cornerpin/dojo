@@ -71,18 +71,38 @@ export function recordOwnerRemainder(id: string, status: string, input: { by: st
 
 /** The run word a run that ended with its task's measure still listing items carries on its settle
  *  event. The occurrence itself settles `abandoned`, the existing honest non-complete terminal for a
- *  run (the deliver stand-down's), which the owner's run history shows as not complete, with the
- *  reason. Never `complete`; the schedule still advances, so the next run fires. */
+ *  run (the deliver stand-down's); the owner's run history reads it "Incomplete — N <unit> left"
+ *  (`work/occurrence-runs.ts`). Never `complete`, and only for a run the deliverable gate would have
+ *  recorded complete; the schedule still advances, so the next run fires. */
 export const RUN_STATUS_INCOMPLETE = 'incomplete';
 
 /** A run about to be recorded `complete`: what its task's measure says is left, or null (nothing
- *  left, unmeasured, unread, or this close named its remainder at the agent's door). */
+ *  left, unmeasured, unread, or this close named its remainder at the agent's door, now or through
+ *  a close request the PM is blessing). */
 export function runItemsLeft(occurrenceId: string): { taskId: string; left: number; unit: string } | null {
   const occ = getDb().prepare("SELECT parent_id AS p, sequence AS n FROM work WHERE id = ? AND kind = 'occurrence'")
     .get(occurrenceId) as { p: string | null; n: number | null } | undefined;
-  if (!occ?.p || permits.has(occ.p)) return null;
+  if (!occ?.p || permits.has(occ.p) || closeRequestedThisRun(occ.p, occurrenceId)) return null;
   const r = lastReading(occ.p);
   return r && r.left > 0 ? { taskId: occ.p, left: r.left, unit: r.unit } : null;
+}
+
+/** The writer's pending-close-request rule, for a run: a close request the agent filed on the task
+ *  during THIS run crossed the agent's door, which re-read and judged it (named remainder or zero).
+ *  The PM's Key 2 on it settles the run after the request is spent, so "pending" is asked as "filed
+ *  since the run opened, and not thrown back". */
+function closeRequestedThisRun(taskId: string, occurrenceId: string): boolean {
+  const row = getDb().prepare(
+    `SELECT MAX(e.id) AS req FROM work_events e
+      WHERE e.work_id = ? AND e.kind = 'validation_requested'
+        AND json_extract(e.payload, '$.requested_state') = 'done'
+        AND e.created_at >= (SELECT opened_at FROM work WHERE id = ?)`,
+  ).get(taskId, occurrenceId) as { req: number | null };
+  if (row.req === null) return false;
+  const thrownBack = getDb().prepare(
+    "SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'claim_rejected' AND id > ? LIMIT 1",
+  ).get(taskId, row.req);
+  return !thrownBack;
 }
 
 /** The remainder of a run recorded incomplete, on its task's own record (the PM and the owner read it). */

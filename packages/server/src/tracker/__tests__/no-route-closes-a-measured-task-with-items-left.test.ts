@@ -40,7 +40,8 @@ vi.mock('../../agent/access/read.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
-import { fileAssignDeliverableCloseRequest } from '../tools.js';
+import { fileAssignDeliverableCloseRequest, trackerApplyUserVerdict } from '../tools.js';
+import { requestUserVerdict } from '../../work/tracker-store.js';
 import { agentsHandlers } from '../../agent/tools/cat/agents.js';
 import { trackerRouter } from '../../gateway/routes/tracker.js';
 import { fileOverrideRequest } from '../../work/override-requests.js';
@@ -241,5 +242,65 @@ describe('fix round 3 (NB1): THE OWNER CAN ALWAYS CLOSE HIS OWN TASK', () => {
     expect(res.status).toBe(200);
     const open = db().prepare("SELECT COUNT(*) AS n FROM work WHERE parent_id = ? AND state NOT IN ('done', 'failed', 'abandoned')").get(project) as { n: number };
     expect(open.n).toBe(0);
+  });
+});
+
+describe('fix round 4: a stalemate verdict is the owner\'s only when his own words are on record', () => {
+  const awaiting = (id: string): boolean => (db().prepare(
+    "SELECT (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_requested') > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_cleared'), -1) AS a",
+  ).get(id, id) as { a: number }).a === 1;
+  const ownerSays = (content: string, over: Record<string, unknown> = {}): void => {
+    const row = {
+      id: `m-${Math.random()}`, agent_id: AGENT, conversation_id: 'conv-owner', lane: 'owner', role: 'user', content,
+      channel: 'dashboard', authorized: 1, provenance: 'live', display_kind: 'unclassified', display_tier: 'user-visible',
+      inbound_meta: JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }),
+      ...over,
+    };
+    const cols = Object.keys(row);
+    db().prepare(`INSERT INTO messages (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`).run(row);
+  };
+  async function stalemated(): Promise<string> {
+    const id = await openMeasured(30);
+    requestUserVerdict(id, PM, { status_requested: 'complete' });
+    return id;
+  }
+
+  it('a quote found verbatim in the owner\'s own message since the request closes the task, as the owner', async () => {
+    const id = await stalemated();
+    ownerSays('Yes, close it. The rest can wait until next week.');
+
+    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
+    expect(out).not.toMatch(/^Error|Refused/);
+    expect(readWork(id).state).toBe('done');
+    const notes = (db().prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'audit'").all(id) as Array<{ payload: string }>).map((r) => JSON.parse(r.payload).note as string);
+    expect(notes).toContain('Closed by the owner with 30 messages left.');
+  });
+
+  for (const [why, setup] of [
+    ['no owner message holds the quote', () => ownerSays('Something else entirely.')],
+    ['the quote is in an agent\'s own reply, not the owner\'s', () => ownerSays('The rest can wait until next week.', { role: 'assistant', inbound_meta: null })],
+    ['the quote is in a row the platform wrote to itself (no channel)', () => ownerSays('The rest can wait until next week.', { channel: null, inbound_meta: null })],
+    ['the quote is in a message from a contact, not the owner', () => ownerSays('The rest can wait until next week.', { channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true }) })],
+  ] as const) {
+    it(`unverified (${why}): the close is the PM's, and the remainder rule refuses it`, async () => {
+      const id = await stalemated();
+      setup();
+      const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
+      expect(out).toMatch(/measure-items-left/);
+      expect(readWork(id).state).toBe('claimed');
+      expect(awaiting(id)).toBe(true);
+    });
+  }
+
+  it('the owner\'s words from BEFORE the verdict was asked do not count', async () => {
+    countMeasure.mockResolvedValueOnce({ ok: true, count: 30 });
+    const id = taskIdFrom(await call('work_open:task', { title: 'Sort the inbox', goal: 'g', measure: MEASURE }));
+    ownerSays('The rest can wait until next week.', { sent_at: Date.now() - 60_000 });
+    await call('work_update:status', { task_id: id, status: 'in_progress' });
+    seedDelivery();
+    requestUserVerdict(id, PM, { status_requested: 'complete' });
+    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
+    expect(out).toMatch(/measure-items-left/);
+    expect(readWork(id).state).toBe('claimed');
   });
 });

@@ -26,11 +26,12 @@
 
 import { getDb } from '../db/connection.js';
 import { OCCURRENCE_KIND, OCCURRENCE_EVENT } from './occurrences.js';
+import { RUN_STATUS_INCOMPLETE } from './measure-close-gate.js';
 
 /** The status vocabulary the run history renders, unchanged from `task_runs.status`. The
  *  dashboard's own `statusColors` map is the enumeration: complete / running / skipped, with
  *  `failed` falling through to the neutral badge exactly as it does today. */
-export type RunStatus = 'running' | 'complete' | 'failed' | 'skipped';
+export type RunStatus = 'running' | 'complete' | 'failed' | 'skipped' | 'incomplete';
 
 export interface OccurrenceRun {
   id: string;
@@ -43,6 +44,9 @@ export interface OccurrenceRun {
   startedAt: string | null;
   completedAt: string | null;
   status: RunStatus;
+  /** v3.5: the words the owner reads for a run that ran and ended with its task's measure still
+   *  listing items ("Incomplete — 5 messages left"); null for every other run. */
+  statusLabel: string | null;
   assignedTo: string | null;
   agentName: string | null;
   resultSummary: string | null;
@@ -62,7 +66,7 @@ interface OccurrenceRunRow {
   id: string; parent_id: string; sequence: number; state: string;
   next_run_at: number | null; opened_at: number; closed_at: number | null;
   agent_id: string | null; notes: string | null; agent_name: string | null;
-  run_status: string | null;
+  run_status: string | null; items_left: number | null; unit: string | null;
 }
 
 /** `abandoned` means two things; the settle event says which. A row with no settle event —
@@ -72,6 +76,7 @@ function runStatusOf(state: string, runStatusEvent: string | null): RunStatus {
   if (state === 'open' || state === 'claimed') return 'running';
   if (state === 'done') return 'complete';
   if (state === 'failed') return 'failed';
+  if (runStatusEvent === RUN_STATUS_INCOMPLETE) return 'incomplete';   // v3.5: it ran; it is not "skipped"
   return runStatusEvent === 'complete' ? 'complete' : 'skipped';
 }
 
@@ -80,7 +85,13 @@ const RUN_SELECT = `
          w.agent_id, w.notes, a.name AS agent_name,
          (SELECT json_extract(e.payload, '$.run_status') FROM work_events e
            WHERE e.work_id = w.id AND e.kind = '${OCCURRENCE_EVENT.settled}'
-           ORDER BY e.id DESC LIMIT 1) AS run_status
+           ORDER BY e.id DESC LIMIT 1) AS run_status,
+         (SELECT json_extract(e.payload, '$.items_left') FROM work_events e
+           WHERE e.work_id = w.id AND e.kind = '${OCCURRENCE_EVENT.settled}'
+           ORDER BY e.id DESC LIMIT 1) AS items_left,
+         (SELECT json_extract(e.payload, '$.unit') FROM work_events e
+           WHERE e.work_id = w.id AND e.kind = '${OCCURRENCE_EVENT.settled}'
+           ORDER BY e.id DESC LIMIT 1) AS unit
     FROM work w
     LEFT JOIN agents a ON a.id = w.agent_id
    WHERE w.kind = '${OCCURRENCE_KIND}'`;
@@ -95,6 +106,9 @@ function mapRun(r: OccurrenceRunRow): OccurrenceRun {
     startedAt: iso(r.opened_at),
     completedAt: iso(r.closed_at),
     status,
+    statusLabel: status === 'incomplete'
+      ? (r.items_left === null ? 'Incomplete' : `Incomplete — ${r.items_left} ${r.unit ?? 'items'} left`)
+      : null,
     assignedTo: r.agent_id,
     agentName: r.agent_name,
     resultSummary: r.notes,

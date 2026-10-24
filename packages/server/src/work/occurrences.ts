@@ -539,8 +539,7 @@ export function settleOccurrence(
   let effectiveStatus = runStatus;
   let effectiveDelivery = deliveryId;
   let gateNote: string | null = null;
-  const left = runStatus === 'complete' ? runItemsLeft(occurrenceId) : null;   // v3.5: not complete while its measure lists items
-  if (left) { effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null; gateNote = `${left.left} ${left.unit} left by the task's measure`; }
+  const left = runStatus === 'complete' ? runItemsLeft(occurrenceId) : null;   // v3.5: what the task's measure still lists
   if (effectiveStatus === 'complete') {
     const owed = occurrenceOwesDeliverable(occurrenceId);
     if (owed.owes) {
@@ -597,6 +596,13 @@ export function settleOccurrence(
       gateNote = 'the run ended without reaching the person it owed a message';
     }
   }
+  // v3.5 DONE IS MEASURED — AFTER the deliverable gate, never before it: an owed run is still
+  // refused (`owed`) and a spent ladder is still UNDELIVERED with the owner's alert. Only a run
+  // the gate would record COMPLETE is recorded INCOMPLETE while its task's measure lists items.
+  if (left && effectiveStatus === 'complete') {
+    effectiveStatus = RUN_STATUS_INCOMPLETE; effectiveDelivery = null;
+    gateNote = `${left.left} ${left.unit} left by the task's measure`;
+  }
 
   // T2: the settle and the run's own word are ONE unit. The event is the ONLY carrier
   // of the discriminator between "finished, reached nobody" and "never ran" (both land on
@@ -650,10 +656,12 @@ export function settleOccurrence(
   // word the deliverable gate above allowed. For every task that owes nobody anything the two
   // are the same value and this is a no-op.
   if (result.kind === 'applied') {
+    const incomplete = left && runStatusInner === RUN_STATUS_INCOMPLETE ? left : null;
     appendWorkEvent(occurrenceId, OCCURRENCE_EVENT.settled, 'scheduler', {
       run_status: runStatusInner, summary: summary ?? null,
+      ...(incomplete ? { items_left: incomplete.left, unit: incomplete.unit } : {}),   // the run history's "N <unit> left"
     });
-    if (left) recordRunRemainder(occurrenceId, left);
+    if (incomplete) recordRunRemainder(occurrenceId, incomplete);
   }
   return result;
   });
