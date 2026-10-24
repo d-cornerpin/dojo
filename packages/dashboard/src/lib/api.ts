@@ -1807,9 +1807,7 @@ export interface TaskRun {
   scheduledFor: string;
   startedAt: string | null;
   completedAt: string | null;
-  status: string;
-  /** The owner-facing words when the status alone would mislead ("Incomplete — 5 messages left"). */
-  statusLabel?: string | null;
+  status: string; statusLabel?: string | null;   // the owner-facing words when the status alone would mislead
   assignedTo: string | null;
   agentName: string | null;
   resultSummary: string | null;

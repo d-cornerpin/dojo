@@ -799,14 +799,8 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
 export async function closeRunsThatDelivered(): Promise<number> {
   let closed = 0;
   for (const row of runsReadyToCloseOnDelivery()) {
-    try {   // v3.5: the run is judged on a fresh reading; one row that cannot be re-read never stops the sweep
-      await (await import('../agent/tools/cat/measure-door.js')).remeasureTask('scheduler', row.taskId);
-    } catch (err) {
-      logger.warn('Scheduler: re-reading a delivered run\'s measure failed; left for the next tick', {
-        taskId: row.taskId, runId: row.occurrenceId, error: err instanceof Error ? err.message : String(err),
-      });
-      continue;
-    }
+    try { await (await import('../agent/tools/cat/measure-door.js')).remeasureTask('scheduler', row.taskId); }   // v3.5: the run is judged on a fresh reading
+    catch (err) { logger.warn('Scheduler: re-reading a delivered run\'s measure failed; left for the next tick', { taskId: row.taskId, runId: row.occurrenceId, error: String(err) }); continue; }   // one row never stops the sweep
     logger.info('Scheduler: a run delivered — closing it on the message', {
       taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId,
       tool: row.tool, steered: row.steered,
