@@ -16,6 +16,7 @@ import { homeDir } from '../../home.js';
 import { idleStreamDeadline } from '../../services/idle-stream-deadline.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
+import { getOllamaModelInfo } from '../../services/ollama.js';
 // t202 D10: the owner's 32K floor for an agent's MAIN model.
 import { refuseSmallMainModel } from '../../agent/main-model-floor.js';
 
@@ -417,10 +418,12 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
         const modelId = `ollama-${m.name.replace(/[^a-z0-9]/gi, '-')}`;
         const existingModel = db.prepare('SELECT id FROM models WHERE id = ? OR api_model_id = ?').get(modelId, m.name);
         if (!existingModel) {
+          // M41: store what Ollama reports about the model; what it does not report is NULL, never a stand-in.
+          const info = await getOllamaModelInfo(m.name, 'http://localhost:11434');
           db.prepare(`
-            INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, '[]', 32000, 0, 0, 1, datetime('now'), datetime('now'))
-          `).run(modelId, providerId, m.name, m.name);
+            INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '[]', ?, ?, 0, 0, 1, datetime('now'), datetime('now'))
+          `).run(modelId, providerId, m.name, m.name, info?.contextWindow ?? null, info?.maxOutputTokens ?? null);
           added++;
         }
       }

@@ -185,11 +185,13 @@ const ANTHROPIC_COST_MAP: Record<string, { input: number; output: number }> = {
   haiku: { input: 0.80, output: 4.0 },
 };
 
-function getAnthropicCost(modelId: string): { input: number; output: number } {
+// M41: a family the catalog does not list has NO price (NULL, which the Models page flags as unknown),
+// never another family's price.
+function getAnthropicCost(modelId: string): { input: number; output: number } | null {
   for (const [key, cost] of Object.entries(ANTHROPIC_COST_MAP)) {
     if (modelId.includes(key)) return cost;
   }
-  return { input: 3.0, output: 15.0 }; // default to sonnet pricing
+  return null;
 }
 
 // DeepSeek models — OpenAI-compatible provider at https://api.deepseek.com.
@@ -364,7 +366,7 @@ async function seedDeepSeekModels(
           insertStmt.run(
             uuidv4(), providerId, m.id, m.id,
             JSON.stringify(['chat', 'code', 'tools']),
-            64_000, 8_192, 0.27, 1.10,
+            null, null, null, null,   // M41: a live-listed id the reference catalog does not know has no known window, cap or price
           );
           liveInserted++;
         }
@@ -408,20 +410,20 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
   name: string;
   apiModelId: string;
   capabilities: string[];
-  contextWindow: number;
-  maxOutputTokens: number;
-  inputCostPerM: number;
-  outputCostPerM: number;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  inputCostPerM: number | null;
+  outputCostPerM: number | null;
 }>> {
   try {
     const models: Array<{
       name: string;
       apiModelId: string;
       capabilities: string[];
-      contextWindow: number;
-      maxOutputTokens: number;
-      inputCostPerM: number;
-      outputCostPerM: number;
+      contextWindow: number | null;
+      maxOutputTokens: number | null;
+      inputCostPerM: number | null;
+      outputCostPerM: number | null;
     }> = [];
 
     // Fetch all models from Anthropic API
@@ -439,10 +441,13 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
 
       const cost = getAnthropicCost(model.id);
 
-      // The API returns max_tokens (max output tokens) and context_window on model objects
+      // M41: the API reports `max_input_tokens` (the window) and `max_tokens` (the output cap) on model
+      // objects. A figure it does not report is NULL, not a stand-in: a stand-in is stored looking exactly
+      // like a real one and then overwrites the real one.
       const apiModel = model as unknown as Record<string, unknown>;
-      const maxOutput = (apiModel.max_tokens as number) ?? (apiModel.max_output_tokens as number) ?? 8192;
-      const contextWindow = (apiModel.context_window as number) ?? 200000;
+      const positive = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : null);
+      const maxOutput = positive(apiModel.max_tokens) ?? positive(apiModel.max_output_tokens);
+      const contextWindow = positive(apiModel.max_input_tokens) ?? positive(apiModel.context_window);
 
       models.push({
         name: model.display_name ?? displayName,
@@ -450,8 +455,8 @@ async function fetchAnthropicModels(client: Anthropic): Promise<Array<{
         capabilities: ['chat', 'code', 'analysis', 'tools'],
         contextWindow,
         maxOutputTokens: maxOutput,
-        inputCostPerM: cost.input,
-        outputCostPerM: cost.output,
+        inputCostPerM: cost?.input ?? null,
+        outputCostPerM: cost?.output ?? null,
       });
     }
 
@@ -557,7 +562,7 @@ configRouter.post('/providers', async (c) => {
 
   // Auto-insert models for Anthropic providers (dynamically fetched, with fallback)
   if (type === 'anthropic') {
-    let anthropicModels = ANTHROPIC_MODELS_FALLBACK;
+    let anthropicModels: Awaited<ReturnType<typeof fetchAnthropicModels>> = ANTHROPIC_MODELS_FALLBACK;
     if (credential) {
       try {
         const useOAuth = authType === 'oauth' || credential.includes('sk-ant-oat');
@@ -637,7 +642,7 @@ configRouter.post('/providers', async (c) => {
               insertExtra.run(
                 uuidv4(), id, m.id, m.id,
                 JSON.stringify(['chat', 'code', 'tools']),
-                128000, 16384, 2.50, 10.0,
+                null, null, null, null,   // M41: a model the catalog does not list has no known window, cap or price
               );
             }
           }
@@ -845,8 +850,8 @@ configRouter.post('/providers/:id/validate', async (c) => {
         const freshModels = await fetchAnthropicModels(client);
         const updateModel = db.prepare(`
           UPDATE models SET
-            max_output_tokens = ?,
-            context_window = ?,
+            max_output_tokens = COALESCE(?, max_output_tokens),
+            context_window = COALESCE(?, context_window),
             input_cost_per_m = COALESCE(?, input_cost_per_m),
             output_cost_per_m = COALESCE(?, output_cost_per_m),
             updated_at = datetime('now')
@@ -904,7 +909,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
               insertModel.run(
                 uuidv4(), id, m.id, m.id,
                 JSON.stringify(['chat', 'code', 'tools']),
-                128000, 16384, 2.50, 10.0,
+                null, null, null, null,   // M41: a model the catalog does not list has no known window, cap or price
               );
             }
           }
