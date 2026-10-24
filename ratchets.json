@@ -9152,6 +9152,20 @@
       "to": 383,
       "by": "t252 B4 (v3.5, 2026-10-23): one KNOWN_DIVERGENCES entry for the in-lane amendment of unreleased migration 201",
       "why": "+7: one ledger entry (file, the two checksums, since, reason) in the shape every other entry has. The migration freeze gate counts every commit on the branch since the last tag as applicable, and the lane's one reserved migration was amended after B2 committed it (B4 added summary_checks). The ledger is the gate's only adjudication mechanism and the entry is data, not code. ALTERNATIVE REFUSED: rewriting the lane's history to fold B4's table into B2's commit is a rebase, which the lane rules forbid."
+    },
+    {
+      "path": "packages/server/src/memory/summary-writer-health.ts",
+      "from": null,
+      "to": 243,
+      "by": "t252 (v3.5, 2026-10-23): pinned at its current count (growth detector: unlisted file past 60% of the cap)",
+      "why": "t252 A5 (v3.5): the summary writer list puts the Dojo's standard writer second. +3 over the 240 it held (an import, one list line, one comment line naming the new step); the growth detector flags any unlisted file past 240, so it is pinned here, decrease-only from now on."
+    },
+    {
+      "path": "packages/server/src/services/local-standard.ts",
+      "from": null,
+      "to": 289,
+      "by": "t252 (v3.5, 2026-10-23): pinned at its current count (growth detector: unlisted file past 60% of the cap)",
+      "why": "t252 A1/A2 (v3.5): the ONE module that names the two standard models (plan rule: nothing else names them), installs them, reports their state and runs the once-per-version update hook. Pinned at its count rather than split so the tags and everything that acts on them stay in one file, as the plan's file table asks; decrease-only from now on."
     }
   ],
   "maxNewFileLines": 400,
@@ -9380,6 +9394,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-obligations.ts": 297,
     "packages/server/src/memory/summary-rebuild.ts": 464,
+    "packages/server/src/memory/summary-writer-health.ts": 243,
     "packages/server/src/memory/tail-horizon.ts": 540,
     "packages/server/src/memory/work-board-lane.ts": 790,
     "packages/server/src/microsoft/auth.ts": 635,
@@ -9411,6 +9426,7 @@
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
+    "packages/server/src/services/local-standard.ts": 289,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 466,
     "packages/server/src/services/outlook-watcher.ts": 520,
