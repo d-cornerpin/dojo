@@ -95,7 +95,7 @@ Open `http://localhost:3000` (dev) or `http://localhost:3001` (production). Bow 
 ## Requirements
 
 - macOS 13+ (Ventura or later)
-- 8GB RAM minimum. 16GB if you want to run local models. More is better. Always more.
+- 16GB RAM minimum. The Dojo runs two small local models of its own (about 6GB), so it needs the room. More is better. Always more.
 - Node.js 22+
 - Internet for cloud AI providers. Or go fully local with Ollama. Your call, your dojo.
 

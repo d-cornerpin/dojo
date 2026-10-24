@@ -206,7 +206,7 @@ cat > "$DEST/README.md" << 'READMEEOF'
 ## Requirements
 
 - macOS 13+ (Ventura or later)
-- 8GB+ RAM (16GB recommended for local models)
+- 16GB RAM minimum (the Dojo runs two small local models of its own)
 - Internet connection (for initial setup)
 
 ## After Install

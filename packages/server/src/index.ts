@@ -984,12 +984,12 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j. Compute RAM-aware num_ctx recommendations for Ollama models that
-  // don't have one yet. Separate background task so it doesn't block boot
-  // or the capability backfill.
+  // 4j. v3.5: the Dojo's two standard models, once per version (an updating box gets them), then RAM-aware
+  // num_ctx recommendations for Ollama models without one (theirs included). Background: never blocks boot.
   {
     void (async () => {
       try {
+        await (await import('./services/local-standard.js')).ensureStandardModelsAtBoot();
         const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
         await backfillRecommendedNumCtx();
       } catch (err) {

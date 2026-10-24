@@ -10,6 +10,7 @@ import { useToast } from '../../hooks/useToast';
 import { useTheme } from '../../themes';
 import { MigrationExport } from '../MigrationExport';
 import { ImportWizard } from '../ImportWizard';
+import { StandardModels } from './StandardModels';
 import {
   getOrbQualityCached,
   refreshOrbQualityFromServer,
@@ -677,6 +678,7 @@ const OllamaSettings = () => {
         Controls how many different Ollama models can be loaded in RAM simultaneously.
         Set to 1 for 16GB machines, 2+ if you have more RAM.
       </div>
+      <StandardModels repair />
       <label className="flabel">Max Concurrent Models</label>
       <div className="srow">
         <input

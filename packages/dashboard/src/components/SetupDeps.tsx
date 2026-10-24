@@ -2,6 +2,7 @@ import { fullDiskAccessInstructions, FULL_DISK_ACCESS_VERIFY } from '@dojo/share
 import { useState, useEffect, useCallback } from 'react';
 import { request } from '../lib/api';
 import { automationInstructions, AUTOMATION_VERIFY } from '../lib/automation-permission';
+import { StandardModels, type StandardModelsState } from './settings/StandardModels';
 
 // ════════════════════════════════════════
 // Dependencies & Local Models — OOBE Step
@@ -104,11 +105,14 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [configured, setConfigured] = useState(false);
 
   const [pullElapsed, setPullElapsed] = useState(0);
+  // v3.5: the Dojo's own two models install themselves; Next waits while they download.
+  const [standardPulling, setStandardPulling] = useState(false);
+  const onStandardState = useCallback((st: StandardModelsState) => setStandardPulling(st.decision === 'pulling' || st.writer === 'pulling'), []);
 
   // Required deps: all must be installed before proceeding
   // Also block Next while a model is downloading
   const requiredReady =
-    !pulling &&
+    !pulling && !standardPulling &&
     deps.node === 'installed' &&
     deps.brew === 'installed' &&
     deps.ollama === 'installed' &&
@@ -412,42 +416,26 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       {/* Section 2: Local Models (once Ollama is ready) */}
       {phase === 'models' && deps.ollamaRunning && deps.nomic === 'installed' && (
         <div>
-          <h3 className="card-header mb-1">Choose a Local Model</h3>
+          <h3 className="card-header mb-1">Dojo's two models</h3>
           <p className="text-xs text-ui/40 mb-3">
-            A local model runs on your machine for free. It's used for lightweight tasks, as a fallback when API providers are down,
-            and for system services. You can skip this if you only want to use API models.
+            The Dojo installs two small local models of its own: one answers its yes/no questions, the other writes
+            titles and memory summaries. They download by themselves; there is nothing to choose.
           </p>
-
-          {/* Recommended model */}
-          <div className="glass-nested rounded-xl p-4 mb-3 border border-ui/[0.10]">
-            <div className="flex items-start justify-between">
-              <div>
-                <span className="text-sm font-medium text-ui/90">qwen3.5:9b</span>
-                <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">Recommended</span>
-                <p className="text-xs text-ui/40 mt-1">Good balance of capability and speed for machines with 16GB+ RAM. Free, runs locally.</p>
-              </div>
-              {installedModels.some(m => m.name.includes('qwen3.5')) ? (
-                <span className="text-xs text-green-700 shrink-0">{'\u2705'} Installed</span>
-              ) : (
-                <button
-                  onClick={() => pullModel('qwen3.5:9b')}
-                  disabled={pulling !== null}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg shrink-0 transition-colors ${
-                    pulling === 'qwen3.5:9b' ? 'bg-yellow-600/20 text-yellow-400' : 'glass-btn-primary'
-                  }`}
-                >
-                  {pulling === 'qwen3.5:9b' ? 'Downloading...' : 'Install'}
-                </button>
-              )}
-            </div>
+          <div className="glass-nested rounded-xl p-4 mb-5 border border-ui/[0.10]">
+            <StandardModels onState={onStandardState} />
           </div>
+
+          <h3 className="card-header mb-1">Models for your agents</h3>
+          <p className="text-xs text-ui/40 mb-3">
+            Optional. Pull a local model for your agents to use, or skip this if your agents will use cloud models.
+          </p>
 
           {/* Manual pull */}
           <div className="flex gap-2 mb-4">
             <input
               value={manualModel}
               onChange={(e) => setManualModel(e.target.value)}
-              placeholder="Or type a model name (e.g., llama3.3, gemma3:4b)"
+              placeholder="Type a model name (e.g., llama3.3, gemma3:4b)"
               className="glass-input flex-1"
             />
             <button
@@ -455,7 +443,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
               disabled={!manualModel.trim() || pulling !== null}
               className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors shrink-0"
             >
-              {pulling && pulling !== 'qwen3.5:9b' ? 'Pulling...' : 'Pull'}
+              {pulling ? 'Pulling...' : 'Pull'}
             </button>
           </div>
 

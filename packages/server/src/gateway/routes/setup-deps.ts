@@ -14,7 +14,10 @@ import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
-import { ensureLocalOllamaProvider } from '../../services/local-standard.js';
+import {
+  ensureLocalOllamaProvider, startStandardInstall, standardState, standardProgressLines,
+  STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL,
+} from '../../services/local-standard.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -283,6 +286,18 @@ setupDepsRouter.delete('/ollama/models/:name', async (c) => {
   }
 });
 
+// GET /ollama/standard — the Dojo's two models: their state, their tags, the install's progress lines
+setupDepsRouter.get('/ollama/standard', async (c) => {
+  const state = await standardState();
+  return c.json({ ok: true, data: { ...state, tags: { decision: STANDARD_DECISION_MODEL.tag, writer: STANDARD_WRITER_MODEL.tag }, lines: standardProgressLines() } });
+});
+
+// POST /ollama/standard — install or repair them (the Ollama tile's Repair button), in the background
+setupDepsRouter.post('/ollama/standard', (c) => {
+  startStandardInstall();
+  return c.json({ ok: true, data: { started: true } });
+});
+
 // POST /ollama/auto-configure — create Ollama provider + discover models
 setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   const db = getDb();
@@ -315,6 +330,8 @@ setupDepsRouter.post('/ollama/auto-configure', async (c) => {
       }
 
       logger.info('Ollama model discovery complete', { total: models.length, added });
+      // v3.5: Ollama answers and the embedder is present — the Dojo's two models install themselves.
+      if (models.some((m) => m.name.startsWith('nomic-embed-text'))) startStandardInstall();
       return c.json({ ok: true, data: { providerId, modelsFound: models.length, modelsAdded: added } });
     }
   } catch { /* ignore */ }

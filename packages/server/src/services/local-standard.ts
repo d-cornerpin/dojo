@@ -199,10 +199,11 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
     progressLines = [...progressLines.filter((l) => !l.startsWith(line.split(':')[0])), line];
     onProgress?.(line);
   };
+  // Ollama must answer before anything is written: a box without it gets no provider row from here.
+  const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(localOllamaProvider()?.baseUrl ?? 'http://localhost:11434', '/api/tags');
+  if (!tags) return standardState();
   const provider = ensureLocalOllamaProvider();
   if (!provider) return standardState();
-  const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(provider.baseUrl, '/api/tags');
-  if (!tags) return standardState();
   const installed = installedTagsOf(tags);
   const ids: Record<Which, string | null> = { decision: null, writer: null };
 
@@ -242,4 +243,47 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
 export function ensureStandardModels(onProgress?: (line: string) => void): Promise<StandardState> {
   if (!inFlight) inFlight = install(onProgress).finally(() => { inFlight = null; });
   return inFlight;
+}
+
+/** Resolves when the install running now (if any) has finished. Starts nothing. */
+export async function standardInstallSettled(): Promise<void> {
+  await inFlight?.catch(() => undefined);
+}
+
+/** Start the install in the background (setup, the Repair button); progress is read back by polling. */
+export function startStandardInstall(): void {
+  void ensureStandardModels().catch((err) => {
+    logger.warn('Standard model install failed', { error: err instanceof Error ? err.message : String(err) });
+  });
+}
+
+/**
+ * The update hook (the once-per-version pattern of `prompt/shipped-souls.ts`): the first boot of a
+ * version installs or repairs the pair. Stamped only when both are installed, so an install Ollama
+ * could not finish is tried again at the next boot. A box that never set up a local Ollama is left
+ * to setup. Returns whether a run happened.
+ */
+export async function ensureStandardModelsOncePerVersion(version: string): Promise<boolean> {
+  if (!/^\d/.test(version)) return false;
+  const db = getDb();
+  const seen = (db.prepare("SELECT value FROM config WHERE key = 'standard_models_version'").get() as { value: string } | undefined)?.value;
+  if (seen === version || !localOllamaProvider()) return false;
+  const s = await ensureStandardModels();
+  if (s.decision === 'installed' && s.writer === 'installed') {
+    db.prepare(`INSERT INTO config (key, value, updated_at) VALUES ('standard_models_version', ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(version);
+  } else {
+    logger.warn('The Dojo\'s two standard models are not both installed after the update; the next boot tries again', { note: s.note });
+  }
+  return true;
+}
+
+/** The boot hook: background, never fatal. */
+export async function ensureStandardModelsAtBoot(): Promise<void> {
+  try {
+    const { getCurrentVersion } = await import('../gateway/routes/update.js');
+    await ensureStandardModelsOncePerVersion(getCurrentVersion());
+  } catch (err) {
+    logger.warn('Standard model check at boot failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+  }
 }

@@ -32,10 +32,11 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# RAM check
+# RAM check. The floor is 16GB (owner, v3.5): the Dojo keeps two small local models of its own
+# resident beside macOS and the engine. A smaller Mac is warned and asked, never refused.
 RAM_GB=$(( $(sysctl -n hw.memsize) / 1073741824 ))
-if [[ $RAM_GB -lt 8 ]]; then
-    echo "⚠️  Warning: Only ${RAM_GB}GB RAM detected. 8GB+ recommended."
+if [[ $RAM_GB -lt 16 ]]; then
+    echo "⚠️  This Mac has ${RAM_GB}GB of memory. The Dojo needs 16GB: it runs two small local models of its own (about 6GB) beside macOS and the engine, so a smaller Mac will be slow and will have no room for a local agent model."
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
     [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
