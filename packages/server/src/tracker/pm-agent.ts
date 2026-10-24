@@ -1,3 +1,4 @@
+import { closeoutReceipts } from './closeout-receipts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
@@ -582,6 +583,9 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
 
+  // K35: what the request shows is counted as it is built, and kept with the trail entry beside the thread it rides.
+  const threadId = uuidv4();
+  const { block: receiptsBlock, shown } = closeoutReceipts(rows, ctx.agentId);
   try {
     const { writeTaskLog } = await import('./task-log.js');
     for (const r of rows) {
@@ -592,6 +596,7 @@ export async function escalateCloseoutMissToPM(ctx: {
         actionTaken: `escalated to PM via ${sourceLabel}`,
         reason: 'agent produced user-facing text without calling work_update(action="status"); the reply was shown to the user and the task remains in_progress pending PM review',
         note: ctx.agentText.slice(0, 4000),
+        evidenceJson: JSON.stringify({ thread_id: threadId, receipts_shown: shown[r.id] ?? 0 }),
       });
     }
   } catch (err) {
@@ -606,68 +611,6 @@ export async function escalateCloseoutMissToPM(ctx: {
   const truncatedSaid = ctx.agentText.length > 1500
     ? ctx.agentText.slice(0, 1500) + '...'
     : ctx.agentText;
-
-  // v2.10.2, receipts in the A2A body. Pre-fix, PM only saw the
-  // agent's suppressed text ("08 done"), not the tool-call rows from
-  // task_log. That made it easy for PM to conclude "no evidence,
-  // re-run" when the audit log actually had the [SENT] success row.
-  // Pull the last few tool_use audit entries for each paused task
-  // and embed them inline so PM has the receipts in the same
-  // message as the question.
-  let receiptsBlock = '';
-  try {
-    const receiptLines: string[] = [];
-    for (const r of rows) {
-      // PHASE-2 T10G: reads the trail through its own seam now that the table is gone.
-      // `tool_use` LEAVES the kind list and is not replaced: it is not one of the thirteen
-      // kinds `TaskLogEntryKind` declares, no writer in the tree has ever emitted it, and the
-      // box carried zero rows of it — a dead kind inside a live predicate, which is why the
-      // list is a measurement and not a copy.
-      const auditRows = listTaskLog(r.id, { limit: 6, kinds: ['transition', 'observation'] });
-      if (auditRows.length === 0) continue;
-      receiptLines.push(`  ${r.id.slice(0, 8)} recent audit (newest first):`);
-      for (const a of auditRows) {
-        const action = a.actionTaken ?? '(no action recorded)';
-        const detail = [a.reason, a.note].filter(Boolean).join(' / ').slice(0, 180);
-        receiptLines.push(`    [${a.createdAt}] ${action}${detail ? `, ${detail}` : ''}`);
-      }
-    }
-    // C26: engine-written verification receipts. These are machine facts (the
-    // provider's own id / a read-only re-fetch), not the agent's prose, so PM
-    // can tell a real send from an invented "sent it." Render per-task rows
-    // (stamped when the complete gate consumed them) plus the assignee's recent
-    // rows in the window (a turn that did NOT close through the gate leaves them
-    // unstamped). Read-only.
-    const fmtReceipt = (vr: { tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }): string =>
-      `    [${vr.created_at}] ${vr.tool} ${vr.verified ? 'VERIFIED' : 'unverified'} (${vr.basis})${vr.provider_id ? `, id ${vr.provider_id}` : ''}`;
-    for (const r of rows) {
-      const taskReceipts = db.prepare(`
-        SELECT tool, verified, basis, provider_id, created_at
-        FROM tool_receipts WHERE task_id = ?
-        ORDER BY created_at DESC LIMIT 10
-      `).all(r.id) as Array<{ tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }>;
-      if (taskReceipts.length === 0) continue;
-      receiptLines.push(`  ${r.id.slice(0, 8)} engine receipts:`);
-      for (const vr of taskReceipts) receiptLines.push(fmtReceipt(vr));
-    }
-    const assigneeReceipts = db.prepare(`
-      SELECT tool, verified, basis, provider_id, created_at
-      FROM tool_receipts
-      WHERE agent_id = ? AND task_id IS NULL AND created_at >= datetime('now', '-2 hours')
-      ORDER BY created_at DESC LIMIT 10
-    `).all(ctx.agentId) as Array<{ tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }>;
-    if (assigneeReceipts.length > 0) {
-      receiptLines.push(`  ${ctx.agentId} recent engine receipts (unstamped, last 2h):`);
-      for (const vr of assigneeReceipts) receiptLines.push(fmtReceipt(vr));
-    }
-    if (receiptLines.length > 0) {
-      receiptsBlock = `Audit log excerpts (the actual receipts, read these BEFORE deciding):\n${receiptLines.join('\n')}\n\n`;
-    }
-  } catch (err) {
-    logger.warn('Failed to assemble audit-log receipts for closeout-miss A2A (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err), taskCount: rows.length,
-    });
-  }
 
   const payload =
     `[Engine notice - CLOSEOUT MISS]\n\n` +
@@ -695,7 +638,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
     const res = await deliverA2AMessage({
       intent: 'QUESTION',
-      threadId: uuidv4(),
+      threadId,
       requiresResponse: true,
       payload,
       toAgent: pmId,

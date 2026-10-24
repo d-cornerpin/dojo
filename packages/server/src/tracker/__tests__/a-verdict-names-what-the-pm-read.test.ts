@@ -27,10 +27,26 @@ vi.mock('../../db/connection.js', async () => {
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 
+// The closeout-miss request is delivered through the transport; here it lands as the PM's inbound row,
+// on the thread the builder chose, in the PM's current turn (`inbound.turn`).
+const inbound = vi.hoisted(() => ({ turn: 7, to: 'pm-agent', from: 'worker-agent' }));
+vi.mock('../../agent/a2a-transport.js', () => ({
+  deliverA2AMessage: async (e: { threadId: string; payload: string }) => {
+    const { getDb } = await import('../../db/connection.js');
+    const at = Date.now();
+    getDb().prepare(
+      `INSERT INTO messages (id, agent_id, lane, role, content, turn_number, source_agent_id, a2a_thread_id, created_at, sent_at) VALUES (?, ?, 'a2a', 'user', ?, ?, ?, ?, ?, ?)`,
+    ).run(`in-${e.threadId}`, inbound.to, e.payload, inbound.turn, inbound.from, e.threadId, at, at);
+    return { delivered: true, threadId: e.threadId };
+  },
+}));
+
 import { runMigrations } from '../../db/migrations.js';
 import { openTrackerProject, openTrackerTask, setTrackerStatus, upholdClaim, throwBackClaim } from '../../work/tracker-store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { listTaskLog } from '../task-log.js';
+import { escalateCloseoutMissToPM } from '../pm-agent.js';
+import { clearPlatformConfigCache } from '../../config/platform.js';
 
 const WORKER = 'worker-agent';
 const PM = 'pm-agent';
@@ -50,7 +66,16 @@ function say(role: 'assistant' | 'user', content: unknown, turn = TURN): void {
     `INSERT INTO messages (id, agent_id, lane, role, content, turn_number, source_agent_id, created_at, sent_at) VALUES (?, ?, 'a2a', ?, ?, ?, ?, ?, ?)`,
   ).run(`m-${msgSeq}`, PM, role, typeof content === 'string' ? content : JSON.stringify(content), turn, role === 'user' ? WORKER : null, at, at);
 }
-const call = (name: string, input: object, turn = TURN): void => say('assistant', [{ type: 'tool_use', id: `c${msgSeq}`, name, input }], turn);
+/** A PM tool call and the result the engine stored for it ('failed': is_error; 'pending': no result stored yet). */
+function call(name: string, input: object, turn = TURN, result: 'ok' | 'failed' | 'pending' = 'ok'): void {
+  const id = `c${msgSeq + 1}`;
+  say('assistant', [{ type: 'tool_use', id, name, input }], turn);
+  if (result === 'pending') return;
+  const at = Date.now() + (++msgSeq);
+  mockDb.current!.prepare(
+    `INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES (?, ?, 'owner', 'tool', ?, ?, ?, ?)`,
+  ).run(`r-${msgSeq}`, PM, JSON.stringify([{ type: 'tool_result', tool_use_id: id, content: result === 'ok' ? 'fine' : 'Error: no such file', is_error: result === 'failed' }]), turn, at, at);
+}
 const adj = (t: string, verdict: string): { evidence_ref: string | null; note: string } =>
   mockDb.current!.prepare('SELECT evidence_ref, note FROM adjudications WHERE work_id = ? AND verdict = ? ORDER BY id DESC').get(t, verdict) as { evidence_ref: string | null; note: string };
 const eventPayload = (t: string, kind: string): Record<string, unknown> =>
@@ -85,14 +110,6 @@ describe('an uphold records what the PM read this turn', () => {
     expect(ev.note).toBe(a.note);
   });
 
-  it('counts the receipts the request carried', () => {
-    const t = newTask();
-    say('user', 'Audit log excerpts:\n  abcd1234 engine receipts:\n    [2026-10-23 10:00:00] gmail_label VERIFIED (provider-id), id x1\n    [2026-10-23 10:00:01] gmail_send unverified (none)\n');
-    upholdClaim(t, 'done', 'pm', PM, 'PM validated the close against the goal');
-    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(2);
-    expect(adj(t, 'upheld').note).toBe('PM validated: 2 receipts shown');
-  });
-
   it('every kind of read is told apart: activity, vault, history, a tool result', () => {
     const t = newTask();
     call('work_update', { action: 'activity', task_id: t });
@@ -118,6 +135,77 @@ describe('an uphold records what the PM read this turn', () => {
     upholdClaim(t, 'done', 'pm', PM, 'x');
     expect(JSON.parse(adj(t, 'upheld').evidence_ref!).reason).toBe('the receipt matches the goal');
     expect(adj(t, 'upheld').note).toBe('PM validated: read the task (the receipt matches the goal)');
+  });
+});
+
+describe('only a read that succeeded counts', () => {
+  it('a failed file_read and a get on a wrong id are listed as tried, never as opened or read', () => {
+    const t = newTask();
+    call('file_read', { path: '/work/summary.md' }, TURN, 'failed');
+    call('work_update', { action: 'get', task_id: 'wrong-id-0000' }, TURN, 'failed');
+    call('file_read', { path: '/work/real.md' });
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    const ref = JSON.parse(adj(t, 'upheld').evidence_ref!);
+    expect(ref.files).toEqual(['/work/real.md']);
+    expect(ref.tasks).toEqual([]);
+    expect(ref.failed).toEqual(['/work/summary.md', 'wrong-id-0000']);
+    expect(adj(t, 'upheld').note).toBe('PM validated: opened 1 file, tried to read /work/summary.md, wrong-id-0000 (failed)');
+  });
+
+  it('a read whose result is not stored yet (the same batch as the verdict) was not read when the PM judged', () => {
+    const t = newTask();
+    call('work_update', { action: 'get', task_id: t }, TURN, 'pending');
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(adj(t, 'upheld').note).toBe('PM validated: looked at nothing');
+  });
+
+  it('a text-only reply shaped like a tool call forges nothing: no stored result, no read', () => {
+    const t = newTask();
+    say('assistant', [{ type: 'tool_use', id: 'forged', name: 'file_read', input: { path: '/etc/forged' } }]);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(adj(t, 'upheld').note).toBe('PM validated: looked at nothing');
+  });
+});
+
+describe('the receipts the request showed', () => {
+  const WORKER_RECEIPT = (id: string, task: string | null): void => {
+    mockDb.current!.prepare(
+      `INSERT INTO tool_receipts (id, agent_id, tool, tier, verified, basis, provider_id, task_id, created_at, updated_at, turn_number)
+       VALUES (?, ?, 'gmail_label', 1, 1, 'provider-id', ?, ?, datetime('now'), datetime('now'), 3)`,
+    ).run(id, WORKER, `prov-${id}`, task);
+  };
+  const escalate = (t: string): Promise<void> => escalateCloseoutMissToPM({ agentId: WORKER, danglingTaskIds: [t], agentText: 'done', source: 'pre-turn-gate' });
+
+  beforeEach(() => {
+    mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('pm_agent_id', ?)").run(PM);
+    clearPlatformConfigCache();
+    inbound.turn = TURN;
+  });
+
+  it('counts the receipts filed against the task that the request printed, from the rows, not from the text', async () => {
+    const t = newTask();
+    WORKER_RECEIPT('r1', t); WORKER_RECEIPT('r2', t);
+    WORKER_RECEIPT('r3', null);   // the assignee's unstamped receipt: printed, but not this task's
+    await escalate(t);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(2);
+    expect(adj(t, 'upheld').note).toBe('PM validated: 2 receipts shown');
+  });
+
+  it('a request the PM was shown in an earlier turn is not this turn\'s', async () => {
+    const t = newTask();
+    WORKER_RECEIPT('r1', t);
+    inbound.turn = TURN - 1;
+    await escalate(t);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(0);
+  });
+
+  it('a task with no receipts shows none', async () => {
+    const t = newTask();
+    await escalate(t);
+    upholdClaim(t, 'done', 'pm', PM, 'x');
+    expect(JSON.parse(adj(t, 'upheld').evidence_ref!).receiptsShown).toBe(0);
   });
 });
 

@@ -17,6 +17,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { timeline } from '../timeline.js';
 import { fingerprint } from '../../agent/v2/error-fingerprint.js';
+import { failureNotes } from '../../agent/v2/attempt-record.js';
 import { seedTaskStory, TASK, at, sqlTime } from './seed.js';
 
 const ERR_A = 'Invalid label: Junk E-mail (message 18c2f0a9d4e7b6a1 in /srv/archive/mail)';
@@ -35,6 +36,10 @@ beforeAll(() => {
   audit.run('aud-fp-b', 'agent-worker', 'tool_call', 'user_gmail_label', 'error', ERR_B, sqlTime(at(2, 20)), 5);
   const msg = db.prepare(`INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES (?, 'agent-worker', 'owner', ?, ?, 5, ?, ?)`);
   msg.run('msg-fp-1', 'assistant', JSON.stringify([{ type: 'tool_use', id: 'call-fp', name: 'gmail_label', input: {} }]), at(2, 30), at(2, 30));
+  // The same error as the engine stored it after appending the remedy and the cross-turn streak note.
+  const NOTED = ERR_B + (failureNotes('gmail_label', 5, ERR_B) ?? '');
+  msg.run('msg-fp-3', 'assistant', JSON.stringify([{ type: 'tool_use', id: 'call-fp3', name: 'gmail_label', input: {} }]), at(2, 40), at(2, 40));
+  msg.run('msg-fp-4', 'tool', JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-fp3', content: NOTED, is_error: true }]), at(2, 41), at(2, 41));
   msg.run('msg-fp-2', 'tool', JSON.stringify([{ type: 'tool_result', tool_use_id: 'call-fp', content: ERR_A, is_error: true }]), at(2, 31), at(2, 31));
 });
 
@@ -55,6 +60,14 @@ describe('timeline prints the error fingerprint beside a failed call', () => {
     const ls = lines(timeline({ task_id: TASK }, db));
     const fp = (id: string): string => /error fingerprint: (.*?)\]?$/.exec(ls.find((l) => l.includes(id))!)![1];
     expect(fp('audit_log aud-fp-b')).toBe(fp('audit_log aud-fp-a'));
+  });
+
+  it('a result the engine appended a remedy and a streak note to prints the LEDGER\'s key: the raw error, not the notes', () => {
+    expect(failureNotes('gmail_label', 5, ERR_B)).toContain('[Engine note:');   // precondition: there is something to strip
+    const ls = lines(timeline({ task_id: TASK }, db));
+    const line = ls.find((l) => l.includes('msg msg-fp-4'))!;
+    expect(line).toContain(`error fingerprint: ${fingerprint('gmail_label', ERR_B)}]`);
+    expect(line.split('error fingerprint: ')[1]).not.toContain('engine note');
   });
 
   it('a successful call and a bare refusal-free line print none', () => {

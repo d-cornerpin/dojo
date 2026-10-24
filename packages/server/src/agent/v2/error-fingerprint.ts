@@ -60,3 +60,15 @@ export function maskVolatile(toolName: string, errorText: string): string {
 export function fingerprint(toolName: string, errorText: string): string {
   return maskVolatile(toolName, errorText).toLowerCase().slice(0, FINGERPRINT_CHARS);
 }
+
+/**
+ * The error text as the ledger fingerprinted it: a stored failing result with everything the engine
+ * appended taken off. `failureNotes` (`attempt-record.ts`: the registered remedy from `remedyNote`,
+ * then `crossTurnFailureNote`) always appends at the END, each note opened by a blank line and
+ * `[Engine note:`, so the first such opening starts the engine's part. Anything that prints or
+ * compares a stored result's fingerprint with the ledger's key reads it through this.
+ */
+export function stripEngineNotes(storedResult: string): string {
+  const i = storedResult.indexOf('\n\n[Engine note:');
+  return i < 0 ? storedResult : storedResult.slice(0, i);
+}

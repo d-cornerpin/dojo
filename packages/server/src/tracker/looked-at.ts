@@ -22,6 +22,9 @@ import { workOperation } from '../tools/work-verbs.js';
 
 export interface LookedAt {
   tasks: string[]; activity: string[]; files: string[]; messages: string[]; results: string[]; vault: string[];
+  /** Reads that failed or were refused, by their id / path / query. */
+  failed: string[];
+  /** Engine receipts filed against the task that the request showed the PM (counted when the request was built). */
   receiptsShown: number;
   /** The measure and ledger lines the validation request carried (the measured plan's E1). Not yet
    *  carried by any request on this base, so never set here; the field is the place it lands. */
@@ -29,13 +32,10 @@ export interface LookedAt {
 }
 
 type Row = { content: string };
-interface Block { type?: string; name?: string; input?: Record<string, unknown> }
+interface Block { type?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; is_error?: unknown }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const add = (into: string[], v: unknown): void => { const s = str(v); if (s && !into.includes(s)) into.push(s); };
-
-/** One engine-written receipt line, as the PM's validation requests print them. */
-const RECEIPT_LINE = /^\s+\[[^\]\n]+\] \S+ (?:VERIFIED|unverified) \(/gm;
 
 function callsOf(rows: Row[]): Block[] {
   const out: Block[] = [];
@@ -47,39 +47,79 @@ function callsOf(rows: Row[]): Block[] {
   return out;
 }
 
-/** What the PM read in turn `turnNumber`, from its own persisted tool calls and the request it was woken with. */
-export function lookedAtThisTurn(pmAgentId: string, turnNumber: number): LookedAt {
-  const l: LookedAt = { tasks: [], activity: [], files: [], messages: [], results: [], vault: [], receiptsShown: 0 };
+/** Tool-use id -> did its result succeed, for the results stored in this turn. */
+function resultsOf(pmAgentId: string, turnNumber: number): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  const rows = getDb().prepare(
+    "SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'tool' AND content LIKE '[{%'",
+  ).all(pmAgentId, turnNumber) as Row[];
+  for (const r of rows) {
+    try {
+      for (const b of JSON.parse(r.content) as Block[]) if (b?.type === 'tool_result' && b.tool_use_id) out.set(b.tool_use_id, !b.is_error);
+    } catch { /* not a block array */ }
+  }
+  return out;
+}
+
+/** Receipts the PM's requests this turn showed for `workId` (or for any task when omitted), from the
+ *  count the request builder kept with the task's trail entry beside the thread the request rode. */
+function receiptsShownThisTurn(pmAgentId: string, turnNumber: number, workId?: string): number {
   const db = getDb();
-  const mine = db.prepare(
+  const threads = new Set((db.prepare(
+    "SELECT DISTINCT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'user' AND a2a_thread_id IS NOT NULL",
+  ).all(pmAgentId, turnNumber) as Array<{ t: string }>).map((r) => r.t));
+  if (threads.size === 0) return 0;
+  const entries = db.prepare(
+    `SELECT json_extract(payload, '$.evidence_json') AS ev FROM work_events
+      WHERE kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'closeout_miss'${workId ? ' AND work_id = ?' : ''}`,
+  ).all(...(workId ? [workId] : [])) as Array<{ ev: string | null }>;
+  let shown = 0;
+  for (const e of entries) {
+    try {
+      const ev = JSON.parse(e.ev ?? '') as { thread_id?: string; receipts_shown?: number };
+      if (ev.thread_id && threads.has(ev.thread_id) && typeof ev.receipts_shown === 'number') shown += ev.receipts_shown;
+    } catch { /* an entry with no structured evidence */ }
+  }
+  return shown;
+}
+
+/** What the PM read in turn `turnNumber`, from its own persisted tool calls (joined to their results)
+ *  and the receipts its request showed. `workId`: the work being judged, so receipts are that task's. */
+export function lookedAtThisTurn(pmAgentId: string, turnNumber: number, workId?: string): LookedAt {
+  const l: LookedAt = { tasks: [], activity: [], files: [], messages: [], results: [], vault: [], failed: [], receiptsShown: 0 };
+  const mine = getDb().prepare(
     "SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND content LIKE '[{%'",
   ).all(pmAgentId, turnNumber) as Row[];
+  const results = resultsOf(pmAgentId, turnNumber);
   for (const c of callsOf(mine)) {
+    const ok = c.id ? results.get(c.id) : undefined;
+    if (ok === undefined) continue;   // no stored result: the PM had not read it when it judged
     const a = c.input ?? {};
+    const into = (list: string[], v: unknown): void => add(ok ? list : l.failed, v);
     switch (workOperation(c.name, a) ?? c.name) {
-      case 'work_update:get': add(l.tasks, a.task_id); break;
-      case 'work_update:activity': add(l.activity, a.task_id ?? a.project_id); break;
-      case 'vault_get': add(l.vault, a.entry_id); break;
-      case 'vault_search': add(l.vault, a.query); break;
-      case 'history_get': add(l.messages, a.id ?? a.query); break;
-      case 'history_search': add(l.messages, a.query ?? a.pattern); break;
-      case 'tool_result_read': add(l.results, a.id); break;
-      case 'file_read': case 'file_list': add(l.files, a.path); break;
+      case 'work_update:get': into(l.tasks, a.task_id); break;
+      case 'work_update:activity': into(l.activity, a.task_id ?? a.project_id); break;
+      case 'vault_get': into(l.vault, a.entry_id); break;
+      case 'vault_search': into(l.vault, a.query); break;
+      case 'history_get': into(l.messages, a.id ?? a.query); break;
+      case 'history_search': into(l.messages, a.query ?? a.pattern); break;
+      case 'tool_result_read': into(l.results, a.id); break;
+      case 'file_read': case 'file_list': into(l.files, a.path); break;
     }
   }
-  const asked = db.prepare(
-    "SELECT content FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'user'",
-  ).all(pmAgentId, turnNumber) as Row[];
-  for (const r of asked) l.receiptsShown += r.content.match(RECEIPT_LINE)?.length ?? 0;
+  l.receiptsShown = receiptsShownThisTurn(pmAgentId, turnNumber, workId);
   return l;
 }
+
+/** A task id as the tools accept it: the full id or its 8-character prefix, never anything shorter. */
+const matchesWork = (workId: string, given: string): boolean => given.length >= 8 && workId.startsWith(given);
 
 const n = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
 
 /** One plain line: "read the task, opened 2 files, 6 receipts shown". `workId` is the work being judged:
  *  reading ANOTHER task is said as such, never as "read the task". */
 export function lookedAtLine(l: LookedAt, workId?: string): string {
-  const isThis = (id: string): boolean => workId !== undefined && workId.startsWith(id);
+  const isThis = (id: string): boolean => workId !== undefined && matchesWork(workId, id);
   const mine = l.tasks.filter(isThis).length;
   const other = l.tasks.length - mine;
   const parts: string[] = [];
@@ -90,6 +130,7 @@ export function lookedAtLine(l: LookedAt, workId?: string): string {
   if (l.messages.length) parts.push(`searched or read ${n(l.messages.length, 'message', 'messages')}`);
   if (l.results.length) parts.push(`re-read ${n(l.results.length, 'tool result', 'tool results')}`);
   if (l.vault.length) parts.push(`consulted the vault ${n(l.vault.length, 'time', 'times')}`);
+  if (l.failed.length) parts.push(`tried to read ${l.failed.join(', ')} (failed)`);
   if (l.receiptsShown) parts.push(n(l.receiptsShown, 'receipt shown', 'receipts shown'));
   if (l.measure) parts.push(`measure ${l.measure.remaining ?? 'unknown'} remaining`);
   return parts.length ? parts.join(', ') : 'looked at nothing';
@@ -103,7 +144,7 @@ function reasonGiven(pmAgentId: string, turnNumber: number, workId: string): str
   for (const c of callsOf(rows).reverse()) {
     if (workOperation(c.name, c.input) !== 'work_validate:validate') continue;
     const id = str(c.input?.task_id);
-    if (id && workId.startsWith(id)) return str(c.input?.reason);
+    if (id && matchesWork(workId, id)) return str(c.input?.reason);
   }
   return null;
 }
@@ -127,7 +168,7 @@ export function pmVerdictRecord(by: string, byId: string, workId: string): Verdi
     const ctx = turnContext(byId);
     if (!ctx) return undefined;
     const turn = ctx.turnNumber ?? currentTurnNumber(byId);
-    const looked = lookedAtThisTurn(byId, turn);
+    const looked = lookedAtThisTurn(byId, turn, workId);
     const summary = lookedAtLine(looked, workId);
     const reason = reasonGiven(byId, turn, workId);
     const looked_at = { ...looked, summary, ...(reason ? { reason } : {}) };

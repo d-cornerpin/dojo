@@ -33,6 +33,8 @@ beforeAll(() => {
   const at = Date.now();
   db.prepare("INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES ('pm-call', ?, 'owner', 'assistant', ?, 30, ?, ?)")
     .run(PM, JSON.stringify([{ type: 'tool_use', id: 'k1', name: 'work_update', input: { action: 'get', task_id: TASK } }, { type: 'tool_use', id: 'k2', name: 'file_read', input: { path: '/work/summary.md' } }]), at, at);
+  db.prepare("INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES ('pm-result', ?, 'owner', 'tool', ?, 30, ?, ?)")
+    .run(PM, JSON.stringify([{ type: 'tool_result', tool_use_id: 'k1', content: 'fine', is_error: false }, { type: 'tool_result', tool_use_id: 'k2', content: 'fine', is_error: false }]), at + 1, at + 1);
 });
 afterAll(() => endTurnContext(PM));
 

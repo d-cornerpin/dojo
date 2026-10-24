@@ -16,7 +16,7 @@ import type Database from 'better-sqlite3';
 import { redactRows } from './redact.js';
 import { agentLabel, msExpr, short, utc, toMs } from './scope.js';
 import { failedResults, messageText, toolNamesIn } from './message-text.js';
-import { fingerprint } from '../agent/v2/error-fingerprint.js';
+import { fingerprint, stripEngineNotes } from '../agent/v2/error-fingerprint.js';
 
 export type Source = 'events' | 'tools' | 'receipts' | 'deliveries' | 'turns' | 'messages';
 export const SOURCES: readonly Source[] = ['events', 'tools', 'receipts', 'deliveries', 'turns', 'messages'];
@@ -65,8 +65,10 @@ const join = (...cs: Clause[]): Clause => {
 
 const turnTag = (r: Row): string => (r.turn_number !== null && r.turn_number !== undefined ? ` · turn ${r.turn_number}` : '');
 const rootTag = (r: Row): string => (r.root_id ? ` · ${r.root_kind ?? 'root'} ${short(String(r.root_id))}` : '');
-/** K37: beside a failed call, the fingerprint the cross-agent tool-error ledger counts it under. */
-const fpNote = (fps: Array<[string, string]>): string => fps.map(([tool, text]) => `  [error fingerprint: ${fingerprint(tool, text)}]`).join('');
+/** K37: beside a failed call, the fingerprint the cross-agent tool-error ledger counts it under. The ledger
+ *  fingerprints the error BEFORE the engine appends its remedy and streak notes, so they are taken off here.
+ *  An audit line's detail is the error text only where its writer put it there (the thrown-exception writer does). */
+const fpNote = (fps: Array<[string, string]>): string => fps.map(([tool, text]) => `  [error fingerprint: ${fingerprint(tool, stripEngineNotes(text))}]`).join('');
 const who = (r: Row, names: Map<string, string>): string => `agent ${agentLabel(names, r.agent_id as string)}`;
 
 /** K35: a verdict's note, and what the PM looked at when the note does not already say it (an uphold's does). */

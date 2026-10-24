@@ -64,4 +64,13 @@ describe('state: the Standing instruction block', () => {
   it('shows what a section has grown by since its reference', () => {
     expect(section(state(db))).toMatch(/sys\.soul · 600 tokens · 60% · \+100 since the last reference/);
   });
+
+  it('passes the same redaction as the rest of the page: key-shaped text in a section id is blanked', () => {
+    const KEY = 'sk-proj-SyntheticSectionValue00000000000';
+    db.prepare('INSERT INTO prompt_sections (agent_id, entry_id, tokens, chars, measured_at, baseline_tokens, baseline_at) VALUES (?, ?, 5, 20, 1, 5, 1)')
+      .run('agent-primary', `lane.${KEY}`);
+    const text = section(state(db));
+    expect(text).not.toContain(KEY);
+    expect(text).toMatch(/<redacted-credential>/);
+  });
 });

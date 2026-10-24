@@ -79,7 +79,7 @@ export function state(db: Database.Database = getReadOnlyDb()): string {
       `- ${agentLabel(names, a.id as string)} · ${a.status} · ${a.classification}${a.agent_type ? ` · ${a.agent_type}` : ''}`
       + ` · model ${a.model_id ? modelName.get(a.model_id as string) ?? a.model_id : 'none'}${a.grp ? ` · group ${a.grp}` : ''}`
       + ` · grants ${grants.get(a.id as string) ?? 'none'}`), 'No agents.'),
-    'Standing instruction': standingInstruction(db, names),
+    'Standing instruction': redactText(standingInstruction(db, names)),
     'Providers and models': or(rows(db, 'SELECT id, name, type, base_url, auth_type, is_validated FROM providers ORDER BY name').map((p) => {
       const models = rows(db, 'SELECT name, api_model_id, is_enabled, context_window, thinking_enabled FROM models WHERE provider_id = ? ORDER BY name', p.id)
         .map((m) => `  · ${m.name} (${m.api_model_id}) · ${m.is_enabled ? 'enabled' : 'disabled'}${m.context_window ? ` · window ${Number(m.context_window).toLocaleString('en-US')}` : ''}${m.thinking_enabled ? ' · thinking' : ''}`);
