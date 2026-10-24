@@ -9257,6 +9257,48 @@
       "to": 1088,
       "by": "t252 rebase onto v35 (2026-10-24)",
       "why": "+2, a merge correction, no new code: v35 (t258's recurring tool errors, +2) and t252 (B3's decision-score section, +2) each raised the 1,084 pin to 1,086 independently; the rebased file holds both: 1,084 + 2 + 2 = 1,088. From 1,088 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2868,
+      "to": 2875,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+7: two import lines (the A2A fence builder from tools/inbound-fences.ts, and unfenceExternal) and the reason lines at the two readers of a stored A2A row that must read it WITHOUT the fence (review I-K4: semantic dedup compares the sender's words, and the crash-recovery relay can reach the owner's phone). The builder itself lives in the new focused file tools/inbound-fences.ts, not here. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 664,
+      "to": 666,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+2: the import of the outside-content registry and the one call in dispatchResolved, the single door every tool result passes, with its one-line reason. That one call is what fences every registered read (review I-K3); the registry is the new focused file agent/tools/outside-content.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/vault/maintenance.ts",
+      "from": 2161,
+      "to": 2163,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+2: the fence import and the one-line reason at wrapArchive, which fences each archive the Dreamer reads (master plan K33). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/gmail-watcher.ts",
+      "from": 595,
+      "to": 596,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+1: the import of the shared fenced mail block (tools/inbound-fences.ts), which both mail watchers now use instead of building the email block inline. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/twilio/call-session.ts",
+      "from": 916,
+      "to": 917,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+1: the import of the live-call fence builder (tools/inbound-fences.ts); the old import of addressesMatch is unchanged. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/twilio/sms-inbound.ts",
+      "from": 409,
+      "to": 410,
+      "by": "t260 fix round 1 (2026-10-24): v3.5 K33, outside text is fenced; review M-K1 asked for raises instead of folding untouched code",
+      "why": "+1: the fence import and the owner check on a known sender's text (the owner's own words are not fenced; anyone else's are, master plan K33). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9303,7 +9345,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1985,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1385,
-    "packages/server/src/agent/a2a-transport.ts": 2868,
+    "packages/server/src/agent/a2a-transport.ts": 2875,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 268,
@@ -9343,7 +9385,7 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
-    "packages/server/src/agent/tools/index.ts": 664,
+    "packages/server/src/agent/tools/index.ts": 666,
     "packages/server/src/agent/tools/surface.ts": 735,
     "packages/server/src/agent/tools/types.ts": 340,
     "packages/server/src/agent/tools/util.ts": 371,
@@ -9514,7 +9556,7 @@
     "packages/server/src/services/capability-registry.ts": 251,
     "packages/server/src/services/format-time.ts": 275,
     "packages/server/src/services/generation-jobs.ts": 464,
-    "packages/server/src/services/gmail-watcher.ts": 595,
+    "packages/server/src/services/gmail-watcher.ts": 596,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
     "packages/server/src/services/local-standard.ts": 319,
@@ -9544,13 +9586,13 @@
     "packages/server/src/tracker/task-stamps.ts": 336,
     "packages/server/src/tracker/tools.ts": 5216,
     "packages/server/src/tracker/version-gap-reconcile.ts": 361,
-    "packages/server/src/twilio/call-session.ts": 916,
-    "packages/server/src/twilio/sms-inbound.ts": 409,
+    "packages/server/src/twilio/call-session.ts": 917,
+    "packages/server/src/twilio/sms-inbound.ts": 410,
     "packages/server/src/update-state.ts": 417,
     "packages/server/src/update/disk-preflight.ts": 246,
     "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/bounded-reads.ts": 606,
-    "packages/server/src/vault/maintenance.ts": 2161,
+    "packages/server/src/vault/maintenance.ts": 2163,
     "packages/server/src/vault/retrieval.ts": 425,
     "packages/server/src/vault/store.ts": 1297,
     "packages/server/src/vault/tools.ts": 658,
