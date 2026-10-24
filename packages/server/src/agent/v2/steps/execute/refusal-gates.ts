@@ -167,10 +167,10 @@ export function runRefusalGates(
         `BLOCKED by engine thrash gate, \`${tc.name}(${argsPart})\` is refused. ` +
         `You've already called this tool with these exact arguments; the first call's result is in this conversation.\n\n` +
         `Pick a different next action:\n` +
-        `  (a) Call \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
-        `  (b) Call work_update(action="status", status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +
-        `  (c) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
-        `  (d) Send the user a direct question if you need clarification.\n\n` +
+        `  (a) Continue the work from that result: the next item or step, or \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
+        `  (b) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
+        `  (c) Send the user a direct question if you need clarification.\n` +
+        `  (d) Only if the work is done: work_update(action="status", status='complete', result='...', evidence=[...]).\n\n` +
         ENGINE_BLOCK_ESCAPE_HATCH;
       state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
       logger.warn('v2: thrash gate refused tool call', {
@@ -296,7 +296,7 @@ export function runRefusalGates(
   if (closeOut.refuse) {
     const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
     const refusalText = (
-      `Refused: engine close-out gate. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
+      `Refused: engine tracker check. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
       `(ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
       `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
       `work_update(action="status", status="paused"|"blocked") if you are waiting; status="complete" only if one is done. ` +
@@ -366,7 +366,7 @@ export function runRefusalGates(
       `platform has already brought you to it. Compose it — the pieces are in the steer, quoted verbatim. ` +
       `Write the combined reply now, as this turn's message; do not look anything up first. ` +
       `Only two calls run while this is owed: ONE send_to_agent (if a piece is a hand-off rather than a ` +
-      `deliverable, ask that agent for the result directly), and a tracker close-out. ` +
+      `deliverable, ask that agent for the result directly), and a tracker status call. ` +
       `"${tc.name}" works normally again as soon as the reply lands.\n\n` +
       ENGINE_BLOCK_ESCAPE_HATCH
     );

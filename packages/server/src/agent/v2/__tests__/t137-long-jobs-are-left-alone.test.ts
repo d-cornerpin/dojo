@@ -891,8 +891,9 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     const gate = messageRows().filter((m) => m.content.startsWith('[System: tracker check before this turn.'));
     expect(gate).toHaveLength(1);
     expect(gate[0].content).toContain('the abandoned spreadsheet');
-    // v3.5 text wave (orchestrator ruling): the facts and that the job continues; no close-out coaching.
-    expect(gate[0].content).toContain('the job continues');
+    // v3.5 text wave (orchestrator ruling; fix round 1 I-3): the facts, and nothing is closed for it; no close-out coaching.
+    expect(gate[0].content).toContain('nothing is closed for you');
+    expect(gate[0].content).not.toContain('the job continues');
     expect(gate[0].content).not.toMatch(/close-out|abandoned work|KEEP GOING|wrap up|never closed/i);
     expect(gate[0].content.indexOf('work_note(')).toBeLessThan(gate[0].content.indexOf('status="complete"'));
     expect(gate[0].content).not.toContain('summarise the research folder');

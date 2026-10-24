@@ -88,7 +88,7 @@ describe('the task board shows measured progress', () => {
     const id = task('Tidy the labels');
     touch(id, 139);
     const block = lineOf((await buildWorkBoardLane(AGENT)).activeTasks!, 'Tidy the labels');
-    expect(block).toContain('Progress: 139 items touched (no measure set — set one with work_update(action="edit", measure=…) if this task covers a set of items)');
+    expect(block).toContain('Progress: 139 items touched (no measure set — set one with work_update(action="edit", measure=…) if this task covers a set of mailbox messages)');
   });
 
   it('neither a measure nor a touched item: no Progress line at all', async () => {

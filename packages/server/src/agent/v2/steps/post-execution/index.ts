@@ -94,7 +94,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
         agentId, turnNumber, floor: 'repetition', atLoop: state.loopCount,
         content:
           '[System: You are repeating yourself, your last two responses were identical. ' +
-          'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
+          'Try a different approach. If the task is complete, record it with its result (e.g. work_update(action="status")). ' +
           'If you need help, explain what you are stuck on.]',
       }, { broadcast });
       return continueLoop(state);

@@ -286,7 +286,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
       const id = await stalemated();
       setup();
       const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
-      expect(out).toMatch(/measure-items-left/);
+      expect(out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
       expect(readWork(id).state).toBe('claimed');
       expect(awaiting(id)).toBe(true);
     });
@@ -306,7 +306,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   ] as const) {
     it(`a fragment is refused: owner "${owner}", quoted "${quote}"`, async () => {
       const r = await verdictOn(owner, quote);
-      expect(r.out).toMatch(/measure-items-left/);
+      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
       expect(r.state).toBe('claimed');
     });
   }
@@ -338,18 +338,18 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   it('an email reply, even from the owner\'s own mailbox, never verifies a quote', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Yes. Close it, I&#39;ll do the rest.'), "close it, I'll do the rest", emailRow('owner@home.example'));
-    expect(r.out).toMatch(/measure-items-left/);
+    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
     expect(r.state).toBe('claimed');
   });
   it('an email from anyone else is not the owner', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Close it.'), 'close it', emailRow('someone@else.example'));
-    expect(r.out).toMatch(/measure-items-left/);
+    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
   });
   it('the agent\'s own question, quoted back in an owner-mailbox reply, never verifies', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const r = await verdictOn(emailBody('Not yet. On Mon, the agent wrote: > 30 messages are still left. Close it now? Or keep going?'), 'Close it now', emailRow('owner@home.example'));
-    expect(r.out).toMatch(/measure-items-left/);
+    expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
     expect(r.state).toBe('claimed');
   });
   it('the owner\'s dashboard reply still verifies when an email with the same words is also on record', async () => {
@@ -370,7 +370,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     seedDelivery();
     requestUserVerdict(id, PM, { status_requested: 'complete' });
     const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
-    expect(out).toMatch(/measure-items-left/);
+    expect(out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
     expect(readWork(id).state).toBe('claimed');
   });
 });

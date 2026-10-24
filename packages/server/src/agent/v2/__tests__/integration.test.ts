@@ -4385,12 +4385,12 @@ describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is wai
     ? broadcastSpy.mock.calls.some((c) => {
       const e = c[0] as { type?: string; result?: string };
       return e.type === 'chat:tool_result' && typeof e.result === 'string'
-        && e.result.includes('Refused: engine close-out gate');
+        && e.result.includes('Refused: engine tracker check');
     })
     : broadcastSpy.mock.calls.some((c) => {
       const e = c[0] as { type?: string; result?: string };
       return e.type === 'chat:tool_result' && typeof e.result === 'string'
-        && e.result.includes('Refused: engine close-out gate');
+        && e.result.includes('Refused: engine tracker check');
     });
 
   it('PROVENANCE: the idle window seeded here is the engine\'s own declaration', () => {

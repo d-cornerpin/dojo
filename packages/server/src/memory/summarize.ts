@@ -73,7 +73,7 @@ TEMPORAL ANCHORING — CRITICAL:
 ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL proper nouns: company names, product names, people's names, place names
 - Preserve ALL specific details: numbers, dates, prices, URLs, file paths, version numbers
-- Preserve ALL stated preferences: "favorite movie is Meet Joe Black" not "discussed movie preferences"
+- Preserve ALL stated preferences: "favorite tea is jasmine green" not "discussed drink preferences"
 - Preserve ALL business/project details: "runs Acme Corp (advertising/video production)" not "discussed their businesses"
 - Preserve exact quotes when the user states a preference, makes a decision, or gives an instruction
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
@@ -94,8 +94,8 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 BAD: "The user discussed their work and business ventures"
 GOOD: "[2026-04-19 09:00–11:30] The user runs two businesses: Acme Corp (advertising and video production, primary client is BigTech) and SideProject (wedding videography serving the greater metro area)"
 
-BAD: "The user mentioned their entertainment preferences"
-GOOD: "The user's favorite movie is Meet Joe Black. Favorite TV show is Schitt's Creek."
+BAD: "The user mentioned their drink and hobby preferences"
+GOOD: "The user's favorite tea is jasmine green. Favorite board game is chess."
 ${contextBlock}`;
   }
 
@@ -123,7 +123,7 @@ TEMPORAL ANCHORING — CRITICAL:
 ABSOLUTE RULES:
 - Preserve ALL proper nouns, specific names, numbers, dates, and concrete details from the source summaries
 - When two summaries mention the same topic, merge them but keep ALL specific details from both
-- NEVER generalize specific facts into vague categories — "favorite movie is Meet Joe Black" must survive, not become "has movie preferences"
+- NEVER generalize specific facts into vague categories — "favorite tea is jasmine green" must survive, not become "has drink preferences"
 - NEVER drop business names, project names, people's names, or technical specifics
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
 - Obligation lines (things owed to someone) carry a work id and, where the engine has resolved it, a bracketed state. Carry BOTH forward verbatim and never restate an obligation as currently owed: the OPEN WORK block is the current status, not these summaries. An obligation with no id does not survive condensation.

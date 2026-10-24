@@ -453,7 +453,8 @@ describe('C2: the end-of-turn text never coaches closure', () => {
     const cont = text.indexOf('If there is more to do, do it');
     expect(cont).toBeGreaterThan(-1);
     for (const door of ['status="paused"', 'status="blocked"', 'status="complete"']) expect(text.indexOf(door)).toBeGreaterThan(cont);
-    expect(text).toContain('A task left in progress is not a problem');
+    expect(text).toContain('A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.');   // fix round 1 I-4
+    expect(text).not.toContain('or you name what is left');   // fix round 1 I-5
   });
 
   it('a side effect that already ran is listed as a fact, with no close command', async () => {

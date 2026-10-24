@@ -20,6 +20,8 @@ vi.mock('../../../../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessa
 import { runMigrations } from '../../../../../db/migrations.js';
 import { createTask } from '../../../../../tracker/schema.js';
 import { runRefusalGates } from '../refusal-gates.js';
+import { canonicalToolSignature } from '../../../classifiers/loop.js';
+import { advance, initState } from '../../../state.js';
 
 const AGENT = 'agent-gate';
 const db = (): Database.Database => mockDb.current!;
@@ -47,11 +49,23 @@ describe('the close-out gate refusal', () => {
     const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
     const out = runRefusalGates(state as never, { id: 'c1', name: 'gmail_search', arguments: { query: 'x' } } as never, ctx as never, false);
     const text = out.refusal?.content ?? '';
-    expect(text).toContain('Refused: engine close-out gate.');
+    expect(text).toContain('Refused: engine tracker check.');
     const note = text.indexOf('work_note(');
     expect(note).toBeGreaterThan(-1);
     for (const w of ['paused', 'blocked', 'complete']) expect(text.indexOf(w)).toBeGreaterThan(note);
     expect(text).toContain('status="complete" only if one is done');
     expect(text).not.toMatch(/never closed|resolve at least one/);
+  });
+
+  it('fix round 1 (I-2): the thrash refusal puts continuing first and offers complete only for done work', () => {
+    const call = { id: 'c2', name: 'gmail_search', arguments: { query: 'in:inbox' } };
+    const state = advance(initState({ agentId: AGENT, maxToolLoops: 75, turnNumber: 1, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
+      { thrashGatedSignatures: [canonicalToolSignature(call.name, call.arguments)] });
+    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
+    const text = runRefusalGates(state as never, call as never, ctx as never, false).refusal?.content ?? '';
+    expect(text).toContain('BLOCKED by engine thrash gate');
+    expect(text).toContain('(a) Continue the work from that result');
+    expect(text).toContain('(d) Only if the work is done:');
+    expect(text).not.toContain("using the data you've already gathered");
   });
 });

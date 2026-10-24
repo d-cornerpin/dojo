@@ -208,7 +208,9 @@ const T262_BASELINE_CHARS = { work_open: 9478, work_update: 10075 };
 //   work_update 10,075 → 10,193 (+118: the enum and the clause)
 // And the parked t262 entry: `tasks` no longer says a project REQUIRES them ("just put down the FIRST
 // concrete thing"); it says they are optional beside the plan, one per step: 8,708 → 8,407 (-301).
-const T266_BASELINE_CHARS = { work_open: 8407, work_update: 10193 };
+// Fix round 1: the measure says "a SET of mailbox messages" (only a mailbox can be measured) and work_open's goal
+// drops "close-out": work_open 8,407 → 8,405; work_update 10,193 → 10,180.
+const T266_BASELINE_CHARS = { work_open: 8405, work_update: 10180 };
 const PRE_T266_TASKS_TEXT = 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.';
 const PRE_T266_MEASURE = {
   ...WORK_MEASURE_PROP,
@@ -223,6 +225,9 @@ function withoutT266(schema: Record<string, unknown>): Record<string, unknown> {
   put((out.properties.tasks as { items?: Schema } | undefined)?.items);
   const tasks = out.properties.tasks as { description?: string } | undefined;
   if (tasks?.description) tasks.description = PRE_T266_TASKS_TEXT;
+  // Fix round 1 (M-1): work_open's goal no longer says "close-out".
+  const goal = out.properties.goal as { description?: string } | undefined;
+  if (goal?.description) goal.description = goal.description.replace('PM compares the result against it when the task closes.', 'PM compares the close-out result against it.');
   put(((out.properties.plan as Schema | undefined)?.properties.steps as { items?: Schema } | undefined)?.items);
   return out;
 }

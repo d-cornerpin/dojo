@@ -209,7 +209,7 @@ export const WORK_FIELD_TEXT: Record<string, { canonical: string; onUpdate: stri
 
 export const WORK_MEASURE_PROP: PropSchema = {
   type: 'object',
-  description: 'For a task over a SET of items (messages, files, rows): the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" (your own mailbox) or "user_gmail_search" (the user\'s), with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',
+  description: 'For a task over a SET of mailbox messages: the read the engine can re-run to list what is STILL to do, so progress is counted for you and the task cannot be closed with items left. {tool, args, unit}. Supported today: tool="gmail_search" (your own mailbox) or "user_gmail_search" (the user\'s), with args.query (optionally args.account) and unit="messages". Write the query so it SHRINKS as you work (e.g. "in:inbox -label:Sorted"), never one that stays constant. The engine counts it when you set it, at the end of each turn that makes progress, and when you close; your task board shows the last count.',
   properties: {
     tool: { type: 'string', enum: ['gmail_search', 'user_gmail_search'] },
     args: { type: 'object', properties: { query: { type: 'string' }, account: { type: 'string' } }, required: ['query'] },

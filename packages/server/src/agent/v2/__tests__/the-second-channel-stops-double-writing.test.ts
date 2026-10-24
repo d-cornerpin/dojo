@@ -197,7 +197,7 @@ describe('§0 the two channels, measured against the real assembler', () => {
     expect(msg!.content).toBe(queued!.content);
     expect(queued!.content).toContain('[Engine thrash gate]');
     expect(queued!.content).toContain('Your next action MUST be one of');
-    expect(queued!.content).toContain('(e) Send the user a specific question');
+    expect(queued!.content).toContain('(d) Send the user a specific question');
   });
 
   it('the rider is INVISIBLE on the turn it is written — the tail cutoff excludes it', async () => {
@@ -228,7 +228,7 @@ describe('§0 the two channels, measured against the real assembler', () => {
     expect(body.length).toBeGreaterThan(gist.length);
     // And what the cut removes is the instruction's operative tail.
     expect(body).toContain('Your next action MUST be one of');
-    expect(gist).not.toContain('(e) Send the user a specific question');
+    expect(gist).not.toContain('(d) Send the user a specific question');
   });
 
   it('the lane FRAMES whatever it carries as a notice, not as an order', async () => {
@@ -306,7 +306,7 @@ describe('§1 thrash-gate', () => {
     // The key is the whole bound at this site — a second gated signature is a second fact.
     expect(queued!.key).toBe(SIG);
     expect(queued!.content).toContain('[Engine thrash gate]');
-    expect(queued!.content).toContain('(e) Send the user a specific question');
+    expect(queued!.content).toContain('(d) Send the user a specific question');
     expect(renderMessageEntry('msg.pending-nudge', { pendingSteer: queued!.content } as unknown as AssemblyContext)!.content)
       .toBe(queued!.content);
     // …and the gate's own state still latches, which is what stops the second fire.

@@ -49,7 +49,7 @@ describe('the assignment notice', () => {
   it('an unmeasured task: work it through, with how to set a measure; close only when done', () => {
     const id = createTask({ title: 'Sort the inbox', assignedTo: WORKER, createdBy: CREATOR, origin: ORIGIN });
     const text = notice(id);
-    expect(text).toContain('Work it through. If it covers a set of items, set its measure');
+    expect(text).toContain('Work it through. If it covers a set of mailbox messages, set its measure');
     expect(text).toContain(`work_update(action="edit", task_id="${id}", measure=`);
     expect(text).toContain('only when it is done. If you cannot proceed, status="blocked" with the reason.');
     expect(text).not.toMatch(/When finished|Begin working/);

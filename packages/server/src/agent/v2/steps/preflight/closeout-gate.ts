@@ -185,10 +185,10 @@ export async function runCloseoutGate(
       }
 
       const gateMsg = (
-        `${GATE_MSG_HEAD} Your tracker shows work that has not moved for a while; the job continues, and the tracker should say where it stands.\n\n` +
+        `${GATE_MSG_HEAD} Your tracker shows work that has not moved for a while; nothing is closed for you, and the tracker should say where it stands.\n\n` +
         `${sections.join('\n\n')}\n\n` +
         `**Start this turn with one tracker call, before any reply.** For each item: work_note(task_id, notes="what is next") if you are continuing it (then carry on with the work in this same turn); ` +
-        `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; status="complete" (or action="complete_step") only for one that is done, and a measured task closes when its measure reads 0 or you name what is left; ` +
+        `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; status="complete" (or action="complete_step") only for one that is done (a measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass remainder naming them and why); ` +
         `work_update(action="close_project", project_id, status="cancelled", reason="...") only if the whole project is no longer wanted (a duplicate, or superseded). ` +
         `Until one tracker call lands the engine refuses other tool calls; after it, the rest of the turn is yours. ` +
         `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`

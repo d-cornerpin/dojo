@@ -63,8 +63,8 @@ export function measuredCloseRefusal(
   if (!r || r.left === 0 || r.pending) return null;
   return {
     kind: 'refused', workId: id, reason: 'measure-items-left',
-    detail: `its measure still returned ${r.left} ${r.unit} when last read, so the task is not done; `
-      + 'it closes when the measure reads 0, or when its agent closes it naming what is left',
+    detail: `Its measure still returned ${r.left} ${r.unit} when last read, so the task is not done. It closes when the measure `
+      + 'reads 0; if some items genuinely cannot or should not be done, its own agent closes it with a remainder naming them and why.',
   };
 }
 

@@ -12,7 +12,8 @@ describe('model-facing examples name roles', () => {
   it.each([
     ['prompt/assembler.ts', /Nora/, 'Always send the research agent\'s posts via iMessage'],
     ['microsoft/tools-read.ts', /'Alex'/, 'E.g., a first name, \'acme.com\', \'CFO\'.'],
-    ['services/imessage-bridge.ts', /\?\? 'Alex'/, 'senderRecord?.name ?? \'This contact\''],
+    ['services/imessage-bridge.ts', /\?\? 'Alex'|\?\? 'This contact'/, 'senderRecord?.name ?? \'<their name>\''],
+    ['memory/summarize.ts', /Joe Black|Schitt/, 'favorite tea is jasmine green'],
     ['vault/tools.ts', /Bob's address/, 'the contractor\'s address is still unknown'],
   ])('%s', (rel, gone, now) => {
     const text = read(rel);

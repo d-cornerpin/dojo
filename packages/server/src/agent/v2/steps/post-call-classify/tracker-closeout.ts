@@ -223,10 +223,10 @@ export async function runTrackerCloseout(
         // it twice now"). New wording: tool call ONLY, no text,
         // explicit "do not repeat your prior message" guardrail.
         const nudgeText = (
-          `[System: ${openTasks.length} in_progress task${openTasks.length === 1 ? '' : 's'} assigned to you was not closed out this turn:\n` +
+          `[System: this turn did work and replied, and ${openTasks.length === 1 ? 'this in_progress task of yours has' : `these ${openTasks.length} in_progress tasks of yours have`} no status from it:\n` +
           `${taskList}\n` +
-          `REQUIRED ACTION: call work_update(action="complete_step") (for multi-step projects) or work_update(action="status") (complete | blocked | paused) on each task above. Make ONLY the tool call(s). Do NOT write any user-facing text, the user already received your previous response and a duplicate reply is worse than a stale tracker. ` +
-          `If a task is genuinely still in progress, end your turn now with NO text output (no tool call, no message); the engine will continue you on the next user turn.]`
+          `Still working on one? Say what is next with work_note(task_id), or end your turn with no text: it stays as it is, nothing is closed for you, and the PM checks in on open work. Waiting? status="paused" or "blocked" with the reason. Finished? status="complete" with the result and evidence (or action="complete_step"). ` +
+          `Make only tool calls now: your reply was already delivered, and a second one is worse than a stale tracker.]`
         );
         // RC-19: via persistEngineSteer so the close-out directive reaches the
         // model (the steer queue) AND keeps its dashboard row. This branch is

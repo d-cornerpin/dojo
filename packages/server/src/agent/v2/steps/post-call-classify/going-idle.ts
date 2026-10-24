@@ -104,9 +104,9 @@ export async function runGoingIdle(
   // Broader sibling of the add-notes-stop nudge. Catches every case
   // where the agent ends a turn while a task assigned to them is
   // still in_progress AND they did not transition it this turn.
-  // Walks them through the decision matrix - keep going, mark
-  // complete, mark paused (waiting on user), or mark blocked
-  // (needs escalation). One-shot so a model that insists on
+  // Lists them with the end-of-turn choices - keep going first,
+  // then paused (waiting on user), blocked (needs escalation), or
+  // complete when done. One-shot so a model that insists on
   // stopping doesn't trigger a loop.
   //
   // Skip if the close-out gate is already armed for this turn
@@ -206,8 +206,8 @@ export async function runGoingIdle(
         `\nIf there is more to do, do it: call your next tool now and continue from exactly where you stopped (next item, next line, next step; do not restart or re-read what you already processed).\n` +
         `If you are waiting on the person (you already asked them): work_update(action="status", task_id, status="paused", notes="waiting for X").\n` +
         `If something the person does not know about stops you: work_update(action="status", task_id, status="blocked", notes="why").\n` +
-        `If the task is genuinely finished: work_update(action="status", task_id, status="complete", result, evidence) — a measured task closes only when its measure reads 0 or you name what is left.\n` +
-        `A task left in progress is not a problem: it stays open and you are brought back to it.]`
+        `If the task is genuinely finished: work_update(action="status", task_id, status="complete", result, evidence) — a measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass remainder naming them and why.\n` +
+        `A task left in progress is not a problem: a one-off task stays open and you are brought back to it; a scheduled run left in progress is recorded as not done, and its schedule goes on.]`
       );
       // v3.1.10: if the agent ALREADY produced a user-facing reply this
       // turn, do NOT re-prompt it. The weaker model treats the re-prompt

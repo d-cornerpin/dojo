@@ -384,7 +384,7 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
     expect(body, 'and names the reaper as the owner of a genuinely dead process')
       .toContain('reaper');
     expect(body, 'the close-out repair stays — that is not a transfer')
-      .toContain('that is a close-out, not a takeover');
+      .toContain('that records the delivery; it is not a takeover');
   });
 
   it('the ladder tops out: rung 4 is recorded, so it does not re-ask every minute', async () => {

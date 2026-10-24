@@ -22,6 +22,8 @@ describe('the work_update doc', () => {
     expect(keepOn).toBeGreaterThan(head);
     expect(finished).toBeGreaterThan(d.indexOf('4. **The whole project is no longer relevant**'));
     expect(d).toContain('**A task left in_progress at the end of a turn stays yours.**');
+    expect(d).toContain('a scheduled run left in progress is recorded as not done, and its schedule goes on.');   // fix round 1 I-4
+    expect(d).not.toMatch(/Close-outs are silent|want to abandon a project/);   // fix round 1 M-1
   });
 
   it('t250 parked: documents measure on edit and remainder on a close', () => {

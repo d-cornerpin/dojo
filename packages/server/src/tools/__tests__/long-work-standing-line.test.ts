@@ -15,4 +15,11 @@ describe('the long-work standing line', () => {
   it('is absent for an agent without file_append', () => {
     expect(generateToolIndex([tool('file_read')], [])).not.toContain('When an answer deserves to be long');
   });
+
+  it('fix round 1 (I-1, M-5): the tracker reflex is true and does not coach closing; the long-work line is its own paragraph', () => {
+    const idx = generateToolIndex([tool('file_write'), tool('file_append'), tool('work_open'), tool('scratchpad_set')], ['work_open', 'file_append', 'scratchpad_set']);
+    expect(idx).toContain('- **Keep the tracker true.**');
+    expect(idx).not.toMatch(/Close out tracker tasks the moment|suppresses your reply|resolves them itself|dangling/);
+    expect(idx).toContain('\n\n' + LINE);
+  });
 });

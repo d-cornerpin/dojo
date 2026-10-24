@@ -96,8 +96,8 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       const driftNudge =
         `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
         `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
-        `work_update(action="status") (or work_note), then continue. If you are stuck, wrap up and tell ` +
-        `the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
+        `work_update(action="status") (or work_note), then continue. If you are stuck, tell the user ` +
+        `where things stand and what you need. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
       // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
       // This rung used to write the nudge TWICE: an events-lane row (lifted into
       // `lane.events` on a LATER turn) beside the queue entry. The paragraph that
@@ -350,11 +350,11 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `with the SAME arguments every time. The first call's result is already in this conversation; ` +
         `further calls with these exact args are refused.\n\n` +
         `Your next action MUST be one of:\n` +
-        `  (a) Call \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
-        `  (b) Reply to the user with the answer you can give using the data you already have.\n` +
-        `  (c) Call work_update(action="status", status='complete') with a result + evidence if this is a tracker task.\n` +
-        `  (d) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
-        `  (e) Send the user a specific question if you need clarification.\n\n` +
+        `  (a) Continue the work from that result: the next item or step, or \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
+        `  (b) Reply to the user with the answer you can give using the data you already have, if that is what they asked for.\n` +
+        `  (c) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
+        `  (d) Send the user a specific question if you need clarification.\n` +
+        `  (e) Only if a tracker task is done: work_update(action="status", status='complete') with a result + evidence.\n\n` +
         `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
       logger.warn('v2: thrash gate activated for signature', {
         toolName: thrash.toolName, signature: thrash.signature,

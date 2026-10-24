@@ -39,7 +39,7 @@ const cut = (s: string, width: number): string => (s.length > width ? `${s.slice
 /** The one Progress line. `termWidth` bounds the query and the unit (the board's title width). */
 export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string {
   if (!f.measure) {
-    return `Progress: ${n(f.touched)} items touched (no measure set — set one with work_update(action="edit", measure=…) if this task covers a set of items)`;
+    return `Progress: ${n(f.touched)} items touched (no measure set — set one with work_update(action="edit", measure=…) if this task covers a set of mailbox messages)`;
   }
   const unit = cut(f.measure.unit, termWidth);
   const head = `Progress: ${n(f.touched)} ${unit} touched; measure ${f.measure.tool} "${cut(f.measure.args.query, termWidth)}"`;
@@ -52,7 +52,7 @@ export function formatMeasureLine(f: MeasureFacts, termWidth = Infinity): string
 export function assignmentMeasureLine(taskId: string): string {
   const f = readMeasureFacts(taskId);
   if (!f?.measure) {
-    return `Work it through. If it covers a set of items, set its measure (work_update(action="edit", task_id="${taskId}", measure={tool:"gmail_search", args:{query:"<what is still to do>"}})) so the engine counts for you.`;
+    return `Work it through. If it covers a set of mailbox messages, set its measure (work_update(action="edit", task_id="${taskId}", measure={tool:"gmail_search", args:{query:"<what is still to do>"}})) so the engine counts for you.`;
   }
   const now = f.remaining === null ? 'could not be read yet' : `returns ${f.remaining} ${f.measure.unit} now`;
   return `This task is measured: ${describeMeasure(f.measure)} ${now}. It is done when that reads 0; the engine keeps the count of items you touch and re-counts the measure at the end of each turn that makes progress. When such a turn ends with items left, the engine continues you on the next turn.`;

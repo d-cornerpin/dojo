@@ -504,7 +504,7 @@ function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): strin
       + `status change, and do not try a different terminal word — the same answer comes back.`
     );
   }
-  if (r.reason === 'takeover-needs-the-owner') {
+  if (r.reason === 'takeover-needs-the-owner' || r.reason === 'measure-items-left') {   // v3.5 text wave: the measured rule in words, no code token
     return `Error: "${wanted}" was refused. ${r.detail} Nothing changed on the task.`;
   }
   return `Error: that status change was refused (${r.reason}): ${r.detail}`;
@@ -2218,7 +2218,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       const agentRow = db.prepare('SELECT classification, task_id FROM agents WHERE id = ?').get(agentId) as { classification: string; task_id: string | null } | undefined;
       if (agentRow && agentRow.classification === 'apprentice' && agentRow.task_id === taskId) {
         parts.push('');
-        parts.push('[REMINDER] You just marked your own assigned task complete, but you have NOT finalized your work. work_update(action="status") alone does not terminate you or notify your parent. Call complete_task(status="complete", summary="<your result>") on your next turn to wrap up properly.');
+        parts.push('[REMINDER] You just marked your own assigned task complete, but you have NOT finalized your work. work_update(action="status") alone does not terminate you or notify your parent. Call complete_task(status="complete", summary="<your result>") on your next turn to end your run with that result.');
       }
     }
 
@@ -2274,7 +2274,7 @@ function relayAssignHandbackIfMissing(taskId: string): void {
     const payload =
       `${row.result?.trim() || `Task "${row.title}" was closed as complete (no result text recorded).`}\n\n` +
       `[Engine relay: the assignee closed the assigned task "${row.title}" (${taskId.slice(0, 8)}) ` +
-      `without replying on this thread; the text above is the recorded close-out result.]`;
+      `without replying on this thread; the text above is the result recorded at its close.]`;
 
     void (async () => {
       // Grace period, then re-check. Models routinely batch
@@ -3899,7 +3899,7 @@ export async function trackerRetask(
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-      `Do the work the directive describes, then close out (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+      `Do the work the directive describes; when it is done, close it (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
     // t143 round 3 (I2): a directive, not a question — it wakes the agent and owes the PM no reply.
     redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: body, taskId });
   } catch (err) {
@@ -4669,7 +4669,7 @@ export async function trackerValidateComplete(
         `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck, this is a routine PM check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `To close this out: address what PM flagged, then call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
+        `Next: address what PM flagged; when that is done, call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
       redriven = await redriveWithoutReply({ toAgentId: task.assigned_to, fromAgentId: pmAgentId, content: directive, taskId });
     } catch (err) {
       redriven = false;
