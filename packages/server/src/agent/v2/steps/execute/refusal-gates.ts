@@ -296,12 +296,11 @@ export function runRefusalGates(
   if (closeOut.refuse) {
     const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
     const refusalText = (
-      `Refused: engine close-out gate. You have ${closeOut.live.length} in_progress ` +
-      `task(s) from a previous turn that you never closed (ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
-      `Before any other tool call, resolve at least one with work_update(action="complete_step"), ` +
-      `work_update(action="status", status="complete" | "blocked" | "paused"), or, if you're genuinely still working ` +
-      `on it across turns, work_note to signal "in flight." After ANY one of those, the gate ` +
-      `disengages for the rest of this turn and "${tc.name}" will work normally. ` +
+      `Refused: engine close-out gate. ${closeOut.live.length} in_progress task(s) of yours have not moved for a while ` +
+      `(ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
+      `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
+      `work_update(action="status", status="paused"|"blocked") if you are waiting; status="complete" only if one is done. ` +
+      `After any one of those the gate stands down for this turn and "${tc.name}" works normally. ` +
       `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.\n\n` +
       ENGINE_BLOCK_ESCAPE_HATCH
     );

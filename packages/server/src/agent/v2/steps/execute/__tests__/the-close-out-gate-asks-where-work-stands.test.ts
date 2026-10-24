@@ -1,0 +1,57 @@
+// v3.5 text wave — the close-out gate's refusal asks where the work stands; it does not ask the
+// agent to close it (done-is-measured Part C4). Continuing (`work_note`) is named before any
+// status, and "complete" only for a task that is done.
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+const mockDb: { current: Database.Database | null } = { current: null };
+vi.mock('../../../../../db/connection.js', async () => {
+  const os = await import('node:os');
+  const path = await import('node:path');
+  return {
+    getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+    closeDb: vi.fn(),
+    getDbPath: () => path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-closeout-text', 'dojo.db'),
+  };
+});
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: () => Promise.resolve() }) }));
+
+import { runMigrations } from '../../../../../db/migrations.js';
+import { createTask } from '../../../../../tracker/schema.js';
+import { runRefusalGates } from '../refusal-gates.js';
+
+const AGENT = 'agent-gate';
+const db = (): Database.Database => mockDb.current!;
+
+beforeEach(() => {
+  mockDb.current?.close();
+  mockDb.current = new Database(':memory:');
+  runMigrations();
+  db().prepare(`INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
+    VALUES ('local','Local','openai-compatible','http://127.0.0.1:1/v1','none',1,datetime('now'),datetime('now'))`).run();
+  db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
+    VALUES ('m1','local','M','m','["text"]',8192,1024,1,datetime('now'),datetime('now'))`).run();
+  db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
+    VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
+});
+
+describe('the close-out gate refusal', () => {
+  it('names work_note before any status word, and says complete only for a task that is done', () => {
+    const id = createTask({ title: 'Sort the inbox', assignedTo: AGENT, createdBy: AGENT, origin: { kind: null, sourceMessageId: null, turn: null, convKey: null } });
+    const state = {
+      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
+      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
+      loopCount: 0, closeOutGateSatisfied: false, danglingTaskIds: [id], compileGateSatisfied: true, compileOwedAskIds: [],
+    };
+    const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: {}, counterparty: null, reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '' };
+    const out = runRefusalGates(state as never, { id: 'c1', name: 'gmail_search', arguments: { query: 'x' } } as never, ctx as never, false);
+    const text = out.refusal?.content ?? '';
+    expect(text).toContain('Refused: engine close-out gate.');
+    const note = text.indexOf('work_note(');
+    expect(note).toBeGreaterThan(-1);
+    for (const w of ['paused', 'blocked', 'complete']) expect(text.indexOf(w)).toBeGreaterThan(note);
+    expect(text).toContain('status="complete" only if one is done');
+    expect(text).not.toMatch(/never closed|resolve at least one/);
+  });
+});
