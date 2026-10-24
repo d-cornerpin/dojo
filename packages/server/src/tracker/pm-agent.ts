@@ -1,5 +1,5 @@
 import { closeoutReceipts } from './closeout-receipts.js';
-import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, validationRecordLine } from './job-loop-facts.js';
+import { continuedJobTouchingNothing, continuedJobFact, measuredLeftFact, parkCheckInText, validationMeasureLines } from './job-loop-facts.js';
 import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
@@ -1987,8 +1987,8 @@ async function runPMReview(): Promise<void> {
       ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
       : 'unassigned';
     const isRecurringRun = cTask.repeat_interval !== null && cTask.next_run_at !== null;
-    // Text wave (orchestrator ruling): the report carries the record the close is judged on, never a bias.
-    const recordLine = validationRecordLine(cTask.id);
+    // The request carries the record the close is judged on (measure, ledger, named remainder), never a bias.
+    const recordLines = validationMeasureLines(cTask.id);
 
     const smellLine = cTask.last_smell_flag
       ? `\n  ⚠ SMELL_FLAG: ${renderSmellFlag(cTask.last_smell_flag)}`
@@ -2051,11 +2051,11 @@ async function runPMReview(): Promise<void> {
         `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${doorbellLine}${smellLine}${runLine}${goalEditLine}\n` +
         `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
-        `  Evidence:\n${evidenceLines}${lastNoteLine}${deliveredLine}\n` +
-        `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${recordLine}\n` +
+        `  Evidence:\n${evidenceLines}${lastNoteLine}${deliveredLine}${recordLines}\n` +
+        `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
         `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
-        `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
+        `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not. ` + `A measured task: validate when the measure reads 0, or when the named remainder's reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, escalate to the owner through the main agent (the same escalation you use for a block) and say the count and the worker's reason. An unmeasured task: judge the ledger and receipts above, not the result text.`,
     });
   }
 

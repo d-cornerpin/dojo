@@ -94,12 +94,12 @@ describe('the tracker lines around a close', () => {
     for (const s of ['Bias toward validate', 'CLOSE-OUT NEEDED', 'with the result NOW', 'whatever it takes to make sure the task actually']) expect(pm).not.toContain(s);
     expect(pm).toContain('Judge it now on its record (the measure, ');
   });
-  it('orchestrator ruling: the validation record line names the measure, what was touched and the remainder', async () => {
-    const { validationRecordLine } = await import('../job-loop-facts.js');
-    expect(validationRecordLine(TASK)).toBe('\n  Record: No measure. 0 items touched by its calls.');
-    db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 1 WHERE id = ?')
+  it('orchestrator ruling: the validation record names the measure and what was touched (E1 renders it as Measure/Ledger lines)', async () => {
+    const { validationMeasureLines } = await import('../job-loop-facts.js');
+    expect(validationMeasureLines(TASK)).toBe('\n  Measure: none set\n  Ledger: 0 items touched (none)');
+    db().prepare('UPDATE work SET measure_json = ?, measure_initial = 50, measure_remaining = 12, measure_at = 0 WHERE id = ?')
       .run(JSON.stringify({ tool: 'gmail_search', args: { query: 'in:inbox -label:Done' }, unit: 'messages' }), TASK);
-    expect(validationRecordLine(TASK)).toBe('\n  Record: Its measure (gmail_search "in:inbox -label:Done") still returns 12 messages (of 50 at the start). 0 items touched by its calls.');
+    expect(validationMeasureLines(TASK)).toBe('\n  Measure: gmail_search "in:inbox -label:Done": 12 remaining of 50 at start\n  Ledger: 0 items touched (none)');
   });
 
   it('fix round 2: no closure push in the thrash breaker, the closeout-miss notice or the takeover refusal', () => {

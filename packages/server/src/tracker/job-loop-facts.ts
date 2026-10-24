@@ -51,18 +51,39 @@ export function parkCheckInText(task: { id: string; title: string }, idleMinutes
     + `Waiting on someone? status="paused" or "blocked" with the reason. Task "${task.title}", ID: ${task.id}, no movement for ${idleMinutes} minutes.`;
 }
 
-/** A measured task's reading when there is no count left to state: it reads 0, or it was never read. */
-function measureNoneLeft(taskId: string): string {
-  const r = getDb().prepare('SELECT measure_json, measure_remaining FROM work WHERE id = ?').get(taskId) as { measure_json: string | null; measure_remaining: number | null } | undefined;
-  if (!r?.measure_json) return 'No measure.';
-  return r.measure_remaining === null ? 'Its measure could not be read.' : 'Its measure reads 0.';
+const utc = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+const fmt = (v: number): string => v.toLocaleString('en-US');
+type Reading = { ok?: boolean; remaining?: number | null; at?: number; error?: string } | null;
+
+/** The Measure line of the validation request, in one of its shapes: a reading, a reading with the
+ *  remainder the worker named, a reading that could not be made, or no measure at all. */
+function measureText(taskId: string, touched: number, byTool: Array<{ tool: string }>): string {
+  const db = getDb();
+  const r = db.prepare('SELECT measure_json, measure_initial, measure_remaining, measure_at FROM work WHERE id = ?')
+    .get(taskId) as { measure_json: string | null; measure_initial: number | null; measure_remaining: number | null; measure_at: number | null } | undefined;
+  let parsed: ReturnType<typeof parseMeasure> | null = null;
+  try { parsed = r?.measure_json ? parseMeasure(JSON.parse(r.measure_json)) : null; } catch { parsed = null; }
+  if (!r || !parsed?.ok) return touched > 0 ? `none set; ledger shows ${fmt(touched)} items touched by ${byTool.map((b) => b.tool).join(', ')}` : 'none set';
+  const name = describeMeasure(parsed.measure);
+  if (r.measure_remaining === null) {
+    // The newest reading that worked, and why the latest did not: both are on the task's own spine.
+    const reads = (db.prepare(`SELECT payload FROM work_events WHERE work_id = ? AND kind = 'measured' ORDER BY id DESC`).all(taskId) as Array<{ payload: string | null }>)
+      .map((e): Reading => { try { return JSON.parse(e.payload ?? 'null') as Reading; } catch { return null; } });
+    const good = reads.find((x) => x?.ok === true && typeof x.remaining === 'number');
+    const why = reads.find((x) => x?.ok === false)?.error;
+    return `${name}: could not be read at close${why ? ` (${why.slice(0, 160)})` : ''} — `
+      + (good ? `last good reading ${fmt(good.remaining as number)} at ${utc(good.at ?? 0)}` : 'no earlier reading');
+  }
+  const named = r.measure_remaining === 0 ? undefined
+    : listTaskLog(taskId, { kinds: ['observation'] }).map((e) => e.note ?? '').find((x) => x.startsWith('Remainder named at close:'));   // newest first
+  return `${name}: ${fmt(r.measure_remaining)} remaining${r.measure_initial === null ? '' : ` of ${fmt(r.measure_initial)} at start`}`
+    + `${r.measure_at ? ` (measured ${utc(r.measure_at)})` : ''}${named ? ` — named by the worker: ${named.slice('Remainder named at close:'.length).trim()}` : ''}`;
 }
 
-/** What the validator judges a close on, from the records (orchestrator ruling, text wave): the measure,
- *  what the task's calls touched, and the remainder its agent named, if any. */
-export function validationRecordLine(taskId: string): string {
-  const touched = `${ledgerTotals(taskId).touched.toLocaleString('en-US')} items touched by its calls`;
-  const left = measuredLeftFact(taskId) ?? measureNoneLeft(taskId);
-  const rem = listTaskLog(taskId, { kinds: ['observation'] }).map((e) => e.note ?? '').find((n) => n.startsWith('Remainder named at close:'));   // newest first
-  return `\n  Record: ${left} ${touched}.${rem ? ` ${rem}` : ''}`;
+/** What the validator judges a close on, from the records (done-is-measured E1): the measure, and the
+ *  ledger of what the task's calls touched. The remainder the worker named rides on the Measure line. */
+export function validationMeasureLines(taskId: string): string {
+  const { touched, byTool } = ledgerTotals(taskId);
+  return `\n  Measure: ${measureText(taskId, touched, byTool)}`
+    + `\n  Ledger: ${fmt(touched)} items touched (${byTool.map((b) => `${b.tool} ${fmt(b.n)}`).join(', ') || 'none'})`;
 }
