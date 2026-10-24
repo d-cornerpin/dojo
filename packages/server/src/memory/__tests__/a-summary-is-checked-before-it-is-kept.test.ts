@@ -35,6 +35,7 @@ import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary
 import { SUMMARY_CHECK_NOTICE_CODE, passMark, checkSummary } from '../summary-check.js';
 import { decisionWindowTokens } from '../../services/dojo-working-memory.js';
 import { CHARS_PER_TOKEN } from '../budget.js';
+import { unfenceExternal } from '../../tools/external-content.js';
 import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
@@ -171,11 +172,14 @@ describe('a summary is checked against its source before it is kept', () => {
 
 describe('NB-4: a source larger than the decision model\'s window is checked in parts, never cut', () => {
   it('every part fits the window with the summary; the parts together are the whole source; the verdicts combine', async () => {
-    const seen: Array<{ rows: string; part?: string }> = [];
+    const seen: Array<{ rows: string; part?: string; sent: number }> = [];
     let open = 0; let most = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
       const { state } = JSON.parse(init?.body ?? '{}') as { state: { source_rows: string; summary: string; source_part?: string } };
-      seen.push({ rows: state.source_rows, part: state.source_part });
+      // v3.5 K33: decide() fences each text of the state; the part is read back unfenced, and what was SENT
+      // (fences included) is what must fit the window.
+      seen.push({ rows: unfenceExternal(state.source_rows), part: state.source_part === undefined ? undefined : unfenceExternal(state.source_part),
+        sent: state.source_rows.length + state.summary.length + (state.source_part?.length ?? 0) });
       open++; most = Math.max(most, open);
       await new Promise((r) => setTimeout(r, 5));
       open--;
@@ -188,7 +192,7 @@ describe('NB-4: a source larger than the decision model\'s window is checked in 
     const source = rows.join('\n\n---\n\n');
     const r = await checkSummary(source, 'A plain summary.', AGENT);
     expect(seen.length).toBeGreaterThanOrEqual(3);
-    for (const s of seen) expect(s.rows.length + 'A plain summary.'.length).toBeLessThan(window * CHARS_PER_TOKEN);
+    for (const s of seen) expect(s.sent).toBeLessThan(window * CHARS_PER_TOKEN);
     expect(seen.map((s) => s.rows).join('\n---\n')).toBe(source);   // nothing was cut
     expect(seen.map((s) => s.part)).toEqual(seen.map((_, i) => `${i + 1} of ${seen.length}`));
     expect(r.ok).toBe(false);

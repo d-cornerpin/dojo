@@ -3,7 +3,7 @@
 // (split from `summary-check.ts`): its parts, and the parts' verdicts as one.
 // ════════════════════════════════════════════════════════════════════════════
 
-import type { Answer } from '../agent/decide.js';
+import { fencedState, type Answer } from '../agent/decide.js';
 import { CHARS_PER_TOKEN } from './budget.js';
 
 // ── NB-4 (fix round 4): A SOURCE LARGER THAN THE DECISION MODEL'S WINDOW IS CHECKED IN PARTS, NEVER CUT ──
@@ -14,7 +14,8 @@ import { CHARS_PER_TOKEN } from './budget.js';
 const ROW_SEPARATOR = '\n---\n';
 /** The source's parts, or null when the summary alone leaves no room. `questionChars` is the questions' JSON. */
 export function sourceParts(source: string, summary: string, windowTokens: number, questionChars: number): string[] | null {
-  const room = windowTokens * CHARS_PER_TOKEN - summary.length - questionChars - JSON.stringify({ source_rows: '', summary: '', source_part: '' }).length;
+  // v3.5 K33: decide() fences each text of the state, so the frame counted here is the fenced one.
+  const room = windowTokens * CHARS_PER_TOKEN - summary.length - questionChars - JSON.stringify(fencedState({ source_rows: '', summary: '', source_part: '' })).length;
   if (room <= 0) return null;
   if (source.length <= room) return [source];
   const parts: string[] = [];

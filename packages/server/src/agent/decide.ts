@@ -18,6 +18,7 @@ import { openAgentCall } from './abortable-call.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { localHeld, localWorkBegins } from '../services/ollama-quiet.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
+import { fenceExternal } from '../tools/external-content.js';
 
 const logger = createLogger('decide');
 
@@ -49,6 +50,19 @@ function fail(cls: FailureClass, purpose: string, detail?: string): null {
     logger.warn('decide() returned no answer; the rule decides', { failure: cls, purpose, detail });
   }
   return null;
+}
+
+/**
+ * v3.5 K33: the state is the MATERIAL the questions are about — a reply, a summary, a job's source rows
+ * with a contact's message or a page in them — never instructions. So every text in it goes to the model
+ * inside its own fence (the one fence, `fenceExternal`; a forged end in it is defanged), named by its key.
+ * Numbers, flags and the shape pass as they are. Exported so a caller sizing a request can count the fences.
+ */
+export function fencedState(v: unknown, key = 'state'): unknown {
+  if (typeof v === 'string') return fenceExternal('document', `the ${key} this question is about`, v);
+  if (Array.isArray(v)) return v.map((x) => fencedState(x, key));
+  if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fencedState(x, k)]));
+  return v;
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -92,7 +106,7 @@ export async function decide(
       resp = await fetch(`${provider.baseUrl}/v1/systemone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: provider.model, state, questions, keep_alive: -1, options: { num_ctx: numCtx } }),
+        body: JSON.stringify({ model: provider.model, state: fencedState(state), questions, keep_alive: -1, options: { num_ctx: numCtx } }),
         signal: slot?.signal ?? clock,
       });
     } catch (err) {

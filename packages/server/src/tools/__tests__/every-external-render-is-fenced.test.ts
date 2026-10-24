@@ -145,6 +145,16 @@ describe('K33 — inbound producers', () => {
   });
 });
 
+// Rebase follow-up 2: the decision model reads outside text too (the summary check hands it a job's source
+// rows). decide() is the one door to it, and the state goes through the fence there.
+describe('K33 — the decision model', () => {
+  it('decide() is the only caller of the decision model, and it sends the state fenced', () => {
+    const callers = walk(SRC).filter((f) => /\/v1\/systemone/.test(code(f))).map((f) => path.relative(SRC, f));
+    expect(callers).toEqual(['agent/decide.ts']);
+    expect(code(path.join(SRC, 'agent/decide.ts'))).toMatch(/JSON\.stringify\(\{ model: provider\.model, state: fencedState\(state\), questions/);
+  });
+});
+
 describe('K33 — one producer of the markers', () => {
   it('no source file but the shared definition writes a fence marker', () => {
     const roots = ['server/src', 'dashboard/src', 'shared/src'].map((r) => path.join(PACKAGES, r));
