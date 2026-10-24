@@ -9150,8 +9150,8 @@
       "path": "packages/server/src/db/migration-checksums.ts",
       "from": 376,
       "to": 383,
-      "by": "t252 B4 (v3.5, 2026-10-23): one KNOWN_DIVERGENCES entry for the in-lane amendment of unreleased migration 201",
-      "why": "+7: one ledger entry (file, the two checksums, since, reason) in the shape every other entry has. The migration freeze gate counts every commit on the branch since the last tag as applicable, and the lane's one reserved migration was amended after B2 committed it (B4 added summary_checks). The ledger is the gate's only adjudication mechanism and the entry is data, not code. ALTERNATIVE REFUSED: rewriting the lane's history to fold B4's table into B2's commit is a rebase, which the lane rules forbid."
+      "by": "t252 B4 (v3.5, 2026-10-23): two KNOWN_DIVERGENCES entries for the in-lane amendments of unreleased migration 201",
+      "why": "+7, now holding TWO ledger entries for 201 written compactly (one per earlier in-lane version: the summary_checks table added, then its `failed` literal renamed), in the shape every other entry has. The migration freeze gate counts every commit on the branch since the last tag as applicable, and the lane's one reserved migration was amended after B2 committed it (B4 added summary_checks). The ledger is the gate's only adjudication mechanism and the entry is data, not code. ALTERNATIVE REFUSED: rewriting the lane's history to fold B4's table into B2's commit is a rebase, which the lane rules forbid."
     },
     {
       "path": "packages/server/src/memory/summary-writer-health.ts",
@@ -9166,6 +9166,13 @@
       "to": 289,
       "by": "t252 (v3.5, 2026-10-23): pinned at its current count (growth detector: unlisted file past 60% of the cap)",
       "why": "t252 A1/A2 (v3.5): the ONE module that names the two standard models (plan rule: nothing else names them), installs them, reports their state and runs the once-per-version update hook. Pinned at its count rather than split so the tags and everything that acts on them stay in one file, as the plan's file table asks; decrease-only from now on."
+    },
+    {
+      "path": "packages/server/src/services/local-standard.ts",
+      "from": 289,
+      "to": 315,
+      "by": "t252 fix round 1 (v3.5, 2026-10-23): a missing standard model is retried whenever Ollama answers, and the owner is told once",
+      "why": "+26, from the orchestrator's I-2 ruling and the A1 review minors: retryStandardModelsIfMissing (the health check's hook, 9 lines with its doc), the owner-card telling and clearing at the end of an install (4), the capability repair of a row discovery made first (+3 with its why), progress lines keyed by model instead of by a string split (+3), sizing the rows' num_ctx at install instead of the next boot (+1), and the imports and the re-exported notice words (+6). All of it acts on the install this module owns; moving it out would split the install from its own retry and notice."
     }
   ],
   "maxNewFileLines": 400,
@@ -9182,7 +9189,7 @@
     "packages/dashboard/src/components/Markdown.tsx": 433,
     "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
-    "packages/dashboard/src/components/RouterConfig.tsx": 577,
+    "packages/dashboard/src/components/RouterConfig.tsx": 434,
     "packages/dashboard/src/components/SetupDeps.tsx": 688,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 502,
     "packages/dashboard/src/components/TwilioSettings.tsx": 563,
@@ -9426,7 +9433,7 @@
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 476,
     "packages/server/src/services/imessage-bridge.ts": 2162,
-    "packages/server/src/services/local-standard.ts": 289,
+    "packages/server/src/services/local-standard.ts": 315,
     "packages/server/src/services/num-ctx-calculator.ts": 563,
     "packages/server/src/services/ollama-lock.ts": 466,
     "packages/server/src/services/outlook-watcher.ts": 520,
