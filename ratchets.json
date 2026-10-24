@@ -9012,13 +9012,6 @@
       "to": 2920,
       "by": "t250 (2026-10-23): v3.5 done-is-measured, `measure` and `remainder` on the wire (Task A4)",
       "why": "+3: three property lines, the plan's schema fields: `measure` on work_open's top level and inside each `tasks[]` item, and `measure` + `remainder` on work_update (two lines). The two schema objects themselves live once in `agent/work-verb-schema.ts` (`WORK_MEASURE_PROP`, `WORK_REMAINDER_PROP`), on the existing import line, so this file carries only the references. The wire cost is measured in `agent/__tests__/work-verb-schema.test.ts` (work_open +1,586, work_update +1,278 chars). From 2,920 this file may only shrink."
-    },
-    {
-      "path": "packages/server/src/db/migration-checksums.ts",
-      "from": 376,
-      "to": 383,
-      "by": "t250 (2026-10-23): v3.5 fix round 1, the one work_events rebuild of the release",
-      "why": "+7: seven lines of ledger ROW, no logic, the same five-field shape as every entry above it. The orchestrator ruled that D1's `continued` and `stalled` kinds fold into migration 200b, so the release rebuilds work_events once instead of twice. 200b had an earlier version on the v3.5 lane branch, and `check-migration-freeze.mjs` counts branch history since the tag as applied, so the amendment needs its (file, appliedChecksum, fileChecksum) triple here. The entry's reason states that the earlier bytes were applied by no released or owner box; `migration-checksums.test.ts` machine-checks the fileChecksum against the tree and pins the file list. REFUSED: a second rebuild file (200c) to avoid the entry, which would copy every box's work_events twice for the release, the cost the ruling exists to avoid. From 383 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9200,7 +9193,7 @@
     "packages/server/src/credentials/secret-values.ts": 278,
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
-    "packages/server/src/db/migration-checksums.ts": 383,
+    "packages/server/src/db/migration-checksums.ts": 376,
     "packages/server/src/gateway/routes/agents.ts": 1041,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
