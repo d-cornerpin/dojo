@@ -166,8 +166,11 @@ describe('the premises are still true of the code that creates them', () => {
     const bridge = read(path.join(REPO_ROOT, 'packages/server/src/services/imessage-bridge.ts'));
     expect(bridge, 'the AppleScript fallback should still tell Messages')
       .toMatch(/tell application "Messages"/);
-    expect(bridge, 'and it should still run through osascript').toMatch(/execSync\(`osascript -e/);
-    expect(bridge, 'the primary path is still the imsg CLI').toMatch(/execFileSync\('imsg'/);
+    // v3.5 E19b: the bridge's programs run through its async runner, which the server spawns.
+    const runner = read(path.join(REPO_ROOT, 'packages/server/src/services/imessage-run.ts'));
+    expect(bridge, 'and it should still run through osascript').toMatch(/runMessagesProgram\('osascript', \['-e'/);
+    expect(runner, 'as a child the server spawns').toMatch(/spawn\(program, \[\.\.\.argv\]/);
+    expect(runner, 'the primary path is still the imsg CLI').toMatch(/execFileSync\('imsg'/);
   });
 
   it('⚠ the Automation route still only OPENS the pane, which is why the copy says "use it"', () => {
