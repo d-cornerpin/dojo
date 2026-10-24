@@ -13,7 +13,7 @@ import {
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
 } from '../lib/provider-edits';
 import { useToast } from '../hooks/useToast';
-import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
+import { RouterConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
 import { DataBackupNotice } from '../components/DataBackupNotice';
 import { DiskSpaceNotice } from '../components/DiskSpaceNotice';
 import { RouterTest } from '../components/RouterTest';

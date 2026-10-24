@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { SYSTEM_TIER_PROVIDER_TYPES } from '@dojo/shared';
 import * as api from '../lib/api';
 import { RouterUsage } from './RouterUsage';
 
@@ -69,8 +68,7 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
       <div>
         <h3 className="card-header mb-3">Tier Configuration</h3>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* The 'system' tier is not router-related (it runs the classifier +
-              watchdog); its model picker lives in Settings -> Dojo instead. */}
+          {/* The 'system' tier is not router-related: it is the Dojo's own writer, installed by setup. */}
           {config.tiers.filter((tier) => tier.id !== 'system').map((tier) => (
             <TierPanel
               key={tier.id}
@@ -124,28 +122,18 @@ const TierPanel = ({
   tier,
   availableModels,
   onUpdate,
-  bare = false,
 }: {
   tier: Tier;
   availableModels: AvailableModel[];
   onUpdate: (models: Array<{ modelId: string; priority: number }>) => Promise<void>;
-  /** Render only the model list + add control, no card wrapper or title (the
-      host card supplies those). Used by the System Model card in the Dojo tab. */
-  bare?: boolean;
 }) => {
   const [saving, setSaving] = useState(false);
   const [showAddDropdown, setShowAddDropdown] = useState(false);
 
   const sortedModels = [...tier.models].sort((a, b) => a.priority - b.priority);
 
-  // The 'system' tier is local-only: its model runs the multi-step classifier
-  // and the watchdog's smart alerts, and the watchdog must keep working with no
-  // network/cloud. So only offer local (Ollama) models there. Enforced server-
-  // side too — this is just to keep cloud models out of the picker.
-  const isSystemTier = tier.id === 'system';
   const selectableModels = availableModels
-    .filter((m) => !tier.models.some((tm: { modelId: string }) => tm.modelId === m.id))
-    .filter((m) => !isSystemTier || m.provider_type === 'ollama');
+    .filter((m) => !tier.models.some((tm: { modelId: string }) => tm.modelId === m.id));
 
   const handleMoveUp = async (index: number) => {
     if (index === 0) return;
@@ -248,11 +236,7 @@ const TierPanel = ({
       {showAddDropdown ? (
         <div className="space-y-1">
           {selectableModels.length === 0 ? (
-            <p className="text-xs text-ui/25">
-              {isSystemTier
-                ? 'No local (Ollama) models available. The System tier accepts local models only — add one in the Models tab.'
-                : 'No available models. Enable models in the Models tab first.'}
-            </p>
+            <p className="text-xs text-ui/25">No available models. Enable models in the Models tab first.</p>
           ) : (
             <select
               defaultValue=""
@@ -289,7 +273,6 @@ const TierPanel = ({
     </>
   );
 
-  if (bare) return inner;
   return (
     <div className={`glass-card rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
       <div className="mb-3">
@@ -360,135 +343,9 @@ const DimensionRow = ({
   );
 };
 
-// ── System Model ──
-// The 'system' tier is not router-related: its model runs the multi-step
-// classifier and the watchdog's smart alerts. Rendered as a single-pulldown
-// card matching the other model-picker cards (image/video/etc). Still backed
-// by the 'system' router tier (so getSystemModel keeps working) — we just save
-// a single model at priority 0.
-export const SystemModelConfig = () => {
-  const [selectedId, setSelectedId] = useState('');
-  const [models, setModels] = useState<AvailableModel[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const load = async () => {
-    const [cfgRes, modelsRes] = await Promise.all([
-      api.getRouterConfig(),
-      api.getAvailableRouterModels(),
-    ]);
-    if (cfgRes.ok) {
-      const data = cfgRes.data as Record<string, unknown>;
-      const raw = (data.tiers as Array<Record<string, unknown>>).find((t) => t.id === 'system');
-      const tierModels = (raw?.models ?? []) as TierModel[];
-      setSelectedId(tierModels[0]?.modelId ?? '');
-    }
-    if (modelsRes.ok) setModels(modelsRes.data);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
-
-  // ⚠ THE OWNER-REPORTED BUG (t88 deliverable 3): "it says saved but it reverts."
-  //
-  // THREE DEFECTS IN ONE HANDLER, and the first two are why the third looked like a mystery:
-  //   1. THE DROPDOWN OFFERED MODELS THE SERVER REFUSES. The System tier is local-only — the
-  //      watchdog must work with no network — and the route has always returned 400 for anything
-  //      else. The list was every enabled model, cloud included. Fixed by `eligibleModels` below,
-  //      filtered on the SAME shared constant the route enforces.
-  //   2. THE RESPONSE WAS DISCARDED. `await api.updateTierModels(...)` returns `{ ok, error }` and
-  //      this handler threw it away, then flashed "Saved!" unconditionally — so a 400 read as a
-  //      success. A save that cannot fail in the UI is a save the UI cannot be trusted about.
-  //   3. NOTHING RE-READ THE SERVER. With no reload, the dropdown kept showing the value the user
-  //      picked, and the old value reappeared on the NEXT visit — which is exactly the "it reverts
-  //      later" symptom. The authoritative state is now read back after every successful write.
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    const res = await api.updateTierModels('system', selectedId ? [{ modelId: selectedId, priority: 0 }] : []);
-    setSaving(false);
-    if (!res.ok) {
-      setError(res.error ?? 'The system model could not be saved.');
-      return;                       // and NO "Saved!" — the save did not happen
-    }
-    await load();                   // show what the server actually has, not what we hoped
-    flash();
-  };
-
-  const handleClear = async () => {
-    setSaving(true);
-    setError(null);
-    const res = await api.updateTierModels('system', []);
-    setSaving(false);
-    if (!res.ok) {
-      setError(res.error ?? 'The system model could not be cleared.');
-      return;
-    }
-    await load();
-    flash();
-  };
-
-  if (loading) return null;
-
-  // Only what the route will accept — see `handleSave` for why offering more was half the bug.
-  const eligibleModels = models.filter((m) => SYSTEM_TIER_PROVIDER_TYPES.includes(m.provider_type));
-
-  return (
-    <div className="tile space-y-4">
-      <div>
-        <div className="scard__title">System Model</div>
-        <p className="text-xs text-ui/40 mt-1">
-          Runs the multi-step classifier and the watchdog's smart alerts. A small, fast model is
-          ideal — a local (Ollama) one keeps working with no network. Not part of the model router.
-        </p>
-      </div>
-
-      {!selectedId && (
-        <div className="alert-banner alert-warning">No system model selected. Pick one below.</div>
-      )}
-
-      {error && <div className="alert-banner alert-error">{error}</div>}
-
-      <div>
-        <label className="flabel">System model</label>
-        <select
-          value={selectedId}
-          onChange={(e) => setSelectedId(e.target.value)}
-          className="finput field--select"
-        >
-          <option value="">(none)</option>
-          {eligibleModels.map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="srow">
-        <button type="button" onClick={handleSave} disabled={saving} className="btn btn--primary btn--sm">
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        {selectedId && (
-          <button type="button" onClick={handleClear} disabled={saving} className="btn btn--sm">
-            Clear
-          </button>
-        )}
-        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-      </div>
-    </div>
-  );
-};
-
 // Voice fast first-responder: which model speaks the short contextual opener
 // while the full agent spins up. Stored in config key `voice.opener_model`.
-//   ''    → Auto (use the System model)
+//   ''    → Auto (the Dojo's own writer)
 //   'off' → disabled (no opener)
 //   <id>  → a specific (ideally low-TTFT) model
 // Single-pulldown card matching the other model-picker cards.
@@ -523,7 +380,7 @@ export const VoiceOpenerModelConfig = () => {
     flash();
   };
 
-  // "Clear" returns to Auto (System model) — the unset default.
+  // "Clear" returns to Auto (the Dojo's writer) — the unset default.
   const handleClear = async () => {
     setSaving(true);
     await api.setSetting('voice.opener_model', '');
@@ -542,7 +399,7 @@ export const VoiceOpenerModelConfig = () => {
           In voice chats, this model speaks a short contextual bridge ("sure, let me pull that up")
           the instant you finish talking, while the full agent spins up. It never states facts, so it
           can't contradict the answer. Pick a low-latency model (Haiku / Groq-tier) for the snappiest
-          feel. Auto uses your System model; Off disables the opener.
+          feel. Auto uses the Dojo's own writer; Off disables the opener.
         </p>
       </div>
 
@@ -553,7 +410,7 @@ export const VoiceOpenerModelConfig = () => {
           onChange={(e) => setSelectedId(e.target.value)}
           className="finput field--select"
         >
-          <option value="">Auto (System model)</option>
+          <option value="">Auto (the Dojo's writer)</option>
           <option value="off">Off (no opener)</option>
           {models.map((m) => (
             <option key={m.id} value={m.id}>{m.name}</option>

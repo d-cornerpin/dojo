@@ -4,7 +4,6 @@
 
 import { Hono } from 'hono';
 import { getDb } from '../../db/connection.js';
-import { SYSTEM_TIER_PROVIDER_TYPES, SYSTEM_TIER_PROVIDER_REFUSAL } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 import { scoreQuery, clearDimensionCache } from '../../router/scorer.js';
 import type { RouterConfig, TierConfig } from '../../router/types.js';
@@ -111,24 +110,11 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
     return c.json({ ok: false, error: 'Tier not found' }, 404);
   }
 
-  // The 'system' tier is LOCAL-ONLY: its model powers the multi-step
-  // classifier and the watchdog's smart alerts. The watchdog must work when
-  // the network/cloud is down, so a cloud model there would be a liability.
-  // Enforce server-side too (not just the UI dropdown) so the API can't be
-  // used to slip a cloud model in.
+  // v3.5 (owner ruling 2026-10-19: "Remove it. Those models are hard coded as the small decision and
+  // small writer."): the 'system' tier is the Dojo's standard writer, written only by the install
+  // routine (`services/local-standard.ts`). Refused here so no door can point it elsewhere.
   if (tierId === 'system') {
-    const assigned = (body.models as Array<{ modelId: string }>).map(m => m.modelId);
-    for (const modelId of assigned) {
-      const row = db.prepare(`
-        SELECT p.type as providerType FROM models m
-        JOIN providers p ON p.id = m.provider_id WHERE m.id = ?
-      `).get(modelId) as { providerType: string } | undefined;
-      // t88: the SAME list the Settings dropdown filters on, so the UI cannot offer a model this
-      // route will refuse. The refusal sentence is shared for the same reason.
-      if (!row || !SYSTEM_TIER_PROVIDER_TYPES.includes(row.providerType)) {
-        return c.json({ ok: false, error: SYSTEM_TIER_PROVIDER_REFUSAL }, 400);
-      }
-    }
+    return c.json({ ok: false, error: "The Dojo's writer is fixed; it is installed by setup." }, 409);
   }
 
   try {

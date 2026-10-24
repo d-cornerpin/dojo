@@ -7,7 +7,7 @@ import { useState, useEffect } from 'react';
 import type { Provider, Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { parseUtc } from '../../lib/dates';
-import { SystemModelConfig, VoiceOpenerModelConfig } from '../RouterConfig';
+import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
 import {
   FallbackVisionModelCard, ImageGenModelCard, VideoGenModelCard, AudioGenModelCard,
@@ -688,7 +688,6 @@ export const ModelsTab = () => {
         <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
         <CompactionModelCard models={models} />
-        <SystemModelConfig />
         <VoiceOpenerModelConfig />
       </div>
     </div>
