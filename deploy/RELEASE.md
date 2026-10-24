@@ -51,7 +51,7 @@ are written for the user, not for developers:
   stuck"), not how it was built.
 - Leave out work a user never sees (tests, build tooling).
 
-Never release with the default commit-subject notes. Write the file and pass it:
+There is no default: `release.sh` refuses a release without `--notes-file` (and a dry run says it would). Write the file and pass it:
 
 ```bash
 bash deploy/release.sh 3.0.4 --notes-file <path>
