@@ -93,7 +93,7 @@ describe('a summary is checked against its source before it is kept', () => {
     const r = await write();
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.tooBig).toBeFalsy();
-    expect(checks()).toEqual([{ outcome: 'failed', invented: 0.93 }]);
+    expect(checks()).toEqual([{ outcome: 'not_kept', invented: 0.93 }]);
     expect(writerPassedOver('writer-small', AGENT)).toBe(false);
   });
 

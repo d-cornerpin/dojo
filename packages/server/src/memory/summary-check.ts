@@ -66,7 +66,7 @@ function failedFeedback(c: SummaryCheck): string {
   return failed.join('; ');
 }
 
-type Outcome = 'ok' | 'rewritten_ok' | 'failed' | 'unavailable';
+type Outcome = 'ok' | 'rewritten_ok' | 'not_kept' | 'unavailable';
 
 function record(agentId: string, writer: string, outcome: Outcome, c: SummaryCheck | null): void {
   try {
@@ -93,7 +93,7 @@ const NOTICED_KEY = 'summary_check_noticed_writer';
 function noticeIfFailing(agentId: string, writer: string): void {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT SUM(outcome = 'failed') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
+    const row = db.prepare("SELECT SUM(outcome = 'not_kept') AS failed, COUNT(*) AS total FROM summary_checks WHERE writer_model_id = ? AND outcome != 'unavailable'")
       .get(writer) as { failed: number | null; total: number };
     const failed = row.failed ?? 0;
     const noticed = (db.prepare('SELECT value FROM config WHERE key = ?').get(NOTICED_KEY) as { value: string } | undefined)?.value;
@@ -135,7 +135,7 @@ export async function keepOnlyIfChecked(
   if (!second.answers) { record(agentId, writer, 'unavailable', null); return again; }
   if (second.ok) { record(agentId, writer, 'rewritten_ok', second); noticeIfFailing(agentId, writer); return again; }
 
-  record(agentId, writer, 'failed', second);
+  record(agentId, writer, 'not_kept', second);
   logger.warn('summary_check_failed the summary was not kept; the rows stay whole for a later pass', {
     writer, invented: second.invented, dropped: second.dropped, statedCurrent: second.statedCurrent,
   }, agentId);
@@ -165,7 +165,7 @@ export function rewriteInstruction(checkFeedback?: string): string {
 export function summaryCheckLine(): string | null {
   try {
     const r = getDb().prepare(`SELECT COUNT(*) AS n, SUM(outcome = 'ok') AS ok, SUM(outcome = 'rewritten_ok') AS rw,
-      SUM(outcome = 'failed') AS failed, SUM(outcome = 'unavailable') AS un FROM summary_checks`).get() as
+      SUM(outcome = 'not_kept') AS failed, SUM(outcome = 'unavailable') AS un FROM summary_checks`).get() as
       { n: number; ok: number | null; rw: number | null; failed: number | null; un: number | null };
     if (r.n === 0) return null;
     return `Summary check (kept window): ${r.n} checked, ${r.ok ?? 0} kept as written, ${r.rw ?? 0} kept after one rewrite, `

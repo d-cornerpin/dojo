@@ -21,6 +21,6 @@ CREATE INDEX IF NOT EXISTS idx_decision_shadow_turn ON decision_shadow(turn_id);
 
 CREATE TABLE IF NOT EXISTS summary_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, writer_model_id TEXT NOT NULL,
-  outcome TEXT NOT NULL CHECK(outcome IN ('ok', 'rewritten_ok', 'failed', 'unavailable')),
+  outcome TEXT NOT NULL CHECK(outcome IN ('ok', 'rewritten_ok', 'not_kept', 'unavailable')),
   invented REAL, dropped REAL, stated_current REAL, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_summary_checks_writer ON summary_checks(writer_model_id, created_at);
