@@ -66,7 +66,7 @@ export function overRoomRowView(msg: Message, roomTokens: number): Message {
   // A row no longer than the standard pointer is shown whole: its pointer would cost as much and show less.
   if (msg.content.length <= POINTER_VIEW_CHARS) return msg;
   // The standard pointer (t200): an eighth of one view of head and tail, and the label.
-  return pointered(msg, toolResultView(msg.content, keptRowHandle(msg.id), POINTER_VIEW_CHARS));
+  return pointered(msg, toolResultView(msg.content, keptRowHandle(msg.id), POINTER_VIEW_CHARS, 'message'));
 }
 
 /**
@@ -80,7 +80,7 @@ export function overRoomRowView(msg: Message, roomTokens: number): Message {
 function structuredRowView(msg: Message, blocks: StoredBlock[], roomTokens: number): Message {
   const fits = (view: StoredBlock[]): boolean => messageTokens({ role: 'user', content: view as never }) + replayedReasoningTokens(msg) <= roomTokens;
   const done = (view: StoredBlock[]): Message => { const content = JSON.stringify(view); return content === msg.content ? msg : pointered(msg, content); };
-  const each = blocks.map((b, i) => (b.type === 'text' && typeof b.text === 'string' && b.text.length > POINTER_VIEW_CHARS ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), POINTER_VIEW_CHARS) }
+  const each = blocks.map((b, i) => (b.type === 'text' && typeof b.text === 'string' && b.text.length > POINTER_VIEW_CHARS ? { ...b, text: toolResultView(b.text, keptRowHandle(msg.id, i), POINTER_VIEW_CHARS, 'message') }
     : b.type === 'tool_use' && inputChars(b.input) > POINTER_VIEW_CHARS ? { ...b, input: inputView(keptRowHandle(msg.id, i), b.input) }
       : isMedia(b) && mediaTokens(b) > roomTokens ? oversizeMediaNote(b) : b));
   if (fits(each)) return done(each);
@@ -88,7 +88,7 @@ function structuredRowView(msg: Message, blocks: StoredBlock[], roomTokens: numb
   const first = blocks.findIndex((b) => b.type === 'text');
   // Both steps below take a view aligned with `blocks` (index i is block i, so each handle names its own block).
   const collapse = (view: StoredBlock[]): StoredBlock[] => (text === null || text.length <= POINTER_VIEW_CHARS ? view
-    : view.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS) }] : blocks[i].type === 'text' ? [] : [b])));
+    : view.flatMap((b, i) => (i === first ? [{ type: 'text', text: toolResultView(text, keptRowHandle(msg.id), POINTER_VIEW_CHARS, 'message') }] : blocks[i].type === 'text' ? [] : [b])));
   const squeeze = (view: StoredBlock[]): StoredBlock[] => view.map((b, i) => (isMedia(b) ? oversizeMediaNote(b)
     : b.type === 'tool_use' && inputChars(b.input) > POINTER_LABEL_ROOM_CHARS ? { ...b, input: { input: toolResultView(callInputText(blocks[i].input), keptRowHandle(msg.id, i), POINTER_LABEL_ROOM_CHARS) } } : b));
   const collapsed = collapse(each);

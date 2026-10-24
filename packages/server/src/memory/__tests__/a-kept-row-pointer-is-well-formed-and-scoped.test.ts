@@ -123,6 +123,7 @@ describe('finding 5: msg: reads only a row the agent\'s view could show', () => 
     insertMessage({ id: 'row-other-thread', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'someone', content: big('their manifest'), conversationId: 'conv-other' });
     insertMessage({ id: 'row-this-conv', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'my question', conversationId: 'conv-dock' });
     expect(overRoomRowView(asMessage('row-other-thread'), 1_000).content).toContain('msg:row-other-thread');
+    expect(overRoomRowView(asMessage('row-other-thread'), 1_000).content).toContain('KEPT WHOLE, NOT ALL SHOWN: this message is ');   // t257 r3: the pointer names a message, not a tool result
     expect(findToolResult(AGENT, 'msg:row-other-thread')?.content).toContain('their manifest');
   });
 

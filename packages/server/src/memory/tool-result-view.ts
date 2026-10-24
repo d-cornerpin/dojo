@@ -101,9 +101,9 @@ function lineAt(text: string, at: number): number {
  * The view of one tool result. A result that fits `viewChars` is returned exactly as it is. A
  * longer one becomes its pointer: the start, a labelled gap, the end. `id` is the tool call's id,
  * which is the handle `tool_result_read` takes. The whole must be kept by the caller; this only
- * says what the agent sees.
+ * says what the agent sees. `noun` names what was kept (a stored message row is "message", a call's argument "argument").
  */
-export function toolResultView(text: string, id: string, viewChars: number = TOOL_RESULT_VIEW_CHARS): string {
+export function toolResultView(text: string, id: string, viewChars: number = TOOL_RESULT_VIEW_CHARS, noun = 'tool result'): string {
   if (text.length <= viewChars) return text;
   const excerpt = Math.max(0, Math.min(RESULT_EXCERPT_CHARS, viewChars - POINTER_LABEL_ROOM_CHARS));
   const headBudget = Math.floor(excerpt * 3 / 4);
@@ -122,7 +122,7 @@ export function toolResultView(text: string, id: string, viewChars: number = TOO
     : `Above: ${headWhole ? `lines 1–${n(headLast)}` : `the first ${n(headEnd)} characters`}. `
       + `Below: ${tailWhole ? `lines ${n(lineAt(text, tailStart))}–${n(lines)}` : `the last ${n(text.length - tailStart)} characters`}.`;
   const next = headWhole ? readCall(id, { from_line: headLast + 1 }) : readCall(id, { offset: headEnd });
-  const label = `[… KEPT WHOLE, NOT ALL SHOWN: this tool result is ${n(text.length)} characters `
+  const label = `[… KEPT WHOLE, NOT ALL SHOWN: this ${noun} is ${n(text.length)} characters `
     + `(~${n(Math.ceil(text.length / CHARS_PER_TOKEN))} tokens) in ${n(lines)} line${lines === 1 ? '' : 's'}, too long to show at once. `
     + `${shown} Nothing was lost. Read any part with ${next} (any from_line/to_line range), `
     + `or find text in it with ${readCall(id, { search: '…' })}. …]`;
