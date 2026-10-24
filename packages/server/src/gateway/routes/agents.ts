@@ -187,16 +187,16 @@ agentsRouter.post('/', async (c) => {
     // integrations, no credentials, no techniques.
     //
     // Still the same resolver, so there is one answer to "what does a new agent
-    // start with" rather than two that drift, and the base is CLAMPED to the
-    // ceiling below before anything merges over it. The ceiling is the primary's
-    // own grants for the same reason the manifest's is: the route is the owner
-    // acting, and the owner's agent is the ceiling. That also makes
-    // `granterIsPrimary` true here, which is what lets an owner switch a new
-    // agent's human-channel master on from the dashboard — the one thing a
-    // non-primary AGENT may never do.
+    // start with" rather than two that drift. The route is the OWNER acting, so it
+    // is judged as the owner (null granter, t267 ruled change): a new agent's
+    // access is never capped at the main agent's own grants. `granterIsPrimary`
+    // true is what lets an owner switch a new agent's human-channel master on
+    // from the dashboard — the one thing a non-primary AGENT may never do. The
+    // box-effects manifest above keeps its own ceiling; that is not a grant.
+    // Agent-initiated spawns keep the no-escalation check (`agent/spawner.ts`).
     const grantScope = resolveSpawnGrants(
       body.grants,
-      getAccessGrants(getPrimaryAgentId()),
+      null,
       true,
       body.toolsPolicy,
       DASHBOARD_CREATE_DEFAULT_GRANTS,

@@ -366,9 +366,9 @@ const refusal = (excesses: string[]): string =>
  * 2's floor — that is the argument default, so no call site changed meaning. The
  * dashboard CREATE route passes `DASHBOARD_CREATE_DEFAULT_GRANTS`
  * (`access/create-defaults.ts`), the floor plus Conversation Recall, because the
- * owner pressing a button is not an agent handing out its own access. Whatever
- * is passed is CLAMPED to the granter first, exactly as the floor is, so a wider
- * base can never widen what the granter actually holds.
+ * owner pressing a button is not an agent handing out its own access. An AGENT
+ * granter clamps whatever is passed first; `granter` null is the OWNER (t267
+ * ruled change): never capped at any agent's grants, the main agent's included.
  *
  * `toolsPolicy` is `spawn_agent`'s PRE-A2 `tools:{allow,deny}` argument, folded
  * in verbatim and deliberately NOT subject to the no-escalation rule. A1 made
@@ -379,17 +379,17 @@ const refusal = (excesses: string[]): string =>
  */
 export function resolveSpawnGrants(
   requested: unknown,
-  granter: AccessGrants,
+  granter: AccessGrants | null,
   granterIsPrimary: boolean,
   toolsPolicy?: { allow?: string[]; deny?: string[] } | null,
   defaults: AccessGrants = MOST_RESTRICTIVE_GRANTS,
 ): GrantsResolution {
-  const base = clampGrantsTo(defaults, granter);
+  const base = granter ? clampGrantsTo(defaults, granter) : cloneGrants(defaults);
   let resolved = base;
   if (requested !== undefined && requested !== null) {
     const validated = validateGrants(requested);
     if (!validated.ok) return { ok: false, reason: `invalid grants — ${validated.reason}` };
-    const excesses = grantExcesses(validated.patch, granter, granterIsPrimary);
+    const excesses = granter ? grantExcesses(validated.patch, granter, granterIsPrimary) : [];
     if (excesses.length > 0) return { ok: false, reason: refusal(excesses) };
     resolved = mergeGrants(base, validated.patch);
   }

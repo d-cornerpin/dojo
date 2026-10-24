@@ -265,3 +265,26 @@ describe('fix round 4 RULING: an edit is judged on what it leaves', () => {
     }
   });
 });
+
+describe('RULED CHANGE (create route): the owner\'s dashboard create is judged as the owner\'s', () => {
+  it('the owner narrows the main agent, then creates an agent holding the removed group: created; a spawn naming it: refused', async () => {
+    const { TOOL_CATEGORIES } = await import('../../tools/categories.js');
+    const json = (method: string, url: string, body: unknown) => mod.agentsRouter.request(url, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    try {
+      const narrowed = await json('PUT', `/${PRIMARY}`, { grants: { tools: { categories: TOOL_CATEGORIES.map((c) => c.label).filter((l) => l !== 'Web') } } });
+      expect(narrowed.status, await narrowed.clone().text()).toBe(200);
+      mod.access.forgetAccessGrants();
+      const created = await json('POST', '/', { name: 'owner-made', systemPrompt: 'You help.', grants: { tools: { categories: ['Web'] } } });
+      const out = await created.clone().text();
+      expect(created.status, out).toBeLessThan(300);
+      const id = (JSON.parse(out) as { data: { id: string } }).data.id;
+      mod.access.forgetAccessGrants();
+      expect(mod.access.getAccessGrants(id).tools.categories).toContain('Web');
+      // An agent-initiated create doing the same keeps the no-escalation check.
+      await expect(spawn(PRIMARY, { grants: { tools: { categories: ['Web'] } } })).rejects.toThrow(/Web/);
+    } finally {
+      mod.connection.getDb().prepare('UPDATE agents SET permissions = NULL WHERE id = ?').run(PRIMARY);
+      mod.access.forgetAccessGrants();
+    }
+  });
+});
