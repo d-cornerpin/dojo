@@ -72,12 +72,14 @@ function headerSentences(header: string[]): string[] {
     .map((x) => x.trim()).filter((x) => /[.!?:]$/.test(x)).map((x) => x.replace(/:$/, '.'));
 }
 
-/** A sentence describes a table when it is ABOUT it: it opens with the table's name in backticks
- *  ("A `grant_rule` row is …"), or, in a file that creates only that table, "this table" is its
- *  subject ("This table is …", "THIS table carries …" — not "Until this table, …"). */
+/** A sentence describes a table when it says what the table HOLDS: it opens with the table's name
+ *  in backticks and a verb of holding ("A `grant_rule` row is …"), or, in a file that creates only
+ *  that table, "this table" opens a clause with one ("This table is …", "… and THIS table carries
+ *  …"). Not "Until this table, …", not "…; this table is the mechanism", not "`x` has one writer". */
+const HOLDS = '(is|are|carries|holds|records|keeps|lets|stores)';
 const describes = (sentence: string, names: string[], onlyTable: boolean): boolean =>
-  (onlyTable && /\bthis table (is|carries|holds|records|keeps|lets|stores|says|names|exists)\b/i.test(sentence))
-  || names.some((n) => new RegExp(`^(the |a |an |each |one |every )?\`${n}\``, 'i').test(sentence));
+  (onlyTable && new RegExp(`(^|\\band )this table ${HOLDS}\\b`, 'i').test(sentence))
+  || names.some((n) => new RegExp(`^(the |a |an |each |one |every )?\`${n}\`( row| rows| table)? ${HOLDS}\\b`, 'i').test(sentence));
 
 function parseFile(text: string, notes: SchemaNotes): void {
   const lines = text.split('\n');

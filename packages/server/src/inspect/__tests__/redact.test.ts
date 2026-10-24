@@ -100,6 +100,33 @@ describe('refuseDeniedSql — fix round 1: the word explain, every quoting form,
   });
 });
 
+describe('refuseDeniedSql — fix round 2', () => {
+  it('sqlite_stat* is refused: ANALYZE samples index keys, credentials included, in cleartext', () => {
+    const stat = new Database(':memory:');
+    stat.exec('CREATE TABLE destructive_approvals (token TEXT PRIMARY KEY, agent_id TEXT)');
+    for (let i = 0; i < 40; i++) stat.prepare('INSERT INTO destructive_approvals VALUES (?, ?)').run(`approval-synthetic-value-${i}`, 'a');
+    stat.exec('ANALYZE');
+    // The leak is real when STAT4 is compiled in: the sample holds the token.
+    const sampled = stat.prepare("SELECT count(*) FROM sqlite_master WHERE name = 'sqlite_stat4'").pluck().get() === 1
+      && (stat.prepare('select cast(sample as text) from sqlite_stat4').pluck().all() as string[]).some((x) => x.includes('approval-synthetic-value'));
+    expect(sampled).toBe(true);
+    for (const q of ['select tbl, idx, cast(sample as text) from sqlite_stat4', 'select hex(sample) from "sqlite_stat4"',
+      'select * from sqlite_stat1', "select * from 'sqlite_stat3'", 'select * from main.sqlite_stat4']) {
+      expect(refuseDeniedSql(q, stat), q).toMatch(/Refused: .*sqlite_stat/);
+    }
+  });
+
+  it("a schema pragma names a credential table's columns, never its values", () => {
+    for (const q of ["select name, type from pragma_table_info('google_accounts')", "select * from pragma_table_xinfo('google_accounts')",
+      "select * from pragma_index_list('destructive_approvals')", "select * from pragma_foreign_key_list('google_accounts')"]) {
+      expect(refuseDeniedSql(q, db), q).toBeNull();
+    }
+    expect(refuseDeniedSql("select p.name, g.access_token from pragma_table_info('google_accounts') p, google_accounts g", db)).toMatch(/Refused/);
+    expect(refuseDeniedSql("select * from pragma_table_info('google_accounts') p, 'google_accounts' g", db)).toMatch(/Refused/);
+    expect(refuseDeniedSql("select * from messages where content = 'google_accounts'", db)).toMatch(/Refused/);
+  });
+});
+
 describe('redactRows', () => {
   it('blanks a credential column and scrubs every other string cell', () => {
     const out = redactRows([{ id: 'acct-1', access_token: 'ya29.synthetic-access-value', token_count: 12, note: `Authorization: Bearer ${BEARER}`, token_expires_at: 1792651631000 }]);

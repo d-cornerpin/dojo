@@ -32,6 +32,15 @@ export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /
 
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
 
+/** SQLite's own statistics tables. After an ANALYZE, `sqlite_stat4.sample` holds sampled index
+ *  keys in cleartext — the primary key of `destructive_approvals` (a token) among them. */
+const STAT_TABLE = /^sqlite_stat/;
+const isDeniedTable = (t: string): boolean => DENIED_TABLES.includes(t) || STAT_TABLE.test(t);
+
+/** The schema pragmas name a table's columns and indexes, never its values, so the table they
+ *  are asked about is not "reached". Their quoted argument is set aside before the name scan. */
+const SCHEMA_PRAGMA = /\bpragma_(table_info|table_xinfo|index_list|index_info|index_xinfo|foreign_key_list)\s*\(\s*'(?:[^']|'')*'\s*\)/gi;
+
 /** A column name that says credential and is not a time. */
 export const columnNamesCredential = (name: string): boolean => namesCredential(name);
 function namesCredential(name: string): boolean {
@@ -135,8 +144,8 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
  * where it runs; one it compiles but this check cannot read is refused.
  */
 export function refuseDeniedSql(sql: string, db?: Database.Database): string | null {
-  const ids = new Set(identifiers(sql));
-  const named = DENIED_TABLES.find((t) => ids.has(t));
+  const ids = new Set(identifiers(sql.replace(SCHEMA_PRAGMA, 'pragma_$1(NULL)')));
+  const named = [...ids].find(isDeniedTable);
   if (named) return tableRefusal(named);
   if (!db) return null;
   const { explained, inner } = stripExplain(sql);
@@ -146,7 +155,7 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
     try { db.prepare(inner); } catch { return null; }
     return 'Refused: the statement could not be checked for what it reads, so it does not run.';
   }
-  const opened = DENIED_TABLES.find((t) => reached.tables.has(t));
+  const opened = [...reached.tables].find(isDeniedTable);
   if (opened) return tableRefusal(opened);
   const [column] = [...reached.columns].sort();
   return column
@@ -155,6 +164,7 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
 }
 
 function tableRefusal(table: string): string {
+  if (STAT_TABLE.test(table)) return `Refused: the statement reaches ${table}, SQLite's statistics, which sample index keys (credentials among them) and are not readable through dojo_inspect.`;
   return `Refused: the statement reaches ${table}, which holds credentials (or the owner's private memory) and is not readable through dojo_inspect.`;
 }
 

@@ -108,6 +108,10 @@ describe('schema', () => {
     expect(out).not.toContain('TWO WORDS THAT NAME EVENTS THAT');
     expect(out).toMatch(/^messages \([\d,]+ rows\) — \(no description\)$/m);
     expect(out).toMatch(/^turns \(0 rows\) — \(no description\)$/m);
+    // Fix round 2: whole sentences that do not say what the table holds are not meanings.
+    expect(out).toMatch(/^destructive_approvals \(1 row\) — \(no description\)$/m);
+    expect(out).toMatch(/^dojo_reports \(0 rows\) — \(no description\)$/m);
+    expect(out).toMatch(/^tool_receipts \(0 rows\) — This table lets the ENGINE/m);
   });
 
   it('lists a table\'s columns with type, nullability and the meaning, or "(no description)"', () => {
@@ -164,6 +168,10 @@ describe('sql', () => {
     expect(outs[4]).toContain('<redacted-credential>');
     for (const out of outs) for (const secret of [ACCESS, APPROVAL, PASTED, 'r-synthetic-value-0003']) expect(out).not.toContain(secret);
     for (const out of outs.slice(6)) expect(out).toMatch(/^Refused/);
+    // Fix round 2: a credential table's schema is readable, its values are not.
+    const cols = await q("select name, type from pragma_table_info('google_accounts')");
+    expect(cols).toMatch(/^access_token +TEXT$/m);
+    expect(cols).not.toContain(ACCESS);
     expect(await q('select agent_id, tool_name, status from destructive_approvals')).toMatch(/1 row\./);
   });
 
