@@ -254,6 +254,7 @@ describe('divergence adjudication', () => {
       '159_owed_interrupt_event_kind.sql',
       '168_work_tracker_default_grant.sql',
       '171_report_read_indexes.sql',
+      '200b_work_event_kind_measured.sql',   // v3.5 fix round 1: an unreleased lane-branch version, the rebuild folded once
     ]);
     // ⚠ `165_work_effort_meter.sql` IS ABSENT ON PURPOSE. It diverges on the dev box and logs at
     // ERROR, and it stays that way: the applied checksum matches no version of the file in this
