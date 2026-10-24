@@ -131,7 +131,7 @@ describe('a summary is checked against its source before it is kept', () => {
     expect(notices()).toHaveLength(1);
     expect(notices()[0]).toMatchObject({ type: 'chat:error', agentId: AGENT });
     expect(notices()[0].error).toBe(
-      "This box's memory summaries keep failing the accuracy check (2 of the last 2). The small writer may be too small for this box's conversations; pick a larger model under Settings → Models → Summarization Model.",
+      "This box's memory summaries keep failing the accuracy check (2 of the last 2). This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",   // t268 fix round 2 (edited): no single 'small writer' writes them now
     );
     writer.outputs = ['INVENTED g.', 'INVENTED h.', 'INVENTED i.', 'INVENTED j.'];
     await write('writer-large'); await write('writer-large');
@@ -151,6 +151,13 @@ describe('a summary is checked against its source before it is kept', () => {
     writer.outputs = ['INVENTED one.', 'INVENTED two.'];
     const r = await write();
     expect(r.ok === false && r.checkFailed).toBe(true);
+  });
+
+  it('t268 fix round 2: with no Settings pick, the card follows the writer this box\'s checks were last made for', async () => {
+    expect(summaryWriterStatus()).toEqual({ writer: null, failed: 0, total: 0, failing: false });
+    writer.outputs = ['INVENTED x.', 'INVENTED y.', 'INVENTED z.', 'INVENTED w.'];
+    await write('writer-large'); await write('writer-large');
+    expect(summaryWriterStatus()).toEqual({ writer: 'writer-large', failed: 2, total: 2, failing: true });
   });
 
   it('(iv) the Summarization card is told when the current summary writer is failing', async () => {

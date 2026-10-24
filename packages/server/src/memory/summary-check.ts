@@ -128,7 +128,7 @@ function noticeIfFailing(agentId: string, writer: string): void {
       type: 'chat:error',
       agentId,
       error: `This box's memory summaries keep failing the accuracy check (${failed} of the last ${row.total}). `
-        + "The small writer may be too small for this box's conversations; pick a larger model under Settings → Models → Summarization Model.",
+        + "This box's summary writer may be too small for its conversations; pick a larger model under Settings → Models → Summarization Model.",
       code: SUMMARY_CHECK_NOTICE_CODE,
       severity: 'warning',
       retryable: false,

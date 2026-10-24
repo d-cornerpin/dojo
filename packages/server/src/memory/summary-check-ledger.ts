@@ -6,7 +6,6 @@
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
-import { standardModelRowId } from '../services/local-standard.js';
 import { modeFor } from '../agent/decision-policy.js';
 import type { Answer } from '../agent/decide.js';
 
@@ -81,15 +80,16 @@ export function summaryCheckLine(): string | null {
 }
 
 /**
- * (iv, fix round 2) What the owner's Summarization Model card says: is the CURRENT summary writer (his pick,
- * else the Dojo's writer) failing the check in the kept window? Owner 2026-10-20: "the user is encouraged to
+ * (iv, fix round 2) What the owner's Summarization Model card says: is THIS BOX'S SUMMARY WRITER failing the check
+ * in the kept window? It is his pick; with none (t268, owner 2026-10-24: each agent's own model writes), the writer
+ * this box's checks were last made for. Owner 2026-10-20: "the user is encouraged to
  * change the summarization model to another larger model" — the card says so while this is true.
  */
 export function summaryWriterStatus(): { writer: string | null; failed: number; total: number; failing: boolean } {
   try {
     const db = getDb();
     const writer = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value
-      || standardModelRowId('writer');
+      || (db.prepare("SELECT writer_model_id AS w FROM summary_checks WHERE outcome != 'unavailable' ORDER BY id DESC LIMIT 1").get() as { w: string } | undefined)?.w;
     if (!writer) return { writer: null, failed: 0, total: 0, failing: false };
     const status = writerFailing(writer);
     return { writer, ...status, failing: status.failing && summaryCheckActs() };   // t268: a shadow verdict tells no one

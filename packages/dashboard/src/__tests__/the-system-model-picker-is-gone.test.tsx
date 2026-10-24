@@ -25,6 +25,7 @@ vi.mock('../hooks/useToast', async () => {
 });
 
 import { ModelsTab } from '../components/settings/ModelsTab';
+import { CompactionModelCard } from '../components/settings/CapabilityModelCards';
 import * as RouterConfigModule from '../components/RouterConfig';
 
 afterEach(() => { vi.clearAllMocks(); });
@@ -38,6 +39,14 @@ describe('Settings → Models', () => {
       "Writes memory summaries when an agent compacts its history. Unless one model is chosen here, each agent's own model writes its summaries, and the Dojo's small local writer steps in only when that model cannot be reached.",
     )).toBeTruthy();
     expect(screen.queryByText(/cheapest/)).toBeNull();
+  });
+
+  // t268 fix round 2 (owner 2026-10-24, "The agents model."): with nothing chosen, the card says who writes.
+  it('with no Summarization model chosen, the card says each agent\'s own model writes its summaries', async () => {
+    const models = [{ id: 'm-chat', name: 'A chat model', capabilities: ['chat'], isEnabled: true, providerId: 'p' }] as unknown as Parameters<typeof CompactionModelCard>[0]['models'];
+    render(<CompactionModelCard models={models} />);
+    await waitFor(() => expect(screen.getByText("No model chosen here: each agent's own model writes its own summaries.")).toBeTruthy());
+    expect(screen.queryByText(/Using the default: the Dojo's small writer/)).toBeNull();
   });
 
   it('the System Model card component no longer exists', () => {

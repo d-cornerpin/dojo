@@ -358,8 +358,8 @@ export const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
 );
 
 // The model that writes memory summaries when an agent compacts. Any text model works (image/video/
-// music/embedding models and the Dojo's decision model write no text). v3.5, owner ruling 2026-10-20:
-// the Dojo's small writer is the setup default; every summary is checked before it is kept.
+// music/embedding models and the Dojo's decision model write no text). v3.5, owner ruling 2026-10-24 ("The
+// agents model."): with nothing chosen here each agent's own model writes its summaries; the small writer is the fallback.
 export const CompactionModelCard = ({ models }: { models: Model[] }) => (
   <CapabilityModelCard
     title="Summarization Model"
@@ -368,7 +368,7 @@ export const CompactionModelCard = ({ models }: { models: Model[] }) => (
     matchFn={(m) => !m.capabilities.some((c) => c.includes('generation') || c === 'embedding' || c === 'decision')}
     selectorLabel="Summarization model"
     noModelsMessage="No text-capable models are enabled. Enable a chat model above and come back here to pick it."
-    noSelectionMessage="Using the default: the Dojo's small writer. Pick one to set it explicitly."
+    noSelectionMessage="No model chosen here: each agent's own model writes its own summaries."
     notice={<SummaryCheckNotice />}
     models={models}
   />
