@@ -137,13 +137,9 @@ const dur = (ms: number): string => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
 };
 
-interface OpenWork { id: string; title: string; updated: number; opened: number }
+interface OpenWork { id: string; title: string; updated: number; opened: number /* D17/#26: when the agent was HANDED the work: newest of open, last fire, last movement */ }
 
 function openWorkOf(agentId: string, now: number): OpenWork[] {
-  // `opened` is the instant the agent was HANDED what it holds: the newest of the row's open, its
-  // last fire (a recurring task's `opened_at` is the day it was created, the fire is when the agent
-  // was given this run), and its last movement. D17 / GitHub #26: measured from `opened_at` alone, a
-  // nightly task fired on the very tick of the sweep read as "no sign of work for 15 h".
   return getDb().prepare(`SELECT w.id, COALESCE(w.title, w.id) AS title, w.updated_at AS updated,
         MAX(w.opened_at, COALESCE(w.last_run_at, 0), ${taskMovedAtSql('w')}) AS opened
       FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0

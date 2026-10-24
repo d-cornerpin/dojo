@@ -45,7 +45,8 @@ import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } 
 import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
 import { toolDefinitionsByName } from '../definitions.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
-import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, liveAgentsNamed, liveAgentNamesNear, sameNameNote, type LiveAgentByName } from '../../tool-helpers.js';
+import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from '../../tool-helpers.js';
+import { liveAgentsNamed, liveAgentNamesNear, sameNameNote, type LiveAgentByName } from '../../agent-name-lookup.js';
 
 import { auditLog, agentCanSelfCompleteById, toolsLogger as logger } from '../util.js';
 import { activeRuns } from '../../shared-state.js';

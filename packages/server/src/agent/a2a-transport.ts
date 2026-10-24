@@ -14,7 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { liveAgentsNamed, liveAgentNamesNear } from './tool-helpers.js';
+import { liveAgentsNamed, liveAgentNamesNear } from './agent-name-lookup.js';
 // t114 (census U3): the liveness fact every other reaper in the tree guards on, and the
 // patience ladder that scales a grant by the assignee's own declared model speed.
 import { activeRuns } from './shared-state.js';
