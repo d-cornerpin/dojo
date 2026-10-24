@@ -105,7 +105,9 @@ export type WorkOutcomeReason =
   | 'blocked-disposal-not-the-actors'
   // t193: the same layer's second refusal — another live agent's work is cancelled or reopened
   // only on the owner's word (`work/row-authority.ts:takeoverRefusal`).
-  | 'takeover-needs-the-owner';
+  | 'takeover-needs-the-owner'
+  // v3.5: a measured task whose last reading shows items left (`work/measure-close-gate.ts`).
+  | 'measure-items-left';
 
 /** The applied proof. `eventId` is the row somebody can go and read. */
 export interface TransitionApplied {
@@ -147,6 +149,7 @@ export type WorkUnsettledOutcome =
   // without a second code path. See `WorkOutcomeReason` above for why it is not a gate.
   | (OutcomeRefused<'blocked-disposal-not-the-actors'> & { readonly workId: string })
   | (OutcomeRefused<'takeover-needs-the-owner'> & { readonly workId: string })
+  | (OutcomeRefused<'measure-items-left'> & { readonly workId: string })
   | Extract<LiveOutcome<TransitionApplied, WorkOutcomeReason>, { kind: 'failed' }>;
 
 /**

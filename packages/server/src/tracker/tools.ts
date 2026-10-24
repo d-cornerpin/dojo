@@ -1868,8 +1868,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // ── Phase B.1: complete engine hard gate ──
     // Structure only. Engine never inspects evidence content; that is PM's job.
     // t193 (dec 27): ONE gate for both close doors — `complete_step` calls it too.
-    if (status === 'complete' && !callerIsPM) {
-      const refused = closeEvidenceGate(agentId, taskId, args) ?? remainderGate(taskId, args);
+    if (status === 'complete') {   // v3.5: the measure binds the PM's own close too; the evidence gate does not
+      const refused = (callerIsPM ? null : closeEvidenceGate(agentId, taskId, args)) ?? remainderGate(taskId, args);
       if (refused) return refused;
     }
 
@@ -3630,7 +3630,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
   { const no = taskWriteRefusal(agentId, projectId, 'close'); if (no) return no; }   // t193 (dec 3): the project's editors close it.
   const userQuote = typeof args.user_quote === 'string' ? args.user_quote : null;
   { const no = projectCloseRefusal(agentId, projectId, project.title, status, reason, userQuote); if (no) return no; }   // t193 (dec 29)
-  { const no = status === 'complete' && !isPMAgent(agentId) ? projectRemainderGate(projectId) : null; if (no) return no; }   // v3.5: measured work left
+  { const no = status === 'complete' ? projectRemainderGate(projectId) : null; if (no) return no; }   // v3.5: measured work left
 
   try {
     const result = closeProjectAndOpenTasks({
@@ -3958,7 +3958,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   }
 
   if (markComplete) {
-    { const no = isPMAgent(agentId) ? null : remainderGate(taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
+    { const no = remainderGate(taskId, args, 'work_schedule(action="pause", mark_complete=true)', false); if (no) return no; }   // v3.5
     // Stop the schedule AND mark the task as complete (terminal state)
     const schedDoneRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),

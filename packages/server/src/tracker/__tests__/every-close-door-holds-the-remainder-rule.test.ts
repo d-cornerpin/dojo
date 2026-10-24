@@ -203,13 +203,8 @@ describe('minors', () => {
     expect(String(lastEvent(id, 'measured')!.payload.error)).toMatch(/^Permission denied/);
   });
 
-  it('a PM close never reads the measure (the PM is never judged by it)', async () => {
-    const id = await openMeasured(100);
-    db().prepare(`INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
-      VALUES ('pm-agent-x', 'PM', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run();
-    await call('work_update:status', { task_id: id, status: 'complete', ...CLOSE }, 'pm-agent-x');
-    expect(countMeasure).toHaveBeenCalledTimes(1);
-  });
+  // (Round 1's "a PM close never reads the measure" is gone: fix round 2's ruling binds the PM's
+  // own close to the measure; `no-route-closes-a-measured-task-with-items-left.test.ts` holds it.)
 
   it('a task created with an error after its insert (an unknown group) keeps its measure', async () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 55 });

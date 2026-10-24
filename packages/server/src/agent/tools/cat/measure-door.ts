@@ -11,7 +11,9 @@ import { editMeasure, namedRemainderNote, recordNamedRemainder, measuredOpenTask
 import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
 import { claimedTasksOf } from '../../../tracker/claimed-tasks.js';
 import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
-import { isPMAgent } from '../../../config/platform.js';
+import { withNamedRemainder } from '../../../work/measure-close-gate.js';
+import { remainderGate } from '../../../tracker/measure-gate.js';
+import { pendingCloseRequestExpr } from '../../../work/tracker-view.js';
 import { gatesForCall } from '../gates.js';
 import { evaluateGate } from '../gate-eval.js';
 
@@ -40,19 +42,21 @@ export async function readMeasureArg(agentId: string, raw: unknown): Promise<{ r
 }
 
 /** A close of a measured task re-reads its measure first; the close door judges that reading.
- *  Held to the same wall as when it was set: a read the agent may no longer make is not made, and is
- *  recorded as a reading that could not be taken (which never refuses the close). Never for the PM,
- *  whose closes the measure does not judge. */
-export async function remeasureTask(agentId: string, taskId: string | null): Promise<void> {
-  if (!taskId || isPMAgent(agentId)) return;
-  const row = getDb().prepare('SELECT measure_json FROM work WHERE id = ?').get(taskId) as { measure_json: string | null } | undefined;
+ *  The read is made AS THE TASK'S OWN AGENT, whoever closes (the agent, the PM, an apprentice's
+ *  parent): it is that agent's job and that agent's mailbox, and it is held to the same wall as when
+ *  it was set, so a read that agent may no longer make is not made, and is recorded as a reading
+ *  that could not be taken (which never refuses the close). */
+export async function remeasureTask(_closer: string, taskId: string | null): Promise<void> {
+  if (!taskId) return;
+  const row = getDb().prepare('SELECT measure_json, agent_id FROM work WHERE id = ?').get(taskId) as { measure_json: string | null; agent_id: string } | undefined;
   if (!row?.measure_json) return;
   let raw: unknown;
   try { raw = JSON.parse(row.measure_json); } catch { return; }
   const parsed = parseMeasure(raw);
   if (!parsed.ok) return;
-  const refused = await refusalFor(agentId, parsed.measure);
-  recordMeasured(taskId, refused ? { ok: false, error: refused } : await countMeasure(parsed.measure, agentId, agentNameOf(agentId)), Date.now());
+  const owner = row.agent_id;
+  const refused = await refusalFor(owner, parsed.measure);
+  recordMeasured(taskId, refused ? { ok: false, error: refused } : await countMeasure(parsed.measure, owner, agentNameOf(owner)), Date.now());
 }
 
 /** Is this status argument a close? The status door's own reading of the word, never a second copy. */
@@ -71,7 +75,8 @@ export async function closeWithMeasure(agentId: string, taskId: string | null, a
   await remeasureTask(agentId, taskId);
   const note = taskId ? namedRemainderNote(taskId, args) : null;
   const mark = note && taskId ? lastTransitionId(taskId) : 0;
-  const content = close();
+  // A named remainder is honoured by the status writer for exactly this synchronous close.
+  const content = note && taskId ? withNamedRemainder(taskId, close) : close();
   if (note && taskId && lastTransitionId(taskId) > mark) recordNamedRemainder(agentId, taskId, note);
   return content;
 }
@@ -108,4 +113,16 @@ export async function editWithMeasure(
   const m = editMeasure(agentId, String(args.task_id), measured.reading);
   if ('error' in m) return { content: m.error, isError: true };
   return { content: hasFields ? `${content}\n${m.line}` : `[OK] task_id=${String(args.task_id)}\n\n${m.line}`, isError: false };
+}
+
+/** complete_task(status="complete"), before the agent is ended: its task is re-read and judged like
+ *  any close. A task already closed, or carrying a close request (it crossed a door that judged it),
+ *  is not judged again. complete_task takes no remainder, so the refusal names the door that does. */
+export async function completeTaskRefusal(agentId: string, taskId: string | null): Promise<string | null> {
+  if (!taskId) return null;
+  const row = getDb().prepare(`SELECT w.state AS state, ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`)
+    .get(taskId) as { state: string; pending: number } | undefined;
+  if (!row || row.pending === 1 || !['claimed', 'on_deck'].includes(row.state)) return null;
+  await remeasureTask(agentId, taskId);
+  return remainderGate(taskId, {}, 'complete_task(status="complete")', false);
 }

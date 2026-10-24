@@ -195,13 +195,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-10-14',
     reason: 'v3.3.3 cut check: section 4a copied inter_agent_messages.source_agent_id straight through, so one peer row with no sender aborted the chain on every boot (the lane/role/sender CHECK); 4b already fell back to `unrecorded-peer`. Amended so 4a does the same for exactly the rows that CHECK needs it for. ONE blob has shipped in every one of the 30 tags that carry this file (v3.1.17-preflight.23 through v3.3.2), and be8e01f7 is its checksum. The only executable delta is one CASE expression that changes a value only for a NULL-sender, non-engine, non-assistant/tool row, the very row the old file aborted on; a box carrying the old checksum crossed the file and so held none, and every row the amended file writes there is identical.',
   },
-  {
-    file: '200b_work_event_kind_measured.sql',
-    appliedChecksum: '46af0b43c9cdcf5f7f9bdfb5231dcf62b8a6ea5fd85aaccbb2e9b34ae9d61c85',
-    fileChecksum: '526346f61e6ce00b514e34805f0dd0cf54dafd4da86847d34daad1d37400fc65',
-    since: '2026-10-23',
-    reason: 'v3.5 fix round 1 (orchestrator ruling: ONE work_events rebuild for the release): `continued` and `stalled` (Task D1) joined the CHECK beside `measured`. The earlier bytes existed only on the unmerged v3.5 lane branch, so no released or owner box applied them; the freeze gate counts branch history since the tag as applied, which is why this pair is recorded. The executable delta is two values added to the CHECK list and nothing else: the list only grows, so every row the earlier bytes admitted the current ones admit, and the rebuild (ids, counter, index) is byte-identical.',
-  },
 ];
 
 type Db = ReturnType<typeof getDb>;
