@@ -13,7 +13,7 @@ import { getDb } from '../db/connection.js';
 import { getDecisionProvider } from './decision-provider.js';
 import { scoreQuestion, type QuestionScore } from './decision-shadow.js';
 import type { DiagnosticItem } from '../healer/diagnostic.js';
-import { summaryCheckLine } from '../memory/summary-check.js';
+import { summaryCheckLine } from '../memory/summary-check-ledger.js';
 
 export type Mode = 'rule' | 'shadow' | 'model';
 

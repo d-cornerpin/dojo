@@ -2316,7 +2316,7 @@ configRouter.post('/models/disable', async (c) => {
 // ── Platform Settings (key-value config) ──
 
 // GET /summary-check — v3.5: is the current summary writer failing its accuracy check? (the Summarization card)
-configRouter.get('/summary-check', async (c) => c.json({ ok: true, data: (await import('../../memory/summary-check.js')).summaryWriterStatus() }));
+configRouter.get('/summary-check', async (c) => c.json({ ok: true, data: (await import('../../memory/summary-check-ledger.js')).summaryWriterStatus() }));
 
 // GET /settings/:key
 configRouter.get('/settings/:key', (c) => {

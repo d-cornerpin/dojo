@@ -32,7 +32,8 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { writerPassedOver, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
-import { summaryCheckLine, SUMMARY_CHECK_NOTICE_CODE, passMark, summaryWriterStatus } from '../summary-check.js';
+import { SUMMARY_CHECK_NOTICE_CODE, passMark } from '../summary-check.js';
+import { summaryCheckLine, summaryWriterStatus } from '../summary-check-ledger.js';
 import { recordShadow, recordTruth } from '../../agent/decision-shadow.js';
 import { getDecisionScoreItems } from '../../agent/decision-policy.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
