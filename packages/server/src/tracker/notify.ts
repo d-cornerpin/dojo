@@ -22,6 +22,8 @@ import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEvent, claimTrackerNoticeForTask } from '../memory/message-store.js';
 import { isDreamerAgent, isPrimaryAgent } from '../config/platform.js';
+import { readMeasureFacts } from '../work/measure-view.js';
+import { describeMeasure } from '../work/measure.js';
 
 const logger = createLogger('tracker:notify');
 
@@ -105,6 +107,16 @@ export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, ta
   }
 }
 
+/** v3.5 Part C1: a measured task states its count and the continuation; an unmeasured one is told how to get one. */
+function measuredLine(taskId: string): string {
+  const f = readMeasureFacts(taskId);
+  if (!f?.measure) {
+    return `Work it through. If it covers a set of items, set its measure (work_update(action="edit", task_id="${taskId}", measure={tool:"gmail_search", args:{query:"<what is still to do>"}})) so the engine counts for you.`;
+  }
+  const now = f.remaining === null ? 'could not be read yet' : `returns ${f.remaining} ${f.measure.unit} now`;
+  return `This task is measured: ${describeMeasure(f.measure)} ${now}. It is done when that reads 0; the engine keeps the count of items you touch and re-counts the measure at the end of each turn that makes progress. When such a turn ends with items left, the engine continues you on the next turn.`;
+}
+
 /**
  * Inject a task-assignment notification into the assignee's conversation.
  * Skips work and returns ok:false if the assignee is the same as the
@@ -156,8 +168,8 @@ export function injectTaskAssignmentNotification(
     // where this work came from, so the ticket is never a floating title.
     (() => { try { const o = findTaskOriginChain(taskId); return o ? `Origin: ${renderTaskOriginChain(o)}` : ''; } catch { return ''; } })(),
     ``,
-    `Begin working on this task. When finished, call work_update(action="status", task_id="${taskId}", status="complete", notes="what you did").`,
-    `If you get stuck, call work_update(action="status", task_id="${taskId}", status="blocked", notes="why you're blocked").`,
+    measuredLine(taskId),
+    `Close it with work_update(action="status", task_id="${taskId}", status="complete", result, evidence) only when it is done. If you cannot proceed, status="blocked" with the reason.`,
   ].filter(Boolean);
   const content = lines.join('\n');
 
