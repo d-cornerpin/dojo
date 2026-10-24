@@ -11,6 +11,7 @@
 
 import { getOllamaLock } from './ollama-lock.js';
 import { isLocalOllamaBaseUrl } from './num-ctx-calculator.js';
+import { broadcast } from '../gateway/ws.js';
 
 let held: { providerId: string; over: Promise<void> } | null = null;
 let localWork = 0;
@@ -23,6 +24,35 @@ export function heldFor(providerId?: string): Promise<void> | null {
 }
 /** Is a restart holding the local Ollama right now? (decide() answers with its rule instead of waiting.) */
 export const localHeld = (): boolean => held !== null;
+
+/** Who is waiting (fix round 5, NB4-3): the agent's Stop ends the wait, and its turn shows what it waits for. */
+export interface HoldWait { signal?: AbortSignal; agentId?: string }
+
+/**
+ * Wait out a hold on `providerId` (the local Ollama when none is named): null when nothing holds it, so a caller
+ * that is let through is counted in the same tick. A stopped agent stops waiting (the Stop's own reason is
+ * thrown). An agent's wait is shown as an engine activity row — the existing frame the dashboard's active-jobs
+ * row renders; the 'compaction' kind is reused as the nightly maintenance row does, the label carries the meaning.
+ */
+export function waitOutHold(providerId?: string, wait: HoldWait = {}): Promise<void> | null {
+  if (!heldFor(providerId)) return null;
+  return (async () => {
+    const id = `ollama_restart_${wait.agentId ?? 'engine'}_${Date.now()}`;
+    const startedAt = new Date().toISOString();
+    const emit = (phase: 'start' | 'end'): void => {
+      if (wait.agentId) broadcast({ type: 'engine:activity', data: { id, kind: 'compaction', agentId: wait.agentId, label: 'Waiting for the local model to restart', startedAt, phase } });
+    };
+    emit('start');
+    const stopped = new Promise<never>((_, reject) => {
+      if (wait.signal?.aborted) reject(wait.signal.reason);
+      wait.signal?.addEventListener('abort', () => reject(wait.signal!.reason), { once: true });
+    });
+    stopped.catch(() => { /* raced below */ });
+    try {
+      for (let h = heldFor(providerId); h; h = heldFor(providerId)) await Promise.race([h, stopped]);
+    } finally { emit('end'); }
+  })();
+}
 
 export function wakeQuietWaiters(): void {
   const w = quietWaiters;
@@ -39,7 +69,7 @@ export function pinnedEnds(providerId: string): void {
  * Local Ollama work that takes no lock slot begins: it waits out a restart's hold, is counted from this tick, and
  * the returned function ends it (once). With a `baseUrl` that is not this box's Ollama it counts nothing.
  */
-export function localWorkBegins(baseUrl?: string): Promise<() => void> {
+export function localWorkBegins(baseUrl?: string, wait?: HoldWait): Promise<() => void> {
   if (baseUrl !== undefined && !isLocalOllamaBaseUrl(baseUrl)) return Promise.resolve(() => {});
   const begin = (): (() => void) => {
     localWork++;
@@ -47,7 +77,7 @@ export function localWorkBegins(baseUrl?: string): Promise<() => void> {
     return () => { if (ended) return; ended = true; localWork--; wakeQuietWaiters(); };
   };
   if (!held) return Promise.resolve(begin());
-  return (async () => { for (let h = heldFor(); h; h = heldFor()) await h; return begin(); })();
+  return (async () => { for (let w = waitOutHold(undefined, wait); w; w = waitOutHold(undefined, wait)) await w; return begin(); })();
 }
 
 /** Everything in flight on the local Ollama (`providerId` is its provider row). */

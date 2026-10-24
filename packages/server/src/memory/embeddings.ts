@@ -147,7 +147,7 @@ export async function generateEmbedding(
 
   if (config.provider === 'ollama') {
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
-    const endLocalWork = await localWorkBegins(baseUrl);   // v3.5: in-flight work the model-limit restart waits for
+    const endLocalWork = await localWorkBegins(baseUrl, { signal: slot?.signal, agentId: opts?.agentId });   // v3.5: work the model-limit restart waits for
     try {
     // C12: adaptive retry, on a token-context overflow, halve the input and retry (up to
     // 3x) so a dense input still embeds instead of dropping to un-searchable.

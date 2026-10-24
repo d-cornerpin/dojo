@@ -26,7 +26,7 @@
 // happen stays owed and is tried again at the next start.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { createLogger } from '../logger.js';
@@ -37,6 +37,7 @@ import { getOllamaLock, getOllamaMaxConcurrent } from './ollama-lock.js';
 import { ownerCardFrame } from './owner-card-frames.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { checkOllamaHealth } from './ollama.js';
+import { attachIdleBound, type WatchableChild } from '../child-idle-bound.js';
 import {
   tellOwnerOnce, ownerConditionCleared, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords,
 } from '../healer/owner-notices.js';
@@ -71,8 +72,8 @@ export interface OllamaLimitDeps {
 type Run = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
 type Kill = (pid: number, signal: NodeJS.Signals | 0) => boolean;
 
-/** The real commands, built over `run`/`kill` so a test can read their argv without running any. */
-export function makeRealDeps(run: Run, kill: Kill): OllamaLimitDeps {
+/** The real commands, built over `run`/`kill`/`spawnChild` so a test can read their argv without running any. */
+export function makeRealDeps(run: Run, kill: Kill, spawnChild: (cmd: string, args: string[]) => WatchableChild): OllamaLimitDeps {
   const pids = (out: string): number[] => out.split('\n').map((l) => parseInt(l, 10)).filter((n) => Number.isInteger(n) && n > 0);
   return {
     getenv: async (name) => { try { return (await run('launchctl', ['getenv', name])).stdout.trim() || null; } catch { return null; } },
@@ -84,21 +85,25 @@ export function makeRealDeps(run: Run, kill: Kill): OllamaLimitDeps {
         return { pid, path: (await run('ps', ['-o', 'comm=', '-p', String(pid)])).stdout.trim() };
       } catch { return null; }
     },
-    appPids: async () => { try { return pids((await run('pgrep', ['-x', 'Ollama'])).stdout); } catch { return []; } },
+    // This user's own processes only (fix round 5): another user's Ollama app is not ours to signal.
+    appPids: async () => { try { return pids((await run('pgrep', ['-x', '-u', String(process.getuid?.() ?? ''), 'Ollama'])).stdout); } catch { return []; } },
     appInstalled: async () => {   // `/bin/test -d`: the bundle is there (no file-system import for one yes/no)
       for (const p of ['/Applications/Ollama.app', join(homeDir(), 'Applications', 'Ollama.app')]) { try { await run('/bin/test', ['-d', p]); return true; } catch { /* not here */ } }
       return false;
     },
     terminate: (pid) => { try { kill(pid, 'SIGTERM'); } catch { /* already gone */ } },
     alive: (pid) => { try { return kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } },
-    // Exactly how Ollama's CLI starts the Mac app (`cmd/start_darwin.go`): hidden, fast start-up.
-    launchApp: async () => { await run('/usr/bin/open', ['-j', '-a', 'Ollama', '--args', '--fast-startup']); },
+    // Exactly how Ollama's CLI starts the Mac app (`cmd/start_darwin.go`): hidden, fast start-up. Run under the
+    // platform's child-process bound (`child-idle-bound.ts`) at the app-start patience below (fix round 5, NB4-2).
+    launchApp: async () => {
+      await attachIdleBound(spawnChild('/usr/bin/open', ['-j', '-a', 'Ollama', '--args', '--fast-startup']), { idleMs: WAIT_MS, ceilingMs: WAIT_MS });
+    },
     answers: (baseUrl) => checkOllamaHealth(baseUrl),   // the Dojo's one Ollama health check (`services/ollama.ts`)
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   };
 }
 const execRun = promisify(execFile);
-const REAL = makeRealDeps((cmd, args) => execRun(cmd, args), (pid, sig) => process.kill(pid, sig));
+const REAL = makeRealDeps((cmd, args) => execRun(cmd, args), (pid, sig) => process.kill(pid, sig), (cmd, args) => spawn(cmd, args));
 
 const toldValue = (): string | null =>
   (getDb().prepare("SELECT value FROM config WHERE key = 'ollama_limit_told'").get() as { value: string } | undefined)?.value ?? null;
@@ -155,6 +160,7 @@ export async function ensureOllamaModelLimit(
     const appRunning = !!listening || (await deps.appPids()).length > 0;
     if (!appRunning && !(await deps.appInstalled())) return 'skipped';   // nothing serves and no app: tried again next start
     const raised = raisedLoadedLimit(await deps.getenv(VAR), want);
+    ownerConditionCleared('ollama-limit-manual:', true);   // the Ollama app serves this box now (fix round 5, NB4-5)
     if (raised === null && !(appRunning && restartOwed())) {
       if (!appRunning) setConfig(RESTART_OWED, null);   // a stopped app reads the value when it starts
       ownerConditionCleared('ollama-limit-failed');
@@ -200,13 +206,17 @@ async function restartWhenQuiet(deps: OllamaLimitDeps, local: { id: string; base
     for (const pid of pids) deps.terminate(pid);
     const quit = await waitUntil(deps, () => pids.every((pid) => !deps.alive(pid)));
     await deps.launchApp();   // also when it did not quit: the app must be running afterwards either way
+    // Success is the local Ollama ANSWERING after the relaunch (fix round 5, NB4-1), by its own health check.
     const answered = await waitUntil(deps, () => deps.answers(local.baseUrl));
     if (!quit) throw new Error('the Ollama app did not quit');
+    if (!answered) throw new Error('the Ollama app did not answer after its relaunch');
     setConfig(RESTART_OWED, null);
     ownerConditionCleared('ollama-limit-failed');
-    logger.info('Restarted the Ollama app to apply its loaded-model limit', { answered });
+    logger.info('Restarted the Ollama app to apply its loaded-model limit');
   } catch (err) {
-    failed(err);   // the restart stays owed: the next start tries it again
+    // The restart stays owed (the next start tries it again) and the hold is released below: a waiting call
+    // proceeds into the platform's ordinary Ollama-down path.
+    failed(err);
   } finally {
     endHold();
   }

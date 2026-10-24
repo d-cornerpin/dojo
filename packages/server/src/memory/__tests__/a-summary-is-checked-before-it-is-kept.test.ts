@@ -172,9 +172,13 @@ describe('a summary is checked against its source before it is kept', () => {
 describe('NB-4: a source larger than the decision model\'s window is checked in parts, never cut', () => {
   it('every part fits the window with the summary; the parts together are the whole source; the verdicts combine', async () => {
     const seen: Array<{ rows: string; part?: string }> = [];
+    let open = 0; let most = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
       const { state } = JSON.parse(init?.body ?? '{}') as { state: { source_rows: string; summary: string; source_part?: string } };
       seen.push({ rows: state.source_rows, part: state.source_part });
+      open++; most = Math.max(most, open);
+      await new Promise((r) => setTimeout(r, 5));
+      open--;
       // "dropped" is true of exactly one part (it holds a request the summary left out): the whole check fails on it.
       return Response.json({ answers: { invented: { noul: 0.04 }, dropped: { noul: state.source_rows.includes('DROPPED-REQUEST') ? 0.9 : 0.05 }, stated_current: { noul: 0.05 } } });
     }));
@@ -189,6 +193,7 @@ describe('NB-4: a source larger than the decision model\'s window is checked in 
     expect(seen.map((s) => s.part)).toEqual(seen.map((_, i) => `${i + 1} of ${seen.length}`));
     expect(r.ok).toBe(false);
     expect(r.dropped).toBe(0.9);
+    expect(most).toBe(1);   // fix round 5 (NB4-6): one part after another, never all at once against one clock
   });
 
   it('a source that fits is asked once, whole, as before', async () => {

@@ -149,7 +149,7 @@ describe('clause 1 — the transport hands the lock the number it will itself ar
     const src = ollamaTransportSource();
 
     expect(
-      /lock\.acquire\(\s*modelInfo\.providerId,\s*ollamaModelName,\s*bounds\.firstChunkMs\s*(,\s*pinned\s*)?\)/.test(src),
+      /lock\.acquire\(\s*modelInfo\.providerId,\s*ollamaModelName,\s*bounds\.firstChunkMs\s*(,\s*pinned\s*(,\s*\{[^}]*\}\s*)?)?\)/.test(src),
       'the lock must receive the same expression the watchdog arms',
     ).toBe(true);
     expect(

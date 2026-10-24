@@ -83,8 +83,13 @@ export async function checkSummary(sourceRows: string, summary: string, agentId:
   } else if (parts.length === 1) {
     answers = await decide({ source_rows: sourceRows, summary }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs });
   } else {
-    answers = combineParts(await Promise.all(parts.map((part, i) =>
-      decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs }))));
+    // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
+    // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
+    const each: Array<Record<string, Answer> | null> = [];
+    for (const [i, part] of parts.entries()) {
+      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, QUESTIONS, { purpose: PURPOSE, agentId, timeoutMs }));
+    }
+    answers = combineParts(each);
   }
   const p = (q: keyof typeof QUESTIONS): number => (answers?.[q]?.type === 'noul' ? (answers[q] as { noul: number }).noul : 0);
   const [invented, dropped, statedCurrent] = [p('invented'), p('dropped'), p('stated_current')];

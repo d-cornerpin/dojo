@@ -33,11 +33,18 @@ export function sourceParts(source: string, summary: string, windowTokens: numbe
   return parts;
 }
 
-/** The parts' verdicts as one. "dropped" and "stated_current" are true of the summary if true of ANY part (a
- *  request any part holds and the summary left out was left out). "invented" — the summary states what the
- *  source does not say — only if NO part says it, so the lowest part's probability; a summary drawing on several
- *  parts may read as invented to each, which fails it (the rows stay whole: never a wrong record). Any part
- *  unanswered → the whole check unanswered. */
+/**
+ * The parts' verdicts as one (fix round 5, NB4-6: stated, not implied).
+ *   · "dropped" and "stated_current": the HIGHEST part score. A request any one part holds and the summary left
+ *     out was left out; a "pending" claim is in the summary whichever part is beside it. One part judged so fails
+ *     the summary — that is the intent.
+ *   · "invented" (the summary says what the source does not): the LOWEST part score. One part judging a claim
+ *     invented does NOT fail the summary, because the claim may come from another part; it fails only when every
+ *     part judges it invented. The known cost: a summary that draws on several parts can read as invented to each
+ *     of them and fail. That is the safe direction (the rows stay whole, never a wrong record), and it is rare —
+ *     leaf chunks are sized to the window, so a check in parts happens only at its edge.
+ *   · any part unanswered → the whole check is unanswered (kept and logged 'unavailable', like a down model).
+ */
 export function combineParts(answers: Array<Record<string, Answer> | null>): Record<string, Answer> | null {
   if (answers.some((a) => a === null)) return null;
   const noul = (q: 'invented' | 'dropped' | 'stated_current'): number[] => answers.map((a) => (a![q]?.type === 'noul' ? (a![q] as { noul: number }).noul : 0));

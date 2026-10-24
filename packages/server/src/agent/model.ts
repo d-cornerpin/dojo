@@ -1365,7 +1365,7 @@ async function callOllamaModel(
   // the identical number the watchdog will arm. The two cannot drift again without someone
   // editing one expression that both read.
   await refuseUncheckedAtFirstLoad(modelId);   // v3.5: a model picked while it could not be sized is judged now
-  await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs, pinned);
+  await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs, pinned, { signal: params.abortSignal, agentId });
 
   const startTime = Date.now();
 

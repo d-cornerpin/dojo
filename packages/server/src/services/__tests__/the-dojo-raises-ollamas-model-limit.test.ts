@@ -37,6 +37,8 @@ import { getOllamaLock } from '../ollama-lock.js';
 import { localWorkBegins } from '../ollama-quiet.js';
 import { pullOllamaModel } from '../ollama-pull.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
+import { holdWhenQuiet } from '../ollama-quiet.js';
+import type { WatchableChild } from '../../child-idle-bound.js';
 
 const LOCAL = 'ollama-local';
 const APP_SERVER = '/Applications/Ollama.app/Contents/Resources/ollama';
@@ -44,7 +46,7 @@ const BREW_SERVER = '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama';
 
 type Fake = OllamaLimitDeps & { sets: string[]; terms: number[]; launches: number; log: string[] };
 function fakeDeps(env: Record<string, string>, o: {
-  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>;
+  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean;
 } = {}): Fake {
   const server = o.server === undefined ? APP_SERVER : o.server;
   const living = new Set<number>([...(o.appPids ?? (server === APP_SERVER ? [501] : [])), ...(server ? [502] : [])]);
@@ -58,13 +60,24 @@ function fakeDeps(env: Record<string, string>, o: {
     terminate: (pid) => { d.terms.push(pid); d.log.push('term'); if (!o.neverQuits) living.delete(pid); },
     alive: (pid) => living.has(pid),
     launchApp: async () => { d.log.push('launch'); await o.launchGate; d.launches++; living.add(501); living.add(502); },
-    answers: async () => living.has(502),
+    answers: async () => !o.neverAnswers && living.has(502),
     sleep: async () => { /* the tick, instant in a test */ },
   };
   return d;
 }
 
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 10));
+/** A child process stand-in: exits cleanly at once, or (`hang`) never. */
+function quickChild(hang = false): WatchableChild & { killed: boolean } {
+  const closers: Array<(code: number | null, signal: NodeJS.Signals | null) => void> = [];
+  const c = {
+    killed: false, stdout: null, stderr: null,
+    on: (ev: string, cb: (code: number | null, signal: NodeJS.Signals | null) => void) => { if (ev === 'close') closers.push(cb); return c; },
+    kill: () => { c.killed = true; for (const cb of closers) cb(null, 'SIGTERM'); return true; },
+  };
+  if (!hang) setTimeout(() => { for (const cb of closers) cb(0, null); }, 0);
+  return c as unknown as WatchableChild & { killed: boolean };
+}
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -254,9 +267,10 @@ describe('NB-2: act only where it is true', () => {
 
   it('the app\'s process is found by its case-sensitive name (`pgrep -x Ollama`), never Homebrew\'s lowercase `ollama`', async () => {
     const argv: string[][] = [];
-    const real = makeRealDeps(async (cmd, args) => { argv.push([cmd, ...args]); return { stdout: '501\n' }; }, () => true);
+    const real = makeRealDeps(async (cmd, args) => { argv.push([cmd, ...args]); return { stdout: '501\n' }; }, () => true, () => quickChild());
     expect(await real.appPids()).toEqual([501]);
-    expect(argv).toEqual([['pgrep', '-x', 'Ollama']]);
+    // fix round 5 (NB4-4): this user's processes only — another user's Ollama app is never signalled
+    expect(argv).toEqual([['pgrep', '-x', '-u', String(process.getuid!()), 'Ollama']]);
   });
 });
 
@@ -288,7 +302,7 @@ describe('NB-5: no AppleScript; a failed restart is tried again at the next star
       argv.push([cmd, ...args]);
       if (cmd === 'launchctl' && args[0] === 'getenv') throw Object.assign(new Error('exit 1'), { code: 1 });
       return { stdout: '' };
-    }, (pid, sig) => { kills.push([pid, sig]); return true; });
+    }, (pid, sig) => { kills.push([pid, sig]); return true; }, (cmd, args) => { argv.push([cmd, ...args]); return quickChild(); });
     expect(await real.getenv('OLLAMA_MAX_LOADED_MODELS')).toBeNull();
     real.terminate(501);
     await real.launchApp();
@@ -315,5 +329,61 @@ describe('NB-5: no AppleScript; a failed restart is tried again at the next star
     expect(await ensureOllamaModelLimit(after, 'darwin')).toBe('already');
     await ollamaRestartSettled();
     expect(after.terms).toEqual([]);
+  });
+});
+
+describe('fix round 5', () => {
+  it('NB4-1: a relaunched app that does not ANSWER is a failed restart — owed kept, failed card, the hold released, retried next start', async () => {
+    const env: Record<string, string> = {};
+    const silent = fakeDeps(env, { neverAnswers: true });
+    expect(await ensureOllamaModelLimit(silent, 'darwin')).toBe('set');
+    await settle();
+    const call = getOllamaLock().acquire(LOCAL, 'agent-model:7b');   // waits on the hold, then proceeds into Ollama-down
+    await ollamaRestartSettled();
+    await call;
+    getOllamaLock().release(LOCAL, 'agent-model:7b');
+    expect(frames.list.map((f) => f.error)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
+    expect(healerOwnerCards().map((c) => c.words)).toContain(OLLAMA_LIMIT_FAILED_WORDS);
+    const next = fakeDeps(env);
+    expect(await ensureOllamaModelLimit(next, 'darwin')).toBe('set');   // still owed
+    await ollamaRestartSettled();
+    expect(next.launches).toBe(1);
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(OLLAMA_LIMIT_FAILED_WORDS);
+  });
+
+  it('NB4-2: `/usr/bin/open` runs under the platform\'s child-process bound: one that never returns is ended', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = quickChild(true);
+      const real = makeRealDeps(async () => ({ stdout: '' }), () => true, () => child);
+      const launched = real.launchApp().then(() => 'returned', () => 'ended');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await launched).toBe('ended');
+      expect(child.killed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('NB4-3: a call waiting on the hold stops when its agent is stopped, and its turn shows it is waiting for the local model', async () => {
+    const release = await holdWhenQuiet(LOCAL);
+    const stop = new AbortController();
+    const waiting = getOllamaLock().acquire(LOCAL, 'agent-model:7b', undefined, false, { signal: stop.signal, agentId: 'agent-w' })
+      .then(() => 'proceeded', () => 'stopped');
+    await settle();
+    const activity = frames.list.filter((f) => (f as { type?: string }).type === 'engine:activity') as unknown as Array<{ data: { agentId: string; label: string; phase: string } }>;
+    expect(activity.map((f) => [f.data.agentId, f.data.phase])).toEqual([['agent-w', 'start']]);
+    expect(activity[0].data.label).toBe('Waiting for the local model to restart');
+    stop.abort();
+    expect(await waiting).toBe('stopped');
+    expect((frames.list.filter((f) => (f as { type?: string }).type === 'engine:activity') as unknown as Array<{ data: { phase: string } }>).map((f) => f.data.phase)).toEqual(['start', 'end']);
+    release();
+  });
+
+  it('NB4-5: the Homebrew card is cleared once the Ollama app serves this box (even with the value already in place)', async () => {
+    const env: Record<string, string> = {};
+    expect(await ensureOllamaModelLimit(fakeDeps(env, { server: BREW_SERVER, installed: false }), 'darwin')).toBe('manual');
+    expect(healerOwnerCards().map((c) => c.words)).toContain(ollamaLimitManualWords(4));
+    env.OLLAMA_MAX_LOADED_MODELS = '8';
+    expect(await ensureOllamaModelLimit(fakeDeps(env), 'darwin')).toBe('already');
+    expect(healerOwnerCards().map((c) => c.words)).not.toContain(ollamaLimitManualWords(4));
   });
 });
