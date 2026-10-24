@@ -7,10 +7,12 @@
 // brake woke the agent at once into the same refusal, for ever: the t168 "1,216 wakes" class. The
 // orchestrator's ruling — the assembly must CONVERGE, never loop and never surrender:
 //
-//   1. EVERY EXIT RECORDS ITS OUTCOME. A forced pass that found nothing to fold, or threw, goes through
-//      `notePassOutcome` like every other pass, so a pass that bought nothing arms the brake and the
-//      park waits for it. (A pass skipped because another holds the agent's lock does not exist for
-//      the boundary's condense: it waits for the running pass, `assembly-validation.ts`.)
+//   1. EVERY EXIT RECORDS ITS OUTCOME, STRUCTURALLY (fix round 3). `checkAndCompact` runs every forced
+//      pass through `recordingForcedPass`, so no caller has to remember: a return path that recorded
+//      nothing (the leaf-less early return, say, reached by the recovery door) is recorded here, WITH
+//      its facts, so a pass that bought nothing arms the brake and the park waits for it, and a genuine
+//      stall (over budget with nothing left that can shrink) is reported once as a compaction defect.
+//      (A pass skipped because another holds the lock never ran; the running pass records its own.)
 //   2. NOTHING LEFT OUTSIDE THE PROTECTED RECENT PART IS NOT THE END. The next forced pass folds the
 //      OLDEST whole group of the protected part itself — summarised, never dropped: the live
 //      conversation is kept as a summary — one group per pass, until the assembly fits. Every round
@@ -26,7 +28,8 @@ import { createLogger } from '../logger.js';
 import { getMessagesOutsideFreshTail } from './store.js';
 import { getCompactedMessageIds } from './dag.js';
 import { groupTail } from './assembler.js';
-import { notePassOutcome, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
+import { notePassOutcome, compactionBrakeMsLeft, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
+import { isStopFenced } from '../agent/shared-state.js';
 
 const logger = createLogger('forced-pass-progress');
 
@@ -37,11 +40,32 @@ const progressed = (r: PassResult): boolean => r.leafCreated + r.condensedCreate
 /** Agents whose last forced pass threw, so a second throw (after the brake's bound) is the one the owner hears of. */
 const threw = new Set<string>();
 
-/** Run one forced pass, recording a throw as its outcome (ruling 3). The throw still reaches the caller. */
-export async function recordingForcedPass(agentId: string, run: () => Promise<PassResult>): Promise<PassResult> {
+/** Did this agent's last forced pass throw? (Its park is then told through the compaction card, never "stuck".) */
+export const lastForcedPassThrew = (agentId: string): boolean => threw.has(agentId);
+
+/** Was this agent's last forced pass skipped by the brake (rather than run)? Read by a park that awaited it. */
+const skippedByBrake = new Map<string, boolean>();
+export const lastForcedPassWasBraked = (agentId: string): boolean | undefined => skippedByBrake.get(agentId);
+
+/**
+ * Run one forced pass and RECORD ITS OUTCOME ON EVERY RETURN PATH (rulings 1 and 3). A path that already
+ * recorded (it ran and noted, or the brake skipped it) is left alone; one that recorded nothing is noted
+ * here with the pass's measured facts. A throw is recorded too, and still reaches the caller.
+ */
+export async function recordingForcedPass(agentId: string, run: () => Promise<PassResult>, opts: {
+  abortSignal?: AbortSignal; measure: () => Promise<{ assembledTokens: number; budgetTokens: number }>;
+}): Promise<PassResult> {
+  const brakedBefore = compactionBrakeMsLeft(agentId) !== null;   // a braked skip IS the recorded outcome
+  skippedByBrake.set(agentId, brakedBefore);
   try {
     const result = await run();
-    if (progressed(result)) threw.delete(agentId);
+    if (progressed(result)) { threw.delete(agentId); return result; }
+    if (!brakedBefore && compactionBrakeMsLeft(agentId) === null && !opts.abortSignal?.aborted && !isStopFenced(agentId)) {
+      const facts = await opts.measure().catch(() => undefined);
+      const stalled = facts !== undefined && facts.assembledTokens > facts.budgetTokens;
+      logger.warn('a forced pass returned without recording what it bought; recorded now', { ...facts, stalled }, agentId);
+      notePassOutcome(agentId, true, result, { ...facts, stage: stalled ? 'nothing_left_to_shrink' : null });
+    }
     return result;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -87,4 +111,5 @@ export async function foldOldestProtectedGroup(args: {
 /** Test-only reset; the set is per-process. */
 export function __resetForcedPassProgressForTests(): void {
   threw.clear();
+  skippedByBrake.clear();
 }

@@ -59,12 +59,22 @@ export async function tryOverBudgetAssemblyRecovery(state: AgentTurnState, error
   ]);
 
   if (await agentFits(agentId)) {
-    // Read before awaiting the pass: the boundary STARTED it, and a summary dial takes seconds, so this
-    // is normally before it lands — the park only uses it to tell a braked skip from a pass that ran.
-    const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
+    const brakedNow = compactionBrakeMsLeft(agentId) !== null;
     await condensed;   // resolves whether the pass ran, was skipped or failed (its own catch logs a failure)
+    // The park tells a braked skip from a pass that ran: the pass itself recorded which (fix round 3); a pass
+    // with nothing to fold lands before this step could have read the brake.
+    const { lastForcedPassThrew, lastForcedPassWasBraked } = await import('../../memory/forced-pass-progress.js');
+    const brakedBefore = condensed ? (lastForcedPassWasBraked(agentId) ?? brakedNow) : brakedNow;
+    // Fix round 3: the pass bought nothing (the brake is on) and did not throw: nothing left can shrink this
+    // assembly. That is a genuine stall: reported once, with the refusal's own numbers, as a compaction defect
+    // (`compaction-defect.ts`), and the park below keeps the existing "stuck" notice for it.
+    if (compactionBrakeMsLeft(agentId) !== null && !lastForcedPassThrew(agentId)) {
+      (await import('../../memory/compaction-defect.js')).reportCompactionDefect(agentId, 'nothing_left_to_shrink',
+        { assembledTokens: refusal.refusedDial.tokenTotal, budgetTokens: refusal.refusedDial.budgetTokens }, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
+    }
     logger.warn('over-budget assembly: the conversation outgrew the window; condensed, the next turn re-assembles', { agentId, turnNumber, modelId }, agentId);
-    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore, { quiet: true });
+    // Quiet only after a THROW (the compaction card tells the owner); a genuine stall keeps the existing "stuck" notice.
+    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore, { quiet: lastForcedPassThrew(agentId) });
     return true;
   }
 

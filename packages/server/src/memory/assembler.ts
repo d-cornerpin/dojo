@@ -26,6 +26,7 @@ import {
   SUMMARY_SHARE, storedRowCost,
 } from './budget.js';
 import { readCall, toolResultView } from './tool-result-view.js';
+import { overRoomRowView } from './kept-row-view.js';
 // t113 G: the person-facing half of the starved-window refusal. See the call site below.
 import { noteWindowHolds, reportStarvedWindow } from './window-starvation-card.js';
 import {
@@ -1231,10 +1232,10 @@ function buildContentLanes(
         let kept = budgetFreshTail(p.rows, maxTokens, tailTrimBlockGroups(freshTailCount));
         // t145 round 4: the served owner message is never out of view. If the trim took it (or it was
         // already behind the boundary), it is re-emitted, and its cost comes off what the rest may spend.
-        let served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]);
+        let served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]).map((m) => overRoomRowView(m, maxTokens));   // D18 r3
         if (served.length > 0) {
           kept = budgetFreshTail(p.rows, Math.max(0, maxTokens - rowTokens(served)), tailTrimBlockGroups(freshTailCount));
-          served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]);
+          served = servedRowsOutOfView(p.agentId, [...kept, ...(p.inEvents ?? [])]).map((m) => overRoomRowView(m, maxTokens));
         }
         const dropped = Math.max(0, p.rows.length - kept.length);
         // `kept` is a suffix of `rows` (whole groups off the front), so the trim's front cut ends
@@ -2548,8 +2549,11 @@ function budgetFreshTail(
     });
   }
 
+  // v3.5 D18 r3: what rides over the budget is never a whole row that ALONE exceeds the room: such a
+  // row is shown as its head, its tail and the kept-whole pointer (`kept-row-view.ts`). Rows the trim can
+  // take out of view are untouched; they leave the view and are folded as before.
   // Already chronological: the slice preserved the input's order.
-  return includedGroups.flatMap(g => g.messages);
+  return includedGroups.flatMap(g => (keptTokens > availableTokens ? g.messages.map((m) => overRoomRowView(m, availableTokens)) : g.messages));
 }
 
 /**

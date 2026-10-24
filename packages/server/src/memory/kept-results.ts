@@ -16,6 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { insertMessageIfAbsent, type NewMessage } from './message-store.js';
+import { KEPT_ROW_PREFIX } from './kept-row-view.js';
 
 /** The whole of one long result, as the recorder hands it over. */
 export interface KeptWhole {
@@ -60,6 +61,11 @@ function blockText(content: unknown): string | null {
 /** The whole of this agent's tool result with this call id, or null when none is stored. */
 export function findToolResult(agentId: string, toolUseId: string): FoundResult | null {
   const db = getDb();
+  // v3.5 D18 r3: a stored row too long for the view (`kept-row-view.ts`) is named `msg:<id>`; the row is the whole.
+  if (toolUseId.startsWith(KEPT_ROW_PREFIX)) {
+    const row = db.prepare('SELECT content FROM messages WHERE agent_id = ? AND id = ?').get(agentId, toolUseId.slice(KEPT_ROW_PREFIX.length)) as { content: string } | undefined;
+    return row ? { content: row.content, toolName: null } : null;
+  }
   const kept = db.prepare(
     `SELECT content, tool_name FROM kept_tool_results WHERE agent_id = ? AND tool_use_id = ?
      ORDER BY rowid DESC LIMIT 1`,

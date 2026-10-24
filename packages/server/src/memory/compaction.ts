@@ -428,7 +428,7 @@ export async function checkAndCompact(
   if (options?.force) forcedPassAt.set(agentId, Date.now());
   const result = await withLock(
     `compact:${agentId}`,
-    () => (options?.force ? recordingForcedPass(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options)) : runCheckAndCompact(agentId, modelId, contextWindow, options)),
+    () => (options?.force ? recordingForcedPass(agentId, () => runCheckAndCompact(agentId, modelId, contextWindow, options), { abortSignal: options.abortSignal, measure: async () => { const m = await measured(agentId, contextWindow, options.dialedModelId ?? modelId); return { assembledTokens: m.total, budgetTokens: m.view.budgetTokens }; } }) : runCheckAndCompact(agentId, modelId, contextWindow, options)),
     { ifBusy: options?.waitIfBusy ? 'wait' : 'skip' },
   );
   if (result === undefined) {

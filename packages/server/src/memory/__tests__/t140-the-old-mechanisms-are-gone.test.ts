@@ -151,7 +151,7 @@ describe('t140 census, fix round 1 — one cost function, one launcher, every fa
     expect(assembler).toMatch(/const groups = groupTail\(f\.before\);/);
     expect(compaction).not.toMatch(/liveViewIsFull|gateMessageCap|GATE_MESSAGE_CAP_TOKENS|storedRowCost/);
     // Exactly the files that own a tail cost call it: the owner and the trim (the dry run is the trim's).
-    expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts']);
+    expect(filesWith(/\bstoredRowCost\(/)).toEqual(['memory/assembler.ts', 'memory/budget.ts', 'memory/kept-row-view.ts']);   // v3.5 D18 r3: the same one cost function
   });
 
   it('M3/I3 (round 2): ONE background PRESSURE-fold launcher, the gate\'s; ONE out-of-view door, used by the turn\'s assembly and the re-fit', () => {

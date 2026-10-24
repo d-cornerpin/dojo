@@ -70,7 +70,7 @@ vi.mock('../../../memory/compaction.js', async (importOriginal) => ({
       const result = { leafCreated: seen.progress ? 1 : 0, condensedCreated: 0, tokensReclaimed: 0 };
       notePassOutcome(agentId, true, result);
       return result;
-    });
+    }, { measure: async () => ({ assembledTokens: 0, budgetTokens: 1 }) });
   },
 }));
 vi.mock('../../../tools/tool-docs.js', async (importOriginal) => ({

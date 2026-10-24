@@ -27,13 +27,13 @@ vi.mock('../../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
   closeDb: vi.fn(),
 }));
-const seen = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string; error?: string }>, texts: [] as string[], summaries: 0, throwIn: null as null | (() => void) }));
+const seen = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string; error?: string }>, texts: [] as string[], summaries: 0, wakes: 0, throwIn: null as null | (() => void) }));
 vi.mock('../../../gateway/ws.js', () => ({
   broadcast: (e: { type?: string; code?: string; error?: string }) => { seen.cards.push(e); },
   stampPersistedRow: (e: unknown) => e,
 }));
 vi.mock('../../runtime.js', () => ({
-  getAgentRuntime: () => ({ notifyPrimaryOfInjury: vi.fn(async () => undefined), handleMessage: vi.fn(async () => undefined) }),
+  getAgentRuntime: () => ({ notifyPrimaryOfInjury: vi.fn(async () => undefined), handleMessage: vi.fn(async () => { seen.wakes++; }) }),
 }));
 vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -84,7 +84,7 @@ const OVER_BY = 4_000;
 beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
-  seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.throwIn = null;
+  seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.wakes = 0; seen.throwIn = null;
   pendingWakeups.clear();
   __resetBrakesForTests();
   (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
@@ -214,5 +214,126 @@ describe('D18 fix round 2: a forced pass that cannot run records its outcome, so
     await recovering;
     expect(seen.summaries, 'the refusal\'s own pass ran after the other one').toBeGreaterThan(0);
     expect(pendingWakeups.has(AGENT), 'one re-assembly').toBe(true);
+  });
+});
+
+// ── Fix round 3 (re-review probe): a single STORED row that alone fills the room ──────────────────────
+// A 32K window, the 120 exchanges of history, then one owner message of ~39.6K tokens; the instructions
+// and tools fit. Round 2 folded the history once and then refused identically on the brake's timer for
+// ever, telling nobody. The ruling: such a row is kept whole and shown as its head, its tail and the
+// kept-result pointer (t200), readable with `tool_result_read`; the assembler never forces the whole
+// over-room row back in. Driven through the REAL timer park (fake timers advance the brake's clock).
+describe('D18 fix round 3: a single stored row that alone exceeds the room', () => {
+  const HUGE_TOKENS = 39_600;
+  function storeHugeOwnerMessage(): string {
+    const id = 'msg-the-whole-manifest';
+    insertMessage({ id, agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner',
+      content: `[ask 121] Here is the whole manifest, please check every line:\n${'crate 0412, north dock, sealed, 40 kg, inspected\n'.repeat(Math.ceil(HUGE_TOKENS * 4 / 50))}END OF MANIFEST`, turnNumber: 121 });
+    return id;
+  }
+
+  it('it fits within a few rounds through the real park and wake, the agent answers, and the whole is one read away', async () => {
+    const id = storeHugeOwnerMessage();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    let fitted = false;
+    let rounds = 0;
+    try {
+      for (let round = 1; round <= 6 && !fitted; round++) {
+        rounds = round;
+        const { refusal } = await dial(0);
+        if (!refusal) { fitted = true; break; }
+        await recover(refusal, 500 + round);
+        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        const woke = seen.wakes;
+        await vi.advanceTimersByTimeAsync(16 * 60_000);   // the brake's clock: the timer park's wake
+        for (let i = 0; i < 50 && seen.wakes === woke; i++) await new Promise((r) => setImmediate(r));
+        expect(seen.wakes, `round ${round}: the timer park woke it`).toBeGreaterThan(woke);
+      }
+    } finally { vi.useRealTimers(); }
+    expect(fitted, 'the agent answers').toBe(true);
+    expect(rounds, 'within a few rounds').toBeLessThanOrEqual(3);
+    const assembled = await assembleContext(AGENT, MODEL);
+    const shown = JSON.stringify(assembled.messages);
+    expect(shown, 'the head is shown').toContain('[ask 121] Here is the whole manifest');
+    expect(shown, 'the tail is shown').toContain('END OF MANIFEST');
+    expect(shown, 'with the kept-result pointer').toContain('KEPT WHOLE, NOT ALL SHOWN');
+    expect(shown, 'naming the row to read').toContain(`msg:${id}`);
+    const { resultReadHandlers } = await import('../../tools/cat/result-read.js');
+    const read = await resultReadHandlers.tool_result_read({ agentId: AGENT, name: 'tool_result_read', args: { id: `msg:${id}`, search: 'END OF MANIFEST' }, callId: 'c', toolCall: {} as never });
+    expect(read.isError, read.content.slice(0, 200)).toBe(false);
+    expect(read.content).toContain('END OF MANIFEST');
+    expect(seen.texts).toEqual([]);
+  });
+});
+
+describe('D18 fix round 3: a large stored row and the TIMER park, multi-round', () => {
+  it('a stored owner message filling a quarter of the room, the turn\'s rows over it, and a first pass that throws: the timer park wakes it after the brake and it converges', async () => {
+    const { contextWindowPolicy } = await import('../../../memory/budget.js');
+    const half = Math.floor(contextWindowPolicy(WINDOW, { toolPayloadTokens: 2_000, maxOutputTokens: 4096 }).assemblyBudgetTokens / 4);
+    insertMessage({ id: 'msg-half-manifest', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner',
+      content: `[ask 121] A quarter of the manifest:\n${'crate 0412, north dock, sealed, 40 kg, inspected\n'.repeat(Math.ceil(half * 4 / 50))}`, turnNumber: 121 });
+    const size = await witnessSize(1_000);   // over by less than the history a fold wins back
+    let throws = 1;
+    seen.throwIn = () => { if (throws > 0) { throws--; throw new Error('the summary store could not be read'); } };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    let fitted = false;
+    let timerParks = 0;
+    let rounds = 0;
+    try {
+      for (let round = 1; round <= 8 && !fitted; round++) {
+        rounds = round;
+        const { refusal } = await dial(size);
+        if (!refusal) { fitted = true; break; }
+        await recover(refusal, 700 + round);
+        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        expect(compactionBrakeMsLeft(AGENT), `round ${round}: parked on the brake's timer`).not.toBeNull();
+        timerParks++;
+        const before = seen.wakes;
+        await vi.advanceTimersByTimeAsync(16 * 60_000);
+        for (let i = 0; i < 50 && seen.wakes === before; i++) await new Promise((r) => setImmediate(r));   // the wake's dynamic import settles
+        expect(seen.wakes, `round ${round}: the timer park's wake ran`).toBeGreaterThan(before);
+      }
+    } finally { vi.useRealTimers(); }
+    expect(timerParks, 'the timer park was exercised').toBeGreaterThan(0);
+    expect(fitted, `it converged in ${rounds} rounds`).toBe(true);
+    expect(seen.texts.filter((t) => /stuck/i.test(t))).toEqual([]);
+  });
+});
+
+describe('D18 fix round 3: a genuine stall is reported once, never silently parked', () => {
+  it('the turn\'s own rows alone more than any fold can win back: the brake\'s timer park, the defect recorded, and the owner told once', async () => {
+    const size = await witnessSize(30_000);   // this turn's rows alone overflow: nothing stored can shrink enough
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      // Every fold wins something until the stored history is gone; then the brake parks it on its timer.
+      let braked = 0;
+      for (let round = 1; round <= 60 && braked < 3; round++) {
+        const { refusal } = await dial(size);
+        expect(refusal, `round ${round}: still over`).not.toBeNull();
+        await recover(refusal, 800 + round);
+        if (pendingWakeups.has(AGENT)) { pendingWakeups.clear(); continue; }
+        braked++;
+        await vi.advanceTimersByTimeAsync(16 * 60_000);
+        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      }
+      expect(braked, 'it reached the stall').toBe(3);
+    } finally { vi.useRealTimers(); }
+    const { compactionFailureReason } = await import('../../../memory/compaction-defect.js');
+    expect(compactionFailureReason(AGENT), 'the stall is a recorded defect').toBe('nothing_left_to_shrink');
+    expect(seen.texts.filter((t) => /stuck/i.test(t)), 'the owner is told once').toHaveLength(1);
+  });
+});
+
+// ── Fix round 3: EVERY forced pass records its outcome, structurally ─────────────────────────────────
+describe('D18 fix round 3: a forced pass with nothing to condense records its outcome on every caller', () => {
+  it('context-overflow recovery (the recovery door\'s forced pass) arms the brake: no immediate wake on consecutive rounds', async () => {
+    db().prepare('DELETE FROM messages WHERE agent_id = ?').run(AGENT);
+    insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: 'Is the north dock open?', turnNumber: 1 });
+    for (const turn of [601, 602]) {
+      pendingWakeups.clear();
+      await recover(new Error('prompt is too long: 40000 tokens > 32768 maximum'), turn);
+      expect(compactionBrakeMsLeft(AGENT), `round ${turn}: the no-progress pass armed the brake`).not.toBeNull();
+      expect(pendingWakeups.has(AGENT), `round ${turn}: no wake at once`).toBe(false);
+    }
   });
 });

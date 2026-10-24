@@ -138,7 +138,7 @@ export class AssemblyValidationError extends Error {
     this.name = 'AssemblyValidationError';
   }
   /** v3.5 D18: set on a SIZE refusal by `refuseAndCondense` — what was dialed, and the condense it started. */
-  refusedDial?: { modelId: string; systemPromptTokens: number; condensed: Promise<unknown> | null };
+  refusedDial?: { modelId: string; systemPromptTokens: number; tokenTotal: number; budgetTokens: number; condensed: Promise<unknown> | null };
 }
 
 /**
@@ -697,7 +697,7 @@ function refuseAndCondense(
   );
   // Measured for the dialed model; WRITTEN by the summary writer resolved from the agent's
   // configured model (fix round 1, review I3), never by a dialed routed pick.
-  err.refusedDial = { modelId: input.modelId, systemPromptTokens: estimateTokens(input.systemPrompt), condensed: result.budgetTokens === 0 ? null : Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
+  err.refusedDial = { modelId: input.modelId, systemPromptTokens: estimateTokens(input.systemPrompt), tokenTotal: result.tokenTotal, budgetTokens: result.budgetTokens, condensed: result.budgetTokens === 0 ? null : Promise.all([import('./compaction.js'), import('../db/connection.js'), import('./turn-patience.js')])
     .then(([{ checkAndCompact, forcedCompactionOptions }, { getDb }, { turnPatienceMs }]) => {
       const configured = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(input.agentId) as
         { model_id: string | null } | undefined)?.model_id ?? input.modelId;
