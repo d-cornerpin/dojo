@@ -272,6 +272,12 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     why: 'PART 4. The iMessage bridge runs as an inbound listener as well as an outbound send, and its attachment staging happens on the bridge\'s own timing.',
     residual: 'an attachment an agent named in a send is staged outside that call\'s context.',
   },
+  {
+    file: 'services/imessage-run.ts',
+    klass: 'honest-label',
+    why: 'v3.5 E19b: the iMessage bridge\'s process calls MOVED OUT of services/imessage-bridge.ts (the entry above, which now holds no child_process) when the sends became async and bound to the owner\'s Stop. It runs ONLY platform-literal programs: imsg (from a fixed candidate list) and osascript for a send, `which`/`imsg --help` for the runnability probe, and macOS `sips` for an inbound HEIC photo; argv form for every send, no shell. An agent\'s own send (imessage_send) binds the child to that agent\'s Stop through agent/effects/proc-tree.ts. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
+    residual: 'the text, the recipient (allowlist-checked by the tool) and an attachment path the agent named reach imsg/osascript as arguments, gate-DECIDED by the tool but not facade-carried; the platform sends (owner notices, the auto-route) run with no call context at all.',
+  },
 
   // (b) The seven ADDENDUM 3(2) files — one function serves both populations,
   //     so there is no half to move and a split would be a rewrite.
