@@ -55,8 +55,28 @@ describe("the agent's own model writes its summaries", () => {
     expect(summaryWriterCandidates('big-cloud').indexOf('big-cloud')).toBeLessThan(summaryWriterCandidates('big-cloud').indexOf('std-writer'));
   });
 
-  it('an auto-routed agent (no own model): the standard writer, as the fallback', () => {
-    expect(summaryWriterCandidates()[0]).toBe('std-writer');
+  // Fix round 3 (owner ruling, "The agents model."; edited: this clause put an auto-routed agent on the small
+  // writer first): an auto-routed agent's own model is its router's standard-tier pick, in the router's own
+  // fallback order; the small writer only after that model cannot be reached.
+  describe('an auto-routed agent', () => {
+    beforeEach(() => {
+      db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('cloud2', 'Cloud two', 'openai-compatible', 'https://example.invalid/v1', 'api_key', 1)").run();
+      model('std-tier', 'cloud2', 'std', ['chat'], 2);
+      model('heavy-tier', 'cloud', 'heavy', ['chat'], 9);
+      db().prepare("DELETE FROM router_tier_models WHERE tier_id IN ('standard', 'heavy', 'light')").run();
+      db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('standard', 'std-tier', 0), ('heavy', 'heavy-tier', 0)").run();
+    });
+
+    it('its summaries go to the model a standard-tier request gets', () => {
+      for (const m of [undefined, 'auto', '__auto__']) expect(summaryWriterCandidates(m)[0]).toBe('std-tier');
+    });
+
+    it('that model unreachable: the router\'s own fallback, then the small writer', () => {
+      noteDidNotAnswerInTurn('std-tier');
+      expect(eligibleSummaryWriters('auto', 'agent-auto')[0]).toBe('heavy-tier');
+      noteDidNotAnswerInTurn('heavy-tier');
+      expect(eligibleSummaryWriters('auto', 'agent-auto')[0]).toBe('std-writer');
+    });
   });
 
   it('the decision model never writes a summary', () => {

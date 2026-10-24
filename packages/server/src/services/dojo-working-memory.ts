@@ -47,9 +47,9 @@ export async function decisionWindowTokens(): Promise<number> {
 
 /**
  * Are summaries ASSIGNED to the Dojo's writer on this box's configuration (t268 fix round 2, ruling; owner
- * 2026-10-24, "The agents model.")? Yes when it is the explicit Summarization pick; with no pick, when an agent's
- * summaries go to it first — an agent whose own model it is, or an auto-routed one (no own model: its candidates
- * start with the writer, `summaryWriterCandidates`). A FALLBACK (an agent's model not answering) is not an
+ * 2026-10-24, "The agents model.")? Yes when it is the explicit Summarization pick; with no pick, when it is an
+ * agent's FIXED model (fix round 3: an auto-routed agent writes with its router's standard-tier pick, not the
+ * writer, `summaryWriterCandidates`). A FALLBACK (an agent's model not answering) is not an
  * assignment: it is sized to the memory free when it runs (`memory/writer-fallback-room.ts`), never reserved.
  */
 export function writerAssignedSummaries(): boolean {
@@ -58,7 +58,7 @@ export function writerAssignedSummaries(): boolean {
   const db = getDb();
   const pick = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
   if (pick) return pick === writerId;
-  return !!db.prepare("SELECT 1 FROM agents WHERE model_id IS NULL OR model_id IN ('', 'auto', '__auto__', ?) LIMIT 1").get(writerId);
+  return !!db.prepare('SELECT 1 FROM agents WHERE model_id = ? LIMIT 1').get(writerId);
 }
 
 /**

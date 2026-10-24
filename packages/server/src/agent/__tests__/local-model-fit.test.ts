@@ -360,10 +360,11 @@ describe('I-2: the writer\'s reserved room is the jobs it really has', () => {
     expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
   });
 
-  it('an agent whose summaries are assigned to the writer reserves its summary job: auto-routed, or the writer is its model', async () => {
+  // Fix round 3 (owner ruling; edited): an auto-routed agent writes with its router's pick, so it reserves nothing.
+  it('an agent whose summaries are assigned to the writer reserves its summary job: only when the writer is its fixed model', async () => {
     db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('ag-auto', 'Auto', 'auto', 'idle', '{}')").run();
-    expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));
-    db().prepare("UPDATE agents SET model_id = 'm-cloud' WHERE id = 'ag-auto'").run();
+    expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
+    db().prepare("UPDATE agents SET model_id = NULL WHERE id = 'ag-auto'").run();
     expect(await writerReservedWindowTokens(null)).toBe(MIN_UTILITY_NUM_CTX);
     db().prepare("UPDATE agents SET model_id = 'm-writer' WHERE id = 'ag-auto'").run();
     expect(await writerReservedWindowTokens(null)).toBe(await writerJobWindowTokens(null));

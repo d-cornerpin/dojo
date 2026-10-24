@@ -247,6 +247,9 @@ export function routedFirstPicks(): string[] {
   return [...picks];
 }
 
+/** t268 (owner 2026-10-24, "The agents model."): what an auto-routed agent's ordinary (standard-tier) request walks, in order. */
+export const standardTierChain = (): string[] => [...new Set(TIER_FALLBACK.standard.flatMap((t) => getTierModels(t).map((m) => m.model_id)))];
+
 /** Skips that clear without the agent changing. */
 const PASSING = new Set<RoutedSkip>(['rate_limit', 'provider_down']);
 

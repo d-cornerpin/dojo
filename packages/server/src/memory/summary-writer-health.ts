@@ -15,11 +15,10 @@
 //     turn, a self-wake, a continuation — round 6 re-armed on those, and for every agent at once.
 // t207 (D9): the mark is PERSISTED (`healer_state`), so a restart does not forget an unreachable writer;
 // and "answered" means a SUMMARY call: round 7's re-arm on any call (a chat turn) is gone.
-// The order: the owner's Settings choice, then the agent's own model and provider, then (only with
-// no Settings choice, as before) the cheapest — see `summaryWriterCandidates`. The eligible writers
-// are that order without broken or not-answering ones; when none is left, nothing is dialled and
-// placeholder notes stay, labelled. A call the OWNER stopped, or cut by the turn's patience, is not
-// the writer's failure.
+// The order (`summaryWriterCandidates`): the Settings choice, the agent's own model (an auto agent's: its router's
+// pick), the Dojo's writer, then (no Settings choice) the cheapest. Eligible = that order without broken or
+// not-answering ones; none left: nothing dialled, placeholder notes stay, labelled. A call the OWNER stopped,
+// or cut by the turn's patience, is not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -29,6 +28,7 @@ import { contextWindowPolicy, estimateRequestTokens } from './budget.js';
 import { measuredDivisorsFor } from '../costs/estimator-divisors.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { standardModelRowId } from '../services/local-standard.js';
+import { standardTierChain } from '../router/selector.js';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
@@ -194,7 +194,7 @@ function notAnswering(modelId: string, agentId?: string): boolean {
  *   2. the agent's own model, then its provider's other text models (owner 2026-10-24: "The agents model.");
  *   3. the Dojo's standard writer — the FALLBACK when the agent's model cannot be reached; local, nowhere new;
  *   4. ONLY when the owner set no Settings writer — exactly as before t140 — the cheapest text model.
- * An auto-routed agent has no own model: its list is the Settings writer, the standard writer, else the cheapest.
+ * An auto-routed agent's own model is its router's standard-tier pick, in the router's order (owner 2026-10-24).
  */
 export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const db = getDb();
@@ -208,10 +208,10 @@ export function summaryWriterCandidates(preferredModelId?: string): string[] {
   const isUsable = (id: string | undefined): id is string => !!id && usable.some((u) => u.id === id);
   const explicitId = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
   const explicit = isUsable(explicitId) ? explicitId : undefined;
-  const ownId = preferredModelId && preferredModelId !== 'auto' && preferredModelId !== '__auto__' ? preferredModelId : undefined;
-  const own = isUsable(ownId) ? ownId : undefined;
-  const ownProvider = usable.find((u) => u.id === own)?.provider;
-  const ownProviderModels = ownProvider ? usable.filter((u) => u.provider === ownProvider).map((u) => u.id) : [];
+  const fixed = preferredModelId && preferredModelId !== 'auto' && preferredModelId !== '__auto__' ? preferredModelId : undefined;
+  const routed = fixed ? [] : standardTierChain().filter(isUsable);
+  const own = isUsable(fixed) ? fixed : routed[0];
+  const ownProviderModels = fixed ? usable.filter((u) => own && u.provider === usable.find((x) => x.id === own)?.provider).map((u) => u.id) : routed;
   const list = [
     ...(explicit ? [explicit] : []),
     ...(own ? [own, ...ownProviderModels] : []),
