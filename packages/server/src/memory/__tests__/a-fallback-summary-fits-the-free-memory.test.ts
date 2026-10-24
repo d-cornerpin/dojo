@@ -3,7 +3,8 @@
 // the small writer writes one only when that model cannot be reached; no room is set aside for it, so a span larger
 // than what is free now is refused as too big (`tooBig`, never dialled) and the caller halves it — the existing
 // path for a writer that cannot hold a span. When summaries ARE assigned to the writer, its room is reserved and
-// nothing here refuses. The writer and Ollama are scripted; os.totalmem is the test's.
+// nothing here refuses. The writer and Ollama are scripted; os.totalmem is the test's. Fix round 4 (N-C): what a
+// loaded model holds is Ollama's own loaded size (`/api/ps`), so the loaded agent model is listed there.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import os from 'node:os';
@@ -24,18 +25,19 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { generateSummary } from '../summarize.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
-import { getOllamaLock } from '../../services/ollama-lock.js';
 import { freeWriterWindowTokens } from '../../agent/local-model-fit.js';
 
 const GIB = 1024 ** 3;
 const AGENT_MODEL = 'agent-local:14b';
 const arch = { 'general.architecture': 'qwen3', 'qwen3.block_count': 36, 'qwen3.attention.head_count': 32, 'qwen3.attention.head_count_kv': 8, 'qwen3.embedding_length': 4096, 'qwen3.context_length': 262144 };
 const db = (): Database.Database => mockDb.current!;
+const loaded: Array<{ name: string; size: number }> = [];
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   writer.calls = 0;
+  loaded.length = 0;
   vi.spyOn(os, 'totalmem').mockImplementation(() => 32 * GIB);
   db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('ollama-local', 'Ollama', 'ollama', 'http://localhost:11434', 'none', 1)").run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('m-writer', 'ollama-local', ?, ?, '["chat"]', 262144, 1)`).run(STANDARD_WRITER_MODEL.tag, STANDARD_WRITER_MODEL.tag);
@@ -47,6 +49,7 @@ beforeEach(() => {
       { name: STANDARD_WRITER_MODEL.tag, size: 3_400_000_000 }, { name: STANDARD_DECISION_MODEL.tag, size: 2_800_000_000 },
       { name: 'nomic-embed-text:latest', size: 274_302_471 }, { name: AGENT_MODEL, size: 13_000_000_000 },
     ] });
+    if (p === '/api/ps') return Response.json({ models: loaded });
     if (p === '/api/show') {
       const name = (JSON.parse(init?.body ?? '{}') as { name?: string; model?: string });
       return (name.name ?? name.model) === STANDARD_WRITER_MODEL.tag ? Response.json({ model_info: arch }) : new Response('nf', { status: 404 });
@@ -59,29 +62,24 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); mockDb.current?.c
 const summarize = (chars: number) => generateSummary({ content: 'r'.repeat(chars), depth: 0, targetTokens: 5_000, agentId: 'agent-x', modelId: 'm-writer' });
 
 describe('a fallback summary on the Dojo\'s writer fits the memory free now', () => {
-  // First: the lock is the process's own, and a model it loaded stays loaded (idle) after its turn, as in Ollama.
   it('nothing else loaded: a whole leaf chunk fits the free memory and is written', async () => {
     expect(await summarize(120_000)).toMatchObject({ ok: true });
   });
 
   it('an agent\'s 13 GB model loaded beside the pair: a whole leaf chunk does not fit what is free, and is refused as too big', async () => {
-    const lock = getOllamaLock();
-    await lock.acquire('ollama-local', AGENT_MODEL);
-    try {
-      const free = await freeWriterWindowTokens();
-      expect(free).not.toBeNull();
-      const r = await summarize(120_000);   // ~48K tokens at the writer's density: more than is free
-      expect(r).toMatchObject({ ok: false, tooBig: true });
-      expect(writer.calls).toBe(0);
-      expect(await summarize(12_000)).toMatchObject({ ok: true });   // a halved span that fits is written
-      expect(writer.calls).toBe(1);
-    } finally { lock.release('ollama-local', AGENT_MODEL); }
+    loaded.push({ name: AGENT_MODEL, size: 13_000_000_000 });   // as Ollama reports it loaded
+    const free = await freeWriterWindowTokens();
+    expect(free).not.toBeNull();
+    const r = await summarize(120_000);   // ~48K tokens at the writer's density: more than is free
+    expect(r).toMatchObject({ ok: false, tooBig: true });
+    expect(writer.calls).toBe(0);
+    expect(await summarize(12_000)).toMatchObject({ ok: true });   // a halved span that fits is written
+    expect(writer.calls).toBe(1);
   });
 
   it('summaries assigned to the writer (the explicit pick): its room is reserved, so nothing here refuses', async () => {
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', 'm-writer')").run();
-    const lock = getOllamaLock();
-    await lock.acquire('ollama-local', AGENT_MODEL);
-    try { expect(await summarize(120_000)).toMatchObject({ ok: true }); } finally { lock.release('ollama-local', AGENT_MODEL); }
+    loaded.push({ name: AGENT_MODEL, size: 13_000_000_000 });
+    expect(await summarize(120_000)).toMatchObject({ ok: true });
   });
 });

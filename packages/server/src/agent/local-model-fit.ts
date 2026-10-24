@@ -34,7 +34,6 @@ import {
 import { dojoWorkingBytes, writerJobWindowTokens, writerReservedWindowTokens } from '../services/dojo-working-memory.js';
 import { kvBytesPerTokenOf } from '../services/kv-bytes.js';
 import { localOllamaProvider, STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL, STANDARD_TAGS } from '../services/local-standard.js';
-import { getOllamaLock } from '../services/ollama-lock.js';
 import { effectiveContextWindow, resolveNumCtx } from './model.js';
 import { MAIN_MODEL_MIN_WINDOW } from './main-model-floor.js';
 import { ownerCardFrame } from '../services/owner-card-frames.js';
@@ -206,23 +205,40 @@ export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void>
   throw new Error(v.message ?? 'This model does not fit in this box\'s memory.');
 }
 
+/** `/api/ps`: each model loaded on this Ollama and what it REALLY holds now — Ollama's own figure, its weights plus the
+ *  working memory (KV cache) of the window it was loaded at. Bounded like `/api/tags` above. */
+async function loadedSizes(baseUrl: string): Promise<Map<string, number> | null> {
+  try {
+    const resp = await fetch(`${baseUrl}/api/ps`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return null;
+    const data = await resp.json() as { models?: Array<{ name: string; size?: number }> };
+    return new Map((data.models ?? []).filter((m) => typeof m.size === 'number').map((m) => [m.name, m.size as number]));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * t268 fix round 2 (ruling): the window a job of the Dojo's writer that NO reserve holds (a fallback summary, when an
  * agent's own model cannot be reached) can have NOW on this box's Ollama — its reserved room plus the open memory the
- * fit computes, less the agent models the platform has loaded there (the lock's slots), at the writer's KV per
- * token. Null when it cannot be sized (then nothing is refused).
+ * fit computes, less what the other models loaded there really hold (fix round 4, N-C: Ollama's loaded size, their KV
+ * cache included — never their weights alone), at the writer's KV per token. The Dojo's own models and the embedder
+ * are already counted in the open memory, so they are not charged again. Null when it cannot be sized (then nothing
+ * is refused).
  */
 export async function freeWriterWindowTokens(): Promise<number | null> {
   const provider = localOllamaProvider();
   const sizes = provider ? await installedSizes(provider.baseUrl) : null;
+  const loadedNow = provider ? await loadedSizes(provider.baseUrl) : null;
   const total = provider ? resolveOllamaTotalRamBytes(provider.baseUrl, null) : null;
-  if (!provider || !sizes || total === null) return null;
+  if (!provider || !sizes || !loadedNow || total === null) return null;
   const arch = await fetchModelArchInfo(provider.baseUrl, STANDARD_WRITER_MODEL.tag);
   const kv = arch ? kvBytesPerTokenOf(arch.modelInfo, arch.archField) : null;
   if (typeof kv !== 'number' || kv <= 0) return null;
   const pair = (sizes.get(STANDARD_DECISION_MODEL.tag) ?? STANDARD_DECISION_MODEL.bytes) + (sizes.get(STANDARD_WRITER_MODEL.tag) ?? STANDARD_WRITER_MODEL.bytes);
-  const loaded = getOllamaLock().getStatus().slots.filter((s) => s.providerId === provider.id && !STANDARD_TAGS.includes(s.modelName))
-    .reduce((n, s) => n + (sizeOf(sizes, s.modelName) ?? 0), 0);
-  const open = total - pickDesktopReserve(total) - ENGINE_RESERVE_BYTES - (sizeOf(sizes, embedderName()) ?? 0) - pair - await dojoWorkingBytes(provider.baseUrl) - loaded;
+  const embedder = embedderName();
+  const counted = new Set([...STANDARD_TAGS, STANDARD_DECISION_MODEL.windowTag, embedder, embedder.includes(':') ? embedder : `${embedder}:latest`]);
+  const loaded = [...loadedNow].filter(([name]) => !counted.has(name)).reduce((n, [, bytes]) => n + bytes, 0);
+  const open = total - pickDesktopReserve(total) - ENGINE_RESERVE_BYTES - (sizeOf(sizes, embedder) ?? 0) - pair - await dojoWorkingBytes(provider.baseUrl) - loaded;
   return await writerReservedWindowTokens(null) + Math.max(0, Math.floor(open / kv));
 }
