@@ -9075,6 +9075,13 @@
       "to": 2938,
       "by": "t250 (2026-10-23): rebase onto v35, the measure props on the work verbs",
       "why": "+1, a merge correction, no new code: t250 adds four lines to this file (the measure and remainder props on work_open, its project tasks and work_update, and one import line widened). Its own raise (b3d434bf) was +3 because the pin had one line of slack at its base (2,917 pinned, 2,916 measured); v35 pinned the file exactly at 2,934, so the rebased sum is 2,934 + 4 = 2,938, not 2,934 + 3. From 2,938 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2938,
+      "to": 2939,
+      "by": "t262 (2026-10-23): v3.5 plan before project, Task A1",
+      "why": "+1: the `plan` property on work_open, one line referencing the WORK_PLAN_PROP object declared in agent/work-verb-schema.ts (the object, its description and its steps schema live there, beside the measure and remainder objects, not here). From 2,939 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9157,7 +9164,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
     "packages/server/src/agent/tools/cat/tracker.ts": 997,
-    "packages/server/src/agent/tools/definitions.ts": 2938,
+    "packages/server/src/agent/tools/definitions.ts": 2939,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
