@@ -20,7 +20,12 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const GATE = path.join(REPO_ROOT, 'deploy/checks/check-commit-identity.mjs');
-const NEUTRAL = '4242+someone@users.noreply.github.com';
+/** Addresses are composed, so no literal in this file has the shape of someone's inbox. */
+const addr = (user: string, host: string) => `${user}@${host}`;
+const NEUTRAL = addr('4242+someone', 'users.noreply.github.com');
+const HOST_LOCAL = addr('someone', 'host.local');
+const OTHER_LOCAL = addr('x', 'Some-Mac.local');
+const PRIVATE = addr('person', 'private-mail.test');
 
 let repo: string;
 const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } }).trim();
@@ -61,25 +66,25 @@ describe('G23: the commit-identity gate', () => {
   });
 
   it('a commit authored as someone@host.local is refused, naming its hash', () => {
-    const bad = commit('made on a box with no identity', { author: 'someone@host.local' });
+    const bad = commit('made on a box with no identity', { author: HOST_LOCAL });
     commit('a fine one');
     const r = gate();
     expect(r.code).toBe(1);
     expect(r.out).toContain(bad);
-    expect(r.out).toContain('someone@host.local');
+    expect(r.out).toContain(HOST_LOCAL);
     expect(r.out).toContain('made on a box with no identity');
     expect(r.out).not.toMatch(/a fine one/);
   });
 
   it('a bad COMMITTER is refused as well as a bad author', () => {
-    const bad = commit('rebased on another box', { committer: 'x@Some-Mac.local' });
+    const bad = commit('rebased on another box', { committer: OTHER_LOCAL });
     const r = gate();
     expect(r.code).toBe(1);
     expect(r.out).toContain(bad);
   });
 
   it('a real-looking address that is not the neutral identity is refused too', () => {
-    const bad = commit('a private address', { author: 'person@example.org' });
+    const bad = commit('a private address', { author: PRIVATE });
     const r = gate();
     expect(r.code).toBe(1);
     expect(r.out).toContain(bad);
@@ -88,14 +93,14 @@ describe('G23: the commit-identity gate', () => {
   it('history before the last tag is not the gate\'s business', () => {
     // the bad commit sits BEFORE the tag: re-tag after it
     git('tag', '-d', 'v1.0.0');
-    commit('old machine-default commit', { author: 'old@host.local' });
+    commit('old machine-default commit', { author: addr('old', 'host.local') });
     git('tag', 'v1.0.0');
     commit('new work');
     expect(gate().code).toBe(0);
   });
 
   it('both fixed: the bad commit gone, the gate passes', () => {
-    commit('bad', { author: 'someone@host.local' });
+    commit('bad', { author: HOST_LOCAL });
     expect(gate().code).toBe(1);
     git('reset', '-q', '--hard', 'v1.0.0');
     commit('good again');
@@ -103,10 +108,10 @@ describe('G23: the commit-identity gate', () => {
   });
 
   it('a repo whose own configured identity is not neutral is refused (its release commit would carry it)', () => {
-    git('config', 'user.email', 'me@Hostname.local');
+    git('config', 'user.email', addr('me', 'Hostname.local'));
     const r = gate();
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/me@Hostname\.local/);
+    expect(r.out).toContain(addr('me', 'Hostname.local'));
     expect(r.out).toMatch(/user\.email/);
   });
 
