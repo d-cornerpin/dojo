@@ -275,7 +275,7 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   {
     file: 'services/imessage-run.ts',
     klass: 'honest-label',
-    why: 'v3.5 E19b: the iMessage bridge\'s process calls MOVED OUT of services/imessage-bridge.ts (the entry above, which now holds no child_process) when the sends became async and bound to the owner\'s Stop. It runs ONLY platform-literal programs: imsg (from a fixed candidate list) and osascript for a send, `which`/`imsg --help` for the runnability probe, and macOS `sips` for an inbound HEIC photo; argv form for every send, no shell. An agent\'s own send (imessage_send) binds the child to that agent\'s Stop through agent/effects/proc-tree.ts. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
+    why: 'v3.5 E19b: the iMessage bridge\'s process calls MOVED OUT of services/imessage-bridge.ts (the entry above, which now holds no child_process) when the sends became async and bound to the owner\'s Stop. Its sends now run through the one Stop-bound runner (agent/stop-bound-run.ts); what it still runs itself is platform-literal: `which`/`imsg --help` for the runnability probe and macOS `sips` for an inbound HEIC photo. An agent\'s own send (imessage_send) binds the child to that agent\'s Stop through the runner. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
     residual: 'the text, the recipient (allowlist-checked by the tool) and an attachment path the agent named reach imsg/osascript as arguments, gate-DECIDED by the tool but not facade-carried; the platform sends (owner notices, the auto-route) run with no call context at all.',
   },
 
@@ -288,10 +288,10 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     residual: 'dispatch-context reach through a dual-service function stays gate-DECIDED but not facade-carried.',
   },
   {
-    file: 'agent/system-control-run.ts',
+    file: 'agent/stop-bound-run.ts',
     klass: 'honest-label',
-    why: 'v3.5 E19: the runner MOVED OUT of agent/system-control.ts (the entry above) when it became async and bound to the owner\'s Stop, so that file stays the tools; it serves the same two populations through the same dual-service functions (the tool layer and the dashboard control route). It runs ONLY the screen-control programs those functions name (cliclick, screencapture, osascript, which), argv form, no shell, and binds each child to the Stop through agent/effects/proc-tree.ts. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
-    residual: 'dispatch-context reach through a dual-service function stays gate-DECIDED but not facade-carried, exactly as for agent/system-control.ts.',
+    why: 'v3.5 E19 + E19b: THE ONE RUNNER for a platform program the owner\'s Stop can cut. The screen-control tools (agent/system-control.ts, the entry above: cliclick, screencapture, osascript, and `which` for the cliclick probe) and the iMessage sends (services/imessage-run.ts: imsg, osascript) each had a near-copy; both now call this one. It runs ONLY the program its caller names from those fixed lists, argv form, no shell, and binds each child to the Stop through agent/effects/proc-tree.ts. Routing it through agent/effects/proc.ts is refused for RULING P5-R12\'s reason: the per-call capability names the program the agent asked for, never these.',
+    residual: 'dispatch-context reach through a dual-service function stays gate-DECIDED but not facade-carried, as for agent/system-control.ts; a platform send runs with no call context at all.',
   },
   {
     file: 'services/canvas-html.ts',
