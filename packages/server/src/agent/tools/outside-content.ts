@@ -91,6 +91,7 @@ export const NOT_OUTSIDE_CONTENT: Readonly<Record<string, string>> = {
   history_get: 'the agent\'s own conversation record; outside text in it was fenced when it arrived',
   history_search: 'the agent\'s own conversation record; outside text in it was fenced when it arrived',
   history_expand: 'the agent\'s own conversation record',
+  dojo_inspect: 'the platform\'s own records, log and source; outside text in a message was fenced when it arrived',
   recall_recent_thread: 'the agent\'s own conversation record',
   canvas_read: 'the agent\'s own canvas', file_list: 'a listing of names on this machine', vault_get: 'the agent\'s own memory',
   vault_search: 'the agent\'s own memory', squad_recall: 'what the agents shared among themselves',

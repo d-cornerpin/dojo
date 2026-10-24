@@ -175,6 +175,7 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'apply_update': 'platform control',
   'cost_summary': 'oversight read',
   'channel_inspect': 'oversight read',
+  'dojo_inspect': 'oversight read',
   'dreamer_run_now': 'oversight trigger',
   'approve_destructive_action': 'oversight approval',
   'healer_*': 'self-repair bookkeeping',

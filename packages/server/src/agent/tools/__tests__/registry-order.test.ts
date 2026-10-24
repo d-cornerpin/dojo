@@ -67,8 +67,9 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // no person on an owner channel, so the parity loop does not mint one for it.
     // t200: 443 → 444. `tool_result_read`, one core tool (`effects: []`, it reads the agent's own rows).
     // K34: 444 → 445. `lesson_record`, one core tool (`effects: []`), no twin.
-    expect(cov.total).toBe(445);
-    expect(cov.declared).toBe(445);
+    // v3.5 inspect C1: 445 → 446. `dojo_inspect`, one core tool, no twin.
+    expect(cov.total).toBe(446);
+    expect(cov.declared).toBe(446);
     // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
     // performed, when the recall door converted to the facade and the missing
     // declaration refused it (RULING P5-R14, corrected at the site).
@@ -95,7 +96,8 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // DOJO-REPORT T3: 149 → 150. `dojo_report` declares the one `fs_write` it performs —
     // the local evidence bundle under `~/.dojo/reports`. It declares no `net` and no `send`,
     // which is the census confirming the tool cannot publish rather than us asserting it.
-    expect(cov.effectful).toBe(150);
+    // v3.5 inspect C1: 150 → 151. `dojo_inspect` declares the node process its sql view runs.
+    expect(cov.effectful).toBe(151);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs
@@ -112,7 +114,9 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // out of the named `CARRIED_PROGRAMS` list. It is the FIRST branch-(B)
     // declaration in the tree, and it adds no refusal — `gates.ts` still gives
     // row 3 to the name `exec` and to nothing else (P5-R5).
-    expect(cov.byKind.proc).toBe(19);
+    // v3.5 inspect C1, 19 → 20: `dojo_inspect` declares node (`process.execPath`), the second
+    // CARRIED_PROGRAMS member: its sql view's child process, argv fixed, the query on stdin.
+    expect(cov.byKind.proc).toBe(20);
     expect(cov.byKind.shell).toBe(1);
     expect(cov.byKind.applescript).toBe(1);
     expect(cov.byKind.spawn).toBe(1);

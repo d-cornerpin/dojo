@@ -253,6 +253,10 @@ describe('T54 — CONTROL: bookkeeping filtering is otherwise unmoved', () => {
     // K34: `lesson_record` is the Dreamer's background bookkeeping door, like `vault_discard_archives`
     // beside it: no person reads its result, so a chat chip for it would be exactly the noise T54 removed.
     'lesson_record',
+    // v3.5 inspect C1: `dojo_inspect` is an oversight read of the platform's own records, like
+    // `channel_inspect` and `cost_summary` in the T54 pin: the agent's answer is what the owner
+    // reads, and an investigation of ten looks would be ten chips of exactly the noise T54 removed.
+    'dojo_inspect',
   ];
 
   // NAMES THAT LEFT THE HIDDEN SET AFTER T54, each one argued here (same history rule as above:

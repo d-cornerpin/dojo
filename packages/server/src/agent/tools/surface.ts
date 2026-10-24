@@ -44,6 +44,7 @@ import { toolGrantsFor, toolCategoryGranted, mayUsePlaud, holdsCredentialGrant, 
 import { channelForTool } from '../access/channels.js';
 import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
+import { holdsDojoInspect, DOJO_INSPECT } from '../../inspect/grant.js';
 import { toolDefinitions } from './definitions.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 import { getSudoPolicy } from '../brokers/sudo-policy.js';
@@ -306,6 +307,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
   if (!isPrimaryAgent(agentId)) {
     removeTools.push(...PRIMARY_ONLY_TOOLS, 'reset_session');
   }
+  if (!holdsDojoInspect(agentId)) removeTools.push(DOJO_INSPECT);   // v3.5: the main agent, the Healer, and agents whose grant names it
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
   const agentClassification = agentRow?.classification ?? undefined;

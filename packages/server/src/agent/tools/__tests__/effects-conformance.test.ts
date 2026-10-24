@@ -285,15 +285,17 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
   // one. TWINS.length holding at 119 IS the check that it did not accidentally acquire one,
   // the same check T3's `shell` earned.
   // t200 moves both by ONE the same way: `tool_result_read`, a core definition with no twin.
-  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read` + K34\'s `lesson_record`, 119 user_ twins, 445 at runtime', () => {
-    expect(BASE.length).toBe(326);
+  // v3.5 inspect C1 moves both by ONE more: `dojo_inspect`, a core definition with no twin.
+  it('the census is T0\'s 320 static definitions + T3\'s `shell` + T77b\'s two drafts + DOJO-REPORT\'s `dojo_report` + t200\'s `tool_result_read` + K34\'s `lesson_record` + `dojo_inspect`, 119 user_ twins, 446 at runtime', () => {
+    expect(BASE.length).toBe(327);
+    expect(BASE.filter((d) => d.name === 'dojo_inspect')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'tool_result_read')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
     expect(BASE.filter((d) => d.name === 'gmail_draft' || d.name === 'outlook_draft')).toHaveLength(2);
     expect(BASE.filter((d) => d.name === 'dojo_report')).toHaveLength(1);
     expect(TWINS.length).toBe(119);
-    expect(ALL.length).toBe(445);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(445);
+    expect(ALL.length).toBe(446);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(446);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -384,9 +386,10 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // `attachments` field earns, plus their two twins (127 base → 149 runtime).
     // DOJO-REPORT T3 moves both by ONE: `dojo_report` declares the single `fs_write` it
     // performs (the local evidence bundle). No twin, so base and runtime move together.
+    // v3.5 inspect C1 moves both by ONE: `dojo_inspect` declares the node process its sql view runs.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(128);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(150);
+    expect(effectful.length).toBe(129);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(151);
     // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
     // `pdf_create.filename` and the seven `output_filename` siblings are BARE
     // NAMES, not paths. Their old `fs_write from: args.<name>` declaration
@@ -404,7 +407,9 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // T8 Step 3, the office door: +1. `office_create_spreadsheet` gains its first
     // ruling because `filename` is the same BARE NAME the PDF door carried — its
     // two create siblings already had a `nonEffects` block, so they move nothing.
-    expect(BASE.filter((d) => d.nonEffects).length).toBe(24);
+    // v3.5 inspect C1: +1. `dojo_inspect.path` names a file in the GitHub repo (read over HTTPS)
+    // and `query` is a read-only statement; neither is a path on this machine.
+    expect(BASE.filter((d) => d.nonEffects).length).toBe(25);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
     // `fs_delete` and `spawn` are single-member classes today; since T3 so are
@@ -568,8 +573,9 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // below does not move. Both numbers moving together is the check on that claim.
     // t200: core 113 → 114 and runtime 443 → 444, `tool_result_read`, the same shape.
     // K34: core 114 → 115 and runtime 444 → 445, `lesson_record` (the Dreamer's door), no twin.
-    expect(toolDefinitions.length).toBe(115);
-    expect(ALL.length).toBe(445);
+    // v3.5 inspect C1: core 115 → 116 and runtime 445 → 446, `dojo_inspect`, no twin.
+    expect(toolDefinitions.length).toBe(116);
+    expect(ALL.length).toBe(446);
 
     const core = new Set(toolDefinitions.map((d) => d.name));
     const outsideCore = ALL.filter((d) => !core.has(d.name));

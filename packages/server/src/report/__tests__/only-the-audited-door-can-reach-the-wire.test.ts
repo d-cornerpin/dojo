@@ -251,6 +251,10 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
   'google/auth.ts',                     // fetch(
   'google/client.ts',                   // fetch(
   'google/tools-slides.ts',             // fetch(
+  'inspect/source-remote.ts',           // fetch( — v3.5 t267, reached through the handler table (cat/inspect.ts, dojo_inspect's code
+                                        // views), never from the report path. Read-only GETs at the running commit: raw files of the
+                                        // PUBLIC repo, and GitHub code search, which carries the agent's search pattern in the query
+                                        // string (with the owner's GitHub connection). It sends no body and writes nothing.
   'memory/embeddings.ts',               // fetch(
   'microsoft/auth.ts',                  // fetch(
   'microsoft/client.ts',                // fetch(

@@ -49,6 +49,7 @@ import { sessionHandlers } from './cat/session.js';
 import { metaHandlers } from './cat/meta.js';
 import { reportHandlers } from './cat/report.js';
 import { resultReadHandlers } from './cat/result-read.js';
+import { inspectHandlers } from './cat/inspect.js';
 import { googleHandlers } from './provider/google.js';
 import { microsoftHandlers } from './provider/microsoft.js';
 import { plaudHandlers } from './provider/plaud.js';
@@ -98,6 +99,7 @@ function table(): ReadonlyMap<string, ToolHandler> {
     ...Object.entries(metaHandlers),
     ...Object.entries(reportHandlers),
     ...Object.entries(resultReadHandlers),
+    ...Object.entries(inspectHandlers),
     ...Object.entries(googleHandlers),
     ...Object.entries(microsoftHandlers),
     ...Object.entries(plaudHandlers),

@@ -106,6 +106,8 @@ export type ToolGate =
   | { readonly kind: 'category'; readonly row: string }
   /** Branch 10 — primary OR the Healer. */
   | { readonly kind: 'primary_or_healer'; readonly row: string }
+  /** v3.5 — dojo_inspect: the main agent, the Healer, or an agent whose grant names it (`inspect/grant.ts`). */
+  | { readonly kind: 'inspect_grant'; readonly row: string }
   /** Branch 8 — the PM allowlist, keyed on the OPERATION not the name. */
   | { readonly kind: 'pm_only_operation'; readonly operation: string; readonly row: string }
   /** Branches 11, 12 — only the creator dismisses. */
@@ -213,6 +215,7 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   // 10 — reset_session: primary OR the Healer, and deliberately not in the set
   // above (the Healer legitimately calls it to clear a wedged agent).
   if (name === 'reset_session') gates.push({ kind: 'primary_or_healer', row: '10' });
+  if (name === 'dojo_inspect') gates.push({ kind: 'inspect_grant', row: '10i' });
   // 11, 12 — only the creator dismisses. An unresolved ref falls through to the
   // handler's friendlier not-found error, exactly as before.
   if (name === 'kill_agent') gates.push({ kind: 'creator_only', entity: 'agent', ref: String(args.agent_id ?? ''), row: '11' });

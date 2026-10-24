@@ -104,6 +104,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'contact_search',
   'contact_remember',
   'contact_get',
+  'dojo_inspect',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -210,6 +211,7 @@ export const HEALER_AGENT_ALWAYS_LOADED = [
   'vault_remember',
   'healer_log_action',
   'healer_propose',
+  'dojo_inspect',
 ];
 
 // Imaginer agent: doesn't run through the LLM runtime at all, its

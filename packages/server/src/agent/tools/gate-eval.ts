@@ -30,6 +30,7 @@ import {
   toolCategoryGranted, toolCategoryLabels,
 } from '../access/read.js';
 import { heldGroupsClause } from './held-groups.js';   // t90 D3
+import { holdsDojoInspect, DOJO_INSPECT_REFUSAL } from '../../inspect/grant.js';
 import type { ToolGate } from './gates.js';
 
 /** What a gate answered, plus enough to audit and render it. */
@@ -295,6 +296,12 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
             errorCode: null,
             auditAs: name,
           };
+
+    case 'inspect_grant':
+      return holdsDojoInspect(agentId) ? skip(gate) : {
+        gate, verdict: denied('inspect-grant:dojo_inspect', 'dojo_inspect is held by the main agent, the Healer and agents whose grant names it', DOJO_INSPECT_REFUSAL),
+        resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name,
+      };
 
     case 'pm_only_operation':
       return isPMAgent(agentId)

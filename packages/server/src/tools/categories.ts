@@ -136,7 +136,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
     // Owner-facing oversight + the engine's self-repair surface.
     label: 'Oversight & Admin',
-    tools: ['cost_summary', 'channel_inspect', 'dreamer_run_now', 'approve_destructive_action'],
+    tools: ['cost_summary', 'channel_inspect', 'dojo_inspect', 'dreamer_run_now', 'approve_destructive_action'],
   },
   {
     label: 'Healer (self-repair)',

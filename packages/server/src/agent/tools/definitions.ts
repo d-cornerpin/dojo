@@ -56,6 +56,7 @@ import { microsoftWriteToolDefinitions } from '../../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions } from '../../microsoft/tools-office.js';
 import { unifiedToolDefinitions } from '../../tools/unified-read.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from './told-about-task.js';
+import { dojoInspectDefinition } from '../../inspect/definition.js';   // v3.5: the eight inspect views, one schema
 import { V2_MAX_TOOL_RESULT_TOKENS } from '../../memory/tool-result-view.js';
 
 
@@ -2767,6 +2768,7 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 1500,
   },
+  dojoInspectDefinition,
   {
     name: 'open_settings',
     description: 'Open the dashboard Settings panel to a specific tab (and optionally scroll to a section) on the user\'s screen. Use when the user asks where a setting lives or asks you to take them to it ("where do I change my voice?", "open my channel settings", "take me to where I add a provider"). This only moves the UI for a user who has the dashboard open; it changes no settings on its own. Pick the tab that holds what they asked about: platform (Dojo capacity, Ollama, system model, remote access, web search, migration, restart), providers (LLM provider API keys), models (enable models, pricing, and the image/video/TTS/music/vision/transcription model pickers), router (model routing + test), profile (your name, about-you), security (dashboard password), sensei (dreamer + healer schedules), channels (iMessage, Twilio/SMS, Google + Microsoft accounts), integrations (Plaud), voice (TTS/STT voice, speed, wake word), update (version + software update). Optionally pass `section` as the heading of the specific card to scroll to (e.g. "Hands-free wake word", "Playback speed", "Twilio", "Remote Access"), it best-effort matches a section title within the tab. To actually CHANGE a capability model yourself, prefer set_capability_model; use this when the user wants to see/change it themselves.',

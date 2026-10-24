@@ -74,6 +74,9 @@ export const CARRIED_PROGRAMS: Readonly<Record<string, string>> = {
    * ordinary way. The argv is audited rather than matched.
    */
   ffmpeg: 'the transcoder transcribe_audio spawns to reach 16 kHz mono PCM WAV; its argv is two platform-generated temp paths, so the PROGRAM is what the declaration can honestly name',
+  /** v3.5 — `dojo_inspect`'s sql view runs each query in its own process so Stop can kill it.
+   *  Keyed by the ABSOLUTE path the process door is asked for; one call site (`inspect/sql-child.ts`). */
+  [process.execPath]: 'node, for dojo_inspect\'s sql view: argv is the fixed inline child source; the query is stdin data, run on a read-only connection',
 };
 
 /**
