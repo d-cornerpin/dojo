@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
 import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
 // SWEEP CORE-2 item 2: the Healer's three status writes go through the ONE writer.
-import { writeAgentStatus, terminateDuplicateAgentsByName } from '../agent/agent-status.js';
+import { writeAgentStatus } from '../agent/agent-status.js';
 // T81d (NO-DOOMED-DIALS, census row 15): the same `activeRuns` guard `agent/runtime.ts`'s
 // `recoverStuckAgents` (census row 19) already applies before reaping a stale 'working' row.
 // `agent/shared-state.ts` is a leaf module (imports only the logger), so this does not reach
@@ -419,11 +419,9 @@ export function ensureHealerAgentRunning(): void {
 
   if (!primaryReady('Healer', primaryId, () => ensureHealerAgentRunning())) return;
 
-  // Clean up any old temporary Healer agents (from before permanent resident approach).
-  // SWEEP CORE-2 item 2: this was the tree's only name-scoped status write. It now selects
-  // and terminates each clone through the one writer, so a clone's exit is an ordinary
-  // transition rather than a second dialect of one.
-  terminateDuplicateAgentsByName(healerName, healerId);
+  // (The name-keyed clean-up of "old temporary Healer agents" that stood here is deleted: it ended any
+  // agent carrying the Healer's name, which is an owner's agent as often as a clone. The Healer is the row
+  // with `healer_agent_id`; nothing is ended because of what it is called.)
 
   const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as
     | { id: string; status: string }

@@ -131,23 +131,6 @@ export function clearAgentLastError(agentId: string): void {
 }
 
 /**
- * Terminate every OTHER row carrying this name — a singleton service agent's boot-time
- * cleanup of clones left by an older spawn strategy.
- *
- * SWEEP CORE-2 item 2: this was a name-scoped `UPDATE agents SET status = 'terminated'` with
- * no id, the only writer in the tree shaped that way besides the boot sweep. It selects and
- * then writes through the one writer, so the statement count stays at one owner and each
- * termination is a normal transition. Returns how many it terminated.
- */
-export function terminateDuplicateAgentsByName(name: string, keepId: string): number {
-  const clones = getDb()
-    .prepare('SELECT id FROM agents WHERE name = ? COLLATE NOCASE AND id != ?')
-    .all(name, keepId) as Array<{ id: string }>;
-  for (const clone of clones) writeAgentStatus(clone.id, 'terminated');
-  return clones.length;
-}
-
-/**
  * The boot sweep: a process that died mid-turn leaves rows reading `working` that no run
  * owns. Restarting is the only thing that can know that, so it is the only thing that does
  * this — a SET-based repair with no id, no broadcast (nothing is connected yet) and, kept

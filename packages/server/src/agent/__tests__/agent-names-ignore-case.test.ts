@@ -35,7 +35,6 @@ vi.mock('../runtime.js', async (importOriginal) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { deliverA2AMessage } from '../a2a-transport.js';
 import { agentsHandlers } from '../tools/cat/agents.js';
-import { terminateDuplicateAgentsByName } from '../agent-status.js';
 
 const SENDER = 'sender-agent';
 
@@ -126,17 +125,5 @@ describe('E21 — send_to_agent finds an agent by name without regard to case', 
     // and the transport agrees with the tool about who "the newest" is
     const row = mockDb.current!.prepare("SELECT agent_id FROM messages WHERE role = 'user' AND content LIKE '%a note for you%' ORDER BY rowid DESC LIMIT 1").get() as { agent_id: string } | undefined;
     expect(row?.agent_id).toBe('wb-2');
-  });
-});
-
-describe('E21 — the Healer boot cleanup terminates clones whatever their capitalisation', () => {
-  it('terminateDuplicateAgentsByName("worker-b", keep) terminates "Worker-B" clones and keeps the one it was told to keep', () => {
-    addAgent('wb-2', 'WORKER-B', '2026-02-01 00:00:00');
-    const n = terminateDuplicateAgentsByName('worker-b', 'wb-2');
-    expect(n).toBe(1);
-    const status = (id: string) => (mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string }).status;
-    expect(status('wb-1')).toBe('terminated');
-    expect(status('wb-2')).not.toBe('terminated');
-    expect(status('wc-1')).not.toBe('terminated');
   });
 });
