@@ -90,6 +90,13 @@ describe('G23: the commit-identity gate', () => {
     expect(r.out).toContain(bad);
   });
 
+  it('another GitHub noreply address is not the repo\'s identity: refused (strict, as the plan says)', () => {
+    const bad = commit('someone else\'s noreply', { author: addr('9999+other', 'users.noreply.github.com') });
+    const r = gate();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(bad);
+  });
+
   it('history before the last tag is not the gate\'s business', () => {
     // the bad commit sits BEFORE the tag: re-tag after it
     git('tag', '-d', 'v1.0.0');

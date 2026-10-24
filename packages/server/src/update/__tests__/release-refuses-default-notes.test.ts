@@ -39,9 +39,9 @@ beforeEach(() => {
 });
 afterEach(() => { fs.rmSync(sandbox, { recursive: true, force: true }); });
 
-function release(args: string[]) {
+function release(args: string[], cwd = REPO_ROOT) {
   const r = spawnSync('bash', [RELEASE_SH, ...args], {
-    cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000,
+    cwd, encoding: 'utf8', timeout: 60_000,
     env: { ...process.env, PATH: `${path.join(sandbox, 'bin')}:${process.env.PATH ?? ''}` },
   });
   return { code: r.status, out: `${r.stdout}\n${r.stderr}` };
@@ -83,6 +83,14 @@ describe('G23: a release without plain notes is refused before anything is touch
     expect(r.out).toMatch(/WOULD FAIL.*Refused: a release needs plain release notes \(--notes-file\)/);
     expect(ghCalled(), 'a dry run stopped at the notes line and proved nothing else').toBe(true);
     expect(r.code).not.toBe(0);
+  });
+
+  it('a RELATIVE --notes-file is made absolute before the script changes directory, so it is still found after', () => {
+    notes('Fixed: something plain.\n');
+    // Run from the sandbox: `notes.md` is valid there, and release.sh then `cd`s to the repo root.
+    const r = release(['9.9.9', '--notes-file', 'notes.md'], sandbox);
+    expect(r.out).not.toMatch(/Notes file not found|Refused: a release needs plain release notes/);
+    expect(r.out).toContain(`release notes: ${path.join(fs.realpathSync(sandbox), 'notes.md')}`);
   });
 
   it('with real notes the notes check passes (the run goes on to the first gh call, which the stub fails)', () => {
