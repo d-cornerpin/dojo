@@ -13,7 +13,8 @@ import { createLogger } from '../../logger.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
-import { idleStreamDeadline } from '../../services/idle-stream-deadline.js';
+import { pullOllamaModel, type PullProgress } from '../../services/ollama-pull.js';
+import { ensureLocalOllamaProvider } from '../../services/local-standard.js';
 import { attachIdleBound } from '../../child-idle-bound.js';
 import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
@@ -201,21 +202,7 @@ setupDepsRouter.get('/ollama/models', async (c) => {
 
 // ── Pull progress state (pollable) ──
 
-let currentPullProgress: {
-  model: string;
-  status: string;
-  completed: number;
-  total: number;
-  layers: number;
-  error: string | null;
-} | null = null;
-
-// ── t114 (census U8) — the pull's three bounds, each named for its own job ──
-// The old flat 1,800,000 was asked to be all three at once. A registry that never answers is a
-// different failure from one that stops mid-download, and neither is "this model is too big".
-const OLLAMA_PULL_FIRST_BYTE_MS = 60_000;
-const OLLAMA_PULL_IDLE_MS = 2 * 60_000;
-const OLLAMA_PULL_CEILING_MS = 6 * 60 * 60_000;
+let currentPullProgress: PullProgress | null = null;
 
 // ── t114 (CENSUS U22) — AN INSTALLER THAT IS DOWNLOADING IS NOT A WEDGED INSTALLER ──
 //
@@ -260,114 +247,23 @@ setupDepsRouter.get('/ollama/pull-progress', (c) => {
   return c.json({ ok: true, data: currentPullProgress });
 });
 
-// POST /ollama/pull — pull a model with progress tracking
+// POST /ollama/pull — pull a model with progress tracking (the bounded pull of t114, shared with
+// the standard-models install: `services/ollama-pull.ts`)
 setupDepsRouter.post('/ollama/pull', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.model) return c.json({ ok: false, error: 'model is required' }, 400);
 
   const model = body.model as string;
-  currentPullProgress = { model, status: 'starting', completed: 0, total: 0, layers: 0, error: null };
-
-  const pullDeadline = idleStreamDeadline({
-    firstByteMs: OLLAMA_PULL_FIRST_BYTE_MS,
-    idleMs: OLLAMA_PULL_IDLE_MS,
-    ceilingMs: OLLAMA_PULL_CEILING_MS,
-  });
-
   try {
-    const resp = await fetch('http://localhost:11434/api/pull', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, stream: true }),
-      // ── t114 (CENSUS U8) — THE PULL IS BOUNDED BY SILENCE, NOT BY A HALF-HOUR WALL ──
-      //
-      // THE DEFECT: a flat 30 minutes covering the whole streamed pull. A 70 GB model on a home
-      // line takes longer than that, so the download was aborted mid-transfer WHILE
-      // `digestProgress` (built ten lines below this clock) was actively tracking real bytes
-      // arriving — the progress fact was in hand and the clock never consulted it. The UI bar was
-      // left frozen at whatever fraction it had reached, which is the part a user actually sees.
-      //
-      // Ollama streams a JSON progress line per chunk, so arrival is the measured fact of
-      // liveness. The bound re-arms on each line; a registry that goes quiet is still cut, and a
-      // non-re-arming ceiling keeps a pull that dribbles for ever from holding the route open.
-      signal: pullDeadline.signal,
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      return c.json({ ok: false, error: text }, 500);
+    const outcome = await pullOllamaModel(model, { onProgress: (p) => { currentPullProgress = p; } });
+    if (outcome.ok) {
+      currentPullProgress = null;
+      return c.json({ ok: true, data: { model, pulled: true, status: outcome.status } });
     }
-
-    const reader = resp.body?.getReader();
-    if (!reader) return c.json({ ok: false, error: 'No response body' }, 500);
-
-    const decoder = new TextDecoder();
-    let lastStatus = '';
-
-    // Track cumulative progress across all digests/layers
-    const digestProgress = new Map<string, { total: number; completed: number }>();
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // t114 (U8): a progress line IS the proof the pull is moving. This is the whole fix.
-      pullDeadline.bump();
-      const text = decoder.decode(value, { stream: true });
-      const lines = text.trim().split('\n');
-
-      for (const line of lines) {
-        try {
-          const json = JSON.parse(line);
-          lastStatus = json.status ?? lastStatus;
-
-          if (json.error) {
-            currentPullProgress = { model, status: 'error', completed: 0, total: 0, layers: 0, error: json.error };
-            return c.json({ ok: false, error: json.error }, 500);
-          }
-
-          // Track per-digest progress
-          if (json.digest && json.total) {
-            digestProgress.set(json.digest, {
-              total: json.total,
-              completed: json.completed ?? 0,
-            });
-          }
-
-          // Calculate cumulative totals across all digests
-          let cumulativeTotal = 0;
-          let cumulativeCompleted = 0;
-          for (const [, dp] of digestProgress) {
-            cumulativeTotal += dp.total;
-            cumulativeCompleted += dp.completed;
-          }
-
-          // Update pollable progress state
-          currentPullProgress = {
-            model,
-            status: json.status ?? 'downloading',
-            completed: cumulativeCompleted,
-            total: cumulativeTotal,
-            layers: digestProgress.size,
-            error: null,
-          };
-        } catch { /* skip non-JSON lines */ }
-      }
-    }
-
-    currentPullProgress = null;
-    return c.json({ ok: true, data: { model, pulled: true, status: lastStatus } });
+    if (outcome.stalled) return routeFailure(c, logger, new Error(outcome.error), { status: 500 });
+    return c.json({ ok: false, error: outcome.error }, 500);
   } catch (err) {
-    // t114 (U8): say which bound ended it. "the registry went quiet" is a different problem from
-    // "this model is too big to pull", and the old flat wall could not tell them apart.
-    if (pullDeadline.fired()) {
-      currentPullProgress = {
-        model, status: 'error', completed: 0, total: 0, layers: 0,
-        error: `the pull stopped making progress for ${Math.round(OLLAMA_PULL_IDLE_MS / 1000)}s and was stopped`,
-      };
-    }
     return routeFailure(c, logger, err, { status: 500 });
-  } finally {
-    pullDeadline.done();
   }
 });
 
@@ -391,20 +287,10 @@ setupDepsRouter.delete('/ollama/models/:name', async (c) => {
 setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   const db = getDb();
 
-  // Check if Ollama provider already exists
-  const existing = db.prepare("SELECT id FROM providers WHERE type = 'ollama'").get();
-  let providerId: string;
-
-  if (existing) {
-    providerId = (existing as { id: string }).id;
-  } else {
-    providerId = 'ollama-local';
-    db.prepare(`
-      INSERT INTO providers (id, name, type, base_url, auth_type, is_validated, validated_at, created_at, updated_at)
-      VALUES (?, 'Ollama (Local)', 'ollama', 'http://localhost:11434', 'none', 1, datetime('now'), datetime('now'), datetime('now'))
-    `).run(providerId);
-    logger.info('Auto-configured Ollama provider');
-  }
+  // The local Ollama provider row, found or created by the one routine the standard models use too.
+  const provider = ensureLocalOllamaProvider();
+  if (!provider) return c.json({ ok: false, error: 'Could not configure the local Ollama provider' }, 500);
+  const providerId = provider.id;
 
   // Discover models
   try {

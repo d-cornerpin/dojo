@@ -257,6 +257,10 @@ const EGRESS_IN_CLOSURE: readonly string[] = [
   'services/litellm-pricing-sync.ts',   // fetch(
   'services/num-ctx-calculator.ts',     // fetch(
   'services/ollama.ts',                 // fetch(
+  'services/ollama-pull.ts',            // fetch( — v3.5 MOVED the setup pull here from setup-deps (listed above); one POST to
+                                        // the local Ollama's /api/pull carrying only a model name.
+  'services/local-standard.ts',         // fetch( — v3.5, reached through router/selector.ts: GETs of the local Ollama's
+                                        // /api/tags and /api/ps; no exported function takes content to send.
   'services/transcription.ts',          // fetch(
   'services/video-generation.ts',       // fetch(
   'twilio/client.ts',                   // fetch(

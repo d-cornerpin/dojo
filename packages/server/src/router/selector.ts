@@ -11,6 +11,7 @@ import { isRateLimited } from './rate-limits.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { standardModelRowId } from '../services/local-standard.js';
 import type { DimensionScore } from './types.js';
 // T82a fix wave (round 2) — a LEAF import, deliberately not `agent/model.js`: see
 // `providerCeilingTokensFor` below for why the query is mirrored here instead.
@@ -56,14 +57,15 @@ function getTierModels(tierId: string): TierModelRow[] {
 }
 
 /**
- * The "system" router tier holds the model used for background/system tasks
- * (the multi-step classifier today; watchdog smart-alerts to follow). It is
- * NOT score-routed — it's resolved explicitly here. Returns the top-priority
- * enabled model id assigned to the tier, or null when none is configured (in
- * which case callers fall back to their non-LLM behavior). Separate from the
- * PM agent model (`pm_agent_model`) by design.
+ * The model for the engine's own writing jobs (titles, the multi-step classifier's names, voice
+ * openers). v3.5: the Dojo's standard WRITER (`services/local-standard.ts`) whenever it is
+ * installed; the `system` tier row its install routine writes is what older readers see, and the
+ * fallback while the pair is not installed yet. Null when neither exists (callers fall back to their
+ * non-LLM behaviour). Separate from the PM agent model (`pm_agent_model`) by design.
  */
 export function getSystemModel(): string | null {
+  const writer = standardModelRowId('writer');
+  if (writer) return writer;
   const models = getTierModels('system');
   return models.length > 0 ? models[0].model_id : null;
 }

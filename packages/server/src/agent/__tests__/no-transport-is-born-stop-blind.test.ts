@@ -482,6 +482,8 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     'services/pricing-sync.ts': 'NO AGENT: the provider price refresh, on the platform\'s own timer, shared by every agent on the box',
     'services/num-ctx-calculator.ts': 'NO AGENT: a local sizing probe against Ollama, run at model registration',
     'services/ollama.ts': 'NO AGENT: local model management (list/pull/delete) from Settings',
+    'services/ollama-pull.ts': 'NO AGENT: the bounded model download behind setup\'s pull and the standard-models install (v3.5, moved out of setup-deps unchanged); no turn waits on a pull',
+    'services/local-standard.ts': 'NO AGENT: the Dojo checking and installing its own two standard models, from setup, the update hook and the Ollama tile; no agent turn waits on it',
     'twilio/client.ts': 'TWO KINDS IN ONE FILE (review L2-4). `sendSms` is THE CALL IS THE DELIVERY — an SMS already committed to, where half-sending is worse than finishing; its callers are the channel push and the turn-closure sweep. The second site, `testTwilioCredentials`, is NO AGENT — an operator in Settings pressing Test. `endCall` is neither a delivery nor an agent\'s wait. The file needs both sentences, so here are both',
     'twilio/sms-inbound.ts': 'THE AGENT IS NOT WAITING: the webhook ack owed to Twilio, not work an agent asked for',
     'update/artifact-integrity.ts': 'NO AGENT: the updater verifying what it downloaded',
@@ -513,7 +515,8 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     // t138: 9 -> 7 — the two balance reads moved to costs/provider-balance-check.ts (pinned below).
     'gateway/routes/config.ts': 7,
     'costs/provider-balance-check.ts': 2,
-    'gateway/routes/setup-deps.ts': 7,
+    // v3.5: 7 -> 6 — the pull moved to services/ollama-pull.ts (pinned below), shared with the standard-models install.
+    'gateway/routes/setup-deps.ts': 6,
     'gateway/routes/system.ts': 1,
     'gateway/routes/update.ts': 4,
     'github/device-flow.ts': 2,
@@ -532,6 +535,8 @@ describe('§7 the census: no fetch-bearing module is stop-blind by accident', ()
     'services/litellm-pricing-sync.ts': 1,
     'services/num-ctx-calculator.ts': 2,
     'services/ollama.ts': 3,
+    'services/ollama-pull.ts': 1,
+    'services/local-standard.ts': 1,
     'services/pricing-sync.ts': 1,
     'services/transcription.ts': 2,
     'services/video-generation.ts': 4,
