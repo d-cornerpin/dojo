@@ -12,6 +12,7 @@ import { resolveTaskId, resolveProjectId } from '../../../tracker/schema.js';
 import { claimedTasksOf } from '../../../tracker/claimed-tasks.js';
 import { normalizeTaskStatus } from '../../../tracker/task-status-words.js';
 import { withNamedRemainder } from '../../../work/measure-close-gate.js';
+import { resolveAgentTaskId } from '../../agent-task.js';
 import { remainderGate } from '../../../tracker/measure-gate.js';
 import { pendingCloseRequestExpr } from '../../../work/tracker-view.js';
 import { gatesForCall } from '../gates.js';
@@ -118,7 +119,8 @@ export async function editWithMeasure(
 /** complete_task(status="complete"), before the agent is ended: its task is re-read and judged like
  *  any close. A task already closed, or carrying a close request (it crossed a door that judged it),
  *  is not judged again. complete_task takes no remainder, so the refusal names the door that does. */
-export async function completeTaskRefusal(agentId: string, taskId: string | null): Promise<string | null> {
+export async function completeTaskRefusal(agentId: string): Promise<string | null> {
+  const taskId = resolveAgentTaskId(agentId);
   if (!taskId) return null;
   const row = getDb().prepare(`SELECT w.state AS state, ${pendingCloseRequestExpr('w')} AS pending FROM work w WHERE w.id = ?`)
     .get(taskId) as { state: string; pending: number } | undefined;

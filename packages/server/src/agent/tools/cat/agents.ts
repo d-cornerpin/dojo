@@ -41,7 +41,7 @@ import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/trac
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
 import { noteUnsettled } from '../../../work/store.js';
 import { skipOpenOccurrencesAsComplete } from '../../../work/occurrences.js';
-import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision, resolveAgentTaskId } from '../../spawner.js';
+import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
 import { completeTaskRefusal } from './measure-door.js';
 import { validateAlwaysLoadedTools } from '../../always-loaded-tools.js';
 import { toolDefinitionsByName } from '../definitions.js';
@@ -1045,8 +1045,7 @@ export const agentsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    // v3.5: a measured task with items left is not ended by complete_task (`measure-door.ts`).
-    { const no = completeMapped === 'complete' ? await completeTaskRefusal(agentId, resolveAgentTaskId(agentId)) : null; if (no) return { content: no, isError: true }; }
+    { const no = completeMapped === 'complete' ? await completeTaskRefusal(agentId) : null; if (no) return { content: no, isError: true }; }   // v3.5: measured work left
     try {
       await completeAgent(
         agentId,
