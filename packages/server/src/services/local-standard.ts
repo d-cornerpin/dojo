@@ -210,7 +210,10 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
   };
   // Ollama must answer before anything is written: a box without it gets no provider row from here.
   const tags = await ollamaJson<{ models?: Array<{ name: string }> }>(localOllamaProvider()?.baseUrl ?? 'http://localhost:11434', '/api/tags');
-  if (!tags) return standardState();
+  if (!tags) {   // a box set up for Ollama whose Ollama does not answer: the pair cannot arrive, so he is told
+    if (localOllamaProvider() && tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
+    return standardState();
+  }
   const provider = ensureLocalOllamaProvider();
   if (!provider) return standardState();
   const installed = installedTagsOf(tags);
@@ -242,18 +245,14 @@ async function install(onProgress?: (line: string) => void): Promise<StandardSta
     await computeAndStoreRecommendedNumCtx(ids[which] as string).catch(() => null);   // sized now, not at the next boot's backfill
   }
   assign(ids.writer, ids.decision);
-  // Fix round 1 (I-2): an attempt Ollama answered but that left a model missing is told to the owner
-  // once, as a dashboard card (the existing owner-notice system); the card ends when both are in.
+  // Fix round 1 (I-2): an attempt that left a model missing is told once (the owner-card system); it ends when both are in.
   if (ids.writer && ids.decision) ownerConditionCleared(MISSING_CONDITION);
   else if (tellOwnerOnce(MISSING_CONDITION)) ownerCardFrame(STANDARD_MODELS_MISSING_WORDS, 'warning');
   return standardState();
 }
 
-/**
- * Fix round 1 (I-2): the existing Ollama health check calls this with the names Ollama listed. When it
- * is the local Ollama answering and a model of the pair is missing, the install runs again (no timer:
- * Ollama answering IS the signal; `ensureStandardModels` is single-flight).
- */
+/** Fix round 1 (I-2): the Ollama health check passes what Ollama listed; the local Ollama answering with a
+ *  model of the pair missing runs the install again (no timer: answering IS the signal; single-flight). */
 export function retryStandardModelsIfMissing(installedNames: readonly string[], baseUrl: string): void {
   const provider = localOllamaProvider();
   if (!provider || inFlight || provider.baseUrl !== baseUrl.replace(/\/+$/, '')) return;

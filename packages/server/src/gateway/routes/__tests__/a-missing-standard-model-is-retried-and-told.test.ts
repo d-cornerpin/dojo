@@ -71,6 +71,12 @@ describe('a pair that failed to install', () => {
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(STANDARD_MODELS_MISSING_WORDS);
   });
 
+  it('A5: an updated box whose Ollama does not answer is told too (the writer never installs otherwise)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed: ECONNREFUSED'); }));
+    await ensureStandardModelsOncePerVersion('3.5.0');
+    expect(cards()).toEqual([STANDARD_MODELS_MISSING_WORDS]);
+  });
+
   it('a health check of a box with both models installed starts nothing', async () => {
     ollama.registryDown = false;
     await ensureStandardModelsOncePerVersion('3.5.0');
