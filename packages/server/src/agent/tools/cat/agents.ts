@@ -1102,7 +1102,7 @@ export const agentsHandlers: ToolHandlerMap = {
         if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; return { content, isError }; }
         if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; return { content, isError }; }
         resolvedModel = model;
-        const refused = refuseSmallMainModel(model.id, target.model_id) ?? await refuseUnfitLocalModel(model.id, target.model_id);
+        const refused = await refuseUnfitLocalModel(model.id, target.model_id) ?? refuseSmallMainModel(model.id, target.model_id);
         if (refused) { content = `Error: ${refused}`; isError = true; return { content, isError }; }
       }
 
@@ -1510,9 +1510,9 @@ export const agentsHandlers: ToolHandlerMap = {
              m.max_output_tokens, m.thinking_enabled, m.capabilities
       FROM models m
       JOIN providers p ON p.id = m.provider_id
-      WHERE m.is_enabled = 1
+      WHERE m.is_enabled = 1 AND m.capabilities NOT LIKE '%"decision"%'
       ORDER BY COALESCE(m.input_cost_per_m, 0) ASC
-    `).all() as Array<Record<string, unknown>>;
+    `).all() as Array<Record<string, unknown>>;   // v3.5: the Dojo's decision model is no agent's model
     content = modelRows.map(m => {
       const inputCost = (m.input_cost_per_m as number) ?? 0;
       const outputCost = (m.output_cost_per_m as number) ?? 0;

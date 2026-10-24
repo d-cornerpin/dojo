@@ -917,6 +917,7 @@ export function contractForConfiguredModel(modelId: string | null | undefined): 
 
 import { getOllamaLock } from '../services/ollama-lock.js';
 import { isStandardModelRow } from '../services/local-standard.js';
+import { refuseUncheckedAtFirstLoad } from './local-model-fit.js';
 
 interface NativeOllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -1363,6 +1364,7 @@ async function callOllamaModel(
   // `bounds` is therefore computed above this line rather than below it, and the lock is handed
   // the identical number the watchdog will arm. The two cannot drift again without someone
   // editing one expression that both read.
+  await refuseUncheckedAtFirstLoad(modelId, dial ? 'job' : 'agent');   // v3.5: a model picked while it could not be sized is judged now
   await lock.acquire(modelInfo.providerId, ollamaModelName, bounds.firstChunkMs, pinned);
 
   const startTime = Date.now();

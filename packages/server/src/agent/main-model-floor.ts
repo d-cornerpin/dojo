@@ -97,7 +97,7 @@ export const MAIN_MODEL_SETTING_KEYS: readonly string[] = [
 
 /**
  * v3.5: the config keys through which a person picks a LOCAL model the memory-fit gate judges — the
- * service agents' main models above, and the summary writer (owner ruling 2026-10-19, "an agent or
- * anything else"; the Summarization Model card invites a larger model).
+ * service agents' main models above, and the engine jobs a person picks a model for: the summary writer,
+ * the voice opener and the vision fallback (owner ruling 2026-10-19, "an agent or anything else").
  */
-export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'compaction_model_id'];
+export const LOCAL_MODEL_SETTING_KEYS: readonly string[] = [...MAIN_MODEL_SETTING_KEYS, 'compaction_model_id', 'voice.opener_model', 'dojo_fallback_vision_model_id'];

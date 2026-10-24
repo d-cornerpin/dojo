@@ -370,7 +370,7 @@ export const Agents = () => {
         api.getProviders(),
       ]);
       if (modelsResult.ok) {
-        setModels(modelsResult.data.filter((m) => m.isEnabled));
+        setModels(modelsResult.data.filter((m) => m.isEnabled && !m.capabilities.includes('decision')));   // v3.5: never the Dojo's decision model
       }
       if (providersResult.ok) {
         const map: Record<string, string> = {};

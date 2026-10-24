@@ -31,7 +31,7 @@ healerRouter.post('/config', async (c) => {
   // v3.5: then the memory fit — a local model that will not fit in this box's memory is refused too.
   const newModel = typeof body.modelId === 'string' ? body.modelId : null;
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getHealerAgentId()) as { model_id: string | null } | undefined)?.model_id;
-  const refused = refuseSmallMainModel(newModel, current) ?? await refuseUnfitLocalModel(newModel, current);
+  const refused = await refuseUnfitLocalModel(newModel, current) ?? refuseSmallMainModel(newModel, current);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   setHealerConfig({

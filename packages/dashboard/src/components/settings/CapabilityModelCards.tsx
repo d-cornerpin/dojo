@@ -492,7 +492,7 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
           className="finput field--select"
         >
           <option value="">Auto (first available mid-tier model)</option>
-          {models.map((m) => (
+          {models.filter((m) => !m.capabilities.includes('decision')).map((m) => (
             <option key={m.id} value={m.id}>
               {m.name} ({m.apiModelId})
             </option>

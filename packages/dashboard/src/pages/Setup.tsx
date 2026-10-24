@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
+import { isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 import { VoiceSetupStep } from '../components/VoiceSetupStep';
@@ -964,7 +965,7 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
         api.getSetting('primary_agent_id'),
       ]);
       if (cancelled) return;
-      const enabled = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingId = idRes.ok ? (idRes.data.value ?? '') : '';
@@ -1092,11 +1093,12 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
 // ── Project Manager ──
 
-const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
+export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [pmName, setPmName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -1109,31 +1111,22 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
         api.getSetting('pm_agent_model'),
       ]);
       if (cancelled) return;
-      const enabled = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
-      // Default to cheapest model (last in list, or first Ollama model)
-      const ollamaModel = enabled.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
-      const cheapest = ollamaModel ?? enabled[enabled.length - 1];
       if (existingName) setPmName(existingName);
-      setSelectedModel(existingModel || cheapest?.id || '');
+      // v3.5: the cheapest model the server accepts for an agent (never a local one it refuses).
+      setSelectedModel(existingModel || await defaultRoleModel(enabled));
       if (existingName) setSaved(true);   // already set up → step through freely
     })();
     return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
-    await api.setSetting('pm_agent_enabled', 'true');
-    if (pmName.trim()) {
-      const pmId = pmName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
-      await api.setSetting('pm_agent_name', pmName.trim());
-      await api.setSetting('pm_agent_id', pmId);
-      if (selectedModel) {
-        await api.setSetting('pm_agent_model', selectedModel);
-      }
-    }
-    setSaved(true);
+    const refused = await saveRoleAgent('pm', pmName, selectedModel);   // the server's sentence, never "saved"
+    setError(refused);
+    setSaved(!refused);
   };
 
   return (
@@ -1172,6 +1165,7 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
           {`${pmName} will manage your projects!`}
         </div>
       )}
+      {error && <div className="alert-banner alert-error">{error}</div>}
 
       <button onClick={handleSave} disabled={saved || !pmName.trim()}
         className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
@@ -1190,6 +1184,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -1202,30 +1197,21 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
         api.getSetting('trainer_agent_model'),
       ]);
       if (cancelled) return;
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabledModels);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
-      const ollamaModel = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
-      const cheapest = ollamaModel ?? enabledModels[enabledModels.length - 1];
       if (existingName) setTrainerName(existingName);
-      setSelectedModel(existingModel || cheapest?.id || '');
+      setSelectedModel(existingModel || await defaultRoleModel(enabledModels));
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
-    await api.setSetting('trainer_agent_enabled', 'true');
-    if (trainerName.trim()) {
-      const trainerId = trainerName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
-      await api.setSetting('trainer_agent_name', trainerName.trim());
-      await api.setSetting('trainer_agent_id', trainerId);
-      if (selectedModel) {
-        await api.setSetting('trainer_agent_model', selectedModel);
-      }
-    }
-    setSaved(true);
+    const refused = await saveRoleAgent('trainer', trainerName, selectedModel);
+    setError(refused);
+    setSaved(!refused);
   };
 
   return (
@@ -1264,6 +1250,7 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           {`${trainerName} will train your dojo's techniques!`}
         </div>
       )}
+      {error && <div className="alert-banner alert-error">{error}</div>}
 
       <button onClick={handleSave} disabled={saved || !trainerName.trim()}
         className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
@@ -1277,12 +1264,13 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
 // ── Dreamer ──
 
-const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
+export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [dreamTime, setDreamTime] = useState('03:00');
   const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -1294,13 +1282,12 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
         api.getDreamingConfig(),
       ]);
       if (cancelled) return;
-      const enabledModels = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabledModels);
       const cfg = cfgRes.ok ? cfgRes.data : null;
-      // Default to a Sonnet-class model, or cheapest available
+      // Default to a Sonnet-class model, else the cheapest the server accepts for an agent
       const sonnet = enabledModels.find((m: Model) => m.apiModelId.includes('sonnet'));
-      const fallback = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null) ?? enabledModels[0];
-      setSelectedModel(cfg?.modelId || (sonnet ?? fallback)?.id || '');
+      setSelectedModel(cfg?.modelId || sonnet?.id || await defaultRoleModel(enabledModels));
       if (cfg?.dreamTime) setDreamTime(cfg.dreamTime);
       if (cfg?.dreamMode === 'full' || cfg?.dreamMode === 'light') setDreamMode(cfg.dreamMode);
       // An existing dreamer config (a model was chosen) → step through freely.
@@ -1310,12 +1297,9 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   }, []);
 
   const handleSave = async () => {
-    await api.updateDreamingConfig({
-      modelId: selectedModel || undefined,
-      dreamTime,
-      dreamMode,
-    });
-    setSaved(true);
+    const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime, dreamMode });
+    setError(r.ok ? null : r.error);   // the server's refusal, never "saved"
+    setSaved(r.ok);
   };
 
   return (
@@ -1405,6 +1389,7 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
           The Dreamer will process conversations every night at {dreamTime}.
         </div>
       )}
+      {error && <div className="alert-banner alert-error">{error}</div>}
 
       <button onClick={handleSave} disabled={saved}
         className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${

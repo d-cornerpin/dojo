@@ -24,6 +24,7 @@ import { automationPermissionStatus } from './automation-probe.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 // t202 D10: the owner's 32K floor for an agent's MAIN model.
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { localModelFit } from '../../agent/local-model-fit.js';
 
 const logger = createLogger('setup-deps');
 
@@ -303,6 +304,14 @@ setupDepsRouter.post('/ollama/standard', (c) => {
   return c.json({ ok: true, data: { started: true } });
 });
 
+// GET /model-fit/:modelId — would the server accept this model for an agent? (v3.5 fix round 1: the setup
+// steps default to the cheapest model this says yes to.) A probe: it marks and tells nothing.
+setupDepsRouter.get('/model-fit/:modelId', async (c) => {
+  const modelId = c.req.param('modelId');
+  const v = await localModelFit(modelId, 'agent');
+  return c.json({ ok: true, data: { refused: (v && !v.unchecked && !v.fits ? v.message : null) ?? refuseSmallMainModel(modelId) } });
+});
+
 // POST /ollama/auto-configure — create Ollama provider + discover models
 setupDepsRouter.post('/ollama/auto-configure', async (c) => {
   const db = getDb();
@@ -472,7 +481,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
   // Re-running setup on the model an existing agent already has is not a change and never refused.
   // v3.5: and a local model that will not fit in this box's memory is refused the same way.
-  const refused = refuseSmallMainModel(modelId, existing?.model_id ?? null) ?? await refuseUnfitLocalModel(modelId, existing?.model_id ?? null);
+  const refused = await refuseUnfitLocalModel(modelId, existing?.model_id ?? null) ?? refuseSmallMainModel(modelId, existing?.model_id ?? null);
   if (refused) return c.json({ ok: false, error: refused }, 400);
 
   if (existing) {

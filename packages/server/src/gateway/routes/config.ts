@@ -2336,7 +2336,8 @@ configRouter.put('/settings/:key', async (c) => {
   // fit for every local-model key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
     const current = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value;
-    const refused = (MAIN_MODEL_SETTING_KEYS.includes(key) ? refuseSmallMainModel(body.value, current) : null) ?? await refuseUnfitLocalModel(body.value, current);
+    const main = MAIN_MODEL_SETTING_KEYS.includes(key);   // memory first, so a refusal names the true reason
+    const refused = await refuseUnfitLocalModel(body.value, current, main ? 'agent' : 'job') ?? (main ? refuseSmallMainModel(body.value, current) : null);
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 

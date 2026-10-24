@@ -9,6 +9,7 @@ import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { formatDate } from '../../lib/dates';
 import { HealerCard } from './CapabilityModelCards';
+import { isPickableAgentModel } from '../../lib/role-models';
 
 
 // ── Dreaming Tab ──
@@ -21,6 +22,7 @@ export const DreamingTab = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
   const [lastDream, setLastDream] = useState<api.DreamReport | null>(null);
   const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState<{ kind: 'ok' | 'err' | 'idle'; message: string }>({ kind: 'idle', message: '' });
@@ -38,7 +40,7 @@ export const DreamingTab = () => {
         setDreamMode(configResult.data.dreamMode === 'off' ? 'full' : configResult.data.dreamMode);
       }
       if (modelsResult.ok) {
-        setModels(modelsResult.data.filter((m: Model) => m.isEnabled));
+        setModels(modelsResult.data.filter(isPickableAgentModel));
       }
       if (latestResult.ok) {
         setLastDream(latestResult.data);
@@ -55,6 +57,7 @@ export const DreamingTab = () => {
       dreamTime,
       dreamMode,
     });
+    setSaveError(result.ok ? null : result.error);
     if (result.ok) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -169,6 +172,7 @@ export const DreamingTab = () => {
           {runStatus.kind === 'ok' && <span className="text-xs text-cp-teal">{runStatus.message}</span>}
           {runStatus.kind === 'err' && <span className="text-xs text-cp-coral">{runStatus.message}</span>}
         </div>
+        {saveError && <div className="alert-banner alert-error">{saveError}</div>}
 
         {/* Last dream report — lives inside the Dreamer panel, not its own card. */}
         {lastDream && (

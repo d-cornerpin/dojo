@@ -136,7 +136,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         api.getProviders(),
       ]);
       if (promptResult.ok) setSystemPrompt(promptResult.data.content);
-      if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled));
+      if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled && !m.capabilities.includes('decision')));   // v3.5: never the Dojo's decision model
       if (providersResult.ok) {
         const map: Record<string, string> = {};
         for (const p of providersResult.data) map[p.id] = p.name;

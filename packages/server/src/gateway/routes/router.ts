@@ -81,7 +81,7 @@ routerRouter.get('/available-models', (c) => {
     SELECT m.id, m.name, m.api_model_id, p.name as provider_name, p.type as provider_type
     FROM models m
     JOIN providers p ON m.provider_id = p.id
-    WHERE m.is_enabled = 1
+    WHERE m.is_enabled = 1 AND m.capabilities NOT LIKE '%"decision"%'   -- v3.5: the Dojo's decision model runs no tier or opener
     ORDER BY p.name, m.name
   `).all() as Array<{
     id: string;
@@ -122,7 +122,7 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
   // this box's memory. Models already in the tier are not re-judged (re-saving is never refused).
   const current = new Set((db.prepare('SELECT model_id FROM router_tier_models WHERE tier_id = ?').all(tierId) as Array<{ model_id: string }>).map((r) => r.model_id));
   for (const { modelId } of body.models as Array<{ modelId: string }>) {
-    const refused = current.has(modelId) ? null : await refuseUnfitLocalModel(modelId);
+    const refused = current.has(modelId) ? null : await refuseUnfitLocalModel(modelId, null, 'agent');   // a tier runs agent turns
     if (refused) return c.json({ ok: false, error: refused }, 400);
   }
 
