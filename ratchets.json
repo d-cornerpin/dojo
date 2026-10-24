@@ -9117,6 +9117,13 @@
       "to": 2941,
       "by": "t262 (2026-10-24): v3.5 plan before project, plan schema in its own file",
       "why": "+1: the import of WORK_PLAN_PROP from the new agent/work-plan-schema.ts (the plan object moved out of work-verb-schema.ts, which the growth detector flagged at 247 lines). A further import line, no new code. From 2,941 this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/PlatformTab.tsx",
+      "from": 1043,
+      "to": 1045,
+      "by": "t252 A2 (v3.5, 2026-10-23): the Ollama tile shows the Dojo's two standard models",
+      "why": "+2: one import line and one element (<StandardModels repair />) in the Ollama tile, which the plan names as the place the pair's state and its Repair button live (owner rule: use the existing UX, no new screen). Everything the tile shows (state, progress lines, the note, Repair) lives in the NEW focused file components/settings/StandardModels.tsx, which the setup screen reuses, so the pinned file grows by the two lines that mount it and nothing else."
     }
   ],
   "maxNewFileLines": 400,
@@ -9142,7 +9149,7 @@
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
     "packages/dashboard/src/components/settings/ModelRows.tsx": 1261,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 696,
-    "packages/dashboard/src/components/settings/PlatformTab.tsx": 1043,
+    "packages/dashboard/src/components/settings/PlatformTab.tsx": 1045,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 939,
     "packages/dashboard/src/components/settings/UpdateTab.tsx": 328,
     "packages/dashboard/src/components/settings/VoiceTab.tsx": 1229,
