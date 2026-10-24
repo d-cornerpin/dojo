@@ -28,7 +28,7 @@ vi.mock('../../../../../db/connection.js', async () => {
   };
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-const { countMeasure, parkJob } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true) }));
+const { countMeasure, parkJob, stash } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn() }));
 vi.mock('../../../../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/measure.js')>()), countMeasure }));
 vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/job-continuation.js')>()), parkJob }));
 
@@ -37,7 +37,6 @@ import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
 import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
 import { armTimerWake, beginJobRun, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
-import { continuationContext } from '../../../../turn-state.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -105,6 +104,7 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     agentId: AGENT, db: db(), turnNumber, agent: { id: AGENT, name: 'Worker' },
     turnCtx: { agentId: AGENT, goingIdleDetectorRanThisTurn: false } as never,
     triggerRow: null, isA2ATurn: false, mostRecentInbound: undefined, lastUserMessageContent: null,
+    stashContinuationIfHuman: stash,
     ...over,
   } as unknown as PostCallClassifyContext;
 }
@@ -129,7 +129,7 @@ beforeEach(() => {
   parkJob.mockClear();
   endJobRun(AGENT);
   endJobCarry(AGENT);
-  continuationContext.delete(AGENT);
+  stash.mockClear();
 });
 
 describe('D1: a turn that ends mid-job is parked and continued', () => {
@@ -300,8 +300,8 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139 })]);
-    // The continuation keeps the owner's conversation (the C3 stash every engine auto-continue writes).
-    expect(continuationContext.get(AGENT)).toMatchObject({ convKey: 'dashboard:owner', conversationId: 'conv-owner' });
+    // The continuation keeps the owner's conversation (the driver's C3 stash, the one writer of that record).
+    expect(stash).toHaveBeenCalledTimes(1);
   });
 
   it('no measure, nothing touched, no reply: the menu (today\'s text until the text wave), no park', async () => {

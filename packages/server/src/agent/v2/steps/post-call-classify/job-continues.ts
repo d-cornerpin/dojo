@@ -42,7 +42,6 @@ import { novelCallsInTurn } from '../../../../tracker/effort-ledger.js';
 import { createLogger } from '../../../../logger.js';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
-import { continuationContext } from '../../../turn-state.js';
 
 const logger = createLogger('v2-loop');
 
@@ -87,8 +86,7 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
     // The park, as the engine's other checkpoints do it: a pending PM verdict rides to the agent,
     // the job's own task is marked in flight (the activity line) and carried, then the one park door.
     deliverPendingCirclingVerdict(agentId);
-    // The C3 stash every engine auto-continue writes: the continuation keeps this turn's conversation.
-    if (ctx.chosenConvKey) continuationContext.set(agentId, { convKey: ctx.chosenConvKey, conversationId: ctx.turnCtx.conversationId ?? null, counterparty: ctx.counterparty });
+    ctx.stashContinuationIfHuman();   // the C3 stash every engine auto-continue makes: the continuation keeps a human conversation
     try { noteEngineCheckpoint(agentId, 'job-continues', [task.id]); } catch (err) {
       logger.warn('v2: job-continues checkpoint note failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
     }

@@ -24,7 +24,8 @@ vi.mock('../../../../../db/connection.js', async () => {
   };
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-const { countMeasure, handleMessage, deliverA2A } = vi.hoisted(() => ({
+const { countMeasure, handleMessage, deliverA2A, stash } = vi.hoisted(() => ({
+  stash: vi.fn(),
   countMeasure: vi.fn(),
   handleMessage: vi.fn(async () => undefined),
   deliverA2A: vi.fn(async () => ({ delivered: true, threadId: 't' })),
@@ -38,7 +39,6 @@ import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
 import { chargeEffortCalls } from '../../../../../tracker/effort-ledger.js';
 import { endJobCarry } from '../../../../../work/task-freshness.js';
-import { continuationContext } from '../../../../turn-state.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
@@ -64,7 +64,7 @@ beforeEach(() => {
   handleMessage.mockClear();
   deliverA2A.mockClear();
   endJobCarry(AGENT);
-  continuationContext.delete(AGENT);
+  stash.mockClear();
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -90,7 +90,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
       turnCtx: { agentId: AGENT, goingIdleDetectorRanThisTurn: false, conversationId: 'conv-owner' } as never,
       triggerRow: { rowid: 1, content: 'please sort my inbox' }, isA2ATurn: false, mostRecentInbound: undefined,
       lastUserMessageContent: 'please sort my inbox', chosenConvKey: 'dashboard:owner',
-      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
+      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' }, stashContinuationIfHuman: stash,
     } as unknown as PostCallClassifyContext, sc);
 
     // The owner's reply stands, and nothing was said in its place.
@@ -100,6 +100,7 @@ describe('ruling 1: an owner asks for a measured job — reply delivered, then t
     const continued = db().prepare(`SELECT payload FROM work_events WHERE work_id = ? AND kind = 'continued'`).all(id) as Array<{ payload: string }>;
     expect(continued.map((r) => JSON.parse(r.payload))).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 2 })]);
     expect(handleMessage).not.toHaveBeenCalled();   // the continuation never runs before the turn is over
+    expect(stash).toHaveBeenCalledTimes(1);          // and it keeps the owner's conversation (the C3 stash)
 
     // The park's own timer starts the next turn, from the wake, carrying the job.
     await vi.advanceTimersByTimeAsync(1000);
