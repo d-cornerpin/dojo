@@ -11,6 +11,7 @@ import type Database from 'better-sqlite3';
 import { getReadOnlyDb } from '../db/connection.js';
 import { DENIED_TABLES, isDeniedColumn } from './redact.js';
 import { schemaNotes } from './schema-notes.js';
+import { TABLE_NOTES } from './table-notes.js';
 
 const NOT_READABLE = 'not readable through dojo_inspect';
 const FTS_PART = /^(.*)_(data|idx|config|docsize|content)$/;
@@ -24,7 +25,7 @@ const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 
 /** One table's meaning, or what it is when no migration wrote one. */
 function meaning(name: string, virtualNames: Set<string>): string {
-  const note = schemaNotes().tables.get(name.toLowerCase());
+  const note = TABLE_NOTES[name.toLowerCase()] ?? schemaNotes().tables.get(name.toLowerCase());
   if (note) return note;
   if (virtualNames.has(name)) return 'full-text search index';
   const part = FTS_PART.exec(name);

@@ -89,8 +89,8 @@ describe('schema', () => {
     const out = mod.schema({});
     expect(out).toMatch(/^kept_tool_results \(0 rows\) — Now the stored `tool` row carries what the agent sees .* and THIS table carries the whole, which `tool_result_read` reads by line range or search\.$/m);
     expect(out).toMatch(/^agent_tool_outcomes \(0 rows\) — This table is the per-\(agent, tool\) truth, written on every tool result\.$/m);
-    // Fix round 1: no migration describes `work` in a whole sentence, so it says so instead of quoting a heading.
-    expect(out).toMatch(/^work \(0 rows\) — \(no description\)$/m);
+    // Part C (t267): no migration describes `work` in a whole sentence, so its meaning is hand-written (`table-notes.ts`).
+    expect(out).toMatch(/^work \(0 rows\) — The tracker: every request, task, project, commitment and run of a recurring job is one row \(kind\)/m);
     expect(out).toMatch(new RegExp(`^messages \\(${ROWS.toLocaleString('en-US')} rows\\)`, 'm'));
     expect(out).toMatch(/^google_accounts — not readable through dojo_inspect/m);
   });
@@ -102,16 +102,27 @@ describe('schema', () => {
       const meaning = line.replace(/^[^—]*— /, '');
       expect(meaning === '(no description)' || /[.!?]$/.test(meaning), `${t}: ${meaning}`).toBe(true);
     }
-    // An inline label on the CREATE TABLE line is the author's own, whole, and is kept as written.
-    expect(out).toMatch(/^work_events \(0 rows\) — absorbs task_log, poke_log, override requests$/m);
+    // Part C (t267): the ten-odd tables an agent queries most carry a hand-written meaning, which wins
+    // over a migration's label ("absorbs task_log, poke_log, override requests" said what it replaced).
+    expect(out).toMatch(/^work_events \(0 rows\) — The history of each tracker row/m);
     expect(out).not.toContain('the old message system leaves the');
     expect(out).not.toContain('TWO WORDS THAT NAME EVENTS THAT');
-    expect(out).toMatch(/^messages \([\d,]+ rows\) — \(no description\)$/m);
-    expect(out).toMatch(/^turns \(0 rows\) — \(no description\)$/m);
+    expect(out).toMatch(/^messages \([\d,]+ rows\) — Every message of every agent's conversation, in order \(seq\)/m);
+    expect(out).toMatch(/^turns \(0 rows\) — One row per agent turn/m);
     // Fix round 2: whole sentences that do not say what the table holds are not meanings.
     expect(out).toMatch(/^destructive_approvals \(1 row\) — \(no description\)$/m);
     expect(out).toMatch(/^dojo_reports \(0 rows\) — \(no description\)$/m);
-    expect(out).toMatch(/^tool_receipts \(0 rows\) — This table lets the ENGINE/m);
+    expect(out).toMatch(/^tool_receipts \(0 rows\) — The engine's proof that a send happened/m);
+  });
+
+  it('Part C (t267): the most-queried tables carry a hand-written meaning, a whole sentence each, also on the one-table view', () => {
+    const out = mod.schema({});
+    for (const t of ['agents', 'work', 'work_events', 'messages', 'turns', 'audit_log', 'deliveries', 'tool_receipts', 'agent_tool_failures', 'adjudications', 'a2a_threads', 'config']) {
+      const line = out.split('\n').find((l) => l.startsWith(`${t} (`)) ?? '';
+      expect(line, t).not.toMatch(/\(no description\)$/);
+      expect(line, t).toMatch(/\.$/);
+    }
+    expect(mod.schema({ table: 'audit_log' })).toMatch(/^audit_log — One row per model call, tool call, file access and command/);
   });
 
   it('lists a table\'s columns with type, nullability and the meaning, or "(no description)"', () => {
