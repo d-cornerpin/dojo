@@ -202,6 +202,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
     since: '2026-10-23',
     reason: 'v3.5 fix round 1 (orchestrator ruling: ONE work_events rebuild for the release): `continued` and `stalled` (Task D1) joined the CHECK beside `measured`. The earlier bytes existed only on the unmerged v3.5 lane branch, so no released or owner box applied them; the freeze gate counts branch history since the tag as applied, which is why this pair is recorded. The executable delta is two values added to the CHECK list and nothing else: the list only grows, so every row the earlier bytes admitted the current ones admit, and the rebuild (ids, counter, index) is byte-identical.',
   },
+  {
+    file: '201_decision_shadow.sql',
+    appliedChecksum: '60cf669e3561b32a7286fbbc93ea28ffdca45219c56ae41dbd4d8bf0d5260b75',
+    fileChecksum: '890ab781db4d03a462547fddf25c42775123ea45c524bd8c46b9f07944a08be4',
+    since: '2026-10-23',
+    reason: 'v3.5 lane t252, development-time iteration on an UNRELEASED migration: B2 committed the file (fb86e0cf) with decision_shadow alone, and B4, about an hour later in the same lane, added the summary_checks table and its index to the same reserved number (the lane holds one migration number). The earlier bytes never left that lane worktree: no server booted on the branch and every test runs an in-memory database, so no database holds the earlier checksum. Both versions are purely additive (CREATE TABLE/INDEX IF NOT EXISTS); decision_shadow is byte-identical between them. Were a body to hold the earlier checksum it would lack only summary_checks, and memory/summary-check.ts already degrades to a logged warning when that write fails (summaries are still checked and kept or refused).',
+  },
 ];
 
 type Db = ReturnType<typeof getDb>;
