@@ -58,6 +58,11 @@ describe('conversation', () => {
     expect(out).toMatch(/Earlier: around "msg-w-2" · Later: around "msg-w-4"\./);
   });
 
+  it('matches the pattern against the REDACTED text, so a search cannot probe a secret a character at a time', () => {
+    expect(conversation({ agent: 'worker', pattern: `Bearer ${BEARER.slice(0, 6)}` }, db)).toMatch(/: 0 messages\./);
+    expect(conversation({ agent: 'worker', pattern: 'upstream header' }, db)).toMatch(/: 1 message\./);
+  });
+
   it('leaves engine notices and tool rows out on request, and keeps them by default', () => {
     expect(conversation({ agent: 'worker', since: sqlTime(at(0)) }, db)).toContain('[Engine hint: an engine notice]');
     const quiet = conversation({ agent: 'worker', since: sqlTime(at(0)), include_engine: false }, db);

@@ -52,7 +52,11 @@ export function conversation(a: ConversationArgs, db: Database.Database = getRea
   if (w.to !== null) { where.push('created_at <= ?'); args.push(w.to); }
   if (a.pattern) { where.push('instr(lower(content), lower(?)) > 0'); args.push(a.pattern); }
   if (!engine) where.push(ENGINE_ROWS);
-  const rows = redactRows(db.prepare(`SELECT * FROM messages WHERE ${where.join(' AND ')} ORDER BY seq`).all(...args) as Row[], [agent.id]);
+  // The SQL match only narrows; the pattern must also hold on the REDACTED text, or a search
+  // could probe a secret a character at a time by which rows come back.
+  const needle = a.pattern?.toLowerCase();
+  const rows = redactRows(db.prepare(`SELECT * FROM messages WHERE ${where.join(' AND ')} ORDER BY seq`).all(...args) as Row[], [agent.id])
+    .filter((r) => !needle || r.content.toLowerCase().includes(needle));
   const head = `Conversation of ${agent.label}, ${w.note}${a.pattern ? `, matching "${a.pattern}"` : ''}${engine ? '' : ', engine notices and tool rows left out'}: `
     + `${rows.length} message${rows.length === 1 ? '' : 's'}.`;
   if (rows.length === 0) return `${head}\nNo messages for ${agent.label} in that window.`;
