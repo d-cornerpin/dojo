@@ -193,6 +193,11 @@ function spend(recordCost: (r: Parameters<typeof import('../../costs/tracker.js'
   recordCost({ agentId: 'ag', modelId: 'mdl', providerId: 'prov', inputTokens: Math.round(dollars * 1_000_000), outputTokens: 0 });
 }
 
+// v3.5 E19b fix round 1: sends go one at a time, so a second send starts once the first has
+// settled; one turn of the event loop (the REAL setImmediate, captured before any fake timers)
+// drains the stand-in runner's chain before the transport is read.
+const realSetImmediate = setImmediate;
+const sendsSettle = (): Promise<void> => new Promise((r) => realSetImmediate(r));
 const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 /** Live frames spoken by the platform: severity info = an all-clear's removal, else a card. */
 const frames = (): Array<{ error: string; severity: unknown }> => broadcasts
@@ -344,6 +349,7 @@ describe('all-clears keep their texts, raise no card, and take the trouble card 
     expect(liveCards()).toHaveLength(1);
     const failure = liveCards()[0].error;
     m.watcher.maybeAlertOnRecovery({ name: 'gmail', alreadyAlerted: true, totalNotificationsSinceFailure: 2 });
+    await sendsSettle();
     expect(texts()).toHaveLength(2);
     expect(texts()[1]).toContain('Gmail watcher has recovered and is polling normally again. 2 new emails delivered since recovery.');
     expect(liveCards(), 'the all-clear raises no card').toHaveLength(1);

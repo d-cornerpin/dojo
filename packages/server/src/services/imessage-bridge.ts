@@ -22,7 +22,8 @@ import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutbound, withOutboundAsync, withOutboundAsyncIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
-import { runMessagesProgram, wasCutByTheStop, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
+import { runMessagesProgram, wasCutByTheStop, wasNeverStarted, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { fenceExternal } from '../tools/external-content.js';
 import { recordPersonTold } from '../work/validation-drive.js';
 import { ownerCardFrame, ownerCardEnded, ownerCardStands } from './owner-card-frames.js';
@@ -1712,8 +1713,31 @@ export function checkImsgHealth(): void {
 }
 
 /** What one send came to. `cut`: the owner's Stop ended it, and it may already have gone out. */
-type SendResult = 'sent' | 'failed' | 'cut';
-const CUT_DETAIL = "cut off by the owner's Stop (it may already have gone out)";
+type SendResult = 'sent' | 'failed' | 'cut' | 'not-started';
+const STOP_DETAIL = {
+  cut: "cut off by the owner's Stop (it may already have gone out)",
+  // Fix round 1: a send the standing Stop kept from starting certainly did not go out.
+  'not-started': "not sent: the owner's Stop was already standing, so it never started",
+} as const;
+/** Was this send ended (or never begun) by the owner's Stop? Then nothing is retried another way. */
+const byTheStop = (err: unknown): 'cut' | 'not-started' | null => (wasCutByTheStop(err) ? 'cut' : wasNeverStarted(err) ? 'not-started' : null);
+const stopOrFail = (result: SendResult, failed: string): string => (result === 'cut' || result === 'not-started' ? STOP_DETAIL[result] : failed);
+
+// v3.5 E19b fix round 1 — ONE SEND AT A TIME, IN THE ORDER ASKED. The synchronous sends did this
+// by accident; async ones ran in parallel, so two owner notices seconds apart could reach the phone
+// out of order. Every exported send takes its turn here; a send made INSIDE a send (an attachment's
+// caption) runs in its parent's turn. An idle queue starts the send at once, in the caller's frame.
+const inASend = new AsyncLocalStorage<true>();
+let sendsInFlight = 0;
+let lastSend: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(send: () => Promise<T>): Promise<T> {
+  if (inASend.getStore()) return send();
+  const start = (): Promise<T> => inASend.run(true, send);
+  const run = sendsInFlight === 0 ? start() : lastSend.then(start);
+  sendsInFlight++;
+  lastSend = run.then(() => { sendsInFlight--; }, () => { sendsInFlight--; });
+  return run;
+}
 /** An agent's own send (the `imessage_send` tool) names the agent, and is bound to that agent's Stop.
  *  A platform send (an owner notice, the auto-route) names nobody and no Stop cuts it. */
 export interface SendOpts { agentId?: string }
@@ -1724,7 +1748,7 @@ export interface SendOpts { agentId?: string }
 // imessage_send callers reporting "sent" to the agent (and thus to the
 // user) when nothing actually went through.
 export async function sendIMessage(recipient: string, rawText: string, opts: SendOpts = {}): Promise<boolean> {
-  return (await textDoor(recipient, rawText, opts)) === 'sent';
+  return (await oneAtATime(() => textDoor(recipient, rawText, opts))) === 'sent';
 }
 
 async function textDoor(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
@@ -1739,7 +1763,7 @@ async function textDoor(recipient: string, rawText: string, opts: SendOpts): Pro
     channel: 'imessage',
     tool: 'imessage-door',
     recipientId: recipient,
-    detail: result === 'sent' ? null : result === 'cut' ? CUT_DETAIL : 'every iMessage path failed (imsg CLI and AppleScript)',
+    detail: result === 'sent' ? null : stopOrFail(result, 'every iMessage path failed (imsg CLI and AppleScript)'),
   }), 'imessage: door crossing', { recipient, ok: result === 'sent' });
   return result;
 }
@@ -1769,7 +1793,7 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
         via = 'imsg';
       } catch (imsgErr) {
         // A Stop is not a broken imsg: nothing is retried another way (E19b).
-        if (wasCutByTheStop(imsgErr)) throw imsgErr;
+        if (byTheStop(imsgErr)) throw imsgErr;
         // imsg is present but FAILED, e.g. imsg v0.11.1 installed as a raw
         // binary crashes with SIGTRAP because its compiled
         // PhoneNumberKit_PhoneNumberKit.bundle didn't ship alongside it. Text
@@ -1793,7 +1817,8 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
     // system marker that the loop persists in the chat stream.
     return 'sent';
   } catch (err) {
-    if (wasCutByTheStop(err)) { logger.info('iMessage send cut off by the owner\'s Stop', { recipient }); return 'cut'; }
+    const stopped = byTheStop(err);
+    if (stopped) { logger.info('iMessage send ended by the owner\'s Stop', { recipient, stopped }); return stopped; }
     logger.error('Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
       recipient,
@@ -1809,7 +1834,7 @@ async function sendIMessageInner(recipient: string, rawText: string, opts: SendO
  * the agent-facing imessage_send tool uses sendIMessageWithAttachments).
  */
 export async function sendIMessageWithAttachment(recipient: string, filePath: string, caption?: string, opts: SendOpts = {}): Promise<boolean> {
-  return (await attachmentDoor(recipient, filePath, caption, opts)) === 'sent';
+  return (await oneAtATime(() => attachmentDoor(recipient, filePath, caption, opts))) === 'sent';
 }
 
 function attachmentDoor(recipient: string, filePath: string, caption: string | undefined, opts: SendOpts): Promise<SendResult> {
@@ -1828,7 +1853,7 @@ function attachmentDoor(recipient: string, filePath: string, caption: string | u
         channel: 'imessage',
         tool: 'imessage-attachment-door',
         recipientId: recipient,
-        detail: result === 'sent' ? file : result === 'cut' ? `${file} ${CUT_DETAIL}` : `${file} failed on every path`,
+        detail: result === 'sent' ? file : result === 'failed' ? `${file} failed on every path` : `${file} ${STOP_DETAIL[result]}`,
       }), 'imessage: attachment door crossing', { recipient, ok: result === 'sent' });
       return result;
     },
@@ -1863,7 +1888,8 @@ async function sendIMessageWithAttachmentInner(
       logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(caption) });
       return 'sent';
     } catch (err) {
-      if (wasCutByTheStop(err)) return 'cut';   // the owner stopped it: no AppleScript retry (E19b)
+      const stopped = byTheStop(err);
+      if (stopped) return stopped;   // the owner stopped it: no AppleScript retry (E19b)
       logger.warn('imsg attachment send failed, falling back to AppleScript file send. Repair imsg: ' + IMSG_INSTALL_HINT, {
         error: err instanceof Error ? err.message.slice(0, 300) : String(err),
         recipient,
@@ -1891,7 +1917,8 @@ async function sendIMessageWithAttachmentInner(
     }
     return 'sent';
   } catch (err) {
-    if (wasCutByTheStop(err)) return 'cut';
+    const stopped = byTheStop(err);
+    if (stopped) return stopped;
     logger.error('iMessage attachment send failed on every path (imsg and AppleScript)', {
       error: err instanceof Error ? err.message.slice(0, 300) : String(err),
       recipient,
@@ -1918,10 +1945,10 @@ export function sendIMessageWithAttachments(
   // PHASE-2 T5: one scope for the whole batch. A message with three files that partly failed
   // is ONE delivery the person half-received, recorded once and honestly as `failed` — not
   // three rows, and not a green row per file that happened to go through.
-  return withOutboundAsyncIfAbsent(
+  return oneAtATime(() => withOutboundAsyncIfAbsent(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
     () => sendIMessageWithAttachmentsInner(recipient, text, filePaths, opts),
-  );
+  ));
 }
 
 async function sendIMessageWithAttachmentsInner(
@@ -1955,7 +1982,7 @@ async function sendIMessageWithAttachmentsInner(
     if (result === 'sent') {
       sentFiles.push(filePaths[i]);
       if (i === 0 && caption) textSent = true;
-    } else if (result === 'cut') {
+    } else if (result === 'cut' || result === 'not-started') {
       // The owner pressed Stop: nothing more goes out, not the next file and not the text alone.
       return { ok: false, sentFiles, failedFiles: [...failedFiles, ...filePaths.slice(i)], textSent };
     } else {

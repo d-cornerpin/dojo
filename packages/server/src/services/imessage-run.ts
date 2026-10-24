@@ -24,9 +24,10 @@
 // JPEG conversion of an inbound photo (macOS's own `sips`).
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { homeDir } from '../home.js';
-import { endsWithTheStop, signalProcessTree } from '../agent/effects/proc-tree.js';
+import { endsWithTheStop, signalProcessTree, KILL_GRACE_MS } from '../agent/effects/proc-tree.js';
 import { untilUserStop } from '../agent/stop-waiters.js';
 
 /** The rejection of a run the owner's Stop ended. */
@@ -36,21 +37,37 @@ export function wasCutByTheStop(err: unknown): err is CutByTheStop {
   return err instanceof Error && (err as Partial<CutByTheStop>).cutByTheStop === true;
 }
 
+/** The rejection of a run that never started, because the owner's Stop was already standing. */
+export function wasNeverStarted(err: unknown): boolean {
+  return err instanceof Error && (err as { neverStarted?: boolean }).neverStarted === true;
+}
+
 export function runMessagesProgram(program: string, argv: readonly string[], opts: { timeout: number; agentId?: string }): Promise<string> {
   const maxBuffer = 1024 * 1024;   // Node's documented execFile default, made explicit
   return new Promise((resolve, reject) => {
     const stop = opts.agentId === undefined ? null : untilUserStop(opts.agentId);
-    let cut = stop?.already === true;
-    if (cut) { stop?.dispose(); reject(Object.assign(new Error(`${program}: not started, the agent was stopped`), { cutByTheStop: true as const })); return; }
-    const child = spawn(program, [...argv], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let cut = false;
+    // Fix round 1: a run the standing Stop kept from starting is NOT a cut send — nothing went out.
+    if (stop?.already === true) { stop.dispose(); reject(Object.assign(new Error(`${program}: not started, the agent was stopped`), { neverStarted: true })); return; }
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(program, [...argv], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) { stop?.dispose(); reject(err); return; }   // fix round 1: the waiter is not left behind
     if (opts.agentId !== undefined) endsWithTheStop(opts.agentId, child);
     void stop?.stopped.then(() => { cut = true; });
     let stdout = '';
     let stderr = '';
     let fault: string | null = null;
-    const end = (why: string): void => { fault ??= why; signalProcessTree(child, 'SIGTERM'); };
+    let closed = false;
+    // Fix round 1: the bound escalates like the Stop does (proc-tree.ts): SIGTERM to the group, then
+    // SIGKILL after the same grace, so a program that ignores SIGTERM cannot leave the send pending.
+    const end = (why: string): void => {
+      fault ??= why;
+      signalProcessTree(child, 'SIGTERM');
+      setTimeout(() => { if (!closed) signalProcessTree(child, 'SIGKILL'); }, KILL_GRACE_MS).unref();
+    };
     const bound = setTimeout(() => end(`timed out after ${opts.timeout} ms`), opts.timeout);
-    const done = (): void => { clearTimeout(bound); stop?.dispose(); };
+    const done = (): void => { closed = true; clearTimeout(bound); stop?.dispose(); };
     child.stdout.setEncoding('utf-8').on('data', (d: string) => { stdout += d; if (stdout.length > maxBuffer) end('stdout maxBuffer exceeded'); });
     child.stderr.setEncoding('utf-8').on('data', (d: string) => { stderr += d; if (stderr.length > maxBuffer) end('stderr maxBuffer exceeded'); });
     child.once('error', (err) => { done(); reject(Object.assign(err, { stderr })); });

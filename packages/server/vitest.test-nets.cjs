@@ -35,6 +35,12 @@
 //      shell line (`$(/usr/bin/osascript …)`) is refused too; a name a running shell resolves
 //      finds the net's own refusing stand-ins first (`test-net-stand-in/imsg`, `…/osascript`).
 //      A test stubs the transport, or puts its own stand-in first on `process.env.PATH`.
+//      WHAT IT CANNOT SEE (E19b fix round 1, said so the next author knows the edge):
+//        • a test that sets its OWN PATH without the stand-in directory and then has a shell
+//          resolve `osascript`/`imsg` by name inside `$(…)` (a parsed line is still refused);
+//        • a stand-in a test plants that ITSELF runs `/usr/bin/osascript` (or a `$VAR` path):
+//          Node children carry the net through NODE_OPTIONS, a shell script's children do not.
+//      No test does either. A planted stand-in must only record and exit.
 // ════════════════════════════════════════
 'use strict';
 

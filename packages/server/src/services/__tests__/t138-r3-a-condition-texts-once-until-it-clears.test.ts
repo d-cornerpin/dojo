@@ -131,6 +131,11 @@ afterEach(() => {
   vi.resetModules();
 });
 
+// v3.5 E19b fix round 1: sends go one at a time, so a second send starts once the first has
+// settled; one turn of the event loop (the REAL setImmediate, captured before any fake timers)
+// drains the stand-in runner's chain before the transport is read.
+const realSetImmediate = setImmediate;
+const sendsSettle = (): Promise<void> => new Promise((r) => realSetImmediate(r));
 const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 const about = (word: string): string[] => texts().filter((t) => t.includes(word));
 
@@ -152,6 +157,7 @@ describe('memory below 512MB', () => {
     memory.freeMb = 300; // and came back
     now += 3 * 60_000; vi.setSystemTime(now);
     canSpawnAgent();
+    await sendsSettle();
     expect(about('512MB')).toHaveLength(2);
   });
 

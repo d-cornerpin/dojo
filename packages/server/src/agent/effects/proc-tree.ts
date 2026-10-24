@@ -41,7 +41,7 @@ import { untilUserStop } from '../stop-waiters.js';
 // the way out too (`toolboxGroups`), which keeps the old "a restart ends what the agents ran".
 // ════════════════════════════════════════
 
-const KILL_GRACE_MS = 3_000;
+export const KILL_GRACE_MS = 3_000;
 
 /** Every process group this door has started and that may still have members. */
 const toolboxGroups = new Set<number>();

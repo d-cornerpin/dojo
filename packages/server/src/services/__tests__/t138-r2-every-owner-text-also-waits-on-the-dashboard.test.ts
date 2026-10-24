@@ -205,6 +205,11 @@ function spend(recordCost: typeof import('../../costs/tracker.js').recordCost, d
 }
 
 /** What left for the owner's phone. */
+// v3.5 E19b fix round 1: sends go one at a time, so a second send starts once the first has
+// settled; one turn of the event loop (the REAL setImmediate, captured before any fake timers)
+// drains the stand-in runner's chain before the transport is read.
+const realSetImmediate = setImmediate;
+const sendsSettle = (): Promise<void> => new Promise((r) => realSetImmediate(r));
 const texts = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));
 /** The owner's dashboard cards: notification frames spoken by the platform, not an agent. */
 const cards = (): Array<{ error: string; severity: unknown; retryable: unknown }> =>
@@ -230,6 +235,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     expect(PLATFORM_SENDER).toBe('platform');
     budget.setGlobalBudget(10);
     spend(recordCost, 5.1);
+    await sendsSettle();
     expectPaired(1);
     expect(cards()[0].error).toContain('51%');
     expect(cards()[0]).toMatchObject({ severity: 'warning', retryable: false });
@@ -240,6 +246,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     let paused = false;
     for (let i = 0; i < 10 && !paused; i++) paused = errors.recordError('ag');
     expect(paused).toBe(true);
+    await sendsSettle();
     expectPaired(1);
     expect(cards()[0].error).toContain('Helper');
     expect(cards()[0].error).toContain('paused');
@@ -251,6 +258,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     db().prepare("UPDATE agents SET recovery_attempts = 3, status = 'error' WHERE id = 'ag'").run();
     healer.onAgentInjured('ag', 'fetch failed: ECONNRESET');
     healer.onAgentInjured('ag', 'fetch failed: ECONNRESET'); // inside the backoff window: unchanged
+    await sendsSettle();
     expectPaired(1);
     expect(cards()[0].error).toContain('Helper');
   });
@@ -259,6 +267,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
     account.openrouter = 2;
     const { tick } = await boot();
     await tick();
+    await sendsSettle();
     expectPaired(1);
     expect(cards()[0].error).toContain('OpenRouter');
   });
@@ -266,6 +275,7 @@ describe('the RED witness: a text reaches the phone and nothing waits on the das
   it('a critical alert is a critical card; the phone gets the [CRITICAL] prefix, the card its tier', async () => {
     const { bridge } = await boot();
     await bridge.sendAlert('The box is nearly out of memory. Close something.', 'critical');
+    await sendsSettle();
     expectPaired(1);
     expect(texts()[0]).toContain('[CRITICAL]');
     expect(cards()[0]).toMatchObject({ error: 'The box is nearly out of memory. Close something.', severity: 'error' });
@@ -281,12 +291,14 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     spend(mods.recordCost, 2.5);
     spend(mods.recordCost, 1.5);
     spend(mods.recordCost, 0.3);
+    await sendsSettle();
     expectPaired(3);
     expect(cards().map((c) => c.error.match(/(\d+)%/)?.[1])).toEqual(['51', '78', '93']);
 
     mods = await boot(); // a fresh process: the crossing is already told
     spend(mods.recordCost, 0.1);
     mods.budget.checkBudget('ag', 0.01);
+    await sendsSettle();
     expectPaired(3);
   });
 
@@ -294,12 +306,14 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     const { recordCost, budget } = await boot();
     budget.setGlobalBudget(10);
     spend(recordCost, 9.2);
+    await sendsSettle();
     expectPaired(1);
     db().prepare("UPDATE cost_records SET created_at = datetime('now', '-2 days')").run();
     for (const f of ['alert_50_sent', 'alert_75_sent', 'alert_90_sent']) {
       db().prepare(`UPDATE budgets SET ${f} = ${f} - 2 * 86400 WHERE ${f} > 0`).run();
     }
     spend(recordCost, 9.1);
+    await sendsSettle();
     expectPaired(2);
   });
 
@@ -311,14 +325,18 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     const later = async (): Promise<void> => { now += 60 * 60_000; vi.setSystemTime(now); await tick(); };
     vi.setSystemTime(now);
     await tick();
+    await sendsSettle();
     expectPaired(1);
     await later(); // unchanged
+    await sendsSettle();
     expectPaired(1);
     account.openrouter = 40; // the owner topped up: re-armed silently
     await later();
+    await sendsSettle();
     expectPaired(1);
     account.openrouter = 3; // and it fell again
     await later();
+    await sendsSettle();
     expectPaired(2);
   });
 
