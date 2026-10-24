@@ -5,7 +5,8 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
-import { executeGmailLabel, BATCH_MODIFY_IDS } from './gmail-label.js';
+import { executeGmailLabel } from './gmail-label.js';
+import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import {
   type LocalAttachment,

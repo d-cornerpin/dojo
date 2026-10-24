@@ -13,6 +13,7 @@
 
 import { googleWrite } from './client.js';
 import { resolveGmailLabelTarget } from './gmail-archive.js';
+import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 
 /** The refusal for a call with nothing to add and nothing to remove. */
 export const NOTHING_TO_CHANGE =
@@ -57,9 +58,6 @@ export async function executeGmailLabel(
   const count = (result.data as { messages?: unknown[] } | null)?.messages?.length;
   return `Labels updated on the WHOLE conversation ${target.threadId}${count ? ` (${count} message${count === 1 ? '' : 's'})` : ''}. To change only one message next time, pass message_id with this_message_only=true.`;
 }
-
-/** Gmail's documented maximum ids per `messages.batchModify` call. */
-export const BATCH_MODIFY_IDS = 1000;
 
 const idList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []);
 const unique = (xs: string[]): string[] => [...new Set(xs)];
