@@ -9082,6 +9082,34 @@
       "to": 2939,
       "by": "t262 (2026-10-23): v3.5 plan before project, Task A1",
       "why": "+1: the `plan` property on work_open, one line referencing the WORK_PLAN_PROP object declared in agent/work-verb-schema.ts (the object, its description and its steps schema live there, beside the measure and remainder objects, not here). From 2,939 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/types.ts",
+      "from": 338,
+      "to": 340,
+      "by": "t262 (2026-10-23): v3.5 plan before project, Task A2",
+      "why": "+2: the `scale?: ToolScale` field on ToolDefinition and the one type import it needs. The ToolScale type and everything that reads it live in the new tools/scale-facts.ts. From 340 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 997,
+      "to": 998,
+      "by": "t262 (2026-10-23): v3.5 plan before project, Task A2",
+      "why": "+1: the import of `scaleFactsForAgent`. The plan handling in the project door replaced lines it already had (the task list and measure read), so the door grew by the import alone; the facts are built in tools/scale-facts.ts. From 998 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2939,
+      "to": 2940,
+      "by": "t262 (2026-10-23): v3.5 plan before project, Task A2",
+      "why": "+1: the directory-listing tool's one-line `scale` declaration (a sentence; no batch and no pages, a listing has neither). The other declarations sit in the provider files. From 2,940 this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/google/tools-forms.ts",
+      "from": 821,
+      "to": 822,
+      "by": "t262 (2026-10-23): v3.5 plan before project, Task A2",
+      "why": "+1: the form-responses tool's one-line `scale` declaration (page size 5000 with its page_token, Forms' documented maximum). From 822 this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9163,14 +9191,14 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 910,
     "packages/server/src/agent/tools/cat/session.ts": 277,
-    "packages/server/src/agent/tools/cat/tracker.ts": 997,
-    "packages/server/src/agent/tools/definitions.ts": 2939,
+    "packages/server/src/agent/tools/cat/tracker.ts": 998,
+    "packages/server/src/agent/tools/definitions.ts": 2940,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 370,
     "packages/server/src/agent/tools/gates.ts": 286,
     "packages/server/src/agent/tools/index.ts": 664,
     "packages/server/src/agent/tools/surface.ts": 735,
-    "packages/server/src/agent/tools/types.ts": 338,
+    "packages/server/src/agent/tools/types.ts": 340,
     "packages/server/src/agent/tools/util.ts": 371,
     "packages/server/src/agent/turn-context.ts": 650,
     "packages/server/src/agent/turn-state.ts": 239,
@@ -9277,7 +9305,7 @@
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 776,
-    "packages/server/src/google/tools-forms.ts": 821,
+    "packages/server/src/google/tools-forms.ts": 822,
     "packages/server/src/google/tools-read.ts": 945,
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 2007,
