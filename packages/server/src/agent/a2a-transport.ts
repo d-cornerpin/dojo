@@ -30,7 +30,8 @@ import { isSenderAuthorized } from './v2/channel-auth.js';
 // SWEEP CORE-2 item 5: STATIC, because the relay's scope check runs on the synchronous
 // path beside the compose branches. `config/platform.ts` imports only `db/connection.js`,
 // so there is no cycle to buy with the dynamic form the older call sites in this file use.
-import { isPrimaryAgent } from '../config/platform.js';
+import { isPrimaryAgent, isSystemServiceAgent } from '../config/platform.js';
+import { fenceExternal } from '../tools/external-content.js';
 import { mayUseChannel } from './access/read.js';
 import { ACCESS_CHANNELS, type AccessChannel } from '@dojo/shared';
 import { type DeliveryInput } from './v2/deliveries.js';
@@ -569,10 +570,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     logDrop(envelope, 'AGENT_NOT_FOUND', { liveAgentsNearThatName: liveAgentNamesNear(envelope.toAgent) });
     return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
   }
-  if (target.status === 'terminated') {
-    logDrop(envelope, 'AGENT_NOT_FOUND');
-    return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
-  }
+  if (target.status === 'terminated') { logDrop(envelope, 'AGENT_NOT_FOUND'); return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId }; }
 
   // ── 3. Enforce intent rules ──
   // Two independent concepts:
@@ -950,7 +948,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   const promotionTag = autoPromotedFromFyi
     ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
     : '';
-  let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
+  // v3.5 K33: another agent's report to the main agent is information, not orders (platform agents and the engine are not fenced).
+  const theirReport = isPrimaryAgent(target.id) && !isPrimaryAgent(envelope.fromAgent) && !isEngineEnvelope && !isSystemServiceAgent(envelope.fromAgent) ? fenceExternal('agent report', senderName, envelope.payload, { addressedToAgent: true }) : envelope.payload;
+  let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${theirReport}${threadInfo}${primaryDeliverableHint}`;
 
   // ── ND-3: attach the recipient's OWN task evidence to a validation QUESTION ──
   // A QUESTION cross-examining an agent about a task IT completed otherwise makes

@@ -140,7 +140,8 @@ describe('web_fetch against a JSON API', () => {
 
     // The SHAPE survives: a JSON content-type is not run through the HTML stripper, so
     // what reaches the agent is still valid JSON with its fields intact.
-    const body = out.slice(out.indexOf('\n\n') + 2);
+    // v3.5 K33: the page arrives inside the external-content fence; the JSON is what sits between its lines.
+    const body = out.slice(out.indexOf('\n\n') + 2).split('\n').slice(1, -1).join('\n');
     const parsed = JSON.parse(body) as typeof ISSUES_PAYLOAD;
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed).toHaveLength(1);

@@ -114,7 +114,8 @@ describe('§3 one reader of "who is the owner on iMessage"', () => {
     // By file name (the refusal gate lives under the engine's step packages, which only the
     // shared corpus walks by path — guard-corpus-census).
     expect(filesMatching(/\bisOwnerIMessageRecipient\s*\(/).map((f) => f.slice(f.lastIndexOf('/') + 1)))
-      .toEqual(['refusal-gates.ts', 'safe-senders.ts', 'validation-drive.ts']);
+      // v3.5 K33: the SMS and live-call doors ask the same rule (is this the owner, whose words are not fenced).
+      .toEqual(['refusal-gates.ts', 'safe-senders.ts', 'call-session.ts', 'sms-inbound.ts', 'validation-drive.ts']);
     expect(filesMatching(/\bownerIMessageRecord\s*\(/)).toEqual(['services/imessage-bridge.ts', 'services/safe-senders.ts']);
   });
 

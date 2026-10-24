@@ -18,6 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { fenceExternal } from '../tools/external-content.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
@@ -339,7 +340,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       const content =
         `[SOURCE: OUTLOOK NOTIFICATION — ${notifyAccount} (${accountSuffix})]\n\n` +
         body +
-        `From: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}\n` +
+        fenceExternal('email', from, `From: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}`, { addressedToAgent: isDirectToAgent }) + `\nMessage ID: ${msg.id}\n` +   // v3.5 K33
         `Use \`${toolHint}\`${kind === 'user' ? ` (account: ${notifyAccount})` : ''} to read the full body${isDirectToAgent ? ' if you need it' : ' before deciding'}.`;
 
       const msgId = uuidv4();

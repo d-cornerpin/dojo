@@ -945,7 +945,7 @@ export async function executePdfTool(
         const p = args.path as string;
         if (!p) return 'Error: path is required.';
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
-        const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
+        const [{ extractPdfText, PdfExtractError }, { fenceExternal }] = await Promise.all([import('../services/pdf-extract.js'), import('../tools/external-content.js')]);
         try {
           const data = effectFs.readFileSync(p).toString('base64');
           const extracted = await extractPdfText(data);
@@ -954,7 +954,7 @@ export async function executePdfTool(
             return `This PDF (${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}) has no extractable text layer — it is almost certainly scanned or image-only. There is nothing to read as text; tell the user it looks image-based.`;
           }
           const header = `[PDF text — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}, ${extracted.charCount} chars${extracted.truncated ? `, truncated to the first ${extracted.pagesExtracted} page(s)` : ''}]`;
-          return `${header}\n${trimmed}`;
+          return `${header}\n${fenceExternal('document', p, trimmed)}`;   // v3.5 K33: a document is information, not orders
         } catch (err) {
           const reason = err instanceof PdfExtractError ? err.message : (err instanceof Error ? err.message : String(err));
           return `Error reading PDF text: ${reason}`;

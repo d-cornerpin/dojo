@@ -23,6 +23,7 @@ import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutbound, withOutboundAsync, withOutboundAsyncIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
 import { runMessagesProgram, wasCutByTheStop, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
+import { fenceExternal } from '../tools/external-content.js';
 import { recordPersonTold } from '../work/validation-drive.js';
 import { ownerCardFrame, ownerCardEnded, ownerCardStands } from './owner-card-frames.js';
 import { homeDir } from '../home.js';
@@ -954,7 +955,9 @@ export async function processInboundIMessage(
   // engine delivers. The remaining SOURCE tag below carries the policy
   // + sender identity. The per-turn `[Reply destination: ...]` line in
   // the assembled system prompt tells the model SMS voice is required.
-  let msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+  // v3.5 K33: a contact's text is addressed to the agent — answerable, never orders. The owner's own text is not fenced.
+  const theirText = senderRecord?.is_primary ? textForModel : fenceExternal('text message', senderLabel, textForModel, { addressedToAgent: true });
+  let msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${theirText}`;
   if (input.staleSentAtIso) {
     // P5c: the row keeps its real send time in-band (absolute, cache-safe) so
     // the model reads it as history, not as a fresh ask awaiting a reply.

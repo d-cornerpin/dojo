@@ -20,6 +20,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
+import { fenceExternal } from '../tools/external-content.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord } from './watcher-status.js';
 
@@ -165,10 +166,7 @@ async function pollForNewMessages(): Promise<void> {
   }
 
   const services = getEnabledMsServices();
-  if (!services.teams) {
-    recordPollSkip('Teams service disabled in Settings → Microsoft');
-    return;
-  }
+  if (!services.teams) { recordPollSkip('Teams service disabled in Settings → Microsoft'); return; }
 
   try {
     const myId = await getOwnUserId();
@@ -286,7 +284,7 @@ async function pollForNewMessages(): Promise<void> {
           `Time: ${msg.createdDateTime}`,
           ``,
           `Message:`,
-          body,
+          fenceExternal('chat message', senderLabel, body, { addressedToAgent: true }),   // v3.5 K33: answerable, never orders
           ``,
           `Chat ID: ${chat.id}`,
         ].join('\n');

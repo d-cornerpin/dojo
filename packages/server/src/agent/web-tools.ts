@@ -5,6 +5,7 @@
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { stripHtmlTags } from './html-text.js';
+import { fenceExternal } from '../tools/external-content.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
 // ── t114 (census U17) — web_fetch's two phases, named ──
@@ -142,9 +143,7 @@ export async function webSearch(
     };
 
     const results = data.web?.results ?? [];
-    if (results.length === 0) {
-      return `No results found for: "${query}"`;
-    }
+    if (results.length === 0) return `No results found for: "${query}"`;
 
     // Phase 3.5 (2026-05-04) — per-result snippet cap at 200 chars per
     // Part XVIII §A. Brave's `description` is the snippet; truncating it
@@ -158,7 +157,7 @@ export async function webSearch(
       return `${i + 1}. ${r.title}\n   ${r.url}\n   ${snippet}`;
     }).join('\n\n');
 
-    return `Search results for "${query}":\n\n${formatted}`;
+    return `Search results for "${query}":\n\n${fenceExternal('search result', `a web search for "${query}"`, formatted)}`;
     } catch (err) {
       // The discriminator is this call's OWN controller, never the message: a composed clock
       // rejects with the same `AbortError` a stop does.
@@ -407,7 +406,7 @@ export async function webFetch(
         });
         const extract = result.content?.trim();
         if (extract && extract.length > 0) {
-          return `Fetched from ${url} (extracted via prompt):\n\n${extract}`;
+          return `Fetched from ${url} (extracted via prompt):\n\n${fenceExternal('web page', url, extract)}`;
         }
         extractionSkipped = 'the extractor returned nothing, so the raw page is shown instead';
         logger.warn('web_fetch extractor returned empty content — falling back to raw', { url }, agentId);
@@ -436,6 +435,6 @@ export async function webFetch(
   }
   // t114: the note rides the RESULT, so the agent learns its prompt was not applied.
   return extractionSkipped
-    ? `Fetched from ${url} (NOTE: your extraction prompt was NOT applied — ${extractionSkipped}):\n\n${text}`
-    : `Fetched from ${url}:\n\n${text}`;
+    ? `Fetched from ${url} (NOTE: your extraction prompt was NOT applied — ${extractionSkipped}):\n\n${fenceExternal('web page', url, text)}`
+    : `Fetched from ${url}:\n\n${fenceExternal('web page', url, text)}`;
 }

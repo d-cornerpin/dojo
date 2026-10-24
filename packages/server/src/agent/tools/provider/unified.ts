@@ -12,6 +12,7 @@
 
 import { unifiedCalendarAgenda, unifiedEmailSearch } from '../../../tools/unified-read.js';
 import { getDb } from '../../../db/connection.js';
+import { fenceExternal } from '../../../tools/external-content.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 
 const handlers = {
@@ -30,6 +31,8 @@ const handlers = {
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
     content = await unifiedEmailSearch(args, agentId, agentRow?.name ?? agentId);
     isError = content.startsWith('Error');
+    // v3.5 K33: the matches are other people's mail — information, never instructions.
+    if (!isError && !content.startsWith('No mailbox is connected')) content = fenceExternal('email', 'the connected mailboxes', content);
     return { content, isError };
   },
 } satisfies Record<string, ToolHandler>;
