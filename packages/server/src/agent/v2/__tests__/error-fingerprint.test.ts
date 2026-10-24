@@ -10,10 +10,10 @@ describe('fingerprint(toolName, errorText)', () => {
   });
 
   it('two otherwise identical errors that differ only by ids, uuids, paths, numbers and emails fingerprint the same', () => {
-    const a = fingerprint('file_read', 'Cannot read /Users/alice/docs/report-2024.pdf (message 18f3a9c2d4e5b601, id 3f2b8c1e-9d4a-4c7e-8a11-0b5d6e7f8a90) after 3 tries; contact a.person@example.com');
-    const b = fingerprint('file_read', 'Cannot read /home/bob/other/place/notes-77.pdf (message 99aa88bb77cc6601, id 0a1b2c3d-1111-2222-3333-444455556666) after 12 tries; contact someone.else@example.org');
+    const a = fingerprint('file_read', 'Cannot read /var/data/docs/report-2024.pdf (message 18f3a9c2d4e5b601, id 3f2b8c1e-9d4a-4c7e-8a11-0b5d6e7f8a90) after 3 tries; contact a.person@example.com');
+    const b = fingerprint('file_read', 'Cannot read /opt/other/place/notes-77.pdf (message 99aa88bb77cc6601, id 0a1b2c3d-1111-2222-3333-444455556666) after 12 tries; contact someone.else@example.org');
     expect(a).toBe(b);
-    expect(a).not.toMatch(/alice|bob|example|\d{3}/);
+    expect(a).not.toMatch(/var\/data|opt\/other|example|\d{3}/);
   });
 
   it('different failures stay different', () => {
