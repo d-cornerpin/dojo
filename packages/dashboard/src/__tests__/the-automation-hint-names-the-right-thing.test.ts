@@ -169,7 +169,11 @@ describe('the premises are still true of the code that creates them', () => {
     // v3.5 E19b: the bridge's programs run through its async runner, which the server spawns.
     const runner = read(path.join(REPO_ROOT, 'packages/server/src/services/imessage-run.ts'));
     expect(bridge, 'and it should still run through osascript').toMatch(/runMessagesProgram\('osascript', \['-e'/);
-    expect(runner, 'as a child the server spawns').toMatch(/spawn\(program, \[\.\.\.argv\]/);
+    // Since the rebase onto v35 the spawn itself is the one Stop-bound runner both screen control and the
+    // sends use (agent/stop-bound-run.ts); the iMessage runner hands its programs to it.
+    expect(runner, 'through the one Stop-bound runner').toMatch(/return runBoundToTheStop\(program, argv, opts\);/);
+    const shared = read(path.join(REPO_ROOT, 'packages/server/src/agent/stop-bound-run.ts'));
+    expect(shared, 'as a child the server spawns').toMatch(/spawn\(program, \[\.\.\.argv\]/);
     expect(runner, 'the primary path is still the imsg CLI').toMatch(/execFileSync\('imsg'/);
   });
 
