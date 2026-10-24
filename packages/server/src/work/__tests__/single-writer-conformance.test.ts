@@ -60,9 +60,9 @@ const WRITER_DIR = 'work/';
  *  `work_events` from matching `work` and vice versa — it is load-bearing and self-tested. */
 const SPINE_WRITE_RE = new RegExp(
   [
-    String.raw`(?:INSERT(?:\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(?:work\b|work_events\b|adjudications\b|\$\{)`,
-    String.raw`UPDATE\s+(?:work\b|work_events\b|adjudications\b|\$\{)`,
-    String.raw`DELETE\s+FROM\s+(?:work\b|work_events\b|adjudications\b|\$\{)`,
+    String.raw`(?:INSERT(?:\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(?:work\b|work_events\b|work_ledger\b|adjudications\b|\$\{)`,
+    String.raw`UPDATE\s+(?:work\b|work_events\b|work_ledger\b|adjudications\b|\$\{)`,
+    String.raw`DELETE\s+FROM\s+(?:work\b|work_events\b|work_ledger\b|adjudications\b|\$\{)`,
   ].join('|'),
   'i',
 );
@@ -168,6 +168,9 @@ describe('PART A — the work spine has exactly one writer', () => {
       'UPDATE work SET state = ?',
       'DELETE FROM work_events WHERE id = ?',
       'UPDATE ${table} SET state = ?',
+      // v3.5 (migration 200): the ledger is spine too; its writes live in work/ledger-store.ts.
+      'INSERT INTO work_ledger (work_id, item_key) VALUES (?, ?)',
+      'DELETE FROM work_ledger WHERE work_id = ?',
     ]) expect(SPINE_WRITE_RE.test(form)).toBe(true);
 
     // ...and does NOT fire on names that merely start the same way, or on reads.
