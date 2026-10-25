@@ -12,6 +12,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import type { HonestStopKind } from './error-format.js';
 import { budgetStopCardsLifted } from '../../healer/owner-notices.js';
+import { endWaitsThatAreOver } from '../../memory/writer-wait.js';
 
 const logger = createLogger('honest-stop');
 
@@ -67,8 +68,10 @@ async function releaseIfParked(kind: HonestStopKind, opts: { agentId?: string; o
 /** A limit was raised or a window turned over: release the agents it no longer stops. */
 export const releaseClearedBudgetStops = (): Promise<string[]> => releaseIfParked('budget_stop', {});
 
-/** A model, tier, window or tool list changed: every no-fit lock (or one agent's) gets another look. */
+/** A model, tier, window or tool list changed: every no-fit lock (or one agent's) gets another look — and (t268
+ *  breaker fix) every summary span waiting for a writer whose writer can now run ends its wait, once. */
 export const noteModelsChanged = async (agentId?: string): Promise<void> => {
+  endWaitsThatAreOver(agentId);
   await releaseIfParked('no_model_fits', { agentId });
   await releaseIfParked('budget_stop', { agentId, onModelsChange: true });   // t149: only a "free fallback did not answer" park listens to this
 };

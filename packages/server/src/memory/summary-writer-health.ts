@@ -216,10 +216,10 @@ export function eligibleSummaryWriters(preferredModelId?: string, agentId?: stri
  *  one can: a wait, not a failed pass, so nothing arms the compaction brake for it (no writer at all is a defect). The
  *  wait is recorded (breaker fix), so a writer of its order answering again reaches it (`writer-wait.ts`). */
 export function spanWaitsForAWriter(agentId: string): boolean {
-  const own = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
-  const waits = (): boolean => summaryWriterCandidates(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId).length === 0;
+  const own = (): string | undefined => (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;   // read afresh: the owner may change it
+  const waits = (): boolean => summaryWriterCandidates(own(), agentId).length > 0 && eligibleSummaryWriters(own(), agentId).length === 0;
   if (!waits()) return false;
-  noteSpanWaits(agentId, { stillWaits: waits, writesOn: (p, m) => summaryWriterCandidates(own, agentId).some((id) => (m ? id === m : providerKey(id) === p)) });
+  noteSpanWaits(agentId, { stillWaits: waits, writesOn: (p, m) => summaryWriterCandidates(own(), agentId).some((id) => (m ? id === m : providerKey(id) === p)) });
   return true;
 }
 

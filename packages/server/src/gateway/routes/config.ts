@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { getProviderCredential, setProviderCredential, clearSecretsCache, getSearchApiKey, getSearchProvider, setSearchConfig } from '../../config/loader.js';
 import { clearClientCache, resolveOpenAIBaseUrl, THINKING_OUTPUT_FLOOR_TOKENS, getContextWindow } from '../../agent/model.js';
+import { writersMayBeBack } from '../../memory/writer-wait.js';
 import { CreateProviderSchema, EditProviderSchema, EnableModelsSchema, ProviderPatienceSchema, ProviderPrefillThroughputSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
@@ -527,6 +528,7 @@ configRouter.post('/providers', async (c) => {
     }
 
     const updated = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+    writersMayBeBack(id);   // t268 breaker fix: the owner saved this provider: a summary span waiting on a writer there is re-tested
     return c.json({ ok: true, data: updated });
   }
 
@@ -668,6 +670,7 @@ configRouter.post('/providers', async (c) => {
 
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Provider created', { providerId: id, type });
+  writersMayBeBack(id);   // t268 breaker fix: its models may be a waiting summary span's writers
 
   return c.json({ ok: true, data: rowToProvider(row) }, 201);
 });
@@ -1033,6 +1036,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
     `).run(id);
 
     logger.info('Provider validated successfully', { providerId: id });
+    writersMayBeBack(id);   // t268 breaker fix: a waiting summary writer there is re-tested
     return c.json({ ok: true, data: { valid: true } });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -2388,7 +2392,7 @@ configRouter.put('/settings/:key', async (c) => {
     });
   }
 
-  if (key === 'router.context_window') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look
+  if (key === 'router.context_window' || key === 'compaction_model_id') await (await import('../../agent/v2/honest-stop-lock.js')).noteModelsChanged();   // N42: the router window changed; no-fit locks get another look (t268: the Summarization pick: a waiting summary span)
 
   // Clear platform config cache when platform keys are updated
   const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed', 'sudo_policy'];
