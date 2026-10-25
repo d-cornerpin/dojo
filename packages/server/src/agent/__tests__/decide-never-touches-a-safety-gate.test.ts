@@ -2,19 +2,20 @@
 //
 // A decision model reads text, and injected content in the text can shift its answers; a gate that holds a destructive
 // command, a privilege escalation, a private-network fetch, a credential, an approval, an inbound's authority or an
-// A2A intent must answer the same way for the same input, whatever the input says. So no gate file imports `decide()` or
-// anything built on it. This is a census, not a sentence: it reads the files.
+// A2A intent must answer the same way for the same input, whatever the input says. This is a census, not a sentence:
+// it reads the files.
 //
-//   1. DIRECT: none of the gate files imports (statically or dynamically) a module of the decision cluster — `decide`,
-//      the shadow log, the policy, the ask helper, and every judgment module built on them (new ones join by name
-//      pattern, so a gate cannot be pointed at one by accident).
-//   2. THE LEAVES: the gates that import almost nothing (the credential patterns, the net guard, the sudo policy) have
-//      a closure of imports that stays clear of the cluster, however deep.
-//   3. BEHAVIOUR: with a decision model installed and every judged question proven, the pure gates answer exactly as
+//   1. TRANSITIVE: walk the import graph (value imports, static and dynamic; `import type` is erased and not an edge)
+//      from every gate file. No path may reach `agent/decide.ts` or `agent/decision-ask.ts`. The engine files the
+//      gates import for other reasons (spawner, runtime, the iMessage bridge, the A2A transport) ask the decision
+//      model only through the leaf `agent/decision-hooks.ts`, which imports nothing, so no path runs through them.
+//      Three edges are declared, not hidden (EXEMPT_EDGES, each argued): `decision-window.ts` imports the measured
+//      request-size CONSTANT from `decide.ts` (a number, never a call), and the two doors into the B4 summary check
+//      (it consults the model about a summary, which is no gate's input). A new edge must be argued there.
+//   2. DIRECT: no gate file imports any module that asks (the judgment modules, the shadow log, the policy, the hooks).
+//   3. THE LEAF: `decision-hooks.ts` imports nothing of the engine; `decision-ask.ts` is imported only by the server's boot.
+//   4. BEHAVIOUR: with a decision model installed and every judged question proven, the pure gates answer exactly as
 //      they always did and no `/v1/systemone` request is made.
-//   The bigger gate files (permissions, path guards, the destructive gate, the iMessage commands, the inbox watchers,
-//   the A2A tool surface) sit in the one import component with the engine, so a transitive test over them would pass
-//   or fail on the whole app; the direct test is the claim, and test 4 pins the list itself.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -29,11 +30,13 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { decisionAsksSettled } from '../decision-ask.js';
 import { installDecisionModel, proveNoul, scriptDecisions, yes } from './decision-fake.js';
 import { detectCredentialContent } from '../../vault/credential-gate.js';
 import { isPrivateAddress } from '../net-guard.js';
 import { isSudoLine, mentionsPrivilegeToken } from '../brokers/sudo-policy.js';
 import { INBOUND_ROUTING_PURPOSE } from '../v2/classifiers/inbound-routing.js';
+import { MEMORY_SHAPE_PURPOSE } from '../../memory/shape-judgment.js';
 
 const SRC = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -49,30 +52,41 @@ const GATES: Record<string, string[]> = {
   'the Gmail / Outlook direct-to-agent rule': ['services/gmail-watcher.ts', 'services/outlook-watcher.ts'],
   'the A2A intent validation': ['agent/tools/cat/agents.ts'],
 };
-/** The leaves: gates small enough that their whole import closure is the claim. */
-const LEAVES = ['vault/credential-gate.ts', 'agent/net-guard.ts', 'agent/brokers/sudo-policy.ts'];
 
-/** The decision cluster. `*-judgment` / `inbound-routing` / `reply-claims` are the modules that ask the model for a rule. */
-const CLUSTER = /(^|\/)(decide|decision-ask|decision-policy|decision-shadow|decision-provider|inbound-routing|shape-judgment|provider-error-judgment|reply-claims|summary-check[\w-]*)\.ts$/;
+/** The decision code: what a gate must not reach. */
+const SINKS = new Set(['agent/decide.ts', 'agent/decision-ask.ts']);
+/** Modules that ASK (a gate must not import one even indirectly, and not at all directly). New judgment modules join by name. */
+const ASKERS = /(^|\/)(decide|decision-ask|decision-hooks|decision-policy|decision-shadow|decision-provider|inbound-routing|shape-judgment|provider-error-judgment|reply-claims|summary-check[\w-]*)\.ts$/;
+/** Edges the walk does not follow, each argued. */
+const EXEMPT_EDGES: Array<{ from: string; to: string; why: string }> = [
+  { from: 'services/decision-window.ts', to: 'agent/decide.ts', why: 'imports MAX_DECISION_BODY_BYTES, a measured byte constant (the 64 KiB limit of one request); it never calls decide(), and a number cannot consult a model.' },
+  // The summary check (v3.5 B4, shipped before this census) consults the model about a SUMMARY. The gates reach it only
+  // because they import the runtime that writes summaries; nothing it asks is a gate's input. Declared, not hidden.
+  { from: 'memory/summarize.ts', to: 'memory/summary-check.ts', why: 'the one door every summary is written through asks the B4 summary check; a summary is not a gate\'s input.' },
+  { from: 'memory/out-of-view-fold.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
+];
 
+const strip = (text: string): string => text.replace(/^\s*(?:import|export)\s+type\s[^;]*?from\s+['"][^'"]+['"];?/gms, '');
 const specifiersOf = (file: string): string[] =>
-  [...fs.readFileSync(file, 'utf8').matchAll(/(?:from\s+|import\s*\(\s*|import\s+)['"](\.[^'"]+)['"]/g)].map((m) => m[1]);
+  [...strip(fs.readFileSync(file, 'utf8')).matchAll(/(?:from\s+|import\s*\(\s*|import\s+)['"](\.[^'"]+)['"]/g)].map((m) => m[1]);
 function resolveImport(from: string, spec: string): string | null {
   const p = path.resolve(path.dirname(from), spec).replace(/\.js$/, '');
   return [`${p}.ts`, path.join(p, 'index.ts')].find((c) => fs.existsSync(c)) ?? null;
 }
 const rel = (f: string): string => path.relative(SRC, f);
+const importsOf = (file: string): string[] => specifiersOf(file).map((s) => resolveImport(file, s)).filter((r): r is string => !!r);
 
-function closureReaching(start: string): string | null {
+/** The shortest import chain from `start` to a sink, or null. `exempt` lists the edges not followed. */
+function chainToSink(start: string, exempt = EXEMPT_EDGES): string | null {
+  const skip = new Set(exempt.map((e) => `${e.from}>${e.to}`));
   const parents = new Map<string, string | null>([[start, null]]);
   const queue = [start];
   while (queue.length) {
     const cur = queue.shift()!;
-    for (const spec of specifiersOf(cur)) {
-      const r = resolveImport(cur, spec);
-      if (!r || parents.has(r)) continue;
+    for (const r of importsOf(cur)) {
+      if (parents.has(r) || skip.has(`${rel(cur)}>${rel(r)}`)) continue;
       parents.set(r, cur);
-      if (CLUSTER.test(r)) {
+      if (SINKS.has(rel(r))) {
         const chain: string[] = [];
         for (let c: string | null = r; c; c = parents.get(c) ?? null) chain.unshift(rel(c));
         return chain.join(' -> ');
@@ -87,40 +101,61 @@ describe('the gate files exist and are the ones named', () => {
   it('every file in the list is a real file (a renamed gate cannot slip out of the census)', () => {
     for (const files of Object.values(GATES)) for (const f of files) expect(fs.existsSync(path.join(SRC, f)), f).toBe(true);
   });
-  it('the cluster pattern matches the real modules (a rename cannot blind the census)', () => {
-    for (const f of ['agent/decide.ts', 'agent/decision-ask.ts', 'agent/decision-policy.ts', 'agent/decision-shadow.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts', 'agent/provider-error-judgment.ts']) {
+  it('the sinks and the asker pattern match the real modules (a rename cannot blind the census)', () => {
+    for (const f of SINKS) expect(fs.existsSync(path.join(SRC, f)), f).toBe(true);
+    for (const f of ['agent/decision-hooks.ts', 'agent/decision-policy.ts', 'agent/decision-shadow.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts', 'agent/provider-error-judgment.ts']) {
       expect(fs.existsSync(path.join(SRC, f)), f).toBe(true);
-      expect(CLUSTER.test(f), f).toBe(true);
+      expect(ASKERS.test(f), f).toBe(true);
     }
+    for (const e of EXEMPT_EDGES) expect(importsOf(path.join(SRC, e.from)).map(rel), e.why).toContain(e.to);   // a stale exemption fails
   });
 });
 
-describe('1. no gate file imports the decision cluster', () => {
+describe('1. no import path leads from a gate file to the decision code', () => {
   for (const [role, files] of Object.entries(GATES)) {
     for (const f of files) {
-      it(`${role}: ${f}`, () => {
-        const offenders = specifiersOf(path.join(SRC, f)).map((s) => resolveImport(path.join(SRC, f), s)).filter((r): r is string => !!r && CLUSTER.test(r)).map(rel);
-        expect(offenders).toEqual([]);
-      });
+      it(`${role}: ${f}`, () => { expect(chainToSink(path.join(SRC, f))).toBeNull(); });
+    }
+  }
+  it('the walk is not blind: with the declared exemption removed it finds the real chain from the destructive gate', () => {
+    expect(chainToSink(path.join(SRC, 'agent/destructive-gate.ts'), [])).toMatch(/services\/decision-window\.ts -> agent\/decide\.ts$/);
+  });
+  it('the walk follows a dynamic import: the engine\'s own asker is found from the server\'s boot', () => {
+    expect(chainToSink(path.join(SRC, 'index.ts'))).toMatch(/agent\/decision-ask\.ts$/);
+  });
+});
+
+describe('2. no gate file imports a module that asks, directly', () => {
+  for (const [role, files] of Object.entries(GATES)) {
+    for (const f of files) {
+      it(`${role}: ${f}`, () => { expect(importsOf(path.join(SRC, f)).filter((r) => ASKERS.test(rel(r))).map(rel)).toEqual([]); });
     }
   }
 });
 
-describe('2. the leaf gates reach the decision cluster by no path at all', () => {
-  for (const f of LEAVES) it(f, () => { expect(closureReaching(path.join(SRC, f))).toBeNull(); });
-  it('the census sees a real chain when there is one (the walker is not blind)', () => {
-    expect(closureReaching(path.join(SRC, 'agent/a2a-transport.ts'))).toMatch(/inbound-routing\.ts$/);
+describe('3. the leaf stays a leaf and the real seam is installed only by the boot', () => {
+  it('`decision-hooks.ts` imports nothing of the engine (its type imports are erased)', () => {
+    expect(importsOf(path.join(SRC, 'agent/decision-hooks.ts'))).toEqual([]);
+  });
+  it('the modules that pair a rule with the decision model import the leaf, never `decide` or `decision-ask`', () => {
+    for (const f of ['agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts', 'agent/provider-error-judgment.ts']) {
+      expect(importsOf(path.join(SRC, f)).map(rel).filter((r) => SINKS.has(r)), f).toEqual([]);
+    }
+  });
+  it('`decision-ask.ts` is imported by the server\'s boot', () => {
+    expect(importsOf(path.join(SRC, 'index.ts')).map(rel)).toContain('agent/decision-ask.ts');
   });
 });
 
-describe('3. a decision model installed and every judged question proven changes no gate\'s answer and is never called', () => {
+describe('4. a decision model installed and every judged question proven changes no gate\'s answer and is never called', () => {
   beforeEach(() => {
     mockDb.current = new Database(':memory:');
     runMigrations(mockDb.current);
     installDecisionModel(mockDb.current);
     for (const q of ['simple_chat', 'multi_step', 'delegates', 'pleasantry', 'deliverable']) proveNoul(INBOUND_ROUTING_PURPOSE, q);
+    for (const q of ['standing_instruction', 'prose_shaped', 'obligation', 'filler', 'worth_summary']) proveNoul(MEMORY_SHAPE_PURPOSE, q);
   });
-  afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+  afterEach(async () => { await decisionAsksSettled(); vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
 
   it('the credential patterns, the net guard\'s private ranges and the sudo detectors', () => {
     const calls = scriptDecisions(() => yes(0.0));   // a model that would wave everything through

@@ -1106,7 +1106,7 @@ export async function processInboundIMessage(
       wakeAgent &&
       !!senderRecord?.is_agent &&
       !!cleanedText &&
-      await courtesyJudged(primaryId, cleanedText);
+      await courtesyJudged(primaryId, msgId, cleanedText);
 
     if (dampCourtesy && senderRecord) {
       const markerId = uuidv4();

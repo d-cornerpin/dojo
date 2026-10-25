@@ -116,7 +116,7 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
       }, agentId);
     }
     try {
-      const { detectMultistep, getMultistepConfig } = await import('../../classifiers/multistep.js');
+      const { detectMultistepJudged, getMultistepConfig } = await import('../../classifiers/inbound-routing.js');
       const cfg = getMultistepConfig();
       if (cfg.enabled) {
         // Skip if there's a RECENTLY-TENDED active tracker task assigned
@@ -150,7 +150,7 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
           `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
         ).get(agentId, lastUserMessageContent);
         if (!existingTask && !bootstrapTwin) {
-          const decision = await detectMultistep(lastUserMessageContent, agentId, cfg, turnCtx);
+          const decision = await detectMultistepJudged(turnCtx, lastUserMessageContent, agentId, cfg);
           turnCtx.inboundClassifiedAsWork =
             decision.multistep || decision.source === 'user_creating_explicitly';
           logger.info('v2 multistep classifier ran', {

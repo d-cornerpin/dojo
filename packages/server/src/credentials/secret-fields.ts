@@ -95,7 +95,7 @@ export {
  *     message it stores. Redacting one copy of a value the platform published
  *     in the row above it is theatre.
  *   * `vault_remember.content` — the vault REFUSES credential-shaped content
- *     (`vault/tools.ts:detectCredentialContent`); its field is declared as
+ *     (`vault/credential-gate.ts:detectCredentialContent`); its field is declared as
  *     knowledge, not as a secret.
  *
  * Read through a memo rather than on every call: `redactDeclaredSecretArgs`

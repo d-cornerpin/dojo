@@ -1,9 +1,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 // v3.5 Part C — ASK THE DECISION MODEL ALONGSIDE A RULE.
 //
-// The one place the engine's prose judgments (inbound routing, memory shape, the provider error's class)
-// pair a rule with `decide()`. A caller computes its rule exactly as it always did and hands the rule's
-// answer here with the question's name:
+// The one place the engine's prose judgments (inbound routing, memory shape, the provider error's class) pair a
+// rule with `decide()`. A caller computes its rule exactly as it always did and hands the rule's answer here with
+// the question's name (through `decision-hooks.ts`, the leaf the engine files import; this module installs itself
+// into it, and the server's boot imports it):
 //
 //   rule    — nothing is asked (no decision model on this box, or the owner held the question to the rule);
 //   shadow  — the model is asked in the BACKGROUND (it waits for the agents to go idle and never delays the
@@ -13,47 +14,28 @@
 //             decile where the model was right least often), where it also gets `null` = leave the rule alone.
 //
 // `null` means "use your rule" in every case, and it is also what any failure returns: this module never
-// throws, and never calls the model itself (`decide()` is the only door). Safety gates (the spec's Group C)
-// never import it: `agent/__tests__/decide-never-touches-a-safety-gate.test.ts` pins that.
+// throws, and never calls the model itself (`decide()` is the only door). A SHADOW ask carries NO agent into
+// `decide()`: an agent that is idle must not look live (a turn-scoped abortable) or be preempted because of a
+// check nobody is waiting for. Only a `model`-mode ask, which the caller waits on, is the caller's own call.
+//
+// ONE ROW PER QUESTION PER SUBJECT: the log is keyed by the subject's own stable id (`JudgmentSpec.subject`), so
+// an assemble loop, a retry or a continuation that looks at the same subject again adds no row and, in shadow,
+// no request. Safety gates (the spec's Group C) never import this module nor reach it.
 //
 // WHAT IS NOT HERE: a truth source. `recordTruth` has no caller for these questions yet, so no question is
 // ever promoted to `model` by this release on its own; the rows are the evidence the policy will read.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { randomUUID } from 'node:crypto';
 import { createLogger } from '../logger.js';
-import { decide, type Answer, type Question } from './decide.js';
-import { modeFor, type Mode } from './decision-policy.js';
+import { getDb } from '../db/connection.js';
+import { decide, type Answer } from './decide.js';
+import { modeFor } from './decision-policy.js';
 import { recordShadow, scoreQuestion } from './decision-shadow.js';
+import { installDecisionHooks, type Judgment, type JudgmentSpec, type Mode, type Verdict } from './decision-hooks.js';
+
+export type { Judgment, JudgmentSpec, Verdict } from './decision-hooks.js';
 
 const logger = createLogger('decision-ask');
-
-/** What the model decided, in the rule's own terms: a yes/no for a `noul`, the chosen name for a `choice`. */
-export type Verdict = boolean | string;
-
-export interface JudgmentSpec {
-  /** The decision-model purpose (cost rows, the shadow log, the owner's `decision_mode.<purpose>.<question>`). */
-  purpose: string;
-  agentId?: string;
-  turnId?: string;
-  /** The material the questions are about; every text in it is fenced by `decide()`. */
-  state: unknown;
-  questions: Record<string, Question>;
-  /** When one question is asked many times over (a batch of messages), the name it is scored under: the log and
-   *  the policy see `questionOf(name)`, not the batch's own key. */
-  questionOf?: (name: string) => string;
-}
-
-export interface Judgment {
-  modeOf(name: string): Mode;
-  /**
-   * The rule's answer for `name` is known (or will be: a promise is awaited off the caller's path): log both
-   * and, in `model` mode, return the model's verdict when it is outside the question's weak band.
-   * Otherwise resolves `null` at once. `strict` also leaves alone any verdict not clearly beyond the band
-   * (for the questions where acting wakes an agent or locks one).
-   */
-  alongside(name: string, ruleSaid: unknown, opts?: { strict?: boolean }): Promise<Verdict | null>;
-}
 
 const decile = (p: number): number => Math.min(9, Math.max(0, Math.floor(p * 10)));
 
@@ -88,58 +70,85 @@ function track(p: Promise<unknown>): void {
   inFlight.add(done);
 }
 
+/** The shadow log's turn id for a subject: the join key a truth writer will use. */
+const turnIdFor = (purpose: string, subject: string): string => `${purpose}:${subject}`;
+
+/** Has this subject already been judged on this question (a row exists)? */
+export function alreadyJudged(purpose: string, question: string, subject: string): boolean {
+  try {
+    return !!getDb().prepare('SELECT 1 FROM decision_shadow WHERE turn_id = ? AND question = ? LIMIT 1').get(turnIdFor(purpose, subject), question);
+  } catch { return false; }
+}
+
 /**
  * One judgment: the questions about one state, asked in ONE `decide()` call however many sites report their
  * rule. `key` memoises it (a turn's context object): the first site to report starts the call, the rest join it.
+ * Each name settles once: asking it again returns the first answer and writes nothing.
  */
 export function judgment(spec: JudgmentSpec, key?: object): Judgment {
   const known = key ? memo.get(key) : undefined;
   if (known) return known;
-  const turnId = spec.turnId ?? randomUUID();
   const scored = (name: string): string => spec.questionOf?.(name) ?? name;
+  const subjectOf = (name: string): string => (typeof spec.subject === 'function' ? spec.subject(name) : spec.subject);
+  // The mode is resolved once per SCORED question (a batch of 200 texts is one lookup, not 200).
   const modes = new Map<string, Mode>();
   const modeOf = (name: string): Mode => {
-    let m = modes.get(name);
-    if (!m) {
-      try { m = name in spec.questions ? modeFor(spec.purpose, scored(name)) : 'rule'; } catch { m = 'rule'; }
-      modes.set(name, m);
-    }
+    if (!(name in spec.questions)) return 'rule';
+    const q = scored(name);
+    let m = modes.get(q) ?? spec.mode;
+    if (!m) { try { m = modeFor(spec.purpose, q); } catch { m = 'rule'; } }
+    modes.set(q, m);
     return m;
   };
+  const judged = (name: string): boolean => alreadyJudged(spec.purpose, scored(name), subjectOf(name));
   let answers: Promise<Record<string, Answer> | null> | null = null;
   const ask = (): Promise<Record<string, Answer> | null> => answers ??= (() => {
-    const names = Object.keys(spec.questions).filter((n) => modeOf(n) !== 'rule');
+    // A subject already judged in shadow is not asked again; one the policy acts on is asked every time it is needed.
+    const names = Object.keys(spec.questions).filter((n) => modeOf(n) === 'model' || (modeOf(n) === 'shadow' && !judged(n)));
     if (names.length === 0) return Promise.resolve(null);
-    // Nobody waits on a shadow answer: it waits behind the agents' own turns. A `model` question is waited on.
+    // Nobody waits on a shadow answer: it waits behind the agents' own turns, and carries no agent (it must not make one look live).
     const background = !names.some((n) => modeOf(n) === 'model');
     return decide(spec.state, Object.fromEntries(names.map((n) => [n, spec.questions[n]])), {
-      purpose: spec.purpose, agentId: spec.agentId, turnId, background,
+      purpose: spec.purpose, agentId: background ? undefined : spec.agentId, turnId: turnIdFor(spec.purpose, subjectOf(names[0])), background,
     }).catch(() => null);
   })();
   const settle = (name: string, ruleSaid: unknown, modelSaid: Answer | null): void => {
     if (!modelSaid) return;   // no answer: nothing to compare (the log keeps judged rows)
     track(Promise.resolve(ruleSaid).then((rule) => {
-      recordShadow({ purpose: spec.purpose, question: scored(name), agentId: spec.agentId, turnId: spec.questionOf ? `${turnId}:${name}` : turnId, ruleSaid: rule, modelSaid });
+      if (judged(name)) return;   // the subject has its row already (checked in the tick that writes it)
+      recordShadow({ purpose: spec.purpose, question: scored(name), agentId: spec.agentId, turnId: turnIdFor(spec.purpose, subjectOf(name)), ruleSaid: rule, modelSaid });
     }));
   };
-  const judged: Judgment = {
+  const settled = new Map<string, Promise<Verdict | null>>();
+  const run = (name: string, ruleSaid: unknown, strict: boolean): Promise<Verdict | null> => {
+    const mode = modeOf(name);
+    if (mode === 'rule') return Promise.resolve(null);
+    if (mode === 'shadow') {
+      if (!judged(name)) track(ask().then((all) => settle(name, ruleSaid, all?.[name] ?? null)));
+      return Promise.resolve(null);
+    }
+    return ask().then((all) => {
+      const a = all?.[name] ?? null;
+      settle(name, ruleSaid, a);
+      return a ? decisiveVerdict(spec.purpose, scored(name), a, strict) : null;
+    }).catch(() => null);
+  };
+  const judgedOnce: Judgment = {
     modeOf,
     alongside(name, ruleSaid, opts) {
       try {
-        const mode = modeOf(name);
-        if (mode === 'rule') return Promise.resolve(null);
-        if (mode === 'shadow') {
-          track(ask().then((all) => settle(name, ruleSaid, all?.[name] ?? null)));
-          return Promise.resolve(null);
-        }
-        return ask().then((all) => {
-          const a = all?.[name] ?? null;
-          settle(name, ruleSaid, a);
-          return a ? decisiveVerdict(spec.purpose, scored(name), a, opts?.strict === true) : null;
-        }).catch(() => null);
+        let p = settled.get(name);
+        if (!p) { p = run(name, ruleSaid, opts?.strict === true); settled.set(name, p); }
+        return p;
       } catch { return Promise.resolve(null); }
     },
   };
-  if (key) memo.set(key, judged);
-  return judged;
+  if (key) memo.set(key, judgedOnce);
+  return judgedOnce;
 }
+
+installDecisionHooks({
+  judgment,
+  modeOf: (purpose, question) => { try { return modeFor(purpose, question); } catch { return 'rule'; } },
+  judged: alreadyJudged,
+});

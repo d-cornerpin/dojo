@@ -14,7 +14,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { Question } from './decide.js';
-import { judgment } from './decision-ask.js';
+import { judgment, subjectKey } from './decision-hooks.js';
 import type { ProviderErrorClass, ProviderErrorFacts } from './provider-error.js';
 
 export const PROVIDER_ERROR_PURPOSE = 'provider_error';
@@ -46,7 +46,7 @@ export interface JudgedProviderError { facts: ProviderErrorFacts; choice: string
 export async function judgeProviderError(facts: ProviderErrorFacts, text: string, agentId: string): Promise<JudgedProviderError> {
   const rule = { facts, choice: CHOICE_OF[facts.class] };
   if ((facts.basis !== 'text' && facts.basis !== 'none') || !text) return rule;   // the provider's own answer settled it
-  const said = await judgment({ purpose: PROVIDER_ERROR_PURPOSE, agentId, state: { error: text }, questions: { error_class: ERROR_CLASS } })
+  const said = await judgment({ purpose: PROVIDER_ERROR_PURPOSE, agentId, subject: subjectKey(agentId, text), state: { error: text }, questions: { error_class: ERROR_CLASS } })
     .alongside('error_class', rule.choice, { strict: true });
   const cls = typeof said === 'string' ? CLASS_OF[said] : undefined;
   return cls ? { facts: { ...facts, class: cls, basis: 'text' }, choice: said as string } : rule;

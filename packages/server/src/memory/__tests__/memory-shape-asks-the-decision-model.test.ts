@@ -51,7 +51,7 @@ describe('no decision model on the box: the rules answer and nothing is asked', 
     expect(await shape.obligation(null)).toBeNull();
     expect(await shape.standing(false)).toBe(false);
     expect(await shape.prose(true)).toBe(true);
-    expect(await spanWorthJudged('a1', 'a span', false)).toBe(false);
+    expect(await spanWorthJudged('a1', 'sum-1', 'a span', false)).toBe(false);
     beginFillerPass(); isFiller('sure'); await settleFiller('a1');
     await decisionAsksSettled();
     expect(calls).toHaveLength(0);
@@ -116,14 +116,14 @@ describe('shadow: the rule decides and both answers are logged', () => {
 
   it('the rebuild\'s floor is asked beside, and still decides', async () => {
     scriptDecisions(() => yes(0.99));
-    expect(await spanWorthJudged('a1', 'a span of tool calls', false)).toBe(false);
+    expect(await spanWorthJudged('a1', 'sum-1', 'a span of tool calls', false)).toBe(false);
     await decisionAsksSettled();
     expect(rows('worth_summary').map((r) => r.rule_said)).toEqual(['false']);
   });
 
   it('a model that is down changes nothing', async () => {
     scriptDecisions(() => 'fail');
-    expect(await spanWorthJudged('a1', 'a span', true)).toBe(true);
+    expect(await spanWorthJudged('a1', 'sum-1', 'a span', true)).toBe(true);
     expect(await entryShape('a1', FACT).prose(false)).toBe(false);
     await decisionAsksSettled();
     expect(rows()).toEqual([]);
@@ -172,9 +172,9 @@ describe('model mode (proven on measured accuracy): the verdict stands in, outsi
 
   it('the rebuild asks the model in place of the 120-character floor', async () => {
     scriptDecisions(() => yes(0.97));
-    expect(await spanWorthJudged('a1', 'short', false)).toBe(true);
+    expect(await spanWorthJudged('a1', 'sum-1', 'short', false)).toBe(true);
     scriptDecisions(() => yes(0.02));
-    expect(await spanWorthJudged('a1', 'x'.repeat(500), true)).toBe(false);
+    expect(await spanWorthJudged('a1', 'sum-1', 'x'.repeat(500), true)).toBe(false);
   });
 });
 
@@ -193,7 +193,7 @@ describe('the sites ask through the seam and the credential gate stands alone', 
     expect(src).not.toMatch(/FILLER_PATTERNS/);
   });
   it('A22: the rebuild asks `spanWorthJudged` where it compared the 120-character floor', () => {
-    expect(read('memory/summary-rebuild.ts')).toMatch(/!await spanWorthJudged\(flag\.agentId, input, proseChars\(input\) >= MIN_PROSE_CHARS\)/);
+    expect(read('memory/summary-rebuild.ts')).toMatch(/!await spanWorthJudged\(flag\.agentId, flag\.id, input, proseChars\(input\) >= MIN_PROSE_CHARS\)/);
   });
   it('the credential patterns moved out of tools.ts whole; the gate file imports nothing', () => {
     expect(read('vault/tools.ts')).not.toMatch(/CREDENTIAL_PATTERNS/);

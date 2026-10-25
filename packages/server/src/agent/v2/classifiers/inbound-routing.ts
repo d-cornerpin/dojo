@@ -18,13 +18,15 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { Question } from '../../decide.js';
-import { judgment, type Judgment } from '../../decision-ask.js';
+import { judgment, subjectKey, type Judgment } from '../../decision-hooks.js';
 import { complexityClassifier } from './complexity.js';
 import { isContentFreeCourtesy, isEngineAckLine } from './inbound-courtesy.js';
 import {
   detectMultistep, getMultistepConfig, looksLikeEngineMessage, userExplicitlyAsksToCreateTracker,
   multistepHeuristic, type MultistepConfig, type MultistepDecision,
 } from './multistep.js';
+
+export { getMultistepConfig };
 
 export const INBOUND_ROUTING_PURPOSE = 'inbound_routing';
 
@@ -37,9 +39,15 @@ const QUESTIONS: Record<string, Question> = {
 };
 const only = (...names: string[]): Record<string, Question> => Object.fromEntries(names.map((n) => [n, QUESTIONS[n]]));
 
-/** The turn's one routing judgment (A12–A14): the first site to report starts the call, the rest join it. */
+/**
+ * The turn's one routing judgment (A12–A14): the first site to report starts the call, the rest join it. Its subject
+ * is the message that started the turn (an ask's trigger row, else the turn's root), so every assemble loop, retry
+ * or continuation of that turn is the same subject; only a turn with neither is keyed by what was said.
+ */
 function routing(turnCtx: object, agentId: string, message: string): Judgment {
-  return judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, state: { message }, questions: only('simple_chat', 'multi_step', 'delegates') }, turnCtx);
+  const root = (turnCtx as { root?: { sourceMessageId?: string | null; id?: string } | null }).root;
+  const subject = root?.sourceMessageId ?? root?.id ?? subjectKey(agentId, message);
+  return judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject, state: { message }, questions: only('simple_chat', 'multi_step', 'delegates') }, turnCtx);
 }
 
 /** A12 — is this turn a quick conversational ask? */
@@ -79,17 +87,17 @@ export async function detectMultistepJudged(
   return rule;
 }
 
-/** A11 — is an AGENT's iMessage nothing but a pleasantry (so no turn is taken)? Our own ack lines never ask. */
-export async function courtesyJudged(agentId: string, text: string): Promise<boolean> {
+/** A11 — is an AGENT's iMessage (`subject`: its message row) nothing but a pleasantry, so no turn is taken? Our own ack lines never ask. */
+export async function courtesyJudged(agentId: string, subject: string, text: string): Promise<boolean> {
   const rule = isContentFreeCourtesy(text);
   if (isEngineAckLine(text)) return rule;
-  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, state: { message: text }, questions: only('pleasantry') }).alongside('pleasantry', rule);
+  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject, state: { message: text }, questions: only('pleasantry') }).alongside('pleasantry', rule);
   return typeof said === 'boolean' ? said : rule;
 }
 
 /** A15 — is a sub-agent's FYI to the primary really a deliverable (so it wakes the primary)? STRICTEST reading of the band. */
-export async function deliverableJudged(agentId: string, payload: string, rule: boolean): Promise<boolean> {
-  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, state: { message: payload }, questions: only('deliverable') })
+export async function deliverableJudged(agentId: string, from: string, payload: string, rule: boolean): Promise<boolean> {
+  const said = await judgment({ purpose: INBOUND_ROUTING_PURPOSE, agentId, subject: subjectKey(from, agentId, payload), state: { message: payload }, questions: only('deliverable') })
     .alongside('deliverable', rule, { strict: true });
   return typeof said === 'boolean' ? said : rule;
 }

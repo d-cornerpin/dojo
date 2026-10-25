@@ -57,8 +57,8 @@ describe('no decision model on the box: the rules answer and nothing is asked', 
     const turn = {};
     expect(await isConversational(turn, 'a1', 'hey there')).toBe(true);
     expect(await delegatesJudged(turn, 'a1', 'have one of your agents research it', true)).toBe(true);
-    expect(await courtesyJudged('a1', 'sounds good')).toBe(true);
-    expect(await deliverableJudged('a1', 'draft #4 is ready', true)).toBe(true);
+    expect(await courtesyJudged('a1', 'msg-1', 'sounds good')).toBe(true);
+    expect(await deliverableJudged('a1', 'sub-agent', 'draft #4 is ready', true)).toBe(true);
     expect(await detectMultistepJudged(turn, S5, 'a1', CFG)).toEqual(await detectMultistep(S5, 'a1', CFG));
     await decisionAsksSettled();
     expect(calls).toHaveLength(0);
@@ -105,15 +105,15 @@ describe('shadow (no measured accuracy yet): the rule decides, the model is aske
 
   it('an engine ack line coming back is machine courtesy by construction and never asks', async () => {
     const calls = scriptDecisions(() => yes(0.01));
-    expect(await courtesyJudged('a1', START_ACK_POOL[0])).toBe(true);
+    expect(await courtesyJudged('a1', 'msg-1', START_ACK_POOL[0])).toBe(true);
     await decisionAsksSettled();
     expect(calls).toHaveLength(0);
   });
 
   it('a pleasantry and a deliverable shape are asked once each, with the rule beside them', async () => {
     const calls = scriptDecisions((name) => (name === 'pleasantry' ? yes(0.9) : yes(0.1)));
-    expect(await courtesyJudged('a1', 'what is the plan for friday')).toBe(false);            // the rule wins over the model's 0.9
-    expect(await deliverableJudged('a1', 'Draft #14 is ready for review', true)).toBe(true);  // and over its 0.1
+    expect(await courtesyJudged('a1', 'msg-1', 'what is the plan for friday')).toBe(false);            // the rule wins over the model's 0.9
+    expect(await deliverableJudged('a1', 'sub-agent', 'Draft #14 is ready for review', true)).toBe(true);  // and over its 0.1
     await decisionAsksSettled();
     expect(calls.map((c) => c.questions)).toEqual([['pleasantry'], ['deliverable']]);
     expect(shadowRows().map((r) => [r.question, r.rule_said])).toEqual([['pleasantry', 'false'], ['deliverable', 'true']]);
@@ -157,26 +157,26 @@ describe('model mode (proven on measured accuracy): the verdict stands in, outsi
   it('a decision model that fails falls back to the rule in the rule\'s time', async () => {
     scriptDecisions(() => 'fail');
     expect(await isConversational({}, 'a1', 'hey there')).toBe(true);
-    expect(await courtesyJudged('a1', 'sounds good')).toBe(true);
+    expect(await courtesyJudged('a1', 'msg-1', 'sounds good')).toBe(true);
     expect(await detectMultistepJudged({}, S6, 'a1', CFG)).toMatchObject({ source: 'llm_multi' });
   });
 
   it('the pleasantry judgment can stop an agent\'s message waking a turn, and cannot override an engine ack', async () => {
     scriptDecisions(() => yes(0.97));
-    expect(await courtesyJudged('a1', 'see you at the offsite')).toBe(true);                  // rule: false → model: pure pleasantry
+    expect(await courtesyJudged('a1', 'msg-1', 'see you at the offsite')).toBe(true);                  // rule: false → model: pure pleasantry
     expect(complexityClassifier('hey there').complexity).toBe('simple');
     scriptDecisions(() => yes(0.02));
-    expect(await courtesyJudged('a1', START_ACK_POOL[0])).toBe(true);                         // the exact-match fast path
+    expect(await courtesyJudged('a1', 'msg-1', START_ACK_POOL[0])).toBe(true);                         // the exact-match fast path
   });
 
   it('A15 takes the STRICTEST band: 0.45 is outside the weak decile but not clearly beyond it, so the rule stands (the others act on it)', async () => {
     scriptDecisions(() => yes(0.45));
-    expect(await deliverableJudged('a1', 'Draft #14 is ready for review', true)).toBe(true);   // strict: leave the rule alone
+    expect(await deliverableJudged('a1', 'sub-agent', 'Draft #14 is ready for review', true)).toBe(true);   // strict: leave the rule alone
     expect(await delegatesJudged({}, 'a1', 'have one of your agents research it', true)).toBe(false);   // not strict: acts
     scriptDecisions(() => yes(0.97));
-    expect(await deliverableJudged('a1', 'status: working on the second draft', false)).toBe(true);
+    expect(await deliverableJudged('a1', 'sub-agent', 'status: working on the second draft', false)).toBe(true);
     scriptDecisions(() => yes(0.03));
-    expect(await deliverableJudged('a1', 'Draft #14 is ready for review', true)).toBe(false);
+    expect(await deliverableJudged('a1', 'sub-agent', 'Draft #14 is ready for review', true)).toBe(false);
   });
 });
 
@@ -187,19 +187,18 @@ describe('the five sites ask through the seam, and not around it (a census of th
     expect(src).toMatch(/await isConversational\(turnCtx,/);
     expect(src).not.toMatch(/complexityClassifier/);
   });
-  it('A13: the multistep detection passes the turn to `detectMultistep`, which hands it to the judged path', () => {
-    expect(read(`${ENGINE_STEPS_REL}/assemble/multistep-detection.ts`)).toMatch(/detectMultistep\(lastUserMessageContent, agentId, cfg, turnCtx\)/);
-    expect(read('agent/v2/classifiers/multistep.ts')).toMatch(/detectMultistepJudged\(turnCtx, query, agentId, config\)/);
+  it('A13: the multistep detection asks `detectMultistepJudged` with the turn', () => {
+    expect(read(`${ENGINE_STEPS_REL}/assemble/multistep-detection.ts`)).toMatch(/await detectMultistepJudged\(turnCtx, lastUserMessageContent, agentId, cfg\)/);
   });
   it('A14: the delegation hint asks `delegatesJudged` with the grammar\'s answer', () => {
-    expect(read(`${ENGINE_STEPS_REL}/assemble/delegation-and-attachments.ts`)).toMatch(/await delegatesJudged\(turnCtx, agentId, lastUserMessageContent, detectExplicitDelegation\(lastUserMessageContent\)\)/);
+    expect(read(`${ENGINE_STEPS_REL}/assemble/delegation-and-attachments.ts`)).toMatch(/delegatesJudged\(turnCtx, agentId, lastUserMessageContent, detectExplicitDelegation\(lastUserMessageContent\)\)/);
   });
   it('A11: the iMessage wake point asks `courtesyJudged`, after the sender-is-an-agent test', () => {
     const src = read('services/imessage-bridge.ts');
-    expect(src).toMatch(/senderRecord\?\.is_agent &&\s+!!cleanedText &&\s+await courtesyJudged\(primaryId, cleanedText\)/);
+    expect(src).toMatch(/senderRecord\?\.is_agent &&\s+!!cleanedText &&\s+await courtesyJudged\(primaryId, msgId, cleanedText\)/);
     expect(src).not.toMatch(/isContentFreeCourtesy/);
   });
   it('A15: the A2A transport asks `deliverableJudged` only inside the FYI / primary / sub-agent test', () => {
-    expect(read('agent/a2a-transport.ts')).toMatch(/senderIsSubAgent &&\s+await deliverableJudged\(target\.id, envelope\.payload, payloadLooksDeliverable\(envelope\.payload\)\)/);
+    expect(read('agent/a2a-transport.ts')).toMatch(/senderIsSubAgent &&\s+await \(await import\('\.\/v2\/classifiers\/inbound-routing\.js'\)\)\.deliverableJudged\(target\.id, envelope\.fromAgent, envelope\.payload, payloadLooksDeliverable\(envelope\.payload\)\)/);
   });
 });

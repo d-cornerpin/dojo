@@ -996,7 +996,7 @@ async function main(): Promise<void> {
   {
     void (async () => {
       try {
-        void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot());   // a download must not hold the backfill
+        void import('./agent/decision-ask.js'); void import('./services/local-standard.js').then((m) => m.ensureStandardModelsAtBoot());   // a download must not hold the backfill
         const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
         await backfillRecommendedNumCtx();
       } catch (err) {

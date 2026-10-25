@@ -445,9 +445,7 @@ export async function detectMultistep(
   query: string,
   agentId: string,
   config: MultistepConfig = getMultistepConfig(),
-  turnCtx?: object,   // v3.5 C2: given, the decision model is asked alongside (`inbound-routing.ts`)
 ): Promise<MultistepDecision> {
-  if (turnCtx) return (await import('./inbound-routing.js')).detectMultistepJudged(turnCtx, query, agentId, config);
   const heuristic = multistepHeuristic(query);
 
   if (!config.enabled) {

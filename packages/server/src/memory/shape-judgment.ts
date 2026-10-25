@@ -16,7 +16,7 @@
 
 import { createLogger } from '../logger.js';
 import type { Question } from '../agent/decide.js';
-import { judgment, type Judgment } from '../agent/decision-ask.js';
+import { judgment, judged, modeOf, subjectKey, type Judgment } from '../agent/decision-hooks.js';
 import { takeFillerCandidates, setFillerVerdicts } from '../vault/filler.js';
 
 const logger = createLogger('memory-shape');
@@ -42,7 +42,7 @@ export interface EntryShape {
 
 export function entryShape(agentId: string, entry: string): EntryShape {
   const j: Judgment = judgment({
-    purpose: MEMORY_SHAPE_PURPOSE, agentId, state: { entry },
+    purpose: MEMORY_SHAPE_PURPOSE, agentId, subject: subjectKey(agentId, entry), state: { entry },
     questions: { standing_instruction: QUESTIONS.standing_instruction, prose_shaped: QUESTIONS.prose_shaped, obligation: QUESTIONS.obligation },
   });
   const yesNo = async (name: string, rule: boolean): Promise<boolean> => {
@@ -59,9 +59,9 @@ export function entryShape(agentId: string, entry: string): EntryShape {
   };
 }
 
-/** A22 — is this span worth a model summary (so it is rebuilt, not given the deterministic placeholder)? */
-export async function spanWorthJudged(agentId: string, span: string, rule: boolean): Promise<boolean> {
-  const said = await judgment({ purpose: MEMORY_SHAPE_PURPOSE, agentId, state: { span }, questions: { worth_summary: QUESTIONS.worth_summary } })
+/** A22 — is this span (`subject`: its summary row) worth a model summary, so it is rebuilt rather than given the deterministic placeholder? */
+export async function spanWorthJudged(agentId: string, subject: string, span: string, rule: boolean): Promise<boolean> {
+  const said = await judgment({ purpose: MEMORY_SHAPE_PURPOSE, agentId, subject, state: { span }, questions: { worth_summary: QUESTIONS.worth_summary } })
     .alongside('worth_summary', rule);
   return typeof said === 'boolean' ? said : rule;
 }
@@ -69,21 +69,28 @@ export async function spanWorthJudged(agentId: string, span: string, rule: boole
 /**
  * A21 — ends a triage pass (`beginFillerPass` … here): asks about the short messages the rule judged, in requests
  * of at most 64, and in `model` mode hands the confident verdicts back to the rule for the passes that follow.
- * In `rule` and `shadow` mode no verdict is applied. Never throws.
+ * In `rule` and `shadow` mode no verdict is applied. The mode is resolved ONCE for the pass; in `rule` nothing is
+ * built; in `shadow` a text already asked (its row exists: a continuation re-triages the same queue) is not dialled
+ * again, each distinct text being one subject. Never throws.
  */
 export async function settleFiller(agentId: string): Promise<void> {
   try {
     const seen = takeFillerCandidates();
     const verdicts = new Map<string, boolean>();
-    for (let from = 0; from < seen.length; from += MAX_QUESTIONS_PER_CALL) {
-      const chunk = seen.slice(from, from + MAX_QUESTIONS_PER_CALL);
+    const mode = modeOf(MEMORY_SHAPE_PURPOSE, FILLER_QUESTION);
+    const todo = mode === 'rule' ? [] : seen.filter(([text]) => mode === 'model' || !judged(MEMORY_SHAPE_PURPOSE, FILLER_QUESTION, subjectKey(text)));
+    for (let from = 0; from < todo.length; from += MAX_QUESTIONS_PER_CALL) {
+      const chunk = todo.slice(from, from + MAX_QUESTIONS_PER_CALL);
       const questions: Record<string, Question> = {};
       const state: Record<string, string> = {};
       chunk.forEach(([text], i) => {
         state[`m${i}`] = text;
         questions[`m${i}`] = { type: 'noul', instructions: `Is \`m${i}\` conversational filler or process narration, such as an acknowledgement, "let me check" or "thanks", that carries nothing worth remembering?` };
       });
-      const j = judgment({ purpose: MEMORY_SHAPE_PURPOSE, agentId, state, questions, questionOf: () => FILLER_QUESTION });
+      const j = judgment({
+        purpose: MEMORY_SHAPE_PURPOSE, agentId, state, questions, mode, questionOf: () => FILLER_QUESTION,
+        subject: (name) => subjectKey(chunk[Number(name.slice(1))][0]),
+      });
       const said = await Promise.all(chunk.map(([, rule], i) => j.alongside(`m${i}`, rule)));
       said.forEach((v, i) => { if (typeof v === 'boolean') verdicts.set(chunk[i][2], v); });
     }
