@@ -56,6 +56,9 @@ import { findToolResult } from '../../../../../memory/kept-results.js';
 import { advance, initState } from '../../../state.js';
 import type { RepeatCallState } from '../../../identical-call-brake.js';
 import { runExecute, EXECUTE_PHASE, type ExecuteContext } from '../index.js';
+// t277: the REAL admission door, loaded at collection (this file mocks tools/index.js, so a plain import
+// would be the mock). It used to be fetched inside `runBatch`, i.e. inside every clause's timeout.
+const { admitToolResult } = await vi.importActual<typeof import('../../../../tools/index.js')>('../../../../tools/index.js');
 
 const AGENT = 'agent-batch';
 const MODEL = 'model-batch';
@@ -146,7 +149,6 @@ async function runBatch(n: number, decorate: (id: string, content: string) => st
     id: 'msg-call', agentId: AGENT, role: 'assistant', turnNumber: 7,
     content: JSON.stringify(calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))),
   });
-  const { admitToolResult } = await vi.importActual<typeof import('../../../../tools/index.js')>('../../../../tools/index.js');
   executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => {
     const whole = bigResult(tc.id);
     const admitted = admitToolResult(tc.name, tc.id, whole, false);

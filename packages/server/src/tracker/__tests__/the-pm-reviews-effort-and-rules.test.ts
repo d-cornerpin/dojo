@@ -104,7 +104,15 @@ import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixt
 // checks, exactly as `tracker/pm-agent.ts` already imports it for the poke sweep's own
 // busy-deferral.
 import { activeRuns as pmActiveRuns } from '../../agent/shared-state.js';
-import * as fresh from '../pm-agent.js';
+
+// t277: THE "RESTARTED PM" IS A SECOND, GENUINELY FRESH MODULE INSTANCE, LOADED AT COLLECTION. The
+// restart clause below must prove that the review dedupe lives in the database and not in module
+// memory, which needs an instance that shares NOTHING with the one the other clauses use. Loading it
+// here (registry reset, then a fresh import of the same graph, both at top level) gives exactly that
+// without a per-clause cold import inside a test timeout: its module state starts empty and stays
+// empty until the clause calls it, which is what a restarted process is.
+vi.resetModules();
+const fresh = await import('../pm-agent.js');
 
 const PM_ID = 'pm'; // config/platform.ts's own fallback when no `config` row exists — unmocked here on purpose.
 
@@ -268,11 +276,12 @@ describe('§1 queueEffortReviewIfNeeded — the durable dedupe', () => {
     expect(queueEffortReviewIfNeeded('t5')).toBe(true);
     expect(requestCount('t5')).toBe(1);
 
-    // Simulate a PM process restart: throw away every module and re-import fresh. If the
-    // dedupe held any module-level JS state (a Set, a Map, a cache), this fresh instance
-    // would know nothing about the request just filed and would queue a duplicate. It does
-    // not, because the dedupe is a query over `work_events`/`work`, both untouched by the
-    // module reload — the DATABASE is what a restart actually preserves.
+    // Simulate a PM process restart: `fresh` (loaded above, at collection) is a separate module
+    // instance that has never seen this request. If the dedupe held any module-level JS state (a Set,
+    // a Map, a cache), it would know nothing about the request just filed and would queue a
+    // duplicate. It does not, because the dedupe is a query over `work_events`/`work`, both untouched
+    // by the module reload — the DATABASE is what a restart actually preserves.
+    expect(fresh.queueEffortReviewIfNeeded, 'the restarted PM is a different module instance').not.toBe(queueEffortReviewIfNeeded);
 
     expect(fresh.queueEffortReviewIfNeeded('t5')).toBe(false);
     expect(requestCount('t5')).toBe(1); // still exactly one, from before the "restart"

@@ -305,9 +305,10 @@ describe('t140 round 3 — Stop during the fold', () => {
     // t277: the clause asks "did Stop cut the call, or did the call run out its own patience?" - a
     // difference of 50 ms against `transportMs`. With the patience at 300 ms the margin was 250 ms of
     // wall clock, which any starved process loses (measured 329-799 ms on a loaded machine) while Stop
-    // had worked. The fixture's patience is made long enough that scheduling noise cannot reach it; Stop
-    // working still returns in tens of milliseconds, and Stop NOT working waits the whole 8 s and fails.
-    writers.transportMs = 8_000;
+    // had worked. The fixture's patience is raised to 3 s so scheduling noise cannot reach it; Stop
+    // working still returns in tens of milliseconds, and Stop NOT working waits the whole 3 s and fails
+    // the assertion (still inside the clause's unchanged 5 s budget).
+    writers.transportMs = 3_000;
     writers.mode[OWN] = 'hang';
     seedACut();
     const stop = new AbortController();
@@ -318,7 +319,7 @@ describe('t140 round 3 — Stop during the fold', () => {
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(failingCards()).toBe(0);
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a stopped call is not a failed writer').toBe(OWN);
-  }, 20_000);
+  }, 5_000);
 });
 
 describe('t140 round 3 (re-aimed round 5) — a backlog is folded as far as the turn\'s patience goes', () => {

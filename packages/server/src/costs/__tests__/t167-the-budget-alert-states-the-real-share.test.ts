@@ -90,10 +90,6 @@ import { runMigrations } from '../../db/migrations.js';
 // many suites it can pass the 30 s default. Nothing here measures time.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import type { LogEntry } from '../../logger.js';
-import * as tracker from '../tracker.js';
-import * as budget from '../budget.js';
-import * as bridge from '../../services/imessage-bridge.js';
-import * as coldImport1 from '../../logger.js';
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
@@ -117,6 +113,7 @@ beforeEach(() => {
 afterEach(() => {
   mockDb.current?.close();
   mockDb.current = null;
+  vi.resetModules();
 });
 
 function seed(withPhone = true): void {
@@ -147,8 +144,12 @@ async function boot(): Promise<{
   budget: typeof import('../budget.js');
   bridge: typeof import('../../services/imessage-bridge.js');
 }> {
+  vi.resetModules();
   // A fresh process has a fresh logger: hook the dashboard's log feed onto THIS one.
-  coldImport1.setLogBroadcast((e) => { logs.push(e); });
+  (await import('../../logger.js')).setLogBroadcast((e) => { logs.push(e); });
+  const tracker = await import('../tracker.js');
+  const budget = await import('../budget.js');
+  const bridge = await import('../../services/imessage-bridge.js');
   return { recordCost: tracker.recordCost, budget, bridge };
 }
 
