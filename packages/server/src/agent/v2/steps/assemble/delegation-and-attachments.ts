@@ -19,6 +19,7 @@ import type { AgentTurnState } from '../../state.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
 import { attachmentsWithinRoom } from '../../../../memory/kept-row-view.js';
+import { delegatesJudged } from '../../classifiers/inbound-routing.js';
 
 const logger = createLogger('v2-loop');
 
@@ -95,6 +96,7 @@ const DELEGATION_HINT_BODY =
   'directly and why. Do not silently override their routing instruction.';
 
 export interface DelegationAndAttachmentsInput {
+  readonly turnCtx: object;   // v3.5 C2: the turn the decision model's one routing call is memoised on
   readonly agentId: string;
   readonly turnNumber: number;
   readonly counterparty: TurnCounterparty;
@@ -106,7 +108,7 @@ export interface DelegationAndAttachmentsInput {
 }
 
 export async function injectDelegationHintAndAttachments(state: AgentTurnState, input: DelegationAndAttachmentsInput): Promise<void> {
-  const { agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages } = input;
+  const { turnCtx, agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages } = input;
 
   // ── F9: explicit-delegation routing hint ───────────────────────────────
   // The user EXPLICITLY routed work to the agent's own agents ("have one of
@@ -125,7 +127,7 @@ export async function injectDelegationHintAndAttachments(state: AgentTurnState, 
     counterparty.kind === 'user' &&
     !isPMAgent(agentId) &&
     !isHealerAgent(agentId) &&
-    detectExplicitDelegation(lastUserMessageContent)
+    await delegatesJudged(turnCtx, agentId, lastUserMessageContent, detectExplicitDelegation(lastUserMessageContent))
   ) {
     try {
       const { looksLikeEngineMessage } = await import('../../classifiers/multistep.js');

@@ -75,6 +75,7 @@ import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shar
 import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';   // t239
+import { deliverableJudged } from './v2/classifiers/inbound-routing.js';   // v3.5 C2
 
 // Terminal intents CLOSE the thread (prevent acknowledgement replies).
 // But closing the thread and waking the receiver are INDEPENDENT concepts.
@@ -608,7 +609,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       envelope.intent === 'FYI' &&
       targetIsPrimary &&
       senderIsSubAgent &&
-      payloadLooksDeliverable(envelope.payload)
+      await deliverableJudged(target.id, envelope.payload, payloadLooksDeliverable(envelope.payload))
     ) {
       effectiveIntent = 'DELIVERABLE';
       autoPromotedFromFyi = true;

@@ -42,6 +42,9 @@ vi.mock('../../../../../config/platform.js', () => ({
 }));
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../../../runtime.js', () => ({ injectAttachmentBlocks: () => [] }));
+// v3.5 C2: the decision model is asked alongside the grammar (`inbound-routing.ts`); this unit pins the grammar and
+// the hint, so the seam answers with the rule it is handed (the seam itself is pinned in inbound-routing-asks-the-decision-model).
+vi.mock('../../../classifiers/inbound-routing.js', () => ({ delegatesJudged: async (_t: object, _a: string, _m: string, rule: boolean) => rule }));
 
 import {
   detectExplicitDelegation,
@@ -173,6 +176,7 @@ function runInject(text: string) {
   const mctx = {} as Record<string, unknown>;
   const messages: unknown[] = [];
   return injectDelegationHintAndAttachments(makeState(), {
+    turnCtx: {},
     agentId: 'harnessbot',
     turnNumber: 7,
     counterparty: { kind: 'user' } as never,

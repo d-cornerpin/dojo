@@ -435,7 +435,7 @@ export interface MultistepDecision {
   /** How we decided — for logging. */
   source:
     | 'heuristic_single' | 'heuristic_multi'
-    | 'llm_single' | 'llm_multi'
+    | 'llm_single' | 'llm_multi' | 'decision_single' | 'decision_multi'
     | 'fallback_multi' | 'fallback_single_question' | 'fallback_single_default'
     | 'disabled' | 'user_creating_explicitly' | 'engine_message';
   heuristic: MultistepHeuristic;
@@ -445,7 +445,9 @@ export async function detectMultistep(
   query: string,
   agentId: string,
   config: MultistepConfig = getMultistepConfig(),
+  turnCtx?: object,   // v3.5 C2: given, the decision model is asked alongside (`inbound-routing.ts`)
 ): Promise<MultistepDecision> {
+  if (turnCtx) return (await import('./inbound-routing.js')).detectMultistepJudged(turnCtx, query, agentId, config);
   const heuristic = multistepHeuristic(query);
 
   if (!config.enabled) {

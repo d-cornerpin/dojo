@@ -43,7 +43,7 @@ import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { PromptTurnContext } from '../../../../prompt/assembler.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import { clearConsumedOneShotFlags } from '../../../runtime.js';
-import { complexityClassifier } from '../../classifiers/complexity.js';
+import { isConversational } from '../../classifiers/inbound-routing.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import type { SteerEntry } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
@@ -152,7 +152,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // one is project work, and pass it so the assembler injects guidance to handle
   // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
   const conversationalTurn = counterparty.kind === 'user'
-    && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
+    && await isConversational(turnCtx, agentId, lastUserMessageContent ?? '');
   // Content-preservation for THE ROW THAT IS THIS TURN'S OWN TRIGGER.
   //
   // T83 (behav-sig:a9ca4fea) — WAS scoped to origin_intent === 'a2a_request' only (Healer
@@ -351,7 +351,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   });
 
   await injectDelegationHintAndAttachments(state, {
-    agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages, roomTokens: ctx.allocation?.budgetTokens,
+    turnCtx, agentId, turnNumber, counterparty, lastUserMessageContent, mctx, messages, roomTokens: ctx.allocation?.budgetTokens,
   });
 
   const steer = runSteerCheckpoint(state, {

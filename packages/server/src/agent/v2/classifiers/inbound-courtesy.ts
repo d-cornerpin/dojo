@@ -79,12 +79,15 @@ const PLEASANTRY_MAX_CHARS = 48;
  * or a fact will not match. The caller pairs this with a sender.is_agent check
  * before damping, so a human's "thanks!" is never affected.
  */
+/** v3.5: an inbound that IS one of the engine's own ack lines, verbatim — machine courtesy by construction. */
+export const isEngineAckLine = (text: string): boolean => ACK_POOL_STRINGS.has((text ?? '').trim());
+
 export function isContentFreeCourtesy(text: string): boolean {
   if (!text) return false;
   const t = text.trim();
   if (t.length === 0) return false;
   // (b) exact match against our own emitted ack lines, any length.
-  if (ACK_POOL_STRINGS.has(t)) return true;
+  if (isEngineAckLine(t)) return true;
   // (a) short pleasantry family, whole-message only.
   if (t.length > PLEASANTRY_MAX_CHARS) return false;
   return PLEASANTRY_WHOLE_RE.test(t);
