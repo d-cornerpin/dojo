@@ -12,7 +12,7 @@
 // is a graph loaded in the wrong place.
 //
 // ── THE RULE ──
-// A test file may not dynamically import a HEAVY source module (static import graph of at
+// A test file may not dynamically import (`import()` or `vi.importActual`) a HEAVY source module (static import graph of at
 // least HEAVY_GRAPH_MODULES modules) from inside any function: not a clause, not a hook
 // (`beforeAll` shares the 30 s `hookTimeout`, so it is the same exposure once per file),
 // not a helper a clause calls. A static import at the top of the file (or a top-level
@@ -115,55 +115,71 @@ export function graphSize(file) {
   return seen.size;
 }
 
-/** Every `import('./x')` that sits inside ANY function in a test file. */
+/**
+ * Every way a test loads a module lazily from inside ANY function:
+ *   - `import('./x')`                    (a string-literal relative specifier: sized by its graph)
+ *   - `vi.importActual('./x')`           (the same load, spelled through vitest; NOT counted when it
+ *                                         sits inside a `vi.mock` / `vi.doMock` factory, which runs
+ *                                         when the mocked module is first imported - at collection
+ *                                         for a static import - and is how mocks wrap the real module)
+ *   - `import(x)` with a NON-literal x   (cannot be sized, so it is reported as a finding of its own)
+ */
 function sitesIn(file) {
   const text = fs.readFileSync(file, 'utf8');
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const sites = [];
+  const unsized = [];
   const isFn = (n) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n);
-  (function visit(n, depth) {
-    if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword
-      && n.arguments.length > 0 && ts.isStringLiteralLike(n.arguments[0]) && n.arguments[0].text.startsWith('.')) {
-      if (depth > 0) {
-        const target = resolveModule(file, n.arguments[0].text);
-        if (target) {
-          sites.push({
-            line: sf.getLineAndCharacterOfPosition(n.getStart()).line + 1,
-            spec: n.arguments[0].text,
-            target,
-            size: graphSize(target),
-          });
+  const isMockFactoryCall = (n) => ts.isCallExpression(n) && /^vi\.(mock|doMock)$/.test(n.expression.getText(sf));
+  const lineOf = (n) => sf.getLineAndCharacterOfPosition(n.getStart()).line + 1;
+  (function visit(n, depth, inFactory) {
+    if (depth > 0 && ts.isCallExpression(n)) {
+      const isImport = n.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isActual = !isImport && /^vi\.(importActual|importMock)$/.test(n.expression.getText(sf));
+      if ((isImport || isActual) && n.arguments.length > 0) {
+        const arg = n.arguments[0];
+        if (ts.isStringLiteralLike(arg)) {
+          if (arg.text.startsWith('.') && !(isActual && inFactory)) {
+            const target = resolveModule(file, arg.text);
+            if (target) sites.push({ line: lineOf(n), spec: arg.text, target, size: graphSize(target), via: isActual ? 'vi.importActual' : 'import' });
+          }
+        } else if (isImport) {
+          unsized.push({ line: lineOf(n), code: n.getText(sf).slice(0, 60) });
         }
       }
     }
-    ts.forEachChild(n, (c) => visit(c, depth + (isFn(n) ? 1 : 0)));
-  })(sf, 0);
-  return { sites, resets: /vi\.resetModules\(/.test(text) };
+    ts.forEachChild(n, (c) => visit(c, depth + (isFn(n) ? 1 : 0), inFactory || isMockFactoryCall(n)));
+  })(sf, 0, false);
+  return { sites, unsized, resets: /vi\.resetModules\(/.test(text) };
 }
 
 const rel = (p) => path.relative(ROOT, p).split(path.sep).join('/');
 
 export function scan() {
   const out = [];
+  const unsized = [];
   for (const f of walk(SRC).filter((p) => /\.test\.tsx?$/.test(p))) {
-    const { sites, resets } = sitesIn(f);
-    for (const s of sites) out.push({ file: rel(f), line: s.line, spec: s.spec, target: rel(s.target), size: s.size, resets });
+    const r = sitesIn(f);
+    for (const s of r.sites) out.push({ file: rel(f), line: s.line, spec: s.spec, target: rel(s.target), size: s.size, resets: r.resets, via: s.via });
+    for (const u of r.unsized) unsized.push({ file: rel(f), ...u });
   }
-  return out;
+  return { sites: out, unsized };
 }
 
 function main() {
-  const all = scan();
+  const { sites: all, unsized } = scan();
   if (process.argv.includes('--census')) {
     for (const s of [...all].sort((a, b) => b.size - a.size)) {
-      console.log(`${String(s.size).padStart(5)} modules  ${s.resets ? 'RESET ' : '      '}${s.file}:${s.line}  ${s.spec}`);
+      console.log(`${String(s.size).padStart(5)} modules  ${s.resets ? 'RESET ' : '      '}${s.file}:${s.line}  ${s.spec}${s.via === 'vi.importActual' ? '  [vi.importActual]' : ''}`);
     }
+    for (const u of unsized) console.log(`  ?? modules        ${u.file}:${u.line}  ${u.code}  [non-literal specifier]`);
     console.log(`\n${all.length} in-function relative dynamic imports; ${all.filter((s) => s.size >= HEAVY_GRAPH_MODULES).length} heavy (>= ${HEAVY_GRAPH_MODULES} modules)`);
     return;
   }
 
   const baseline = fs.existsSync(BASELINE) ? JSON.parse(fs.readFileSync(BASELINE, 'utf8')) : { sites: {} };
   const allowed = baseline.sites ?? {};
+  const allowedUnsized = baseline.unsized ?? {};
   const heavy = all.filter((s) => s.size >= HEAVY_GRAPH_MODULES);
   const perFile = {};
   for (const s of heavy) perFile[s.file] = (perFile[s.file] ?? 0) + 1;
@@ -176,7 +192,7 @@ function main() {
       bad++;
       console.error(`${file}: ${n} heavy dynamic import(s) inside a function, ${ok} allowed:`);
       for (const s of heavy.filter((x) => x.file === file)) {
-        console.error(`    line ${s.line}  import('${s.spec}')  -> ${s.size} modules`);
+        console.error(`    line ${s.line}  ${s.via === 'vi.importActual' ? 'vi.importActual' : 'import'}('${s.spec}')  -> ${s.size} modules`);
       }
     }
   }
@@ -192,6 +208,24 @@ function main() {
     }
   }
 
+  // A specifier the scan cannot read (`import(x)`) cannot be sized, so it is a finding of its own: it
+  // must be written as a literal, moved to collection, or listed with a reason - never a silent pass.
+  const unsizedPerFile = {};
+  for (const u of unsized) unsizedPerFile[u.file] = (unsizedPerFile[u.file] ?? 0) + 1;
+  for (const [file, n] of Object.entries(unsizedPerFile)) {
+    const ok = allowedUnsized[file]?.count ?? 0;
+    if (n > ok) {
+      bad++;
+      console.error(`${file}: ${n} dynamic import(s) with a non-literal specifier inside a function, ${ok} allowed (cannot be sized):`);
+      for (const u of unsized.filter((x) => x.file === file)) console.error(`    line ${u.line}  ${u.code}`);
+    }
+  }
+  for (const [file, entry] of Object.entries(allowedUnsized)) {
+    const n = unsizedPerFile[file] ?? 0;
+    if (n < entry.count) { bad++; console.error(`${file}: unsized baseline allows ${entry.count} but the tree has ${n} - lower it`); }
+    if (!entry.why || entry.why.length < 20) { bad++; console.error(`${file}: unsized baseline entry needs a real reason ("why")`); }
+  }
+
   if (bad) {
     console.error(`
 ✗ test cold-import gate: ${bad} problem(s).
@@ -202,8 +236,8 @@ function main() {
   with vi.mock, or list the site in deploy/checks/test-cold-imports-baseline.json with a reason.`);
     process.exit(1);
   }
-  const baselined = Object.values(allowed).reduce((a, e) => a + e.count, 0);
-  console.log(`✓ test cold-import gate: no heavy dynamic import inside a test function (${all.length} light site(s) ignored, ${baselined} baselined with a reason).`);
+  const baselined = Object.values(allowed).reduce((a, e) => a + e.count, 0) + Object.values(allowedUnsized).reduce((a, e) => a + e.count, 0);
+  console.log(`✓ test cold-import gate: no heavy dynamic import inside a test function (${all.length} light site(s) ignored, ${unsized.length} non-literal import(s) all baselined, ${baselined} site(s) baselined with a reason).`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
