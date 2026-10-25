@@ -28,7 +28,7 @@
 
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { decide, type Answer } from './decide.js';
+import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts } from './decide.js';
 import { modeFor } from './decision-policy.js';
 import { recordShadow, scoreQuestion } from './decision-shadow.js';
 import { installDecisionHooks, type Judgment, type JudgmentSpec, type Mode, type Verdict } from './decision-hooks.js';
@@ -106,11 +106,15 @@ export function judgment(spec: JudgmentSpec, key?: object): Judgment {
     // A subject already judged in shadow is not asked again; one the policy acts on is asked every time it is needed.
     const names = Object.keys(spec.questions).filter((n) => modeOf(n) === 'model' || (modeOf(n) === 'shadow' && !judged(n)));
     if (names.length === 0) return Promise.resolve(null);
-    // Nobody waits on a shadow answer: it waits behind the agents' own turns, and carries no agent (it must not make one look live).
+    // Nobody waits on a shadow answer: it waits behind the agents' own turns, and `decide()` forbids it to name an agent
+    // (it must not make one look live). A `model` ask is waited on: it holds the caller's stop slot from the moment it
+    // queues. Either way its PATIENCE is the call's own measured timeout (`measuredDecideTimeoutMs`): no longer than the
+    // call itself is allowed, counted from the ask (a waited one) or from its queue turn (a background one).
+    const asking = Object.fromEntries(names.map((n) => [n, spec.questions[n]]));
     const background = !names.some((n) => modeOf(n) === 'model');
-    return decide(spec.state, Object.fromEntries(names.map((n) => [n, spec.questions[n]])), {
-      purpose: spec.purpose, agentId: background ? undefined : spec.agentId, turnId: turnIdFor(spec.purpose, subjectOf(names[0])), background,
-    }).catch(() => null);
+    const common = { purpose: spec.purpose, turnId: turnIdFor(spec.purpose, subjectOf(names[0])), patienceMs: measuredDecideTimeoutMs(spec.state, names.length) };
+    const opts: DecideOpts = background ? { ...common, background: true } : { ...common, agentId: spec.agentId };
+    return decide(spec.state, asking, opts).catch(() => null);
   })();
   const settle = (name: string, ruleSaid: unknown, modelSaid: Answer | null): void => {
     if (!modelSaid) return;   // no answer: nothing to compare (the log keeps judged rows)

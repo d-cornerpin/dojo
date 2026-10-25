@@ -124,3 +124,18 @@ describe('3. the filler pass resolves its mode once and never re-dials a text it
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('4. a question\'s mode costs the same however long the shadow log is (the in-memory score)', () => {
+  it('50,000 judged rows: after the first look, a thousand `modeFor` calls read the log zero times', async () => {
+    const { modeFor: realModeFor } = await vi.importActual<typeof import('../decision-policy.js')>('../decision-policy.js');
+    const insert = db().prepare("INSERT INTO decision_shadow (purpose, question, turn_id, rule_said, model_said, truth, truth_src, created_at, truth_at) VALUES ('memory_shape', 'filler', ?, 'false', ?, 'true', 'test', ?, ?)");
+    const now = Date.now();
+    db().transaction(() => { for (let i = 0; i < 50_000; i++) insert.run(`seed-${i}`, JSON.stringify({ type: 'noul', noul: 0.9 }), now, now); })();
+    realModeFor('memory_shape', 'filler');                                  // the first look builds the score
+    const reads: string[] = [];
+    const prepare = db().prepare.bind(db());
+    vi.spyOn(db(), 'prepare').mockImplementation(((sql: string) => { reads.push(sql); return prepare(sql); }) as never);
+    for (let i = 0; i < 1000; i++) realModeFor('memory_shape', 'filler');
+    expect(reads.filter((q) => /FROM\s+decision_shadow/i.test(q))).toEqual([]);
+  });
+});
