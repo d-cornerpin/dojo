@@ -41,6 +41,8 @@ vi.mock('../embeddings.js', () => ({
 const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string }> }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
+// t268 round 5: CHEAP is the Dojo's small writer here; whether it fits the box's memory is not this file's question.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -95,9 +97,12 @@ import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, replacePlaceholdersInBackground } from '../uncondensed-placeholder.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-t140-no-limits';
 const OWN = 'model-t140-own';
+/** t268 round 5 (edited): the one fallback after the agent's own model is the Dojo's small local writer — CHEAP here.
+ *  NEXT and FOURTH are enabled cloud models nobody chose for summaries: nothing sends them one. */
 const CHEAP = 'model-t140-cheap';
 const NEXT = 'model-t140-next';
 const FOURTH = 'model-t140-fourth';
@@ -125,7 +130,7 @@ function seedACut(): void {
 function seed(): void {
   const prov = db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url, first_chunk_timeout_ms) VALUES (?, ?, 'openai-compatible', 'api_key', ?, ?)");
   prov.run('p-own', 'Own', 'http://localhost:11434/v1', OWN_PATIENCE_MS);
-  prov.run('p-cheap', 'Cheap', 'http://localhost:11435/v1', null);
+  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-cheap', 'Cheap', 'ollama', 'none', 'http://127.0.0.1:11435')").run();
   prov.run('p-next', 'Next', 'http://localhost:11436/v1', null);
   prov.run('p-fourth', 'Fourth', 'http://localhost:11437/v1', null);
   const model = db().prepare(
@@ -133,7 +138,7 @@ function seed(): void {
      VALUES (?, ?, ?, ?, 32000, 4096, '["text","tools"]', 1, ?, ?)`,
   );
   model.run(OWN, 'p-own', 'own', 'Own', 3, 15);
-  model.run(CHEAP, 'p-cheap', 'cheap', 'Cheap', 0.1, 0.4);
+  model.run(CHEAP, 'p-cheap', STANDARD_WRITER_MODEL.tag, 'Cheap', 0.1, 0.4);
   model.run(NEXT, 'p-next', 'next', 'Next', 0.2, 0.8);
   model.run(FOURTH, 'p-fourth', 'fourth', 'Fourth', 0.3, 1.2);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Reader', 'idle', ?, '{}')").run(AGENT, OWN);
@@ -232,14 +237,15 @@ describe('t140 round 5 — the turn\'s own fold: no clock of ours cuts a writer 
     expect(placeholders(), 'every leaving row has a real summary').toBe(0);
   });
 
-  it('the first three writers answer badly (empty, 402, empty): the fourth eligible writer writes it inside the turn', async () => {
+  // t268 round 5 (edited: the fourth writer was "the cheapest text model", a tail the round removed).
+  it('the agent\'s own writer answers badly (empty): the small local writer writes it inside the turn; no cloud model nobody chose is asked', async () => {
     seedACut();
-    writers.mode = { [OWN]: 'empty', [CHEAP]: '402', [NEXT]: 'empty' };
-    // No Settings writer and an own model: own, then (as before t140) the cheapest text models.
+    writers.mode = { [OWN]: 'empty' };
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(writers.calls).toContain(FOURTH);
-    expect(placeholders(), 'the fourth writer answered; nothing was left to a note').toBe(0);
+    expect(writers.calls).toContain(CHEAP);
+    expect(writers.calls.filter((m) => m === NEXT || m === FOURTH)).toEqual([]);
+    expect(placeholders(), 'the small writer answered; nothing was left to a note').toBe(0);
   });
 
   // Round 6 (R-V333-15) re-aimed the last step: the background no longer retries a writer that did
@@ -298,6 +304,7 @@ describe('t140 round 5 — a writer that failed is used again the moment it answ
   it('the owner\'s one Settings writer failed; it comes back, and at a person\'s next turn the background replaces the notes — no waiting period', async () => {
     // A Settings writer narrows the list to it and the agent's own provider (R-V333-12): here, one writer.
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(OWN);
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(CHEAP);   // t268 round 5: no small writer either: one writer
     writers.mode = { [OWN]: 'empty' };
     seedACut();
     await door();

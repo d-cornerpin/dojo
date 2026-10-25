@@ -338,6 +338,10 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
     model.run(CHEAP, 'Cheap Writer', 'cheap', 32_000, 0.1, 0.4);
     model.run(OWNER_PICK, 'Owner Compaction Pick', 'owner-pick', 32_000, 1, 2);
     db().prepare('UPDATE models SET input_cost_per_m = 5 WHERE id = ?').run(MODEL);
+    // t268 round 5 (edited: "the cheapest text model" wrote, a tail the round removed): an auto-routed agent's summaries
+    // go to its router's standard-tier pick — CHEAP, placed in the standard tier — never the locked heavy model.
+    db().prepare("DELETE FROM router_tier_models WHERE tier_id IN ('standard', 'heavy', 'light')").run();
+    db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('standard', ?, 0), ('heavy', ?, 0)").run(CHEAP, LOCKED);
     db().prepare(
       `INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Routed Desk', 'auto', 'idle', '{}', datetime('now'))`,
     ).run(ROUTED_AGENT);
@@ -372,7 +376,7 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
     expect(summarisedSeqs(ROUTED_AGENT)).toEqual(seqs.slice(0, 40));
   });
 
-  it('I3: with no compaction model set, the summary is written by the CHEAPEST text model, not the locked one', async () => {
+  it('I3: with no compaction model set, the summary is written by the agent\'s standard-tier pick, not the locked one', async () => {
     seedRoutedLoop();
     await gateLocked();
     expect(generateSummarySpy).toHaveBeenCalled();

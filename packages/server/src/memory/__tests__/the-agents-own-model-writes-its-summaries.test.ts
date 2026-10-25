@@ -41,8 +41,9 @@ beforeEach(() => {
 afterEach(() => { clearRateLimits(); mockDb.current?.close(); mockDb.current = null; });
 
 describe("the agent's own model writes its summaries", () => {
-  it("with no Settings pick, the agent's own model is first, its provider's models next, then the standard writer", () => {
-    expect(summaryWriterCandidates('big-cloud').slice(0, 3)).toEqual(['big-cloud', 'aaa-free-cloud', 'std-writer']);
+  // Fix round 5 (edited: its provider's other models and "the cheapest" followed; the round removed both).
+  it("with no Settings pick: the agent's own model, then the standard writer — and nothing else", () => {
+    expect(summaryWriterCandidates('big-cloud')).toEqual(['big-cloud', 'std-writer']);
   });
 
   it("the agent's model cannot be reached → the standard writer writes", () => {
@@ -81,15 +82,14 @@ describe("the agent's own model writes its summaries", () => {
       db().prepare("INSERT INTO budgets (id, scope, limit_usd, period) VALUES ('agent_agent-auto', 'agent-auto', 0.005, 'daily')").run();
       expect(summaryWriterCandidates('auto', 'agent-auto')[0], 'std-tier (~$0.004 a request) is within it; heavy-tier is not').toBe('std-tier');
       db().prepare("UPDATE budgets SET limit_usd = 0.001 WHERE id = 'agent_agent-auto'").run();
-      const order = summaryWriterCandidates('auto', 'agent-auto');
-      expect(order[0], 'no tier model is within the budget: the small writer is next').toBe('std-writer');
+      expect(summaryWriterCandidates('auto', 'agent-auto'), 'no tier model is within the budget: the small writer alone').toEqual(['std-writer']);
     });
 
-    it('that model unreachable: the router\'s own fallback, then the small writer', () => {
+    // Fix round 5 (edited: the router's next tier followed): its own model is the ONE model the router's selection
+    // gives a standard-tier request now; unreachable, the small writer is next, and nothing after it.
+    it('that model unreachable: the small writer, and nothing after it', () => {
       noteDidNotAnswerInTurn('std-tier');
-      expect(eligibleSummaryWriters('auto', 'agent-auto')[0]).toBe('heavy-tier');
-      noteDidNotAnswerInTurn('heavy-tier');
-      expect(eligibleSummaryWriters('auto', 'agent-auto')[0]).toBe('std-writer');
+      expect(eligibleSummaryWriters('auto', 'agent-auto')).toEqual(['std-writer']);
     });
   });
 
@@ -98,8 +98,9 @@ describe("the agent's own model writes its summaries", () => {
     expect(summaryWriterCandidates('std-decision')).not.toContain('std-decision');
   });
 
-  it('a box without the writer keeps the order it had', () => {
+  // Fix round 5 (edited: the cheapest text model wrote here): no pick, no own model, no writer — no candidate at all.
+  it('a box without the writer and an agent without a model: no writer, never the cheapest cloud model', () => {
     db().prepare("DELETE FROM models WHERE id IN ('std-writer', 'std-decision')").run();
-    expect(summaryWriterCandidates()[0]).toBe('aaa-free-cloud');
+    expect(summaryWriterCandidates()).toEqual([]);
   });
 });

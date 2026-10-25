@@ -44,6 +44,8 @@ vi.mock('../embeddings.js', () => ({
 const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string; error?: string }> }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
+// t268 round 5: the fallback here is the Dojo's small writer; whether it fits the box's memory is not this file's question.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 
 type Mode = 'ok' | 'hang' | 'empty' | '402';
 const writers = vi.hoisted(() => ({
@@ -109,11 +111,13 @@ import { __resetBrakesForTests, noteLowYield } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { withLock } from '../../db/with-lock.js';
 import { runMigrations } from '../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-t140-writer-down';
 /** The agent's own model — the first summary writer (no Settings choice is configured). */
 const OWN = 'model-t140-own';
-/** Two cheaper writers on two other providers: the fallbacks, cheapest first. */
+/** t268 round 5 (edited): the one fallback after the agent's own model is the Dojo's small local writer, so CHEAP is
+ *  that writer. NEXT is an enabled cloud model nobody chose for summaries: nothing ever sends it a summary. */
 const CHEAP = 'model-t140-cheap';
 const NEXT = 'model-t140-next';
 const db = (): Database.Database => mockDb.current!;
@@ -149,14 +153,14 @@ function appendTurn(large: boolean, bodyRepeat = 1): void {
 
 function seed(): void {
   db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-own','Own','openai-compatible','api_key','http://localhost:11434/v1')").run();
-  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-cheap','Cheap','openai-compatible','api_key','http://localhost:11435/v1')").run();
+  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-cheap','Cheap','ollama','none','http://127.0.0.1:11435')").run();
   db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-next','Next','openai-compatible','api_key','http://localhost:11436/v1')").run();
   const model = db().prepare(
     `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
      VALUES (?, ?, ?, ?, 32000, 4096, '["text","tools"]', 1, ?, ?)`,
   );
   model.run(OWN, 'p-own', 'own', 'Own', 3, 15);
-  model.run(CHEAP, 'p-cheap', 'cheap', 'Cheap', 0.1, 0.4);
+  model.run(CHEAP, 'p-cheap', STANDARD_WRITER_MODEL.tag, 'Cheap', 0.1, 0.4);
   model.run(NEXT, 'p-next', 'next', 'Next', 0.2, 0.8);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Reader', 'idle', ?, '{}')").run(AGENT, OWN);
 }
@@ -543,23 +547,25 @@ describe('t140 round 4 — card noise: one card per incident', () => {
 });
 
 describe('t140 round 4 — R-V333-12: the fallback never widens who sees the conversation', () => {
-  it('with a Settings writer: Settings writer, then the agent\'s own model — never a third provider', async () => {
+  // t268 round 5 (edited): the order is the Settings writer, the agent's own model, then the Dojo's small LOCAL writer
+  // (CHEAP here) — and nothing after it: no model on a provider nobody chose for summaries, however cheap.
+  it('with a Settings writer: Settings writer, the agent\'s own model, the small local writer — never another provider', async () => {
     db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
-    writers.mode = { [NEXT]: 'empty', [OWN]: 'empty', [CHEAP]: 'ok' };
+    writers.mode = { [NEXT]: 'empty', [OWN]: 'empty', [CHEAP]: 'empty' };
     seedACut();
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
-    expect(writers.calls.slice(0, 2)).toEqual([NEXT, OWN]);
-    expect(writers.calls, 'the cheapest model on a provider nobody chose was sent the conversation').not.toContain(CHEAP);
+    expect([...new Set(writers.calls)]).toEqual([NEXT, OWN, CHEAP]);
     expect(placeholders().length, 'placeholders, not a wider audience').toBeGreaterThan(0);
   }, 5_000);
 
-  it('with NO Settings writer: the agent\'s own model, then (as before) the cheapest eligible text model', async () => {
+  it('with NO Settings writer: the agent\'s own model, then the small local writer — never the cheapest cloud model', async () => {
     writers.mode = { [OWN]: 'empty' };
     seedACut();
     const ctx = await door();
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(writers.calls.slice(0, 2)).toEqual([OWN, CHEAP]);
+    expect(writers.calls, 'an enabled cloud model nobody chose for summaries').not.toContain(NEXT);
     expect(placeholders()).toEqual([]);
   }, 5_000);
 });

@@ -1,8 +1,8 @@
 // t268 fix round 4 (N-B, N-C, orchestrator rulings) — THE SMALL WRITER'S FALLBACK, AS THE MEMORY REALLY IS.
 // · N-B: when the Dojo's small writer cannot fit even a summary in the memory free at that moment (on a 16 GB box,
-//   with the decision model's memory counted, it never can), the fallback passes at once to the NEXT writer in the
-//   order — never a refused span halved again and again. With no writer able to run, the rows are kept (nothing is
-//   lost, nothing is dialled) and the span is tried again when the agent's own model is reachable again.
+//   with the decision model's memory counted, it never can), it is refused once — never a span halved and asked again.
+//   Fix round 5: NOTHING comes after it in the order, so with no writer able to run the span waits (rows kept, nothing
+//   dialled, no brake) and is written once the agent's own model is reachable again.
 // · N-C: the free memory counts what the models loaded on Ollama REALLY hold — Ollama's own loaded size (`/api/ps`),
 //   their working memory included — never their weights alone.
 // THE DOOR: the real `checkAndCompact` on the real migration chain. The writers and Ollama are scripted;
@@ -43,11 +43,11 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
-import { generateOrPassOn } from '../leaf-writer-fallback.js';
+import { generateOnAWriterThatHolds } from '../leaf-writer-fallback.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, noteAPersonSpoke, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { eligibleSummaryWriters, summaryWriterCandidates, noteAPersonSpoke, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { resolveSummaryWriterModel } from '../compaction.js';
-import { __resetBrakesForTests } from '../compaction-brakes.js';
+import { __resetBrakesForTests, compactionIsBraked } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
@@ -119,52 +119,51 @@ const realSummaries = (): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind != 'uncondensed'").get(AGENT) as { n: number }).n;
 const messages = (): number => (db().prepare('SELECT COUNT(*) AS n FROM messages WHERE agent_id = ?').get(AGENT) as { n: number }).n;
 
-describe('N-B: on a 16 GB box the small writer never fits a summary; the span passes on', () => {
-  it('the agent\'s model unreachable: the next writer in the order writes the summaries, the small writer is never dialled, and it is asked once', async () => {
-    seed();
-    const result = await checkAndCompact(AGENT, OWN, 8_000, { force: true });
-    expect(result.leafCreated).toBeGreaterThan(0);
-    expect(realSummaries()).toBeGreaterThan(0);
-    expect(writers.calls).not.toContain(WRITER);
-    expect(writers.calls.filter((m) => m === NEXT).length).toBeGreaterThan(0);
-    expect(ollama.tagsCalls, 'the free memory was read once: no refused span was halved and asked again').toBe(1);
-    expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([NEXT]);
-  });
-
-  it('no writer can run: nothing is dialled again, the rows are kept, and the span is written once the agent\'s own model answers', async () => {
-    db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(NEXT);
-    seed();
-    const before = messages();
-    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
-    expect(writers.calls.filter((m) => m !== OWN)).toEqual([]);   // only the own model's failed try; the small writer never
-    expect(realSummaries()).toBe(0);
-    expect(messages(), 'nothing lost').toBe(before);
-    expect(eligibleSummaryWriters(OWN, AGENT), 'no writer can run: nothing to retry until something changes').toEqual([]);
-    expect(resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background fold waits').toBeNull();
-
-    writers.unreachable.clear();
-    noteAPersonSpoke(AGENT);   // the agent's own model is tried again
-    expect(eligibleSummaryWriters(OWN, AGENT)[0]).toBe(OWN);
-    __resetBrakesForTests();   // the zero-yield pass's own low-yield hold is another mechanism; it is not what is tested here
-    const calls = writers.calls.length;
-    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
-    expect(writers.calls.slice(calls).every((m) => m === OWN)).toBe(true);
-    expect(realSummaries()).toBeGreaterThan(0);
-    expect(eligibleSummaryWriters(OWN, AGENT), 'its own model answered: the small writer is its fallback again').toEqual([OWN, WRITER]);
-  });
-
+describe('N-B: on a 16 GB box the small writer never fits a summary; it is refused once, never halved', () => {
   it('a generateSummary call on the small writer, as the fallback, is refused as "no room" without dialling it', async () => {
     const r = await generateSummary({ content: 'r'.repeat(4_000), depth: 0, targetTokens: 5_000, agentId: AGENT, modelId: WRITER });
     expect(r).toMatchObject({ ok: false, noRoom: true });
     expect(writers.calls).toEqual([]);
   });
 
-  it('a condensation batch on the small writer with no room passes whole to the next writer (never halved)', async () => {
+  // Fix round 5 (edited: this clause handed the batch to the next model in the order, which round 5 removed).
+  it('a condensation batch on the small writer with no room: refused, and no other model is asked', async () => {
     noteSummaryWriterOutcome(OWN, false);   // the agent's own model is not answering: the small writer is next
     const content = 'Earlier summary: the crew counted the depot. '.repeat(200);
-    const r = await generateOrPassOn({ content, depth: 1, targetTokens: 2_000, agentId: AGENT, modelId: WRITER });
-    expect(r.ok).toBe(true);
-    expect(writers.calls).toEqual([NEXT]);
+    const r = await generateOnAWriterThatHolds({ content, depth: 1, targetTokens: 2_000, agentId: AGENT, modelId: WRITER });
+    expect(r).toMatchObject({ ok: false, noRoom: true });
+    expect(writers.calls).toEqual([]);
+  });
+});
+
+// Fix round 5 (ORCHESTRATOR CORRECTION, the owner's law "a fix must not quietly move work onto pricier models"): the
+// order is the Summarization pick, the agent's own model, the small writer when it fits — and NOTHING after it.
+describe('round 5: nothing after the small writer — never a cloud model the owner did not pick for summaries', () => {
+  it('16 GB, the agent\'s model unreachable, a cloud model enabled: zero calls to it; the span waits, unbraked, and is summarised once the own model returns', async () => {
+    seed();
+    const before = messages();
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(writers.calls.filter((m) => m === NEXT), 'the enabled cloud model is never asked').toEqual([]);
+    expect(writers.calls.filter((m) => m !== OWN)).toEqual([]);
+    expect(realSummaries()).toBe(0);
+    expect(messages(), 'rows kept whole').toBe(before);
+    expect(ollama.tagsCalls, 'the small writer was sized once: no refused span halved and asked again').toBe(1);
+    expect(eligibleSummaryWriters(OWN, AGENT), 'no writer can run: nothing to retry until something changes').toEqual([]);
+    expect(resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background fold waits').toBeNull();
+    expect(compactionIsBraked(AGENT, true), 'a wait, not a failed pass: no brake').toBe(false);
+    writers.unreachable.clear();
+    noteAPersonSpoke(AGENT);
+    const calls = writers.calls.length;
+    await checkAndCompact(AGENT, OWN, 8_000, { force: true });
+    expect(realSummaries()).toBeGreaterThan(0);
+    expect(writers.calls.slice(calls).every((m) => m === OWN), 'the agent\'s own model writes').toBe(true);
+    expect(eligibleSummaryWriters(OWN, AGENT), 'its own model answered: the small writer is its fallback again').toEqual([OWN, WRITER]);
+  });
+
+  it('the order holds only the pick, the own model and the small writer', () => {
+    expect(summaryWriterCandidates(OWN, AGENT)).toEqual([OWN, WRITER]);
+    db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(NEXT);
+    expect(summaryWriterCandidates(OWN, AGENT)).toEqual([NEXT, OWN, WRITER]);
   });
 });
 

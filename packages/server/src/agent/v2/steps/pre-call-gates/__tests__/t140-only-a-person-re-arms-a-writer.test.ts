@@ -64,6 +64,7 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../../../../services/local-standard.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { backgroundDrains, pendingWakeups, stoppedAgents, turnContinuationCounts } from '../../../../shared-state.js';
 import { __resetBrakesForTests } from '../../../../../memory/compaction-brakes.js';
@@ -84,10 +85,13 @@ const db = (): Database.Database => mockDb.current!;
 const PERSON: TurnCounterparty = { kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null } as unknown as TurnCounterparty;
 
 function seed(): void {
+  // t268 round 5 (edited): the second writer is the Dojo's small local writer — the one fallback after the agent's own
+  // model (a second cloud model was "the cheapest", a tail the round removed).
   WRITERS.forEach((id, i) => {
-    db().prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES (?, ?, 'openai-compatible', 'api_key')`).run(`p-${i}`, `P${i}`);
+    if (i === 0) db().prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES (?, ?, 'openai-compatible', 'api_key')`).run(`p-${i}`, `P${i}`);
+    else db().prepare(`INSERT INTO providers (id, name, type, auth_type, base_url) VALUES (?, ?, 'ollama', 'none', 'http://127.0.0.1:11439')`).run(`p-${i}`, `P${i}`);
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
-                  VALUES (?, ?, ?, ?, '["text","tools"]', 200000, 4096, 1, ?, ?)`).run(id, `p-${i}`, id, id, i + 1, i + 2);
+                  VALUES (?, ?, ?, ?, '["text","tools"]', 200000, 4096, 1, ?, ?)`).run(id, `p-${i}`, id, i === 0 ? id : STANDARD_WRITER_MODEL.tag, i + 1, i + 2);
   });
   db().prepare(`INSERT INTO agents (id, name, model_id, status, config, created_at) VALUES (?, 'Desk', ?, 'idle', '{}', datetime('now'))`).run(THIRD, OWN);
   for (const agent of [AGENT, OTHER]) {

@@ -248,7 +248,7 @@ export function notePassOutcome(
   }
   if (cancelled) return null;   // won nothing before it was cut: no evidence against the writer, so no backoff
 
-  armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);
+  if (!facts?.waiting) armBackoff(agentId, force && gainedNothing, stage === 'summary_writer_unavailable' ? facts?.modelId ?? null : null);   // t268 r5
   // A low-yield pass no longer over budget has nothing to report (the brake is the whole answer),
   // nor has one that stopped at its FLOOR under budget (t171: nothing refused, nothing to repair).
   if ((!stage || FLOOR_STAGES.has(stage)) && !overBudget) return null;

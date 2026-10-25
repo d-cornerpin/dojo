@@ -91,6 +91,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import { assembleContext } from '../assembler.js';
+import { noteAPersonSpoke } from '../summary-writer-health.js';
 import { insertMessage } from '../message-store.js';
 import {
   checkAndCompact, estimateAssembledTokens, leavingFromView,
@@ -721,6 +722,9 @@ describe('t94 §7 — the seam: a compaction backlog drains across consecutive t
 
     passLog.length = 0;
     summariser.up = true;
+    // t268 round 5: a writer that failed is not dialled again (no "cheapest" fallback, no forced re-dial) until something
+    // changes; a person's next message is that change.
+    noteAPersonSpoke(AGENT);
     const after = await driveRun({ turns: 25 });
     const deltas = runDeltas([...before.slice(-1), ...after]);
     const bad = discontinuities(deltas);

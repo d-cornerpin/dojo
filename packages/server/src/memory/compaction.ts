@@ -17,7 +17,7 @@ import { insertMessageIfAbsent, retireReplayedReasoningBeforeTurn } from './mess
 // T67b: the stub distance is DECLARED by the assembler, which renders it, and READ here,
 // which decides when it applies. One number, two readers — never a second literal.
 import { V2_STUB_AFTER_TURNS, type ContextView } from './assembler.js';
-import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver } from './summary-writer-health.js';
+import { summaryWriterCandidates, eligibleSummaryWriters, summaryRoom, writerPassedOver, spanWaitsForAWriter } from './summary-writer-health.js';
 import { leafWithWriterFallback, type LeftBehind } from './leaf-writer-fallback.js';
 import { foldOldestProtectedGroup, forcedPassDoor, finishedUnderTheLock } from './forced-pass-progress.js';
 import { supersedeUncondensedPlaceholders } from './uncondensed-head.js';
@@ -345,17 +345,13 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
 // never get written). Precedence:
 //   1) the explicit Settings → compaction model, if enabled + text-capable
 //   2) the caller's preferred model (the agent's own), if it's text-capable
-//   3) the cheapest enabled text-capable model (the floor), deterministic tiebreak
-// Shared by checkAndCompact and the nightly summary rebuild so both write
-// summaries with the same (cheap) model choice. Returns null when no
-// text-capable model exists at all.
-export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string, opts?: { background?: boolean }): string | null {
-  // t140 round 3: the order above, passing over writers broken or not answering
-  // (`summary-writer-health.ts`). A BACKGROUND fold with none left dials nothing (round 6: no writer
-  // answering, no dial). A forced pass still gets the first in order: it has its own brake, and "no
-  // writer" there would be a false defect.
+//   3) the Dojo's small local writer — and nothing after it (t268 fix round 5: no "cheapest" floor)
+// Shared by checkAndCompact and the nightly summary rebuild. Returns null when none of them can run now.
+export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string, _opts?: { background?: boolean }): string | null {
+  // t140 round 3: the order above, passing over writers broken or not answering (`summary-writer-health.ts`). With
+  // none left nothing is dialled, background or forced (t268 round 5: the span waits, no brake, until one can run).
   const all = summaryWriterCandidates(preferredModelId, agentId);
-  const pick = eligibleSummaryWriters(preferredModelId, agentId)[0] ?? (opts?.background ? null : all[0] ?? null);
+  const pick = eligibleSummaryWriters(preferredModelId, agentId)[0] ?? null;
   if (pick) logger.info('Resolved summary-writer model', { resolvedModelId: pick, passedOver: all.slice(0, all.indexOf(pick)) }, agentId);
   return pick;
 }
@@ -450,8 +446,9 @@ async function runCheckAndCompact(
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
     const resolved = resolveSummaryWriterModel(agentId, modelId, { background: options?.inTheBackground });
-    if (!resolved && options?.inTheBackground) {
-      logger.info('No summary writer is answering: the background fold waits for one', {}, agentId);
+    if (!resolved && (options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {
+      logger.info('No summary writer can run now: the span waits for one, rows whole', {}, agentId);
+      if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unavailable', modelId: summaryWriterCandidates(modelId, agentId)[0], waiting: true });   // t268 r5: told, never braked
       return NO_COMPACTION;
     }
     if (!resolved) {
@@ -606,7 +603,8 @@ async function runCheckAndCompact(
     // v3.2.3 L1, re-aimed by OR-COMPACT-1: the brake, plus the D3 defect report. The stage
     // the condenser named (if any) travels with the numbers, so a pass that ended over
     // budget having reclaimed nothing says WHICH stage refused instead of showing a card.
-    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore }, options?.abortSignal);
+    const waiting = spanWaitsForAWriter(agentId);   // t268 round 5: with no writer able to run, the pass is a wait, never a brake
+    if (!isStopFenced(agentId)) notePassOutcome(agentId, Boolean(force), result, { ...passFacts(condensation, budget, guardUncompactedCount, agentId, modelId), assembledTokens: tokensAfter, tokensBefore, waiting }, options?.abortSignal);
     broadcast({
       type: 'memory:compaction',
       agentId,
@@ -635,7 +633,7 @@ async function runCheckAndCompact(
       });
     }
 
-    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId) && !options?.abortSignal?.aborted) {   // t168: a cancelled pass bought nothing because it was cut
+    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1 && !isStopFenced(agentId) && !options?.abortSignal?.aborted && !waiting) {   // t168: a cancelled pass bought nothing because it was cut
       // The run happened and bought almost nothing. Back off instead of treadmilling.
       noteLowYield(agentId);
     }
@@ -725,7 +723,7 @@ async function condenseOnlyPass(
     leafCreated: 0, condensedCreated: condensation.condensedCreated,
     tokensReclaimed: Math.max(condensation.summaryTokensBefore - condensation.summaryTokensAfter, 0),
   };
-  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, passFacts(condensation, budget, compactableRows, agentId, modelId), options?.abortSignal);
+  if (!isStopFenced(agentId)) notePassOutcome(agentId, force, result, { ...passFacts(condensation, budget, compactableRows, agentId, modelId), waiting: spanWaitsForAWriter(agentId) }, options?.abortSignal);
   broadcast({ type: 'memory:compaction', agentId, ...result });
   logger.info('Condensation-only compaction complete', {
     ...result, levels: condensation.levels, modelCalls: condensation.modelCalls,
@@ -795,7 +793,7 @@ export async function leavingViewPass(
   if (leafCreated > 0) { ageOutReplayedReasoning(agentId); stubOldToolResultsAtBoundary(agentId); }
 
   const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
-  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result, undefined, options?.abortSignal);   // a Stopped pass is not an outcome (t149 r4)
+  if (!outOfView && !isStopFenced(agentId)) notePassOutcome(agentId, false, result, { waiting: spanWaitsForAWriter(agentId) }, options?.abortSignal);   // a Stopped pass is not an outcome (t149 r4)
   broadcast({ type: 'memory:compaction', agentId, ...result });
   if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
     insertCompactionDivider(agentId, {
@@ -1140,7 +1138,7 @@ export async function runLeafCompaction(
         if (summary.tooBig) {   // t149 F4: not dialled — more than it can hold: halved, a single row is left for a writer that can
           if (chunk.length > 1 && !summary.noRoom) chunks.unshift(chunk.slice(0, Math.ceil(chunk.length / 2)), chunk.slice(Math.ceil(chunk.length / 2)));
           else if (opts?.left) opts.left.tooBig = true;
-          if (summary.noRoom) break;   // t268 N-B: this writer cannot run now; the next writer takes the rest whole
+          if (summary.noRoom) break;   // t268 N-B: this writer cannot run now; nothing is halved, the rest waits
           continue;
         }
         (summary.checkFailed ? logger.debug : logger.warn)('SUMMARY_REFUSED leaf chunk left uncompacted', {   // v3.5: a refused span was logged once (summary_check_failed)

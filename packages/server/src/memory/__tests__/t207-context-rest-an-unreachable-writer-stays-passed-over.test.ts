@@ -52,15 +52,17 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 describe('t207 D9 — the mark survives a restart', () => {
   it('a writer that failed before the restart is still passed over after it, and the resolver skips it', async () => {
     const before = await restart();
-    // An auto-routed agent has no model of its own, and no Settings writer is set: the cheapest is first.
-    expect(before.eligibleSummaryWriters(undefined, AGENT)[0], 'precondition: the cheapest is first').toBe(FREE);
+    // t268 round 5 (edited: FREE was first as "the cheapest", a writer the round removed): FREE is the Settings writer,
+    // and the agent's own model OWN is next.
+    mockDb.current!.prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(FREE);
+    expect(before.eligibleSummaryWriters(OWN, AGENT)[0], 'precondition: the Settings writer is first').toBe(FREE);
     before.noteSummaryWriterOutcome(FREE, false);
     expect(before.writerPassedOver(FREE, AGENT)).toBe(true);
 
     const after = await restart();                       // the process restarts; the database stays
     expect(after.writerPassedOver(FREE, AGENT), 'the first fold after a restart does not dial it again').toBe(true);
-    expect(after.eligibleSummaryWriters(undefined, AGENT)).not.toContain(FREE);
-    expect(after.eligibleSummaryWriters(undefined, AGENT)[0]).toBe(OWN);
+    expect(after.eligibleSummaryWriters(OWN, AGENT)).not.toContain(FREE);
+    expect(after.eligibleSummaryWriters(OWN, AGENT)[0]).toBe(OWN);
   });
 
   it('the mark is per provider: a sibling model on the failed provider is passed over too', async () => {

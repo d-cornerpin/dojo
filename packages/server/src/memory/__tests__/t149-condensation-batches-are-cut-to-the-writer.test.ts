@@ -9,6 +9,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
+// t268 round 5: whether the small writer fits the box's memory is not this file's question.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 vi.mock('../../db/connection.js', () => ({
   getDb: () => {
     if (!mockDb.current) throw new Error('test DB not initialized');
@@ -42,6 +44,7 @@ import { insertMessage } from '../message-store.js';
 import { contextWindowPolicy, estimateTokens } from '../budget.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { runMigrations } from '../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { stoppedAgents } from '../../agent/shared-state.js';
 
 const AGENT = 'agent-t149-condense';
@@ -103,10 +106,12 @@ describe('t149 round 2 — condensation batches are cut to the writer', () => {
     expect(dials.calls.length, 'the walk ended at the first stopped call').toBe(1);
   });
 
+  // t268 round 5 (edited): the writer that can is the Dojo's small local writer — the one fallback after the agent's
+  // own model (a cloud model nobody chose for summaries is never one).
   it('round 4: a pair the writer cannot hold goes to a writer that can, before the batch is given up', async () => {
-    db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-roomy', 'p-roomy', 'openai-compatible', 'api_key', 'http://localhost:11431/v1')").run();
+    db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-roomy', 'p-roomy', 'ollama', 'none', 'http://127.0.0.1:11431')").run();
     db().prepare(`INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
-      VALUES ('model-t149-roomy', 'p-roomy', 'roomy', 'Roomy', 32000, 4096, '["text","tools"]', 1, 0.5, 2)`).run();
+      VALUES ('model-t149-roomy', 'p-roomy', ?, 'Roomy', 32000, 4096, '["text","tools"]', 1, 0.5, 2)`).run(STANDARD_WRITER_MODEL.tag);
     const drop = "SELECT id FROM summaries WHERE agent_id = ? AND id NOT IN (SELECT id FROM summaries WHERE agent_id = ? ORDER BY earliest_at LIMIT 2)";
     for (const t of ['summary_messages', 'context_items']) {
       try { db().prepare(`DELETE FROM ${t} WHERE ${t === 'summary_messages' ? 'summary_id' : 'item_id'} IN (${drop})`).run(AGENT, AGENT); } catch { /* table shape: nothing to clear */ }

@@ -576,8 +576,11 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
     expect(calls.length, 'nothing is built for a provider known to be dead').toBe(0);
     expect(compactionFailureReason(AGENT), 'the stage is named for repair').toBe('summary_writer_unavailable');
     expect(frames.filter(f => f.type === 'chat:error'), 'and no card is stacked on the breaker\'s').toEqual([]);
-    // No terminal state: the agent is braked, and the brake names the writer as its cause.
-    expect(compactionIsBraked(AGENT, true)).toBe(true);
+    // No terminal state. t268 round 5 (edited: the agent was braked on the writer): with no other writer of its order able
+    // to run, the span WAITS — no brake — and nothing is dialled until its writer is back.
+    expect(compactionIsBraked(AGENT, true)).toBe(false);
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    expect(calls.length, 'the next emergency builds nothing either').toBe(0);
   });
 
   it('⚠ AND WHEN THE WRITER COMES BACK, COMPACTION RESUMES WITH NOTHING TO CLICK', async () => {
@@ -585,12 +588,11 @@ describe('§3 a failing compaction is a repairable defect, never a dead end', ()
     noteProviderFailure(PROVIDER, HTTP_402, AGENT);
     noteProviderFailure(PROVIDER, HTTP_402, AGENT);
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
-    expect(compactionIsBraked(AGENT, true), 'precondition: braked on a dead writer').toBe(true);
+    expect(compactionIsBraked(AGENT, true), 't268 round 5 (edited): waiting on a dead writer, never braked').toBe(false);
 
     // The owner tops the account up. No dashboard button, no reset, no archive.
     clearProviderBreaker(PROVIDER);
 
-    expect(compactionIsBraked(AGENT, true), 'a brake whose stated cause is gone must let go at once').toBe(false);
     const before = held();
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
     expect(held(), 'and the very next pass condenses').toBeLessThan(before);

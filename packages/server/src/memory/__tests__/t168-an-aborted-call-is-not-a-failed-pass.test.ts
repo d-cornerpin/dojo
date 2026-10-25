@@ -73,7 +73,7 @@ import { compactionFailureReason, compactionFailingCardText } from '../compactio
 import { rawContextSummaryTokens } from '../condense-until-fits.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
 
 const AGENT = 'agent-t168-aborted';
 const PROVIDER = 'prov-t168';
@@ -172,6 +172,9 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
     const before = rawContextSummaryTokens(AGENT);
 
     script = writes;
+    // t268 round 5 (edited): the cut call left its writer not answering, and nothing comes after it in the order, so a
+    // forced pass waits rather than dial it again; a person's next turn is the change that earns it the retry.
+    noteAPersonSpoke(AGENT);
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: new AbortController().signal });
 
     expect(brakeSkips(), 'the pass was not skipped by a brake').toEqual([]);
@@ -210,13 +213,15 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
   });
 });
 
-describe('t168 (iv) a real writer refusal still brakes, exactly as before', () => {
-  it('an empty answer from a call nobody cancelled arms the force-binding brake, reports the stage and cards once', async () => {
+// t268 round 5 (edited: these clauses asserted the brake). A real refusal is still told once, with its stage; but with no
+// other writer of the agent's order able to run, the span WAITS — no brake — and nothing is dialled until one can.
+describe('t168 (iv) a real writer refusal is told once; with no writer left, the span waits unbraked', () => {
+  it('an empty answer from a call nobody cancelled reports the stage and cards once; no brake, and the next forced pass dials nothing', async () => {
     script = () => ({ content: '' });   // the model answered with nothing usable; no abort anywhere
 
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: new AbortController().signal });
 
-    expect(compactionIsBraked(AGENT, true), 'the brake binds even the next emergency').toBe(true);
+    expect(compactionIsBraked(AGENT, true), 'a wait, not a brake').toBe(false);
     expect(compactionFailureReason(AGENT)).toBe('summariser_refused');
     const defects = defectLines();
     expect(defects.length, 'one defect line').toBe(1);
@@ -233,10 +238,10 @@ describe('t168 (iv) a real writer refusal still brakes, exactly as before', () =
     expect(modelCalls).toBe(callsAfterFirst);
   });
 
-  it('a pass with no signal at all (a manual or routine caller) brakes on a refusal as it always did', async () => {
+  it('a pass with no signal at all (a manual or routine caller): the same — told, not braked', async () => {
     script = () => ({ content: '' });
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true });
-    expect(compactionIsBraked(AGENT, true)).toBe(true);
+    expect(compactionIsBraked(AGENT, true)).toBe(false);
     expect(compactionFailureReason(AGENT)).toBe('summariser_refused');
   });
 });

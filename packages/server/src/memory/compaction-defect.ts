@@ -57,6 +57,8 @@ export interface CompactionPassFacts {
   topLevelSummaries?: number;
   /** The summary-WRITER model, so a writer-caused failure can name and clear itself. */
   modelId?: string;
+  /** t268 fix round 5: no writer of the agent's order could run, so the span WAITS — still told, never braked. */
+  waiting?: boolean;
 }
 
 const failures = new Map<string, CompactionFailure>();

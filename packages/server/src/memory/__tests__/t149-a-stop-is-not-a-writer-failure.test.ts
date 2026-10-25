@@ -58,15 +58,20 @@ import { compactionIsBraked } from '../compaction-brakes.js';
 import { eligibleSummaryWriters, summaryWriterCandidates, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { stoppedAgents, stopFencedRuns, activeAbortControllers, backgroundDrains } from '../../agent/shared-state.js';
 import { clearClientCache } from '../../agent/model.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 
+// t268 round 5: whether the small writer fits the box's memory is not this file's question.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 vi.setConfig({ testTimeout: 20_000 });
 
 const AGENT = 'agent-t149-stop';
 const OWN = 'model-t149-own';
+/** t268 round 5 (edited): after the agent's own model, the one fallback is the Dojo's small local writer — SECOND.
+ *  THIRD is an enabled model nobody chose for summaries: it is never in the order. */
 const SECOND = 'model-t149-second';
 const THIRD = 'model-t149-third';
 const db = (): Database.Database => mockDb.current!;
@@ -108,13 +113,13 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   const prov = db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES (?, ?, 'ollama', ?, 'none', 1)");
-  for (const p of ['p-own', 'p-second', 'p-third']) prov.run(p, p, stubUrl);
+  for (const p of ['p-dojo', 'p-own', 'p-third']) prov.run(p, p, stubUrl);   // p-dojo: the box's own local Ollama (listed first)
   const model = db().prepare(
     `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
      VALUES (?, ?, ?, ?, 32000, 4096, '["text","tools"]', 1, ?, 0)`,
   );
   model.run(OWN, 'p-own', 'own', 'Own', 3);
-  model.run(SECOND, 'p-second', 'second', 'Second', 0.1);
+  model.run(SECOND, 'p-dojo', STANDARD_WRITER_MODEL.tag, 'Second', 0.1);   // the small writer, on this box's local Ollama
   model.run(THIRD, 'p-third', 'third', 'Third', 0.2);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Reader', 'idle', ?, '{}')").run(AGENT, OWN);
   for (let t = 1; t <= 8; t++) {
@@ -151,7 +156,7 @@ describe('t149 F3 — Stop during a background summary', () => {
     expect(dialed.models, 'after the cut call, no other writer was walked to').toEqual([OWN]);
     // No writer is marked: every candidate is still eligible, for this agent and for others.
     const all = summaryWriterCandidates(OWN);
-    expect(all.length).toBe(3);
+    expect(all).toEqual([OWN, SECOND]);
     expect(eligibleSummaryWriters(OWN, AGENT)).toEqual(all);
     expect(eligibleSummaryWriters(OWN, 'another-agent')).toEqual(all);
     // No "compaction is failing" card: the owner stopping the agent is not a defect.

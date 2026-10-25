@@ -28,6 +28,7 @@
 import { createLogger } from '../logger.js';
 import { getMessagesOutsideFreshTail } from './store.js';
 import { getCompactedMessageIds } from './dag.js';
+import { spanWaitsForAWriter } from './summary-writer-health.js';
 import { groupTail } from './assembler.js';
 import { notePassOutcome, compactionBrakeMsLeft, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 import { isStopFenced } from '../agent/shared-state.js';
@@ -65,7 +66,8 @@ export async function recordingForcedPass(agentId: string, run: () => Promise<Pa
     const result = await run();
     if (!brakedBefore) threw.delete(agentId);   // this pass ran and returned: whatever came before, it did not throw
     if (progressed(result)) return result;
-    if (!brakedBefore && compactionBrakeMsLeft(agentId) === null && !opts.abortSignal?.aborted && !isStopFenced(agentId)) {
+    // t268 round 5: a pass that waits for a writer arms no brake, so the brake cannot say it was recorded: it told its own.
+    if (!brakedBefore && compactionBrakeMsLeft(agentId) === null && !opts.abortSignal?.aborted && !isStopFenced(agentId) && !spanWaitsForAWriter(agentId)) {
       const facts = await opts.measure().catch(() => undefined);
       const stalled = facts !== undefined && facts.assembledTokens > facts.budgetTokens;
       logger.warn('a forced pass returned without recording what it bought; recorded now', { ...facts, stalled }, agentId);
@@ -109,7 +111,7 @@ export async function foldOldestProtectedGroup(args: {
   const leafCreated = throughSeq > 0 ? await args.fold(throughSeq) : 0;
   const result: PassResult = { leafCreated, condensedCreated: condensed.condensedCreated, tokensReclaimed: condensed.tokensReclaimed };
   logger.info('forced pass: nothing outside the protected recent part; folded its oldest group', { throughSeq, leafCreated, groupsLeft: groups.length - 1 }, agentId);
-  notePassOutcome(agentId, true, result);
+  notePassOutcome(agentId, true, result, { waiting: spanWaitsForAWriter(agentId) });
   return result;
 }
 

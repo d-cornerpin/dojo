@@ -16,7 +16,7 @@
 // t207 (D9): the mark is PERSISTED (`healer_state`), so a restart does not forget an unreachable writer;
 // and "answered" means a SUMMARY call: round 7's re-arm on any call (a chat turn) is gone.
 // The order (`summaryWriterCandidates`): the Settings choice, the agent's own model (an auto agent's: its router's
-// pick), the Dojo's writer, then (no Settings choice) the cheapest. Eligible = that order without broken,
+// pick), the Dojo's writer — nothing after it (t268 round 5). Eligible = that order without broken,
 // not-answering or (t268 N-B) no-room ones; none left: nothing dialled, placeholder notes stay, labelled. A call
 // the OWNER stopped, or cut by the turn's patience, is not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -187,13 +187,13 @@ function notAnswering(modelId: string, agentId?: string): boolean {
 }
 
 /**
- * Every writer a summary of this agent's conversation MAY go to, in order (ruling R-V333-12, round 4:
- * the fallback never sends a conversation to a provider that would not have received it before):
- *   1. the owner's Settings writer, when one is set and usable;
- *   2. the agent's own model, then its provider's other text models (owner 2026-10-24: "The agents model.");
- *   3. the Dojo's standard writer — the FALLBACK when the agent's model cannot be reached; local, nowhere new;
- *   4. ONLY when the owner set no Settings writer — exactly as before t140 — the cheapest text model.
- * An auto-routed agent's own model is its router's standard-tier pick, in the router's order and through its filters.
+ * Every writer a summary of this agent's conversation MAY go to, in order — and only these (t268 fix round 5, the
+ * owner's law: a fix must not quietly move work onto pricier models):
+ *   1. the owner's Settings writer (the Summarization pick), when one is set and usable;
+ *   2. the agent's own model (owner 2026-10-24: "The agents model."); an auto-routed agent's is its router's
+ *      standard-tier pick, through the router's own order and filters;
+ *   3. the Dojo's small local writer — the FALLBACK, when it fits the memory free then (`writer-fallback-room.ts`).
+ * None of them can run: nothing is dialled and the span waits, rows whole, until one can.
  */
 export function summaryWriterCandidates(preferredModelId?: string, agentId?: string): string[] {
   const db = getDb();
@@ -208,21 +208,21 @@ export function summaryWriterCandidates(preferredModelId?: string, agentId?: str
   const explicitId = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
   const explicit = isUsable(explicitId) ? explicitId : undefined;
   const fixed = preferredModelId && preferredModelId !== 'auto' && preferredModelId !== '__auto__' ? preferredModelId : undefined;
-  const routed = fixed ? [] : standardTierChain(agentId).filter(isUsable);
-  const own = isUsable(fixed) ? fixed : routed[0];
-  const ownProviderModels = fixed ? usable.filter((u) => own && u.provider === usable.find((x) => x.id === own)?.provider).map((u) => u.id) : routed;
-  const list = [
-    ...(explicit ? [explicit] : []),
-    ...(own ? [own, ...ownProviderModels] : []),
-    ...[standardModelRowId('writer') ?? ''].filter(isUsable),
-    ...(explicit ? [] : usable.map((u) => u.id)),
-  ];
-  return [...new Set(list)];
+  const own = fixed ? (isUsable(fixed) ? fixed : undefined) : standardTierChain(agentId).find(isUsable);
+  // t268 fix round 5: NOTHING after the small writer (no "cheapest text model", no other model of the agent's provider).
+  return [...new Set([explicit, own, standardModelRowId('writer') ?? undefined].filter(isUsable))];
 }
 
 /** The writers anything may dial now for `agentId`, turn or background: no open breaker, answering. */
 export function eligibleSummaryWriters(preferredModelId?: string, agentId?: string): string[] {
   return summaryWriterCandidates(preferredModelId, agentId).filter((id) => !writerPassedOver(id, agentId));
+}
+
+/** t268 fix round 5: does this agent have writers, none of which can run now? Then its span WAITS, rows whole, until
+ *  one can: a wait, not a failed pass, so nothing arms the compaction brake for it (no writer at all is a defect). */
+export function spanWaitsForAWriter(agentId: string): boolean {
+  const own = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
+  return summaryWriterCandidates(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId).length === 0;
 }
 
 /** Was this writer passed over — its provider's breaker open, or it has not answered since it failed? */

@@ -31,6 +31,8 @@ vi.mock('../embeddings.js', () => ({
 const owner = vi.hoisted(() => ({ cards: [] as Array<{ type?: string; code?: string }> }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: (e: { type?: string; code?: string }) => { owner.cards.push(e); } }));
 vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
+// t268 round 5: ROOMY is the Dojo's small writer here; whether it fits the box's memory is not this file's question.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
   isDreamerIgnored: vi.fn(() => false),
@@ -66,6 +68,7 @@ import { contextWindowPolicy, estimateTokens } from '../budget.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 
 const AGENT = 'agent-t149-writers';
 const ROOMY = 'model-t149-roomy';
@@ -91,17 +94,23 @@ function seedALongCut(): void { for (let t = 1; t <= 24; t++) appendTurn(); }
 
 function seed(): void {
   const prov = db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES (?, ?, 'openai-compatible', 'api_key', ?)");
-  for (const [i, id] of ['p-roomy', 'p-tiny', 'p-16k', 'p-dead'].entries()) prov.run(id, id, `http://localhost:1143${i}/v1`);
+  for (const [i, id] of ['p-tiny', 'p-16k', 'p-dead'].entries()) prov.run(id, id, `http://localhost:1143${i + 1}/v1`);
+  db().prepare("INSERT INTO providers (id, name, type, auth_type, base_url) VALUES ('p-roomy', 'p-roomy', 'ollama', 'none', 'http://127.0.0.1:11430')").run();
   const model = db().prepare(
     `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities, is_enabled, input_cost_per_m, output_cost_per_m)
      VALUES (?, ?, ?, ?, ?, 4096, '["text","tools"]', 1, ?, ?)`,
   );
-  model.run(ROOMY, 'p-roomy', 'roomy', 'Roomy', 32_000, 0.5, 2);
+  model.run(ROOMY, 'p-roomy', STANDARD_WRITER_MODEL.tag, 'Roomy', 32_000, 0.5, 2);
   model.run(TINY, 'p-tiny', 'tiny', 'Tiny', 4_096, 0, 0);
   model.run(SMALL, 'p-16k', 'small', 'Small', 16_000, 0.1, 0.4);
   model.run(DEAD, 'p-dead', 'dead', 'Dead', 32_000, 0, 0);
   writers.windows = { [ROOMY]: 32_000, [TINY]: 4_096, [SMALL]: 16_000, [DEAD]: 32_000 };
-  // An auto-routed agent: no model of its own, so with no Settings writer the cheapest text model writes.
+  // t268 round 5 (edited: an auto-routed agent's summaries went to "the cheapest text model", a tail the round removed):
+  // an auto-routed agent's own model is its router's standard-tier pick — DEAD, then SMALL, sit in that tier, so the
+  // enabled one is the pick — and the Dojo's small local writer (ROOMY here) is its fallback. (TINY, a 4,096 window,
+  // is in no tier: an agent cannot run on it.)
+  db().prepare("DELETE FROM router_tier_models WHERE tier_id IN ('standard', 'heavy', 'light')").run();
+  db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('standard', ?, 0), ('standard', ?, 1)").run(DEAD, SMALL);
   db().prepare("INSERT INTO agents (id, name, status, model_id, config) VALUES (?, 'Depot Reader', 'idle', 'auto', '{}')").run(AGENT);
 }
 
@@ -124,8 +133,10 @@ const door = (window: number): Promise<unknown> =>
   assembleWithNothingOutOfViewUnsummarised(AGENT, window, () => assembleContext(AGENT, ROOMY));
 
 describe('t149 F4 — a writer that cannot hold the input is never dialled', () => {
-  it('no Settings writer, the cheapest text model has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
-    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (cheapest) and ROOMY
+  // t268 round 5 (edited: TINY was "the cheapest text model", a writer the round removed): TINY is the owner's pick.
+  it('the Settings writer has a 4,096-token window (a budget of 0): it is not dialled, the next one that holds the input writes', async () => {
+    db().prepare('UPDATE models SET is_enabled = 0 WHERE id IN (?, ?)').run(DEAD, SMALL);   // the writers are TINY (the pick) and ROOMY
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('compaction_model_id', ?)").run(TINY);
     seedALongCut();
     await door(32_000);
     expect(writers.calls.map((c) => c.modelId), 'the writer that can hold nothing was never asked').not.toContain(TINY);

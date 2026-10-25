@@ -8,10 +8,10 @@
 // and nothing is recorded against the writer:
 //   · a span larger than what is free, while a smaller one would fit, is refused as too big and the caller halves
 //     it — the path every caller already takes for a writer that cannot hold a span;
-//   · fix round 4 (N-B, ruling): when not even a summary fits (a 16 GB box, always; a 32 GB box beside a large
-//     loaded model, sometimes) the writer cannot run now — `noRoom`: the span passes at once, whole, to the NEXT
-//     writer in the order, and the writer is passed over for this agent until its own model is reachable again
-//     (`writer-no-room.ts`). With no writer able to run, the rows are kept for a later pass.
+//   · fix rounds 4-5 (N-B, rulings): when not even a summary fits (a 16 GB box, always; a 32 GB box beside a large
+//     loaded model, sometimes) the writer cannot run now — `noRoom`: nothing is halved, and the writer is passed
+//     over for this agent until its own model is reachable again (`writer-no-room.ts`). Nothing comes after it in
+//     the order, so the span waits, rows whole, for the agent's own model.
 // When summaries are ASSIGNED to the writer its room is reserved, and nothing here refuses.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -40,7 +40,7 @@ export async function refuseFallbackOverFreeMemory(
   if (need <= free) return null;
   if (windowFor(systemPrompt.length) > free) {
     noteWriterHadNoRoom(agentId);
-    logger.warn('SUMMARY_REFUSED the memory free now cannot hold any summary on the Dojo\'s writer; the span passes to the next writer', { need, free }, agentId);
+    logger.warn('SUMMARY_REFUSED the memory free now cannot hold any summary on the Dojo\'s writer; the span waits, rows whole', { need, free }, agentId);
     return NO_ROOM;
   }
   logger.warn('SUMMARY_REFUSED a fallback summary on the Dojo\'s writer needs more window than the memory free now holds; the span is halved', { need, free }, agentId);
