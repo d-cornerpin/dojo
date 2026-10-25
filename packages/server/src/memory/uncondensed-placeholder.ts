@@ -31,6 +31,7 @@ import {
 } from './compaction.js';
 import { generateSummary } from './summarize.js';
 import { summaryTargetTokens } from './summary-target.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import { isMarkedUnwritable, recordRefusal, writersLeft } from './unwritable-span.js';
 import { KEPT_WHOLE_KIND, keptRowHandle } from './kept-row-view.js';
 import { toolResultView, POINTER_VIEW_CHARS } from './tool-result-view.js';
@@ -164,11 +165,11 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     for (const writer of eligibleSummaryWriters(preferred, agentId)) {
       if (done || opts.abortSignal?.aborted) break;
       if (!left.has(writer)) continue;   // t269 round 2 (N1): it already said it cannot write this span whole
-      const summary = await generateSummary({ content, depth: 0, targetTokens: summaryTargetTokens(content), agentId, modelId: writer, abortSignal: opts.abortSignal, spanIds: source.map((m) => m.id) });
+      const summary = await generateSummary({ content, depth: 0, targetTokens: summaryTargetTokens(content, modelCharsPerToken(writer)), agentId, modelId: writer, abortSignal: opts.abortSignal, spanIds: source.map((m) => m.id) });
       if (!summary.ok) {
         if (summary.stopped) { stoppedByOwner = true; break; }   // the owner's Stop: not the writer's failure, and no next writer
         if (summary.checkFailed) { checkFailed = true; break; }  // v3.5: a verdict on this span — no other writer, left as it is
-        if (summary.tooBig) { recordRefusal(agentId, writer, span); continue; }   // t149 F4: more than it holds (or cut twice); the next may hold it
+        if (summary.tooBig) { if (!summary.noRoom) recordRefusal(agentId, writer, span); continue; }   // t149 F4: more than it holds (or cut twice); the next may hold it — t268's `noRoom` is "cannot run now", never a verdict
         if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
         continue;
       }
@@ -178,21 +179,23 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       done = true;
     }
     if (checkFailed) { checkFailed = false; continue; }   // v3.5 ruling: each span is its own — the next placeholder is not held
-    // t269 fix rounds 1–2 (I1, N1): EVERY candidate writer said it cannot write this span whole (one that was
-    // out was not asked, so it is not counted). Split it, down to single rows; a single row is kept whole behind
-    // its pointer (`unwritable-span.ts`). Each half is tried in this same pass, so a span of n rows costs at most
-    // 2n − 1 attempts per writer, once, until something changes.
-    if (!done && !stoppedByOwner && isMarkedUnwritable(agentId, span)) {
-      if (source.length > 1) {
-        const later = source.slice(Math.ceil(source.length / 2));
-        supersedeUncondensedPlaceholders(agentId, later.map((m) => m.id));
-        queue.unshift(id, placeholderFor(agentId, later));
-      } else {
-        keepRowWhole(agentId, id, source[0]);
-        replaced++;
-      }
+    // t269 fix rounds 1–2 and N6: every ANSWERING writer said it cannot write this span whole — split it, down to
+    // single rows (a writer that is out never blocks the split; it is asked again when back). Each half is tried in
+    // this same pass, so a span of n rows costs at most 2n − 1 attempts per writer, once, until something changes.
+    // A single row is kept whole behind its pointer only when EVERY candidate writer refused it (`unwritable-span.ts`).
+    const answeringRefused = eligibleSummaryWriters(preferred, agentId).length > 0 && writersLeft(agentId, span).length === 0;
+    if (!done && !stoppedByOwner && source.length > 1 && answeringRefused) {
+      const later = source.slice(Math.ceil(source.length / 2));
+      supersedeUncondensedPlaceholders(agentId, later.map((m) => m.id));
+      queue.unshift(id, placeholderFor(agentId, later));
       continue;
     }
+    if (!done && !stoppedByOwner && source.length === 1 && isMarkedUnwritable(agentId, span)) {
+      keepRowWhole(agentId, id, source[0]);
+      replaced++;
+      continue;
+    }
+    if (!done && !stoppedByOwner && answeringRefused) continue;   // a row waiting for a writer that is out: the next note is its own
     if (!done || stoppedByOwner) break;
     replaced++;
   }

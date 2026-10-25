@@ -27,6 +27,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 vi.mock('../summary-check.js', () => ({
   writeThenCheck: (p: unknown, write: (p: unknown) => unknown) => write(p),
   rewriteInstruction: () => '',
+  refuseFallbackOverFreeMemory: async () => null,   // t268: the small writer's free-memory gate (not this file's subject)
 }));
 
 interface Scripted { content: string; stopReason: string; outputRoom?: { sent: number; ceiling: number }; throws?: true }
@@ -46,6 +47,7 @@ import { generateSummary } from '../summarize.js';
 import { summaryTargetTokens, summaryFacts } from '../summary-target.js';
 import { getDepthPrompt } from '../summarize.js';
 import { refuseWhatTheWriterCannotHold } from '../summary-writer-health.js';
+import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { estimateTokens } from '../budget.js';
 
 const AGENT = 'agent-t269-cut';
@@ -203,3 +205,22 @@ describe('t269 fix round 1 — a time range is not a fact a merge must copy (rev
     expect(facts).toEqual(['$400', 'ORD-77', 'v3.4.1']);
   });
 });
+
+// ── Rebase onto v35 (I4): the writer's own token density, never a fixed 4 ─────────────────────────
+describe('t269 I4 — the target and the room are counted at the writer\'s own token density (t268)', () => {
+  it('a target is proportional to the input counted at the writer\'s density', () => {
+    const plain = 'word '.repeat(2_000);   // 10,000 characters, no facts
+    expect(summaryTargetTokens(plain, 2.48)).toBe(Math.ceil(Math.ceil(10_000 / 2.48) * 0.2));
+    expect(summaryTargetTokens(plain, 2.48)).toBeGreaterThan(summaryTargetTokens(plain));
+  });
+
+  it('on the Dojo\'s writer (B5: 2.48 characters a token), a cut is asked again with the input counted at that density', async () => {
+    mockDb.current!.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p-ol', 'O', 'ollama', 'none')").run();
+    mockDb.current!.prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, is_enabled) VALUES ('m-std', 'p-ol', 'w', ?, '[\"chat\"]', 1)").run(STANDARD_WRITER_MODEL.tag);
+    script.push({ content: CUT, stopReason: 'length', outputRoom: { sent: 1_000, ceiling: 32_768 } }, { content: WHOLE, stopReason: 'end_turn' });
+    const out = await generateSummary({ content: INPUT, depth: 0, targetTokens: summaryTargetTokens(INPUT, 2.48), agentId: AGENT, modelId: 'm-std' });
+    expect(out.ok && out.text).toBe(WHOLE);
+    expect(seen[1].outputRoomAsk).toBe(Math.ceil(INPUT.length / 2.48));
+  });
+});
+

@@ -33,7 +33,7 @@
 // Cache: this decides summariser OUTPUT size. It is in no prompt prefix.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { estimateTokens, SUMMARY_SHARE } from './budget.js';
+import { CHARS_PER_TOKEN, effectiveDivisor, SUMMARY_SHARE } from './budget.js';
 import { laneLimit } from './lanes.js';
 import { newestNoteRoomTokens } from './summaries-lane.js';
 
@@ -87,26 +87,33 @@ export const TARGET_SLACK = 1.5;
  * frame (`newestNoteRoomTokens`, measured with the note's own conversation label). Unbounded when there is no
  * budget to measure. A note that still cannot fit shows as the lane's kept-row pointer, never cut.
  */
-export function leafKeepCap(contentBudgetTokens: number, label = 'conversation unknown'): number {
+export function leafKeepCap(contentBudgetTokens: number, label = 'conversation unknown', charsPerToken?: number): number {
   if (!(contentBudgetTokens > 0)) return Number.MAX_SAFE_INTEGER;
-  return Math.max(1, Math.floor(newestNoteRoomTokens(Math.floor(contentBudgetTokens * SUMMARY_SHARE), label) / TARGET_SLACK));
+  // The lane counts in its own dialect (CHARS_PER_TOKEN); the target is the writer's tokens (its density, t268).
+  const roomChars = newestNoteRoomTokens(Math.floor(contentBudgetTokens * SUMMARY_SHARE), label) * CHARS_PER_TOKEN;
+  return Math.max(1, Math.floor(tokensAt(roomChars, charsPerToken) / TARGET_SLACK));
 }
+
+/** Tokens of `text` at a writer's density (`services/token-density.ts`, t268: its own measured median; never above
+ *  the stored-row dialect's 4, `effectiveDivisor`). Absent: the dialect itself. */
+export const tokensAt = (chars: number, charsPerToken?: number): number => Math.ceil(Math.max(0, chars) / effectiveDivisor(charsPerToken));
+export const textTokens = (text: string, charsPerToken?: number): number => tokensAt(text.length, charsPerToken);
 
 /** The ask for a MERGE of `peers` notes (header): what may be kept of it, TARGET_SLACK × ask, is (1 − share)
  *  of its average child — strictly smaller than its input. */
-export function mergeTargetTokens(content: string, peers: number): number {
-  const input = estimateTokens(content);
+export function mergeTargetTokens(content: string, peers: number, charsPerToken?: number): number {
+  const input = textTokens(content, charsPerToken);
   return Math.max(1, Math.min(input - 1, Math.floor(((1 - summaryShare()) * (input / Math.max(1, peers))) / TARGET_SLACK)));
 }
 
 /** The facts a summary of `source` must carry within `budgetTokens`: distinct, newest mention first (a later
  *  mention in the input is newer: notes and rows are given oldest first), as many as the budget holds. */
-export function carriedFacts(source: string, budgetTokens: number): string[] {
+export function carriedFacts(source: string, budgetTokens: number, charsPerToken?: number): string[] {
   const facts = summaryFacts(source).map((f) => ({ f, at: source.lastIndexOf(f) })).sort((a, b) => b.at - a.at);
   const out: string[] = [];
   let used = 0;
   for (const { f } of facts) {
-    const cost = estimateTokens(`${f}, `);
+    const cost = textTokens(`${f}, `, charsPerToken);
     if (used + cost > budgetTokens) break;
     out.push(f);
     used += cost;
@@ -116,14 +123,14 @@ export function carriedFacts(source: string, budgetTokens: number): string[] {
 
 /** The facts of `source` that a summary must carry within `budgetTokens` and does not (exact text: an id
  *  copied is an id kept). */
-export function factsDropped(source: string, summary: string, budgetTokens: number = Number.MAX_SAFE_INTEGER): string[] {
-  return carriedFacts(source, budgetTokens).filter((f) => !summary.includes(f));
+export function factsDropped(source: string, summary: string, budgetTokens: number = Number.MAX_SAFE_INTEGER, charsPerToken?: number): string[] {
+  return carriedFacts(source, budgetTokens, charsPerToken).filter((f) => !summary.includes(f));
 }
 
 /** The target for a summary of `content` (header): proportional, room for its facts, never past the input. */
-export function summaryTargetTokens(content: string): number {
-  const input = estimateTokens(content);
+export function summaryTargetTokens(content: string, charsPerToken?: number): number {
+  const input = textTokens(content, charsPerToken);
   const facts = summaryFacts(content);
-  const factRoom = facts.length > 0 ? estimateTokens(facts.join(' ')) : 0;
+  const factRoom = facts.length > 0 ? textTokens(facts.join(' '), charsPerToken) : 0;
   return Math.max(1, Math.min(input, Math.ceil(input * summaryShare()) + factRoom));
 }

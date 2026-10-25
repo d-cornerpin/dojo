@@ -34,7 +34,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { estimateTokens } from './budget.js';
-import { factsDropped, TARGET_SLACK } from './summary-target.js';
+import { factsDropped, TARGET_SLACK, textTokens } from './summary-target.js';
 import type { SummaryResult } from './summarize.js';
 
 /** What one writer call returned, in the transport's own terms (`ModelCallResult`'s fields). */
@@ -52,6 +52,8 @@ type Done = { text: string } | { refused: SummaryResult };
 export interface WholeArgs {
   call: WriterCall; content: string; depth: number; targetTokens: number; abortSignal?: AbortSignal;
   warn: (message: string, meta: Record<string, unknown>) => void;
+  /** The writer's characters per token (`modelCharsPerToken`); absent, the stored-row dialect. */
+  charsPerToken?: number;
   /** Does the writer's window hold this input with `extra` appended to the system prompt? */
   fits: (extra: string) => boolean;
 }
@@ -92,19 +94,21 @@ function rewriteNote(tokens: number, allowed: number, inputTokens: number, targe
 
 /** Write a summary that may be kept (header). */
 export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
-  const inputTokens = estimateTokens(a.content);
+  // Lengths in the WRITER's tokens (t268's per-model density): the room asked and the limits are its tokens.
+  const tok = (t: string): number => textTokens(t, a.charsPerToken);
+  const inputTokens = tok(a.content);
   const merge = a.depth > 0;
   const slack = Math.ceil(a.targetTokens * TARGET_SLACK);
   const allowed = merge ? Math.min(inputTokens - 1, slack) : Math.min(inputTokens, slack);
-  const keepable = (text: string): boolean => estimateTokens(text) <= (merge ? allowed : inputTokens);
-  const dropped = (t: string): string[] => (merge ? factsDropped(a.content, t, a.targetTokens) : []);
+  const keepable = (text: string): boolean => tok(text) <= (merge ? allowed : inputTokens);
+  const dropped = (t: string): string[] => (merge ? factsDropped(a.content, t, a.targetTokens, a.charsPerToken) : []);
   const first = await finished(a, '', inputTokens);
   if ('refused' in first) return first.refused;
-  const firstTokens = estimateTokens(first.text);
+  const firstTokens = tok(first.text);
   const firstDropped = dropped(first.text);
-  if (firstTokens <= allowed && firstDropped.length === 0) return { ok: true, text: first.text, tokenCount: firstTokens };
+  if (firstTokens <= allowed && firstDropped.length === 0) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
   const keepFirst = (why: string): SummaryResult => {
-    if (keepable(first.text)) return { ok: true, text: first.text, tokenCount: firstTokens };
+    if (keepable(first.text)) return { ok: true, text: first.text, tokenCount: estimateTokens(first.text) };
     a.warn('SUMMARY_REFUSED the summary came out longer than it may be kept, and no rewrite could be had; the span is left whole', { depth: a.depth, inputTokens, firstTokens, why });
     return { ok: false, reason: 'the summary came out longer than it may be kept' };
   };
@@ -128,5 +132,5 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
   }
   const stillDropped = dropped(pick).length;
   if (stillDropped > 0) a.warn('Condensed summary kept with facts its notes record still left out', { depth: a.depth, stillDropped, firstDropped: firstDropped.length });
-  return { ok: true, text: pick, tokenCount: estimateTokens(pick) };
+  return { ok: true, text: pick, tokenCount: estimateTokens(pick) };   // stored in the rows' dialect (`budget.ts`)
 }

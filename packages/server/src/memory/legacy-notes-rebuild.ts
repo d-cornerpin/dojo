@@ -38,6 +38,7 @@ import { generateSummary, getDepthPrompt } from './summarize.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { summaryTargetTokens } from './summary-target.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import { rowSubjectKeys } from './summary-subject.js';
 import { agentBusy, waitReason } from './rebuild-signals.js';
 import { CLASSIFY_SQL } from './notes-classify-sql.js';
@@ -104,7 +105,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     const content = buildLeafSummaryInput(chunk);
     let text = NO_CONVERSATION_PLACEHOLDER;
     if (content.trim().length > 0) {
-      const target = summaryTargetTokens(content);   // t269: the one target rule, proportional to the input
+      const target = summaryTargetTokens(content, modelCharsPerToken(writer));   // t269: the one target rule, at the writer's density
       const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, undefined, unit.agentId));
       const wait = waitReason(unit.agentId, writer, inputTokens, target);
       if (wait) return wait;

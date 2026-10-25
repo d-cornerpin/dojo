@@ -182,13 +182,11 @@ describe('t269 fix round 2 — the mark is the writers\' verdict under the owner
     expect(parents(), 'merged by the new writer').toBe(1);
   });
 
-  // With no Settings writer, every usable text model is a candidate (`summaryWriterCandidates`).
-  const noSettingsWriter = (): void => { db().prepare("DELETE FROM config WHERE key = 'compaction_model_id'").run(); };
-
+  // t268's one writer order: the Summarization pick, then the agent's own model (`m-w` here), then the small writer.
   it('an outage: a writer passed over is never marked as refusing; when it answers again the span is tried, and merges', async () => {
-    noSettingsWriter();
     bigWriter();
-    noteSummaryWriterOutcome('m-big', false);   // the capable writer is not answering: not eligible
+    db().prepare("UPDATE config SET value = 'm-big' WHERE key = 'compaction_model_id'").run();   // the pick: capable
+    noteSummaryWriterOutcome('m-big', false);   // …but not answering: not eligible; the agent's own model is
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense();
     const afterOutage = writer.dials;
@@ -201,9 +199,9 @@ describe('t269 fix round 2 — the mark is the writers\' verdict under the owner
   });
 
   it('every candidate writer cut it: marked, and no writer is dialled again', async () => {
-    noSettingsWriter();
     db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-2', 'W2', 'openai-compatible', 'http://127.0.0.1:3', 'api_key', 1)").run();
     db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-2', 'p-2', 'w2', 'w2', '[\"chat\"]', 131072, 1, 1)").run();
+    db().prepare("UPDATE config SET value = 'm-2' WHERE key = 'compaction_model_id'").run();   // the pick, then the own model
     leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     for (let i = 0; i < 4; i += 1) await condense();
     expect(writer.dials, 'each of the two candidates once').toBe(2);
@@ -216,6 +214,29 @@ describe('t269 fix round 2 — a span no writer is left for is not counted as me
     expect(condensableSummaries(AGENT, { modelId: 'm-w', minFanout: 4 })).toBe(2);
     await condense();
     expect(condensableSummaries(AGENT, { modelId: 'm-w', minFanout: 4 })).toBe(0);
+  });
+});
+
+// ── Rebase onto v35 (re-review 2, N6) ────────────────────────────────────────────────────────────
+describe('t269 N6 — an oversize placeholder is split when every ANSWERING writer refused it; an out writer never blocks the split', () => {
+  const maxSeq = (): number => (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
+  const notes = () => db().prepare('SELECT kind, content FROM summaries WHERE agent_id = ? ORDER BY earliest_at').all(AGENT) as Array<{ kind: string; content: string }>;
+  it('the pick is out (server off): the own model\'s refusals split the span to single rows, none kept whole; when the pick is back it writes them', async () => {
+    db().prepare("INSERT INTO providers (id, name, type, base_url, auth_type, is_validated) VALUES ('p-big', 'B', 'openai-compatible', 'http://127.0.0.1:2', 'api_key', 1)").run();
+    db().prepare("INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, input_cost_per_m, is_enabled) VALUES ('m-big', 'p-big', 'b', 'b', '[\"chat\"]', 1000000, 1, 1)").run();
+    db().prepare("UPDATE config SET value = 'm-big' WHERE key = 'compaction_model_id'").run();
+    writer.capable.add('m-big');
+    noteSummaryWriterOutcome('m-big', false);   // the pick is out
+    for (let t = 1; t <= 4; t += 1) insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `UNWRITABLE row ${t}: ${'filler words '.repeat(40)}`, turnNumber: t });
+    const through = maxSeq();
+    insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: 'ok', turnNumber: 9 });
+    writeUncondensedPlaceholders(AGENT, through);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(writer.dials, 'the own model: 1 + 2 + 4').toBe(7);
+    expect(notes().map((s) => s.kind), 'split to single rows, none kept whole: the pick has not been asked').toEqual(['uncondensed', 'uncondensed', 'uncondensed', 'uncondensed']);
+    noteSummaryWriterOutcome('m-big', true);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(notes().map((s) => s.kind), 'the pick, back, writes each row').toEqual(['leaf', 'leaf', 'leaf', 'leaf']);
   });
 });
 

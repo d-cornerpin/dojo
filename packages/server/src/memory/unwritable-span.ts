@@ -13,7 +13,8 @@
 //     hash of its ids AND contents — the same shape as the accuracy check's ledger (`summary-check-ledger.ts`),
 //     and pruned the same way: a refusal recorded under an earlier writer setting is over, and goes.
 //   · A writer is not dialled over a span it refused (`writersLeft`). A span is UNWRITABLE only when every
-//     CANDIDATE writer (`summaryWriterCandidates`, health aside) has refused it (`isMarkedUnwritable`).
+//     CANDIDATE writer (`summaryWriterCandidates`, the one order t268 defines, health aside) has refused it
+//     (`isMarkedUnwritable`). A writer with no memory free (`noRoom`) cannot run now: that is never a refusal.
 //   · A CONDENSED PAIR left whole is two notes the summaries lane shows or names as it already does.
 //   · A SINGLE ROW left whole becomes a KEPT-WHOLE note (`KEPT_WHOLE_KIND`): the row as the writer would have
 //     read it (its tag, scrubbed exactly as summary input is), shown as the live view's kept-row pointer
@@ -59,18 +60,20 @@ function refusedBy(agentId: string, writer: string, items: readonly SpanItem[], 
   }
 }
 
-/** The writers that may be dialled over this span now: `first` (the pass's resolved writer) and every
- *  eligible writer, less those that already refused it under the current setting. */
+/** The writers that may be dialled over this span now, all from the one writer order (`summary-writer-health.ts`:
+ *  the Summarization pick, the agent's own model, the small writer — t268): the pass's own resolved writer `first`
+ *  (when it is of that order) and the eligible ones, less those that already refused it under the current setting. */
 export function writersLeft(agentId: string, items: readonly SpanItem[], first?: string): string[] {
   const set = setting();
   const hash = spanHash(items);
-  const all = [...new Set([...(first ? [first] : []), ...eligibleSummaryWriters(agentModel(agentId), agentId)])];
-  return all.filter((w) => !refusedBy(agentId, w, items, set, hash));
+  const own = agentModel(agentId);
+  const passWriter = first && summaryWriterCandidates(own, agentId).includes(first) ? [first] : [];
+  return [...new Set([...passWriter, ...eligibleSummaryWriters(own, agentId)])].filter((w) => !refusedBy(agentId, w, items, set, hash));
 }
 
 /** Has EVERY candidate writer (health aside) refused this exact span under the current setting? */
 export function isMarkedUnwritable(agentId: string, items: readonly SpanItem[]): boolean {
-  const candidates = summaryWriterCandidates(agentModel(agentId));
+  const candidates = summaryWriterCandidates(agentModel(agentId), agentId);
   const set = setting();
   const hash = spanHash(items);
   return candidates.length > 0 && candidates.every((w) => refusedBy(agentId, w, items, set, hash));

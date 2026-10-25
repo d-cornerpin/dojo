@@ -84,6 +84,7 @@ import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } fr
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
 import { mergeTargetTokens } from './summary-target.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import { recordRefusal, writersLeft, type SpanItem } from './unwritable-span.js';
 import { KEPT_WHOLE_KIND } from './kept-row-view.js';
 import { subjectBatches } from './summary-subject.js';
@@ -271,11 +272,11 @@ async function condenseLevel(
     const shape = parentShape(batch);
     try {
       const content = condensedSummaryInput(batch);
-      const args = { content, depth: shape.depth, targetTokens: mergeTargetTokens(content, batch.length), agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
+      const args = { content, depth: shape.depth, agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
       // A batch the writer cannot hold is halved first; a pair goes to each writer left until one holds it.
       let summary: Awaited<ReturnType<typeof generateSummary>> = { ok: false, reason: 'no writer left' };
       for (const writer of batch.length > 2 ? writers.slice(0, 1) : writers) {
-        summary = await generateSummary({ ...args, modelId: writer });
+        summary = await generateSummary({ ...args, modelId: writer, targetTokens: mergeTargetTokens(content, batch.length, modelCharsPerToken(writer)) });
         calls += 1;
         if (summary.ok || !summary.tooBig) break;
         if (summary.noRoom) continue;   // t268: that writer cannot run now (no memory free) — not its verdict on this span

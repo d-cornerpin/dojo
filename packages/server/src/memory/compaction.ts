@@ -30,6 +30,7 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import { LEAF_CHUNK_TOKENS, fullSpanTargetTokens, leafKeepCap, summaryShare, summaryTargetTokens } from './summary-target.js';
 import { authoredInputLines, fitInputToBudget, resultForSummary, resultText } from './summary-authored-text.js';
 // T20: the summariser's own cited work id, resolved against the spine before the row is stored.
@@ -1049,7 +1050,7 @@ export async function runLeafCompaction(
   if (room <= 0) return 0;
   const ownModel = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
   const viewBudget = ownModel ? await measured(agentId, cw, ownModel).then((m) => m.view.budgetTokens, () => 0) : 0;
-  const keepCap = leafKeepCap(viewBudget);
+  const keepCap = leafKeepCap(viewBudget, undefined, modelCharsPerToken(modelId));   // in the writer's tokens (t268's density)
   const span = Math.min(getLeafChunkTokens(), room, Math.ceil(keepCap / summaryShare()));
   const chunks = chunkMessages(uncompacted, span);
   const inputBudget = Math.max(0, span - Math.min(getLeafTargetTokens(), keepCap));
@@ -1124,7 +1125,7 @@ export async function runLeafCompaction(
       const summary = await generateSummary({
         content,
         depth: 0,
-        targetTokens: Math.min(summaryTargetTokens(content), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id))),
+        targetTokens: Math.min(summaryTargetTokens(content, modelCharsPerToken(modelId)), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id), modelCharsPerToken(modelId))),
         agentId,
         modelId,
         abortSignal: opts?.abortSignal, spanIds: messageIds,   // v3.5: a span whose check failed is known by its rows

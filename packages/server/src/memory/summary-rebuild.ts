@@ -40,7 +40,8 @@ import {
   resolveSummaryWriterModel,
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
-import { summaryTargetTokens } from './summary-target.js';
+import { summaryTargetTokens, mergeTargetTokens } from './summary-target.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import {
   getSummaryChildren,
   getDescendantMessages,
@@ -277,7 +278,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       return 'placeholder';
     }
     depth = 0;
-    targetTokens = summaryTargetTokens(input);   // t269: proportional to the input, like the live path
+    targetTokens = summaryTargetTokens(input, modelCharsPerToken(modelId));   // t269: proportional to the input, like the live path
   } else {
     const children = getSummaryChildren(flag.id);
     if (children.length === 0) {
@@ -299,7 +300,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     input = condensedSummaryInput(children);
     spanIds = children.map((c) => `summary:${c.id}`);
     depth = flag.depth;
-    targetTokens = summaryTargetTokens(input);
+    targetTokens = mergeTargetTokens(input, children.length, modelCharsPerToken(modelId));   // a merge, as the live condenser asks
   }
 
   // t144: paced by real signals, as the rebuild of older mixed notes is; the note stays flagged for a later night.

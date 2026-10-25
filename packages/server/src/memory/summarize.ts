@@ -10,6 +10,7 @@ import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import { writeWhole } from './summary-whole.js';
+import { modelCharsPerToken } from '../services/token-density.js';
 import type { Summary } from './dag.js';
 
 const logger = createLogger('memory-summarize');
@@ -259,6 +260,7 @@ async function writeSummary(params: {
     return await writeWhole({
       content, depth, targetTokens, abortSignal,
       warn: (message, meta) => logger.warn(message, meta, agentId),
+      charsPerToken: modelCharsPerToken(modelId),   // t268: the writer's own density
       fits: (extra) => refuseWhatTheWriterCannotHold(modelId, systemPrompt + extra, content, agentId) === null,
       call: async (extra, outputRoomAsk) => {
         const result = await callModel({

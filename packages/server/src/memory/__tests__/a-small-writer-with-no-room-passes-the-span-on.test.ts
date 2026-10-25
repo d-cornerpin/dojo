@@ -43,7 +43,6 @@ vi.mock('../../agent/model.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
-import { generateOnAWriterThatHolds } from '../leaf-writer-fallback.js';
 import { insertMessage } from '../message-store.js';
 import { eligibleSummaryWriters, summaryWriterCandidates, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { writersMayBeBack } from '../writer-wait.js';
@@ -131,7 +130,9 @@ describe('N-B: on a 16 GB box the small writer never fits a summary; it is refus
   it('a condensation batch on the small writer with no room: refused, and no other model is asked', async () => {
     noteSummaryWriterOutcome(OWN, false);   // the agent's own model is not answering: the small writer is next
     const content = 'Earlier summary: the crew counted the depot. '.repeat(200);
-    const r = await generateOnAWriterThatHolds({ content, depth: 1, targetTokens: 2_000, agentId: AGENT, modelId: WRITER });
+    // t269: condensation hands a batch to each writer of the order itself (`condense-until-fits.ts`); the small
+    // writer is the order's last, so its `noRoom` answer is the batch's (the pair walk this called is deleted).
+    const r = await generateSummary({ content, depth: 1, targetTokens: 2_000, agentId: AGENT, modelId: WRITER });
     expect(r).toMatchObject({ ok: false, noRoom: true });
     expect(writers.calls).toEqual([]);
   });
