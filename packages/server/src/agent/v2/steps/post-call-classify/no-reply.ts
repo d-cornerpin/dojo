@@ -25,6 +25,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { DECLINE_OPENER_RE, replyClaim } from '../../reply-claims.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -92,7 +93,8 @@ export async function runNoReply(
   // no-reply, not a message to anyone, suppress + don't route, same as the
   // sentinel. Conservative: leading phrase only, no tool calls, so it never
   // swallows a substantive reply that merely mentions "no reply" mid-sentence.
-  const DECLINE_OPENER_RE = /^\s*[`*_>]*\s*(?:no\s+(?:reply|response)\s+(?:needed|necessary|required|warranted)\b|no\s+need\s+to\s+(?:reply|respond)\b|nothing\s+(?:to\s+)?(?:reply|respond|to\s+say)\b|i(?:'|’)?ll\s+hold\s+off\s+(?:on\s+)?repl|i\s+(?:won(?:'|’)?t|will\s+not|am\s+not\s+going\s+to)\s+(?:reply|respond)\b)/i;
+  // v3.5 C1: the rule is `reply-claims.ts`'s DECLINE_OPENER_RE. A suppression has no ledger row behind it, so
+  // the decision model, once proven, may take a rule hit away (its documented false positive) and never add one.
   const isDeclineNonReply =
     persistedContent !== null &&
     result.toolCalls.length === 0 &&
@@ -105,7 +107,7 @@ export async function runNoReply(
     // ask. A bare [no-reply] (the agent's explicit, whole-message choice) is still
     // honored for chatter-prevention; only the FUZZY prose-decline is guarded.
     !triggerRow &&
-    DECLINE_OPENER_RE.test(persistedContent);
+    DECLINE_OPENER_RE.test(persistedContent) && replyClaim(ctx, 'declines_to_reply', true);
 
   // REG-3 refinement (2026-07-16, the trivial-save sequence): intentional
   // silence stands on turns nobody is waiting on (the narration-resurrection

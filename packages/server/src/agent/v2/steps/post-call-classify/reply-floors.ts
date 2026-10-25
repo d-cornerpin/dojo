@@ -31,9 +31,8 @@ import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
 import { claimedDeliverySteer, decideClaimedDelivery } from '../../claimed-delivery.js';
 import { claimsDelivery, decideRefusedDelivery, refusedDeliverySteer } from '../../refused-delivery.js';
-import {
-  decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer,
-} from '../../recorded-commitment.js';
+import { decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer } from '../../recorded-commitment.js';
+import { askReplyClaims, commitmentClaimFor, replyClaim, SAVE_CLAIM_RE } from '../../reply-claims.js';   // v3.5 C1: one decision call per reply
 import { tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -124,6 +123,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
         hasDeliveryReceipt: (recipient) =>
           findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
           findRecentDeliveries(agentId, recipient, 24).length > 0,
+        claimInText: (said) => replyClaim(ctx, 'claims_sent_to_third_party', said),
       });
       if (!claim.fires && claim.recipient) {
         logger.info('v2 claimed-delivery floor stood down; the ledger answered', {
@@ -154,7 +154,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
     decide: (_state, ctx, reply) => {
       const { agentId } = ctx;
       const denial = detectDeliveryDenial({ responseText: reply });
-      if (!denial.denied) return null;
+      if (!replyClaim(ctx, 'denies_having_sent', denial.denied)) return null;
       // Named recipient → 24h window (a specific past send); bare "not yet" → a short 1h
       // window so an unrelated older send cannot spuriously ground it. P6b-2: keyed consult
       // first, legacy alias prong second.
@@ -187,9 +187,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
   // truthfully once so a rejected save can never masquerade as done.
   {
     floor: 'failed-save-claim',
-    gate: (state, _ctx, reply) =>
-      !steerFired(state.steerQueue, 'failed-save-claim') &&
-      /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(reply),
+    gate: (state, ctx, reply) => !steerFired(state.steerQueue, 'failed-save-claim') && replyClaim(ctx, 'claims_saved', SAVE_CLAIM_RE.test(reply)),
     decide: (state, ctx) => {
       const { agentId } = ctx;
       const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
@@ -245,6 +243,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
         toolResultsThisTurn: state.toolResults,
         openedWorkThisTurn: () => openedBoardWorkSince(agentId, turnStartedAtMs),
         openBoardTitles: () => openBoardTitlesBefore(agentId, turnStartedAtMs),
+        claimInText: commitmentClaimFor(ctx, reply),
       });
       if (!promise.fires) {
         logger.info('v2 uncommitted-promise floor stood down; the ledger answered', {
@@ -266,8 +265,8 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
   // noun changed to a delivery. Decision, vocabulary and steer: `agent/v2/refused-delivery.ts`.
   {
     floor: 'false-delivery-claim',
-    gate: (state, _ctx, reply) =>
-      !steerFired(state.steerQueue, 'false-delivery-claim') && claimsDelivery(reply),
+    gate: (state, ctx, reply) =>
+      !steerFired(state.steerQueue, 'false-delivery-claim') && replyClaim(ctx, 'claims_report_delivered', claimsDelivery(reply)),
     decide: (state, ctx) => {
       const refused = decideRefusedDelivery(state.toolResults);
       if (!refused) return null;
@@ -284,14 +283,15 @@ export const TRUTH_GUARDS: readonly TruthGuard[] = Object.freeze(
 );
 
 /** The floors that read the reply's own words against the ledger. */
-export function runReplyFloors(
+export async function runReplyFloors(
   state: AgentTurnState,
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
-): StepOutcome {
+): Promise<StepOutcome> {
   const { agentId, counterparty, db, result, triggerRow, turnNumber, turnStartedAt } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   let { persistedContent } = sc;
+  await askReplyClaims(state, ctx, persistedContent);   // waits only for a question the policy put in `model`
   // ── THE TRUTH GUARDS, ONE PROLOGUE AND ONE LOOP (HL4 step 2, merger 2) ──
   //
   // The prologue is the family's whole shared claim and it is written once: a TERMINAL

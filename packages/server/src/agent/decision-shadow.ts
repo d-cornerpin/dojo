@@ -63,8 +63,9 @@ export interface QuestionScore {
   ruleCI: [number, number]; modelCI: [number, number]; band: [number, number];
 }
 
-/** The model's verdict in the truth's own terms, and the probability it gave it. */
-function verdictOf(a: Answer): { said: string; p: number } {
+/** The model's verdict in the truth's own terms, and the probability it gave it (the cut the score measures,
+ *  so a caller acting on a verdict reads it here rather than typing its own). */
+export function verdictOf(a: Answer): { said: string; p: number } {
   if (a.type === 'noul') return { said: JSON.stringify(a.noul >= 0.5), p: a.noul };
   if (a.type === 'choice') return { said: JSON.stringify(a.choice), p: a.confidence };
   return { said: JSON.stringify(Math.round(a.score)), p: a.confidence };
@@ -81,6 +82,11 @@ export function wilson(successes: number, n: number): [number, number] {
   const margin = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
   return [Math.max(0, centre - margin), Math.min(1, centre + margin)];
 }
+
+/** The tenth of the probability range `p` falls in (0–9; 1.0 is in the top one). */
+const decileOf = (p: number): number => Math.min(9, Math.max(0, Math.floor(p * 10)));
+/** Is `p` inside the score's band — the tenth where the model was right least often? */
+export const inWeakestBand = (s: QuestionScore, p: number): boolean => decileOf(p) === Math.round(s.band[0] * 10);
 
 /**
  * The score over the judged rows still kept, or null when there are none. `band` is the tenth of the
@@ -102,7 +108,7 @@ export function scoreQuestion(purpose: string, question: string): QuestionScore 
     const right = v.said === r.truth;
     if (r.rule_said === r.truth) ruleRight++;
     if (right) modelRight++;
-    const b = Math.min(9, Math.max(0, Math.floor(v.p * 10)));
+    const b = decileOf(v.p);
     const cur = buckets.get(b) ?? { n: 0, right: 0 };
     buckets.set(b, { n: cur.n + 1, right: cur.right + (right ? 1 : 0) });
   }

@@ -192,7 +192,7 @@ export async function runPostCallClassify(
   if (text.directive !== 'proceed') return text as PostCallClassifyOutcome;
   state = text.state;
 
-  const floors = runReplyFloors(state, ctx, sc);
+  const floors = await runReplyFloors(state, ctx, sc);
   if (floors.directive !== 'proceed') return floors as PostCallClassifyOutcome;
   state = floors.state;
 

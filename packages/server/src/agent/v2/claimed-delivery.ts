@@ -90,6 +90,9 @@ export interface ClaimedDeliveryInput {
   /** The receipt suppressor, injected so the decision is testable without the ledger module:
    *  true when a REAL delivery to this recipient is already on record (24h). */
   hasDeliveryReceipt: (recipient: string) => boolean;
+  /** v3.5 C1: the decision model's narrowing (`reply-claims.ts`); absent, the prose alone. It can confirm or take
+   *  away the prose's hit, never add one: the ledger is asked about the party the prose NAMED, and only it names one. */
+  claimInText?: (ruleSaid: boolean) => boolean;
 }
 
 /**
@@ -155,7 +158,7 @@ export function decideClaimedDelivery(input: ClaimedDeliveryInput): ClaimedDeliv
     toolCallsThisTurn: input.toolCallsThisTurn,
     counterpartyName: input.counterpartyName,
   });
-  if (!named.ungrounded) {
+  if (!named.ungrounded || input.claimInText?.(true) === false) {
     return { fires: false, reason: 'no-claim-in-text', recipient: null };
   }
   const recipient = named.recipient;
