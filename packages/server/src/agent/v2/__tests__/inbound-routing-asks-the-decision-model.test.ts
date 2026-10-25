@@ -32,6 +32,7 @@ import { detectMultistep, type MultistepConfig } from '../classifiers/multistep.
 import { complexityClassifier } from '../classifiers/complexity.js';
 import { START_ACK_POOL } from '../ack-copy.js';
 import { modeFor } from '../../decision-policy.js';
+import { ENGINE_STEPS_REL } from './engine-sources.js';
 import { installDecisionModel, proveNoul, scriptDecisions, yes } from '../../__tests__/decision-fake.js';
 
 const db = (): Database.Database => mockDb.current!;
@@ -182,16 +183,16 @@ describe('model mode (proven on measured accuracy): the verdict stands in, outsi
 describe('the five sites ask through the seam, and not around it (a census of the call sites, not a sentence)', () => {
   const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../../../${rel}`, import.meta.url)), 'utf8');
   it('A12: the assemble step asks `isConversational`; the bare complexity rule is no longer read there', () => {
-    const src = read('agent/v2/steps/assemble/index.ts');
+    const src = read(`${ENGINE_STEPS_REL}/assemble/index.ts`);
     expect(src).toMatch(/await isConversational\(turnCtx,/);
     expect(src).not.toMatch(/complexityClassifier/);
   });
   it('A13: the multistep detection passes the turn to `detectMultistep`, which hands it to the judged path', () => {
-    expect(read('agent/v2/steps/assemble/multistep-detection.ts')).toMatch(/detectMultistep\(lastUserMessageContent, agentId, cfg, turnCtx\)/);
+    expect(read(`${ENGINE_STEPS_REL}/assemble/multistep-detection.ts`)).toMatch(/detectMultistep\(lastUserMessageContent, agentId, cfg, turnCtx\)/);
     expect(read('agent/v2/classifiers/multistep.ts')).toMatch(/detectMultistepJudged\(turnCtx, query, agentId, config\)/);
   });
   it('A14: the delegation hint asks `delegatesJudged` with the grammar\'s answer', () => {
-    expect(read('agent/v2/steps/assemble/delegation-and-attachments.ts')).toMatch(/await delegatesJudged\(turnCtx, agentId, lastUserMessageContent, detectExplicitDelegation\(lastUserMessageContent\)\)/);
+    expect(read(`${ENGINE_STEPS_REL}/assemble/delegation-and-attachments.ts`)).toMatch(/await delegatesJudged\(turnCtx, agentId, lastUserMessageContent, detectExplicitDelegation\(lastUserMessageContent\)\)/);
   });
   it('A11: the iMessage wake point asks `courtesyJudged`, after the sender-is-an-agent test', () => {
     const src = read('services/imessage-bridge.ts');
