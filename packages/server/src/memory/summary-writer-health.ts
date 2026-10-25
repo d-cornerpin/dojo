@@ -165,11 +165,11 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
   logger.warn('Summary writer failed; it is passed over until it answers, a person writes, or Settings change', { modelId, providerKey: key });
 }
 
-/** The turn's patience ran out on this writer's call: no failure, but no turn waits on it again
- *  until it has answered (the background keeps trying it). */
+/** The turn's patience ran out on this writer's call: no failure, but no turn waits on it again until something
+ *  changes. The mark is minted afresh (t268 re-review 4, N-1): a re-arm bought this one try, and it is spent. */
 export function noteDidNotAnswerInTurn(modelId: string): void {
   const key = providerKey(modelId);
-  if (markOf(key) === null) markNotAnswering(key);
+  markNotAnswering(key);
   logger.info('Summary writer did not answer within the turn\'s patience; turns pass it over until it answers', { modelId, providerKey: key });
 }
 

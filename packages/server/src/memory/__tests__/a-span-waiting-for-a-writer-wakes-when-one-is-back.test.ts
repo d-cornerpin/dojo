@@ -71,7 +71,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, writerPassedOver, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { eligibleSummaryWriters, writerPassedOver, noteSummaryWriterOutcome, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { __resetBrakesForTests, compactionIsBraked, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
@@ -234,6 +234,26 @@ describe('I-2: its model answering re-arms the waiting agent\'s writer — for t
     await settle(1_300);
     expect(wakes.timer).toBe(0);
     expect(parks.length).toBe(1);
+  });
+});
+
+// Re-review 4, N-1: a re-arm buys ONE try. A summary the in-turn fold's patience cuts (`out-of-view-fold.ts`, which
+// then calls `noteDidNotAnswerInTurn`) after a re-arm marks the writer again, so the next turns wait for a new signal.
+describe('N-1: a re-arm buys one try — a try cut by the turn\'s patience marks the writer again', () => {
+  it('re-armed → one timed-out try → passed over again; the next turns dial nothing until a new signal', async () => {
+    seed();
+    wakes.turn = overBudgetTurn;
+    await overBudgetTurn();                                     // waiting, parked
+    recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // re-armed for it: one try
+    expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([OWN]);
+    noteDidNotAnswerInTurn(OWN);                                // that try ran past the turn's patience
+    expect(eligibleSummaryWriters(OWN, AGENT), 'the re-arm is spent').toEqual([]);
+    await settle(1_300); await Promise.all(wakes.turns);       // the wake the re-arm earned
+    const calls = writers.calls.length;
+    await overBudgetTurn(); await overBudgetTurn();             // the next turns
+    expect(writers.calls.length, 'no re-dial without a new signal').toBe(calls);
+    recordProviderSuccess('p-own', { modelId: OWN, purpose: 'agent_turn' });   // a new signal
+    expect(eligibleSummaryWriters(OWN, AGENT)).toEqual([OWN]);
   });
 });
 

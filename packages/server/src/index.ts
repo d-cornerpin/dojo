@@ -1145,7 +1145,7 @@ async function main(): Promise<void> {
   // Schedule the nightly dreaming cycle for the vault
   try {
     (await import('./vault/maintenance.js')).scheduleDreamingCycle();
-    (await import('./memory/legacy-rebuild-boot.js')).scheduleLegacyRebuildAtBoot();   // t144: the older-notes rebuild, once, after a settle delay
+    (await import('./memory/legacy-rebuild-boot.js')).scheduleLegacyRebuildAtBoot(); (await import('./memory/writer-wait.js')).retestSpansWaitingAtShutdown();   // t144: the older-notes rebuild, once; t268: a span waiting at shutdown, one try
   } catch (err) {
     logger.warn('Failed to schedule dreaming cycle or the older-notes rebuild', { error: err instanceof Error ? err.message : String(err) });
   }

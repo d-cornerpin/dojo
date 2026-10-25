@@ -20,11 +20,14 @@
 //     (`dashboard/src/pages/Health.tsx`, FA-DB2). A cloud provider's row there re-tests its waiting writers; an
 //     Ollama row runs `checkOllamaHealth` (`services/ollama.ts`), whose answer is the signal for that Ollama;
 //   · a summary answering (a mark cleared for everyone) or a person writing to the agent (`noteAPersonSpoke`).
+//   · a restart (re-review 4 (d)): each agent waiting at shutdown gets one try after boot (`retestSpansWaitingAtShutdown`).
+// A re-arm buys ONE try: a try that fails, or is cut by a turn's patience, mints the mark afresh (N-1).
 // The agent's ordinary work is not parked on the writer: a turn that still assembles runs; only the over-budget
 // forced pass parks here, and the owner is told once through the existing compaction card.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
+import { getDb } from '../db/connection.js';
 
 const logger = createLogger('writer-wait');
 
@@ -53,6 +56,28 @@ interface Waiter {
   end: () => void;
 }
 const waiters = new Map<string, Waiter>();
+/** Re-review 4 (d): the agents whose span waits are also kept on disk (`healer_state`), so boot can give each one try. */
+const WAITING_SCOPE = 'summary_span_waiting';
+function keepWaiting(agentId: string, waiting: boolean): void {
+  try {
+    if (waiting) getDb().prepare('INSERT OR IGNORE INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)').run(WAITING_SCOPE, agentId, Date.now());
+    else getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(WAITING_SCOPE, agentId);
+  } catch { /* best effort: without the record a restart waits for the next real signal, as before */ }
+}
+
+/**
+ * Re-review 4 (d), ORCHESTRATOR RULING: BOOT COUNTS AS ONE RE-TEST. A restart is a real change (Ollama or the provider
+ * may be back), so each agent whose span was waiting at shutdown gets its writers re-armed once; its next pass tries
+ * them, and then the ordinary rules hold (a failed try marks the writer again). Called once by the boot (`index.ts`).
+ */
+export function retestSpansWaitingAtShutdown(): void {
+  try {
+    const rows = getDb().prepare('SELECT key FROM healer_state WHERE scope = ?').all(WAITING_SCOPE) as Array<{ key: string }>;
+    for (const { key } of rows) rearmWriters(key);
+    getDb().prepare('DELETE FROM healer_state WHERE scope = ?').run(WAITING_SCOPE);
+    if (rows.length > 0) logger.info('Boot: each summary span waiting at shutdown gets one try of its writers', { agents: rows.length });
+  } catch { /* no database yet: nothing was waiting */ }
+}
 
 /** The span of `agentId` waits for a writer (asked where a pass finds none can run). One wait per agent. */
 export function noteSpanWaits(agentId: string, how: Pick<Waiter, 'stillWaits' | 'writesOn'>): void {
@@ -60,6 +85,7 @@ export function noteSpanWaits(agentId: string, how: Pick<Waiter, 'stillWaits' | 
   let end = (): void => {};
   const wake = new Promise<void>((resolve) => { end = resolve; });
   waiters.set(agentId, { ...how, wake, end });
+  keepWaiting(agentId, true);
 }
 
 /** What a park waiting for a writer waits on: that wait ending. Already over (nothing waits): now. */
@@ -73,6 +99,7 @@ export function endWaitsThatAreOver(agentId?: string): void {
     if (agentId !== undefined && id !== agentId) continue;
     if (w.stillWaits()) continue;
     waiters.delete(id);
+    keepWaiting(id, false);
     logger.info('A summary writer of this agent can run again: its span stops waiting', {}, id);
     w.end();
   }
