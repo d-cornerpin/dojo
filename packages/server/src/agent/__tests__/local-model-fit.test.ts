@@ -36,6 +36,7 @@ import { writerJobWindowTokens, writerReservedWindowTokens, decisionWindowTokens
 import { MIN_UTILITY_NUM_CTX } from '../utility-dial.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { healerOwnerCards } from '../../healer/owner-notices.js';
+import { setupDepsRouter } from '../../gateway/routes/setup-deps.js';
 
 const GIB = 1024 ** 3;
 const EMBEDDER = 274_302_471;
@@ -326,7 +327,6 @@ describe('the door census: every door the 32K floor guards also asks whether the
 
 describe('the setup probe the role steps default from (no marks, no cards)', () => {
   it('answers the refusal for an unfit model and null for one the server accepts', async () => {
-    const { setupDepsRouter } = await import('../../gateway/routes/setup-deps.js');
     const ask = async (id: string): Promise<string | null> =>
       ((await (await setupDepsRouter.request(`/model-fit/${id}`)).json()) as { data: { refused: string | null } }).data.refused;
     expect(await ask('m-9b')).toMatch(/needs about/);

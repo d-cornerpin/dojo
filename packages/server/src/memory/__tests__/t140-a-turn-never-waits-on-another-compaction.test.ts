@@ -65,7 +65,6 @@ const writers = vi.hoisted(() => ({
   hung: [] as Array<() => void>,
 }));
 vi.mock('../../agent/model.js', async () => {
-  const { classifyProviderError } = await import('../../agent/provider-error.js');
   return {
     callModel: async (p: { modelId: string; abortSignal?: AbortSignal }) => {
       writers.calls.push(p.modelId);
@@ -192,9 +191,6 @@ const failingCards = (): number => owner.cards.filter((c) => c.code === 'COMPACT
 beforeAll(async () => {
   // The fold path imports these lazily; load them before any clause starts a fake clock, so the
   // clock does not run on while a module is read from disk.
-  await import('../../agent/model.js');
-  await import('../../tools/tool-docs.js');
-  await import('../../agent/provider-error.js');
 });
 
 beforeEach(() => {
@@ -290,6 +286,9 @@ describe('t140 round 7 — a turn never cancels a background summary it is not g
 // {leafSummariesCreated: 0} — "nothing to compact" — though rows were leaving. A turn never waits
 // (above); the owner's explicit request queues behind the running pass and then runs.
 import { checkAndCompact } from '../compaction.js';
+import { classifyProviderError } from '../../agent/provider-error.js';
+import '../../agent/model.js';
+import '../../tools/tool-docs.js';
 describe('t178 — the owner\'s compact-now waits its turn instead of reporting nothing', () => {
   it('with the lock held, a forced pass does not settle; once released it takes the lock itself', async () => {
     seedACut();

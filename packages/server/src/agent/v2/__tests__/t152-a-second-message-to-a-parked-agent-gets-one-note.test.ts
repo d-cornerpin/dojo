@@ -448,8 +448,8 @@ const noFreeModel = (): void => { db().prepare(`UPDATE models SET is_enabled = 0
 
 beforeEach(async () => {
   mockDb.current = setupTestDb();
-  (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  coldImport1.invalidateDailySpendCache();
+  coldImport2.__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
     loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
@@ -466,8 +466,7 @@ beforeEach(async () => {
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
-    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-    const { checkBudget } = await import('../../../costs/budget.js');
+    coldImport1.invalidateDailySpendCache();
     const priced = p.modelId === 'test-model';
     if (priced && !checkBudget(p.agentId, 0.01).allowed) return realModel.callModel!(p);
     return { content: ANSWER, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' };
@@ -498,6 +497,9 @@ function expectAnHonestStop(cause: RegExp): void {
 
 
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { checkBudget } from '../../../costs/budget.js';
+import * as coldImport1 from '../../../costs/tracker.js';
+import * as coldImport2 from '../../../memory/window-starvation-card.js';
 
 const headsUps = (): Array<{ id: string; content: string }> =>
   db().prepare(`SELECT id, content FROM messages WHERE agent_id = ? AND role = 'system' AND content LIKE ? ORDER BY rowid`)

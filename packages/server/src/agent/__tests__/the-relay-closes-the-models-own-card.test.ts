@@ -45,7 +45,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-const broadcast = vi.fn();
+const broadcast = vi.hoisted(() => vi.fn());
 vi.mock('../../gateway/ws.js', () => ({ broadcast }));
 vi.mock('../../memory/embeddings.js', () => ({
   generateEmbedding: vi.fn(async () => new Float32Array(8)),
@@ -63,6 +63,7 @@ import {
 } from '../../work/store.js';
 import { openTrackerTask, setTrackerStatus } from '../../work/tracker-store.js';
 import { JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
+import { resolveCompilePendingJoins } from '../a2a-transport.js';
 
 const AGENT = 'zargo';
 const OTHER_AGENT = 'quilba';
@@ -93,7 +94,6 @@ function advanceTurnTo(n: number, agentId = AGENT): void {
 }
 
 const drive = async (): Promise<void> => {
-  const { resolveCompilePendingJoins } = await import('../a2a-transport.js');
   await resolveCompilePendingJoins(AGENT);
 };
 

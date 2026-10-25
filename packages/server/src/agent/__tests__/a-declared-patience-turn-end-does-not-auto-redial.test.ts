@@ -25,6 +25,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { runMigrations } from '../../db/migrations.js';
+import { pendingWakeups, declaredPatienceHonestFailTurn } from '../shared-state.js';
+import { getAgentRuntime } from '../runtime.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -65,12 +68,10 @@ function seedTurn(turnNumber: number): void {
 }
 
 beforeEach(async () => {
-  vi.resetModules();
   runV2TurnSpy.mockClear();
   broadcastSpy.mockClear();
   const db = new Database(':memory:');
   mockDb.current = db;
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
 });
 
@@ -84,8 +85,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
   it('RED: the marker naming the agent\'s current latest turn declines the redial', async () => {
     seedAgent('working'); // status alone would NOT block this — the marker must be what does
     seedTurn(1);
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     declaredPatienceHonestFailTurn.set(AGENT, 1); // names turn 1 — the agent's current latest
     vi.useFakeTimers();
@@ -104,8 +103,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
   it('the wake is left queued, not dropped — a later clean turn can still serve it', async () => {
     seedAgent('working');
     seedTurn(1);
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     declaredPatienceHonestFailTurn.set(AGENT, 1);
     vi.useFakeTimers();
@@ -122,8 +119,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
   it('the marker is CONSUMED (deleted) once it declines — it does not fire on a second, independent check', async () => {
     seedAgent('working');
     seedTurn(1);
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     declaredPatienceHonestFailTurn.set(AGENT, 1);
     vi.useFakeTimers();
@@ -138,8 +133,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
   it('does not duplicate a human-facing note — T81a\'s own injury path already sent one', async () => {
     seedAgent('working');
     seedTurn(1);
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     declaredPatienceHonestFailTurn.set(AGENT, 1);
     vi.useFakeTimers();
@@ -166,8 +159,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
     seedAgent('working');
     seedTurn(1);
     seedTurn(2); // a newer turn has already run since the marker was set
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     declaredPatienceHonestFailTurn.set(AGENT, 1); // stale — names the OLD turn, not the current one
     vi.useFakeTimers();
@@ -183,8 +174,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
   it('CONTROL: no marker at all (the shape every one of the four recovery arms leaves) still auto-redials normally, even with a stale doomed last_error', async () => {
     seedAgent('working');
     seedTurn(1);
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     expect(declaredPatienceHonestFailTurn.has(AGENT)).toBe(false); // no marker — the four arms never set one
     vi.useFakeTimers();
@@ -203,8 +192,6 @@ describe('a declared-patience turn end does not auto-redial via the queued wakeu
     // as it would for a perfectly healthy agent.
     seedAgent('working');
     seedTurn(5); // several turns deep — an established, ongoing session
-    const { pendingWakeups, declaredPatienceHonestFailTurn } = await import('../shared-state.js');
-    const { getAgentRuntime } = await import('../runtime.js');
 
     expect(declaredPatienceHonestFailTurn.has(AGENT)).toBe(false);
     vi.useFakeTimers();

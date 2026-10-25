@@ -15,6 +15,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { runMigrations } from '../../db/migrations.js';
+import { insertMessage } from '../../memory/message-store.js';
+import { getAgentRuntime } from '../runtime.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -36,12 +39,10 @@ const AGENT = 'parked-desk';
 const CAUSE = 'Today\'s spending limit is reached ($2.00 of $1.00), so this agent\'s turn was not run. Your message is kept. It will be answered when the limit resets, or as soon as you raise the limit in Settings.';
 
 beforeEach(async () => {
-  vi.resetModules();
   for (const s of [runV2TurnSpy, broadcastSpy, sendAlertSpy, imessageSpy]) s.mockClear();
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
   db.prepare("INSERT INTO agents (id, name, status, last_error, model_id) VALUES (?, 'Desk', 'paused', ?, NULL)").run(AGENT, `[budget_stop] ${CAUSE}`);
   db.prepare("INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at) VALUES ('conv-dash', ?, 'dashboard', NULL, 'owner', datetime('now'))").run(AGENT);
@@ -50,7 +51,6 @@ beforeEach(async () => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 async function arrive(id: string, channel: 'dashboard' | 'imessage', conv: string): Promise<void> {
-  const { insertMessage } = await import('../../memory/message-store.js');
   insertMessage({
     id, agentId: AGENT, role: 'user', content: 'Is the north dock open today?', turnNumber: 1, channel, senderId: 'owner',
     conversationId: conv, inboundMeta: JSON.stringify({ channel, relation: 'owner' }),
@@ -63,7 +63,6 @@ const askState = (id: string): string => (mockDb.current!.prepare("SELECT state 
 describe('t148 r5 — a message to a parked agent is answered on arrival with the true cause', () => {
   it('a dashboard message gets the plain-words line in its own conversation, once, with no text and no card; it stays queued', async () => {
     await arrive('m-dash', 'dashboard', 'conv-dash');
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     await getAgentRuntime().handleMessage(AGENT, '');   // woken again: still one line for this message
     const n = notes();
@@ -80,7 +79,6 @@ describe('t148 r5 — a message to a parked agent is answered on arrival with th
 
   it('an iMessage-origin message gets the line in ITS conversation, dashboard only: nothing goes back out on the phone channel', async () => {
     await arrive('m-im', 'imessage', 'conv-im');
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     const n = notes();
     expect(n.map((r) => [r.id, r.conversation_id])).toEqual([['park-note:m-im', 'conv-im']]);
@@ -91,7 +89,6 @@ describe('t148 r5 — a message to a parked agent is answered on arrival with th
   it('two messages in two conversations each get their own line; an agent that is merely paused (no park tag) gets none', async () => {
     await arrive('m-a', 'dashboard', 'conv-dash');
     await arrive('m-b', 'imessage', 'conv-im');
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     expect(notes().map((r) => r.id).sort()).toEqual(['park-note:m-a', 'park-note:m-b']);
     mockDb.current!.prepare("DELETE FROM messages WHERE id LIKE 'park-note:%'").run();

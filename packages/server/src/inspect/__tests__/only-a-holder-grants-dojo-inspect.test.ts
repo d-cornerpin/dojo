@@ -24,7 +24,24 @@ const WORKER = 'agent-plain-worker';
 const HEALER = 'agent-healer-cfg';
 const SPAWNER_MANIFEST = { file_read: '*', file_write: '*', file_delete: 'none', exec_allow: ['*'], exec_deny: [], network_domains: '*', max_processes: 5, can_spawn_agents: true, can_assign_permissions: true, system_control: [] };
 
-let home: string;
+// t277: THE ENVIRONMENT AND THE IMPORTS ARE SET UP AT COLLECTION, NOT IN A HOOK. `DOJO_HOME` must be
+// in place before the product modules are first loaded (they read it at import), so the home is made
+// and the variable stubbed first, then the modules are loaded with top-level awaits. This used to be
+// a `beforeAll` with a 120 s bound, which only gave a cold import of ~650 modules a longer timeout;
+// collection has no per-test budget at all, and the hook below is left with database setup only.
+const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-grant-door-'));
+vi.stubEnv('DOJO_HOME', home);
+const imp_connection = await import('../../db/connection.js');
+const imp_migrations = await import('../../db/migrations.js');
+const imp_platform = await import('../../config/platform.js');
+const imp_spawner = await import('../../agent/spawner.js');
+const imp_grant = await import('../grant.js');
+const imp_read = await import('../../agent/access/read.js');
+const imp_index = await import('../../agent/tools/index.js');
+const imp_tool_outcome = await import('../../agent/tool-outcome.js');
+const imp_agents = await import('../../gateway/routes/agents.js');
+const imp_surface = await import('../../agent/tools/surface.js');
+
 let mod: {
   connection: typeof import('../../db/connection.js');
   spawner: typeof import('../../agent/spawner.js');
@@ -36,12 +53,9 @@ let mod: {
   surface: typeof import('../../agent/tools/surface.js');
 };
 
-beforeAll(async () => {
-  home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-grant-door-'));
-  vi.stubEnv('DOJO_HOME', home);
-  vi.resetModules();
-  const connection = await import('../../db/connection.js');
-  (await import('../../db/migrations.js')).runMigrations();
+beforeAll(() => {
+  const connection = imp_connection;
+  imp_migrations.runMigrations();
   const db = connection.getDb();
   db.prepare("INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at) VALUES ('prov', 'Prov', 'openai', 'api_key', 1, datetime('now'), datetime('now'))").run();
   db.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
@@ -52,18 +66,18 @@ beforeAll(async () => {
   db.prepare("INSERT INTO agents (id, name, status, config, classification, spawn_depth, created_by) VALUES (?, 'worker', 'idle', '{}', 'apprentice', 1, ?)").run(WORKER, PRIMARY);
   db.prepare("INSERT INTO agents (id, name, status, config, classification, model_id, spawn_depth, created_by) VALUES (?, 'healer', 'idle', '{}', 'sensei', 'mdl', 1, ?)").run(HEALER, PRIMARY);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?), ('healer_agent_id', ?)").run(PRIMARY, HEALER);
-  (await import('../../config/platform.js')).clearPlatformConfigCache();
+  imp_platform.clearPlatformConfigCache();
   mod = {
     connection,
-    spawner: await import('../../agent/spawner.js'),
-    grant: await import('../grant.js'),
-    access: await import('../../agent/access/read.js'),
-    tools: await import('../../agent/tools/index.js'),
-    outcome: await import('../../agent/tool-outcome.js'),
-    agentsRouter: (await import('../../gateway/routes/agents.js')).agentsRouter,
-    surface: await import('../../agent/tools/surface.js'),
+    spawner: imp_spawner,
+    grant: imp_grant,
+    access: imp_read,
+    tools: imp_index,
+    outcome: imp_tool_outcome,
+    agentsRouter: imp_agents.agentsRouter,
+    surface: imp_surface,
   };
-}, 120_000);
+});
 
 afterAll(() => {
   mod.connection.closeDb();

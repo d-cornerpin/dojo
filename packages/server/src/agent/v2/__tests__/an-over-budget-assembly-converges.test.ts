@@ -71,6 +71,13 @@ import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
 import { pendingWakeups } from '../../shared-state.js';
 import { withLock } from '../../../db/with-lock.js';
+import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
+import { resultReadHandlers } from '../../tools/cat/result-read.js';
+import { compactionFailureReason } from '../../../memory/compaction-defect.js';
+import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import * as coldImport1 from '../../../memory/window-starvation-card.js';
+import * as coldImport2 from '../full-context-wait.js';
+import * as coldImport3 from '../../../memory/forced-pass-progress.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -90,7 +97,7 @@ async function seed(): Promise<void> {
   seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.wakes = 0; seen.throwIn = null;
   pendingWakeups.clear();
   __resetBrakesForTests();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  coldImport1.__resetStarvedWindowsForTests();
   db().prepare(`INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
     VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now'))`).run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
@@ -105,8 +112,8 @@ async function seed(): Promise<void> {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] Keep counting the crates.`, turnNumber: t });
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
   }
-  (await import('../full-context-wait.js')).__resetFullContextWaitForTests();
-  (await import('../../../memory/forced-pass-progress.js')).__resetForcedPassProgressForTests();
+  coldImport2.__resetFullContextWaitForTests();
+  coldImport3.__resetForcedPassProgressForTests();
 }
 afterEach(async () => {
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 15_000))]);
@@ -151,7 +158,6 @@ async function recover(err: unknown, turnNumber: number): Promise<void> {
 /** The turn's own rows sized so the FIRST dial is over the boundary's budget by `overBy` tokens. */
 async function witnessSize(overBy: number): Promise<number> {
   const assembled = await assembleContext(AGENT, MODEL);
-  const { contextWindowPolicy, estimateTokens } = await import('../../../memory/budget.js');
   const budget = contextWindowPolicy(WINDOW, { toolPayloadTokens: 2_000, maxOutputTokens: 4096 }).assemblyBudgetTokens - estimateTokens(assembled.systemPrompt);
   const first = await dial(0);
   expect(first.refusal, 'precondition: the assembly alone fits').toBeNull();
@@ -268,7 +274,6 @@ describe('D18 fix round 3: a single stored row that alone exceeds the room', () 
     expect(shown, 'the tail is shown').toContain('END OF MANIFEST');
     expect(shown, 'with the kept-result pointer').toContain('KEPT WHOLE, NOT ALL SHOWN');
     expect(shown, 'naming the row to read').toContain(`msg:${id}`);
-    const { resultReadHandlers } = await import('../../tools/cat/result-read.js');
     const read = await resultReadHandlers.tool_result_read({ agentId: AGENT, name: 'tool_result_read', args: { id: `msg:${id}`, search: 'END OF MANIFEST' }, callId: 'c', toolCall: {} as never });
     expect(read.isError, read.content.slice(0, 200)).toBe(false);
     expect(read.content).toContain('END OF MANIFEST');
@@ -278,7 +283,6 @@ describe('D18 fix round 3: a single stored row that alone exceeds the room', () 
 
 describe('D18 fix round 3: a large stored row and the TIMER park, multi-round', () => {
   it('a stored owner message filling a quarter of the room, the turn\'s rows over it, and a first pass that throws: the timer park wakes it after the brake and it converges', async () => {
-    const { contextWindowPolicy } = await import('../../../memory/budget.js');
     const half = Math.floor(contextWindowPolicy(WINDOW, { toolPayloadTokens: 2_000, maxOutputTokens: 4096 }).assemblyBudgetTokens / 4);
     insertMessage({ id: 'msg-half-manifest', agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner',
       content: `[ask 121] A quarter of the manifest:\n${'crate 0412, north dock, sealed, 40 kg, inspected\n'.repeat(Math.ceil(half * 4 / 50))}`, turnNumber: 121 });
@@ -328,7 +332,6 @@ describe('D18 fix round 3: a genuine stall is reported once, never silently park
       }
       expect(braked, 'it reached the stall').toBe(3);
     } finally { vi.useRealTimers(); }
-    const { compactionFailureReason } = await import('../../../memory/compaction-defect.js');
     expect(compactionFailureReason(AGENT), 'the stall is a recorded defect').toBe('nothing_left_to_shrink');
     expect(seen.texts.filter((t) => /stuck/i.test(t)), 'the owner is told once').toHaveLength(1);
   });
@@ -369,7 +372,6 @@ async function answersThroughThePark(maxRounds: number, size = 0): Promise<{ fit
 }
 
 async function readWhole(id: string, search: string): Promise<{ isError: boolean; content: string }> {
-  const { resultReadHandlers } = await import('../../tools/cat/result-read.js');
   return resultReadHandlers.tool_result_read({ agentId: AGENT, name: 'tool_result_read', args: { id, search }, callId: 'c', toolCall: {} as never });
 }
 
@@ -472,7 +474,6 @@ describe('D18 fix round 4, finding 3: a stall whose first no-progress pass threw
     const thrown = await stall(plain.firstPark);
     expect(thrown.firstPark, 'the throw landed on the first no-progress pass').toBe(plain.firstPark);
     expect(thrown.braked).toBe(4);
-    const { compactionFailureReason } = await import('../../../memory/compaction-defect.js');
     expect(compactionFailureReason(AGENT), 'the stall is a recorded defect').toBe('nothing_left_to_shrink');
     expect(seen.texts.filter((t) => /stuck/i.test(t)), 'the owner is told once').toHaveLength(1);
   });
@@ -505,7 +506,6 @@ describe('D18 fix round 5, finding 2: a msg: read is allowed exactly when the vi
   it('the re-reviewer\'s shape: an ENGINE turn whose trigger is an over-room events row with no conversation — the view pointers it, and the pointer reads on that turn', async () => {
     const id = 'msg-engine-event-huge';
     insertMessage({ id, agentId: AGENT, role: 'user', lane: 'events', content: `[engine] The dock sensor log:\n${'sensor 7, north dock, door open, 12 C\n'.repeat(12_000)}END OF SENSOR LOG`, turnNumber: 121 });
-    const { openTurnContext, endTurnContext } = await import('../../turn-context.js');
     const bag = openTurnContext(AGENT);
     bag.root = { kind: 'engine', id: 'engine-root', sourceMessageId: null, conversationId: null };
     bag.conversationId = null;

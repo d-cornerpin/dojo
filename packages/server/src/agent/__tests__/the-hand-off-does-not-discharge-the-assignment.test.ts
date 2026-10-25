@@ -35,7 +35,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-const broadcast = vi.fn();
+const broadcast = vi.hoisted(() => vi.fn());
 vi.mock('../../gateway/ws.js', () => ({ broadcast }));
 vi.mock('../../memory/embeddings.js', () => ({
   generateEmbedding: vi.fn(async () => {
@@ -49,14 +49,14 @@ vi.mock('../../config/platform.js', () => ({
   isPrimaryAgent: () => false, isPMAgent: () => false, isHealerAgent: () => false,
   isDreamerAgent: () => false, getOwnerName: () => 'Owner', getPrimaryAgentId: () => 'primary',
 }));
-const handleMessage = vi.fn(async () => {});
+const handleMessage = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage }) }));
 vi.mock('../../memory/conversations.js', () => ({
   resolveOrCreateConversation: vi.fn(() => 'conv-1'),
 }));
 
 /** Every inbound body the transport composed, in order — this is where the footer lives. */
-const persistedBodies: string[] = [];
+const persistedBodies = vi.hoisted(() => [] as string[]);
 vi.mock('../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../memory/message-store.js')>()),
   insertMessageIfAbsent: vi.fn((m: { content?: string }) => {
@@ -74,13 +74,14 @@ vi.mock('../../memory/message-store.js', async (importOriginal) => ({
  *  reaches back into `gateway/ws.js` while this file's own mock of it is still initializing.
  *  `a2a-transport.ts` imports exactly one name from this module, dynamically, so a bare
  *  factory is the whole contract. */
-const fileAssignDeliverableCloseRequest = vi.fn(async () => {});
+const fileAssignDeliverableCloseRequest = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../tracker/tools.js', () => ({ fileAssignDeliverableCloseRequest }));
 
 import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, claimAsk, openDelegationJoin, findJoinChildByThread, joinState, THREAD_HOP_CAP,
 } from '../../work/store.js';
+import { deliverA2AMessage } from '../a2a-transport.js';
 // `agent/tools/definitions.ts` is deliberately NOT imported here: it pulls the Google and
 // Microsoft definition modules, whose graph reaches `gateway/ws.js` while this file's mock of
 // it is still initializing. The declaration clauses live beside the declaration, in
@@ -96,7 +97,6 @@ const workRow = (id: string): Record<string, unknown> =>
   mockDb.current!.prepare('SELECT * FROM work WHERE id = ?').get(id) as Record<string, unknown>;
 
 async function deliver(over: Record<string, unknown>) {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   return deliverA2AMessage({
     intent: 'ANSWER' as never,
     threadId: T_ASSIGN,

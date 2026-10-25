@@ -29,6 +29,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { drainRecoveryNotices } from '../injury-recovery.js';
+import * as mod from '../injury-recovery.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -69,7 +71,6 @@ function stripped(rel: string): string {
 }
 
 beforeEach(() => {
-  vi.resetModules();
   delivered.length = 0;
   noticeGate = null;
   const db = new Database(':memory:');
@@ -83,7 +84,6 @@ afterEach(() => {
 
 describe('§1 the drain settles what the module started', () => {
   it('is a safe no-op when nothing is outstanding', async () => {
-    const { drainRecoveryNotices } = await import('../injury-recovery.js');
 
     // Must resolve rather than hang — an afterEach that blocks on an empty set would turn every
     // case in every file that calls it into a timeout.
@@ -91,7 +91,6 @@ describe('§1 the drain settles what the module started', () => {
   });
 
   it('THE RED: the drain does not return while a notice is still in flight', async () => {
-    const mod = await import('../injury-recovery.js');
     const drain = mod.drainRecoveryNotices;
 
     // Stand a pending notice up through the module's OWN tracker, which is the thing under test:
@@ -111,7 +110,6 @@ describe('§1 the drain settles what the module started', () => {
   });
 
   it('the module EXPORTS the handle — without it a caller has nothing to await', async () => {
-    const mod = await import('../injury-recovery.js');
     expect(typeof mod.drainRecoveryNotices, 'the drain is part of the module surface').toBe('function');
   });
 });

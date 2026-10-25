@@ -44,11 +44,13 @@
 // Fictional agents, fictional services, fictional key material throughout (G1).
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { executeCredentialTool } from '../tools.js';
+import { getCredentialByService } from '../store.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CRED_ROOT = path.resolve(HERE, '..');
@@ -73,15 +75,8 @@ const SLOT = 'batterytest-forecast';
 const PAYLOAD = { api_key: 'FAKE-forecast-key-0001' };
 const NOTE = 'Sandbox forecast API test key, handed over in dashboard chat for the weather technique';
 
-// Pay the cold module compile ONCE, in a hook sized for cold work — same reason
-// the T83 suite next door does it, and the same contract: this list is exactly
-// the set of modules the clauses import cold, never a wildcard.
-beforeAll(async () => {
-  await Promise.all([
-    import('../store.js'),
-    import('../tools.js'),
-  ]);
-}, 120_000);
+// The store and the tools are imported STATICALLY below (t277): a cold module compile belongs to
+// collection, not to a clause's budget or a pre-warm hook's longer one.
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -138,7 +133,6 @@ function destructionRows(): Array<{ detail: string | null }> {
 
 /** Drive the tool the model drives, not the store beneath it. */
 async function tool(name: string, args: Record<string, unknown>, agent = BATTERY_AGENT): Promise<string> {
-  const { executeCredentialTool } = await import('../tools.js');
   return executeCredentialTool(name, args, agent);
 }
 
@@ -280,7 +274,6 @@ describe('§2 a real change is untouched by the no-op branch', () => {
     expect(receipt, 'the recovery write must land, not be mistaken for a no-op')
       .not.toMatch(/already holds/);
     expect(receipt).toMatch(/previous value is gone/);
-    const { getCredentialByService } = await import('../store.js');
     expect(getCredentialByService(SLOT, null)?.credentials, 'the row is readable again')
       .toEqual(PAYLOAD);
   });

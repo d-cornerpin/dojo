@@ -28,6 +28,17 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { runMigrations } from '../../db/migrations.js';
+import { insertMessage } from '../../memory/message-store.js';
+import { deliverA2AMessage } from '../a2a-transport.js';
+import { openTurnContext, endTurnContext } from '../turn-context.js';
+import { startTurn, finalizeTurn } from '../v2/turn-record.js';
+import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../work/store.js';
+import { recordDelivery } from '../v2/deliveries.js';
+import { recordOwedInterruptSubjects, settleAsksAtTurnFinalize, settleAsk } from '../../work/ask-settlement.js';
+import { recordOwedAskShown } from '../../work/delegated-relay-evidence.js';
+import { getAgentRuntime } from '../runtime.js';
+import * as shared from '../shared-state.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -69,7 +80,6 @@ beforeEach(async () => {
   // ONE module instance for the file (no `resetModules`): a queued-wakeup timer left over from an
   // earlier test then fires into that same instance, which `afterEach` waits out below.
   turnScript.length = 0;
-  const shared = await import('../shared-state.js');
   shared.activeRuns.clear();
   shared.pendingWakeups.clear();
   const d = new Database(':memory:');
@@ -80,7 +90,6 @@ afterEach(async () => {
   // The runtime arms a 500 ms timer for a queued wakeup, and a run it starts can arm another. Let
   // the chain die out into THIS test's database (and the empty script), not the next test's: quiet
   // means no run started or ended for longer than the timer, and none in flight.
-  const shared = await import('../shared-state.js');
   lastRunTouch = Date.now();
   while (Date.now() - lastRunTouch < 900 || shared.activeRuns.size > 0) await new Promise((r) => setTimeout(r, 100));
   mockDb.current?.close();
@@ -90,8 +99,6 @@ afterEach(async () => {
 async function boot(): Promise<void> {
   // The runtime first: it initialises the module graph in the order production does (the work
   // store sits in an import cycle that a cold `message-store` import trips).
-  await import('../runtime.js');
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
   db().prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Desk', 'idle', '1970-01-01'), (?, 'Helper', 'idle', '1970-01-01')`,
@@ -104,7 +111,6 @@ async function boot(): Promise<void> {
 
 /** An owner message through the real writer — which also opens the ask row, as in production. */
 async function ownerSays(msgId: string, text: string): Promise<void> {
-  const { insertMessage } = await import('../../memory/message-store.js');
   insertMessage({
     id: msgId, agentId: AGENT, role: 'user', content: text, channel: 'dashboard', senderId: 'owner',
     conversationId: CONV, inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
@@ -134,7 +140,6 @@ const reServes = (id: string): number =>
 
 /** The helper's ANSWER, through the REAL transport door. */
 async function helperAnswers(): Promise<void> {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   const r = await deliverA2AMessage({
     intent: 'ANSWER' as never, threadId: THREAD, requiresResponse: false,
     payload: HELPER_ANSWER, toAgent: AGENT, fromAgent: HELPER,
@@ -155,13 +160,6 @@ interface TurnOpts {
 /** TURN T — the turn that owes ask B. Returns the turn number it ran as. */
 function scriptOwingTurn(out: { turn: number }, opts: TurnOpts = {}): () => Promise<void> {
   return async () => {
-    const { openTurnContext, endTurnContext } = await import('../turn-context.js');
-    const { startTurn, finalizeTurn } = await import('../v2/turn-record.js');
-    const { claimAsk, stampClaimingTurn, openDelegationJoin } = await import('../../work/store.js');
-    const { recordDelivery } = await import('../v2/deliveries.js');
-    const { recordOwedInterruptSubjects, settleAsksAtTurnFinalize } = await import('../../work/ask-settlement.js');
-    const { recordOwedAskShown } = await import('../../work/delegated-relay-evidence.js');
-    const { insertMessage } = await import('../../memory/message-store.js');
 
     const ctx = openTurnContext(AGENT);
     const turn = startTurn({
@@ -234,12 +232,6 @@ function scriptReServeTurn(out: { turn: number; done: boolean; ownerAtStart: str
   return async () => {
     // What the owner holds at the moment the re-serve turn begins: the owing turn has torn down.
     out.ownerAtStart = ownerFacing();
-    const { openTurnContext, endTurnContext } = await import('../turn-context.js');
-    const { startTurn, finalizeTurn } = await import('../v2/turn-record.js');
-    const { claimAsk, stampClaimingTurn } = await import('../../work/store.js');
-    const { recordDelivery } = await import('../v2/deliveries.js');
-    const { settleAsksAtTurnFinalize } = await import('../../work/ask-settlement.js');
-    const { insertMessage } = await import('../../memory/message-store.js');
     const ctx = openTurnContext(AGENT);
     const turn = startTurn({
       agentId: AGENT, kind: 'user', subjectKind: 'conv', subjectId: CONV, rootKind: 'ask',
@@ -278,7 +270,6 @@ async function runOwingTurnThenWaitForReServe(opts: TurnOpts, reServeAnswers: bo
   const reServe = { turn: 0, done: false, ownerAtStart: [] as string[] };
   turnScript.push(scriptOwingTurn(owing, opts));
   turnScript.push(scriptReServeTurn(reServe, reServeAnswers));
-  const { getAgentRuntime } = await import('../runtime.js');
   await getAgentRuntime().handleMessage(AGENT, '');
   return { owing, reServe };
 }
@@ -323,7 +314,6 @@ describe('t163 (i) — the measured shape: the relay lands AFTER the turn\'s own
       seenMidTurn.owner = ownerFacing();
       seenMidTurn.relays = relayDeliveries().length;
     });
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     // Inside the turn (after the helper answered and the reply was written) there was no relay.
     expect(seenMidTurn.relays).toBe(0);
@@ -339,7 +329,6 @@ describe('t163 (i) — the measured shape: the relay lands AFTER the turn\'s own
     const owing = { turn: 0 };
     const inner = scriptOwingTurn(owing, {});
     turnScript.push(async () => { await inner(); throw new Error('the model loop crashed after the helper answered'); });
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     expect(relayDeliveries()).toHaveLength(1);
     expect(ownerFacing().at(-1)).toContain('Heard back from');
@@ -389,7 +378,6 @@ describe('t163 (iv) — a relay with the agent IDLE is delivered at once, as tod
   it('no turn is running: the helper\'s answer reaches the owner during the delivery itself', async () => {
     await boot();
     await ownerSays(ASK_A_MSG, 'First topic: draft me a short note');
-    const { claimAsk, stampClaimingTurn, openDelegationJoin } = await import('../../work/store.js');
     claimAsk(ASK_A, AGENT);
     stampClaimingTurn(ASK_A, 1);
     openDelegationJoin({
@@ -418,10 +406,6 @@ describe('t163 — the three conditions are each load-bearing (controls: the eng
     turnScript.push(scriptOwingTurn(owing, {}));
     const reServe = { turn: 0, done: false };
     turnScript.push(async () => {
-      const { openTurnContext, endTurnContext } = await import('../turn-context.js');
-      const { startTurn, finalizeTurn } = await import('../v2/turn-record.js');
-      const { claimAsk, stampClaimingTurn } = await import('../../work/store.js');
-      const { settleAsksAtTurnFinalize } = await import('../../work/ask-settlement.js');
       const ctx = openTurnContext(AGENT);
       const turn = startTurn({
         agentId: AGENT, kind: 'user', subjectKind: 'conv', subjectId: CONV, rootKind: 'ask',
@@ -435,7 +419,6 @@ describe('t163 — the three conditions are each load-bearing (controls: the eng
         settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: turn });
       } finally { endTurnContext(AGENT); reServe.done = true; }
     });
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(AGENT, '');
     await waitForReServe(reServe);
     expect(workState(ASK_B)).toBe('open');
@@ -451,7 +434,6 @@ describe('t163 — the three conditions are each load-bearing (controls: the eng
     // Re-open B as the ladder would have, with B\'s arrival stamped a minute after the relay.
     db().prepare(`UPDATE work SET state = 'claimed', closed_at = NULL, result_delivery_id = NULL, opened_at = ? WHERE id = ?`)
       .run(Date.parse(relay.created_at.replace(' ', 'T') + 'Z') + 60_000, ASK_B);
-    const { settleAsk } = await import('../../work/ask-settlement.js');
     const turn = (db().prepare(`SELECT MAX(turn_number) AS t FROM turns WHERE agent_id = ?`).get(AGENT) as { t: number }).t;
     const verdict = settleAsk(ASK_B, { agentId: AGENT, turnNumber: turn, at: 'finalize' });
     expect(verdict.verdict).toBe('reopened');

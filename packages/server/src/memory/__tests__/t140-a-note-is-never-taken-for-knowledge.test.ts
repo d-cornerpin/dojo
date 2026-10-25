@@ -39,6 +39,10 @@ import { insertMessage } from '../message-store.js';
 import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
 import { insertEmbeddingIfSourceAlive, embeddingSourceAliveSql } from '../embedding-sources.js';
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { runBackfill } from '../backfill.js';
+import { findContaminatedSummaries } from '../summary-rebuild.js';
+import { sweepStoredSummaryObligations } from '../summary-obligations.js';
+import { getDescendantMessages } from '../dag.js';
 
 const AGENT = 'agent-t140-note-knowledge';
 const MODEL = 'model-t140-note-knowledge';
@@ -89,7 +93,6 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 
   it('BACKFILL: the embedding backfill never picks a note up', async () => {
     const id = aNote();
-    const { runBackfill } = await import('../backfill.js');
     await runBackfill();
     expect(embed.stored, 'the backfill sent a note to be embedded').not.toContain(id);
   });
@@ -105,20 +108,17 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 
   it('NIGHTLY REBUILD: a note is never flagged for a rebuild (the replacement owns it)', async () => {
     const id = aNote();
-    const { findContaminatedSummaries } = await import('../summary-rebuild.js');
     expect(findContaminatedSummaries().map((f) => f.id)).not.toContain(id);
   });
 
   it('OBLIGATIONS SWEEP: a note\'s text names no work, so the sweep never rewrites it (which would make it a leaf)', async () => {
     const id = aNote();
-    const { sweepStoredSummaryObligations } = await import('../summary-obligations.js');
     sweepStoredSummaryObligations({ dryRun: false, agentId: AGENT });
     expect((db().prepare('SELECT kind FROM summaries WHERE id = ?').get(id) as { kind: string }).kind).toBe('uncondensed');
   });
 
   it('EXPANSION: a note expands to exactly the rows it stands for', async () => {
     const id = aNote();
-    const { getDescendantMessages } = await import('../dag.js');
     const linked = (db().prepare('SELECT COUNT(*) AS n FROM summary_messages WHERE summary_id = ?').get(id) as { n: number }).n;
     expect(getDescendantMessages(id).length).toBe(linked);
   });

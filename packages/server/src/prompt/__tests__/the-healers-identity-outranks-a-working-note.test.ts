@@ -91,6 +91,8 @@ import {
   WORKING_NOTE_PREFIX,
   INTERNAL_WORKING_NOTE_PREFIX,
 } from '@dojo/shared';
+import { soulFileForAgent } from '../assembler.js';
+import * as platform from '../../config/platform.js';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
@@ -135,7 +137,6 @@ beforeEach(async () => {
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
   setConfig('owner_name', 'Yorvak');
-  const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   seedAgent(PRIMARY, 'Zargo');
   seedAgent(HEALER, 'Healer');            // charter NULL — the measured shape
@@ -201,7 +202,6 @@ describe('the Healers identity outranks a working note', () => {
   });
 
   it('T59 CONTROL: the Healer itself no longer takes this path at all — its soul is a FILE now', async () => {
-    const { soulFileForAgent } = await import('../assembler.js');
     insertMessage({ id: 'n1', agentId: HEALER, role: 'system', content: THE_88_BYTE_NOTE });
 
     // The rule below still answers for the Healer's ROWS…

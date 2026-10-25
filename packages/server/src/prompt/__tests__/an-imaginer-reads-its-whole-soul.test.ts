@@ -58,6 +58,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { getSoulContent, soulFileForAgent, imaginerSoulDefaultFrom } from '../assembler.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
+import { PLATFORM_SOUL_PLACEHOLDERS } from '../assembler.js';
+import * as platform from '../../config/platform.js';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
@@ -89,7 +91,6 @@ beforeEach(async () => {
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
   setConfig('owner_name', 'Yorvak');
-  const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
@@ -207,7 +208,6 @@ describe('both dead writes are gone, not left beside the live one', () => {
 
 describe('CONTROLS — nothing that was already right moves', () => {
   it('the shipped Imaginer template names no placeholder the ONE substituter does not know', async () => {
-    const { PLATFORM_SOUL_PLACEHOLDERS } = await import('../assembler.js');
     const used = new Set([...SHIPPED.matchAll(/\{\{([a-z_]+)\}\}/g)].map((m) => m[1]));
     expect(used.has('imaginer_agent_name')).toBe(true);   // the one T59 had to add
     for (const p of used) {
@@ -216,7 +216,6 @@ describe('CONTROLS — nothing that was already right moves', () => {
   });
 
   it('EVERY shipped soul template is answerable by the one substituter — the durable guard', async () => {
-    const { PLATFORM_SOUL_PLACEHOLDERS } = await import('../assembler.js');
     const dir = path.resolve(__dirname, '../../../../../templates');
     const souls = fs.readdirSync(dir).filter((f) => f.endsWith('-SOUL.md')).sort();
     expect(souls.length).toBeGreaterThanOrEqual(5);

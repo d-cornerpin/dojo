@@ -70,6 +70,8 @@ import { getSoulContent, soulFileForAgent, readSoulFile, writeSoulFile } from '.
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
 import { PM_ALLOWED_WORK_OPS } from '../../tracker/pm-agent.js';
 import { WORK_OPS } from '../../tools/work-verbs.js';
+import { pmSoulDefaultFrom, platformTemplateSearchPaths } from '../assembler.js';
+import * as platform from '../../config/platform.js';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
@@ -101,7 +103,6 @@ beforeEach(async () => {
   setConfig('pm_agent_id', PM);
   setConfig('pm_agent_name', 'Quilba');
   setConfig('owner_name', 'Yorvak');
-  const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
@@ -166,7 +167,6 @@ describe('the PM runs on its whole soul', () => {
   });
 
   it('the last-resort stub is substituted too, and it is not silent', async () => {
-    const { pmSoulDefaultFrom } = await import('../assembler.js');
     const logs: string[] = [];
 
     const soul = pmSoulDefaultFrom(() => null, (msg) => logs.push(msg));
@@ -177,7 +177,6 @@ describe('the PM runs on its whole soul', () => {
   });
 
   it('the shipped template resolves in the packaged layout as well as the repo', async () => {
-    const { platformTemplateSearchPaths } = await import('../assembler.js');
     const paths = platformTemplateSearchPaths('PM-SOUL.md');
 
     // The repo layout (`<root>/templates`) and the installed layout

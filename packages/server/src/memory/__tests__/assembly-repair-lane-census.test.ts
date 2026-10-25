@@ -53,6 +53,8 @@ import { tagMessageLane, collectMessageLaneIds } from '../message-lane-tag.js';
 // file's first draft: the injection sites move with their tranche, and a guard that reads
 // them by path goes QUIET rather than red when they do.
 import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
+import { getMessageEntries } from '../../prompt/registry/registry.js';
+import '../../prompt/registry/entries.js';
 
 // ── A TIMEOUT WITH ITS MEASURED REASON (T-PROMISE's side-fix precedent, same class) ──
 // The RUNTIME census clause imports the prompt registry, and that module graph costs
@@ -158,8 +160,6 @@ describe('the priority repair recognises post-budget lanes instead of refusing',
 
 describe('THE CENSUS — the declared membership cannot drift from what actually injects', () => {
   it('every REGISTERED message entry is declared post-budget, and every declared `msg.` key is registered', async () => {
-    await import('../../prompt/registry/entries.js');
-    const { getMessageEntries } = await import('../../prompt/registry/registry.js');
     const registered = getMessageEntries().map((e) => e.id).sort();
     const declared = Object.keys(POST_BUDGET_ENTRY_LANE).filter((k) => k.startsWith('msg.')).sort();
     expect(registered.length).toBeGreaterThan(0);

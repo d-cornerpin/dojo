@@ -30,6 +30,8 @@ import {
 } from '../../tools/tool-docs.js';
 import type { ToolDefinition } from '../../agent/tools/types.js';
 import { engineText, engineFileContaining, engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
+import { getMessageEntries } from '../../prompt/registry/registry.js';
+import '../../prompt/registry/entries.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -219,8 +221,6 @@ describe('S3 — assembly is PURE (reads only)', () => {
 
 describe('RULING P3-R1 — a registered entry with no injection site is impossible', () => {
   it('every registered message entry has a live injection site in the loop', async () => {
-    const { getMessageEntries } = await import('../../prompt/registry/registry.js');
-    await import('../../prompt/registry/entries.js');
     // PHASE-6 GUARD-AUDIT: the ten `injectRegistryMessage` call sites are spread across the
     // `assemble` and `callLLM` tranches — they move in TWO different cuts. Read against
     // `loop.ts` alone this clause would have reported every migrated entry as an orphan

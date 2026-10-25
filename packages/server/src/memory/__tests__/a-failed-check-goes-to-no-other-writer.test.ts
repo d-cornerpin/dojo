@@ -36,6 +36,7 @@ import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncond
 import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { proveSummaryCheck } from './summary-check-proven.js';
+import { generateSummary } from '../summarize.js';
 
 const AGENT = 'agent-check-walk';
 const db = (): Database.Database => mockDb.current!;
@@ -83,7 +84,6 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
   const span = { content: rows('SPAN-A'), depth: 0, targetTokens: 400, agentId: AGENT, spanIds: ['msg-1', 'msg-2'] };
 
   it('(i)+(ii) is handed to no other writer by any path, and not retried by the same writer, until something changes', async () => {
-    const { generateSummary } = await import('../summarize.js');
     expect((await generateSummary({ ...span, modelId: 'writer-small' })).ok).toBe(false);
     expect(writers.calls).toEqual(['writer-small', 'writer-small']);
     writers.calls.length = 0;
@@ -95,7 +95,6 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
   });
 
   it('(ii) a new row joining the span, or the owner changing the summary writer, lets it be tried again', async () => {
-    const { generateSummary } = await import('../summarize.js');
     await generateSummary({ ...span, modelId: 'writer-small' });
     writers.calls.length = 0;
     await generateSummary({ ...span, spanIds: ['msg-1', 'msg-2', 'msg-3'], modelId: 'writer-small' });
@@ -107,7 +106,6 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
   });
 
   it('fix round 4 (NB-9): refusals under an earlier writer setting are pruned; a span summarized after all leaves none', async () => {
-    const { generateSummary } = await import('../summarize.js');
     const refused = (): string[] => (db().prepare("SELECT key FROM healer_state WHERE scope = 'summary_span_refused' ORDER BY key").all() as Array<{ key: string }>).map((r) => r.key);
     await generateSummary({ ...span, modelId: 'writer-small' });
     expect(refused()).toEqual([`${AGENT}|writer-small|msg-1`, `${AGENT}|writer-small|msg-2`]);

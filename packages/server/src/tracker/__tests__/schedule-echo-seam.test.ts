@@ -78,6 +78,8 @@ vi.mock('../../config/platform.js', () => ({
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { getBoxTimeZone } from '../../scheduler/engine.js';
+import { toolDefinitionsByName } from '../../agent/tools/definitions.js';
+import { formatTimeForAgent } from '../../services/format-time.js';
 
 const AGENT = 'a1';
 const ORIGINAL_TZ = process.env.TZ;
@@ -326,7 +328,6 @@ describe('the recurring gate accepts every first-run spelling the tool declares'
     }
 
     it(`${d.door}: every accepted spelling is declared on ${d.tool}`, async () => {
-      const { toolDefinitionsByName } = await import('../../agent/tools/definitions.js');
       const def = toolDefinitionsByName().get(d.tool);
       expect(def, `${d.tool} is not a declared tool`).toBeDefined();
       const declared = Object.keys(
@@ -487,7 +488,6 @@ describe('one next-run computer', () => {
 describe('formatTimeForAgent reads the DB text shape as UTC, not as local wall clock', () => {
   it('the space-separated Z-less form is the instant SQLite meant', async () => {
     process.env.TZ = 'America/Los_Angeles';
-    const { formatTimeForAgent } = await import('../../services/format-time.js');
     expect(
       formatTimeForAgent('2026-08-07 03:00:00'),
       'the DB\'s own `strftime(\'%Y-%m-%d %H:%M:%S\')` text was read as local wall clock',
@@ -496,7 +496,6 @@ describe('formatTimeForAgent reads the DB text shape as UTC, not as local wall c
 
   it('an explicit-offset input is still honoured as that offset', async () => {
     process.env.TZ = 'America/Los_Angeles';
-    const { formatTimeForAgent } = await import('../../services/format-time.js');
     expect(formatTimeForAgent('2026-08-07T03:00:00Z')).toContain('2026-08-07T03:00:00.000Z');
     expect(formatTimeForAgent('2026-08-06T20:00:00-07:00')).toContain('2026-08-07T03:00:00.000Z');
     // A real offset-bearing provider timestamp (Graph/Calendar) is unaffected.

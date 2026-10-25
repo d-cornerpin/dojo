@@ -13,6 +13,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runWithToolCallId } from '../../turn-state.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from '../capability.js';
 import { stopWaiterCount } from '../../stop-waiters.js';
+import { spawnAuthorized } from '../proc.js';
+import { stopAgent } from '../../runtime.js';
+import * as s from '../../shared-state.js';
 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
 vi.mock('../../../db/connection.js', () => ({
@@ -48,7 +51,6 @@ async function until(cond: () => boolean, ms: number): Promise<boolean> {
 afterEach(async () => {
   for (const pid of started) { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }
   started.length = 0;
-  const s = await import('../../shared-state.js');
   s.stoppedAgents.clear();
   s.stopFencedRuns.clear();
   s.activeRuns.clear();
@@ -57,7 +59,6 @@ afterEach(async () => {
 
 describe('t224: the stop reaches every command the toolbox started', () => {
   it('a command that ignores SIGTERM is still gone within the kill grace, with the job it backgrounded', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
     const child = await inCall(async () => spawnAuthorized('/bin/zsh', ['-c', 'trap "" TERM; sleep 41 & echo "$$ $!"; wait']));
     started.push(child.pid as number);
     const pids = await new Promise<number[]>((resolve) => {
@@ -67,14 +68,11 @@ describe('t224: the stop reaches every command the toolbox started', () => {
         if (buf.includes('\n')) resolve(buf.trim().split(/\s+/).map(Number));
       });
     });
-    const { stopAgent } = await import('../../runtime.js');
     stopAgent(AGENT);
     expect(await until(() => !alive(pids[0]) && !alive(pids[1]), 6000), 'a TERM-proof command survived the stop').toBe(true);
   });
 
   it('a command started AFTER a stop is standing is cut the moment it is born', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
-    const { stopAgent } = await import('../../runtime.js');
     stopAgent(AGENT);
     const child = await inCall(async () => spawnAuthorized('/bin/zsh', ['-c', 'sleep 43; wait']));
     started.push(child.pid as number);
@@ -82,7 +80,6 @@ describe('t224: the stop reaches every command the toolbox started', () => {
   });
 
   it('the door holds a stop wait for the life of the child and no longer', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
     const child = await inCall(async () => spawnAuthorized('/bin/zsh', ['-c', 'sleep 1']));
     expect(stopWaiterCount(AGENT)).toBe(1);
     await new Promise<void>((r) => child.on('close', () => r()));
@@ -90,8 +87,6 @@ describe('t224: the stop reaches every command the toolbox started', () => {
   });
 
   it('a stop, pressed twice, or after the child ended on its own, does nothing odd', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
-    const { stopAgent } = await import('../../runtime.js');
     const child = await inCall(async () => spawnAuthorized('/bin/zsh', ['-c', 'exit 0']));
     await new Promise<void>((r) => child.on('close', () => r()));
     expect(() => { stopAgent(AGENT); stopAgent(AGENT); }).not.toThrow();

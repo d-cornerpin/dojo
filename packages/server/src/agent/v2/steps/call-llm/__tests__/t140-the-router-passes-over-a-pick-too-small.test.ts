@@ -75,6 +75,11 @@ import { advance, initState } from '../../../state.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
 import { selectModel } from '../model-selection.js';
 import type { PromptTurnContext } from '../../../../../prompt/assembler.js';
+import { recoverFromError } from '../../../recovery.js';
+import { updateRateLimits } from '../../../../../router/rate-limits.js';
+import * as coldImport1 from '../../../../../router/rate-limits.js';
+import * as health from '../../../../../memory/summary-writer-health.js';
+import * as coldImport2 from '../../../../../memory/window-starvation-card.js';
 
 const AGENT = 'agent-t140-tiny-light';
 const TINY = 'm-tiny-8k';
@@ -129,12 +134,12 @@ async function callStep(): Promise<Awaited<ReturnType<typeof runCallLLM>>> {
 }
 
 beforeEach(async () => {
-  (await import('../../../../../router/rate-limits.js')).clearRateLimits();
+  coldImport1.clearRateLimits();
   mockDb.current = new Database(':memory:');
   runMigrations();
   dialed.length = 0;
   owner.cards.length = 0;
-  (await import('../../../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();   // N42: clauses card now
+  coldImport2.__resetStarvedWindowsForTests();   // N42: clauses card now
 });
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
@@ -152,7 +157,6 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
     // Round 7 (re-review H2'): judged by what the OWNER is sent, not by a thrown error's text.
     // t148: the limit alone is an honest stop. The call step throws it to the platform's lock (the ask
     // re-armed, nothing handed back), and the lock tells the owner once.
-    const { recoverFromError } = await import('../../../recovery.js');
     const thrown = await callStep().then(() => null, (err: unknown) => err);
     // N42: on this router (its smallest model holds the agent) the limit leaves the router no model at all.
     expect(thrown, 'the router hands the stop on: no model within the limit').toMatchObject({ code: 'NO_MODEL' });
@@ -180,7 +184,6 @@ describe('t140 round 6 — the router\'s own pick, too small for the agent', () 
 describe('t140 round 7 — when no router pick fits, what the owner sees is the true cause', () => {
   it('the roomy model is skipped for budget: the owner is told, in plain words, that today\'s spending limit is reached — and the agent is not errored or handed to the Healer', async () => {
     seed(true, { tinyOnRouter: false });
-    const { recoverFromError } = await import('../../../recovery.js');
     let outcome: unknown = null;
     try {
       outcome = await callStep();
@@ -204,9 +207,7 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   // limit does, so the TRUE cause is that: the owner reads the no-fit words and the card, never the Healer.
   it('v3.5 N42: the roomy model is rate-limited, but the tiny router model is the true cause: the owner is told that — no Healer, not errored', async () => {
     seed(false);
-    const { updateRateLimits } = await import('../../../../../router/rate-limits.js');
     updateRateLimits(ROOMY, { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
-    const { recoverFromError } = await import('../../../recovery.js');
     try {
       await callStep();
     } catch (err) {
@@ -225,7 +226,6 @@ describe('t140 round 7 — when no router pick fits, what the owner sees is the 
   // fresh message or the Settings writer changing does. A chat answer says nothing about summaries.
   it('t207: the turn\'s call answers: a summary writer on that provider that had failed is STILL passed over', async () => {
     seed(false, { tinyOnRouter: false });
-    const health = await import('../../../../../memory/summary-writer-health.js');
     health.__resetSummaryWriterHealthForTests();
     health.noteSummaryWriterOutcome(ROOMY, false);                     // a summary call on its provider failed
     expect(health.eligibleSummaryWriters(ROOMY), 'precondition: passed over').not.toContain(ROOMY);

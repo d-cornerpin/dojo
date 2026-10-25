@@ -75,6 +75,9 @@ vi.mock('../../agent/model.js', () => ({
 import {
   expandSynthesisBudgetMs, EXPAND_FLOOR_MS, EXPAND_MS_PER_1K_TOKENS, EXPAND_CEILING_MS,
 } from '../retrieval.js';
+import { memoryExpand } from '../retrieval.js';
+import { callModel } from '../../agent/model.js';
+import { generateEmbedding, isEmbeddingBackendUnavailable } from '../embeddings.js';
 
 const AGENT = 'quill';
 
@@ -168,7 +171,6 @@ describe('§2 U7 — both directions, driven through the real handler', () => {
   }
 
   it('THE RED: a synthesis that takes longer than the OLD flat bound still completes', async () => {
-    const { memoryExpand } = await import('../retrieval.js');
     const ids = seedMaterial(6, 4_000);
 
     // The model takes 400ms — well past nothing, and the point is that it finishes rather than
@@ -183,7 +185,6 @@ describe('§2 U7 — both directions, driven through the real handler', () => {
   });
 
   it('the bound the handler arms is the DERIVED one, not a flat 60s', async () => {
-    const { memoryExpand } = await import('../retrieval.js');
     const ids = seedMaterial(8, 8_000);
 
     callModelSpy.modelDelayMs = 50;
@@ -196,9 +197,7 @@ describe('§2 U7 — both directions, driven through the real handler', () => {
   });
 
   it('THE OTHER DIRECTION: an abort still ends it, and the AGENT is told it ran out of time', async () => {
-    const { memoryExpand } = await import('../retrieval.js');
     const ids = seedMaterial(4, 2_000);
-    const { callModel } = await import('../../agent/model.js');
 
     // THE ABORT IS DELIVERED THE WAY THE REAL TRANSPORT DELIVERS IT: a `DOMException` named
     // 'AbortError', which is exactly what `AbortSignal.timeout` produces when the budget expires.
@@ -226,9 +225,7 @@ describe('§2 U7 — both directions, driven through the real handler', () => {
   });
 
   it('CONTROL: a genuine model FAILURE still reads as a failure, not as a timeout', async () => {
-    const { memoryExpand } = await import('../retrieval.js');
     const ids = seedMaterial(3, 1_000);
-    const { callModel } = await import('../../agent/model.js');
     (callModel as unknown as { mockImplementationOnce: (f: () => Promise<never>) => void })
       .mockImplementationOnce(async () => { throw new Error('provider exploded'); });
 
@@ -271,7 +268,6 @@ describe('§3 U16 — the caller\'s declared bound is what the embed path arms',
       `INSERT OR REPLACE INTO config (key, value) VALUES ('embedding_config', ?)`,
     ).run(JSON.stringify({ provider: 'openai', model: 'text-embedding-3-small', baseUrl: 'https://example.test/v1' }));
     const probe = stubEmbedFetch();
-    const { generateEmbedding } = await import('../embeddings.js');
 
     // A latency-sensitive caller (the router's FA-R4 path) asks for 150ms. Under the defect this
     // transport armed 30,000ms regardless and the caller's declaration meant nothing.
@@ -294,7 +290,6 @@ describe('§3 U16 — the caller\'s declared bound is what the embed path arms',
       `INSERT OR REPLACE INTO config (key, value) VALUES ('embedding_config', ?)`,
     ).run(JSON.stringify({ provider: 'openai', model: 'text-embedding-3-small', baseUrl: 'https://example.test/v1' }));
     stubEmbedFetch();
-    const { generateEmbedding, isEmbeddingBackendUnavailable } = await import('../embeddings.js');
 
     const err = await generateEmbedding('some text', { timeoutMs: 120 }).catch((e: unknown) => e);
 

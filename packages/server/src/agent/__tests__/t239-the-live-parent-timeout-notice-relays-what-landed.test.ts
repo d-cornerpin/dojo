@@ -44,6 +44,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn
 
 import { runMigrations } from '../../db/migrations.js';
 import { openAsk, claimAsk, openDelegationJoin, findJoinChildByThread, landPiece, settlePieceWithoutResult } from '../../work/store.js';
+import { sweepExpiredJoins } from '../a2a-transport.js';
 
 const AGENT = 'mainagent';
 const T1 = 'thread-aaaaaaaa-1111';
@@ -87,7 +88,6 @@ function seedLiveFanOut(threeWay = false): string {
 }
 
 async function sweep(): Promise<{ failedClosed: number }> {
-  const { sweepExpiredJoins } = await import('../a2a-transport.js');
   return sweepExpiredJoins();
 }
 

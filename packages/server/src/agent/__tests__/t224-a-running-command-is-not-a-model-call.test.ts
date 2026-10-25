@@ -13,6 +13,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { ResourceGrant } from '../effects/capability.js';
+import { spawnAuthorized } from '../effects/proc.js';
+import { runWithToolCallId } from '../turn-state.js';
+import { attachCallCapability, mintCallCapability } from '../effects/capability.js';
+import { preemptedAgents, registerAbortable, countAbortable } from '../shared-state.js';
+import * as s from '../shared-state.js';
+import { preemptAgentForUrgentMessage } from '../runtime.js';
+import { clearEngineSharedState } from './clear-shared-state.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -28,14 +35,13 @@ const AGENT = 't224-preempt-agent';
 const started: number[] = [];
 
 beforeEach(() => {
-  vi.resetModules();
+  clearEngineSharedState();
   mockDb.current = new Database(':memory:');
 });
 
 afterEach(async () => {
   for (const pid of started) { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }
   started.length = 0;
-  const s = await import('../shared-state.js');
   s.activeAbortControllers.clear();
   s.preemptedAgents.clear();
   s.stoppedAgents.clear();
@@ -50,9 +56,6 @@ function alive(pid: number): boolean {
 
 async function runCommand(): Promise<{ pid: number }> {
   // Loaded after `resetModules`, so the door and the capability share one module graph.
-  const { spawnAuthorized } = await import('../effects/proc.js');
-  const { runWithToolCallId } = await import('../turn-state.js');
-  const { attachCallCapability, mintCallCapability } = await import('../effects/capability.js');
   const grants: ResourceGrant[] = [{ kind: 'proc', program: '/bin/zsh', display: '/bin/zsh' } as ResourceGrant];
   const child = await runWithToolCallId(AGENT, 'call-1', async () => {
     attachCallCapability(mintCallCapability({ agentId: AGENT, tool: 'shell', callId: 'call-1', grants }));
@@ -64,8 +67,6 @@ async function runCommand(): Promise<{ pid: number }> {
 
 describe('t224: an urgent preempt while a command runs', () => {
   it('RED: returns false, arms nothing and leaves the command alone when no model call is open', async () => {
-    const { preemptedAgents } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
     const { pid } = await runCommand();
 
     expect(preemptAgentForUrgentMessage(AGENT), 'nothing was in flight to abort').toBe(false);
@@ -76,8 +77,6 @@ describe('t224: an urgent preempt while a command runs', () => {
   });
 
   it('RED: no cool-down is burned, so a real barge-in right after still aborts the model call', async () => {
-    const { registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
     await runCommand();
     expect(preemptAgentForUrgentMessage(AGENT)).toBe(false);
 
@@ -88,8 +87,6 @@ describe('t224: an urgent preempt while a command runs', () => {
   });
 
   it('with a model call AND a command open, the preempt cuts the model call and spares the command', async () => {
-    const { registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
     const { pid } = await runCommand();
     const modelCall = new AbortController();
     registerAbortable(AGENT, modelCall, 'turn');
@@ -102,7 +99,6 @@ describe('t224: an urgent preempt while a command runs', () => {
   });
 
   it('the registry, and so the live-work indicator, counts a model or media request and not a command', async () => {
-    const { countAbortable } = await import('../shared-state.js');
     await runCommand();
     expect(countAbortable(AGENT, 'turn')).toBe(0);
     expect(countAbortable(AGENT, 'background')).toBe(0);

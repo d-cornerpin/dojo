@@ -61,6 +61,7 @@ import { forgetAccessGrants } from '../read.js';
 import { deriveLegacyGrants } from '../derive.js';
 import { ownerChannelRelayRefusal } from '../../a2a-transport.js';
 import type { AccessGrants } from '@dojo/shared';
+import { ungatedEffectKinds } from '../../tools/gates.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -282,7 +283,6 @@ describe('the five boot rewriters are retired (owner ruling 3)', () => {
 
 describe('the enforcement surface moved in one direction only', () => {
   it('`secrets` is no longer an ungated declared effect', async () => {
-    const { ungatedEffectKinds } = await import('../../tools/gates.js');
     const gates = gatesForCall('credential_get', { service_name: 'x' });
     expect(ungatedEffectKinds('credential_get', gates)).not.toContain('secrets');
   });

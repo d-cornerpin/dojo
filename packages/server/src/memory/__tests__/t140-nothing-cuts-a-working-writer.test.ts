@@ -57,7 +57,6 @@ const writers = vi.hoisted(() => ({
   hung: [] as Array<() => void>,
 }));
 vi.mock('../../agent/model.js', async () => {
-  const { classifyProviderError } = await import('../../agent/provider-error.js');
   return {
     callModel: async (p: { modelId: string; abortSignal?: AbortSignal }) => {
       writers.calls.push(p.modelId);
@@ -98,6 +97,9 @@ import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, replacePl
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { classifyProviderError } from '../../agent/provider-error.js';
+import '../../agent/model.js';
+import '../../tools/tool-docs.js';
 
 const AGENT = 'agent-t140-no-limits';
 const OWN = 'model-t140-own';
@@ -187,9 +189,6 @@ const failingCards = (): number => owner.cards.filter((c) => c.code === 'COMPACT
 beforeAll(async () => {
   // The fold path imports these lazily; load them before any clause starts a fake clock, so the
   // clock does not run on while a module is read from disk.
-  await import('../../agent/model.js');
-  await import('../../tools/tool-docs.js');
-  await import('../../agent/provider-error.js');
 });
 
 beforeEach(() => {

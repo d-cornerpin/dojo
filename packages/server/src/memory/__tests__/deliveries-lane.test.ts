@@ -55,6 +55,7 @@ import { estimateTokens } from '../budget.js';
 // T69b: the stamp the lane renders, imported from the module that renders it rather than
 // re-typed here — a literal in this file would be a second formatter to drift from.
 import { recordedInstant } from '../message-stamp.js';
+import { writeContextReceipt } from '../../agent/v2/receipt.js';
 
 const AGENT = 'p3t7-deliveries';
 const CONV = 'conv-owner-im';
@@ -328,7 +329,6 @@ describe('the receipt attributes the lane to itself, measured', () => {
     process.env.DOJO_HOME = scratch;
     process.env.DOJO_RECEIPT_MODE = 'meta';
     // RECEIPTS_ROOT resolves from homeDir() at module load, so the import comes after.
-    const { writeContextReceipt } = await import('../../agent/v2/receipt.js');
     const grant = (id: string, slot: number) => ({
       id, slot, priority: Number.MAX_SAFE_INTEGER, requested: 0, granted: 0,
       status: 'empty' as const, reason: 'post-budget lane did not fire on this turn',

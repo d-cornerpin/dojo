@@ -63,6 +63,12 @@ async function intervalsArmedDuring(body: () => Promise<unknown>): Promise<Armed
   return armed;
 }
 
+// t277: THE IMPORT IS THE SUBJECT, SO IT HAPPENS AT COLLECTION. `agent/runtime.ts` arms its sweeps
+// when it is first imported, and it drags in most of the product, so the import took 8-12 s inside
+// the clause's own budget on a loaded machine. A top-level await runs while the file is collected,
+// where no per-test timeout applies; the clause below only reads what the interceptor recorded.
+const armedByRuntimeImport = await intervalsArmedDuring(() => import('../runtime.js'));
+
 describe('§1 the interceptor, before it is trusted', () => {
   it('⚠ it tells a ref\'d interval from an unref\'d one — otherwise §2 proves nothing', async () => {
     const armed = await intervalsArmedDuring(async () => {
@@ -91,8 +97,8 @@ describe('§1 the interceptor, before it is trusted', () => {
 
 describe('§2 agent/runtime.ts', () => {
   it('⚠ THE CLAUSE: every interval it arms at import is unref\'d, and it still arms them',
-    async () => {
-      const armed = await intervalsArmedDuring(() => import('../runtime.js'));
+    () => {
+      const armed = armedByRuntimeImport;
 
       // Counted BOTH ways (campaign wire rule). Deleting the sweeps would make "all unref'd"
       // vacuously true, and the sweeps are wanted behaviour — the stuck-agent recovery and the

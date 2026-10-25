@@ -54,6 +54,7 @@ import { runEmptyResponse } from '../v2/steps/post-call-classify/empty-response.
 import { advance, initState } from '../v2/state.js';
 import type { PostCallClassifyContext } from '../v2/steps/post-call-classify/index.js';
 import type { ToolCall } from '@dojo/shared';
+import { deliverA2AMessage } from '../a2a-transport.js';
 
 const MAIN = 'mainagent';
 const FAST = 'fasthelper';
@@ -67,7 +68,6 @@ const db = (): Database.Database => mockDb.current!;
 async function deliver(o: {
   from: string; to: string; intent: string; payload: string; threadId?: string;
 }): Promise<Awaited<ReturnType<typeof import('../a2a-transport.js').deliverA2AMessage>>> {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   return deliverA2AMessage({
     intent: o.intent as never, threadId: o.threadId ?? '', requiresResponse: true,
     payload: o.payload, toAgent: o.to, fromAgent: o.from,

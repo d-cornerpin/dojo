@@ -41,6 +41,9 @@ import { runMigrations } from '../../../db/migrations.js';
 import { healerRouter } from '../healer.js';
 import { vaultRouter } from '../vault.js';
 import { configRouter } from '../config.js';
+import { agentsHandlers } from '../../../agent/tools/cat/agents.js';
+import { spawnAgent } from '../../../agent/spawner.js';
+import * as coldImport1 from '../../../config/platform.js';
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -89,7 +92,7 @@ beforeEach(async () => {
   seedAgent('healer-agent', 'big');
   seedAgent('dreamer-agent', 'big');
   seedAgent('imaginer-agent', 'big');
-  (await import('../../../config/platform.js')).clearPlatformConfigCache();
+  coldImport1.clearPlatformConfigCache();
 });
 
 afterEach(() => {
@@ -143,7 +146,6 @@ describe('the service-agent model setters refuse a model under 32K', () => {
 describe('the update_agent tool refuses a model under 32K', () => {
   it('refused before the rename; the agent keeps its model and its name', async () => {
     seedAgent('worker', 'big', 'main-agent');
-    const { agentsHandlers } = await import('../../../agent/tools/cat/agents.js');
     const out = await agentsHandlers['update_agent']!({
       agentId: 'main-agent', args: { agent_id: 'worker', name: 'Renamed', model_id: 'tiny' },
     } as never);
@@ -155,7 +157,6 @@ describe('the update_agent tool refuses a model under 32K', () => {
 
   it('allowed: a big model, and the small model the agent is already on', async () => {
     seedAgent('worker', 'tiny', 'main-agent');
-    const { agentsHandlers } = await import('../../../agent/tools/cat/agents.js');
     const same = await agentsHandlers['update_agent']!({ agentId: 'main-agent', args: { agent_id: 'worker', model_id: 'tiny' } } as never);
     expect(same.isError).toBeFalsy();
     const up = await agentsHandlers['update_agent']!({ agentId: 'main-agent', args: { agent_id: 'worker', model_id: 'big' } } as never);
@@ -166,7 +167,6 @@ describe('the update_agent tool refuses a model under 32K', () => {
 
 describe('the spawn door refuses a model under 32K', () => {
   it('an explicit small model is refused and no agent row is made', async () => {
-    const { spawnAgent } = await import('../../../agent/spawner.js');
     await expect(spawnAgent({
       parentId: 'main-agent', name: 'kid', systemPrompt: 'x', modelId: 'tiny', timeout: 600,
     } as never)).rejects.toThrow(PLAIN);

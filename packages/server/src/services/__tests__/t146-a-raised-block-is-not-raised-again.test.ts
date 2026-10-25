@@ -86,6 +86,12 @@ import { ESCALATION_STEER_MARKER, selectRowsForOwnerEscalation } from '../../wor
 import { sendAlert, startIMBridge, stopIMBridge } from '../imessage-bridge.js';
 import { executeTool } from '../../agent/tools/index.js';
 import { withOutboundAsync } from '../../agent/v2/outbound.js';
+import { sweepUnvalidatedTasksForUserEscalation } from '../../scheduler/runner.js';
+import { agentMayNameTask } from '../../agent/tools/told-about-task.js';
+import { withOutbound, recordAtDoor, currentOutboundDeliveryId } from '../../agent/v2/outbound.js';
+import { recordPersonTold } from '../../work/validation-drive.js';
+import * as coldImport1 from '../../logger.js';
+import * as coldImport2 from '../owner-card-frames.js';
 
 /** Fictional throughout (G1). */
 const PRIMARY = 'primary';
@@ -157,7 +163,6 @@ const headsUps = (): string[] =>
 const candidates = (): string[] => selectRowsForOwnerEscalation(CUTOFF, SERVICE_IDS).map((r) => r.id);
 
 async function driveLadderToTheEnd(): Promise<void> {
-  const { sweepUnvalidatedTasksForUserEscalation } = await import('../../scheduler/runner.js');
   await sweepUnvalidatedTasksForUserEscalation();
   await sweepUnvalidatedTasksForUserEscalation();
   await sweepUnvalidatedTasksForUserEscalation();
@@ -303,7 +308,6 @@ describe('§3 the record refuses what is not a tell to the owner or the requeste
   });
 
   it('round 3 (M1): who may name a task — its holder, its assignee, the agent that opened it, and the primary (the ladder\'s teller); nobody else', async () => {
-    const { agentMayNameTask } = await import('../../agent/tools/told-about-task.js');
     for (const id of ['stranger', 'opener', 'helper']) db().prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')`).run(id, id);
     seedBlocked('t-who', { requester: 'agent', requester_id: 'opener', assignee_agent: 'helper' });
     expect(agentMayNameTask(ASSIGNEE, 't-who'), 'holder').toBe(true);
@@ -334,8 +338,8 @@ describe('§3 the record refuses what is not a tell to the owner or the requeste
 describe('§4 the owner-notice record says whether a dashboard card was raised', () => {
   const ownerNoticeEntries = async (fire: () => Promise<void>): Promise<Array<Record<string, unknown> | undefined>> => {
     const seen: Array<{ component: string; meta?: Record<string, unknown> }> = [];
-    (await import('../../logger.js')).setLogBroadcast((e) => { seen.push(e); });
-    try { await fire(); } finally { (await import('../../logger.js')).setLogBroadcast(() => { /* off */ }); }
+    coldImport1.setLogBroadcast((e) => { seen.push(e); });
+    try { await fire(); } finally { coldImport1.setLogBroadcast(() => { /* off */ }); }
     return seen.filter((e) => e.component === 'owner-notice').map((e) => e.meta);
   };
   const noPhone = (): void => { db().prepare(`DELETE FROM config WHERE key = 'imessage_approved_senders'`).run(); };
@@ -368,7 +372,7 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
   const CARD_WORDS = 'The greenhouse firmware task is blocked: the controller rejects every upload.';
   /** A card that LASTS: the owner-notices list (GET /api/config/owner-notices) re-derives it. */
   const standing = async (words: string[]): Promise<void> =>
-    (await import('../owner-card-frames.js')).registerStandingOwnerCards(() => words.map((w) => ({ words: w })));
+    coldImport2.registerStandingOwnerCards(() => words.map((w) => ({ words: w })));
 
   it('a card raised for a notice about the blocked task records the tell, and the ladder does not raise it again', async () => {
     seedBlocked('t-card');
@@ -412,8 +416,6 @@ describe('§5 no phone: the owner card about a work row is the tell', () => {
 
   it('the record refuses an owner_card tell on anything but a platform dashboard row', async () => {
     seedBlocked('t-wrongcard');
-    const { withOutbound, recordAtDoor, currentOutboundDeliveryId } = await import('../../agent/v2/outbound.js');
-    const { recordPersonTold } = await import('../../work/validation-drive.js');
     const viaCard = (agentId: string, channel: 'imessage' | 'dashboard', recipientId: string) => withOutbound(
       { agentId, tool: 'owner-card', channel, recipientId },
       () => { recordAtDoor({ outcome: 'delivered', channel, recipientId }); return recordPersonTold('t-wrongcard', { deliveryId: currentOutboundDeliveryId()!, via: 'owner_card' }); },

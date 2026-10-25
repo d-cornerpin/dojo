@@ -16,6 +16,7 @@
 // Fixing one and leaving two is the failure mode this suite exists to prevent.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { googleRouter } from '../routes/google.js';
 
 const exchange = vi.fn();
 const flowForState = vi.fn();
@@ -68,7 +69,6 @@ const XSS = '<script>alert(1)</script>';
 
 /** Hit GET /callback on the real router with the given query string. */
 async function callback(query: string): Promise<string> {
-  const { googleRouter } = await import('../routes/google.js');
   const res = await googleRouter.request(`/callback?${query}`);
   return res.text();
 }

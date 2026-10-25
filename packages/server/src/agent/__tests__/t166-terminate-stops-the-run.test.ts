@@ -70,8 +70,13 @@ vi.mock('../../logger.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 // The engine's shared maps, read from the SAME module instance the code under test was loaded in
-// (`vi.resetModules()` gives every clause a fresh graph; a static import here would be a stranger's).
-const shared = async (): Promise<typeof import('../shared-state.js')> => import('../shared-state.js');
+// (t277: no clause resets the module registry any more, so the static import IS that instance, and
+// `clearShared` below is the isolation each clause used to get from a fresh graph).
+import * as sharedState from '../shared-state.js';
+import { getAgentRuntime, stopAgent } from '../runtime.js';
+import { terminateAgent } from '../spawner.js';
+import { deliverA2AMessage } from '../a2a-transport.js';
+const shared = async (): Promise<typeof import('../shared-state.js')> => sharedState;
 const clearShared = async (): Promise<void> => {
   const s = await shared();
   for (const m of [s.activeRuns, s.stoppedAgents, s.pendingWakeups]) m.clear();
@@ -141,7 +146,6 @@ function armGate(): void {
 }
 
 beforeEach(async () => {
-  vi.resetModules();
   mockDb.current = freshDb();
   seedWorld();
   callModelSpy.mockReset(); executeToolSpy.mockReset();
@@ -172,7 +176,6 @@ const rowsFor = (id: string): number => (db().prepare('SELECT COUNT(*) AS n FROM
 async function startRunMidTool(script: Array<Record<string, unknown>>): Promise<{ run: Promise<void> }> {
   script.forEach((r, i) => callModelSpy.mockImplementationOnce(async () => r));
   callModelSpy.mockImplementation(async () => reply([], 'done'));   // any further call: a plain text end
-  const { getAgentRuntime } = await import('../runtime.js');
   const run = getAgentRuntime().handleMessage(WORKER, '');
   await firstToolRunning;
   return { run };   // boxed: returning the bare promise would make this function await the whole run
@@ -187,7 +190,6 @@ describe('t166 (i) — an agent terminated mid tool loop does nothing further', 
     const ownerRowsBefore = rowsFor(OWNER_AGENT);
     const peerRowsBefore = rowsFor(PEER);
 
-    const { terminateAgent } = await import('../spawner.js');
     terminateAgent(WORKER, 'Terminated via dashboard');
     gate.open();
     await run;
@@ -210,7 +212,6 @@ describe('t166 (ii) — a terminated agent\'s late send is refused and logged', 
   it('the A2A door refuses a sender ended mid-run: nothing persisted, one warn naming the reason', async () => {
     db().prepare("UPDATE agents SET status = 'terminated' WHERE id = ?").run(WORKER);
     (await shared()).stopFencedRuns.set(WORKER, Date.now());   // the run it was ended in is still unwinding
-    const { deliverA2AMessage } = await import('../a2a-transport.js');
     const r = await deliverA2AMessage({ ...ASSIGN_OPEN, threadId: '', toAgent: PEER, fromAgent: WORKER });
     expect(r.delivered).toBe(false);
     expect(r.reason).toBe('SENDER_TERMINATED');
@@ -228,7 +229,6 @@ describe('t166 (ii) — a terminated agent\'s late send is refused and logged', 
     const peerRowsBefore = rowsFor(PEER);
     let release!: () => void;
     embedding.calls = 0; embedding.hold = new Promise<void>((r) => { release = r; });
-    const { deliverA2AMessage } = await import('../a2a-transport.js');
     const sending = deliverA2AMessage({ intent: 'STATUS', requiresResponse: false, payload: 'the depot count is now thirty one crates', threadId: THREAD, toAgent: PEER, fromAgent: WORKER });
     for (let i = 0; i < 200 && embedding.calls === 0; i++) await sleep(10);
     expect(embedding.calls, 'precondition: the door is parked on the embedding').toBeGreaterThan(0);
@@ -244,14 +244,12 @@ describe('t166 (ii) — a terminated agent\'s late send is refused and logged', 
 
   it('CONTROL: a sender that FINISHED its own task is terminated but no run is unwinding: the engine hand-back still delivers', async () => {
     db().prepare("UPDATE agents SET status = 'terminated' WHERE id = ?").run(WORKER);
-    const { deliverA2AMessage } = await import('../a2a-transport.js');
     const r = await deliverA2AMessage({ ...ASSIGN_OPEN, threadId: '', toAgent: PEER, fromAgent: WORKER });
     expect(r.reason).not.toBe('SENDER_TERMINATED');
     expect(r.delivered).toBe(true);
   });
 
   it('CONTROL: a live sender delivers as before', async () => {
-    const { deliverA2AMessage } = await import('../a2a-transport.js');
     const r = await deliverA2AMessage({ ...ASSIGN_OPEN, threadId: '', toAgent: PEER, fromAgent: WORKER });
     expect(r.delivered).toBe(true);
   });
@@ -267,7 +265,6 @@ describe('t166 (ii-seam) — a tool call by a terminated agent is refused', () =
     });
     callModelSpy.mockImplementationOnce(async () => reply([call('c1', 'shell', { command: 'ls' }), call('c2', 'work_open', { title: 'x' })]));
     callModelSpy.mockImplementation(async () => reply([], 'done'));
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(WORKER, '');
     expect(executed).toEqual(['shell']);
     expect(warns.some((w) => /tool call refused, this agent has been terminated/.test(w.msg))).toBe(true);
@@ -284,7 +281,6 @@ describe('t166 (ii-seam) — a tool call by a terminated agent is refused', () =
       call('c2', 'send_to_agent', { agent_id: PEER, intent: 'ANSWER', payload: 'hand-back' }),
     ]));
     callModelSpy.mockImplementation(async () => reply([], 'done'));
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(WORKER, '');
     expect(executed).toEqual(['complete_task', 'send_to_agent']);
   });
@@ -295,7 +291,6 @@ describe('t166 (iii) — the owner\'s Stop on a live agent is unchanged', () => 
     const { run } = await startRunMidTool([
       reply([call('c1', 'shell', { command: 'ls' }), call('c2', 'work_open', { title: 'x' })]),
     ]);
-    const { stopAgent } = await import('../runtime.js');
     stopAgent(WORKER);
     expect((await shared()).stopFencedRuns.has(WORKER), 'the run\'s fence is raised').toBe(true);
     gate.open();
@@ -313,11 +308,9 @@ describe('t166 (iv) — a terminated agent\'s queued wakeup never starts a turn'
     const { run } = await startRunMidTool([
       reply([call('c1', 'shell', { command: 'ls' }), call('c2', 'work_open', { title: 'x' })]),
     ]);
-    const { getAgentRuntime } = await import('../runtime.js');
     await getAgentRuntime().handleMessage(WORKER, '');   // arrives while busy: parked as a wakeup
     expect((await shared()).pendingWakeups.has(WORKER), 'precondition: the wakeup is queued').toBe(true);
 
-    const { terminateAgent } = await import('../spawner.js');
     terminateAgent(WORKER, 'Terminated via dashboard');
     gate.open();
     await run;

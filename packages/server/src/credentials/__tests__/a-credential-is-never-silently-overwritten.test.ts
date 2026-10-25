@@ -27,11 +27,13 @@
 // the caller saying, on the record, which specific existing value it is ending.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { addCredential, updateCredential, getCredentialByService, deleteCredentialByService } from '../store.js';
+import { credentialsToolDefinitions, executeCredentialTool } from '../tools.js';
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -52,32 +54,12 @@ vi.mock('../../config/loader.js', () => ({
 const OWNER_AGENT = 'zargo';
 const BATTERY_AGENT = 'harnessbot';
 
-// ── WHY THIS HOOK EXISTS (backlog wave 1b item 3, 2026-09-26) ──────────────────────────────
-// This file flaked on ONE clause — "both write tools declare the overwrite flag in their
-// schema", `Test timed out in 5000ms` — and only under full-suite load. The clause is three
-// assertions on a schema object; what it actually spends its time on is the FIRST cold
-// `await import('../tools.js')` in the worker, which drags in the whole tool-definition chain.
-// MEASURED here: 3.16-3.22s of that 5s budget on an IDLE box (vitest's own per-test report),
-// and with the machine saturated it goes over 5s every time (20/20 reproduced with 24 busy
-// cores). Nothing is slow about the clause; a cold module compile is simply not something a
-// per-test budget should be paying for, and vitest's 5s default is a budget for a TEST.
-//
-// The `beforeEach` below already says the neighbouring half of this out loud: re-importing the
-// chain per clause (via `vi.resetModules()`) cost ~2.5s each and starved neighbouring suites.
-// This is the same fact from the other side — pay the compile ONCE, in a hook with a bound
-// sized for cold work, and every clause's `await import()` is a module-cache read afterwards.
-// The imports stay dynamic and every clause keeps its own; nothing about what they prove moves.
-//
-// THE CONTRACT OF THIS LIST: it is the set of modules the clauses import COLD. A clause that
-// reaches for a module nobody warmed here is paying for a compile inside its own budget again,
-// which is the whole defect. It is deliberately NOT a wildcard — a hook that imported the world
-// would hide which module is expensive.
-beforeAll(async () => {
-  await Promise.all([
-    import('../store.js'),
-    import('../tools.js'),
-  ]);
-}, 120_000);
+// ── WHY THE IMPORTS ARE STATIC (backlog wave 1b item 3, then t277) ────────────────────────
+// This file flaked on ONE clause - "both write tools declare the overwrite flag in their
+// schema" - because the FIRST cold `await import('../tools.js')` (the whole tool-definition
+// chain) ran inside that clause's own budget. A `beforeAll` pre-warm with a 120 s bound was the
+// first answer; it only moved the cold compile into a longer timeout. The modules are now
+// imported statically, so the compile happens at COLLECTION, where no test budget runs.
 
 beforeEach(() => {
   // NO `vi.resetModules()` here, deliberately. The store and the tool module hold no
@@ -121,7 +103,6 @@ afterEach(() => {
 
 /** The owner's real SendGrid row, as it stood before 2026-09-21. */
 async function seedOwnersKey(): Promise<void> {
-  const { addCredential } = await import('../store.js');
   const r = addCredential('sendgrid', { api_key: 'SG.real.owner-key' },
     'SendGrid API key provided by Yorvak on 2026-06-21', OWNER_AGENT);
   expect(r.ok).toBe(true);
@@ -147,7 +128,6 @@ describe('a write that would destroy a stored value refuses by default', () => {
   it('THE RED: credential_update replaces a four-month-old key with no confirmation', async () => {
     await seedOwnersKey();
     const before = storedValue();
-    const { updateCredential } = await import('../store.js');
 
     const result = updateCredential('sendgrid', { api_key: 'sk-live-battery-fake' },
       'rotated value, replaces the earlier key of the same lineage', BATTERY_AGENT);
@@ -158,7 +138,6 @@ describe('a write that would destroy a stored value refuses by default', () => {
 
   it('the refusal NAMES what it is protecting — when it was made, and by whom', async () => {
     await seedOwnersKey();
-    const { updateCredential } = await import('../store.js');
     const result = updateCredential('sendgrid', { api_key: 'sk-live-battery-fake' }, null, BATTERY_AGENT);
 
     expect(result.ok).toBe(false);
@@ -171,7 +150,6 @@ describe('a write that would destroy a stored value refuses by default', () => {
 
   it('credential_add on an existing name refuses with the SAME facts, and no longer routes to a silent verb', async () => {
     await seedOwnersKey();
-    const { addCredential } = await import('../store.js');
     const result = addCredential('sendgrid', { api_key: 'sk-live-battery-fake' }, null, BATTERY_AGENT);
 
     expect(result.ok).toBe(false);
@@ -182,7 +160,6 @@ describe('a write that would destroy a stored value refuses by default', () => {
   });
 
   it('CONTROL: a genuinely NEW service name still stores with no flag at all', async () => {
-    const { addCredential, getCredentialByService } = await import('../store.js');
     const result = addCredential('brand_new_service', { api_key: 'k' }, 'first of its name', BATTERY_AGENT);
     expect(result.ok).toBe(true);
     expect(getCredentialByService('brand_new_service', null)?.credentials).toEqual({ api_key: 'k' });
@@ -194,7 +171,6 @@ describe('a write that would destroy a stored value refuses by default', () => {
 describe('an authorised overwrite works, and leaves a record', () => {
   it('the flag lets the write through and replaces the value', async () => {
     await seedOwnersKey();
-    const { updateCredential, getCredentialByService } = await import('../store.js');
 
     const result = updateCredential('sendgrid', { api_key: 'SG.rotated.by-the-owner' },
       'rotated 2026-09-21', OWNER_AGENT, { overwrite: true });
@@ -207,7 +183,6 @@ describe('an authorised overwrite works, and leaves a record', () => {
     await seedOwnersKey();
     const idBefore = (mockDb.current!.prepare('SELECT id FROM agent_credentials WHERE service_name = ?')
       .get('sendgrid') as { id: string }).id;
-    const { addCredential } = await import('../store.js');
 
     const result = addCredential('sendgrid', { api_key: 'SG.new' }, 'replaced', OWNER_AGENT, { overwrite: true });
 
@@ -224,7 +199,6 @@ describe('an authorised overwrite works, and leaves a record', () => {
 
   it('every authorised overwrite writes an audit row naming the service and the actor', async () => {
     await seedOwnersKey();
-    const { updateCredential } = await import('../store.js');
     updateCredential('sendgrid', { api_key: 'SG.rotated' }, null, BATTERY_AGENT, { overwrite: true });
 
     const rows = auditRows();
@@ -236,7 +210,6 @@ describe('an authorised overwrite works, and leaves a record', () => {
 
   it('the audit row carries no secret — not the old value, not the new one', async () => {
     await seedOwnersKey();
-    const { updateCredential } = await import('../store.js');
     updateCredential('sendgrid', { api_key: 'sk-live-should-never-be-logged' }, null, BATTERY_AGENT, { overwrite: true });
 
     const blob = JSON.stringify(auditRows());
@@ -246,7 +219,6 @@ describe('an authorised overwrite works, and leaves a record', () => {
 
   it('a REFUSED write leaves no audit row — the record is of overwrites, not of attempts', async () => {
     await seedOwnersKey();
-    const { updateCredential } = await import('../store.js');
     updateCredential('sendgrid', { api_key: 'x' }, null, BATTERY_AGENT);
     expect(auditRows()).toHaveLength(0);
   });
@@ -256,7 +228,6 @@ describe('an authorised overwrite works, and leaves a record', () => {
 
 describe('the flag reaches the model, and the owner\'s own edits still work', () => {
   it('both write tools declare the overwrite flag in their schema', async () => {
-    const { credentialsToolDefinitions } = await import('../tools.js');
     for (const toolName of ['credential_add', 'credential_update']) {
       const def = credentialsToolDefinitions.find((d) => d.name === toolName);
       const props = (def?.input_schema as { properties: Record<string, unknown> }).properties;
@@ -267,7 +238,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
 
   it('the tool hands the store\'s refusal to the model verbatim', async () => {
     await seedOwnersKey();
-    const { executeCredentialTool } = await import('../tools.js');
     const out = await executeCredentialTool('credential_update',
       { service_name: 'sendgrid', credentials: { api_key: 'sk-live-fake' } }, BATTERY_AGENT);
     expect(out).toContain('2026-06-21');
@@ -276,7 +246,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
 
   it('the tool honours an explicit overwrite:true from the model', async () => {
     await seedOwnersKey();
-    const { executeCredentialTool } = await import('../tools.js');
     const out = await executeCredentialTool('credential_update',
       { service_name: 'sendgrid', credentials: { api_key: 'SG.new' }, overwrite: true }, OWNER_AGENT);
     expect(out).toContain('updated');
@@ -285,7 +254,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
 
   it('THE RED (review IMPORTANT B-1): credential_delete refuses without confirm, and names the row', async () => {
     await seedOwnersKey();
-    const { deleteCredentialByService, getCredentialByService } = await import('../store.js');
 
     const result = deleteCredentialByService('sendgrid', BATTERY_AGENT);
 
@@ -301,7 +269,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
 
   it('a confirmed delete works and leaves an audit row naming the row it ended', async () => {
     await seedOwnersKey();
-    const { deleteCredentialByService, getCredentialByService } = await import('../store.js');
 
     const result = deleteCredentialByService('sendgrid', BATTERY_AGENT, { confirm: true });
 
@@ -316,7 +283,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
 
   it('the delete TOOL carries the flag, refuses without it, and honours it', async () => {
     await seedOwnersKey();
-    const { credentialsToolDefinitions, executeCredentialTool } = await import('../tools.js');
     const def = credentialsToolDefinitions.find((d) => d.name === 'credential_delete');
     const props = (def?.input_schema as { properties: Record<string, unknown> }).properties;
     expect(props.confirm, 'the model has no way to authorise a deletion').toBeDefined();
@@ -330,7 +296,6 @@ describe('the flag reaches the model, and the owner\'s own edits still work', ()
   });
 
   it('CONTROL: deleting a name that does not exist still says so, and writes nothing', async () => {
-    const { deleteCredentialByService } = await import('../store.js');
     const result = deleteCredentialByService('never_existed', BATTERY_AGENT, { confirm: true });
     expect(result.ok).toBe(false);
     expect(result.error).toContain('No credential found');

@@ -49,7 +49,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-const broadcast = vi.fn();
+const broadcast = vi.hoisted(() => vi.fn());
 /**
  * ⚠ FIX ROUND 3 — the same handle fix the two NEW D3 suites needed, applied here because this file
  * is in t90's package and is the third-largest source of in-flight filesystem work in the run.
@@ -84,6 +84,7 @@ import {
   openAsk, claimAsk, transition, openDelegationJoin, findJoinChildByThread,
   landPiece, joinPieces, dueJoins, dueJoinsUnderClosedParent,
 } from '../../work/store.js';
+import { sweepExpiredJoins } from '../a2a-transport.js';
 
 const AGENT = 'zargo';
 const T1 = 'thread-aaaaaaaa-1111';
@@ -164,7 +165,6 @@ function seedClosedParentJoin(
 }
 
 async function sweep(): Promise<{ failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number }> {
-  const { sweepExpiredJoins } = await import('../a2a-transport.js');
   return sweepExpiredJoins();
 }
 

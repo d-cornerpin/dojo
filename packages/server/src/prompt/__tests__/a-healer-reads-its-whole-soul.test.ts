@@ -63,6 +63,8 @@ import { insertMessage } from '../../memory/message-store.js';
 import { getSoulContent, soulFileForAgent, healerSoulDefaultFrom } from '../assembler.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
 import { WORKING_NOTE_PREFIX } from '@dojo/shared';
+import { PLATFORM_SOUL_PLACEHOLDERS } from '../assembler.js';
+import * as platform from '../../config/platform.js';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
@@ -98,7 +100,6 @@ beforeEach(async () => {
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
   setConfig('owner_name', 'Yorvak');
-  const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
@@ -240,7 +241,6 @@ describe('the dead second reader is gone, not left beside the live one', () => {
 
 describe('CONTROLS — the souls that were already right do not move', () => {
   it('the shipped Healer template names no placeholder the ONE substituter does not know', async () => {
-    const { PLATFORM_SOUL_PLACEHOLDERS } = await import('../assembler.js');
     const used = new Set([...SHIPPED.matchAll(/\{\{([a-z_]+)\}\}/g)].map((m) => m[1]));
     for (const p of used) {
       expect((PLATFORM_SOUL_PLACEHOLDERS as readonly string[]).includes(p), `{{${p}}}`).toBe(true);

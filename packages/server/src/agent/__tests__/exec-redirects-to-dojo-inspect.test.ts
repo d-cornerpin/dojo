@@ -26,7 +26,22 @@ const PRIMARY = 'agent-main';
 const HEALER = 'agent-healer';
 const WORKER = 'agent-worker';
 
-let home: string;
+// t277: THE ENVIRONMENT AND THE IMPORTS ARE SET UP AT COLLECTION, NOT IN A HOOK. `DOJO_HOME` must be
+// in place before the product modules are first loaded (they read it at import), so the home is made
+// and the variable stubbed first, then the modules are loaded with top-level awaits. This used to be
+// a `beforeAll` with a 120 s bound, which only gave a cold import of ~650 modules a longer timeout;
+// collection has no per-test budget at all, and the hook below is left with database setup only.
+const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-redirect-'));
+vi.stubEnv('DOJO_HOME', home);
+const imp_connection = await import('../../db/connection.js');
+const imp_migrations = await import('../../db/migrations.js');
+const imp_platform = await import('../../config/platform.js');
+const imp_index = await import('../brokers/index.js');
+const imp_index_ = await import('../tools/index.js');
+const imp_tool_outcome = await import('../tool-outcome.js');
+const imp_assembler = await import('../../prompt/assembler.js');
+const imp_home = await import('../../home.js');
+
 let mod: {
   connection: typeof import('../../db/connection.js');
   brokers: typeof import('../brokers/index.js');
@@ -35,29 +50,26 @@ let mod: {
   assembler: typeof import('../../prompt/assembler.js');
 };
 
-beforeAll(async () => {
-  home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-redirect-'));
-  vi.stubEnv('DOJO_HOME', home);
-  vi.resetModules();
-  const connection = await import('../../db/connection.js');
-  (await import('../../db/migrations.js')).runMigrations();
+beforeAll(() => {
+  const connection = imp_connection;
+  imp_migrations.runMigrations();
   const db = connection.getDb();
   const add = db.prepare("INSERT INTO agents (id, name, status, config, classification, permissions) VALUES (?, ?, 'idle', '{}', ?, ?)");
   add.run(PRIMARY, 'main', 'sensei', null);
   add.run(HEALER, 'healer', 'sensei', JSON.stringify({ exec_allow: ['*'], exec_deny: [], file_read: '*', file_write: '*', file_delete: 'none', network_domains: '*', max_processes: 5, can_spawn_agents: false, can_assign_permissions: false, system_control: [] }));
   add.run(WORKER, 'worker', 'apprentice', null);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?), ('healer_agent_id', ?)").run(PRIMARY, HEALER);
-  (await import('../../config/platform.js')).clearPlatformConfigCache();
+  imp_platform.clearPlatformConfigCache();
   mod = {
     connection,
-    brokers: await import('../brokers/index.js'),
-    tools: await import('../tools/index.js'),
-    outcome: await import('../tool-outcome.js'),
-    assembler: await import('../../prompt/assembler.js'),
+    brokers: imp_index,
+    tools: imp_index_,
+    outcome: imp_tool_outcome,
+    assembler: imp_assembler,
   };
-  HOME = (await import('../../home.js')).homeDir();
+  HOME = imp_home.homeDir();
   DB = `${HOME}/.dojo/data/dojo.db`;
-}, 120_000);
+});
 
 afterAll(() => {
   mod.connection.closeDb();

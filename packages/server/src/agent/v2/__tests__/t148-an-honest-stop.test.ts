@@ -396,6 +396,21 @@ import {
 import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { checkBudget } from '../../../costs/budget.js';
+import { contextWindowPolicy, SystemPromptTooLargeError } from '../../../memory/budget.js';
+import { reportStarvedWindow } from '../../../memory/window-starvation-card.js';
+import * as coldImport1 from '../../../memory/window-starvation-card.js';
+import { getWaitingHumanConversations } from '../counterparty.js';
+import { costsRouter } from '../../../gateway/routes/costs.js';
+import { kickMemoryRecheck, backgroundChecksSettled } from '../../../scheduler/background-checks.js';
+import { writeAgentStatus } from '../../agent-status.js';
+import { agentsRouter } from '../../../gateway/routes/agents.js';
+import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { handleIMCommand } from '../../../services/imessage-commands.js';
+import { releaseClearedBudgetStops } from '../honest-stop-lock.js';
+import { configRouter } from '../../../gateway/routes/config.js';
+import { updateRateLimits } from '../../../router/rate-limits.js';
+import * as tracker from '../../../costs/tracker.js';
 
 
 let migratedImage: Buffer | null = null;
@@ -455,8 +470,8 @@ const noFreeModel = (): void => { db().prepare(`UPDATE models SET is_enabled = 0
 
 beforeEach(async () => {
   mockDb.current = setupTestDb();
-  (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  tracker.invalidateDailySpendCache();
+  coldImport1.__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
     loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
@@ -473,8 +488,7 @@ beforeEach(async () => {
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
-    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-    const { checkBudget } = await import('../../../costs/budget.js');
+    tracker.invalidateDailySpendCache();
     const priced = p.modelId === 'test-model';
     if (priced && !checkBudget(p.agentId, 0.01).allowed) return realModel.callModel!(p);
     return { content: ANSWER, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' };
@@ -527,8 +541,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   it('a PINNED model genuinely too small for the agent: the true card, and no Healer, not errored', async () => {
     db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
-    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
-    const { reportStarvedWindow } = await import('../../../memory/window-starvation-card.js');
     // The assembler's own refusal, as it does it (memory/assembler.ts): card once, then throw.
     assembleContextMock.mockImplementation(async () => {
       const policy = contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 });
@@ -546,7 +558,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     // What the runtime's human drain does next (runtime.ts, "Human conversation drain"): while the
     // agent is not in a stop state and a person's ask is waiting, serve it again — up to
     // MAX_DRAIN_STUCK passes, after which the ask is set aside as poisoned.
-    const { getWaitingHumanConversations } = await import('../counterparty.js');
     const drainWouldServe = (): boolean => !['error', 'paused', 'terminated'].includes(status())
       && getWaitingHumanConversations(AGENT).length > 0;
     let reServed = 0;
@@ -561,7 +572,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     handleMessageSpy.mockClear();
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     const res = await costsRouter.request('/budget/global', {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }),
     });
@@ -591,7 +601,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(status()).toBe('paused');
     expect(ask(), 'the message is still the owner\'s open ask, not handed back through a settlement rung').toBe('open');
     // The drain stands down for the lock, so nothing re-serves it and nothing is said again.
-    const { getWaitingHumanConversations } = await import('../counterparty.js');
     expect(['error', 'paused', 'terminated']).toContain(status());
     expect(getWaitingHumanConversations(AGENT).length).toBeGreaterThan(0);
     expect(notices().length, 'told once').toBe(1);
@@ -599,7 +608,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(turnExit.exit_reason, 'the turn does not claim the model chose silence').not.toBe('no_reply_intended');
 
     handleMessageSpy.mockClear();
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
     await runV2Turn(AGENT);
@@ -614,8 +622,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
-    const { kickMemoryRecheck, backgroundChecksSettled } = await import('../../../scheduler/background-checks.js');
-    const tracker = await import('../../../costs/tracker.js');
     handleMessageSpy.mockClear();
     kickMemoryRecheck(); await backgroundChecksSettled();
     expect(handleMessageSpy, 'the window has not turned over: still parked').not.toHaveBeenCalled();
@@ -637,7 +643,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls.length, 'the budget\'s own crossing alert, once').toBe(1);
     // The lock lifted by something that is not the event (a long-errored sweep), then the same stop again.
-    const { writeAgentStatus } = await import('../../agent-status.js');
     writeAgentStatus(AGENT, 'idle');   // the sweep keeps the diagnostic, as the lock's own record
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls.length, 'no second text').toBe(1);
@@ -647,14 +652,12 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   it('no_model_fits: changing the agent\'s model releases the lock and wakes it; the Healer is never called', async () => {
     db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
-    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
     assembleContextMock.mockImplementation(async () => {
       throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
     });
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     handleMessageSpy.mockClear();
-    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
     const res = await agentsRouter.request(`/${AGENT}/model`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }),
     });
@@ -668,11 +671,9 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   it('no_model_fits: ONE text through the owner-notice door and a lasting card with the same words, once per condition; the card ends when the agent is released', async () => {
     db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
-    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
     assembleContextMock.mockImplementation(async () => {
       throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
     });
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     const texts = sendAlertSpy.mock.calls.map((c) => c[0] as string);
     expect(texts, 'one text').toHaveLength(1);
@@ -681,14 +682,12 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(healerOwnerCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([texts[0]]);
 
     // The lock lifted by something that is not the event, and the same stop again: told once.
-    const { writeAgentStatus } = await import('../../agent-status.js');
     writeAgentStatus(AGENT, 'idle');
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls.length, 'no second text').toBe(1);
     expect(healerOwnerCards()).toHaveLength(1);
 
     // The real event releases the agent, and the card ends with it.
-    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
     await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
     expect(status()).toBe('idle');
     expect(healerOwnerCards(), 'the card ends when the agent is released').toEqual([]);
@@ -698,7 +697,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     expect(sendAlertSpy.mock.calls.map((c) => c[0] as string).filter((t) => /none of its models/i.test(t))).toEqual([]);
     expect(healerOwnerCards()).toEqual([]);
   });
@@ -711,10 +709,8 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
-    const { handleIMCommand } = await import('../../../services/imessage-commands.js');
     expect(await handleIMCommand('pause', 'owner')).toMatch(/paused/i);
     handleMessageSpy.mockClear();
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(status(), 'the owner said pause; it stays paused').toBe('paused');
     expect(handleMessageSpy, 'and it is not woken').not.toHaveBeenCalled();
@@ -724,11 +720,9 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
-    const { writeAgentStatus } = await import('../../agent-status.js');
     writeAgentStatus(AGENT, 'working');   // a retry turn keeps the tag across `working`
     writeAgentStatus(AGENT, 'paused');    // then something else pauses it
     handleMessageSpy.mockClear();
-    const { releaseClearedBudgetStops } = await import('../honest-stop-lock.js');
     db().prepare(`UPDATE budgets SET limit_usd = 10`).run();
     await releaseClearedBudgetStops();
     expect(status()).toBe('paused');
@@ -746,7 +740,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(status()).toBe('paused');
     const told = notices().length;
     handleMessageSpy.mockClear();
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     const put = (limitUsd: number) => costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd }) });
     await put(1.20);   // 0.90 + 0.01 fits, 0.90 + 0.50 does not: the router still picks nothing
     expect(status(), 'still parked').toBe('paused');
@@ -763,11 +756,9 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     toolPayload.tokens = 7_000;   // the tiny model cannot hold the agent's tools
     await runV2Turn(AGENT);       // the real assembler refuses (no scripted throw)
     expect(status()).toBe('paused');
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     const texts = sendAlertSpy.mock.calls.length;
     const said = notices().length;
     handleMessageSpy.mockClear();
-    const { configRouter } = await import('../../../gateway/routes/config.js');
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
       VALUES ('m-other', 'test-provider', 'Other', 'other', '["text","tools"]', 4096, 1024, 0, 0, 0)`).run();
     const res = await configRouter.request('/models/enable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelIds: ['m-other'] }) });
@@ -778,7 +769,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(notices().length, 'no new notice').toBe(said);
     expect(healerOwnerCards(), 'its card stands').toHaveLength(1);
     // The agent is pointed at a model that holds it: that IS the event.
-    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
     await agentsRouter.request(`/${AGENT}/model`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'test-model' }) });
     expect(status()).toBe('idle');
     expect(healerOwnerCards()).toEqual([]);
@@ -793,7 +783,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
       .filter((e) => e.type === 'agent:status' && e.status === 'paused').pop();
     expect(frame?.parkedCause).toMatch(/^Today's spending limit is reached/);
     expect(frame?.parkedCause).not.toMatch(/budget_stop/);
-    const { agentsRouter } = await import('../../../gateway/routes/agents.js');
     const parked = await (await agentsRouter.request(`/${AGENT}`)).json() as { data: Record<string, unknown> };
     expect(parked.data.parkedCause).toBe(frame?.parkedCause);
     expect('lastError' in parked.data, 'raw last_error is not served').toBe(false);
@@ -811,7 +800,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, input_cost_per_m, output_cost_per_m)
       VALUES ('m-b', 'test-provider', 'B', 'b', '["text","tools"]', 200000, 4096, 1, 3, 15)`).run();
     db().prepare(`UPDATE router_tier_models SET model_id = 'm-b' WHERE tier_id = 'heavy'`).run();   // standard: test-model, heavy: m-b
-    const { updateRateLimits } = await import('../../../router/rate-limits.js');
     updateRateLimits('test-model', { 'x-ratelimit-remaining': '0', 'retry-after': '600' });
     budget(1.00, 0.999);
     await runV2Turn(AGENT);
@@ -840,7 +828,6 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(notices().length, 'no new notice').toBe(said);
     expect(sendAlertSpy.mock.calls.length, 'no new text').toBe(texts);
     expect(status()).toBe('paused');
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     await runV2Turn(AGENT);
     const ask2 = (db().prepare(`SELECT state FROM work WHERE kind = 'ask' AND root_id = 'msg-user-2'`).get() as { state: string }).state;

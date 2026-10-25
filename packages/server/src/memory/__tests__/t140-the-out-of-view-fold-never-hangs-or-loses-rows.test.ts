@@ -60,7 +60,6 @@ const writers = vi.hoisted(() => ({
   transportMs: 300,
 }));
 vi.mock('../../agent/model.js', async () => {
-  const { classifyProviderError } = await import('../../agent/provider-error.js');
   return {
     callModel: async (p: { modelId: string; abortSignal?: AbortSignal }) => {
       writers.calls.push(p.modelId);
@@ -112,6 +111,14 @@ import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { withLock } from '../../db/with-lock.js';
 import { runMigrations } from '../../db/migrations.js';
 import { STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { classifyProviderError } from '../../agent/provider-error.js';
+import { replaceUncondensedPlaceholders } from '../uncondensed-placeholder.js';
+import * as coldImport1 from '../uncondensed-placeholder.js';
+import { createLeafSummary } from '../dag.js';
+import { condenseUntilFits } from '../condense-until-fits.js';
+import { getArchiveHighWaterMark } from '../../vault/archive.js';
+import { recordPermanentFailure } from '../../providers/billing-breaker.js';
+import * as coldImport2 from '../summary-writer-health.js';
 
 const AGENT = 'agent-t140-writer-down';
 /** The agent's own model — the first summary writer (no Settings choice is configured). */
@@ -284,7 +291,7 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
     writers.mode = {};
     // The writers come back; a person's next turn is the change that earns them a retry (round 6).
     noteAPersonSpoke(AGENT);
-    const ph = await import('../uncondensed-placeholder.js') as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
+    const ph = coldImport1 as unknown as { replaceUncondensedPlaceholders: (a: string) => Promise<number> };
     const replaced = await ph.replaceUncondensedPlaceholders(AGENT);
     expect(replaced).toBeGreaterThan(0);
     expect(placeholders(), 'no placeholder left once a writer answers').toEqual([]);
@@ -295,6 +302,12 @@ describe('t140 round 3 — recovery: a real summary replaces the placeholder, an
 
 describe('t140 round 3 — Stop during the fold', () => {
   it('Stop ends the fold at once; the rows are represented; the writer is not blamed; no card', async () => {
+    // t277: the clause asks "did Stop cut the call, or did the call run out its own patience?" - a
+    // difference of 50 ms against `transportMs`. With the patience at 300 ms the margin was 250 ms of
+    // wall clock, which any starved process loses (measured 329-799 ms on a loaded machine) while Stop
+    // had worked. The fixture's patience is made long enough that scheduling noise cannot reach it; Stop
+    // working still returns in tens of milliseconds, and Stop NOT working waits the whole 8 s and fails.
+    writers.transportMs = 8_000;
     writers.mode[OWN] = 'hang';
     seedACut();
     const stop = new AbortController();
@@ -305,7 +318,7 @@ describe('t140 round 3 — Stop during the fold', () => {
     expect(lostRows(JSON.stringify(ctx.messages))).toEqual([]);
     expect(failingCards()).toBe(0);
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a stopped call is not a failed writer').toBe(OWN);
-  }, 5_000);
+  }, 20_000);
 });
 
 describe('t140 round 3 (re-aimed round 5) — a backlog is folded as far as the turn\'s patience goes', () => {
@@ -342,7 +355,6 @@ describe('t140 round 3 — the brake and a busy lock', () => {
     expect(placeholders().length, 'labelled, not waited for').toBeGreaterThan(0);
     release();
     await held;
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders(), 'the fold happened after').toEqual([]);
   }, 5_000);
@@ -356,10 +368,8 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     expect(placeholders().length).toBeGreaterThan(0);
     writers.mode = {};
     __resetSummaryWriterHealthForTests();
-    const { createLeafSummary } = await import('../dag.js');
     for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot.`, 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
     compaction.rebuildContextItems(AGENT);
-    const { condenseUntilFits } = await import('../condense-until-fits.js');
     await condenseUntilFits({
       agentId: AGENT, modelId: CHEAP, minFanout: 2, targetTokens: 500,
       measure: async () => ({ total: 999_999, summaryTokens: 0 }),   // never fits: condense all it may
@@ -385,7 +395,7 @@ const placeholderCoveredSeqs = (): number[] => (db().prepare(
     WHERE s.agent_id = ? AND s.kind = 'uncondensed'`,
 ).all(AGENT) as Array<{ seq: number }>).map((r) => r.seq);
 const coolAll = async (...ids: string[]) => {
-  const h = await import('../summary-writer-health.js') as unknown as { noteSummaryWriterOutcome: (m: string, ok: boolean) => void };
+  const h = coldImport2 as unknown as { noteSummaryWriterOutcome: (m: string, ok: boolean) => void };
   for (const id of ids) h.noteSummaryWriterOutcome(id, false);
 };
 
@@ -422,7 +432,6 @@ describe('t140 round 4 — F2: placeholder rows reach the vault archive', () => 
     await door();
     const covered = placeholderCoveredSeqs();
     expect(covered.length).toBeGreaterThan(0);
-    const { getArchiveHighWaterMark } = await import('../../vault/archive.js');
     const hw = getArchiveHighWaterMark(AGENT) ?? 0;
     expect(covered.filter((s) => s > hw), 'placeholder rows never archived').toEqual([]);
   }, 10_000);
@@ -438,7 +447,6 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
   }, 5_000);
 
   it('R4 breaker open: a writer whose provider breaker is open is skipped, never dialed', async () => {
-    const { recordPermanentFailure } = await import('../../providers/billing-breaker.js');
     recordPermanentFailure('p-own', 'no_balance', '402', AGENT);
     recordPermanentFailure('p-own', 'no_balance', '402', AGENT);
     seedACut();
@@ -499,7 +507,6 @@ describe('t140 round 4 — F3: the six behaviours the round-3 witnesses missed',
     writers.mode = {};
     __resetSummaryWriterHealthForTests();
     writers.calls = [];
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders().find((p) => p.id === ph[0].id), 'the covered placeholder is gone').toBeUndefined();
     expect(writers.calls.length, 'one call per OTHER placeholder, none for the covered one').toBe(ph.length - 1);
@@ -516,7 +523,6 @@ describe('t140 round 4 (re-aimed round 5) — F4: running past the turn\'s patie
     expect(placeholders().length, 'nobody answered inside the turn\'s patience').toBeGreaterThan(0);
     expect(failingCards(), 'slow is not failing').toBe(0);
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'a turn does not wait on it again until it answers').not.toBe(OWN);
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     writers.calls = [];
     noteAPersonSpoke(AGENT);   // round 6: the change that earns it another try
     await onTheClock(replaceUncondensedPlaceholders(AGENT));
@@ -534,7 +540,6 @@ describe('t140 round 4 — card noise: one card per incident', () => {
     expect(failingCards()).toBe(1);
     writers.mode = {};
     __resetSummaryWriterHealthForTests();
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     await replaceUncondensedPlaceholders(AGENT);   // a real recovery: no placeholder left
     expect(placeholders()).toEqual([]);
     writers.mode = { [OWN]: 'empty', [CHEAP]: 'empty', [NEXT]: 'empty' };
@@ -594,7 +599,6 @@ describe('t140 round 4 — F1: a slow background fold holding the lock does not 
     expect(coverCounts()).toEqual([]);
     expect(result.leafCreated, 'the background fold was not cancelled: its summary landed').toBeTruthy();
     expect(compaction.resolveSummaryWriterModel(AGENT, OWN), 'the slow writer is not blamed').toBe(OWN);
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     await replaceUncondensedPlaceholders(AGENT);
     expect(placeholders(), 'the real summaries came after').toEqual([]);
     expect(coverCounts(), 'one note per row throughout').toEqual([]);
@@ -610,10 +614,8 @@ describe('t140 round 4 — a note is identified structurally, never by its headi
   it('a REAL model summary that happens to start with the heading survives the replacement, untouched and unsuperseded', async () => {
     seedACut();
     const rows = (db().prepare('SELECT id FROM messages WHERE agent_id = ? ORDER BY seq LIMIT 6').all(AGENT) as Array<{ id: string }>).map((r) => r.id);
-    const { createLeafSummary } = await import('../dag.js');
     const forged = '[Not yet condensed] is how the crew labelled the unsorted crates; the rest were filed by bay.';
     const real = createLeafSummary(AGENT, forged, 30, rows, '2026-01-01T00:00:00.000Z', '2026-01-01T00:05:00.000Z');
-    const { replaceUncondensedPlaceholders } = await import('../uncondensed-placeholder.js');
     writers.calls = [];
     await replaceUncondensedPlaceholders(AGENT);
     const after = db().prepare('SELECT content FROM summaries WHERE id = ?').get(real.id) as { content: string } | undefined;

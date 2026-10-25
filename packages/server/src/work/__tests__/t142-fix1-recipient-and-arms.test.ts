@@ -46,6 +46,15 @@ import {
   selectRowsForOwnerEscalation, ESCALATION_STEER_MARKER, recordPersonTold, escalationSteerCount,
 } from '../validation-drive.js';
 import { withOutbound, recordAtDoor, currentOutboundDeliveryId, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
+import { sweepUnvalidatedTasksForUserEscalation } from '../../scheduler/runner.js';
+import { NOTICE_DOOR_SENDER } from '../validation-drive.js';
+// t277: the sweep imports these LAZILY (to break import cycles), so the first clause that drives it
+// used to pay their whole graph inside its own timeout. Loading them here, at collection, leaves the
+// sweep's own `await import` a cache read. The product is unchanged.
+import '../../tracker/pm-agent.js';
+import '../../agent/a2a-notice.js';
+import '../../agent/tools/cat/measure-door.js';
+import '../../tracker/tools.js';
 
 /** Fictional throughout (G1). */
 const ASSIGNEE = 'quillon';
@@ -138,7 +147,6 @@ const steersOn = (id: string): number =>
   ).get(id, ESCALATION_STEER_MARKER) as { n: number }).n;
 
 async function sweep(): Promise<void> {
-  const { sweepUnvalidatedTasksForUserEscalation } = await import('../../scheduler/runner.js');
   await sweepUnvalidatedTasksForUserEscalation();
 }
 
@@ -266,7 +274,6 @@ describe('I3 once-per-episode is the BLOCKED arm only; every other arm keeps one
 
 describe('the notice door\'s sender literal is the platform sender', () => {
   it('NOTICE_DOOR_SENDER === PLATFORM_SENDER (kept as a literal only to avoid an import cycle)', async () => {
-    const { NOTICE_DOOR_SENDER } = await import('../validation-drive.js');
     expect(NOTICE_DOOR_SENDER).toBe(PLATFORM_SENDER);
   });
 });

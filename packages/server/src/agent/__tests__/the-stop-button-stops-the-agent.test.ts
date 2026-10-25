@@ -42,6 +42,8 @@ import {
   stoppedAgents, pendingWakeups, preemptedAgents, activeAbortControllers,
   queueSelfWake,
 } from '../shared-state.js';
+import { runPreCallGates } from '../v2/steps/pre-call-gates/index.js';
+import { engineSources } from '../v2/__tests__/engine-sources.js';
 
 const AGENT = 'stop-button-agent';
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -154,7 +156,6 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
   });
 
   it('the pre-call gate exits on the stop and LEAVES the flag standing for the drains', async () => {
-    const { runPreCallGates } = await import('../v2/steps/pre-call-gates/index.js');
     const setAgentStatus = vi.fn();
     stoppedAgents.add(AGENT);
     const out = await runPreCallGates(
@@ -180,7 +181,6 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     // hand-rolled walk of the step packages — PHASE-6 GUARD-AUDIT's rule, and
     // the reason is exactly this clause's shape: a negative assertion over a
     // corpus that has quietly stopped containing its subject passes forever.
-    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
     const sources = engineSources();
     // ⚠ RE-DERIVED, NOT LOWERED (T83 fix round, review IMPORTANT A-2): the PREDICATE changed
     // name, the requirement did not. Every checkpoint now reads `isStopFenced`, which ORs the
@@ -216,7 +216,6 @@ describe('the stop flag outlives the checkpoint that honoured it', () => {
     // Requirement preserved: a preempt exists so a QUEUED WAKEUP CAN FIRE. Its
     // consumption at the checkpoint is what lets that wakeup through, and the
     // fix above must not have crept onto it. Same shared corpus, same reason.
-    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
     const consumers = engineSources()
       .filter((f) => /preemptedAgents\.delete\(agentId\)/.test(f.text))
       .map((f) => f.rel);

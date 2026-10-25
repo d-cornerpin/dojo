@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { deliverA2AMessage } from '../a2a-transport.js';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -89,7 +90,6 @@ function seedThread(opts: { lastSender: string; lastIntent: string; ageMinutes?:
 }
 
 async function deliver(overrides: Partial<{ intent: string; fromAgent: string; requiresResponse: boolean; payload: string }>) {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   return deliverA2AMessage({
     intent: (overrides.intent ?? 'QUESTION') as never,
     threadId: THREAD,

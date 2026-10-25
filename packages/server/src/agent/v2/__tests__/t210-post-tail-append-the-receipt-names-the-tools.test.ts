@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeContextReceipt } from '../receipt.js';
 
 const permitted = { names: ['web_search', 'work_update'] };
 vi.mock('../../tools/surface.js', () => ({
@@ -33,7 +34,6 @@ async function writeOne(messageEntryIds: Array<string | null>, volatileFrom: num
   const scratch = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-t210-receipt-'));
   process.env.DOJO_HOME = scratch;
   process.env.DOJO_RECEIPT_MODE = 'meta';
-  const { writeContextReceipt } = await import('../receipt.js');
   writeContextReceipt({
     agentId: AGENT, modelId: 'm', turnNumber: 1, loopCount: 2, useTools: true, systemPrompt: 'sys',
     messages: messageEntryIds.map((_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `m${i} ${'x'.repeat(400)}` })),

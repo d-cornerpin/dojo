@@ -100,6 +100,7 @@ import {
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
 import { currentRung } from '../../work/poke-ladder.js';
 import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS } from '../pm-agent.js';
 
 const SLOW_AGENT = 'slow-sub-agent';
 const PRIMARY = 'primary-agent';
@@ -335,7 +336,6 @@ describe('§2 no path from the PM to a task\'s assignee', () => {
   });
 
   it('⚠ the PM no longer holds the reassign verb at all', async () => {
-    const { PM_ALLOWED_WORK_OPS, PM_ONLY_WORK_OPS } = await import('../pm-agent.js');
     expect([...PM_ALLOWED_WORK_OPS], 'owner ruling 2026-10-02: no reassignment concept')
       .not.toContain('work_update:reassign');
     // And it is NOT PM-only, so removing it from the PM's list leaves it callable by the primary

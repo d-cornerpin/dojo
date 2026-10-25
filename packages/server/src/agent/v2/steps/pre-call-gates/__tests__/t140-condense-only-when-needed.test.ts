@@ -69,6 +69,7 @@ import { rowsLeavingView } from '../../../../../memory/tail-horizon.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
+import { writeUncondensedPlaceholders, hasUncondensedPlaceholders } from '../../../../../memory/uncondensed-placeholder.js';
 
 const AGENT = 'agent-t140-busy';
 const MODEL = 'm-t140-200k';
@@ -397,7 +398,6 @@ describe('t140 fix round 1 — an auto-routed tool loop locked to a small, expen
 describe('t140 round 3 — the gate replaces placeholder notes once a writer is eligible', () => {
   it('rows covered by a not-yet-condensed note get their real summary from the next gate, in the background', async () => {
     seedBusyHistory(30);
-    const { writeUncondensedPlaceholders, hasUncondensedPlaceholders } = await import('../../../../../memory/uncondensed-placeholder.js');
     const tenth = (db().prepare('SELECT seq FROM messages WHERE agent_id = ? ORDER BY seq ASC LIMIT 1 OFFSET 9').get(AGENT) as { seq: number }).seq;
     expect(writeUncondensedPlaceholders(AGENT, tenth), 'precondition: ten rows covered by placeholder notes').toBe(10);
     const out = await runPreCallGates(freshState(), makeCtx());

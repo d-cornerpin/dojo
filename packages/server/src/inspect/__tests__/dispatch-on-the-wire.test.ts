@@ -23,7 +23,22 @@ const WORKER = 'agent-worker';
 const GRANTED = 'agent-granted';
 const DENIED_PRIMARY_HOME = { deny: ['dojo_inspect'] };
 
-let home: string;
+// t277: THE ENVIRONMENT AND THE IMPORTS ARE SET UP AT COLLECTION, NOT IN A HOOK. `DOJO_HOME` must be
+// in place before the product modules are first loaded (they read it at import), so the home is made
+// and the variable stubbed first, then the modules are loaded with top-level awaits. This used to be
+// a `beforeAll` with a 120 s bound, which only gave a cold import of ~650 modules a longer timeout;
+// collection has no per-test budget at all, and the hook below is left with database setup only.
+const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-wire-'));
+vi.stubEnv('DOJO_HOME', home);
+const imp_connection = await import('../../db/connection.js');
+const imp_migrations = await import('../../db/migrations.js');
+const imp_platform = await import('../../config/platform.js');
+const imp_surface = await import('../../agent/tools/surface.js');
+const imp_tool_docs = await import('../../tools/tool-docs.js');
+const imp_index = await import('../../agent/tools/index.js');
+const imp_tool_outcome = await import('../../agent/tool-outcome.js');
+const imp_read = await import('../../agent/access/read.js');
+
 let mod: {
   connection: typeof import('../../db/connection.js');
   config: typeof import('../../config/platform.js');
@@ -34,12 +49,9 @@ let mod: {
   access: typeof import('../../agent/access/read.js');
 };
 
-beforeAll(async () => {
-  home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-wire-'));
-  vi.stubEnv('DOJO_HOME', home);
-  vi.resetModules();
-  const connection = await import('../../db/connection.js');
-  (await import('../../db/migrations.js')).runMigrations();
+beforeAll(() => {
+  const connection = imp_connection;
+  imp_migrations.runMigrations();
   const db = connection.getDb();
   const add = db.prepare("INSERT INTO agents (id, name, status, config, classification, tools_policy) VALUES (?, ?, 'idle', '{}', ?, ?)");
   add.run(PRIMARY, 'main', 'sensei', null);
@@ -47,17 +59,17 @@ beforeAll(async () => {
   add.run(WORKER, 'worker', 'apprentice', null);
   add.run(GRANTED, 'granted', 'apprentice', JSON.stringify({ allow: ['dojo_inspect', 'file_read', 'send_to_agent'], deny: [] }));
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?), ('healer_agent_id', ?)").run(PRIMARY, HEALER);
-  const config = await import('../../config/platform.js');
+  const config = imp_platform;
   config.clearPlatformConfigCache();
   mod = {
     connection, config,
-    surface: await import('../../agent/tools/surface.js'),
-    docs: await import('../../tools/tool-docs.js'),
-    tools: await import('../../agent/tools/index.js'),
-    outcome: await import('../../agent/tool-outcome.js'),
-    access: await import('../../agent/access/read.js'),
+    surface: imp_surface,
+    docs: imp_tool_docs,
+    tools: imp_index,
+    outcome: imp_tool_outcome,
+    access: imp_read,
   };
-}, 120_000);
+});
 
 afterAll(() => {
   mod.connection.closeDb();

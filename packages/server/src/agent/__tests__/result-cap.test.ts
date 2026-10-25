@@ -13,6 +13,7 @@ import { resultViewChars } from '../tools/index.js';
 import { applyTextPagination } from '../tools/pagination.js';
 import { TOOL_RESULT_VIEW_CHARS, toolResultView } from '../../memory/tool-result-view.js';
 import { stripOutsideMarks } from '../../tools/external-content.js';
+import '../../google/tools-read.js';
 
 /** What the executor hands the recorder for this result: its view, and whether the whole is kept. */
 function admit(tool: string, content: string): { view: string; kept: boolean } {
@@ -95,7 +96,6 @@ describe('resultViewChars + toolResultView (t200: kept whole, never cut away)', 
 
   it('Phase 3.5, registered cross-file sizes work (Google/MS tools)', async () => {
     // Importing google/tools-read.ts triggers its registerMaxResultTokens calls.
-    await import('../../google/tools-read.js');
     const size = resultViewChars('gmail_read', 'x');
     expect(size).toBeLessThan(TOOL_RESULT_VIEW_CHARS);
     const out = admit('gmail_read', 'g'.repeat(size + 4_000));
@@ -176,7 +176,6 @@ describe('applyTextPagination (Phase 3.5)', () => {
 
   it('the own-page carve-out shows a page that slightly overshoots its tool\'s size whole', async () => {
     // A page within twice its tool's declared size keeps its trailer in sight, as before t200.
-    await import('../../google/tools-read.js');
     const size = resultViewChars('gmail_read', 'x');
     const body = 'q'.repeat(Math.floor(size * 1.1)) + '\n\n[Read chars 0-18000 of 100000 total. 82000 more chars remain.\n To continue: gmail_read(message_id="x", offset=18000, limit=18000).]';
     expect(admit('gmail_read', body)).toEqual({ view: body, kept: false });
@@ -185,7 +184,6 @@ describe('applyTextPagination (Phase 3.5)', () => {
   it('past twice its tool\'s size a page is kept whole and shown as its pointer, not cut', async () => {
     // Pre-2026-05-06 a tool that appended a pagination trailer could ship arbitrarily-large
     // content and bypass the engine cap entirely (a single-line 5.9MB HTML file). The 2x limit stays.
-    await import('../../google/tools-read.js');
     const size = resultViewChars('gmail_read', 'x');
     const body = 'q'.repeat(size * 3) + '\n\n[Read chars 0-50000 of 100000 total. 50000 more chars remain.\n To continue: gmail_read(message_id="x", offset=50000, limit=50000).]';
     const out = admit('gmail_read', body);

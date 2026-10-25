@@ -35,6 +35,9 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runMigrations } from '../../db/migrations.js';
+import { generateManifest } from '../manifest.js';
+import { getCurrentVersion } from '../../gateway/routes/update.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
@@ -77,10 +80,7 @@ describe('export manifest platform_version (rider ii)', () => {
     // (T74b) this case was silently reading the DEVELOPER'S live database, where that
     // table happens to exist — so it passed by accident on one machine and would have
     // failed on a fresh checkout. The schema it needs is now made, not borrowed.
-    const { runMigrations } = await import('../../db/migrations.js');
     runMigrations();
-    const { generateManifest } = await import('../manifest.js');
-    const { getCurrentVersion } = await import('../../gateway/routes/update.js');
     const m = await generateManifest(1234, [], [], 0);
     expect(m.platform_version).toBe(getCurrentVersion());
     // And it is not the old lie.

@@ -38,6 +38,7 @@ import { gatherEvidence } from '../gather.js';
 import {
   resolveWindow, COLLECTOR_CAPS, REPORT_WINDOW_MAX_MINUTES, REPORT_WINDOW_MAX_TURNS,
 } from '../window.js';
+import { readTurns } from '../collect.js';
 
 const AGENT = 'zargo-report-window';
 /** The injected clock. The standing window is 120 minutes, so it opens at 10:00:00Z. */
@@ -262,7 +263,6 @@ describe('the turn count the attachment PUBLISHES is the turn count the reader a
   // exactly the future caller the comment is defending against.
   it('the collector clamps a number NO resolver produced — the min binds at the statement', async () => {
     seedAtNow(COLLECTOR_CAPS.turns * 2);
-    const { readTurns } = await import('../collect.js');
     const since = '1970-01-01 00:00:00';
     expect(
       readTurns(AGENT, since, 10_000).length,

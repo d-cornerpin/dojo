@@ -12,7 +12,7 @@
 //   from its own table, from an allowed table's credential column, or was pasted into an
 //   allowed table's text.
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,8 +29,23 @@ const APPROVAL = 'approval-synthetic-value-0002';
 const PASTED = `ghp_${'Zq9'.repeat(12)}`;
 const ROWS = 100_000;
 
-let home: string;
 let main: Database.Database;
+// t277: THE ENVIRONMENT AND THE IMPORTS ARE SET UP AT COLLECTION, NOT IN A HOOK. `DOJO_HOME` must be
+// in place before the product modules are first loaded (they read it at import), so the home is made
+// and the variable stubbed first, then the modules are loaded with top-level awaits. This used to be
+// a `beforeAll` with a 120 s bound, which only gave a cold import of ~650 modules a longer timeout;
+// collection has no per-test budget at all, and the hook below is left with database setup only.
+const home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-sql-'));
+vi.stubEnv('DOJO_HOME', home);
+const imp_connection = await import('../../db/connection.js');
+const imp_migrations = await import('../../db/migrations.js');
+const imp_schema = await import('../schema.js');
+const imp_sql = await import('../sql.js');
+const imp_sql_child = await import('../sql-child.js');
+const imp_turn_state = await import('../../agent/turn-state.js');
+const imp_capability = await import('../../agent/effects/capability.js');
+const imp_runtime = await import('../../agent/runtime.js');
+
 let mod: {
   connection: typeof import('../../db/connection.js');
   schema: typeof import('../schema.js').schema;
@@ -41,12 +56,12 @@ let mod: {
   runtime: typeof import('../../agent/runtime.js');
 };
 
-beforeAll(async () => {
-  home = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-sql-'));
-  vi.stubEnv('DOJO_HOME', home);
-  vi.resetModules();
-  const connection = await import('../../db/connection.js');
-  const { runMigrations } = await import('../../db/migrations.js');
+// Seeding 100,000 rows is CPU work, and a hook's 30 s bound is a wall-clock budget a starved process
+// loses (measured: 6 of 6 copies under load, once the 120 s hook bound was gone). It runs at collection,
+// like the imports above, where nothing is timing it.
+{
+  const connection = imp_connection;
+  const { runMigrations } = imp_migrations;
   runMigrations();
   main = connection.getDb();
   main.prepare("INSERT INTO agents (id, name) VALUES ('agent-primary', 'primary')").run();
@@ -57,12 +72,12 @@ beforeAll(async () => {
     for (let i = 0; i < ROWS; i++) ins.run(`m-${i}`, i === 7 ? `the key is ${PASTED}` : `row ${i}`, 1792651631000 + i, 1792651631000 + i);
   })();
   mod = {
-    connection, schema: (await import('../schema.js')).schema, sql: (await import('../sql.js')).sql,
-    readInChild: (await import('../sql-child.js')).readInChild,
-    turnState: await import('../../agent/turn-state.js'), cap: await import('../../agent/effects/capability.js'),
-    runtime: await import('../../agent/runtime.js'),
+    connection, schema: imp_schema.schema, sql: imp_sql.sql,
+    readInChild: imp_sql_child.readInChild,
+    turnState: imp_turn_state, cap: imp_capability,
+    runtime: imp_runtime,
   };
-}, 120_000);
+}
 
 afterAll(() => {
   mod.connection.closeDb();
@@ -235,12 +250,28 @@ describe('sql', () => {
     let pid = 0;
     const agent = 'agent-sql-stop';
     const run = asInspect(() => mod.readInChild('select count(*) from messages a, messages b, messages c', (p) => { pid = p; }), agent);
-    await new Promise((r) => setTimeout(r, 400));
+    // t277: WAIT FOR THE FACT, NOT FOR 400 ms. The child process has to start, open the database and
+    // begin its read before it holds a snapshot; a fixed sleep guessed how long that takes and lost the
+    // guess whenever the machine was busy (the checkpoint below then reported 0, nothing holding it).
+    // The thing the clause needs is "a full checkpoint cannot finish", so ask exactly that until it is
+    // true; the clause's own 60 s budget is the only bound.
+    let n = 0;
+    let busy = 0;
+    const waitUntil = Date.now() + 50_000;
+    while (busy !== 1 && Date.now() < waitUntil) {
+      await new Promise((r) => setTimeout(r, 50));
+      for (let i = 0; i < 20; i++) main.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, 'x')").run(`probe-a-${n++}`);
+      busy = (main.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>)[0].busy;
+    }
     expect(pid).toBeGreaterThan(0);
     expect(alive(pid)).toBe(true);
     // While it runs it holds a read snapshot: a full checkpoint cannot finish.
-    for (let i = 0; i < 20; i++) main.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, 'x')").run(`probe-a-${i}`);
-    expect((main.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>)[0].busy).toBe(1);
+    expect(busy).toBe(1);
+    // "The engine never held": its own timer kept ticking while the child ran. If the query ran on the
+    // engine's thread the count would stay at 0 for ever, so waiting for it to pass 10 proves the claim
+    // without guessing how long ten ticks take on a busy machine.
+    const tickDeadline = Date.now() + 30_000;
+    while (ticks <= 10 && Date.now() < tickDeadline) await new Promise((r) => setTimeout(r, 20));
     const during = ticks;
     const stoppedAt = Date.now();
     mod.runtime.stopAgent(agent);

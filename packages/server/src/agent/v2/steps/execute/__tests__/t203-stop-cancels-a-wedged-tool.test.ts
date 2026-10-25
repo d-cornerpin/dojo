@@ -20,6 +20,9 @@ import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { RepeatCallState } from '../../../identical-call-brake.js';
 import { runExecute, EXECUTE_PHASE, type ExecuteContext, type ExecuteOutcome } from '../index.js';
+import { stopAgent } from '../../../../runtime.js';
+import { stopWaiterCount } from '../../../../stop-waiters.js';
+import * as shared from '../../../../shared-state.js';
 
 const executeToolSpy = vi.fn();
 vi.mock('../../../../tools/index.js', async () => {
@@ -115,9 +118,7 @@ async function within(ms: number, p: Promise<ExecuteOutcome>): Promise<ExecuteOu
 const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function pressStop(): Promise<void> {
-  const shared = await import('../../../../shared-state.js');
   shared.activeRuns.add(AGENT); // a run is in flight: the stop raises the run's fence
-  const { stopAgent } = await import('../../../../runtime.js');
   stopAgent(AGENT);
 }
 
@@ -127,13 +128,12 @@ beforeEach(() => {
   recordToolOutcomeSpy.mockReturnValue(0);
 });
 
-afterEach(async () => {
-  const s = await import('../../../../shared-state.js');
-  s.stoppedAgents.clear();
-  s.stopFencedRuns.clear();
-  s.activeRuns.clear();
-  s.pendingWakeups.clear();
-  s.activeAbortControllers.clear();
+afterEach(() => {
+  shared.stoppedAgents.clear();
+  shared.stopFencedRuns.clear();
+  shared.activeRuns.clear();
+  shared.pendingWakeups.clear();
+  shared.activeAbortControllers.clear();
 });
 
 describe('t203: Stop ends a turn whose tool call is stuck', () => {
@@ -249,7 +249,6 @@ describe('t203: Stop ends a turn whose tool call is stuck', () => {
   it('a stop already standing when the call is reached: the tool is never started', async () => {
     executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) =>
       ({ toolCallId: tc.id, name: tc.name, content: 'ran', isError: false }));
-    const shared = await import('../../../../shared-state.js');
     shared.stoppedAgents.add(AGENT);
     const out = await runExecute(freshState(), ctxFor([call('shell', { script: 'echo hi' })]));
     expect(out.directive).toBe('exit');
@@ -262,7 +261,6 @@ describe('t203: Stop ends a turn whose tool call is stuck', () => {
     const out = await runExecute(freshState(), ctxFor([call('file_read', { path: 'a.txt' })]));
     expect(out.directive).toBe('proceed');
     expect(out.state.engineCutExit).toBeNull();
-    const { stopWaiterCount } = await import('../../../../stop-waiters.js');
     expect(stopWaiterCount(AGENT)).toBe(0);
   });
 });

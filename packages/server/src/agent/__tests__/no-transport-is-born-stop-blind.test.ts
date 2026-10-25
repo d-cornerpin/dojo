@@ -40,6 +40,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { abortInFlight, stoppedAgents, countAbortable } from '../shared-state.js';
+import * as s from '../shared-state.js';
+import { webSearch, webFetch } from '../web-tools.js';
+import { STOPPED_BY_USER, openAgentCall } from '../abortable-call.js';
+import { googleRead, googleSilentFetch } from '../../google/client.js';
+import { msGraphRead } from '../../microsoft/client.js';
+import { isEmbeddable } from '../site-snapshot.js';
+import { graphFetch, GRAPH_TIMEOUT_MS } from '../../microsoft/graph-fetch.js';
+import { generateEmbedding } from '../../memory/embeddings.js';
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -120,18 +129,15 @@ async function untilDialled(n = 1): Promise<void> {
 
 /** The USER'S STOP, spelled exactly as `runtime.ts`'s `stopAgent` spells it. */
 async function stopNow(): Promise<number> {
-  const { abortInFlight } = await import('../shared-state.js');
   return abortInFlight(AGENT, 'user-stop', { scope: 'all' });
 }
 
 beforeEach(() => {
-  vi.resetModules();
   dials = [];
 });
 
 afterEach(async () => {
   globalThis.fetch = realFetch;
-  const s = await import('../shared-state.js');
   s.stoppedAgents.clear();
   s.activeRuns.clear();
   s.activeAbortControllers.clear();
@@ -143,8 +149,6 @@ afterEach(async () => {
 describe('§1 a stop cuts web_search on the wire', () => {
   it('aborts the signal the search was dialled with, and says who did it', async () => {
     hangUntilAborted();
-    const { webSearch } = await import('../web-tools.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
     const inFlight = webSearch(AGENT, { query: 'anything' });
     await untilDialled();
@@ -158,9 +162,6 @@ describe('§1 a stop cuts web_search on the wire', () => {
 
   it('refuses at the door while a stop is already standing — no dial at all', async () => {
     hangUntilAborted();
-    const { webSearch } = await import('../web-tools.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
-    const { stoppedAgents } = await import('../shared-state.js');
     stoppedAgents.add(AGENT);
 
     await expect(webSearch(AGENT, { query: 'anything' })).resolves.toBe(STOPPED_BY_USER);
@@ -173,8 +174,6 @@ describe('§1 a stop cuts web_search on the wire', () => {
 describe('§2 a stop cuts web_fetch, and is not renamed a provider failure', () => {
   it('cuts the request and returns the stop sentence, NOT the timeout wording', async () => {
     hangUntilAborted();
-    const { webFetch } = await import('../web-tools.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
     const inFlight = webFetch(AGENT, { url: 'https://example.test/page', prompt: 'x' });
     await untilDialled();
@@ -191,7 +190,6 @@ describe('§2 a stop cuts web_fetch, and is not renamed a provider failure', () 
 
   it('a stop between redirect hops is not survived by the next hop', async () => {
     redirectThenHang(2);
-    const { webFetch } = await import('../web-tools.js');
 
     const inFlight = webFetch(AGENT, { url: 'https://example.test/hop0', prompt: 'x' });
     await untilDialled(3);
@@ -210,8 +208,6 @@ describe('§2 a stop cuts web_fetch, and is not renamed a provider failure', () 
 describe('§3 a stop cuts the Google transport', () => {
   it('cuts the request and answers with the stop sentence, not a transport error', async () => {
     hangUntilAborted();
-    const { googleRead } = await import('../../google/client.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
     const inFlight = googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Zargo', 'drive_list', {});
     await untilDialled();
@@ -226,7 +222,6 @@ describe('§3 a stop cuts the Google transport', () => {
 
   it('a call with no agentId still dials — platform plumbing has no owner to be stopped by', async () => {
     hangUntilAborted();
-    const { googleSilentFetch } = await import('../../google/client.js');
     void googleSilentFetch('GET', 'https://www.googleapis.com/oauth2/v1/tokeninfo');
     await untilDialled();
     expect(dials.length, 'an ownerless plumbing call was refused a dial').toBe(1);
@@ -238,8 +233,6 @@ describe('§3 a stop cuts the Google transport', () => {
 describe('§4 a stop cuts the Microsoft transport', () => {
   it('cuts the request and answers with the stop sentence', async () => {
     hangUntilAborted();
-    const { msGraphRead } = await import('../../microsoft/client.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
     const inFlight = msGraphRead('me/messages', AGENT, 'Zargo', 'outlook_list', {});
     await untilDialled();
@@ -258,7 +251,6 @@ describe('§4 a stop cuts the Microsoft transport', () => {
 describe('§5 a stop cuts the canvas\'s embeddability probe', () => {
   it('cuts the probe, and a stop standing at the door skips it entirely', async () => {
     hangUntilAborted();
-    const { isEmbeddable } = await import('../site-snapshot.js');
 
     const inFlight = isEmbeddable('https://example.test/site', AGENT);
     await untilDialled();
@@ -269,7 +261,6 @@ describe('§5 a stop cuts the canvas\'s embeddability probe', () => {
     await expect(inFlight).resolves.toBe(true);
 
     dials = [];
-    const { stoppedAgents } = await import('../shared-state.js');
     stoppedAgents.add(AGENT);
     await expect(isEmbeddable('https://example.test/site', AGENT)).resolves.toBe(true);
     expect(dials.length, 'a stopped agent still probed').toBe(0);
@@ -280,7 +271,6 @@ describe('§5 a stop cuts the canvas\'s embeddability probe', () => {
 
 describe('§6 composing the stop onto a deadline leaves the deadline working', () => {
   it('the caller\'s own deadline reaches fetch and does NOT read as the user\'s stop', async () => {
-    const { openAgentCall } = await import('../abortable-call.js');
     const slot = openAgentCall(AGENT, 'turn', AbortSignal.timeout(20));
     try {
       expect(slot.signal.aborted).toBe(false);
@@ -299,9 +289,6 @@ describe('§6 composing the stop onto a deadline leaves the deadline working', (
       return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof globalThis.fetch;
 
-    const { googleRead } = await import('../../google/client.js');
-    const { msGraphRead } = await import('../../microsoft/client.js');
-    const { countAbortable } = await import('../shared-state.js');
 
     await googleRead('https://www.googleapis.com/drive/v3/files', AGENT, 'Zargo', 'drive_list', {});
     await msGraphRead('me/messages', AGENT, 'Zargo', 'outlook_list', {});
@@ -316,8 +303,6 @@ describe('§6 composing the stop onto a deadline leaves the deadline working', (
 describe('§6b a stop cuts the Graph calls that do NOT go through the wrapped door', () => {
   it('cuts the call, names the stop, and gives a clockless site a clock', async () => {
     hangUntilAborted();
-    const { graphFetch, GRAPH_TIMEOUT_MS } = await import('../../microsoft/graph-fetch.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
 
     // The shape the reviewer measured eleven of in `tools-office.ts`: no `signal` at all.
     const inFlight = graphFetch(AGENT, 'https://graph.microsoft.com/v1.0/me/drive/items/x/content');
@@ -334,9 +319,6 @@ describe('§6b a stop cuts the Graph calls that do NOT go through the wrapped do
 
   it('refuses at the door under a standing stop, and releases on every exit', async () => {
     hangUntilAborted();
-    const { graphFetch } = await import('../../microsoft/graph-fetch.js');
-    const { STOPPED_BY_USER } = await import('../abortable-call.js');
-    const { stoppedAgents, countAbortable } = await import('../shared-state.js');
 
     stoppedAgents.add(AGENT);
     await expect(graphFetch(AGENT, 'https://graph.microsoft.com/v1.0/me')).rejects.toThrow(STOPPED_BY_USER);
@@ -354,7 +336,6 @@ describe('§6b a stop cuts the Graph calls that do NOT go through the wrapped do
 
   it('an ownerless Graph call still dials, and registers against nobody', async () => {
     hangUntilAborted();
-    const { graphFetch } = await import('../../microsoft/graph-fetch.js');
     void graphFetch(undefined, 'https://graph.microsoft.com/v1.0/me').catch(() => {});
     await untilDialled();
     expect(dials.length).toBe(1);
@@ -385,8 +366,6 @@ describe('§6b a stop cuts the Graph calls that do NOT go through the wrapped do
 describe('§6c a stop cuts an embedding the agent is waiting on', () => {
   it('cuts the dial, and releases — a leaked slot is a Stop button for work that finished', async () => {
     hangUntilAborted();
-    const { generateEmbedding } = await import('../../memory/embeddings.js');
-    const { countAbortable } = await import('../shared-state.js');
 
     const inFlight = generateEmbedding('a query the agent is waiting on', { agentId: AGENT }).catch(() => null);
     await untilDialled();
@@ -404,8 +383,6 @@ describe('§6c a stop cuts an embedding the agent is waiting on', () => {
     // the registry as it aborts it, so after a stop the count is 0 whether the caller released
     // or not. A planted leak therefore survives the clause above and dies here. The stake is
     // A-5b: a registration that outlives its work renders as a Stop button for work that is over.
-    const { generateEmbedding } = await import('../../memory/embeddings.js');
-    const { countAbortable } = await import('../shared-state.js');
     globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
       dials.push({ url: String(input), signal: init?.signal ?? undefined });
       return new Response(JSON.stringify({ embedding: new Array(768).fill(0.01) }), {
@@ -420,7 +397,6 @@ describe('§6c a stop cuts an embedding the agent is waiting on', () => {
 
   it('the corpus sweep still dials with no owner — "not a turn\'s work" is true of THAT path', async () => {
     hangUntilAborted();
-    const { generateEmbedding } = await import('../../memory/embeddings.js');
     void generateEmbedding('a background summary').catch(() => null);
     await untilDialled();
     expect(dials.length).toBe(1);

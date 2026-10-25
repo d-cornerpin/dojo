@@ -58,6 +58,16 @@ import {
   selectRowsForOwnerEscalation, ESCALATION_STEER_MARKER, recordPersonTold, escalationSteerCount,
 } from '../validation-drive.js';
 import { withOutbound, recordAtDoor, currentOutboundDeliveryId, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
+import { sweepUnvalidatedTasksForUserEscalation } from '../../scheduler/runner.js';
+import { ownerEpisodeSettledExpr } from '../validation-drive.js';
+import { validatedExpr, taskScope } from '../tracker-view.js';
+// t277: the sweep imports these LAZILY (to break import cycles), so the first clause that drives it
+// used to pay their whole graph inside its own timeout. Loading them here, at collection, leaves the
+// sweep's own `await import` a cache read. The product is unchanged.
+import '../../tracker/pm-agent.js';
+import '../../agent/a2a-notice.js';
+import '../../agent/tools/cat/measure-door.js';
+import '../../tracker/tools.js';
 
 /** Fictional throughout (G1). */
 const ASSIGNEE = 'quillon';
@@ -150,7 +160,6 @@ const steersOn = (id: string): number =>
   ).get(id, ESCALATION_STEER_MARKER) as { n: number }).n;
 
 async function sweep(): Promise<void> {
-  const { sweepUnvalidatedTasksForUserEscalation } = await import('../../scheduler/runner.js');
   await sweepUnvalidatedTasksForUserEscalation();
 }
 
@@ -438,8 +447,6 @@ describe('§7 the turn-root verify step is gone, and nothing else reads the reco
 
 describe('§8 the episode suppressor and the sequence reads take their index', () => {
   it('on 300 rows x 30 events, no work_events or deliveries access is a scan', async () => {
-    const { ownerEpisodeSettledExpr } = await import('../validation-drive.js');
-    const { validatedExpr, taskScope } = await import('../tracker-view.js');
     const db = mockDb.current!;
     const ins = db.prepare('INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)');
     db.transaction(() => {

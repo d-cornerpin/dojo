@@ -84,6 +84,8 @@ import { advance, initState } from '../state.js';
 import { runAssemble, ASSEMBLE_PHASE } from '../steps/assemble/index.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../steps/call-llm/index.js';
 import type { AssembleContext } from '../steps/assemble/index.js';
+import { getContextWindow } from '../../model.js';
+import * as coldImport1 from '../../../router/rate-limits.js';
 
 const AGENT = 'agent-n42-dock-desk';
 const LIGHT = 'm-n42-light-32k';
@@ -132,7 +134,6 @@ async function oneTurn(configured: string, tier: 'light' | 'standard' | 'heavy')
   route.tier = tier;
   const isAutoRouted = configured === 'auto';
   const contextModelId = isAutoRouted ? '__auto__' : configured;
-  const { getContextWindow } = await import('../../model.js');
   const tc = turnCtx();
   let state = advance(initState(AGENT, configured), { phase: ASSEMBLE_PHASE, loopCount: 1 });
   const assembled = await runAssemble(state, {
@@ -157,7 +158,7 @@ async function oneTurn(configured: string, tier: 'light' | 'standard' | 'heavy')
 }
 
 beforeEach(async () => {
-  (await import('../../../router/rate-limits.js')).clearRateLimits();
+  coldImport1.clearRateLimits();
   mockDb.current = new Database(':memory:');
   runMigrations();
   turns.length = 0;

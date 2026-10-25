@@ -104,6 +104,7 @@ import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixt
 // checks, exactly as `tracker/pm-agent.ts` already imports it for the poke sweep's own
 // busy-deferral.
 import { activeRuns as pmActiveRuns } from '../../agent/shared-state.js';
+import * as fresh from '../pm-agent.js';
 
 const PM_ID = 'pm'; // config/platform.ts's own fallback when no `config` row exists — unmocked here on purpose.
 
@@ -272,8 +273,6 @@ describe('§1 queueEffortReviewIfNeeded — the durable dedupe', () => {
     // would know nothing about the request just filed and would queue a duplicate. It does
     // not, because the dedupe is a query over `work_events`/`work`, both untouched by the
     // module reload — the DATABASE is what a restart actually preserves.
-    vi.resetModules();
-    const fresh = await import('../pm-agent.js');
 
     expect(fresh.queueEffortReviewIfNeeded('t5')).toBe(false);
     expect(requestCount('t5')).toBe(1); // still exactly one, from before the "restart"

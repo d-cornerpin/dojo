@@ -86,6 +86,8 @@ import { advance, initState } from '../../../state.js';
 import { runAssemble, ASSEMBLE_PHASE, type AssembleContext } from '../../assemble/index.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
 import { appendOnlyTurn } from '../append-only-turn.js';
+import { getContextWindow } from '../../../../model.js';
+import * as coldImport1 from '../../../../../router/rate-limits.js';
 
 const AGENT = 'agent-t212-dock-desk';
 const SMALL = 'm-t212-small-32k';
@@ -125,7 +127,6 @@ const turnCtx = (): AssembleContext['turnCtx'] => ({
 async function oneIteration(configured: string): Promise<void> {
   const isAutoRouted = configured === 'auto';
   const contextModelId = isAutoRouted ? '__auto__' : configured;
-  const { getContextWindow } = await import('../../../../model.js');
   const tc = turnCtx();
   let state = advance(initState(AGENT, configured), { phase: ASSEMBLE_PHASE, loopCount: 1 });
   const assembled = await runAssemble(state, {
@@ -150,7 +151,7 @@ async function oneIteration(configured: string): Promise<void> {
 }
 
 beforeEach(async () => {
-  (await import('../../../../../router/rate-limits.js')).clearRateLimits();
+  coldImport1.clearRateLimits();
   mockDb.current = new Database(':memory:');
   runMigrations();
   built.length = 0;

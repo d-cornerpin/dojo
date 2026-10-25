@@ -42,6 +42,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VERSION_UNREADABLE } from '../update.js';
+import { getCurrentVersion, versionIsOrderable, compareVersions, authorizeRollbackTarget } from '../update.js';
+import { issueLabelsFor, REPORT_ISSUE_LABELS, reportVersion } from '../../../report/issue-body.js';
+import { TELEMETRY_WHITELIST, UNRECOGNISED } from '../../../report/telemetry-whitelist.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** `packages/server/src/gateway/routes/__tests__` → the repo root. */
@@ -126,7 +129,6 @@ describe('under the runtime the dev box actually runs', () => {
     // The property the release blocker violated, stated directly. Not "the child is right" and
     // not "the suite is right": that they AGREE. One of them was wrong for a whole release and
     // nothing compared them.
-    const { getCurrentVersion } = await import('../update.js');
     expect(runChild().version, 'the suite and the real runtime read different versions')
       .toBe(getCurrentVersion());
   });
@@ -238,8 +240,6 @@ describe('a version that cannot be read is said so, in the real runtime', () => 
 
 describe('the sentinel cannot be mistaken for a version anywhere it travels', () => {
   it('is not semver, so it takes no label, no header stamp and no trailer', async () => {
-    const { issueLabelsFor, REPORT_ISSUE_LABELS } = await import('../../../report/issue-body.js');
-    const { TELEMETRY_WHITELIST } = await import('../../../report/telemetry-whitelist.js');
 
     // (a) no GitHub label. `'0.0.0'` asked the public tracker for a label called `v0.0.0`.
     expect(issueLabelsFor(VERSION_UNREADABLE), 'the platform would ask a public tracker for a '
@@ -268,9 +268,6 @@ describe('the sentinel cannot be mistaken for a version anywhere it travels', ()
   // a live one. But a clause asserting a travel path the code does not take is a clause the next
   // reader builds on, so the real path gets its own arm: the SUBSTITUTED value, refused too.
   it('F8: the value those two readers actually meet is the SUBSTITUTED one, refused as well', async () => {
-    const { issueLabelsFor, REPORT_ISSUE_LABELS, reportVersion } =
-      await import('../../../report/issue-body.js');
-    const { UNRECOGNISED } = await import('../../../report/telemetry-whitelist.js');
 
     // The two strings are different, which is the whole point of this arm.
     expect(UNRECOGNISED, 'the substituted value and the sentinel are the same string, so there '
@@ -306,7 +303,6 @@ describe('the sentinel cannot be mistaken for a version anywhere it travels', ()
 
 describe('a version this box cannot read is not ordered against real releases', () => {
   it('F7: the sentinel is not orderable, and `0.0.0` — the old fallback — is', async () => {
-    const { versionIsOrderable, compareVersions } = await import('../update.js');
 
     expect(versionIsOrderable(VERSION_UNREADABLE), 'the ordering path cannot tell an unreadable '
       + 'version from a real one').toBe(false);
@@ -323,7 +319,6 @@ describe('a version this box cannot read is not ordered against real releases', 
   });
 
   it('F7: the rollback door REFUSES rather than guessing a direction it cannot know', async () => {
-    const { authorizeRollbackTarget } = await import('../update.js');
 
     const refused = authorizeRollbackTarget('v3.1.20', VERSION_UNREADABLE);
     expect(refused.ok, 'the rollback door accepted a target it could not order against the '

@@ -193,6 +193,7 @@ import { initState } from '../../agent/v2/state.js';
 import { runCloseoutGate } from '../../agent/v2/steps/preflight/closeout-gate.js';
 import { runSchedulerTick, balanceCheckSettled } from '../../scheduler/clock.js';
 import { trackerValidatePause, trackerRetask } from '../tools.js';
+import { sweepSilentAgents } from '../liveness.js';
 
 /** One engine turn of the long job: a turn context like the engine's own, then the two records a
  *  15-minute park leaves (the checkpoint and the turn-finalize stamp), then the turn ends. The
@@ -474,7 +475,6 @@ describe('ROUND 4 (minors): a failed re-drive is not dropped; a crash-left turn 
     claimedTask('task-asked2', 'the venue shortlist', now - 5 * 60 * MIN, 'c-1');
     turnOpen(3, now - 200 * MIN);                // the crash-left row: ended_at never written
     modelCallFinished(now - 199 * MIN);
-    const { sweepSilentAgents } = await import('../liveness.js');
     sweepSilentAgents();
     expect(ownerTexts()).toBe(0);
   });

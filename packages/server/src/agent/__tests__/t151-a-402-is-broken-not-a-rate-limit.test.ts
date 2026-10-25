@@ -81,6 +81,7 @@ import { initState } from '../v2/state.js';
 import { AgentError } from '../errors.js';
 import { classifyProviderErrorText, providerClassOf } from '../provider-error.js';
 import { configRouter } from '../../gateway/routes/config.js';
+import { clearErrors } from '../errors.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -100,7 +101,13 @@ beforeAll(async () => {
     req.on('data', () => {});
     req.on('end', () => {
       // x-should-retry: the client's own back-off sleep is not what is under test
-      res.writeHead(answer.status, { 'content-type': 'application/json', 'x-should-retry': 'false' });
+      // `connection: close` (t277): every call gets a socket of its own. Without it the client reuses
+      // the previous clause's keep-alive socket, and a clause that sits idle for node's 5 s server
+      // keep-alive timeout (the clause between two calls takes that long on a loaded machine) finds the
+      // socket closed under it. That is a connection error, which the client retries after a back-off
+      // sleep - and `vi.useFakeTimers` below fakes that sleep, so the call never returns and the clause
+      // dies at its budget. The request never reaches this server (measured: no hit logged).
+      res.writeHead(answer.status, { 'content-type': 'application/json', 'x-should-retry': 'false', connection: 'close' });
       res.end(JSON.stringify(answer.body));
     });
   });
@@ -210,7 +217,6 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
     const shown = async (): Promise<string[]> =>
       ((await (await configRouter.request('/owner-notices')).json()) as { data: Array<{ words: string }> }).data.map((c) => c.words);
     expect(await shown()).toContain(words);
-    const { clearErrors } = await import('../errors.js');
     clearErrors(AGENT);
     expect(await shown()).not.toContain(words);
   });

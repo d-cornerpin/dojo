@@ -66,6 +66,10 @@ import { withLock } from '../../../db/with-lock.js';
 import { injectDelegationHintAndAttachments } from '../steps/assemble/delegation-and-attachments.js';
 import { buildOpenAIMessages, buildNativeOllamaMessages } from '../../model.js';
 import { contractForModel } from '../../model-contract.js';
+import { resultReadHandlers } from '../../tools/cat/result-read.js';
+import * as coldImport1 from '../../../memory/window-starvation-card.js';
+import * as coldImport2 from '../full-context-wait.js';
+import * as coldImport3 from '../../../memory/forced-pass-progress.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -83,7 +87,7 @@ beforeEach(async () => {
   seen.cards.length = 0; seen.texts.length = 0; seen.wakes = 0; seen.summaries = 0; WINDOW = 32_768;
   pendingWakeups.clear();
   __resetBrakesForTests();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  coldImport1.__resetStarvedWindowsForTests();
   db().prepare(`INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
     VALUES ('prov', 'P', 'anthropic', 'agent-sdk', 1, datetime('now'), datetime('now'))`).run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, is_enabled, created_at, updated_at)
@@ -98,8 +102,8 @@ beforeEach(async () => {
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', senderId: 'owner', content: `[ask ${t}] Keep counting the crates.`, turnNumber: t });
     insertMessage({ agentId: AGENT, role: 'assistant', lane: 'owner', content: `[reply ${t}] ${reply.repeat(6)}`, turnNumber: t });
   }
-  (await import('../full-context-wait.js')).__resetFullContextWaitForTests();
-  (await import('../../../memory/forced-pass-progress.js')).__resetForcedPassProgressForTests();
+  coldImport2.__resetFullContextWaitForTests();
+  coldImport3.__resetForcedPassProgressForTests();
 });
 afterEach(async () => {
   await Promise.race([withLock(`compact:${AGENT}`, async () => undefined, { ifBusy: 'wait' }), new Promise((r) => setTimeout(r, 15_000))]);
@@ -162,7 +166,6 @@ const noRepeatedRefusal = (refusals: string[]): void => {
 };
 
 async function readWhole(id: string, search: string): Promise<{ isError: boolean; content: string }> {
-  const { resultReadHandlers } = await import('../../tools/cat/result-read.js');
   return resultReadHandlers.tool_result_read({ agentId: AGENT, name: 'tool_result_read', args: { id, search }, callId: 'c', toolCall: {} as never });
 }
 

@@ -456,8 +456,8 @@ const noFreeModel = (): void => { db().prepare(`UPDATE models SET is_enabled = 0
 
 beforeEach(async () => {
   mockDb.current = setupTestDb();
-  (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  coldImport1.invalidateDailySpendCache();
+  coldImport2.__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
     loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
@@ -474,8 +474,7 @@ beforeEach(async () => {
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
-    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-    const { checkBudget } = await import('../../../costs/budget.js');
+    coldImport1.invalidateDailySpendCache();
     const priced = p.modelId === 'test-model';
     if (priced && !checkBudget(p.agentId, 0.01).allowed) return realModel.callModel!(p);
     return { content: ANSWER, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' };
@@ -509,6 +508,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll } from 'vitest';
+import { checkBudget } from '../../../costs/budget.js';
+import { contextWindowPolicy, SystemPromptTooLargeError } from '../../../memory/budget.js';
+import { reportStarvedWindow } from '../../../memory/window-starvation-card.js';
+import * as coldImport2 from '../../../memory/window-starvation-card.js';
+import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { noteModelsChanged, releaseClearedBudgetStops } from '../honest-stop-lock.js';
+import { costsRouter } from '../../../gateway/routes/costs.js';
+import * as coldImport1 from '../../../costs/tracker.js';
+import * as coldImport3 from '../honest-stop-notes.js';
 
 // ── The free models' endpoints: one that answers, one that is down (a port nothing listens on) ──
 const FREE_ANSWER = 'The north dock is open today; the free model answered.';
@@ -556,8 +564,6 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
     db().prepare('DELETE FROM router_tier_models').run();
     const tier = db().prepare('INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES (?, ?, 0)');
     for (const t of ['light', 'standard', 'heavy']) tier.run(t, 'm-tiny');
-    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
-    const { reportStarvedWindow } = await import('../../../memory/window-starvation-card.js');
     assembleContextMock.mockImplementation(async () => {
       const policy = contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 });
       reportStarvedWindow(AGENT, 9_000, policy);
@@ -567,7 +573,6 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
 
   it('the agent is parked with the true cause and the card, once: not errored, no Healer', async () => {
     await everyTierTooSmall();
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expectAnHonestStop(/cannot hold a conversation/i);
     expect(status()).toBe('paused');
@@ -596,13 +601,11 @@ describe('t149 F5 — an auto agent whose every routed model is too small is the
   // on ONE tier beside it leaves the window where it was.
   it('v3.5 N42: the tiny model is taken off the router for a model that holds it: the agent is released and answers; the card ends', async () => {
     await everyTierTooSmall();
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     // Every tier is pointed at a roomy model — what the router route does, then asks the lock to look again.
     db().prepare(`UPDATE router_tier_models SET model_id = 'test-model'`).run();
     handleMessageSpy.mockClear();
-    const { noteModelsChanged } = await import('../honest-stop-lock.js');
     await noteModelsChanged();
     expect(status()).toBe('idle');
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
@@ -700,7 +703,7 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
    *  turns every model away, a free one too, and the stop is the plain one): the paid estimates cross it. */
   const spendIs = async (usd: number): Promise<void> => {
     db().prepare(`UPDATE cost_records SET cost_usd = ? WHERE id = 'spent-today'`).run(usd);
-    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
+    coldImport1.invalidateDailySpendCache();
   };
   const autoWithFreeInLight = async (...free: string[]): Promise<void> => {
     if (!inTheBand) await spendIs(0.999);
@@ -711,12 +714,11 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
   const personMessages = async (id: string): Promise<void> => {
     insertMessage({ id, agentId: AGENT, role: 'user', content: 'Is the south dock open?', turnNumber: 9, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-desk',
       inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) });
-    (await import('../honest-stop-notes.js')).noteWaitingOfParked(AGENT);   // what runtime.handleMessage does for a paused agent
+    coldImport3.noteWaitingOfParked(AGENT);   // what runtime.handleMessage does for a paused agent
     await runV2Turn(AGENT);
   };
   const noteFor = (message: string): number => (db().prepare(`SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND id = ?`).get(AGENT, `park-note:${message}`) as { n: number }).n;
   const ticks = async (n: number): Promise<void> => {
-    const { releaseClearedBudgetStops } = await import('../honest-stop-lock.js');
     for (let i = 0; i < n; i++) await releaseClearedBudgetStops();
   };
 
@@ -772,7 +774,6 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     await ticks(3);
     expect(status()).toBe('paused');
     handleMessageSpy.mockClear();
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(status()).toBe('idle');
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
@@ -785,7 +786,6 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(status()).toBe('paused');
     addFreeModel('m-free-b', 'Free B', answeringUrl);
     handleMessageSpy.mockClear();
-    const { noteModelsChanged } = await import('../honest-stop-lock.js');
     await noteModelsChanged();
     expect(status()).toBe('idle');
     expect(handleMessageSpy.mock.calls.map((c) => c[0])).toContain(AGENT);
@@ -807,7 +807,6 @@ describe('t149 round 3 — a park for "the free fallback did not answer"', () =>
     expect(handleMessageSpy, 'nothing woke it').not.toHaveBeenCalled();
     expect(notices().length, 'nothing was told again').toBe(told);
     // The limit really moving still lifts it.
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(status()).toBe('idle');
   });

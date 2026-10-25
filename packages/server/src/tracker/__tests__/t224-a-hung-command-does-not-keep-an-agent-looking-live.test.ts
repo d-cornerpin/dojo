@@ -73,6 +73,8 @@ import { runWithToolCallId } from '../../agent/turn-state.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from '../../agent/effects/capability.js';
 import { countAbortable, activeAbortControllers } from '../../agent/shared-state.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import { spawnAuthorized } from '../../agent/effects/proc.js';
+import { sweepSilentAgents } from '../liveness.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -109,7 +111,6 @@ afterEach(() => {
 
 /** A real child that never exits, started through the toolbox's one spawn door inside a real call. */
 async function startHungCommand(): Promise<void> {
-  const { spawnAuthorized } = await import('../../agent/effects/proc.js');
   const grants: ResourceGrant[] = [{ kind: 'proc', program: '/bin/zsh', display: '/bin/zsh' } as ResourceGrant];
   const child = await runWithToolCallId(AGENT, 'call-1', async () => {
     attachCallCapability(mintCallCapability({ agentId: AGENT, tool: 'shell', callId: 'call-1', grants }));
@@ -136,7 +137,6 @@ describe('t224: a sub-agent wedged on a command that never exits is SILENT, and 
       .run(AGENT, JSON.stringify([{ type: 'tool_use', id: 'tu-1', name: 'shell', input: {} }]), now - 6 * MIN);
     await startHungCommand();
 
-    const { sweepSilentAgents } = await import('../liveness.js');
     sweepSilentAgents();
     sweepSilentAgents();   // the next sweep of the same incident: still one
     // v3.5 E19b: the owner text is sent asynchronously; let it settle (the stand-in runner

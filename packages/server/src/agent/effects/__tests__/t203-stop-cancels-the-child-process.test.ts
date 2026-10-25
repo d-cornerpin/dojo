@@ -15,6 +15,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runWithToolCallId } from '../../turn-state.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from '../capability.js';
+import { spawnAuthorized } from '../proc.js';
+import { stopAgent } from '../../runtime.js';
+import { countAbortable } from '../../shared-state.js';
+import * as s from '../../shared-state.js';
+import { runWithIdleBound } from '../../tools/process-idle-bound.js';
 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
 vi.mock('../../../db/connection.js', () => ({
@@ -50,7 +55,6 @@ async function until(cond: () => boolean, ms: number): Promise<boolean> {
 afterEach(async () => {
   for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
   started.length = 0;
-  const s = await import('../../shared-state.js');
   s.stoppedAgents.clear();
   s.stopFencedRuns.clear();
   s.activeRuns.clear();
@@ -59,7 +63,6 @@ afterEach(async () => {
 
 describe('t203: Stop kills a tool\'s process tree', () => {
   it('THE RED: a shell script and the job it backgrounded both die when the owner presses Stop', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
     // The script prints its own pid and its background child's pid, then waits on the child.
     const child = await inCall('/bin/zsh', async () =>
       spawnAuthorized('/bin/zsh', ['-c', 'sleep 37 & echo "$$ $!"; wait']));
@@ -75,7 +78,6 @@ describe('t203: Stop kills a tool\'s process tree', () => {
     expect(alive(shell)).toBe(true);
     expect(alive(grandchild)).toBe(true);
 
-    const { stopAgent } = await import('../../runtime.js');
     stopAgent(AGENT);
 
     expect(await until(() => !alive(shell), 2000), 'the shell survived the stop').toBe(true);
@@ -83,15 +85,12 @@ describe('t203: Stop kills a tool\'s process tree', () => {
   });
 
   it('the process door releases its stop registration when the process ends on its own', async () => {
-    const { spawnAuthorized } = await import('../proc.js');
-    const { countAbortable } = await import('../../shared-state.js');
     const child = await inCall('/bin/zsh', async () => spawnAuthorized('/bin/zsh', ['-c', 'exit 0']));
     await new Promise<void>((r) => child.on('close', () => r()));
     expect(countAbortable(AGENT)).toBe(0);
   });
 
   it('the idle clock kills the whole tree too, not only the direct child', async () => {
-    const { runWithIdleBound } = await import('../../tools/process-idle-bound.js');
     const marker = `/tmp/t203-idle-${process.pid}-${Date.now()}`;
     // The background job writes its pid to a file, then everything goes silent.
     const run = inCall('/bin/zsh', () => runWithIdleBound('/bin/zsh',

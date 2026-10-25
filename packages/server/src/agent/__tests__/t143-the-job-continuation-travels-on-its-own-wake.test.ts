@@ -15,6 +15,20 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { runMigrations } from '../../db/migrations.js';
+import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import * as coldImport1 from '../runtime.js';
+import * as coldImport2 from '../../work/task-freshness.js';
+import * as coldImport3 from '../../work/engine-checkpoint-note.js';
+import * as coldImport4 from '../../work/job-continuation.js';
+import * as coldImport5 from '../turn-context.js';
+import * as coldImport6 from '../v2/state.js';
+import * as coldImport7 from '../v2/steps/preflight/closeout-gate.js';
+import * as coldImport8 from '../agent-status.js';
+import * as coldImport9 from '../v2/honest-stop.js';
+import * as coldImport10 from '../shared-state.js';
+import * as coldImport11 from '../rate-limit-retry.js';
+import * as coldImport12 from '../../gateway/routes/agents.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 vi.mock('../../db/connection.js', () => ({
@@ -41,19 +55,16 @@ let m: {
 };
 
 beforeEach(async () => {
-  vi.resetModules();
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   mockDb.current = db;
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
-  const { seedTrackerTask } = await import('../../work/__tests__/work-fixture.js');
   m = {
-    runtime: await import('../runtime.js'), fresh: await import('../../work/task-freshness.js'),
-    note: await import('../../work/engine-checkpoint-note.js'), cont: await import('../../work/job-continuation.js'), ctx: await import('../turn-context.js'),
-    state: await import('../v2/state.js'), gate: await import('../v2/steps/preflight/closeout-gate.js'),
-    status: await import('../agent-status.js'), park: await import('../v2/honest-stop.js'), shared: await import('../shared-state.js'),
-    rl: await import('../rate-limit-retry.js'), routes: await import('../../gateway/routes/agents.js'),
+    runtime: coldImport1, fresh: coldImport2,
+    note: coldImport3, cont: coldImport4, ctx: coldImport5,
+    state: coldImport6, gate: coldImport7,
+    status: coldImport8, park: coldImport9, shared: coldImport10,
+    rl: coldImport11, routes: coldImport12,
   };
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-13T12:00:00Z'));

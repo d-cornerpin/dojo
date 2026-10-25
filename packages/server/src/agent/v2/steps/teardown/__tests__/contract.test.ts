@@ -98,6 +98,7 @@ import {
 import { AgentError } from '../../../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../../../stream-patience.js';
 import { doomedPrefillCompactionSpent } from '../../../../shared-state.js';
+import * as compaction from '../../../../../memory/compaction.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOOP_TS = path.resolve(HERE, '..', '..', '..', 'loop.ts');
@@ -466,7 +467,6 @@ describe('T82d — the teardown boolean genuinely reaches recoverFromError, not 
   // again") would have been a lie here. (t211: the agent's model being the `'auto'` sentinel used to be
   // this case's trigger; the pass no longer bails on the auto-router, so the pass throwing is.)
   it('I2: a FIRST occurrence that never got to trim (the compaction pass threw) tells the truth — no false "trimmed it once" claim', async () => {
-    const compaction = await import('../../../../../memory/compaction.js');
     vi.spyOn(compaction, 'checkAndCompact').mockRejectedValueOnce(new Error('the summary writer could not be reached'));
     // Deliberately NOT pre-spending doomedPrefillCompactionSpent — this is the FIRST occurrence.
 

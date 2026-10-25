@@ -71,6 +71,7 @@ vi.mock('../../services/imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../migrations.js';
+import { recordCost } from '../../costs/tracker.js';
 
 // Each clause boots the real module graph (the iMessage door pulls in the engine) and runs the
 // full migration chain; that is an import cost, not a timing assertion, and on a box shared by
@@ -170,7 +171,6 @@ describe('the upgrade door: a box arrives with muted latches set', () => {
     runMigrations(); // the update's boot: 190 is the one pending file
     expect(d.prepare('SELECT COUNT(*) AS n FROM _migrations WHERE name = ?').get(FILE)).toEqual({ n: 1 });
 
-    const { recordCost } = await import('../../costs/tracker.js');
     const call = (): void => recordCost({ agentId: 'x', modelId: 'mdl', providerId: 'prov', inputTokens: 10_000, outputTokens: 0 });
     call();
     const sent = (): string[] => transport.filter((t) => !t.includes('--help') && !t.includes('which'));

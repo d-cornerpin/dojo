@@ -99,6 +99,11 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { renameAgent } from '../agent-rename.js';
 import { readSoulFile, soulFileForAgent } from '../assembler.js';
+import { homeDir } from '../../home.js';
+import { configRouter } from '../../gateway/routes/config.js';
+import { agentsRouter } from '../../gateway/routes/agents.js';
+import { agentsHandlers } from '../../agent/tools/cat/agents.js';
+import * as platform from '../../config/platform.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
@@ -140,7 +145,6 @@ beforeEach(async () => {
   // The directory name is written TWICE — here and in the hoisted factory, which cannot see
   // this module's bindings. This refuses a drift between the two copies rather than silently
   // exercising a directory the platform under test is not using.
-  const { homeDir } = await import('../../home.js');
   if (homeDir() !== HOME) {
     throw new Error(`fixture drift: the home.js mock resolves ${homeDir()}, this test writes ${HOME}`);
   }
@@ -161,7 +165,6 @@ beforeEach(async () => {
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
   setConfig('owner_name', 'Yorvak');
-  const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   seedAgent(PRIMARY, 'Zargo');
   seedAgent(PM, 'Quilba');
@@ -199,7 +202,6 @@ afterEach(() => {
 
 describe('a rename reaches the soul, through every door', () => {
   it('THE DECISIVE SHAPE — the CONFIG door (PM): pm_agent_name changes and the stored soul follows', async () => {
-    const { configRouter } = await import('../../gateway/routes/config.js');
     const res = await configRouter.request('/settings/pm_agent_name', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -217,7 +219,6 @@ describe('a rename reaches the soul, through every door', () => {
   });
 
   it('the CONFIG door (Trainer): the other measured casualty follows too', async () => {
-    const { configRouter } = await import('../../gateway/routes/config.js');
     await configRouter.request('/settings/trainer_agent_name', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -230,7 +231,6 @@ describe('a rename reaches the soul, through every door', () => {
   });
 
   it('the SETTINGS door: PUT /api/agents/:id renames and the soul follows', async () => {
-    const { agentsRouter } = await import('../../gateway/routes/agents.js');
     const res = await agentsRouter.request(`/${PM}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -244,7 +244,6 @@ describe('a rename reaches the soul, through every door', () => {
   });
 
   it('the TOOL door: update_agent renames and the soul follows', async () => {
-    const { agentsHandlers } = await import('../../agent/tools/cat/agents.js');
     const out = await agentsHandlers['update_agent']!({
       agentId: PRIMARY, args: { agent_id: SUB, name: 'Zarnak' },
     } as never);
@@ -372,7 +371,6 @@ describe('the re-fill is exact', () => {
 
 describe('the re-fill reaches the souls T59 made file-backed', () => {
   it('THE CONFIG DOOR (Healer): healer_agent_name changes and the stored soul follows', async () => {
-    const { configRouter } = await import('../../gateway/routes/config.js');
     const res = await configRouter.request('/settings/healer_agent_name', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -387,7 +385,6 @@ describe('the re-fill reaches the souls T59 made file-backed', () => {
   });
 
   it('THE CONFIG DOOR (Imaginer): imaginer_agent_name changes and the stored soul follows', async () => {
-    const { configRouter } = await import('../../gateway/routes/config.js');
     await configRouter.request('/settings/imaginer_agent_name', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },

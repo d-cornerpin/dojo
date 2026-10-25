@@ -33,6 +33,8 @@ import { getContextWindow } from '../../agent/model.js';
 import { routerWindowFloor, routerWindowTokens, agentTurnWindow, routerWindowReport } from '../router-window.js';
 import { Hono } from 'hono';
 import { routerRouter } from '../../gateway/routes/router.js';
+import { contextWindowPolicy, estimateTokens } from '../../memory/budget.js';
+import { buildAssemblyContext, assembleSystemFromRegistry } from '../../prompt/registry/assembler.js';
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -163,13 +165,10 @@ describe('the Router tab\'s report', () => {
     agent('a-big', 'Yard Planner', 'auto');
     tools.byAgent = { 'a-big': 9_000 };
     const r = await routerWindowReport();
-    const { contextWindowPolicy } = await import('../../memory/budget.js');
     // At the low end the agent fits; one thousand tokens below, it does not.
     const fitsAt = (w: number, sys: number): boolean => contextWindowPolicy(w, { toolPayloadTokens: 9_000, maxOutputTokens: 4096 }).assemblyBudgetTokens >= sys;
     const sys = r!.minTokens;   // stands in for the bound check below
     expect(sys).toBeGreaterThan(9_000 + 4096);
-    const { estimateTokens } = await import('../../memory/budget.js');
-    const { buildAssemblyContext, assembleSystemFromRegistry } = await import('../../prompt/registry/assembler.js');
     const prompt = estimateTokens(assembleSystemFromRegistry(buildAssemblyContext('a-big', '__auto__')).text);
     expect(fitsAt(r!.minTokens, prompt), 'it runs at the low end').toBe(true);
     expect(fitsAt(r!.minTokens - 1_000, prompt), 'and not below it').toBe(false);

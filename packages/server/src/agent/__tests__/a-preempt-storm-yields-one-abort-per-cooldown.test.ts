@@ -14,6 +14,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { activeAbortControllers, preemptedAgents, registerAbortable } from '../shared-state.js';
+import { preemptAgentForUrgentMessage } from '../runtime.js';
+import { clearEngineSharedState } from './clear-shared-state.js';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -30,7 +33,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 beforeEach(() => {
-  vi.resetModules();
+  clearEngineSharedState();
   const db = new Database(':memory:');
   mockDb.current = db;
 });
@@ -45,8 +48,6 @@ const AGENT = 'voice-fixture-agent';
 
 describe('a preempt storm yields at most one abort per cool-down window', () => {
   it('RED: five preempts inside one cool-down window abort only ONCE', async () => {
-    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     let aborts = 0;
     const rearm = (): void => {
@@ -72,8 +73,6 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
   });
 
   it('the FIRST press in a window always works, even with nothing yet in the cool-down map', async () => {
-    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const controller = new AbortController();
     registerAbortable(AGENT, controller);
@@ -87,8 +86,6 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
 
   it('a preempt AFTER the cool-down window elapses aborts again — this is a window, not a permanent latch', async () => {
     vi.useFakeTimers();
-    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const first = new AbortController();
     registerAbortable(AGENT, first);
@@ -105,8 +102,6 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
   });
 
   it('CONTROL: a coalesced preempt does not touch a controller belonging to a DIFFERENT agent', async () => {
-    const { activeAbortControllers, preemptedAgents, registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
 
     const mine = new AbortController();
     const someoneElse = new AbortController();
@@ -128,8 +123,6 @@ describe('a preempt storm yields at most one abort per cool-down window', () => 
   });
 
   it('CONTROL: with no in-flight call to abort, the function still returns false (unchanged today\'s behaviour)', async () => {
-    const { activeAbortControllers, registerAbortable } = await import('../shared-state.js');
-    const { preemptAgentForUrgentMessage } = await import('../runtime.js');
     activeAbortControllers.delete(AGENT);
     expect(preemptAgentForUrgentMessage(AGENT)).toBe(false);
   });

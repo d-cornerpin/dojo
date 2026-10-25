@@ -39,6 +39,8 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { transition, type WorkKind } from '../store.js';
 import { validatedExpr } from '../tracker-view.js';
+import { upholdClaim } from '../tracker-store.js';
+import { closeRefusalTextForTest } from '../../tracker/tools.js';
 
 const AGENT = 'zargo';
 const T = 1_700_000_000_000;
@@ -343,7 +345,6 @@ describe("the trigger's key and the PM's verdict are different questions", () =>
       to: 'done', by: 'engine', actorId: AGENT, reason: 'strike-0 receipt close',
       evidenceRef: 'd-1', resultDeliveryId: 'd-1',
     });
-    const { upholdClaim } = await import('../tracker-store.js');
     upholdClaim('w1', 'done', 'pm', 'pm-agent', 'PM validated the close against the goal');
     expect(completeValidated('w1')).toBe(1);
   });
@@ -365,7 +366,6 @@ describe("the trigger's key and the PM's verdict are different questions", () =>
   // the harness as a tool BREAKING — and telling a weak model "Error" about the thing that just
   // worked is the retry spin the tracker's forgiveness rules exist to prevent.
   it('THE KEY-1 FILING IS NOT ERROR-SHAPED — a recorded request must not read as a broken tool', async () => {
-    const { closeRefusalTextForTest } = await import('../../tracker/tools.js');
     const filed = closeRefusalTextForTest('abcdef12-0000', {
       kind: 'refused', workId: 'abcdef12-0000', reason: 'requires-validation',
       detail: 'close request recorded (event 1)',

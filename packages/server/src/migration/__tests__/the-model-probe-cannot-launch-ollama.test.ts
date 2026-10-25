@@ -31,6 +31,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExportManifest } from '../manifest.js';
+import { runMigrations } from '../../db/migrations.js';
+import * as coldImport1 from '../manifest.js';
+import * as coldImport2 from '../checks.js';
 
 const spawned = vi.hoisted(() => ({ commands: [] as string[] }));
 
@@ -99,10 +102,9 @@ let generateManifest: typeof import('../manifest.js').generateManifest;
 let runPostMigrationChecks: typeof import('../checks.js').runPostMigrationChecks;
 
 beforeAll(async () => {
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
-  ({ generateManifest } = await import('../manifest.js'));
-  ({ runPostMigrationChecks } = await import('../checks.js'));
+  ({ generateManifest } = coldImport1);
+  ({ runPostMigrationChecks } = coldImport2);
 });
 
 beforeEach(() => { spawned.commands.length = 0; });

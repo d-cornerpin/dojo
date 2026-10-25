@@ -77,6 +77,8 @@ import { initState, type AgentTurnState } from '../../../state.js';
 import { runPersistAssistant } from '../persist-assistant.js';
 import { stoppedAgents, stopFencedRuns, activeRuns } from '../../../../shared-state.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { isStopFenced } from '../../../../shared-state.js';
+import { latchEngineCut } from '../../../engine-exit.js';
 
 /** The answer the owner refused — the blast's leaked row was this shape: the turn's final text. */
 const THE_REFUSED_ANSWER = 'Here is the whole comparison you asked for, with prices.';
@@ -313,10 +315,8 @@ describe('§3 the stop is still written down as a stop', () => {
     // Not a second notion of "stopped": the suppression above and the `stop` exit reason read
     // the SAME predicate. A seam with its own idea of a live stop is how the blast's split
     // outcome happened in the first place — record says stop, screen says answered.
-    const { isStopFenced } = await import('../../../../shared-state.js');
     stoppedAgents.add(AGENT);
     expect(isStopFenced(AGENT)).toBe(true);
-    const { latchEngineCut } = await import('../../../engine-exit.js');
     expect(typeof latchEngineCut).toBe('function');
   });
 });

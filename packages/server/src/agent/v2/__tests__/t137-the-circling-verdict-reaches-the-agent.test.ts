@@ -50,6 +50,7 @@ import { initState, advance, type AgentTurnState } from '../state.js';
 import { PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../steps/pre-call-gates/index.js';
 import { runTurnTimeBudget } from '../steps/pre-call-gates/turn-budget.js';
 import type { TurnCounterparty } from '../../turn-context.js';
+import { checkAndCompact } from '../../../memory/compaction.js';
 
 const AGENT = 'circling-agent';
 const MODEL = 'circling-model';
@@ -193,7 +194,6 @@ describe('the 15-minute checkpoint hands the circling verdict to the AGENT', () 
   });
 
   it('a stop during the checkpoint delivers nothing and leaves the verdict pending for the sweep', async () => {
-    const { checkAndCompact } = await import('../../../memory/compaction.js');
     vi.mocked(checkAndCompact).mockImplementationOnce(async () => {
       stoppedAgents.add(AGENT);
       return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };

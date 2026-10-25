@@ -67,6 +67,7 @@ import {
 import {
   noteHandedCredentialValues, forgetHandedCredentialValues,
 } from '../../credentials/secret-values.js';
+import '../../router/selector.js';
 
 const AGENT = 'zargo';
 
@@ -119,7 +120,6 @@ beforeAll(async () => {
   // inside that import when its own test ends — it then lands on the NEXT clause's fresh
   // database and its mock, which is a harness artefact and not a property of the code.
   // (Found the honest way: it made a clause fail, and the trace said whose job it was.)
-  await import('../../router/selector.js');
 });
 
 beforeEach(() => {

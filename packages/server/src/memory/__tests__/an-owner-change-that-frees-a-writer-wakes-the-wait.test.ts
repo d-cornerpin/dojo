@@ -81,6 +81,9 @@ import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains, pendingWakeups } from '../../agent/shared-state.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
+import { configRouter } from '../../gateway/routes/config.js';
+import { agentsRouter } from '../../gateway/routes/agents.js';
+import { routerRouter } from '../../gateway/routes/router.js';
 
 const GIB = 1024 ** 3;
 const AGENT = 'agent-waits';
@@ -167,7 +170,6 @@ async function afterTheWake(): Promise<void> { await settle(1_300); await Promis
 describe('an owner change that can make a writer runnable wakes each waiting agent once', () => {
   it('the Summarization pick changed in Settings: each waiting agent wakes once and the pick writes; a second save wakes none', async () => {
     await bothWaiting();
-    const { configRouter } = await import('../../gateway/routes/config.js');
     expect((await configRouter.request('/settings/compaction_model_id', json('PUT', { value: ALT }))).status).toBe(200);
     await afterTheWake();
     expect(wakes.by).toEqual({ [AGENT]: 1, [OTHER]: 1 });
@@ -181,7 +183,6 @@ describe('an owner change that can make a writer runnable wakes each waiting age
 
   it('a change that frees no writer (the router window: a models change, but no writer of theirs can run) wakes nobody', async () => {
     await bothWaiting();
-    const { configRouter } = await import('../../gateway/routes/config.js');
     expect((await configRouter.request('/settings/router.context_window', json('PUT', { value: '64000' }))).status).toBe(200);
     await afterTheWake();
     expect(wakes.by).toEqual({});
@@ -189,7 +190,6 @@ describe('an owner change that can make a writer runnable wakes each waiting age
 
   it('an agent\'s own model changed: that agent wakes once, and its new model writes; the other keeps waiting', async () => {
     await bothWaiting();
-    const { agentsRouter } = await import('../../gateway/routes/agents.js');
     expect((await agentsRouter.request(`/${AGENT}/model`, json('PATCH', { modelId: ALT }))).status).toBe(200);
     await afterTheWake();
     expect(wakes.by).toEqual({ [AGENT]: 1 });
@@ -201,7 +201,6 @@ describe('an owner change that can make a writer runnable wakes each waiting age
     db().prepare("UPDATE agents SET model_id = 'auto' WHERE id IN (?, ?)").run(AGENT, OTHER);
     db().prepare("INSERT INTO router_tier_models (tier_id, model_id, priority) VALUES ('standard', ?, 1)").run(OWN);
     await bothWaiting();
-    const { routerRouter } = await import('../../gateway/routes/router.js');
     expect((await routerRouter.request('/tiers/standard/models', json('PUT', { models: [{ modelId: ALT, priority: 1 }] }))).status).toBe(200);
     await afterTheWake();
     expect(wakes.by).toEqual({ [AGENT]: 1, [OTHER]: 1 });
@@ -212,7 +211,6 @@ describe('an owner change that can make a writer runnable wakes each waiting age
     db().prepare('UPDATE models SET is_enabled = 0 WHERE id = ?').run(ALT);
     db().prepare("INSERT INTO config (key, value) VALUES ('compaction_model_id', ?)").run(ALT);
     await bothWaiting();
-    const { configRouter } = await import('../../gateway/routes/config.js');
     expect((await configRouter.request('/models/enable', json('POST', { modelIds: [ALT] }))).status).toBe(200);
     await afterTheWake();
     expect(wakes.by).toEqual({ [AGENT]: 1, [OTHER]: 1 });
@@ -221,7 +219,6 @@ describe('an owner change that can make a writer runnable wakes each waiting age
   it('a provider saved (the owner edits the down model\'s provider): its waiting agents wake once for a re-test', async () => {
     await bothWaiting();
     writers.unreachable.clear();
-    const { configRouter } = await import('../../gateway/routes/config.js');
     const res = await configRouter.request('/providers', json('POST', { id: 'p-own', name: 'Own', type: 'openai-compatible', baseUrl: 'http://localhost:11444/v1', authType: 'api_key' }));
     expect(res.status).toBe(200);
     await afterTheWake();

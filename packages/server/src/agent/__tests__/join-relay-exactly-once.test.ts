@@ -48,7 +48,7 @@ vi.mock('../../db/connection.js', async () => {
   };
 });
 
-const broadcast = vi.fn();
+const broadcast = vi.hoisted(() => vi.fn());
 vi.mock('../../gateway/ws.js', () => ({ broadcast }));
 vi.mock('../../memory/embeddings.js', () => ({
   generateEmbedding: vi.fn(async () => new Float32Array(8)),
@@ -67,6 +67,7 @@ import {
 } from '../../work/store.js';
 import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND } from '../../work/join-drive.js';
+import { resolveCompilePendingJoins } from '../a2a-transport.js';
 
 const AGENT = 'zargo';
 const PEER = 'dupworker';
@@ -96,7 +97,6 @@ const ownerFacing = (): Array<{ content: string; role: string }> =>
   ).all(AGENT) as Array<{ content: string; role: string }>;
 
 const drive = async (): Promise<void> => {
-  const { resolveCompilePendingJoins } = await import('../a2a-transport.js');
   await resolveCompilePendingJoins(AGENT);
 };
 

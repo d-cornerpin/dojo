@@ -9,6 +9,14 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { runMigrations } from '../../db/migrations.js';
+import { insertMessage } from '../../memory/message-store.js';
+import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../work/store.js';
+import { deliverA2AMessage } from '../a2a-transport.js';
+import { getRecentMessages } from '../../memory/store.js';
+import { labelRows } from '../../memory/row-label.js';
+import * as shared from '../shared-state.js';
+import '../runtime.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -45,7 +53,6 @@ const ANSWER = 'No record of that identifier; I cannot give three facts about it
 const db = (): Database.Database => mockDb.current!;
 
 beforeEach(async () => {
-  const shared = await import('../shared-state.js');
   shared.activeRuns.clear();
   shared.pendingWakeups.clear();
   const d = new Database(':memory:');
@@ -53,7 +60,6 @@ beforeEach(async () => {
   mockDb.current = d;
 });
 afterEach(async () => {
-  const shared = await import('../shared-state.js');
   shared.activeRuns.clear();
   lastRunTouch = Date.now();
   while (Date.now() - lastRunTouch < 900 || shared.activeRuns.size > 0) await new Promise((r) => setTimeout(r, 100));
@@ -62,8 +68,6 @@ afterEach(async () => {
 });
 
 async function boot(): Promise<void> {
-  await import('../runtime.js');
-  const { runMigrations } = await import('../../db/migrations.js');
   runMigrations();
   db().prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Desk', 'idle', '1970-01-01'), (?, 'Helper', 'idle', '1970-01-01')`,
@@ -75,13 +79,11 @@ async function boot(): Promise<void> {
 }
 
 async function delegate(): Promise<void> {
-  const { insertMessage } = await import('../../memory/message-store.js');
   insertMessage({
     id: ASK_MSG, agentId: AGENT, role: 'user', content: 'Ask the helper for three facts and tell me when it is done',
     channel: 'dashboard', senderId: 'owner', conversationId: CONV,
     inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
   });
-  const { claimAsk, stampClaimingTurn, openDelegationJoin } = await import('../../work/store.js');
   claimAsk(ASK, AGENT);
   stampClaimingTurn(ASK, 1);
   openDelegationJoin({
@@ -91,7 +93,6 @@ async function delegate(): Promise<void> {
 }
 
 async function helperReplies(intent: string): Promise<void> {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   const r = await deliverA2AMessage({
     intent: intent as never, threadId: THREAD, requiresResponse: false,
     payload: ANSWER, toAgent: AGENT, fromAgent: HELPER,
@@ -125,7 +126,6 @@ describe('t196 (A1.2) - the wake footer says the answer was already sent', () =>
   it('a relay held back until the delegating turn ends: the footer does not claim it is sent, and does not invite a second send', async () => {
     await boot();
     await delegate();
-    const shared = await import('../shared-state.js');
     shared.activeRuns.add(AGENT);
     try {
       await helperReplies('COMPLETE');
@@ -145,8 +145,6 @@ describe('t196 (A1.1) - the relay row says it was sent', () => {
     await boot();
     await delegate();
     await helperReplies('COMPLETE');
-    const { getRecentMessages } = await import('../../memory/store.js');
-    const { labelRows } = await import('../../memory/row-label.js');
     const rows = getRecentMessages(AGENT, 100);
     const relay = rows.find((r) => r.role === 'assistant' && r.content.startsWith('Heard back from'))!;
     expect(relay).toBeDefined();

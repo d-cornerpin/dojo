@@ -63,6 +63,7 @@ import { stoppedAgents, stopFencedRuns, activeAbortControllers, backgroundDrains
 import { clearClientCache } from '../../agent/model.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
+import { stopAgent } from '../../agent/runtime.js';
 
 // t268 round 5: whether the small writer fits the box's memory is not this file's question.
 vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
@@ -145,7 +146,6 @@ const untilInFlight = async (): Promise<void> => {
 
 describe('t149 F3 — Stop during a background summary', () => {
   it('cuts the call, marks no writer failed, walks no further and files no defect; the replacement resumes on its own later path', async () => {
-    const { stopAgent } = await import('../../agent/runtime.js');
     const run = replaceUncondensedPlaceholders(AGENT);
     await untilInFlight();
 
@@ -196,7 +196,6 @@ describe('t149 round 4 — a pass the owner\'s Stop ended is not an outcome', ()
     }
   }
   const stopDuring = async (pass: () => Promise<unknown>): Promise<void> => {
-    const { stopAgent } = await import('../../agent/runtime.js');
     const run = pass();
     await untilInFlight();
     stopAgent(AGENT);

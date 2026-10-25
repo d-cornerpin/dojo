@@ -391,6 +391,12 @@ import {
 import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { checkBudget } from '../../../costs/budget.js';
+import { healerOwnerCards } from '../../../healer/owner-notices.js';
+import { costsRouter } from '../../../gateway/routes/costs.js';
+import { contextWindowPolicy, SystemPromptTooLargeError } from '../../../memory/budget.js';
+import * as coldImport1 from '../../../costs/tracker.js';
+import * as coldImport2 from '../../../memory/window-starvation-card.js';
 
 
 let migratedImage: Buffer | null = null;
@@ -450,8 +456,8 @@ const noFreeModel = (): void => { db().prepare(`UPDATE models SET is_enabled = 0
 
 beforeEach(async () => {
   mockDb.current = setupTestDb();
-  (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-  (await import('../../../memory/window-starvation-card.js')).__resetStarvedWindowsForTests();
+  coldImport1.invalidateDailySpendCache();
+  coldImport2.__resetStarvedWindowsForTests();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
     loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
@@ -468,8 +474,7 @@ beforeEach(async () => {
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
-    (await import('../../../costs/tracker.js')).invalidateDailySpendCache();
-    const { checkBudget } = await import('../../../costs/budget.js');
+    coldImport1.invalidateDailySpendCache();
     const priced = p.modelId === 'test-model';
     if (priced && !checkBudget(p.agentId, 0.01).allowed) return realModel.callModel!(p);
     return { content: ANSWER, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' };
@@ -523,7 +528,6 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
   it('a warning only, then the limit stops an agent with no free model: ONE stop text and ONE card, plain words, no agent named', async () => {
     noFreeModel();
     gradual();
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     // The budget's own crossing alert is the first text (a warning: 99%); the stop is the second.
@@ -546,7 +550,6 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     noFreeModel();
     gradual();
     addAgent('second', 'South Desk');
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     const before = texts().length;
     expect(before).toBe(2);
@@ -560,7 +563,6 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     noFreeModel();
     gradual();
     addAgent('second', 'South Desk');
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     const first = texts().length;
     // A day and a bit later (the told-at ages with everything else); the limit still stands and a new agent stops.
@@ -574,10 +576,8 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
   it('the card ends with the last release; changing the limit is a new window, so a later stop tells again', async () => {
     noFreeModel();
     gradual();
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(healerOwnerCards()).toHaveLength(1);
-    const { costsRouter } = await import('../../../gateway/routes/costs.js');
     await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
     expect(status()).toBe('idle');
     expect(healerOwnerCards(), 'the card ends when the stop is lifted').toEqual([]);
@@ -595,7 +595,6 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     db().prepare(`INSERT INTO budgets (id, scope, limit_usd, period) VALUES ('agent_primary', 'agent', 1, 'daily')`).run();
     db().prepare(`INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens, cost_usd)
                   VALUES ('spent-agent', ?, 'test-model', 'test-provider', 1, 1, 0.995)`).run(AGENT);
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     const stops = texts().filter((t) => /waiting/i.test(t));
@@ -610,7 +609,6 @@ describe('t167 amendment: "the limit is reached" is ONE fact, told once per wind
     noFreeModel();
     budget(1.00, 2.00);
     addAgent('second', 'South Desk');
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(status()).toBe('paused');
     await runV2Turn('second');
@@ -636,11 +634,9 @@ describe('t167 amendment: "the limit is reached" is ONE fact, told once per wind
 describe('t167 (iv): the no-fit stop is byte-unchanged', () => {
   it('one text, one card, the very same words, the same lock record and chat line, and the budget door adds nothing to it', async () => {
     db().prepare(`UPDATE agents SET model_id = 'm-tiny' WHERE id = ?`).run(AGENT);
-    const { contextWindowPolicy, SystemPromptTooLargeError } = await import('../../../memory/budget.js');
     assembleContextMock.mockImplementation(async () => {
       throw new SystemPromptTooLargeError(9_000, contextWindowPolicy(8_192, { toolPayloadTokens: 2_000, maxOutputTokens: 4_096 }));
     });
-    const { healerOwnerCards } = await import('../../../healer/owner-notices.js');
     await runV2Turn(AGENT);
     expect(sendAlertSpy.mock.calls).toEqual([[NO_FIT_WORDS, 'notice', { cardKey: `nofit:${AGENT}` }]]);   // v3.5 N42 r2: the card is keyed by its condition
     expect(healerOwnerCards().map((c) => ({ words: c.words, severity: c.severity }))).toEqual([{ words: NO_FIT_WORDS, severity: 'notice' }]);

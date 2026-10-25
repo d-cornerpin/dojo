@@ -53,6 +53,10 @@ import { appendWorkEvent } from '../../work/store.js';
 import { trackerListActive, trackerActivity, ACTIVITY_POINTER } from '../tools.js';
 import { workOperation } from '../../tools/work-verbs.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
+import { isWorkReadOp } from '../../tools/work-verbs.js';
+import { classifyConcurrency } from '../../agent/v2/classifiers/concurrency.js';
+import { unknownArgsAgainstSchema } from '../../agent/tools/index.js';
+import { toolDefinitionsByName } from '../../agent/tools/definitions.js';
 
 const AGENT = 'harnessbot';
 const OTHER = 'tyndo';
@@ -309,8 +313,6 @@ describe('T60 CONTROLS — the list door is untouched but for one sentence, and 
   });
 
   it('the door is a READ operation everywhere the engine keys on read-ness', async () => {
-    const { isWorkReadOp } = await import('../../tools/work-verbs.js');
-    const { classifyConcurrency } = await import('../../agent/v2/classifiers/concurrency.js');
     expect(isWorkReadOp('work_update:activity')).toBe(true);
     expect(classifyConcurrency('work_update', { action: 'activity' })).toBe('safe');
   });
@@ -335,7 +337,6 @@ describe('T60 CONTROLS — the list door is untouched but for one sentence, and 
 
 describe('T65 — the window is a declared property, and the door honours it', () => {
   it('RED→GREEN: `hours` is DECLARED, so the unknown-argument census no longer calls it silently ignored', async () => {
-    const { unknownArgsAgainstSchema } = await import('../../agent/tools/index.js');
     const { extras } = unknownArgsAgainstSchema('work_update', { action: 'activity', hours: 36 });
     expect(
       extras,
@@ -406,7 +407,6 @@ describe('T65 CONTROLS — a call without the window is what it always was', () 
   });
 
   it('the window declares ONE property and the action enum is untouched — the golden delta is exactly that', async () => {
-    const { toolDefinitionsByName } = await import('../../agent/tools/definitions.js');
     const def = toolDefinitionsByName().get('work_update');
     const props = (def!.input_schema as { properties: Record<string, unknown> }).properties;
     expect(Object.keys(props)).toContain('hours');

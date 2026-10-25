@@ -93,6 +93,8 @@ import {
   THREAD_HOP_CAP, THREAD_HOP_WINDOW_MS, JOIN_TTL_MINUTES, JOIN_MAX_AGE_DAYS,
   hopWindowLapsed, purgeDeadA2AThreads,
 } from '../../work/store.js';
+import { deliverA2AMessage } from '../a2a-transport.js';
+import { REAPER_KINDS } from '../../work/work-reaper.js';
 
 const SENDER = 'primary';
 const RECEIVER = 'worker';
@@ -154,7 +156,6 @@ function seedSpineThread(threadId: string, hops: number, agoMs: number): void {
 }
 
 async function deliver(threadId = THREAD, intent = 'FYI') {
-  const { deliverA2AMessage } = await import('../a2a-transport.js');
   return deliverA2AMessage({
     intent: intent as never,
     threadId,
@@ -325,7 +326,6 @@ describe('§3 a dropped message is said out loud', () => {
     // Delivered to a recipient that exists; now the one that does not.
     expect(res.delivered).toBe(true);
     for (const k of ['info', 'warn'] as const) log.calls[k].length = 0;
-    const { deliverA2AMessage } = await import('../a2a-transport.js');
     const gone = await deliverA2AMessage({
       intent: 'FYI' as never, threadId: 'thread-t109a-gone', requiresResponse: false,
       payload: 'nobody is there', toAgent: 'no-such-agent', fromAgent: SENDER,
@@ -412,7 +412,6 @@ describe('§4 dead a2a_threads rows get disposed of', () => {
   });
 
   it('it is WIRED to a clock, not merely written — the reaper declares it', async () => {
-    const { REAPER_KINDS } = await import('../../work/work-reaper.js');
     const kind = REAPER_KINDS.find((k) => k.id === 'dead-a2a-threads');
     expect(kind, 'a sweep with no clock is a sweep that never runs').toBeDefined();
     expect(kind!.everyMs, 'on the hourly clock its sibling prune already declared').toBe(3_600_000);

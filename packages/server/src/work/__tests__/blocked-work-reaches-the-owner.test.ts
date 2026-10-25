@@ -79,6 +79,8 @@ import {
 import { patienceFloorFor, flooredThresholds } from '../../tracker/assignee-patience.js';
 import { POKE_THRESHOLDS } from '../../tracker/pm-agent.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
+import { sweepUnvalidatedTasksForUserEscalation } from '../../scheduler/runner.js';
+import { setTaskStatusResult } from '../../tracker/schema.js';
 
 /** Fictional throughout (G1): no real agent or person names reach a shipped surface. */
 const ASSIGNEE = 'zargo';
@@ -166,7 +168,6 @@ const ownerAlerts = (): string[] =>
  * against the mocks above.
  */
 async function sweep(): Promise<void> {
-  const { sweepUnvalidatedTasksForUserEscalation } = await import('../../scheduler/runner.js');
   await sweepUnvalidatedTasksForUserEscalation();
 }
 
@@ -505,7 +506,6 @@ describe('§4 healthy progressing work NEVER escalates', () => {
     // THE REAL DOOR. `setTaskStatusResult` is the tracker's one status door and this is the
     // dashboard PUT's own call, argument for argument (`gateway/routes/tracker.ts`): the owner
     // dragging a card IS the authority, so it carries `claim: 'authoritative'`.
-    const { setTaskStatusResult } = await import('../../tracker/schema.js');
     const { result } = setTaskStatusResult('t-cancelled', 'cancelled', {
       by: 'owner', actorId: 'user', claim: 'authoritative',
       reason: 'dashboard PUT /tracker/tasks/:id', resultDeliveryId: null,

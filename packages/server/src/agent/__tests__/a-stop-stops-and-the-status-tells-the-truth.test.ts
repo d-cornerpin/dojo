@@ -54,6 +54,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { stoppedAgents, activeAbortControllers, registerAbortable, activeRuns, releaseAbortable, abortInFlight, pendingWakeups, queueSelfWake, stopFencedRuns, isStopFenced } from '../shared-state.js';
+import * as s from '../shared-state.js';
+import { stopAgent } from '../runtime.js';
+import { engineSources } from '../v2/__tests__/engine-sources.js';
+import { STUCK_AGENT_THRESHOLD_MINUTES } from '../stuck-thresholds.js';
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -92,13 +97,11 @@ function statusOf(): string {
 }
 
 beforeEach(() => {
-  vi.resetModules();
   broadcasts.length = 0;
   mockDb.current = new Database(':memory:');
 });
 
 afterEach(async () => {
-  const s = await import('../shared-state.js');
   s.stoppedAgents.clear();
   s.pendingWakeups.clear();
   s.preemptedAgents.clear();
@@ -113,7 +116,6 @@ afterEach(async () => {
 
 describe('a call that races the stop to the registry cannot dial', () => {
   it('THE RED: registering while a stop is live is REFUSED, and the controller is aborted on the spot', async () => {
-    const { stoppedAgents, activeAbortControllers, registerAbortable } = await import('../shared-state.js');
     stoppedAgents.add(AGENT);
 
     const racing = new AbortController();
@@ -123,7 +125,6 @@ describe('a call that races the stop to the registry cannot dial', () => {
   });
 
   it('CONTROL: with no stop live, registration is accepted and the controller is untouched', async () => {
-    const { activeAbortControllers, registerAbortable } = await import('../shared-state.js');
     const c = new AbortController();
     expect(registerAbortable(AGENT, c)).toBe(true);
     expect(c.signal.aborted).toBe(false);
@@ -135,8 +136,6 @@ describe('a call that races the stop to the registry cannot dial', () => {
 
 describe('a stop aborts EVERY call the agent has in flight', () => {
   it('THE RED: the turn\'s own call AND a mid-turn compaction call are both cut', async () => {
-    const { activeRuns, registerAbortable } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
 
@@ -154,8 +153,6 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
   });
 
   it('CONTROL — the stop that DID work (03:18:34): one registered call, cut', async () => {
-    const { activeRuns, registerAbortable } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
     const inFlight = new AbortController();
@@ -166,8 +163,6 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
   });
 
   it('CONTROL: a stop on one agent never reaches another agent\'s in-flight call', async () => {
-    const { activeRuns, registerAbortable } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
     const mine = new AbortController();
@@ -181,8 +176,6 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
   });
 
   it('release is by IDENTITY: one call settling never de-registers the other', async () => {
-    const { activeAbortControllers, registerAbortable, releaseAbortable, abortInFlight } =
-      await import('../shared-state.js');
     const first = new AbortController();
     const second = new AbortController();
     registerAbortable(AGENT, first);
@@ -282,8 +275,6 @@ describe('a stop aborts EVERY call the agent has in flight', () => {
 
 describe('the continuation chain cannot re-arm itself after a stop', () => {
   it('THE RED: the turn-budget continuation is refused even after reset-session clears the stop flag', async () => {
-    const { activeRuns, stoppedAgents, pendingWakeups, queueSelfWake } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
 
@@ -298,8 +289,6 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
   });
 
   it('CONTROL: a REAL inbound arriving after the stop still queues — it is not a self-wake', async () => {
-    const { activeRuns, pendingWakeups } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
     stopAgent(AGENT);
@@ -310,8 +299,6 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
   });
 
   it('CONTROL: with no run in flight, a stop raises no fence to leak', async () => {
-    const { stopFencedRuns } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('idle');
     stopAgent(AGENT);
     expect(stopFencedRuns.has(AGENT), 'a fence nothing will ever clear is a silent hang').toBe(false);
@@ -322,8 +309,6 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
     // a reset-session lands two minutes later and lifts `stoppedAgents`. The executor's next
     // boundary check saw no stop and kept dispatching real side-effecting calls — a send, a
     // write, a calendar change — for a run the owner had stopped.
-    const { activeRuns, stoppedAgents, isStopFenced } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
     stopAgent(AGENT);
@@ -361,8 +346,6 @@ describe('the continuation chain cannot re-arm itself after a stop', () => {
 
 describe('the status field does not lie about a stop', () => {
   it('THE RED: a stop landing on a LIVE run never writes idle', async () => {
-    const { activeRuns } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
 
@@ -375,8 +358,6 @@ describe('the status field does not lie about a stop', () => {
   });
 
   it('a stopping run still says something truthful to the dashboard', async () => {
-    const { activeRuns } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
 
@@ -387,7 +368,6 @@ describe('the status field does not lie about a stop', () => {
   });
 
   it('CONTROL: a stop on an agent with NO run in flight writes idle, because idle is true', async () => {
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
 
     stopAgent(AGENT);
@@ -397,8 +377,6 @@ describe('the status field does not lie about a stop', () => {
   });
 
   it('CONTROL: the stop marker is still armed for the next turn, on both paths', async () => {
-    const { activeRuns } = await import('../shared-state.js');
-    const { stopAgent } = await import('../runtime.js');
     seedAgent('working');
     activeRuns.add(AGENT);
     stopAgent(AGENT);
@@ -428,7 +406,6 @@ describe('the status field does not lie about a stop', () => {
     // The corpus is the SHARED derivation, not a sixth hand-rolled walk of the step packages —
     // `guard-corpus-census.test.ts` refuses one, and it refused this clause's first cut.
     const offenders: string[] = [];
-    const { engineSources } = await import('../v2/__tests__/engine-sources.js');
     for (const f of engineSources()) {
       if (ALLOWED.has(f.rel)) continue;
       codeLines(f.text).forEach(({ line, n }) => {
@@ -446,8 +423,6 @@ describe('the status field does not lie about a stop', () => {
   });
 
   it('THE RED (review IMPORTANT A-4): a stop that never tore down is reapable', async () => {
-    const { stopFencedRuns } = await import('../shared-state.js');
-    const { STUCK_AGENT_THRESHOLD_MINUTES } = await import('../stuck-thresholds.js');
     const src = fs.readFileSync(path.join(SRC_ROOT, 'agent/runtime.ts'), 'utf-8');
     const reaper = src.slice(src.indexOf('function recoverStuckAgents()'));
 

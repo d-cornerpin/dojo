@@ -24,6 +24,7 @@ import { authorizeAppleScript } from '../brokers/applescript.js';
 import { authorizeSystemControl } from '../brokers/index.js';
 import { resolveCommandArg } from '../brokers/resolve.js';
 import type { PermissionManifest } from '@dojo/shared';
+import { gatesForCall } from '../tools/gates.js';
 
 const CHILD = 'child-1';
 const child = () => defaultChildScope(PRIMARY_AGENT_PERMISSIONS, CHILD);
@@ -132,7 +133,6 @@ describe('A — messaging/outbound-send: the danger class already withheld, held
   // now, and a default sub-agent's snapshot carries `master:false` and no
   // channel, so the answer is the same one.
   it('`imessage_send` is withheld from a default sub-agent, by a DECLARED gate', async () => {
-    const { gatesForCall } = await import('../tools/gates.js');
     const gates = gatesForCall('imessage_send', {});
     expect(gates.some((g) => g.kind === 'channel' && g.row === '7')).toBe(true);
     const { MOST_RESTRICTIVE_GRANTS, mayReachChannel } = await import('@dojo/shared');
