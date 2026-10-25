@@ -11,7 +11,7 @@
 //      compaction door as well as the input builder);
 //   2  text the agent authored under any of the authored fields is kept next to the tool name;
 //   3  paths, ids and queries are NOT authored text: a `file_read` call renders byte-for-byte as it did;
-//   4  results stay as they were (the first 200 chars);
+//   4  results reach the summariser whole (t269 replaced "the first 200 chars": cause 2 of the summary-quality investigation);
 //   5  the size is the summariser's own input budget, not a number picked here: it keeps everything
 //      while the chunk fits, and scales every kept text down together (never to nothing, never past the
 //      budget) when it does not;
@@ -160,9 +160,9 @@ describe('3 — paths, ids and queries are not authored text: they render as the
   });
 });
 
-describe('4 — results stay as they were', () => {
-  it('a result keeps its first 200 characters and its error flag', () => {
-    expect(condenseToolJsonForSummary(result('r'.repeat(500)))).toBe(`(tool result: ${'r'.repeat(200)})`);
+describe('4 — results reach the summariser (t269: they were cut to their first 200 characters)', () => {
+  it('a result is given whole and keeps its error flag', () => {
+    expect(condenseToolJsonForSummary(result('r'.repeat(500)))).toBe(`(tool result: ${'r'.repeat(500)})`);
     expect(condenseToolJsonForSummary(result('boom', 'toolu_1', true))).toBe('(tool result ERROR: boom)');
   });
 

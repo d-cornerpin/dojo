@@ -5,17 +5,17 @@
 // already passed that writer over) hands the same span to the next eligible writer in the SAME pass.
 // Before this the pass ended with nothing written and armed the 15-minute low-yield brake
 // (`compaction-brakes.ts`), so compaction sat stalled behind a dead cheapest writer while another
-// writer was answering. Round 4: the same when the writer is fine but a row (or a pair of summaries)
+// writer was answering. Round 4: the same when the writer is fine but a row
 // is more than ITS window can hold (`left.tooBig`): the next eligible writer that holds that input
 // takes it. The writer is chosen by the real input. A pass the owner's Stop ended hands nothing on.
-// The out-of-view door (`out-of-view-fold.ts`) walks the writers itself, one pass per writer.
+// The out-of-view door (`out-of-view-fold.ts`) walks the writers itself, one pass per writer, and so does
+// condensation (t269 round 2: `condense-until-fits.ts` hands a pair to each writer that has not refused it).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { eligibleSummaryWriters, writerPassedOver } from './summary-writer-health.js';
-import { generateSummary, type SummaryResult } from './summarize.js';
 
 const logger = createLogger('leaf-writer-fallback');
 
@@ -45,16 +45,4 @@ export async function leafWithWriterFallback(
     logger.info('The summary writer failed or could not hold a row; the next eligible writer takes the span at once', { from: writer, next }, agentId);
     writer = next;
   }
-}
-
-/** A condensation call that does not hold on `params.modelId` is offered to each next eligible writer, until one holds it. */
-export async function generateOnAWriterThatHolds(params: Parameters<typeof generateSummary>[0]): Promise<SummaryResult> {
-  let result = await generateSummary(params);
-  if (result.ok || !result.tooBig) return result;
-  for (const writer of eligibleSummaryWriters(configuredModel(params.agentId), params.agentId)) {
-    if (writer === params.modelId) continue;
-    result = await generateSummary({ ...params, modelId: writer });
-    if (result.ok || !result.tooBig) return result;
-  }
-  return result;
 }

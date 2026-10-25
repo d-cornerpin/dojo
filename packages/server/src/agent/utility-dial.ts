@@ -152,7 +152,7 @@ export function utilityOutputCap(dial: UtilityDial, callerTargetTokens?: number 
 }
 
 /** Context windows are requested in whole blocks; Ollama is happiest on 1,024-token boundaries. */
-const NUM_CTX_BLOCK = 1_024;
+export const NUM_CTX_BLOCK = 1_024;
 /**
  * The floor for any window we ask for. Below this, small models behave erratically regardless of how
  * little input they were given — and this matches the auto-sizer's own `MIN_RECOMMENDED_NUM_CTX`.

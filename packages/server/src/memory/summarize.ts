@@ -9,6 +9,7 @@ import { settleSummaryCall, refuseWhatTheWriterCannotHold } from './summary-writ
 import { noteSummaryCallFailed } from '../agent/failed-call.js';
 import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
+import { writeWhole } from './summary-whole.js';
 import type { Summary } from './dag.js';
 
 const logger = createLogger('memory-summarize');
@@ -77,6 +78,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL business/project details: "runs Acme Corp (advertising/video production)" not "discussed their businesses"
 - Preserve exact quotes when the user states a preference, makes a decision, or gives an instruction
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
+- A tool result shown only in part says so and names the id its whole is kept under: record what the shown part found and keep that id beside it, so the agent can read the rest again
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
 - Record each request WITH ITS OUTCOME as these messages show it, dated: answered, done, declined, or "not answered by <last recorded time>". A summary is a record of what was SAID and DONE, never of what is CURRENT: never write "pending", "outstanding", "next steps" or "still owed" as present fact — the OPEN WORK block (the task list) in the live prompt is the only record of what is current. An obligation may be named only with the work id the conversation gives you, cited as written (e.g. "agreed to email <that contact> the roof quote [cmt:1a2b3c4d5e6f]"). If there is no id for it, leave it out: the id is the record, the summary is the context around it.
@@ -88,7 +90,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
   DEFERRED: [item] — [reason it was deprioritized]
   This prevents the agent from re-raising issues that are already handled.
 - Never record "I could not see / read / receive a message" as an outstanding item. That is a transient context state, not an unanswered question, and writing it down turns a moment's confusion into a durable belief.
-- Target approximately ${targetTokens} tokens — use the space to keep details, not to pad
+- Target approximately ${targetTokens} tokens, sized to this input — use the space to keep details, not to pad, and never write more than the input itself
 - Do NOT include preamble — write the factual summary directly
 
 BAD: "The user discussed their work and business ventures"
@@ -121,7 +123,7 @@ TEMPORAL ANCHORING — CRITICAL:
 - NEVER strip dates or temporal references — they are essential for judging relevance downstream.
 
 ABSOLUTE RULES:
-- Preserve ALL proper nouns, specific names, numbers, dates, and concrete details from the source summaries
+- Preserve ALL proper nouns, specific names, numbers, dates, and concrete details from the source summaries — every id, code and amount copied exactly as written
 - When two summaries mention the same topic, merge them but keep ALL specific details from both
 - NEVER generalize specific facts into vague categories — "favorite tea is jasmine green" must survive, not become "has drink preferences"
 - NEVER drop business names, project names, people's names, or technical specifics
@@ -129,7 +131,7 @@ ABSOLUTE RULES:
 - Obligation lines (things owed to someone) carry a work id and, where the engine has resolved it, a bracketed state. Carry BOTH forward verbatim and never restate an obligation as currently owed: the OPEN WORK block is the current status, not these summaries. An obligation with no id does not survive condensation.
 - Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
 - Maintain correct attribution — never confuse who said or did what. CARRY the party and conversation labels forward; never merge different parties' requests into an unattributed statement.
-- Target approximately ${targetTokens} tokens — use the space for facts, not narrative
+- Target approximately ${targetTokens} tokens, sized to these summaries — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
 ${contextBlock}`;
   }
@@ -148,7 +150,7 @@ TEMPORAL ANCHORING — CRITICAL:
 
 ABSOLUTE RULES:
 - This is a REFERENCE DOCUMENT, not a narrative — optimize for fact density
-- Preserve ALL proper nouns, specific names, numbers, and concrete details
+- Preserve ALL proper nouns, specific names, numbers, and concrete details — every id, code and amount copied exactly as written
 - Preserve ALL stated preferences and decisions, and every instruction WITH its outcome as the sources record it (done, answered, declined, superseded) — an instruction is history, not a standing order
 - Carry every RESOLVED / DECIDED / CLOSED / DEFERRED line forward into one section at the end; never state what is currently pending or owed (the OPEN WORK block, the task list, is the only record of what is current)
 - Preserve ALL business/project details with their specific descriptions
@@ -157,30 +159,9 @@ ABSOLUTE RULES:
 - Keep: anything that would be needed to resume a conversation months later
 - Obligation lines (things owed to someone) keep their work id and any bracketed state verbatim, and are never restated as currently owed: the OPEN WORK block is the current status, not this document. An obligation with no id does not survive condensation.
 - Maintain correct attribution
-- Target approximately ${targetTokens} tokens
+- Target approximately ${targetTokens} tokens, sized to these summaries
 - Do NOT include preamble — write the reference summary directly
 ${contextBlock}`;
-}
-
-// ── Deterministic Truncation (Level 3 Escalation) ──
-
-export function truncateDeterministic(text: string, targetTokens: number): string {
-  const targetChars = targetTokens * 4;
-
-  if (text.length <= targetChars) {
-    return text;
-  }
-
-  const keepChars = Math.floor(targetChars * 0.4); // 20% front + 20% back = 40% of target
-  const frontChars = Math.floor(keepChars / 2);
-  const backChars = keepChars - frontChars;
-
-  const omittedTokens = estimateTokens(text.slice(frontChars, text.length - backChars));
-
-  const front = text.slice(0, frontChars);
-  const back = text.slice(text.length - backChars);
-
-  return `${front}\n\n[... ${omittedTokens} tokens truncated ...]\n\n${back}`;
 }
 
 // ── Main Summarization Function ──
@@ -271,108 +252,25 @@ async function writeSummary(params: {
   if (tooBig) return tooBig;
 
   try {
-    logger.info('Generating summary (level 1: normal)', {
-      depth,
-      targetTokens,
-      contentTokens: estimateTokens(content),
-    }, agentId);
-
-    const result = await callModel({
-      agentId,
-      modelId,
-      messages: [{ role: 'user', content }],
-      systemPrompt,
-      tools: false,
-      // t88: a compaction summary. ⚠ THE CAP COMES FROM `targetTokens`, not from the table: the
-      // prompt already tells the model "target approximately N tokens", so the request may as well
-      // enforce the number it asked for. `utilityOutputCap` adds 50% slack so a summary lands on a
-      // sentence rather than being clipped mid-word, and the table's ceiling still bounds it.
-      // Thinking off matters here too — a thinking model spent its whole budget deliberating and
-      // then produced nothing usable, which this file logs as SUMMARY_REFUSED.
-      purpose: 'memory_summarize',
-      utilityTargetTokens: targetTokens,
-      abortSignal,
+    logger.info('Generating summary', { depth, targetTokens, contentTokens: estimateTokens(content) }, agentId);
+    // t269: every call reads the SOURCE and declares the summary dial (thinking off on every transport that
+    // can switch it, the output room sized to the target); a cut or over-long answer is never kept as
+    // whole (`summary-whole.ts`, which replaced the level-2 re-summary and the level-3 middle cut).
+    return await writeWhole({
+      content, depth, targetTokens, abortSignal,
+      warn: (message, meta) => logger.warn(message, meta, agentId),
+      fits: (extra) => refuseWhatTheWriterCannotHold(modelId, systemPrompt + extra, content, agentId) === null,
+      call: async (extra, outputRoomAsk) => {
+        const result = await callModel({
+          agentId, modelId, messages: [{ role: 'user', content }], systemPrompt: systemPrompt + extra, tools: false,
+          purpose: 'memory_summarize', utilityTargetTokens: targetTokens, abortSignal,
+          ...(outputRoomAsk ? { outputRoomAsk } : {}),
+        });
+        const unusable = unusableOutput(result.content, abortSignal);
+        if (unusable) logger.warn('SUMMARY_REFUSED summarizer produced no usable text', { depth, targetTokens, reason: unusable, stopReason: result.stopReason }, agentId);
+        return result;
+      },
     });
-
-    const unusable = unusableOutput(result.content, abortSignal);
-    if (unusable) {
-      logger.warn('SUMMARY_REFUSED summarizer produced no usable text', {
-        depth, targetTokens, reason: unusable,
-      }, agentId);
-      return { ok: false, reason: unusable };
-    }
-
-    const resultTokens = estimateTokens(result.content);
-
-    if (resultTokens <= targetTokens * 1.5) {
-      logger.info('Summary generated (level 1: normal)', {
-        depth,
-        resultTokens,
-        targetTokens,
-      }, agentId);
-      return { ok: true, text: result.content, tokenCount: resultTokens };
-    }
-
-    logger.info('Summary too large, retrying (level 2: aggressive)', {
-      depth,
-      resultTokens,
-      targetTokens,
-    }, agentId);
-
-    const aggressivePrompt = `Be much more aggressive in condensing. The previous attempt produced ${resultTokens} tokens but the target is ${Math.floor(targetTokens / 2)} tokens. Cut ruthlessly — keep only the most critical facts.\n\n${systemPrompt}`;
-
-    const aggressiveResult = await callModel({
-      agentId,
-      modelId,
-      messages: [{ role: 'user', content: result.content }],
-      systemPrompt: aggressivePrompt,
-      tools: false,
-      // ⚠ THE SECOND ROUND DECLARES WHAT THE FIRST ONE DECLARES, and t88's review found it missing
-      // here. Without these two lines `utilityDial(undefined)` returns null and ALL THREE dials revert
-      // to pre-t88 behaviour on this call: thinking inherits the per-model toggle, `num_predict` falls
-      // through to the model's ordinary maximum instead of the summary's cap, and `num_ctx` takes the
-      // full RAM-recommended window. ⚠ AND THIS IS THE WORST PATH TO LOSE THEM ON: it fires precisely
-      // when the first summary came back TOO LARGE, which means the biggest bodies on the box — the
-      // incident's own shape. The target is the retry's own stated one, the number the prompt above
-      // promises the model ("the target is N tokens"), so the request enforces what it asked for.
-      purpose: 'memory_summarize',
-      utilityTargetTokens: Math.floor(targetTokens / 2),
-      abortSignal,
-    });
-
-    // Same test on the retry: the aggressive pass is where an abort is MOST likely to land,
-    // because it is the second model round of a call the caller may already have given up on.
-    const unusableRetry = unusableOutput(aggressiveResult.content, abortSignal);
-    if (unusableRetry) {
-      logger.warn('SUMMARY_REFUSED aggressive retry produced no usable text', {
-        depth, targetTokens, reason: unusableRetry,
-      }, agentId);
-      return { ok: false, reason: unusableRetry };
-    }
-
-    const aggressiveTokens = estimateTokens(aggressiveResult.content);
-
-    if (aggressiveTokens <= targetTokens * 1.5) {
-      logger.info('Summary generated (level 2: aggressive)', {
-        depth,
-        resultTokens: aggressiveTokens,
-        targetTokens,
-      }, agentId);
-      return { ok: true, text: aggressiveResult.content, tokenCount: aggressiveTokens };
-    }
-
-    // Level 3: Deterministic truncation (always succeeds)
-    logger.warn('Summarization still too large, using deterministic truncation (level 3)', {
-      depth,
-      aggressiveTokens,
-      targetTokens,
-    }, agentId);
-
-    // STILL ok:true, deliberately: this truncates the MODEL'S OWN OUTPUT, which has already
-    // been through the summariser twice and carries no raw rows. It is a shorter summary,
-    // not a raw body wearing a summary's name.
-    const truncated = truncateDeterministic(aggressiveResult.content, targetTokens);
-    return { ok: true, text: truncated, tokenCount: estimateTokens(truncated) };
   } catch (err) {
     // PHASE-3 T5: this used to truncate the RAW input and persist it. The model failing is
     // not a reason to write the conversation back into the summary store verbatim.

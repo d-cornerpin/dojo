@@ -15,12 +15,17 @@
 //   2. HOW MUCH. The summariser's own input budget decides, not a number picked here. A chunk is cut by
 //      its rows' stored size, so its input fits whole in the ordinary case; only an input whose written
 //      text outgrows the budget is scaled down, every kept text by the same share, each keeping its head
-//      and saying how much it cut. Results are unchanged (the first 200 chars).
+//      and saying how much it cut. t269: tool RESULTS are scaled with them (they were cut to their first
+//      200 characters, 46% of all the text being summarised on the dev box): whole while the span fits, and
+//      past it a result keeps its head and tail at the live pointer's 3:1 split (`tool-result-view.ts`), the
+//      facts of the part not shown, and the id its whole is kept under (`tool_result_read`).
 //
 // Cache: this is summariser INPUT. It is in no prompt prefix and moves no cached byte.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { estimateTokens, CHARS_PER_TOKEN } from './budget.js';
+import { charBoundary } from './tool-result-view.js';
+import { summaryFacts } from './summary-target.js';
 
 const AUTHORED_INPUT_FIELDS: ReadonlySet<string> = new Set([
   'notes', 'note', 'content', 'text', 'message', 'body', 'payload', 'description', 'instructions',
@@ -42,6 +47,45 @@ export function authoredInputLines(name: string, input: unknown, keep: number): 
       : `  ${field}: ${value.slice(0, kept)}${kept > 0 ? ' ' : ''}[... ${value.length - kept} more chars of this text are not shown here]`);
   }
   return lines;
+}
+
+/** The text of a stored result's content: a string as it is; content blocks as their text, each image or
+ *  document as its kind (never its base64, which is no reading for a summariser). */
+export function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return JSON.stringify(content ?? '');
+  return content.map((b) => {
+    const block = b as { type?: unknown; text?: unknown } | null;
+    return block?.type === 'text' && typeof block.text === 'string' ? block.text : `[${String(block?.type ?? 'content')}]`;
+  }).join('\n');
+}
+
+/** Head and tail of `body` in `room` characters at the live pointer's 3:1 split, and the part between. */
+function aroundTheGap(body: string, room: number): { head: string; middle: string; tail: string } {
+  const headEnd = charBoundary(body, Math.floor((room * 3) / 4), 'back');
+  const tailStart = Math.max(headEnd, charBoundary(body, body.length - (room - headEnd), 'forward'));
+  return { head: body.slice(0, headEnd), middle: body.slice(headEnd, tailStart), tail: body.slice(tailStart) };
+}
+
+/**
+ * One tool result as the summariser reads it, with `keep` (0..1) of its length shown (the share
+ * `fitInputToBudget` gives every text of the span). Whole at 1. Below it, the shown room is spent on the
+ * facts of the part not shown first (at most half of it, whole facts only), then the head and the tail.
+ */
+export function resultForSummary(body: string, id: string | null, keep: number): string {
+  const room = keep >= 1 ? body.length : Math.floor(body.length * Math.max(0, keep));
+  if (room >= body.length) return body;
+  const listed: string[] = [];
+  let used = 0;
+  for (const f of summaryFacts(aroundTheGap(body, Math.floor(room / 2)).middle)) {
+    if (used + f.length + 2 > room / 2) break;
+    listed.push(f);
+    used += f.length + 2;
+  }
+  const { head, middle, tail } = aroundTheGap(body, room - used);
+  const facts = listed.filter((f) => middle.includes(f));
+  return `${head} [... ${middle.length} more characters of this result are not shown here${id ? `; its whole is kept under id ${id}` : ''}`
+    + `${facts.length > 0 ? `; facts in the part not shown: ${facts.join(', ')}` : ''} ...] ${tail}`;
 }
 
 /**

@@ -45,8 +45,9 @@ describe('t144 census — the deleted mechanisms count to zero', () => {
   it('the condenser batches per conversation through the one input builder', () => {
     const c = code('memory/condense-until-fits.ts');
     expect(count(c, /function batchesOf|function summaryInput/)).toBe(0);
-    expect(count(c, /subjectBatches\(rows, minFanout\)/)).toBe(1);
-    expect(count(c, /condensedSummaryInput\(/)).toBe(2);
+    // t269: batched per depth (peers only) and the lone-note rewrite is gone, so one builder call remains.
+    expect(count(c, /subjectBatches\(peers, minFanout\)/)).toBe(1);
+    expect(count(c, /condensedSummaryInput\(/)).toBe(1);
     const r = code('memory/summary-rebuild.ts');
     expect(count(r, /buildCondensedInput|NIGHTLY_SUMMARY_REBUILD_LIMIT|\blimit\b/)).toBe(0);
     expect(count(r, /condensedSummaryInput\(children\)/)).toBe(1);

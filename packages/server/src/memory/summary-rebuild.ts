@@ -39,8 +39,8 @@ import {
   buildLeafSummaryInput,
   resolveSummaryWriterModel,
   NO_CONVERSATION_PLACEHOLDER,
-  SUMMARY_TARGET_TOKENS,
 } from './compaction.js';
+import { summaryTargetTokens } from './summary-target.js';
 import {
   getSummaryChildren,
   getDescendantMessages,
@@ -277,7 +277,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       return 'placeholder';
     }
     depth = 0;
-    targetTokens = SUMMARY_TARGET_TOKENS.leaf;
+    targetTokens = summaryTargetTokens(input);   // t269: proportional to the input, like the live path
   } else {
     const children = getSummaryChildren(flag.id);
     if (children.length === 0) {
@@ -299,7 +299,7 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     input = condensedSummaryInput(children);
     spanIds = children.map((c) => `summary:${c.id}`);
     depth = flag.depth;
-    targetTokens = SUMMARY_TARGET_TOKENS.condensed;
+    targetTokens = summaryTargetTokens(input);
   }
 
   // t144: paced by real signals, as the rebuild of older mixed notes is; the note stays flagged for a later night.

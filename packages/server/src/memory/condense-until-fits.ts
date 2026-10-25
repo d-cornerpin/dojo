@@ -40,28 +40,29 @@
 // output (t87's single estimate, passed in as `measure`), and the raw figure is one indexed SUM
 // over the same rows — no second model of the assembly, and not the 340KB of summary TEXT.
 //
-// ── THE RULE, AND WHAT A "LEVEL" IS ──
-// A LEVEL IS THE WHOLE TOP-LEVEL SET, not one depth. ⚠ The first cut took the shallowest depth
-// holding rows and condensed only that, which review C1 probed into a dead end: a depth-3
-// 12,000-token summary beside a depth-0 400-token leaf gave `calls=0`, stage
-// `single_summary_at_floor`, a force-binding brake and `condensable=2` — the engine refusing a
-// shape it could see two compressible summaries in, every fifteen minutes, while never touching
-// the bloat. That is "compaction ends", which is the one thing the ruling forbids. Depth is a
-// record of how often a span has been folded; it is not a reason to refuse to merge.
-// So, while the assembler would trim this agent's summaries:
-//   · ≥2 top-level rows → batch them by minFanout SHALLOWEST-FIRST and regardless of depth,
-//     each parent written at `max(child depth) + 1` (so the DAG still records the deepest
-//     fold) with the batch's true min/max timestamps;
-//   · exactly 1 top-level row → re-summarise it to a STRICTLY SMALLER target, keeping the old
-//     row unless the new one really is smaller.
-// A trailing batch of ONE is left alone: because the next level reads the whole set again, it
-// IS condensed with the parents this level just made, for one model call instead of two.
+// ── THE RULE (t269): A NOTE IS MERGED INTO THE LEVEL ABOVE ONCE ──
+// Until t269 a level was the whole top-level set at ANY mix of depths, each parent written at
+// `max(child depth) + 1`, and a lone top note was re-summarised to half its size. So the oldest
+// history went through the writer again on EVERY fold: one chain on the dev box reached depth 72
+// in ~18 hours, a note claimed July 26 – October 18 and held three hours of October 18, and at
+// depth 9+ about 3% of the leaves' ids, codes and amounts survived (v35-summary-quality-
+// investigation.md, H5). Each single step was close to faithful; the wear was the repetition.
+// Now, while the assembler would trim this agent's summaries:
+//   · notes of ONE depth are batched by minFanout (per conversation, `subjectBatches`) and each
+//     batch of two or more becomes ONE parent at that depth + 1, with its true min/max times;
+//   · notes of different depths are never merged, and a lone note is never rewritten.
+// A depth-d note written under this rule therefore stands for at least 2^d leaves (a note an older
+// version left deep merges once, when a carry reaches its depth), so depth grows as log2 of the history
+// and a fact passes through the writer at most that many times. A note with no peer of its depth
+// stays as it is; when the view has no room for it, the summaries lane leaves the OLDEST notes out
+// whole and says how many (`summaries-lane.ts`) — still stored, still reachable by recall — rather
+// than squeezing them again. That is not a refusal and not a dead end: the next leaves make peers.
 //
 // ── THE BOUND, AND WHY THE LOOP IS FINITE PER RUN ──
 // Two independent bounds, either of which ends the run:
 //   1. `CONDENSE_MAX_LEVELS` levels — a `for` loop with a constant ceiling, so finiteness
-//      does not rest on the summariser behaving. A backstop: each level divides the set by the
-//      fanout, so eight levels is far beyond any real body.
+//      does not rest on the summariser behaving. A backstop: a level lifts peers one depth, so
+//      eight levels carry 2^8 = 256 waiting leaves to the top in one run; the next run goes on.
 //   2. The caller's abort signal — the forced path's bound is the turn's patience (t140 round 6,
 //      H3, which removed a 12-calls-per-run cap: a level needs as many calls as it has batches,
 //      and the turn's patience, not a count, is what says the owner has waited long enough).
@@ -82,31 +83,22 @@ import { getDb } from '../db/connection.js';
 import { createCondensedSummary, getLeafSummariesNotCondensed, type Summary } from './dag.js';
 import { UNCONDENSED_KIND } from './uncondensed-head.js';
 import { generateSummary, condensedSummaryInput } from './summarize.js';
-import { generateOnAWriterThatHolds } from './leaf-writer-fallback.js';
+import { mergeTargetTokens } from './summary-target.js';
+import { recordRefusal, writersLeft, type SpanItem } from './unwritable-span.js';
+import { KEPT_WHOLE_KIND } from './kept-row-view.js';
 import { subjectBatches } from './summary-subject.js';
 import { summaryWriterUnavailable, FORCED_YIELD_FLOOR_TOKENS } from './compaction-brakes.js';
 
 const logger = createLogger('condense-until-fits');
 
-/** Levels one run may climb. Seven takes the incident's 43 leaf summaries to a single
- *  floor-sized one (43→11→3→1, then four halvings); eight leaves a level of headroom. */
+/** Levels one run may climb. Three take the incident's 43 leaf summaries to one note
+ *  (43→11→3→1); eight leave headroom (see THE BOUND above). */
 export const CONDENSE_MAX_LEVELS = 8;
-
-
-/** A lone summary is re-asked for half of what it currently costs… */
-export const CONDENSE_SHRINK_FACTOR = 0.5;
-/** …down to this floor, below which a summary is not a summary any more. Reaching it is
- *  reported as a defect (D3) rather than as a terminal state: if the assembler would still
- *  trim with every summary at the floor, something else is wrong and the engine says so
- *  instead of telling the owner to archive their conversation. */
-export const CONDENSE_MIN_TARGET_TOKENS = 500;
 
 /** The stage that refused, when a run ends with nothing to show. The vocabulary of the D3
  *  defect line — a reader must be able to act on the name alone. */
 export type RefusedStage =
   | 'nothing_left_to_condense'
-  | 'single_summary_at_floor'
-  | 'single_summary_did_not_shrink'
   | 'summary_writer_unavailable'
   | 'summariser_refused'
   | 'summariser_threw'
@@ -141,8 +133,6 @@ export interface CondenseArgs {
   /** The summary-WRITER model, already resolved by the caller. */
   modelId: string;
   minFanout: number;
-  /** The ceiling for a condensed summary's size; a lone summary is asked for less. */
-  targetTokens: number;
   /** THE SINGLE ESTIMATE. The caller passes its own, so this module adds no second opinion
    *  about what the assembler will produce. */
   measure: () => Promise<AdmissionEstimate>;
@@ -161,10 +151,10 @@ function topLevelByDepth(agentId: string): TopLevelRow[] {
       `SELECT s.depth AS depth, COUNT(*) AS n, COALESCE(MAX(s.token_count), 0) AS maxTok
          FROM summaries s
         WHERE s.agent_id = @agentId
-          AND s.id NOT IN (SELECT parent_id FROM summary_parents) AND s.kind != @noteKind
+          AND s.id NOT IN (SELECT parent_id FROM summary_parents) AND s.kind NOT IN (@noteKind, @keptKind)
         GROUP BY s.depth
         ORDER BY s.depth ASC`,
-    ).all({ agentId, noteKind: UNCONDENSED_KIND }) as TopLevelRow[];
+    ).all({ agentId, noteKind: UNCONDENSED_KIND, keptKind: KEPT_WHOLE_KIND }) as TopLevelRow[];
   } catch {
     return [];
   }
@@ -200,34 +190,31 @@ export function rawContextSummaryTokens(agentId: string): number {
  */
 function topLevelRows(agentId: string): Summary[] {
   const rows: Summary[] = [];
-  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth).filter((r) => r.kind !== UNCONDENSED_KIND));
+  for (const d of topLevelByDepth(agentId)) rows.push(...getLeafSummariesNotCondensed(agentId, d.depth).filter((r) => r.kind !== UNCONDENSED_KIND && r.kind !== KEPT_WHOLE_KIND));
   return rows;
 }
 
 /**
- * CAN THIS AGENT'S SUMMARIES STILL SHRINK? Asked by the entry point BEFORE it decides a pass
- * is pointless, which is the question the deleted terminal latch answered backwards: summaries
- * over budget is the CASE FOR condensation, not proof it cannot help.
+ * HOW MANY TOP-LEVEL SUMMARIES CAN BE MERGED NOW — in a batch of peers of one depth that some writer is still
+ * left for (t269 fix round 2, N2: a pair every writer refused is not mergeable, so the condense-only pass
+ * returns before any activity or brake). Asked by the entry point before it spends a pass.
  *
- * Two or more top-level summaries always can (they merge, at ANY mix of depths). A single one
- * can while it is above the floor. Zero cannot, and that is a defect to report, not a card.
- *
- * ⚠ THIS FUNCTION AND THE LOOP MUST AGREE, which is what C1 broke: it counted the whole set
- * while the loop looked at one depth, so it promised a merge the loop would not attempt. The
- * invariant is now a clause: `condensableSummaries(a) >= 2` ⇒ a forced pass writes a parent.
+ * ⚠ THIS FUNCTION AND THE LOOP MUST AGREE (review C1): it walks the batches `condenseLevel` forms, halving a
+ * batch with no writer left as the loop does, so `condensableSummaries(a) >= 2` ⇒ a pass dials a writer.
  */
-export function condensableSummaries(agentId: string): number {
-  const rows = topLevelByDepth(agentId);
-  const total = rows.reduce((sum, r) => sum + r.n, 0);
-  if (total >= 2) return total;
-  if (total === 1 && rows[0].maxTok > CONDENSE_MIN_TARGET_TOKENS) return 1;
-  return 0;
-}
-
-/** The target for a lone summary: strictly less than it costs now, never below the floor. */
-export function shrinkTarget(currentTokens: number, ceilingTokens: number): number {
-  const halved = Math.floor(currentTokens * CONDENSE_SHRINK_FACTOR);
-  return Math.max(CONDENSE_MIN_TARGET_TOKENS, Math.min(ceilingTokens, halved));
+export function condensableSummaries(agentId: string, opts: { modelId?: string; minFanout?: number } = {}): number {
+  if (!topLevelByDepth(agentId).some((r) => r.n >= 2)) return 0;
+  const byDepth = new Map<number, Summary[]>();
+  for (const r of topLevelRows(agentId)) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r]);
+  const dialable = (batch: Summary[]): number => {
+    if (batch.length < 2) return 0;
+    const span: SpanItem[] = batch.map((x) => ({ id: x.id, content: x.content }));
+    if (writersLeft(agentId, span, opts.modelId).length > 0) return batch.length;
+    return batch.length > 2 ? halves(batch).reduce((n, h) => n + dialable(h), 0) : 0;
+  };
+  // A batch is at most `minFanout` notes; with none given, one batch per conversation (halved as the loop halves).
+  return [...byDepth.values()].filter((peers) => peers.length >= 2)
+    .flatMap((peers) => subjectBatches(peers, opts.minFanout ?? peers.length)).reduce((n, b) => n + dialable(b), 0);
 }
 
 // t144: batches are per conversation (`subjectBatches`), and the input is the one builder
@@ -239,81 +226,65 @@ function yieldToLoop(): Promise<void> {
   return new Promise<void>(resolve => { setImmediate(resolve); });
 }
 
-interface LevelResult { created: number; calls: number; stage: RefusedStage | null; detail: string | null }
+interface LevelResult { created: number; calls: number; stage: RefusedStage | null; detail: string | null; settled?: true; deepest?: number }
 
-/** A parent records the deepest fold it contains, and the TRUE span of its children — which a
- *  mixed-depth batch makes a real computation rather than `batch[0]`/`batch[last]`. */
+const halves = <T>(batch: readonly T[]): T[][] => [batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))];
+
+/** A parent sits one depth above its peers, over the TRUE span of its children. */
 function parentShape(batch: readonly Summary[]): { depth: number; earliestAt: string; latestAt: string } {
   return {
-    depth: Math.max(...batch.map(s => s.depth)) + 1,
+    depth: batch[0].depth + 1,
     earliestAt: batch.reduce((a, s) => (s.earliestAt < a ? s.earliestAt : a), batch[0].earliestAt),
     latestAt: batch.reduce((a, s) => (s.latestAt > a ? s.latestAt : a), batch[0].latestAt),
   };
 }
 
 /**
- * ONE LEVEL — the WHOLE top-level set (review C1). Condenses it into parents and reports what
- * refused if nothing was written.
- *
- * The arms are the deliverable: ≥ minFanout batches as before, 2…minFanout-1 is the case the
- * old floor silently refused, and the lone arm runs only when the set really is one row.
+ * ONE LEVEL — every depth that holds peers lifts them one depth (t269). Reports what refused if
+ * nothing was written, and `settled` when no depth held two notes (nothing to merge, nothing wrong).
  */
 async function condenseLevel(
   rows: Summary[], args: CondenseArgs,
 ): Promise<LevelResult> {
-  const { agentId, modelId, minFanout, targetTokens, abortSignal } = args;
+  const { agentId, modelId, minFanout, abortSignal } = args;
   let created = 0;
   let calls = 0;
   let stage: RefusedStage | null = null;
   let detail: string | null = null;
+  let deepest = 0;
 
-  // THE LONE SUMMARY — and ONLY when the whole set is one row, because merging beats shrinking
-  // whenever there is anything to merge with. The compression asked for is its own size halved,
-  // and the old row is kept unless the new one is genuinely smaller: swapping a summary for an
-  // equally large one is the zero-yield pass this file exists to report.
-  if (rows.length === 1) {
-    const only = rows[0];
-    if (only.tokenCount <= CONDENSE_MIN_TARGET_TOKENS) {
-      return { created: 0, calls: 0, stage: 'single_summary_at_floor', detail: `${only.tokenCount} tokens` };
-    }
-    const target = shrinkTarget(only.tokenCount, targetTokens);
-    if (summaryWriterUnavailable(agentId, modelId)) {
-      return { created: 0, calls: 0, stage: 'summary_writer_unavailable', detail: modelId };
-    }
-    try {
-      const summary = await generateOnAWriterThatHolds({
-        content: condensedSummaryInput([only]), depth: only.depth + 1, targetTokens: target, agentId, modelId, abortSignal,
-      });
-      calls += 1;
-      if (!summary.ok && summary.stopped) return { created: 0, calls, stage: 'bounded_without_progress', detail: 'stopped by the owner' };
-      if (!summary.ok) return { created: 0, calls, stage: 'summariser_refused', detail: summary.reason };
-      if (summary.tokenCount >= only.tokenCount) {
-        return { created: 0, calls, stage: 'single_summary_did_not_shrink', detail: `${only.tokenCount} → ${summary.tokenCount}` };
-      }
-      createCondensedSummary(agentId, summary.text, summary.tokenCount, [only.id], only.depth + 1, only.earliestAt, only.latestAt);
-      return { created: 1, calls, stage: null, detail: null };
-    } catch (err) {
-      return { created: 0, calls: calls + 1, stage: 'summariser_threw', detail: err instanceof Error ? err.message : String(err) };
-    }
-  }
-
-  const batches = subjectBatches(rows, minFanout);
+  const byDepth = new Map<number, Summary[]>();
+  for (const r of rows) byDepth.set(r.depth, [...(byDepth.get(r.depth) ?? []), r]);
+  const batches = [...byDepth.values()].filter((peers) => peers.length >= 2).flatMap((peers) => subjectBatches(peers, minFanout));
+  if (!batches.some((b) => b.length >= 2)) return { created: 0, calls: 0, stage: null, detail: null, settled: true };
   while (batches.length > 0) {
     const batch = batches.shift()!;
     if (abortSignal?.aborted) { stage ??= 'bounded_without_progress'; detail ??= 'aborted mid-level'; break; }
-    // A trailing single waits for the next level, which reads the whole set again and so merges
-    // it with the parents just written — one model call instead of two.
+    // A trailing single waits for a peer of its own depth (the next leaves, or the next fold).
     if (batch.length === 1) continue;
+    // t269 fix rounds 1–2 (I1, N1): a writer is not dialled over a span it could not write whole; with no
+    // writer left for it the span waits (a larger one is split, so its halves are tried in turn).
+    const span = batch.map((x) => ({ id: x.id, content: x.content }));
+    const writers = writersLeft(agentId, span, modelId);
+    if (writers.length === 0) { if (batch.length > 2) batches.unshift(...halves(batch)); continue; }
     if (summaryWriterUnavailable(agentId, modelId)) { stage = 'summary_writer_unavailable'; detail = modelId; break; }
     const shape = parentShape(batch);
     try {
-      const args = { content: condensedSummaryInput(batch), depth: shape.depth, targetTokens, agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
-      // A pair (or more) the writer cannot hold is halved first; a pair that still does not hold goes to a writer that can.
-      const summary = await (batch.length > 2 ? generateSummary(args) : generateOnAWriterThatHolds(args));
-      calls += 1;
+      const content = condensedSummaryInput(batch);
+      const args = { content, depth: shape.depth, targetTokens: mergeTargetTokens(content, batch.length), agentId, modelId, abortSignal, spanIds: batch.map((x) => `summary:${x.id}`) };
+      // A batch the writer cannot hold is halved first; a pair goes to each writer left until one holds it.
+      let summary: Awaited<ReturnType<typeof generateSummary>> = { ok: false, reason: 'no writer left' };
+      for (const writer of batch.length > 2 ? writers.slice(0, 1) : writers) {
+        summary = await generateSummary({ ...args, modelId: writer });
+        calls += 1;
+        if (summary.ok || !summary.tooBig) break;
+        if (summary.noRoom) continue;   // t268: that writer cannot run now (no memory free) — not its verdict on this span
+        recordRefusal(agentId, writer, span);
+      }
       if (!summary.ok && summary.stopped) { stage ??= 'bounded_without_progress'; detail ??= 'stopped by the owner'; break; }   // a Stop is a stop
-      if (!summary.ok && summary.tooBig && !summary.noRoom && batch.length > 2) {   // t149: not dialled, more than the writer holds: halve it
-        batches.unshift(batch.slice(0, Math.ceil(batch.length / 2)), batch.slice(Math.ceil(batch.length / 2))); continue;
+      if (!summary.ok && summary.tooBig && !summary.noRoom) {   // t149: more than every writer tried holds (or cut twice): recorded, and a batch is halved
+        if (batch.length > 2) batches.unshift(...halves(batch));
+        continue;
       }
       if (!summary.ok) {
         logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
@@ -327,6 +298,7 @@ async function condenseLevel(
         shape.earliestAt, shape.latestAt,
       );
       created += 1;
+      deepest = Math.max(deepest, shape.depth);
     } catch (err) {
       calls += 1;
       logger.error('Failed to create condensed summary', {
@@ -335,7 +307,8 @@ async function condenseLevel(
       stage ??= 'summariser_threw'; detail ??= err instanceof Error ? err.message : String(err);
     }
   }
-  if (created > 0) return { created, calls, stage: null, detail: null };
+  if (created > 0) return { created, calls, stage: null, detail: null, deepest };
+  if (stage === null) return { created, calls, stage: null, detail: null, settled: true };   // every span was left whole: nothing refused
   return { created, calls, stage: stage ?? 'condensation_produced_no_parent', detail: detail ?? `${rows.length} top-level row(s)` };
 }
 
@@ -366,6 +339,7 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
     admittedSummaryTokens: first.summaryTokens, assembledTotalAfter: first.total, deepestDepth: 0,
   };
   if (out.fits) return out;
+  let settled = false;
 
   for (let level = 0; level < CONDENSE_MAX_LEVELS; level += 1) {
     if (abortSignal?.aborted) break;
@@ -379,10 +353,11 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
 
     const res = await condenseLevel(rows, args);
     out.modelCalls += res.calls;
+    if (res.settled) { settled = true; break; }
     out.condensedCreated += res.created;
     if (res.created > 0) {
       out.levels += 1;
-      out.deepestDepth = Math.max(out.deepestDepth, ...rows.map(r => r.depth + 1));
+      out.deepestDepth = Math.max(out.deepestDepth, res.deepest ?? 0);
       rebuild();
     }
     if (res.stage) { out.refusedStage = res.stage; out.refusedDetail = res.detail; break; }
@@ -409,7 +384,7 @@ export async function condenseUntilFits(args: CondenseArgs): Promise<Condensatio
     out.assembledTotalAfter = last.total;
     out.fits = out.summaryTokensAfter <= last.summaryTokens;
   }
-  if (out.fits) { out.refusedStage = null; out.refusedDetail = null; return out; }
+  if (out.fits || settled) { out.refusedStage = null; out.refusedDetail = null; return out; }   // settled: no depth holds two notes (header)
   // ⚠ A BOUND IS NOT A REFUSAL. A run that reclaimed real tokens and then ran out of levels,
   // calls or wall clock has nothing to report: the brake stays off and the next pressure
   // continues from where this one stopped. Only a run with nothing to show is the D3 defect,

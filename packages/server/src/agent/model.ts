@@ -18,7 +18,7 @@ import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions } from './tools/definitions.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
-import { estimateRequestTokens, reasoningRidesThisTurn } from '../memory/budget.js';
+import { estimateRequestTokens, reasoningRidesThisTurn, effectiveDivisor } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { repairToolPairing } from './tool-pairing.js';
 import { resolveProviderStopReason } from './provider-stop-reason.js';
@@ -35,7 +35,7 @@ import { broadcast } from '../gateway/ws.js';
 // this is a leaf edge — no cycle back through the runtime.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
 import { redirectToAFreeModel } from './budget-redirect.js';
-import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured } from './utility-dial.js';
+import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured, imageTokenAllowance, NUM_CTX_BLOCK, NUM_CTX_MARGIN_TOKENS } from './utility-dial.js';
 
 /**
  * ⚠ THE SMALLEST STORED "Max output" THIS ENGINE WILL BIND on an ordinary Ollama call (review M3).
@@ -1198,21 +1198,25 @@ async function callOllamaModel(
   // `tools === false`. When it IS a utility dial, three things change and nothing else does.
   const dial = utilityDial(params.purpose);
   const pinned = !!dial && isStandardModelRow(modelId);   // an engine job on the local provider's own row of the pair
-  const dialOutputCap = dial ? utilityOutputCap(dial, params.utilityTargetTokens) : null;
-  const dialNumCtxInput = dial
-    ? {
-      // Every character the model is shown: the system prompt plus every message part.
-      inputChars: (systemPrompt?.length ?? 0)
-        + nativeMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0),
-      // ⚠ THE IMAGES COUNT TOO (review M1). A caption prompt is one sentence, so a vision dial sized on
-      // text alone lands on the floor while the screenshot beside it costs thousands of tokens — and a
-      // large one then overflows the window and truncates the prompt silently.
-      imageBase64Lengths: nativeMessages.flatMap((m) => (m.images ?? []).map((img) => img.length)),
-      outputTokens: dialOutputCap ?? dial.maxOutputTokens,
-      configuredNumCtx: effectiveNumCtx,
-      charsPerToken: modelCharsPerToken(modelId),   // t268: this model's measured density (B5: ~2.5, not 4)
-    }
-    : null;
+  const dialShown = {
+    // Every character the model is shown: the system prompt plus every message part.
+    inputChars: (systemPrompt?.length ?? 0) + nativeMessages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : 0), 0),
+    // ⚠ THE IMAGES COUNT TOO (review M1). A caption prompt is one sentence, so a vision dial sized on
+    // text alone lands on the floor while the screenshot beside it costs thousands of tokens — and a
+    // large one then overflows the window and truncates the prompt silently.
+    imageBase64Lengths: nativeMessages.flatMap((m) => (m.images ?? []).map((img) => img.length)),
+    configuredNumCtx: effectiveNumCtx,
+    charsPerToken: modelCharsPerToken(modelId),   // t268: this model's measured density (B5: ~2.5, not 4)
+  };
+  // t269: a dial asked for more room (a summary the output limit cut) is sent it, up to the model's own maximum
+  // and (fix round 1, I3) never past the configured window: what that window cannot hold, the caller splits.
+  // The window's room for output: its whole blocks, less the input (at this model's density) and the margin
+  // (`utilityNumCtx`'s own terms).
+  const windowRoom = typeof effectiveNumCtx === 'number' && effectiveNumCtx > 0 ? Math.floor(effectiveNumCtx / NUM_CTX_BLOCK) * NUM_CTX_BLOCK
+    - Math.ceil(dialShown.inputChars / effectiveDivisor(dialShown.charsPerToken)) - imageTokenAllowance(dialShown.imageBase64Lengths) - NUM_CTX_MARGIN_TOKENS : Number.POSITIVE_INFINITY;
+  const dialRoom = dial ? Math.max(0, Math.min(modelInfo.maxOutputTokens, windowRoom)) : Number.POSITIVE_INFINITY;
+  const dialOutputCap = dial ? Math.max(utilityOutputCap(dial, params.utilityTargetTokens), Math.min(params.outputRoomAsk ?? 0, dialRoom)) : null;
+  const dialNumCtxInput = dial ? { ...dialShown, outputTokens: dialOutputCap ?? dial.maxOutputTokens } : null;
   const dialNumCtx = dialNumCtxInput ? utilityNumCtx(dialNumCtxInput) : null;
 
   const requestBody: Record<string, unknown> = {
@@ -1617,7 +1621,7 @@ async function callOllamaModel(
       // when `num_predict` went on the wire; a call that sent no cap has no room figure to report.
       // The ceiling is the model's own configured maximum (never below what was sent).
       ...(typeof options.num_predict === 'number'
-        ? { outputRoom: { sent: options.num_predict, ceiling: Math.max(options.num_predict, modelInfo.maxOutputTokens) } }
+        ? { outputRoom: { sent: options.num_predict, ceiling: Math.max(options.num_predict, Math.min(modelInfo.maxOutputTokens, dialRoom)) } }
         : {}),
     };
   } catch (err) {
@@ -2214,7 +2218,10 @@ async function callOpenAIModel(
 
   // t195: the engine's ask for extra room is honoured up to the contract's ceiling; the result reports
   // what was sent and the most a retry could be given, so escalation is sized from this call's own facts.
-  const budgetInfo = { ...modelInfo, outputEscalationCeiling: contract.outputEscalationCeiling };
+  // t269: a summary job does not think where the contract can switch it off (DeepSeek's `thinking`, OpenRouter's
+  // `reasoning`); where it cannot, the model's own budget still counts its thinking. The Ollama dial already did this.
+  const thinkingSent = utilityDial(purpose)?.purpose === 'memory_summarize' && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
+  const budgetInfo = { ...modelInfo, thinkingEnabled: thinkingSent, outputEscalationCeiling: contract.outputEscalationCeiling };
   const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
   const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);
 
@@ -2338,7 +2345,7 @@ async function callOpenAIModel(
 
   const supportsThinking = modelInfo.capabilities.includes('thinking');
   applyProviderRequestParams(requestParams, contract, {
-    supportsThinking, thinkingEnabled: modelInfo.thinkingEnabled, thinkingLevel: modelInfo.thinkingLevel,
+    supportsThinking, thinkingEnabled: thinkingSent, thinkingLevel: modelInfo.thinkingLevel,
   });
 
   logger.info('Calling OpenAI model', {
@@ -2349,7 +2356,7 @@ async function callOpenAIModel(
     toolCount: openaiTools?.length ?? 0,
     maxOutputTokens: modelInfo.maxOutputTokens,
     sentMaxTokens: effectiveMaxTokens,
-    thinkingEnabled: modelInfo.thinkingEnabled,
+    thinkingEnabled: thinkingSent,
     thinkingLevel: (requestParams as unknown as { reasoning_effort?: string }).reasoning_effort ?? null,
     reasoningToggleApplied: contract.thinkingToggle === 'openrouter-reasoning' && supportsThinking,
   }, agentId);

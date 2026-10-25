@@ -148,8 +148,9 @@ describe('an empty summariser result never reclaims the rows it did not read', (
 
   it('control: a real summary is still returned ok, unchanged', async () => {
     modelStub.reply = 'The owner asked about SMS; the agent confirmed SMS is live.';
+    // t269: the span is longer than its summary (a summary longer than its input is never kept).
     const result = await generateSummary({
-      content: 'a real span', depth: 0, targetTokens: 5000, agentId: AGENT, modelId: MODEL,
+      content: `a real span: ${'the owner asked whether SMS works and the agent checked and confirmed it is live. '.repeat(3)}`, depth: 0, targetTokens: 5000, agentId: AGENT, modelId: MODEL,
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.text).toBe('The owner asked about SMS; the agent confirmed SMS is live.');

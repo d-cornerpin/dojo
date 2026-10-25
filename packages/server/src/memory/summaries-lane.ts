@@ -15,8 +15,9 @@
 //     fit ends the run, so what yields is always the OLDEST and the shown history has no gaps;
 //   - what is left out is SAID (one line with the count; they are still stored), never hidden;
 //   - the fit's truncate re-selects under the grant the ROOM gave, so a small window drops older
-//     summaries whole. Only a newest summary that alone exceeds the room is cut as text, with
-//     the shared truncation marker; nothing smaller is left.
+//     summaries whole. A newest summary that alone exceeds the room is shown as its kept-row
+//     pointer (t269 fix round 2: head, tail, and `tool_result_read("note:<id>")`, never cut); only a
+//     room too small for even the pointer is cut as text, with the shared truncation marker.
 // The 6,000-token figure (`LANE_LIMITS['lane.summaries'].tokens.relevanceBudget`) still decides
 // how many OLDER summaries ride along. It never cuts the newest: the lane's own bound is the
 // room (its share of the content budget), which is the no-hard-limits law.
@@ -30,6 +31,8 @@ import { summaryConversationLabel, LabelFacts } from './summary-subject.js';
 import { renderInstant } from './message-stamp.js';
 import { CHARS_PER_TOKEN } from './budget.js';
 import { renderTokens, truncateTextLane, type LaneRender } from './lanes.js';
+import { toolResultView, POINTER_LABEL_ROOM_CHARS } from './tool-result-view.js';
+import { keptNoteHandle } from './kept-row-view.js';
 
 const HEAD = '═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn\'t do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it. Obligation lines here are HISTORICAL — the OPEN COMMITMENTS snapshot below is the complete current record of what is owed, whatever tense a summary uses.';
 const FOOT = '═══ END COMPRESSED HISTORY ═══';
@@ -98,9 +101,37 @@ export function renderSummariesLane(summaries: Summary[], agentId: string, ceili
   return renderChosen(summaries.map((summary) => ({ summary, xml: formatSummaryXml(summary, facts) })), ceilingTokens);
 }
 
-/** The fit's truncate: the ROOM decides. Re-select under the grant; the text cut is the last resort. */
+/** The fit's truncate: the ROOM decides. Re-select under the grant; a newest note that alone exceeds the room
+ *  is shown as its kept-row pointer (t269 fix round 2); the text cut is the last resort, for a room too small
+ *  for even the pointer. */
 export function truncateSummariesLane(render: LaneRender<SummariesPayload>, grant: number): LaneRender<SummariesPayload> {
   if (!render.payload) return truncateTextLane(render, grant);
   const shrunk = renderChosen(render.payload.pieces, grant);
-  return shrunk.tokens <= grant ? shrunk : truncateTextLane(shrunk, grant);
+  if (shrunk.tokens <= grant) return shrunk;
+  const pointered = newestAsPointer(render.payload, grant);
+  return pointered && pointered.tokens <= grant ? pointered : truncateTextLane(shrunk, grant);
+}
+
+/** The block with only the newest note, its body as head + tail + the `note:<id>` read call, inside `grant`. */
+function newestAsPointer(payload: SummariesPayload, grant: number): LaneRender<SummariesPayload> | null {
+  const newest = payload.pieces[payload.pieces.length - 1];
+  if (!newest) return null;
+  const omitted = payload.pieces.length - 1;
+  const frame = blockText([newest.xml.replace(newest.summary.content, '')], omitted).length;
+  const viewChars = Math.max(0, grant) * CHARS_PER_TOKEN - frame;
+  if (viewChars <= POINTER_LABEL_ROOM_CHARS) return null;
+  const xml = newest.xml.replace(newest.summary.content, () => toolResultView(newest.summary.content, keptNoteHandle(newest.summary.id), viewChars));
+  const messages = [{ role: 'user' as const, content: blockText([xml], omitted) }];
+  return { messages, tokens: renderTokens(messages), payload: { pieces: payload.pieces, chosen: [newest.summary] } };
+}
+
+/**
+ * THE ROOM A NEWEST NOTE HAS in a lane of `laneRoomTokens` (t269 fix round 2: what a leaf is sized to): the
+ * lane's room in characters less this block's frame — its head and foot, the omission line at its widest, and
+ * a note's wrapper for a note about `label` — back in tokens. A note this size is shown whole (`selectSummaries`).
+ */
+export function newestNoteRoomTokens(laneRoomTokens: number, label: string): number {
+  const wrapper = `<summary id="sum_00000000-0000-0000-0000-000000000000" depth="0" kind="leaf" tokens="9999999" conversation="${label}" earliest="${renderInstant(new Date().toISOString()) ?? ''}" latest="${renderInstant(new Date().toISOString()) ?? ''}">\n\n</summary>`;
+  const frame = blockText([wrapper], 0).length + omittedLine(9_999_999).length;
+  return Math.max(0, Math.floor((laneRoomTokens * CHARS_PER_TOKEN - frame) / CHARS_PER_TOKEN));
 }

@@ -30,7 +30,8 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
-import { authoredInputLines, fitInputToBudget } from './summary-authored-text.js';
+import { LEAF_CHUNK_TOKENS, fullSpanTargetTokens, leafKeepCap, summaryShare, summaryTargetTokens } from './summary-target.js';
+import { authoredInputLines, fitInputToBudget, resultForSummary, resultText } from './summary-authored-text.js';
 // T20: the summariser's own cited work id, resolved against the spine before the row is stored.
 import { annotateSummaryObligations } from './summary-obligations.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
@@ -93,8 +94,10 @@ const EMPTY_VIEW: ContextView = {
 
 /** The assembler's own dry run, for `modelId` (the model whose call the measurement is for), on
  *  `contextWindow`. `summaryTokens`/`freshTailTokens` are what the view ADMITS (the summaries sent, the
- *  tail the trim keeps); `total` is what it WANTS to hold — the summaries the agent has plus the live
- *  tail before the trim — so `total > view.budgetTokens` means the view is cutting something. Absent
+ *  tail the trim keeps); `total` is what it WANTS to hold — the summaries the lane sends plus the live
+ *  tail before the trim — so `total > view.budgetTokens` means the view is cutting the live conversation.
+ *  t269: summaries the lane leaves out are not counted: older notes leave the view WHOLE by design (they
+ *  are named, stored and recallable), and a note is no longer rewritten to make them fit. Absent
  *  `modelId`, the agent's configured model. */
 export async function estimateAssembledTokens(
   agentId: string,
@@ -114,7 +117,7 @@ export async function estimateAssembledTokens(
     throw err;
   });
   return {
-    total: view.summaryRawTokens + view.tailTokens, summaryTokens: view.summaryTokens, freshTailTokens: view.tailKeptTokens,
+    total: view.summaryTokens + view.tailTokens, summaryTokens: view.summaryTokens, freshTailTokens: view.tailKeptTokens,
     freshTailCount: view.tailKeptRows, summaryCount: view.summaryCount, reserveTokens: view.reserveTokens, view,
   };
 }
@@ -197,10 +200,9 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
 // ── Defaults ── summary SHAPES, not budget. (t194: the threshold ladder that stood beside them is
 // gone; the view's own fit is the only measure — see the gauge above.)
 
+// t269: the fixed 5,000 / 6,000-token targets are gone — a target follows its input (`summary-target.ts`).
 const DEFAULTS = {
-  leafChunkTokens: 30000,
-  leafTargetTokens: 5000,
-  condensedTargetTokens: 6000,
+  leafChunkTokens: LEAF_CHUNK_TOKENS,
   // OR-COMPACT-1: the fanout is still the batch SIZE for a level with enough waiting
   // summaries, but it is no longer a FLOOR below which a level refuses to condense —
   // `condense-until-fits.ts` condenses 2, 3 or even 1. `incrementalMaxDepth: 1` is gone with
@@ -210,20 +212,13 @@ const DEFAULTS = {
   condensedMinFanout: 4,
 };
 
-/** Summary size targets, exposed for the nightly summary rebuild so regenerated
- *  summaries match the sizes the live compaction path produces. */
-export const SUMMARY_TARGET_TOKENS = {
-  leaf: DEFAULTS.leafTargetTokens,
-  condensed: DEFAULTS.condensedTargetTokens,
-} as const;
-
 export function getLeafChunkTokens(): number {
   return DEFAULTS.leafChunkTokens;
 }
 
-/** The leaf summary's target size — what `replaceUncondensedPlaceholders` asks for too. */
+/** The target of the largest leaf job (a full chunk, before its facts): what a chunk leaves room for. */
 export function getLeafTargetTokens(): number {
-  return DEFAULTS.leafTargetTokens;
+  return fullSpanTargetTokens();
 }
 
 // t194 (owner decision 7b): the protected recent part is TOKENS — the view's `protectedFromSeq`
@@ -672,7 +667,6 @@ function condenseArgs(
   return {
     agentId, modelId,
     minFanout: DEFAULTS.condensedMinFanout,
-    targetTokens: DEFAULTS.condensedTargetTokens,
     abortSignal,
     measure: () => measured(agentId, contextWindow, turnModelId),
     rebuild: () => rebuildContextItems(agentId),
@@ -688,7 +682,7 @@ function passFacts(
     stage: condensation?.refusedStage ?? null, detail: condensation?.refusedDetail ?? null,
     assembledTokens: condensation?.assembledTotalAfter, budgetTokens,
     summaryTokens: condensation?.summaryTokensAfter, admittedSummaryTokens: condensation?.admittedSummaryTokens,
-    compactableRows, topLevelSummaries: condensableSummaries(agentId), modelId,
+    compactableRows, topLevelSummaries: condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }), modelId,
   };
 }
 
@@ -715,6 +709,8 @@ async function condenseOnlyPass(
     }, agentId);
     return NO_COMPACTION;
   }
+  // t269: only notes of one depth merge, where a writer is left for them; else the oldest leave the view whole.
+  if (condensableSummaries(agentId, { modelId, minFanout: DEFAULTS.condensedMinFanout }) < 2) return NO_COMPACTION;
   const condensation = await withCompactionActivity(agentId, () => condenseUntilFits(args));
   // ⚠ RECLAIMED IN SUMMARY TOKENS, NOT IN THE GATE'S TOTAL, and the module header says why:
   // the gate's total already reports the CAPPED figure, so condensation cannot move it. What
@@ -1047,11 +1043,16 @@ export async function runLeafCompaction(
     return 0;
   }
 
-  // Group into chunks of ~leafChunkTokens, oldest first — capped by what this writer can hold (t149 F4).
+  // Group into chunks of ~leafChunkTokens, oldest first — capped by what this writer can hold (t149 F4), and
+  // (t269 round 2) by the span whose summary, at the share, is what the lane can show whole as the newest note.
   const room = summaryRoom(modelId);
   if (room <= 0) return 0;
-  const chunks = chunkMessages(uncompacted, Math.min(getLeafChunkTokens(), room));
-  const inputBudget = Math.max(0, Math.min(getLeafChunkTokens(), room) - getLeafTargetTokens());
+  const ownModel = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id;
+  const viewBudget = ownModel ? await measured(agentId, cw, ownModel).then((m) => m.view.budgetTokens, () => 0) : 0;
+  const keepCap = leafKeepCap(viewBudget);
+  const span = Math.min(getLeafChunkTokens(), room, Math.ceil(keepCap / summaryShare()));
+  const chunks = chunkMessages(uncompacted, span);
+  const inputBudget = Math.max(0, span - Math.min(getLeafTargetTokens(), keepCap));
   const writerWasAnswering = !writerPassedOver(modelId, agentId);
 
   logger.info('Leaf compaction: processing chunks', {
@@ -1123,7 +1124,7 @@ export async function runLeafCompaction(
       const summary = await generateSummary({
         content,
         depth: 0,
-        targetTokens: DEFAULTS.leafTargetTokens,
+        targetTokens: Math.min(summaryTargetTokens(content), leafKeepCap(viewBudget, conversationLabels(chunk).labelOf.get(chunk[0].id))),
         agentId,
         modelId,
         abortSignal: opts?.abortSignal, spanIds: messageIds,   // v3.5: a span whose check failed is known by its rows
@@ -1263,10 +1264,9 @@ export function rebuildContextItems(agentId: string): void {
 
 // ── Helpers ──
 
-// Persisted tool rows (and assistant tool_use rows) are raw JSON arrays.
-// For the summarizer they are flattened to one-liners that keep WHAT happened
-// (tool name, ok/error, a short result head) and drop the wire format. Pure
-// text content passes through untouched.
+// Persisted tool rows (and assistant tool_use rows) are raw JSON arrays. For the summarizer they are
+// flattened to lines that keep WHAT happened (tool name, ok/error, the result — t269: all of it the job
+// window holds, `resultForSummary`) and drop the wire format. Pure text content passes through untouched.
 export function condenseToolJsonForSummary(content: string, keep: number = 1): string {
   const trimmed = content.trim();
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
@@ -1276,12 +1276,12 @@ export function condenseToolJsonForSummary(content: string, keep: number = 1): s
     const lines: string[] = [];
     for (const b of arr) {
       if (!b || typeof b !== 'object') continue;
-      const block = b as { type?: string; name?: string; text?: string; content?: unknown; is_error?: boolean; input?: unknown };
+      const block = b as { type?: string; name?: string; text?: string; content?: unknown; is_error?: boolean; input?: unknown; tool_use_id?: unknown };
       if (block.type === 'tool_use') {
         lines.push(`(called tool ${block.name ?? 'unknown'})`, ...authoredInputLines(block.name ?? 'unknown', block.input, keep));
       } else if (block.type === 'tool_result') {
-        const body = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-        lines.push(`(tool result${block.is_error ? ' ERROR' : ''}: ${body.slice(0, 200)})`);
+        const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : null;
+        lines.push(`(tool result${block.is_error ? ' ERROR' : ''}: ${resultForSummary(resultText(block.content), id, keep)})`);
       } else if (block.type === 'text' && typeof block.text === 'string') {
         lines.push(block.text);
       }

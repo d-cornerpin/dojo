@@ -26,10 +26,14 @@ import { getMessagesOutsideFreshTail } from './store.js';
 import { createLeafSummary, deleteSummary, getCompactedMessageIds, getSummarySourceMessages, updateSummaryContent } from './dag.js';
 import { UNCONDENSED_KIND, placeholderText, supersedeUncondensedPlaceholders } from './uncondensed-head.js';
 import {
-  archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, getLeafTargetTokens, rebuildContextItems,
+  archiveBeforeCovering, buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems,
   NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { generateSummary } from './summarize.js';
+import { summaryTargetTokens } from './summary-target.js';
+import { isMarkedUnwritable, recordRefusal, writersLeft } from './unwritable-span.js';
+import { KEPT_WHOLE_KIND, keptRowHandle } from './kept-row-view.js';
+import { toolResultView, POINTER_VIEW_CHARS } from './tool-result-view.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
@@ -56,18 +60,48 @@ export function writeUncondensedPlaceholders(agentId: string, throughSeq: number
   if (owed.length === 0) return 0;
   if (!archiveBeforeCovering(agentId, owed)) return 0;
   for (const chunk of chunkMessages(owed, getLeafChunkTokens())) {
-    if (chunk.length === 0) continue;
-    const text = placeholderText(chunk);
-    getDb().transaction(() => {
-      const note = createLeafSummary(agentId, text, estimateTokens(text), chunk.map((m) => m.id), chunk[0].createdAt, chunk[chunk.length - 1].createdAt);
-      getDb().prepare('UPDATE summaries SET kind = ? WHERE id = ?').run(UNCONDENSED_KIND, note.id);   // the ONE writer of the kind
-    })();
+    if (chunk.length > 0) placeholderFor(agentId, chunk);
   }
   rebuildContextItems(agentId);
   logger.warn('Rows left the live view with no summary written in time; placeholders stand in until one is', {
     rows: owed.length, throughSeq,
   }, agentId);
   return owed.length;
+}
+
+/** One placeholder note over exactly `rows` (the ONE writer of the kind). Returns its id. */
+function placeholderFor(agentId: string, rows: readonly Message[]): string {
+  const text = placeholderText(rows);
+  return getDb().transaction(() => {
+    const note = createLeafSummary(agentId, text, estimateTokens(text), rows.map((m) => m.id), rows[0].createdAt, rows[rows.length - 1].createdAt);
+    getDb().prepare('UPDATE summaries SET kind = ? WHERE id = ?').run(UNCONDENSED_KIND, note.id);
+    return note.id;
+  })();
+}
+
+/** t269 fix round 1 (I1): the note for ONE row no writer could summarise — the row as summary input shows it
+ *  (its tag; credential and technique bodies scrubbed), as the live view's kept-row pointer when long. */
+function keepRowWhole(agentId: string, noteId: string, row: Message): void {
+  const shown = buildLeafSummaryInput([row], Number.MAX_SAFE_INTEGER);
+  const text = shown.length > POINTER_VIEW_CHARS ? toolResultView(shown, keptRowHandle(row.id), POINTER_VIEW_CHARS) : shown;
+  getDb().prepare('UPDATE summaries SET kind = ?, content = ?, token_count = ? WHERE id = ?').run(KEPT_WHOLE_KIND, text, estimateTokens(text), noteId);
+  logger.warn('No summary writer could summarise this row whole; it is kept whole behind its pointer until it changes', { messageId: row.id, chars: row.content.length }, agentId);
+}
+
+/** A kept-whole row that is no longer refused by every candidate writer (its content changed, the owner's
+ *  writer setting changed, or a new writer can be asked) becomes a placeholder again, so it is tried again. */
+function releaseChangedKeptRows(agentId: string): number {
+  const notes = getDb().prepare('SELECT id FROM summaries WHERE agent_id = ? AND kind = ?').all(agentId, KEPT_WHOLE_KIND) as Array<{ id: string }>;
+  let released = 0;
+  for (const { id } of notes) {
+    const rows = getSummarySourceMessages(id);
+    if (rows.length > 0 && isMarkedUnwritable(agentId, rows.map((m) => ({ id: m.id, content: m.content })))) continue;
+    if (rows.length === 0) { deleteSummary(id); continue; }
+    const text = placeholderText(rows);
+    getDb().prepare('UPDATE summaries SET kind = ?, content = ?, token_count = ? WHERE id = ?').run(UNCONDENSED_KIND, text, estimateTokens(text), id);
+    released++;
+  }
+  return released;
 }
 
 export function hasUncondensedPlaceholders(agentId: string): boolean {
@@ -102,15 +136,16 @@ export async function replaceUncondensedPlaceholders(
 }
 
 async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSignal }): Promise<number> {
-  const ids = getDb().prepare(
+  const queue = (getDb().prepare(
     'SELECT id FROM summaries WHERE agent_id = ? AND kind = ? ORDER BY earliest_at ASC, id ASC',
-  ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>;
+  ).all(agentId, UNCONDENSED_KIND) as Array<{ id: string }>).map((r) => r.id);
   const preferred = configuredModel(agentId);
   let replaced = 0;
   let failedWriter: string | null = null;
   let stoppedByOwner = false;
   let checkFailed = false;
-  for (const { id } of ids) {
+  while (queue.length > 0) {
+    const id = queue.shift()!;
     if (opts.abortSignal?.aborted) break;
     const all = getSummarySourceMessages(id);
     const source = all.filter((m) => !coveredElsewhere(m.id, id));
@@ -124,13 +159,16 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
     const content = buildLeafSummaryInput(source);
     let done = content.trim().length === 0;
     if (done) updateSummaryContent(id, NO_CONVERSATION_PLACEHOLDER, estimateTokens(NO_CONVERSATION_PLACEHOLDER));
+    const span = source.map((m) => ({ id: m.id, content: m.content }));
+    const left = new Set(writersLeft(agentId, span));
     for (const writer of eligibleSummaryWriters(preferred, agentId)) {
       if (done || opts.abortSignal?.aborted) break;
-      const summary = await generateSummary({ content, depth: 0, targetTokens: getLeafTargetTokens(), agentId, modelId: writer, abortSignal: opts.abortSignal, spanIds: source.map((m) => m.id) });
+      if (!left.has(writer)) continue;   // t269 round 2 (N1): it already said it cannot write this span whole
+      const summary = await generateSummary({ content, depth: 0, targetTokens: summaryTargetTokens(content), agentId, modelId: writer, abortSignal: opts.abortSignal, spanIds: source.map((m) => m.id) });
       if (!summary.ok) {
         if (summary.stopped) { stoppedByOwner = true; break; }   // the owner's Stop: not the writer's failure, and no next writer
         if (summary.checkFailed) { checkFailed = true; break; }  // v3.5: a verdict on this span — no other writer, left as it is
-        if (summary.tooBig) continue;                            // t149 F4: not dialled; the next writer may hold it
+        if (summary.tooBig) { recordRefusal(agentId, writer, span); continue; }   // t149 F4: more than it holds (or cut twice); the next may hold it
         if (abortBlamesWriter(opts.abortSignal)) failedWriter = writer;
         continue;
       }
@@ -140,6 +178,21 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
       done = true;
     }
     if (checkFailed) { checkFailed = false; continue; }   // v3.5 ruling: each span is its own — the next placeholder is not held
+    // t269 fix rounds 1–2 (I1, N1): EVERY candidate writer said it cannot write this span whole (one that was
+    // out was not asked, so it is not counted). Split it, down to single rows; a single row is kept whole behind
+    // its pointer (`unwritable-span.ts`). Each half is tried in this same pass, so a span of n rows costs at most
+    // 2n − 1 attempts per writer, once, until something changes.
+    if (!done && !stoppedByOwner && isMarkedUnwritable(agentId, span)) {
+      if (source.length > 1) {
+        const later = source.slice(Math.ceil(source.length / 2));
+        supersedeUncondensedPlaceholders(agentId, later.map((m) => m.id));
+        queue.unshift(id, placeholderFor(agentId, later));
+      } else {
+        keepRowWhole(agentId, id, source[0]);
+        replaced++;
+      }
+      continue;
+    }
     if (!done || stoppedByOwner) break;
     replaced++;
   }
@@ -164,6 +217,7 @@ async function replaceUnderLock(agentId: string, opts: { abortSignal?: AbortSign
  *  one-in-flight slot), only when a placeholder exists and some writer is answering. */
 export function replacePlaceholdersInBackground(agentId: string): boolean {
   try {
+    releaseChangedKeptRows(agentId);   // t269 fix round 1: a kept-whole row that changed is a placeholder again
     if (backgroundDrains.has(agentId) || !hasUncondensedPlaceholders(agentId)) return false;
     if (eligibleSummaryWriters(configuredModel(agentId), agentId).length === 0) return false;   // none answering: no dial
   } catch {

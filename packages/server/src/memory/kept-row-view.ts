@@ -39,6 +39,12 @@ import { attachmentBrackets, defangExternalMarkers } from '../tools/external-con
 /** The handle `tool_result_read` takes for a whole stored row (`msg:<message id>`), or for one text block of a
  *  structured row (`msg:<message id>#<block index>`). */
 export const KEPT_ROW_PREFIX = 'msg:';
+/** t269 fix round 1 (I1): a summaries-lane note standing for ONE stored row no summary writer could write
+ *  whole — the row as summary input shows it, pointered like a live row when long (`unwritable-span.ts`). */
+export const KEPT_WHOLE_KIND = 'kept_whole';
+/** t269 fix round 2: the handle that reads a whole summaries-lane note the room could not show whole (`note:<id>`). */
+export const KEPT_NOTE_PREFIX = 'note:';
+export const keptNoteHandle = (summaryId: string): string => `${KEPT_NOTE_PREFIX}${summaryId}`;
 export const keptRowHandle = (messageId: string, block?: number): string =>
   `${KEPT_ROW_PREFIX}${messageId}${block === undefined ? '' : `#${block}`}`;
 
@@ -175,11 +181,24 @@ function pointered(msg: Message, content: string): Message {
   return { ...msg, content, tokenCount: null };
 }
 
-/** Did a view of this agent, in its current session, point at row `messageId`? */
+/** Did a view of this agent, in its current session, point at row `messageId`? A kept-whole note of this
+ *  agent that shows the row's pointer is such a view (t269 fix round 1): it rides the summaries lane. */
 export function viewPointeredRow(agentId: string, messageId: string): boolean {
+  if (keptWholeNoteShows(agentId, messageId)) return true;
   const rows = pointeredRows.get(agentId);
   if (!rows?.has(messageId)) return false;
   if (rows.get(messageId) === sessionOf(agentId)) return true;
   rows.delete(messageId);   // shown before a reset: the new session's view cannot show it
   return false;
+}
+
+function keptWholeNoteShows(agentId: string, messageId: string): boolean {
+  try {
+    return !!getDb().prepare(
+      `SELECT 1 FROM summaries s JOIN summary_messages sm ON sm.summary_id = s.id
+        WHERE s.agent_id = ? AND s.kind = ? AND sm.message_id = ? AND instr(s.content, ?) > 0 LIMIT 1`,
+    ).get(agentId, KEPT_WHOLE_KIND, messageId, JSON.stringify(keptRowHandle(messageId)));
+  } catch {
+    return false;
+  }
 }

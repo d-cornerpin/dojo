@@ -78,7 +78,9 @@ describe('the placeholder replacer and a failed check', () => {
 });
 
 describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () => {
-  const span = { content: 'SPAN-A rows', depth: 0, targetTokens: 400, agentId: AGENT, spanIds: ['msg-1', 'msg-2'] };
+  // t269: a span is longer than the summaries scripted for it (a summary longer than its input is never kept).
+  const rows = (tag: string): string => `${tag} rows: ${'the owner asked which bay the next crate is for, and the agent answered. '.repeat(3)}`;
+  const span = { content: rows('SPAN-A'), depth: 0, targetTokens: 400, agentId: AGENT, spanIds: ['msg-1', 'msg-2'] };
 
   it('(i)+(ii) is handed to no other writer by any path, and not retried by the same writer, until something changes', async () => {
     const { generateSummary } = await import('../summarize.js');
@@ -113,7 +115,7 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
     await generateSummary({ ...span, spanIds: ['msg-9'], modelId: 'paid-own' });
     expect(refused()).toEqual([`${AGENT}|paid-own|msg-9`]);   // the old setting's rows are gone
     writers.fine.add('SPAN-B');
-    await generateSummary({ ...span, content: 'SPAN-B rows', spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
+    await generateSummary({ ...span, content: rows('SPAN-B'), spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
     expect(refused()).toEqual([]);   // summarized with a new row: no refusal left behind
   });
 

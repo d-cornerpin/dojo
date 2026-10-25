@@ -42,7 +42,7 @@ vi.mock('../../agent/model.js', () => ({
   getModelOutputCap: () => 4_096,
 }));
 
-import { generateSummary, truncateDeterministic } from '../summarize.js';
+import { generateSummary } from '../summarize.js';
 
 const RAW = [
   '[USER] here is a genuinely important business decision about the Verve deck',
@@ -93,26 +93,19 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
     expect(r.tokenCount).toBeGreaterThan(0);
   });
 
-  it('LEVEL 3 truncation stays ok:true — it truncates the MODEL\'S OUTPUT, not raw rows', async () => {
-    // Both calls return something far over target, so level 3 fires.
+  // t269: levels 2 and 3 are gone. Level 2 re-summarised the SUMMARY ("cut ruthlessly") and level 3 cut
+  // the middle out of it (`truncateDeterministic`; 10 stored notes carried its marker). An over-long
+  // answer is now written once more from the source, and one still longer than its input is not kept.
+  it('an answer far over its input is never truncated and never kept: the span is refused, rows kept', async () => {
     callModel.mockResolvedValue({ content: 'model prose '.repeat(2_000) });
     const r = await generateSummary({
       content: RAW, depth: 0, targetTokens: 20, agentId: 'zargo', modelId: 'deepseek/x',
     });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error(r.reason);
-    expect(r.text).toContain('tokens truncated');
-    expect(r.text).toContain('model prose');
-    // and crucially it is NOT the raw input
-    expect(r.text).not.toContain('Verve deck');
-  });
-
-  it('the truncation marker is unchanged — summary-rebuild detects it by substring', () => {
-    // Research 06 §5's truncation-marker collision note: harmonising this marker with the
-    // assembler's tool-result one would make every oversized tool result read as summariser
-    // fallback and permanently block the nightly rebuild. It stays exactly as it is.
-    const out = truncateDeterministic('x'.repeat(10_000), 100);
-    expect(out).toMatch(/\[\.\.\. \d+ tokens truncated \.\.\.\]/);
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).not.toContain('tokens truncated');
+    expect(JSON.stringify(r)).not.toContain('Verve deck');
+    // both calls read the SOURCE: neither is a summary of a summary
+    for (const call of callModel.mock.calls) expect(JSON.stringify(call)).toContain('Verve deck');
   });
 });
 

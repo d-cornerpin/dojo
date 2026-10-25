@@ -70,7 +70,7 @@ export const MIN_COMPACTABLE_ROWS = 6;
  * about, and the same floor `condense-until-fits.ts` calls progress.
  */
 export const FORCED_YIELD_FLOOR_TOKENS = 1_000;
-const FLOOR_STAGES: ReadonlySet<string> = new Set(['single_summary_at_floor', 'nothing_left_to_condense']);
+const FLOOR_STAGES: ReadonlySet<string> = new Set(['nothing_left_to_condense']);   // t269: the lone-note floor is gone with the lone-note rewrite
 
 
 /**

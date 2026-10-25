@@ -131,8 +131,7 @@ vi.mock('../summarize.js', async (importOriginal) => {
 import { runMigrations } from '../../db/migrations.js';
 import { checkAndCompact, estimateAssembledTokens, rebuildContextItems } from '../compaction.js';
 import {
-  condenseUntilFits, condensableSummaries, rawContextSummaryTokens, shrinkTarget,
-  CONDENSE_MAX_LEVELS, CONDENSE_MIN_TARGET_TOKENS,
+  condenseUntilFits, condensableSummaries, rawContextSummaryTokens, CONDENSE_MAX_LEVELS,
 } from '../condense-until-fits.js';
 import { compactionIsBraked, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../compaction-brakes.js';
 import { compactionFailureReason } from '../compaction-defect.js';
@@ -380,27 +379,23 @@ describe('§1 condensation recurses until the assembler will admit every summary
   });
 
   /**
-   * ⚠ ONE SUMMARY, ALONE, TOO BIG. The case with no fanout at all, and the one the owner
-   * named: *"re-summarize one oversized summary to a smaller target"*.
-   *
-   * THE MUTANT: make `shrinkTarget` return `ceilingTokens` unconditionally and the halving row
-   * goes RED; make `condenseLevel` skip `rows.length === 1` and the first row goes RED.
+   * ⚠ ONE SUMMARY, ALONE, TOO BIG. Until t269 it was re-summarised to half its size, again on every
+   * pass — the repetition that wore the oldest history down to ~3% of its facts (summary-quality
+   * investigation, H5). It is now left WHOLE: the summaries lane shows the newest note and names the
+   * ones it leaves out (`summaries-lane.ts`), and the next leaves give it peers. No call, no refusal,
+   * no card.
    */
-  it('a single oversized summary is re-summarised to a strictly smaller target', async () => {
+  it('t269: a single oversized summary is left whole — never rewritten into a smaller copy of itself', async () => {
     seedSummaries(1, 0, 40_000);
     const budget = await admitted();
     expect(held(), 'non-vacuity').toBeGreaterThan(budget);
 
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(calls.length, 'one lone summary costs one call').toBe(1);
-    expect(calls[0].targetTokens, 'asked for strictly less than it currently costs').toBeLessThan(40_000);
-    expect(held()).toBeLessThanOrEqual(await admitted());
-    // And the arithmetic itself, at both ends of its range: the ceiling binds on a huge one,
-    // the HALVING binds just above the budget, and the floor is never crossed.
-    expect(shrinkTarget(40_000, 6_000), 'the condensed ceiling binds on a huge summary').toBe(6_000);
-    expect(shrinkTarget(11_000, 6_000), 'and the halving binds below it').toBe(5_500);
-    expect(shrinkTarget(600, 6_000), 'never below the floor').toBe(CONDENSE_MIN_TARGET_TOKENS);
+    expect(calls.length, 'a lone note costs no call').toBe(0);
+    expect(held(), 'and it is kept as it was').toBe(40_000);
+    expect(compactionFailureReason(AGENT), 'nothing refused: there is nothing to repair').toBeNull();
+    // (A forced pass that bought nothing still arms the ordinary no-yield backoff, which new rows release.)
   });
 
   /**
@@ -463,31 +458,31 @@ describe('§1 condensation recurses until the assembler will admit every summary
     expect(passes, 'and in a handful of passes, not a long tail of them').toBeLessThanOrEqual(3);
     expect(compactionFailureReason(AGENT), 'with nothing reported as refusing').toBeNull();
     expect(compactionIsBraked(AGENT, true), 'and no brake left on an agent that succeeded').toBe(false);
-    // ⚠ AND DEPTH 3 — which the deleted loop's `newDepth` could never produce, so this is the
-    // capability that genuinely did not exist before, not the one the brief named.
-    expect(Math.max(...depthsWritten()), 'the DAG ceiling at depth 2 is gone').toBeGreaterThanOrEqual(3);
+    // t269: with targets proportional to their input, 43 leaves fit at depth 2 (43→11→3) in one pass;
+    // that the DAG has no depth ceiling is pinned by `t269-history-is-folded-once-per-level.test.ts`.
+    expect(Math.max(...depthsWritten()), 'merged up through the levels').toBeGreaterThanOrEqual(2);
   });
 
-  it('a lone summary already AT the floor is a defect report, not a card and not a loop', async () => {
-    seedSummaries(1, 0, CONDENSE_MIN_TARGET_TOKENS);
-    // Force the admitted budget below the floor so "every summary is at the floor" is real. t194: the
+  it('a lone small summary the view cannot admit: no call, no defect, no card (t269: the floor stage is gone)', async () => {
+    seedSummaries(1, 0, 500);
+    // Force the admitted budget below the note so "the view cannot admit it" is real. t194: the
     // tail no longer squeezes the summaries lane (that was the phantom budget; the cached phase is
     // granted first), so the squeeze is a window whose content room, after its own system prompt and
-    // reserve, gives the summaries lane less than one floor-sized summary.
+    // reserve, gives the summaries lane less than the note.
     // The tail is made weightless so that, in so tight a window, it is not itself the bloat (a
     // forced pass would rightly fold it): the lone summary is the clause's only subject.
     mockDb.current!.prepare('UPDATE messages SET token_count = 1 WHERE agent_id = ?').run(AGENT);
     const { view } = await estimateAssembledTokens(AGENT, 65_536, MODEL_64K);
     const tight = Math.ceil((view.systemTokens + view.reserveTokens + 1_000) / 0.96);
     __resetEstimateCacheForTests();
-    expect(held(), 'non-vacuity: a floor-sized summary that still will not be admitted')
+    expect(held(), 'non-vacuity: a small summary that still will not be admitted')
       .toBeGreaterThan((await estimateAssembledTokens(AGENT, tight, MODEL_64K)).summaryTokens);
 
     await checkAndCompact(AGENT, MODEL_64K, tight, { force: true });
 
-    expect(calls.length, 'the engine must not dial a model to shrink what cannot shrink').toBe(0);
-    expect(compactionFailureReason(AGENT)).toBe('single_summary_at_floor');
-    expect(frames.filter(f => f.type === 'chat:error'), 'and the owner is shown nothing: this is ours to fix').toEqual([]);
+    expect(calls.length, 'the engine must not dial a model to rewrite a lone note').toBe(0);
+    expect(compactionFailureReason(AGENT)).toBeNull();
+    expect(frames.filter(f => f.type === 'chat:error'), 'and the owner is shown nothing').toEqual([]);
   });
 });
 
@@ -504,32 +499,25 @@ describe('§2 the loop is finite per run, whatever the summariser does', () => {
    * and this clause hangs rather than reds — which is itself the finding, so the assertion
    * that carries the proof is the CALL COUNT: bounded, and bounded by a declared constant.
    */
-  it('a summariser that compresses nothing produces ONE bounded pass, a defect line and a brake', async () => {
+  it('a summariser that compresses nothing: each note is merged into the level above ONCE, and the next pass dials nothing', async () => {
     answer = echoesItsInput;
     seedSummaries(8, 0, 6_000);
     expect(held(), 'non-vacuity').toBeGreaterThan(await admitted());
 
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    // t140 round 6 (H3): the per-run call cap is gone; finiteness rests on the level ceiling, so
-    // the bound is at most one call per seeded summary per level.
-    expect(calls.length, 'bounded by the level ceiling, whatever the summariser does').toBeLessThanOrEqual(8 * CONDENSE_MAX_LEVELS);
+    // t269: the bound is the structure — 8 leaves → 2 parents → 1 (a note is merged once), so the
+    // calls are at most one fewer than the notes, whatever the summariser returns.
+    expect(calls.length, 'bounded by the notes, whatever the summariser does').toBeLessThanOrEqual(8 - 1);
     expect(calls.length, 'and it really did try — a bound that stops at zero proves nothing').toBeGreaterThan(0);
+    expect(calls.length).toBeLessThanOrEqual(8 * CONDENSE_MAX_LEVELS);
     expect(held(), 'the adversary wins: nothing was reclaimed').toBeGreaterThan(await admitted());
-    expect(compactionFailureReason(AGENT), 'so a stage is named for repair')
-      .toBe('single_summary_did_not_shrink');
     expect(frames.filter(f => f.type === 'chat:error'), 'and no dead-end card is shown').toEqual([]);
 
-    // AND NO SECOND PASS INSIDE THE WINDOW — the anti-thrash half, under force.
+    // AND NO SECOND PASS — the anti-thrash half, under force: one note left, no peer, nothing to dial.
     const callsAfterFirst = calls.length;
-    expect(compactionIsBraked(AGENT, true), 'the brake binds the next EMERGENCY too').toBe(true);
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
-    expect(calls.length, 'a second forced pass inside the window must dial nothing').toBe(callsAfterFirst);
-
-    // …AND IT IS NOT FOR EVER. The brake expires, and the next pressure tries again.
-    vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + LOW_YIELD_BACKOFF_MS + 1);
-    expect(compactionIsBraked(AGENT, true), 'OR-COMPACT-1: no brake may outlive its clock').toBe(false);
+    expect(calls.length, 'a second forced pass must dial nothing').toBe(callsAfterFirst);
   });
 
   it('the declared bounds are small enough to be a bound at all', () => {
@@ -792,63 +780,50 @@ describe('§0 the FIXTURES themselves are shapes a real box can produce (t111-B2
   });
 });
 
-describe('§5 a level is the WHOLE top-level set, at any mix of depths', () => {
+describe('§5 a level merges peers of ONE depth (t269; it was the whole top-level set at any mix of depths)', () => {
   /**
-   * ⚠ REVIEW C1, REPRODUCED AND THEN FIXED. The first cut took the SHALLOWEST depth holding
-   * top-level rows and condensed only that, and ran the lone arm on a single row by itself. So
-   * a depth-3 12,000-token summary beside a depth-0 400-token leaf was a dead end, measured at
-   * the previous HEAD by the reviewer and again by me before touching anything:
-   *
-   *     PROBE A  held=12400 admitted=9982 condensable=2
-   *     PROBE A  after: calls=0 held=12400 stage=single_summary_at_floor braked=true cards=0
-   *
-   * Zero calls, a force-binding brake, a stage that says "at the floor" about an agent holding
-   * 12,000 condensable tokens, and the same refusal every fifteen minutes. That is "compaction
-   * ends" for a shape with two compressible summaries — the one thing the ruling forbids. And it
-   * is not exotic: it is the repaired agent's own state the day after repair (top-level depth 3)
-   * the moment routine leaf compaction writes one small leaf.
-   *
-   * THE MUTANT: restore the per-depth selection — `const rows = getLeafSummariesNotCondensed(
-   * agentId, topLevelByDepth(agentId)[0].depth)` in place of `topLevelRows(agentId)` — and this
-   * clause goes RED with calls=0 and that false stage.
+   * REVIEW C1's shape — a depth-3 12,000-token summary beside a depth-0 400-token leaf — merged the
+   * deep note with the leaf at `max depth + 1`. That merge is the erosion t269 removes: the oldest
+   * history went through the writer again with every new leaf (one chain reached depth 72). Now the
+   * two are left whole: no call, nothing refused. The summaries lane shows the newest and
+   * names the older one it leaves out; the next leaves give the leaf its peers.
    */
-  it('⚠ C1: a deep oversized summary beside a shallow tiny leaf MERGES, in one call', async () => {
+  it('C1 shape: a deep summary beside a shallow leaf is NOT merged, and nothing is reported as failing', async () => {
     seedMixed([{ depth: 3, tokens: 12_000 }, { depth: 0, tokens: 400 }]);
-    const budget = await admitted();
-    expect(held(), 'non-vacuity: the probed shape, and it really is over').toBeGreaterThan(budget);
-    expect(condensableSummaries(AGENT), 'the engine can see two summaries to merge').toBe(2);
+    expect(held(), 'non-vacuity: the probed shape, and it really is over').toBeGreaterThan(await admitted());
+    expect(condensableSummaries(AGENT), 'no depth holds two notes').toBe(0);
 
     await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
 
-    expect(calls.length, 'two rows are a batch of two — one model call, not zero').toBeLessThanOrEqual(2);
-    expect(calls.length, 'and not zero: the first cut spent nothing at all').toBeGreaterThan(0);
-    expect(held(), 'and the bloat is gone').toBeLessThanOrEqual(await admitted());
+    expect(calls.length, 'no call').toBe(0);
+    expect(depthsWritten(), 'both notes as they were').toEqual([3, 0]);
     expect(compactionFailureReason(AGENT), 'nothing refused').toBeNull();
-    expect(compactionIsBraked(AGENT, true), 'and no brake on an agent that succeeded').toBe(false);
-    // The parent records the DEEPEST fold it contains, not the shallowest child's depth.
-    expect(Math.max(...depthsWritten()), 'max(child depth) + 1').toBe(4);
   });
 
-  /**
-   * ⚠ THE INVARIANT THE FIRST CUT VIOLATED, and the reason C1 was a Critical rather than a
-   * fixture gap: `condensableSummaries` counted the whole top-level set while the loop looked at
-   * one depth, so the engine promised a merge it would not attempt. Driven over five mixed-depth
-   * shapes, each with a working summariser, because one shape is one anecdote.
-   */
+  /** The invariant review C1 named, kept: `condensable >= 2` ⇒ a forced pass writes a parent. */
   it.each([
-    [[{ depth: 0, tokens: 8_000 }, { depth: 5, tokens: 8_000 }], 'shallow + very deep'],
-    [[{ depth: 2, tokens: 9_000 }, { depth: 3, tokens: 9_000 }, { depth: 4, tokens: 500 }], 'three depths, one at the floor'],
-    [[{ depth: 7, tokens: 11_000 }, { depth: 0, tokens: 600 }], 'past the old halving chain\'s reach'],
     [[{ depth: 1, tokens: 6_000 }, { depth: 1, tokens: 6_000 }, { depth: 4, tokens: 6_000 }], 'two same-depth plus a deeper one'],
-    [[{ depth: 0, tokens: 400 }, { depth: 0, tokens: 400 }, { depth: 6, tokens: 20_000 }], 'two floor leaves and a huge parent'],
-  ] as const)('condensable >= 2 ⇒ a forced pass writes a parent (%#: %s)', async (rows) => {
+    [[{ depth: 0, tokens: 400 }, { depth: 0, tokens: 400 }, { depth: 6, tokens: 20_000 }], 'two small leaves and a huge parent'],
+    [[{ depth: 2, tokens: 9_000 }, { depth: 2, tokens: 9_000 }, { depth: 2, tokens: 500 }], 'three of one depth'],
+  ] as const)('condensable >= 2 ⇒ a forced pass writes a parent, one depth above its peers (%#: %s)', async (rows) => {
     seedMixed([...rows]);
     expect(condensableSummaries(AGENT)).toBeGreaterThanOrEqual(2);
-    const before = depthsWritten().length;
     const result = await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
     expect(result.condensedCreated, 'the engine may not see a merge it refuses to attempt').toBeGreaterThan(0);
-    expect(depthsWritten().length, 'and a new depth really was written').toBeGreaterThan(before - 1);
+    const peerDepth = rows.find((r, i) => rows.some((o, j) => j !== i && o.depth === r.depth))!.depth;
+    expect(calls.every((c) => c.depth === peerDepth + 1), 'a parent sits one depth above its peers').toBe(true);
     expect(compactionFailureReason(AGENT), 'a pass that merged is not failing').toBeNull();
+  });
+
+  it.each([
+    [[{ depth: 0, tokens: 8_000 }, { depth: 5, tokens: 8_000 }], 'shallow + very deep'],
+    [[{ depth: 7, tokens: 11_000 }, { depth: 0, tokens: 600 }], 'a deep chain and a new leaf'],
+  ] as const)('no two notes of one depth ⇒ no call and no defect (%#: %s)', async (rows) => {
+    seedMixed([...rows]);
+    expect(condensableSummaries(AGENT)).toBe(0);
+    await checkAndCompact(AGENT, MODEL_64K, 65_536, { force: true });
+    expect(calls.length).toBe(0);
+    expect(compactionFailureReason(AGENT)).toBeNull();
   });
 
   /**

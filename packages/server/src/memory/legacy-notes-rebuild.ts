@@ -31,13 +31,13 @@ import { createLogger } from '../logger.js';
 import type { Message } from '@dojo/shared';
 import {
   buildLeafSummaryInput, chunkMessages, getLeafChunkTokens, rebuildContextItems, resolveSummaryWriterModel,
-  NO_CONVERSATION_PLACEHOLDER, SUMMARY_TARGET_TOKENS,
+  NO_CONVERSATION_PLACEHOLDER,
 } from './compaction.js';
 import { createLeafSummary, deleteSummary, getDescendantMessages, getSummary } from './dag.js';
 import { generateSummary, getDepthPrompt } from './summarize.js';
 import { estimateTokens } from './budget.js';
 import { annotateSummaryObligations } from './summary-obligations.js';
-import { CONDENSE_MIN_TARGET_TOKENS } from './condense-until-fits.js';
+import { summaryTargetTokens } from './summary-target.js';
 import { rowSubjectKeys } from './summary-subject.js';
 import { agentBusy, waitReason } from './rebuild-signals.js';
 import { CLASSIFY_SQL } from './notes-classify-sql.js';
@@ -83,11 +83,6 @@ function queuedUnits(): Unit[] {
 
 const chunkKey = (rows: readonly Message[]): string => createHash('sha256').update(rows.map((m) => m.id).join('\n')).digest('hex').slice(0, 32);
 
-/** The rebuilt notes keep the agent's footprint: the older note's size, shared by its conversations. */
-function targetFor(unit: Unit, chunkTokens: number, unitTokens: number): number {
-  const share = unitTokens > 0 ? Math.round(unit.tokenCount * (chunkTokens / unitTokens)) : SUMMARY_TARGET_TOKENS.leaf;
-  return Math.max(CONDENSE_MIN_TARGET_TOKENS, Math.min(SUMMARY_TARGET_TOKENS.leaf, share));
-}
 
 /** Stage every chunk of one queued note. True when the note is fully staged. */
 async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats): Promise<'staged' | 'lost' | string> {
@@ -99,7 +94,6 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     return 'lost';
   }
   const chunks = chunkMessages(rows, getLeafChunkTokens());
-  const unitTokens = rows.reduce((t, m) => t + (m.tokenCount ?? estimateTokens(m.content)), 0);
   const staged = new Set((db.prepare('SELECT chunk_key FROM summary_rebuild_staged WHERE unit_id = ?').all(unit.id) as Array<{ chunk_key: string }>).map((r) => r.chunk_key));
   const insert = db.prepare(`INSERT OR REPLACE INTO summary_rebuild_staged (unit_id, chunk_key, agent_id, subject_key, content, token_count, message_ids)
                              VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -110,7 +104,7 @@ async function stageUnit(unit: Unit, writer: string, stats: LegacyRebuildStats):
     const content = buildLeafSummaryInput(chunk);
     let text = NO_CONVERSATION_PLACEHOLDER;
     if (content.trim().length > 0) {
-      const target = targetFor(unit, chunk.reduce((t, m) => t + (m.tokenCount ?? estimateTokens(m.content)), 0), unitTokens);
+      const target = summaryTargetTokens(content);   // t269: the one target rule, proportional to the input
       const inputTokens = estimateTokens(content) + estimateTokens(getDepthPrompt(0, target, undefined, unit.agentId));
       const wait = waitReason(unit.agentId, writer, inputTokens, target);
       if (wait) return wait;

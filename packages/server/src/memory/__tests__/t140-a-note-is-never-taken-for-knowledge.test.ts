@@ -139,6 +139,11 @@ describe('t140 — a not-yet-condensed note is never taken for knowledge', () =>
 //                           where a note has no children and is SKIPPED, never written — and a
 //                           note's fixed text is never flagged in the first place (witnessed above).
 //   uncondensed-head.ts / uncondensed-placeholder.ts   the identity itself.
+// t269 fix round 1 — the fourth value, 'kept_whole' (one row no writer could summarise, kept whole behind
+// its pointer), reviewed against every reader above: the lane labels it; backfill and embedding treat it as
+// a leaf (its text is the row as summary input shows it, scrubbed); the condenser never merges it; dag.ts
+// expands it to its one row; retrieval prints it; the rebuild skips it (no children). And one new reader:
+//   kept-row-view.ts        a kept-whole note that shows a row's pointer lets `tool_result_read` read that row.
 // A NEW reader of the kind anywhere in memory/ (or the memory routes) fails this until it is reviewed
 // for the third value and added here.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -156,7 +161,7 @@ describe('t140 — census: every reader of summaries.kind has been reviewed for 
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1').split('\n').some((l) => RE.test(l)));
     expect(readers.sort()).toEqual([
       'memory/backfill.ts', 'memory/condense-until-fits.ts', 'memory/dag.ts',
-      'memory/embedding-sources.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
+      'memory/embedding-sources.ts', 'memory/kept-row-view.ts', 'memory/retrieval.ts', 'memory/summaries-lane.ts', 'memory/summary-rebuild.ts',
       'memory/uncondensed-head.ts', 'memory/uncondensed-placeholder.ts',
     ]);
   });

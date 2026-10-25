@@ -16,7 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { insertMessageIfAbsent, type NewMessage } from './message-store.js';
-import { KEPT_ROW_PREFIX, argumentText, callInputText, contentBlocksOf, isMedia, keptRowText, oversizeMediaNote, viewPointeredRow } from './kept-row-view.js';
+import { KEPT_ROW_PREFIX, KEPT_NOTE_PREFIX, argumentText, callInputText, contentBlocksOf, isMedia, keptRowText, oversizeMediaNote, viewPointeredRow } from './kept-row-view.js';
 
 /** The whole of one long result, as the recorder hands it over. */
 export interface KeptWhole {
@@ -63,6 +63,11 @@ export function findToolResult(agentId: string, toolUseId: string): FoundResult 
   const db = getDb();
   // v3.5 D18 r3: a stored row too long for the view (`kept-row-view.ts`) is named `msg:<id>`; the row is the whole.
   if (toolUseId.startsWith(KEPT_ROW_PREFIX)) return findKeptRow(agentId, toolUseId.slice(KEPT_ROW_PREFIX.length));
+  // t269 fix round 2: a note the summaries lane showed as its pointer (`summaries-lane.ts`) is read whole here.
+  if (toolUseId.startsWith(KEPT_NOTE_PREFIX)) {
+    const note = db.prepare('SELECT content FROM summaries WHERE agent_id = ? AND id = ?').get(agentId, toolUseId.slice(KEPT_NOTE_PREFIX.length)) as { content: string } | undefined;
+    return note ? { content: note.content, toolName: null } : null;
+  }
   const kept = db.prepare(
     `SELECT content, tool_name FROM kept_tool_results WHERE agent_id = ? AND tool_use_id = ?
      ORDER BY rowid DESC LIMIT 1`,

@@ -206,11 +206,12 @@ describe('the dial is wired at its call site, not merely available', () => {
     const calls = src.match(/callModel\(\{/g)?.length ?? 0;
     const purposes = src.match(/purpose: 'memory_summarize'/g)?.length ?? 0;
     const targets = src.match(/utilityTargetTokens:/g)?.length ?? 0;
-    expect(calls).toBe(2);
+    // t269: the aggressive retry (a re-summary of the summary at half the target) is gone; every writer
+    // call — the first, a cut answer asked again with room, a rewrite — goes through ONE declared call site.
+    expect(calls).toBe(1);
     expect(purposes, 'every callModel in the summariser must declare its purpose').toBe(calls);
     expect(targets, 'and each must carry the target its own prompt promised the model').toBe(calls);
-    // The retry's target is HALF the first pass's, which is the number its prompt states out loud.
-    expect(src).toContain('utilityTargetTokens: Math.floor(targetTokens / 2)');
+    expect(src).not.toContain('Math.floor(targetTokens / 2)');
   });
 
   it('the title dial DECLARES its purpose', () => {
