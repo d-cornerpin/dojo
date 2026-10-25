@@ -50,15 +50,16 @@ export function proveNoul(purpose: string, question: string): void {
   for (let i = 0; i < 8; i++) seed(200 + i, i % 2 === 0, 0.55);
 }
 
-/** The same for a `choice` question: the model names the truth (confidence 0.9) on 60 rows; the rule says `ruleAlways`. */
+/**
+ * The same for a `choice` question: the model names the truth (confidence 0.9) on 60 rows while the rule always says
+ * `ruleAlways`, plus 6 rows at confidence 0.35 where it is right half the time (the 0.3–0.4 decile is its weak band).
+ */
 export function proveChoice(purpose: string, question: string, truths: string[], ruleAlways: string): void {
-  for (let i = 0; i < 60; i++) {
-    const truth = truths[i % truths.length];
+  const seed = (i: number, truth: string, said: string, confidence: number): void => {
     const turnId = `proof-${purpose}-${question}-${i}`;
-    recordShadow({
-      purpose, question, turnId, ruleSaid: ruleAlways,
-      modelSaid: { type: 'choice', choice: truth, probabilities: { [truth]: 0.9 }, confidence: 0.9 },
-    });
+    recordShadow({ purpose, question, turnId, ruleSaid: ruleAlways, modelSaid: { type: 'choice', choice: said, probabilities: { [said]: confidence }, confidence } });
     recordTruth(turnId, question, truth, 'test: measured accuracy');
-  }
+  };
+  for (let i = 0; i < 60; i++) { const t = truths[i % truths.length]; seed(i, t, t, 0.9); }
+  for (let i = 0; i < 6; i++) { const t = truths[i % truths.length]; seed(100 + i, t, i % 2 === 0 ? t : `not-${t}`, 0.35); }
 }

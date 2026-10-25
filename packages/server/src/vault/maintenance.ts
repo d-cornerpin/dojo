@@ -42,6 +42,8 @@ import { announceLessons, lessonReportLines } from './lessons-announce.js';
 import { homeDir } from '../home.js';
 import { fenceExternal } from '../tools/external-content.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
+import { isFiller, beginFillerPass } from './filler.js';
+import { settleFiller } from '../memory/shape-judgment.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -285,42 +287,8 @@ const BATCH_BUDGET_CAP_RATIO = 0.35;
 // agree on what is plumbing vs. conversation. Imported below; the local
 // isPlatformNoise wrapper is kept so callers here are unchanged.
 
-// Conversational filler, acknowledgments. Drop the whole message if its
-// trimmed content matches. Length-bounded so prose containing "got it"
-// doesn't get false-positived.
-const ACK_FILLER_PATTERNS: RegExp[] = [
-  /^(sure|got it|okay|ok|alright|understood|will do|on it|working on it now?|let me think( about (this|that))?|let me check|one moment|hmm|hmmm|right|yep|yes|no problem|sounds good|makes sense|of course)[.!]?$/i,
-  /^(thanks|thank you)[.!]?$/i,
-];
-
-// Process narration the agent emits between tool calls, pure scaffolding.
-// Only the assistant narrates its own process; a user opening with "I'll…"
-// or "First,…" is stating a plan or a fact, not scaffolding.
-const ASSISTANT_NARRATION_PATTERNS: RegExp[] = [
-  /^(let me |i'?ll |i'?m going to |now i'?ll |first,? |next,? |then,? )/i,
-  /^(checking|searching|reading|writing|looking at|analyzing|processing|continuing|proceeding)\b/i,
-  /^(i found|i see|i notice|i can see|i'?ve found)\b/i,
-];
-
 function isPlatformNoise(content: string): boolean {
   return isSharedPlatformNoise(content);
-}
-
-function isFiller(content: string, role: string): boolean {
-  const trimmed = content.trim();
-  if (trimmed.length === 0) return true;
-  // Allow process-narration patterns to be caught up to ~80 chars (one
-  // sentence). True prose >100 chars is never filler.
-  if (trimmed.length > 100) return false;
-  for (const pat of ACK_FILLER_PATTERNS) {
-    if (pat.test(trimmed)) return true;
-  }
-  if (role === 'assistant') {
-    for (const pat of ASSISTANT_NARRATION_PATTERNS) {
-      if (pat.test(trimmed)) return true;
-    }
-  }
-  return false;
 }
 
 // Extract just the text portion from an assistant content-block array.
@@ -1102,6 +1070,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   const { markConversationProcessed } = await import('./store.js');
   const unprocessed: VaultConversation[] = [];
   let autoSkipped = 0;
+  beginFillerPass();
   for (const conv of allUnprocessed) {
     const reason = classifyTrivial(conv);
     if (reason) {
@@ -1112,6 +1081,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
       unprocessed.push(conv);
     }
   }
+  await settleFiller(getDreamerAgentId());
   if (autoSkipped > 0) {
     logger.info(`Engine triage: auto-skipped ${autoSkipped} trivial archives, ${unprocessed.length} remain for the Dreamer`);
   }
@@ -1419,6 +1389,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   // behavior) and collect non-trivial rows until the raw token superset bound.
   const remaining: VaultConversation[] = [];
   let subsetTokens = 0;
+  beginFillerPass();
   for (const meta of queueMeta) {
     if (subsetTokens > contextWindow * 2 && remaining.length > 0) break;
     const conv = getUnprocessedConversationById(meta.id);
@@ -1432,6 +1403,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
     remaining.push(conv);
     subsetTokens += Math.max(1, meta.tokenCount);
   }
+  await settleFiller(getDreamerAgentId());
   if (remaining.length === 0) return false;
 
   const batches = batchArchives(remaining, contextWindow);

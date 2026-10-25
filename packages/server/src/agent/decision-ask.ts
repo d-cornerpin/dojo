@@ -39,6 +39,9 @@ export interface JudgmentSpec {
   /** The material the questions are about; every text in it is fenced by `decide()`. */
   state: unknown;
   questions: Record<string, Question>;
+  /** When one question is asked many times over (a batch of messages), the name it is scored under: the log and
+   *  the policy see `questionOf(name)`, not the batch's own key. */
+  questionOf?: (name: string) => string;
 }
 
 export interface Judgment {
@@ -93,11 +96,12 @@ export function judgment(spec: JudgmentSpec, key?: object): Judgment {
   const known = key ? memo.get(key) : undefined;
   if (known) return known;
   const turnId = spec.turnId ?? randomUUID();
+  const scored = (name: string): string => spec.questionOf?.(name) ?? name;
   const modes = new Map<string, Mode>();
   const modeOf = (name: string): Mode => {
     let m = modes.get(name);
     if (!m) {
-      try { m = name in spec.questions ? modeFor(spec.purpose, name) : 'rule'; } catch { m = 'rule'; }
+      try { m = name in spec.questions ? modeFor(spec.purpose, scored(name)) : 'rule'; } catch { m = 'rule'; }
       modes.set(name, m);
     }
     return m;
@@ -115,7 +119,7 @@ export function judgment(spec: JudgmentSpec, key?: object): Judgment {
   const settle = (name: string, ruleSaid: unknown, modelSaid: Answer | null): void => {
     if (!modelSaid) return;   // no answer: nothing to compare (the log keeps judged rows)
     track(Promise.resolve(ruleSaid).then((rule) => {
-      recordShadow({ purpose: spec.purpose, question: name, agentId: spec.agentId, turnId, ruleSaid: rule, modelSaid });
+      recordShadow({ purpose: spec.purpose, question: scored(name), agentId: spec.agentId, turnId: spec.questionOf ? `${turnId}:${name}` : turnId, ruleSaid: rule, modelSaid });
     }));
   };
   const judged: Judgment = {
@@ -131,7 +135,7 @@ export function judgment(spec: JudgmentSpec, key?: object): Judgment {
         return ask().then((all) => {
           const a = all?.[name] ?? null;
           settle(name, ruleSaid, a);
-          return a ? decisiveVerdict(spec.purpose, name, a, opts?.strict === true) : null;
+          return a ? decisiveVerdict(spec.purpose, scored(name), a, opts?.strict === true) : null;
         }).catch(() => null);
       } catch { return Promise.resolve(null); }
     },
