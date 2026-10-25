@@ -4,6 +4,9 @@
 
 import { createLogger } from '../logger.js';
 import { retryStandardModelsIfMissing } from './local-standard.js';
+import { getDb } from '../db/connection.js';
+import { writersMayBeBack } from '../memory/writer-wait.js';
+import { freeMemoryMayBeReadable } from '../memory/writer-no-room.js';
 
 const logger = createLogger('ollama');
 
@@ -43,6 +46,7 @@ export async function checkOllamaHealth(baseUrl?: string): Promise<boolean> {
       cachedStatus.models = (data.models ?? []).map(m => m.name);
       // v3.5 (fix round 1, I-2): Ollama answering is the signal to retry a missing standard model.
       retryStandardModelsIfMissing(cachedStatus.models, url);
+      ollamaAnswered(url);   // t268 breaker fix: a waiting summary writer on this Ollama is re-tested
     }
 
     return healthy;
@@ -197,6 +201,17 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
     });
     return null;
   }
+}
+
+/** Ollama at `url` answered: its free memory may be readable again, and each Ollama provider there is a signal for a
+ *  summary span waiting on a writer it serves (`memory/writer-wait.ts`). */
+function ollamaAnswered(url: string): void {
+  freeMemoryMayBeReadable();
+  try {
+    const norm = (u: string | null): string => (u ?? DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
+    const rows = getDb().prepare("SELECT id, base_url FROM providers WHERE type = 'ollama'").all() as Array<{ id: string; base_url: string | null }>;
+    for (const r of rows) if (norm(r.base_url) === norm(url)) writersMayBeBack(r.id);
+  } catch { /* no database yet: nothing waits */ }
 }
 
 export function getOllamaStatus(): { available: boolean; models: string[]; lastCheck: string } {

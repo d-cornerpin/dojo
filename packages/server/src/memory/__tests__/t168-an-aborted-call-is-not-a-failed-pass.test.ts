@@ -73,7 +73,8 @@ import { compactionFailureReason, compactionFailingCardText } from '../compactio
 import { rawContextSummaryTokens } from '../condense-until-fits.js';
 import { __resetEstimateCacheForTests } from '../assembled-estimate-cache.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { __resetSummaryWriterHealthForTests, noteAPersonSpoke } from '../summary-writer-health.js';
+import { __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { writersMayBeBack } from '../writer-wait.js';
 
 const AGENT = 'agent-t168-aborted';
 const PROVIDER = 'prov-t168';
@@ -173,8 +174,9 @@ describe('t168 (i) an aborted summariser call leaves no brake, and the next forc
 
     script = writes;
     // t268 round 5 (edited): the cut call left its writer not answering, and nothing comes after it in the order, so a
-    // forced pass waits rather than dial it again; a person's next turn is the change that earns it the retry.
-    noteAPersonSpoke(AGENT);
+    // forced pass waits rather than dial it again. Breaker fix: its model answering a call (what `recordProviderSuccess`
+    // hands on for every successful call) is the change that earns it the retry.
+    writersMayBeBack(PROVIDER, { modelId: MODEL, purpose: 'agent_turn' });
     await checkAndCompact(AGENT, MODEL, WINDOW, { force: true, abortSignal: new AbortController().signal });
 
     expect(brakeSkips(), 'the pass was not skipped by a brake').toEqual([]);

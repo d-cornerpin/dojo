@@ -12,6 +12,8 @@
 //     loaded model, sometimes) the writer cannot run now — `noRoom`: nothing is halved, and the writer is passed
 //     over for this agent until its own model is reachable again (`writer-no-room.ts`). Nothing comes after it in
 //     the order, so the span waits, rows whole, for the agent's own model.
+//   · t268 breaker fix (minor c): the free memory cannot be read (a failed `/api/ps` or `/api/show`): it is UNKNOWN,
+//     and the writer is not admitted on an unknown — the same `noRoom`, logged once per outage, never "all free".
 // When summaries are ASSIGNED to the writer its room is reserved, and nothing here refuses.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -25,6 +27,8 @@ import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('writer-fallback-room');
 const NO_ROOM: SummaryResult = { ok: false, reason: 'the memory free now cannot hold a summary on the Dojo\'s writer', tooBig: true, noRoom: true };
+/** The free memory could not be read during this outage (told once; the next good read ends the outage). */
+let unreadable = false;
 
 export async function refuseFallbackOverFreeMemory(
   modelId: string, systemPrompt: string, content: string, targetTokens: number, agentId: string,
@@ -33,7 +37,13 @@ export async function refuseFallbackOverFreeMemory(
   if (writerHadNoRoom(agentId)) return NO_ROOM;   // already found with no room for this agent: nothing is read again
   const { freeWriterWindowTokens } = await import('../agent/local-model-fit.js');
   const free = await freeWriterWindowTokens();
-  if (free === null) return null;
+  if (free === null) {
+    if (!unreadable) logger.warn('SUMMARY_REFUSED the memory free now cannot be read; the Dojo\'s writer is not admitted on an unknown, the span waits', {}, agentId);
+    unreadable = true;
+    noteWriterHadNoRoom(agentId, true);
+    return NO_ROOM;
+  }
+  unreadable = false;
   const windowFor = (inputChars: number): number => utilityNumCtx({ inputChars, charsPerToken: writerCharsPerToken(),
     outputTokens: utilityOutputCap(utilityDial('memory_summarize')!, targetTokens), configuredNumCtx: null });
   const need = windowFor(systemPrompt.length + content.length);

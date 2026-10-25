@@ -379,8 +379,8 @@ export interface CheckAndCompactOptions {
    * actually serving the turn, whose declared ceiling the trigger keys on. Absent, it is
    * `modelId`. It is kept APART from `modelId` because `modelId` is the summary WRITER's
    * preference (`resolveSummaryWriterModel`): an auto-routed loop locked to an expensive routed
-   * model must still have its summaries written by the owner's compaction model, else the
-   * cheapest text model, exactly as before t140.
+   * model must still have its summaries written by the owner's compaction model, else its own
+   * (its router's standard pick), else the Dojo's small writer — nothing after (t268 round 5).
    */
   dialedModelId?: string;
   /** t140: a background fold — with no writer answering it dials nothing (round 6). */
@@ -446,7 +446,7 @@ async function runCheckAndCompact(
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
     const resolved = resolveSummaryWriterModel(agentId, modelId, { background: options?.inTheBackground });
-    if (!resolved && (options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {
+    if (!resolved && (spanWaitsForAWriter(agentId) || options?.inTheBackground || summaryWriterCandidates(modelId, agentId).length > 0)) {   // the wait is recorded (breaker fix)
       logger.info('No summary writer can run now: the span waits for one, rows whole', {}, agentId);
       if (options?.force) notePassOutcome(agentId, true, NO_COMPACTION, { stage: 'summary_writer_unavailable', modelId: summaryWriterCandidates(modelId, agentId)[0], waiting: true });   // t268 r5: told, never braked
       return NO_COMPACTION;

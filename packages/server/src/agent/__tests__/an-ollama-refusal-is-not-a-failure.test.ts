@@ -194,7 +194,7 @@ describe('T81b review round, finding 2 — a pre-dial refusal is not logged or c
     const result = await call(SHORT_MESSAGE);
     expect(result.content).toBe('It is done.');
     expect(requests).toBe(1);
-    expect(recordProviderSuccessSpy).toHaveBeenCalledWith('local-ollama');
+    expect(recordProviderSuccessSpy).toHaveBeenCalledWith('local-ollama', expect.objectContaining({ modelId: expect.any(String) }));   // t268: and which model answered
   });
 
   it('CONTROL (byte-preservation): NULL throughput dials the SAME oversized prompt exactly as today', async () => {

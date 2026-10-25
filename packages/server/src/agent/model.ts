@@ -1594,7 +1594,7 @@ async function callOllamaModel(
     // t268 (I-3): a text dial's characters against Ollama's own prompt_eval_count teach THIS model its density.
     if (dialNumCtxInput && dialNumCtxInput.imageBase64Lengths.length === 0) recordDensitySample(modelId, dialNumCtxInput.inputChars, inputTokens, dialNumCtx);
 
-    recordProviderSuccess(modelInfo.providerId);
+    recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     logger.info('Ollama native call completed', {
       model: ollamaModelName,
@@ -2648,7 +2648,7 @@ async function callOpenAIModel(
       inputTokensEstimated,
     });
 
-    recordProviderSuccess(modelInfo.providerId);
+    recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     // ── Text-based tool call fallback ──
     // Some models (MiniMax, older Gemini) occasionally fall back to
@@ -3047,7 +3047,7 @@ async function callAnthropicSdkModel(
     });
 
     const latencyMs = Date.now() - startTime;
-    recordProviderSuccess(modelInfo.providerId);
+    recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     // Record cost (estimated for subscription)
     try {
@@ -3717,7 +3717,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
     }
 
     // Track provider health
-    recordProviderSuccess(modelInfo.providerId);
+    recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     logger.info('Model call completed', {
       model: modelInfo.apiModelId,

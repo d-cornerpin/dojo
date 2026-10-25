@@ -18,6 +18,9 @@ vi.mock('../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: asyn
 vi.mock('../../vault/archive.js', () => ({
   archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'), isDreamerIgnored: vi.fn(() => false), getArchiveHighWaterMark: vi.fn(() => null),
 }));
+// t268 breaker fix (edited): memory that cannot be read no longer counts as free, and this box's Ollama is not served
+// here; memory is not this file's question, so the fallback's room is held to "fits", as in the other writer files.
+vi.mock('../writer-fallback-room.js', () => ({ refuseFallbackOverFreeMemory: async () => null }));
 const writers = vi.hoisted(() => ({ calls: [] as Array<{ modelId: string; content: string }> }));
 vi.mock('../../agent/model.js', () => ({
   callModel: async (p: { modelId: string; messages: Array<{ content: string }> }) => {

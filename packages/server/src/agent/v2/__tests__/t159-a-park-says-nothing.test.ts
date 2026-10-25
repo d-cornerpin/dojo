@@ -666,6 +666,8 @@ describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the st
       'agent/v2/full-context-wait.ts', 'agent/v2/full-context-wait.ts',
       // v3.5 D18 r5: a turn whose forced pass found another compaction holding the lock parks until it lands.
       'agent/v2/full-context-wait.ts',
+      // t268 breaker fix: a forced pass with no summary writer able to run parks until one is back.
+      'agent/v2/full-context-wait.ts',
       // t211: the two recovery forced compactions park through the same door (`forcedPassThenPark`), so
       // `recovery.ts` no longer calls `parkJob` itself.
       'agent/v2/loop.ts',

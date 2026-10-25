@@ -6,8 +6,8 @@
 // note from before this release that mixed conversations: `legacy_mixed_rebuild` when every source row
 // is from the 14 days before the update, `legacy_mixed` (never rebuilt, labelled "older mixed notes")
 // otherwise. This module is run by the EXISTING nightly job (`summary-rebuild.ts`), with the same writer
-// resolution as every summary (the Settings compaction model, else the agent's own model and provider,
-// else — only with no Settings choice — the cheapest; ruling R-V333-12). It re-condenses each queued
+// resolution as every summary (the Settings compaction model, else the agent's own model, else the Dojo's small
+// writer — nothing after it, t268 round 5: no "cheapest" model). It re-condenses each queued
 // note FROM ITS ORIGINAL MESSAGES, per conversation, dated; original messages are never touched.
 //
 // THE SHAPE, and why each part:

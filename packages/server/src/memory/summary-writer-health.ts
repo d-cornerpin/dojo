@@ -16,9 +16,10 @@
 // t207 (D9): the mark is PERSISTED (`healer_state`), so a restart does not forget an unreachable writer;
 // and "answered" means a SUMMARY call: round 7's re-arm on any call (a chat turn) is gone.
 // The order (`summaryWriterCandidates`): the Settings choice, the agent's own model (an auto agent's: its router's
-// pick), the Dojo's writer — nothing after it (t268 round 5). Eligible = that order without broken,
-// not-answering or (t268 N-B) no-room ones; none left: nothing dialled, placeholder notes stay, labelled. A call
-// the OWNER stopped, or cut by the turn's patience, is not the writer's failure.
+// pick), the Dojo's writer — nothing after it (t268 round 5). Eligible = that order without broken, not-answering or
+// (t268 N-B) no-room ones; none left: the span WAITS (`writer-wait.ts`), rows whole, until one can run — and a call to
+// one of its writer models answering re-arms it for that waiting agent (t268 breaker fix). A call the OWNER stopped,
+// or cut by the turn's patience, is not the writer's failure.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -30,6 +31,7 @@ import { isStopFenced } from '../agent/shared-state.js';
 import { standardModelRowId } from '../services/local-standard.js';
 import { standardTierChain } from '../router/standing-filters.js';
 import { writerHadNoRoom, writerMayRunAgain } from './writer-no-room.js';
+import { nextMoment, rearmWriters, rearmedSince, noteSpanWaits, endWaitsThatAreOver, __resetWriterWaitForTests } from './writer-wait.js';
 import type { SummaryResult } from './summarize.js';
 
 const logger = createLogger('summary-writer-health');
@@ -42,13 +44,6 @@ export const FOLD_IN_TURN_LIMIT = 'fold-in-turn-limit';
 /** Abort reasons that say nothing about the writer. Any other abort (a forced pass cut by the turn's patience) still
  *  marks the writer as not answering, so the next turn does not wait on it again (t220: provider-health and log only). */
 const NOT_THE_WRITERS_FAILURE = new Set<unknown>([FOLD_STOPPED_BY_OWNER, FOLD_IN_TURN_LIMIT]);
-
-/** Per agent: the moment (same ordinal as the marks) a person last wrote to it. */
-const personSpokeAt = new Map<string, number>();
-/** An ordinal, not a duration: never repeats, never goes backwards, expires nothing. It starts from the wall
- *  clock so one minted before a restart is smaller than one minted after it. */
-let moment = 0;
-const nextMoment = (): number => (moment = Math.max(moment + 1, Date.now()));
 
 /** Providers whose writer has not answered since it failed or ran past a turn's patience: one `healer_state`
  *  row each, `key` = provider + separator + the Settings writer then (so a Settings change stops it matching). */
@@ -163,7 +158,7 @@ export function noteSummaryWriterOutcome(modelId: string | undefined, ok: boolea
   if (!ok && !abortBlamesWriter(abortSignal)) return;
   const key = providerKey(modelId);
   if (ok) {
-    if (clearMark(key)) { writerMayRunAgain(); logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key }); }   // t268 N-B: and a writer with no room is tried again
+    if (clearMark(key)) { writerMayRunAgain(); endWaitsThatAreOver(); logger.info('Summary writer answered again; turns use it again', { modelId, providerKey: key }); }   // t268: and a writer with no room is tried again
     return;
   }
   markNotAnswering(key);
@@ -180,10 +175,9 @@ export function noteDidNotAnswerInTurn(modelId: string): void {
 
 /** Not answering, and nothing has changed since — for this agent, when one is named. */
 function notAnswering(modelId: string, agentId?: string): boolean {
-  const at = markOf(providerKey(modelId));       // a mark made under another Settings writer is not found: Settings changed
-  if (at === null) return false;
-  if (agentId !== undefined && (personSpokeAt.get(agentId) ?? 0) > at) return false;   // a person wrote to it since
-  return true;
+  const key = providerKey(modelId);
+  const at = markOf(key);       // a mark made under another Settings writer is not found: Settings changed
+  return at !== null && !(agentId !== undefined && rearmedSince(agentId, key, at));   // a person wrote, or (span waiting) it answered since
 }
 
 /**
@@ -219,10 +213,14 @@ export function eligibleSummaryWriters(preferredModelId?: string, agentId?: stri
 }
 
 /** t268 fix round 5: does this agent have writers, none of which can run now? Then its span WAITS, rows whole, until
- *  one can: a wait, not a failed pass, so nothing arms the compaction brake for it (no writer at all is a defect). */
+ *  one can: a wait, not a failed pass, so nothing arms the compaction brake for it (no writer at all is a defect). The
+ *  wait is recorded (breaker fix), so a writer of its order answering again reaches it (`writer-wait.ts`). */
 export function spanWaitsForAWriter(agentId: string): boolean {
   const own = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
-  return summaryWriterCandidates(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId).length === 0;
+  const waits = (): boolean => summaryWriterCandidates(own, agentId).length > 0 && eligibleSummaryWriters(own, agentId).length === 0;
+  if (!waits()) return false;
+  noteSpanWaits(agentId, { stillWaits: waits, writesOn: (p, m) => summaryWriterCandidates(own, agentId).some((id) => (m ? id === m : providerKey(id) === p)) });
+  return true;
 }
 
 /** Was this writer passed over — its provider's breaker open, or it has not answered since it failed? */
@@ -232,12 +230,13 @@ export function writerPassedOver(modelId: string, agentId?: string): boolean {
 
 /** A person's fresh message started this agent's turn: its failed writers (and a writer with no room) get one more try, for it. */
 export function noteAPersonSpoke(agentId: string): void {
-  personSpokeAt.set(agentId, nextMoment());
+  rearmWriters(agentId);
   writerMayRunAgain(agentId);
+  endWaitsThatAreOver(agentId);
 }
 
 /** Test-only reset: who was last written to, and the marks in the test's own database. */
 export function __resetSummaryWriterHealthForTests(): void {
-  personSpokeAt.clear(); writerMayRunAgain();
+  __resetWriterWaitForTests(); writerMayRunAgain();
   try { getDb().prepare('DELETE FROM healer_state WHERE scope = ?').run(MARK_SCOPE); } catch { /* no database in this test */ }
 }

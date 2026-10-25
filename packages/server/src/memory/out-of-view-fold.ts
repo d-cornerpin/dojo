@@ -38,7 +38,7 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { leavingViewPass } from './compaction.js';
 import { summaryCheckRefusedSince } from './summary-check.js';
-import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summaryWriterCandidates, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
+import { abortBlamesWriter, eligibleSummaryWriters, noteDidNotAnswerInTurn, summaryWriterCandidates, spanWaitsForAWriter, FOLD_IN_TURN_LIMIT, FOLD_STOPPED_BY_OWNER } from './summary-writer-health.js';
 import { turnPatienceMs } from './turn-patience.js';
 import { owedThrough, writeUncondensedPlaceholders } from './uncondensed-placeholder.js';
 import { reportCompactionDefect } from './compaction-defect.js';
@@ -163,9 +163,11 @@ async function foldOutOfView(agentId: string, contextWindow: number, throughSeq:
 
   const stopped = budget.stop?.aborted === true;
   if (covered > 0 && !stopped && (failedWriter !== null || noWriter)) {
-    const none = noWriter && summaryWriterCandidates().length === 0;
+    const own = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined)?.model_id ?? undefined;
+    const waits = spanWaitsForAWriter(agentId);   // t268 breaker fix: recorded, so a writer of its order answering again reaches it
+    const none = noWriter && !waits && summaryWriterCandidates(own, agentId).length === 0;   // this agent's order (M-3)
     reportCompactionDefect(agentId, none ? 'summary_writer_unresolvable' : 'summary_writer_unavailable', {
-      modelId: failedWriter ?? undefined,
+      modelId: failedWriter ?? undefined, waiting: waits,
       detail: `${covered} row(s) left the live view while no summary writer answered; placeholder notes stand in for them`,
     }, { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 });
   }

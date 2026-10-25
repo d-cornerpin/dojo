@@ -45,7 +45,8 @@ import { checkAndCompact } from '../compaction.js';
 import { generateSummary } from '../summarize.js';
 import { generateOnAWriterThatHolds } from '../leaf-writer-fallback.js';
 import { insertMessage } from '../message-store.js';
-import { eligibleSummaryWriters, summaryWriterCandidates, noteAPersonSpoke, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { eligibleSummaryWriters, summaryWriterCandidates, noteSummaryWriterOutcome, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
+import { writersMayBeBack } from '../writer-wait.js';
 import { resolveSummaryWriterModel } from '../compaction.js';
 import { __resetBrakesForTests, compactionIsBraked } from '../compaction-brakes.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
@@ -152,7 +153,7 @@ describe('round 5: nothing after the small writer — never a cloud model the ow
     expect(resolveSummaryWriterModel(AGENT, OWN, { background: true }), 'the background fold waits').toBeNull();
     expect(compactionIsBraked(AGENT, true), 'a wait, not a failed pass: no brake').toBe(false);
     writers.unreachable.clear();
-    noteAPersonSpoke(AGENT);
+    writersMayBeBack('p-own', { modelId: OWN, purpose: 'agent_turn' });   // breaker fix: its model answered a call (no person needed)
     const calls = writers.calls.length;
     await checkAndCompact(AGENT, OWN, 8_000, { force: true });
     expect(realSummaries()).toBeGreaterThan(0);

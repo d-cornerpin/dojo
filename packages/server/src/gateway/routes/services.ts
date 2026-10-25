@@ -31,7 +31,8 @@ const providerErrorCounts = new Map<string, number>();
 // first healthy call, matching how the other card problems behave.
 export const PROVIDER_DEGRADED_THRESHOLD = 3;
 
-export function recordProviderSuccess(providerId: string): void {
+/** `call`: the model that answered and what the call was for (t268 breaker fix: the signal a waiting summary span wakes on). */
+export function recordProviderSuccess(providerId: string, call?: { modelId?: string; purpose?: string }): void {
   const prev = providerErrorCounts.get(providerId) ?? 0;
   if (prev >= PROVIDER_DEGRADED_THRESHOLD) {
     logger.info('Provider recovered: calls succeeding again after repeated failures; Health card clearing', {
@@ -44,6 +45,7 @@ export function recordProviderSuccess(providerId: string): void {
   // recorded permanent failure, so it closes the breaker too. (The owner's manual
   // retry is the other way — `POST /api/services/providers/:id/clear-breaker`.)
   noteProviderSuccess(providerId);
+  writersMayBeBack(providerId, call);   // t268 breaker fix: an agent whose span waits on a writer there gets it re-armed
 }
 
 export function recordProviderError(providerId: string): void {
@@ -57,6 +59,7 @@ export function recordProviderError(providerId: string): void {
 }
 import { getProviderCredential } from '../../config/loader.js';
 import { noteProviderSuccess, clearProviderBreaker, openBreakers_readonly } from '../../providers/billing-breaker.js';
+import { writersMayBeBack } from '../../memory/writer-wait.js';
 import { routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
 
@@ -186,6 +189,7 @@ servicesRouter.get('/providers/health', async (c) => {
     } else {
       // For API providers, check if credential exists
       const credential = getProviderCredential(provider.id);
+      if (credential) writersMayBeBack(provider.id);   // t268 breaker fix: this check's poll is the re-test of a waiting writer nobody calls
       const errorCount = providerErrorCounts.get(provider.id) ?? 0;
       const degraded = errorCount >= PROVIDER_DEGRADED_THRESHOLD;
       results.push({
@@ -313,6 +317,7 @@ servicesRouter.get('/providers/breakers', (c) => {
 servicesRouter.post('/providers/:id/clear-breaker', (c) => {
   const providerId = c.req.param('id');
   const wasOpen = clearProviderBreaker(providerId);
+  writersMayBeBack(providerId);   // t268 breaker fix: the owner's retry is a waiting summary writer's too
   logger.info('Provider breaker cleared from the dashboard', { providerId, wasOpen });
   return c.json({ ok: true, data: { providerId, wasOpen } });
 });

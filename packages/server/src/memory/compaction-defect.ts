@@ -105,9 +105,9 @@ export function compactionFailingCardText(stage: string): string {
 /**
  * THE DEFECT LINE (D3), and the card decision behind it.
  *
- * Logs every time it is called — a pass that failed is a pass worth a line. Records the note
- * and cards at most once per outage, and never while the provider breaker is already carding
- * the same outage.
+ * Logs every time it is called — a pass that failed is a pass worth a line (a pass that WAITS for a
+ * writer: once per outage, t268). Records the note and cards at most once per outage, and never
+ * while the provider breaker is already carding the same outage.
  *
  * ⚠ WHICH SPACER IS WHICH, CORRECTED — t91 re-review M-b, and the sentence this file and
  * `compaction.ts:596` both got wrong. This said "the brake is what keeps that from being
@@ -131,7 +131,9 @@ export function reportCompactionDefect(
   result: { leafCreated: number; condensedCreated: number; tokensReclaimed: number },
 ): CompactionFailure | null {
   const breaker = writerBreaker(facts?.modelId);
-  logger.error('COMPACTION_DEFECT a pass ended over budget having reclaimed nothing', {
+  // t268 breaker fix (M-4): a pass that WAITS for a writer is one outage however many passes meet it — its line is
+  // written once, with the note; the passes after it say so at debug.
+  (facts?.waiting && failures.has(agentId) ? logger.debug : logger.error)('COMPACTION_DEFECT a pass ended over budget having reclaimed nothing', {
     stage, detail: facts?.detail ?? null,
     assembledTokens: facts?.assembledTokens ?? null, budgetTokens: facts?.budgetTokens ?? null,
     tokensBefore: facts?.tokensBefore ?? null, tokensReclaimed: result.tokensReclaimed,

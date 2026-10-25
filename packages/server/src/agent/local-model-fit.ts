@@ -76,6 +76,7 @@ async function installedSizes(baseUrl: string, list: '/api/tags' | '/api/ps' = '
     const resp = await fetch(`${baseUrl}${list}`, { signal: AbortSignal.timeout(5000) });
     if (!resp.ok) return null;
     const data = await resp.json() as { models?: Array<{ name: string; size?: number }> };
+    if (list === '/api/ps' && (data.models ?? []).some((m) => typeof m.size !== 'number')) return null;   // t268 (c): a loaded size unread is unknown, never 0
     return new Map((data.models ?? []).filter((m) => typeof m.size === 'number').map((m) => [m.name, m.size as number]));
   } catch {
     return null;
@@ -212,8 +213,8 @@ export async function refuseUncheckedAtFirstLoad(modelId: string): Promise<void>
  * agent's own model cannot be reached) can have NOW on this box's Ollama — its reserved room plus the open memory the
  * fit computes, less what the other models loaded there really hold (fix round 4, N-C: Ollama's loaded size, their KV
  * cache included — never their weights alone), at the writer's KV per token. The Dojo's own models and the embedder
- * are already counted in the open memory, so they are not charged again. Null when it cannot be sized (then nothing
- * is refused).
+ * are already counted in the open memory, so they are not charged again. Null when it cannot be sized: UNKNOWN, and
+ * the caller does not admit the writer on it (t268 breaker fix; it read null as "nothing refused" before).
  */
 export async function freeWriterWindowTokens(): Promise<number | null> {
   const provider = localOllamaProvider();
