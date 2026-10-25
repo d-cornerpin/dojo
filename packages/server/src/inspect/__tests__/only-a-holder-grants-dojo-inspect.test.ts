@@ -173,14 +173,24 @@ describe('a holder, or the owner, grants it', () => {
   });
 
   it('the owner\'s dashboard grants it to an existing worker', async () => {
+    const db = mod.connection.getDb();
     expect(mod.grant.holdsDojoInspect(WORKER)).toBe(false);
-    const res = await mod.agentsRouter.request(`/${WORKER}`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ toolsPolicy: { allow: ['dojo_inspect', 'file_read'], deny: [] } }),
-    });
-    expect(res.status).toBe(200);
-    mod.access.forgetAccessGrants();
-    expect(mod.grant.holdsDojoInspect(WORKER)).toBe(true);
+    try {
+      const res = await mod.agentsRouter.request(`/${WORKER}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ toolsPolicy: { allow: ['dojo_inspect', 'file_read'], deny: [] } }),
+      });
+      expect(res.status).toBe(200);
+      mod.access.forgetAccessGrants();
+      expect(mod.grant.holdsDojoInspect(WORKER)).toBe(true);
+    } finally {
+      // The route writes the folded grants AND the tools_policy column, so the
+      // worker is a holder for the rest of the run — and fix round 2's hand-on
+      // relies on the worker NOT holding the tool. Restore both; leave the memo
+      // clean so the next read re-parses.
+      db.prepare('UPDATE agents SET permissions = NULL, tools_policy = NULL WHERE id = ?').run(WORKER);
+      mod.access.forgetAccessGrants();
+    }
   });
 });
 
