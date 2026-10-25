@@ -657,6 +657,58 @@ interface GmailReplyContext {
   msgIdHeader: string;
 }
 
+// A reply-all addresses the original From plus every To and Cc, minus the
+// mailbox that is sending it (an agent replying on its own thread must not
+// email itself), with duplicates collapsed. The bare address inside
+// `Name <addr@x>` is the comparison key (case-insensitive); the original
+// display form is what goes out. A plain reply stays just From.
+function bareAddress(addr: string): string {
+  const m = addr.match(/<([^>]*)>/);
+  return (m ? m[1] : addr).trim();
+}
+
+/** Split a comma-separated header value into individual addresses, honoring
+ *  angle brackets and quoted display names (a comma inside `"Smith, John"` is
+ *  not a separator). */
+function splitAddressList(value: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inAngle = false;
+  let inQuote = false;
+  for (const ch of value) {
+    if (ch === '"' && !inAngle) inQuote = !inQuote;
+    else if (ch === '<' && !inQuote) inAngle = true;
+    else if (ch === '>' && inAngle) inAngle = false;
+    if (ch === ',' && !inAngle && !inQuote) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/** The reply-all recipient list: original From + To + Cc, minus the sending
+ *  mailbox's own address(es), de-duplicated case-insensitively by bare address
+ *  with the original display form kept. */
+function replyAllRecipients(from: string, to: string, cc: string, ownEmail: string | null): string {
+  const own = ownEmail?.trim().toLowerCase() ?? '';
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const addr of [...splitAddressList(from), ...splitAddressList(to), ...splitAddressList(cc)]) {
+    const bare = bareAddress(addr);
+    if (!bare) continue;
+    const key = bare.toLowerCase();
+    if (own && key === own) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(addr);
+  }
+  return kept.join(', ');
+}
+
 async function gmailReplyContext(
   messageId: string,
   replyAll: boolean,
@@ -664,8 +716,9 @@ async function gmailReplyContext(
   agentName: string,
   slot: string,
   action: string,
+  ownEmail: string | null,
 ): Promise<{ ok: true; ctx: GmailReplyContext } | { ok: false; error: string }> {
-  const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
+  const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Message-ID`;
   const orig = await googleRead(origUrl, agentId, agentName, action, { messageId, slot }, slot);
   if (!orig.ok) return { ok: false, error: `Error fetching original message: ${orig.error}` };
 
@@ -673,12 +726,13 @@ async function gmailReplyContext(
   const headers = origData?.payload?.headers ?? [];
   const from = headers.find(h => h.name === 'From')?.value ?? '';
   const to = headers.find(h => h.name === 'To')?.value ?? '';
+  const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
   const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
   return {
     ok: true,
     ctx: {
       threadId: origData.threadId,
-      replyTo: replyAll ? [from, to].filter(Boolean).join(', ') : from,
+      replyTo: replyAll ? replyAllRecipients(from, to, cc, ownEmail) : from,
       replySubject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
       msgIdHeader: headers.find(h => h.name === 'Message-ID')?.value ?? '',
     },
@@ -1147,7 +1201,7 @@ export async function executeGoogleWriteTool(
       const messageId = args.message_id as string;
       const replyAll = args.reply_all === true;
 
-      const context = await gmailReplyContext(messageId, replyAll, agentId, agentName, slot, 'gmail_reply_fetch');
+      const context = await gmailReplyContext(messageId, replyAll, agentId, agentName, slot, 'gmail_reply_fetch', resolved.account.email ?? null);
       if (!context.ok) return context.error;
       const { threadId, replyTo, replySubject, msgIdHeader } = context.ctx;
 
@@ -1197,7 +1251,7 @@ export async function executeGoogleWriteTool(
       let msgIdHeader: string | undefined;
 
       if (replyToId) {
-        const context = await gmailReplyContext(replyToId, args.reply_all === true, agentId, agentName, slot, 'gmail_draft_fetch');
+        const context = await gmailReplyContext(replyToId, args.reply_all === true, agentId, agentName, slot, 'gmail_draft_fetch', resolved.account.email ?? null);
         if (!context.ok) return context.error;
         to = to ?? context.ctx.replyTo;
         subject = subject ?? context.ctx.replySubject;
