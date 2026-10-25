@@ -42,6 +42,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { onAgentRecovered, drainRecoveryNotices } from '../injury-recovery.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -71,8 +72,14 @@ function stripped(rel: string): string {
     .join('\n');
 }
 
+// t277: injury-recovery loads ONCE, at file collection. The clauses used to `vi.resetModules()` in
+// beforeEach and then `await import('../injury-recovery.js')` inside the clause AND again in
+// afterEach, so every clause (and its teardown) paid the cold graph (imessage bridge, diagnostic,
+// tracker view, owner cards...) inside its own 30 s budget - 13 s for the first clause on a loaded
+// box, a timeout when several suites ran at once. Nothing needs a fresh graph: the database is
+// reached only through the mocked getDb -> mockDb.current, replaced in each beforeEach, and the
+// module's own timers are drained by afterEach.
 beforeEach(() => {
-  vi.resetModules();
   const db = new Database(':memory:');
   mockDb.current = db;
   db.exec(`
@@ -118,7 +125,6 @@ const doomMarkers = (): number =>
   ).get(`${AGENT}:%`) as { n: number }).n;
 
 afterEach(async () => {
-  const { drainRecoveryNotices } = await import('../injury-recovery.js');
   await drainRecoveryNotices();
   mockDb.current?.close();
   mockDb.current = null;
@@ -129,9 +135,7 @@ const agentRow = (): { status: string; last_error: string | null; recovery_attem
     .get(AGENT) as { status: string; last_error: string | null; recovery_attempts: number };
 
 describe('§1 U1 — a COOLDOWN recovery may not clear what only evidence earns', () => {
-  it('THE RED: the doomed-dial marker and the error text survive a cooldown recovery', async () => {
-    const { onAgentRecovered } = await import('../injury-recovery.js');
-
+  it('THE RED: the doomed-dial marker and the error text survive a cooldown recovery', () => {
     onAgentRecovered(AGENT, 'cooldown');
 
     const row = agentRow();
@@ -144,9 +148,7 @@ describe('§1 U1 — a COOLDOWN recovery may not clear what only evidence earns'
       .toBe(3);
   });
 
-  it('THE OTHER DIRECTION: an EVIDENCE recovery still clears everything, as it always did', async () => {
-    const { onAgentRecovered } = await import('../injury-recovery.js');
-
+  it('THE OTHER DIRECTION: an EVIDENCE recovery still clears everything, as it always did', () => {
     // A completed turn is proof the agent is working. This path must not be made more timid —
     // that would leave a genuinely recovered agent carrying a stale diagnostic for ever.
     onAgentRecovered(AGENT, 'evidence');
@@ -157,9 +159,7 @@ describe('§1 U1 — a COOLDOWN recovery may not clear what only evidence earns'
     expect(row.recovery_attempts, 'and resets the ladder').toBe(0);
   });
 
-  it('CONTROL: `evidence` is the DEFAULT, so every existing caller keeps today\'s behaviour', async () => {
-    const { onAgentRecovered } = await import('../injury-recovery.js');
-
+  it('CONTROL: `evidence` is the DEFAULT, so every existing caller keeps today\'s behaviour', () => {
     // The turn path and the Healer self-watchdog call this with one argument. If the default had
     // been `cooldown`, this fix would have quietly stopped real recoveries from clearing.
     onAgentRecovered(AGENT);

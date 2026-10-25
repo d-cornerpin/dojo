@@ -45,6 +45,19 @@ vi.mock('../../../db/connection.js', () => ({
   }),
 }));
 
+// t277: THE WRITER'S TOOL-LIST HELPERS ARE STUBBED BECAUSE EVERY CLAUSE HERE SENDS `useTools: false`.
+// `receipt.ts` imports `getFilteredTools` (the whole tool-surface graph: definitions, google,
+// microsoft, plaud, credentials...) only to name the tools a call was built with. Each clause needs
+// a FRESH `receipt.js` (the announce latch and counters are module state, by design), so each one
+// re-imported that whole graph inside its own 30 s budget: ~1.3 s idle, 13 s for the first clause
+// on a loaded box, a timeout when several suites ran at once. The clauses never reach
+// `toolNameLists`, so the stub changes nothing they observe and the fresh import is now small.
+vi.mock('../../tools/surface.js', () => ({ getFilteredTools: () => [] }));
+vi.mock('../../../tools/tool-docs.js', () => ({
+  filterToolsForApiCall: () => [],
+  getAgentAlwaysLoadedTools: () => [],
+}));
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 

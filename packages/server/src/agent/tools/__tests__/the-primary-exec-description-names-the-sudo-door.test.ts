@@ -16,6 +16,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { getFilteredTools } from '../surface.js';
+import { agentMayRunAdminCommands } from '../../brokers/sudo-claim.js';
+import { bumpToolConfigGeneration } from '../../tool-config-generation.js';
 
 const state = {
   primaryId: 'fixture-primary',
@@ -76,63 +79,66 @@ vi.mock('../../manifest.js', async (importOriginal) => {
   };
 });
 
-async function surfaceFor(agentId: string): Promise<{ getFilteredTools: (id: string) => Array<{ name: string; description: string }> }> {
-  vi.resetModules();
-  return await import('../surface.js') as never;
-}
-
-async function description(agentId: string, tool: string): Promise<string> {
-  const { getFilteredTools } = await surfaceFor(agentId);
+function description(agentId: string, tool: string): string {
   const t = getFilteredTools(agentId).find(x => x.name === tool);
   if (!t) throw new Error(`the fixture must surface a ${tool} tool for this test to mean anything`);
   return t.description;
 }
 
+// t277: THE SURFACE GRAPH LOADS ONCE, AT FILE COLLECTION, NOT INSIDE A CLAUSE.
+// Every clause used to `vi.resetModules()` and then `await import('../surface.js')`, so each one
+// paid the whole cold tool-surface graph (definitions, google, microsoft, plaud, credentials...)
+// inside its own 30 s budget: ~1.5 s idle, 13 s on a loaded box, and the first clause timed out
+// whenever the machine ran several suites at once. Nothing here needs a fresh module graph: the
+// policy and manifest are steered through the mocks above, and the one thing a fresh graph gave
+// for free - an empty `getFilteredTools` memo - is what `bumpToolConfigGeneration()` does in the
+// product (the same call every global surface write makes), so beforeEach does exactly that.
 describe('the command-tool descriptions and the sudo door agree about who may knock', () => {
   beforeEach(() => {
+    bumpToolConfigGeneration();
     state.policy = 'gated';
     state.policyQueue = [];
     state.policyReads = 0;
     state.execAllow = ['ls', 'cat', 'echo', 'node', 'sh'];
   });
 
-  it('finite-allowlist primary under gated: the exception, the hold, do-not-retry, AND the no-wider-grant caveat', async () => {
-    const d = await description('fixture-primary', 'exec');
+  it('finite-allowlist primary under gated: the exception, the hold, do-not-retry, AND the no-wider-grant caveat', () => {
+    const d = description('fixture-primary', 'exec');
     expect(d).toContain('sudo');
     expect(d).toContain('HELD');
     expect(d).toContain('not retry');
     expect(d).toContain('does not widen your command list');
   });
 
-  it("the DEFAULT primary (exec_allow ['*']) reads the door too — the agent most boxes have", async () => {
+  it("the DEFAULT primary (exec_allow ['*']) reads the door too — the agent most boxes have", () => {
     state.execAllow = ['*'];
-    const d = await description('fixture-primary', 'exec');
+    const d = description('fixture-primary', 'exec');
     expect(d).toContain('sudo');
     expect(d).toContain('HELD');
     expect(d).not.toContain('does not widen your command list');
   });
 
-  it('the shell tool carries the same door for the primary', async () => {
+  it('the shell tool carries the same door for the primary', () => {
     state.execAllow = ['*'];
-    const d = await description('fixture-primary', 'shell');
+    const d = description('fixture-primary', 'shell');
     expect(d).toContain('sudo');
     expect(d).toContain('HELD');
   });
 
-  it('primary under free: the floor is named, no hold is promised', async () => {
+  it('primary under free: the floor is named, no hold is promised', () => {
     state.policy = 'free';
-    const d = await description('fixture-primary', 'exec');
+    const d = description('fixture-primary', 'exec');
     expect(d).toContain('sudo');
     expect(d).toContain('safety floor');
     expect(d).not.toContain('HELD');
   });
 
-  it('primary under blocked, and every non-primary under every policy: no door is named', async () => {
+  it('primary under blocked, and every non-primary under every policy: no door is named', () => {
     state.policy = 'blocked';
-    expect(await description('fixture-primary', 'exec')).not.toContain('sudo');
+    expect(description('fixture-primary', 'exec')).not.toContain('sudo');
     for (const p of ['gated', 'free', 'blocked']) {
       state.policy = p;
-      const d = await description('fixture-subagent', 'exec');
+      const d = description('fixture-subagent', 'exec');
       expect(d, `policy=${p}`).not.toContain('sudo');
     }
   });
@@ -146,29 +152,24 @@ describe('the command-tool descriptions and the sudo door agree about who may kn
   // "who may knock" half of this suite was green for a reason unrelated to its fixture.
   // This clause is the one that could not pass before the import direction was unified — the
   // no-grant arm asserts FALSE where the production manifest says TRUE.
-  it('the fixture manifest steers the DOOR: no command grant, no claim, whatever the policy', async () => {
+  it('the fixture manifest steers the DOOR: no command grant, no claim, whatever the policy', () => {
     state.execAllow = [];
-    vi.resetModules();
-    const closed = await import('../../brokers/sudo-claim.js');
     for (const p of ['gated', 'free'] as const) {
-      expect(closed.agentMayRunAdminCommands('fixture-primary', p), `policy=${p}`).toBe(false);
+      expect(agentMayRunAdminCommands('fixture-primary', p), `policy=${p}`).toBe(false);
     }
 
     state.execAllow = ['*'];
-    vi.resetModules();
-    const open = await import('../../brokers/sudo-claim.js');
-    expect(open.agentMayRunAdminCommands('fixture-primary', 'gated')).toBe(true);
+    expect(agentMayRunAdminCommands('fixture-primary', 'gated')).toBe(true);
     // And the other two guards the door holds are still the door's, not the manifest's.
-    expect(open.agentMayRunAdminCommands('fixture-primary', 'blocked')).toBe(false);
-    expect(open.agentMayRunAdminCommands('fixture-subagent', 'gated')).toBe(false);
+    expect(agentMayRunAdminCommands('fixture-primary', 'blocked')).toBe(false);
+    expect(agentMayRunAdminCommands('fixture-subagent', 'gated')).toBe(false);
   });
 
-  it('ONE policy read per surface build: a flip mid-compute cannot store new text under an old key', async () => {
+  it('ONE policy read per surface build: a flip mid-compute cannot store new text under an old key', () => {
     // Review finding on the first cut: fingerprint and description each read the policy,
     // so gated→free between the reads cached FREE text under the GATED fingerprint and
     // nothing ever healed it. With one read, the queue below would need TWO entries to
     // straddle a build; one build consumes exactly one.
-    const { getFilteredTools } = await surfaceFor('fixture-primary');
     state.policyReads = 0;
     state.policyQueue = ['gated', 'free'];
     const first = getFilteredTools('fixture-primary').find(t => t.name === 'exec')!.description;
