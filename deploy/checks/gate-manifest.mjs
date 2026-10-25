@@ -231,6 +231,17 @@ export const GATES = [
     why: 'PHASE-4 T1. It entered this manifest at REPORT tier on purpose and stayed there for the whole compile-fail burn-down — a lint that ships red is a whitelist waiting to happen, and the inventory was 31 across 12 files at the start (20 at the work boundary, 11 at the delivery doors). This is the flip, and it is a ONE-LINE tier change with nothing else in it because the fail line was written at report tier: the population is zero, measured by the gate itself, so from here a single discarded Outcome refuses the build. Its three clauses are the inventory, a planted-fault selftest (four discards must be flagged, six consuming shapes must not), and a conformance check that the rule and `outcome.ts` still declare the same five arms.',
   },
 
+  {
+    id: 'test-cold-imports',
+    tier: 'blocking',
+    phase: 'pre-build',
+    script: 'deploy/checks/check-test-cold-imports.mjs',
+    args: [],
+    title: 'Test cold-import gate (no heavy module imported from inside a test clause, hook or helper)',
+    fail: 'Test cold-import gate: a server test imports a heavy module (static graph of 200+ modules) from inside a function, so a loaded machine times the clause out. NOT publishing.',
+    why: 'THE DEFECT CLASS WAS MET FOUR TIMES in one campaign (t265, t270, t277, and a fourth file in the same full-suite run) and each time it was fixed in the one file that had just failed. A clause did `await import(...)` of a module whose static graph is hundreds of modules, usually after `vi.resetModules()`, so the whole graph loaded INSIDE the clause\'s own 30 s timeout: 1.3 s on an idle box, 13-20 s on a loaded one. It fails as "Test timed out", passes alone, and is blamed on load; the product call it wraps takes milliseconds. A hook with a longer bound (`beforeAll(..., 120_000)`) only moved the same cost into a longer timeout. Static imports and top-level awaits load at COLLECTION, which has no per-test budget. The gate counts the static import graph of each in-function dynamic import (deterministic, unlike a stopwatch) and fails on a new heavy site; deploy/checks/test-cold-imports-baseline.json lists the sites that remain on purpose (a restart IS the subject, or module state has no reset door), each with its reason, and may only shrink.',
+  },
+
   // ════════ report ════════
   // Never blocks, always recorded. Non-negotiable #7: no phase passes or fails on a
   // line count, but a net-positive phase owes an accounting, and the accounting starts

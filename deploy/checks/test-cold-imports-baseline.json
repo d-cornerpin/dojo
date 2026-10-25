@@ -1,0 +1,65 @@
+{
+  "$comment": "Test cold-import baseline (t277). Sites where a heavy module (static import graph >= 200 modules) is imported from inside a test function ON PURPOSE, each with its reason. The list may only SHRINK: deploy/checks/check-test-cold-imports.mjs fails on a new heavy site, and on an entry whose site is gone. To remove one, give the module state a reset door in the product (owner-level) or restructure the file so the import happens at collection.",
+  "sites": {
+    "packages/server/src/agent/__tests__/t194-context-gauge-overflow-never-sets-the-owners-message-aside.test.ts": {
+      "count": 2,
+      "why": "Module-level state OUTSIDE `agent/shared-state.ts` with no reset door in the product; clearing every shared-state Map/Set (the isolation that DID replace the reset in sibling suites) was tried 2026-10-24 and failed clauses of this file, so a fresh registry per clause is what isolates it. Removing it needs the product to expose reset doors (an owner-level call, no product change in t277). Measured before t277 (slowest clause / median, 3 clauses, load ~190 with 300 files running): 6.7 s / 3.1 s."
+    },
+    "packages/server/src/agent/__tests__/the-runtime-arms-no-refd-timer-at-import.test.ts": {
+      "count": 1,
+      "why": "The import IS the subject (the module arms its sweeps when it is first imported) and it runs at COLLECTION through a top-level await inside the interceptor's callback; the gate sees a function boundary there, not a clause. Measured before t277 (slowest clause / median, 2 clauses, load ~190 with 300 files running): 7.9 s / 7.9 s."
+    },
+    "packages/server/src/agent/v2/__tests__/the-receipt-writer-cannot-die-silently.test.ts": {
+      "count": 1,
+      "why": "The announce latch and counters are module state by design, so each clause needs a fresh receipt.js. Its heavy door (the tool surface and tool docs) is stubbed because every clause sends `useTools: false`, which brought the fresh import from ~13 s to ~0.4 s on a loaded machine; the gate counts the static graph and cannot see the stub. Measured before t277: first clause 13.6 s on a loaded box."
+    },
+    "packages/server/src/costs/__tests__/t138-the-balance-is-watched-with-the-ledger-closed.test.ts": {
+      "count": 5,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 12 clauses, load ~190 with 300 files running): 18.0 s / 6.9 s."
+    },
+    "packages/server/src/healer/__tests__/compaction-before-reset.test.ts": {
+      "count": 7,
+      "why": "Restart simulation by design (t265 left it): a fresh registry IS a restart there, and the clauses `vi.doMock` the transport per clause, which a static import cannot express. Measured before t277 (slowest clause / median, 11 clauses, load ~190 with 300 files running): 11.0 s / 3.9 s."
+    },
+    "packages/server/src/healer/__tests__/nobody-force-resets-a-live-agent.test.ts": {
+      "count": 4,
+      "why": "Module-level state OUTSIDE `agent/shared-state.ts` with no reset door in the product; clearing every shared-state Map/Set (the isolation that DID replace the reset in sibling suites) was tried 2026-10-24 and failed clauses of this file, so a fresh registry per clause is what isolates it. Removing it needs the product to expose reset doors (an owner-level call, no product change in t277). Measured before t277 (slowest clause / median, 7 clauses, load ~190 with 300 files running): 1.6 s / 1.3 s."
+    },
+    "packages/server/src/healer/__tests__/recovery-single-owner.test.ts": {
+      "count": 3,
+      "why": "Restart simulation by design (t265 left it): the restart clauses' subject is the FRESH registry of injury-recovery; the negative control was moved to a static instance. Measured before t277 (slowest clause / median, 13 clauses, load ~190 with 300 files running): 1.9 s / 0.5 s."
+    },
+    "packages/server/src/services/__tests__/a-stop-stops-the-media-generators.test.ts": {
+      "count": 4,
+      "why": "Module-level state OUTSIDE `agent/shared-state.ts` with no reset door in the product; clearing every shared-state Map/Set (the isolation that DID replace the reset in sibling suites) was tried 2026-10-24 and failed clauses of this file, so a fresh registry per clause is what isolates it. Removing it needs the product to expose reset doors (an owner-level call, no product change in t277). Measured before t277 (slowest clause / median, 33 clauses, load ~190 with 300 files running): 7.3 s / 0.9 s."
+    },
+    "packages/server/src/services/__tests__/t138-r2-every-owner-text-also-waits-on-the-dashboard.test.ts": {
+      "count": 5,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 12 clauses, load ~190 with 300 files running): 13.9 s / 3.6 s."
+    },
+    "packages/server/src/services/__tests__/t138-r3-a-condition-texts-once-until-it-clears.test.ts": {
+      "count": 6,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 4 clauses, load ~190 with 300 files running): 13.8 s / 6.4 s."
+    },
+    "packages/server/src/services/__tests__/t138-r3-an-owner-card-outlives-the-page.test.ts": {
+      "count": 7,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 10 clauses, load ~190 with 300 files running): 19.9 s / 4.2 s."
+    },
+    "packages/server/src/services/__tests__/t138-r4-every-card-lasts-and-leaves-when-its-condition-ends.test.ts": {
+      "count": 11,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 10 clauses, load ~190 with 300 files running): 20.3 s / 3.8 s."
+    },
+    "packages/server/src/services/__tests__/t138-r5-a-dismissal-reaches-every-tab-and-a-watcher-survives-a-restart.test.ts": {
+      "count": 7,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 6 clauses, load ~190 with 300 files running): 14.0 s / 6.5 s."
+    },
+    "packages/server/src/services/__tests__/t138-r6-a-card-lives-exactly-as-long-as-its-condition.test.ts": {
+      "count": 12,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 9 clauses, load ~190 with 300 files running): 14.3 s / 3.9 s."
+    },
+    "packages/server/src/services/__tests__/t138-r7-a-watcher-card-follows-what-the-watcher-watches.test.ts": {
+      "count": 10,
+      "why": "A RESTART IS THE SUBJECT: `boot()` resets the module registry on purpose so the module-held latches and watchers start empty exactly as on a real restart, and the clauses assert that the owner's cards come back from the DATABASE alone. Clearing state instead would let live in-memory state stand in for the persisted state under test, so the fresh registry cannot be removed without hollowing the test. Measured before t277 (slowest clause / median, 4 clauses, load ~190 with 300 files running): 7.5 s / 3.5 s."
+    }
+  }
+}
