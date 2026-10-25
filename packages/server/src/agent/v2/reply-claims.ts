@@ -12,8 +12,10 @@
 //            on it; the rule decides; both answers are logged in `decision_shadow` under the reply's id.
 //   model  — B3 measured the model better. The floor's narrowing reads the model's verdict (the cut the
 //            score measures, `verdictOf`) instead of its rule, except inside the measured band, where the
-//            rule's answer stands. Only then does the turn wait for the call, and a call that fails or
-//            runs out of its measured time is the rule's answer (`decide()` logs why).
+//            rule's answer stands. Only then does the turn wait for the call — for no longer than its
+//            PATIENCE, the call's own measured timeout counted from when it asks, queued time included —
+//            and a call that fails, runs out of patience, or is cut by the owner's Stop is the rule's answer.
+// Each reply resolves its modes ONCE, when it asks, and the floors read those (fix round 1: no score read per floor).
 // Every floor keeps its ledger conjuncts. The one floor with NO ledger behind it — the prose decline,
 // which swallows a reply — lets the model take a rule hit away and never add one (REVIEW FOCUS 5).
 //
@@ -26,9 +28,9 @@
 
 import { isBareNoReplySentinel } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
-import { decide, type Answer, type Question } from '../decide.js';
-import { modeFor } from '../decision-policy.js';
-import { inWeakestBand, recordShadow, scoreQuestion, verdictOf } from '../decision-shadow.js';
+import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts, type FailureClass, type Question } from '../decide.js';
+import { modeFor, type Mode } from '../decision-policy.js';
+import { inWeakestBand, recordShadow, scoreQuestion, verdictOf, type QuestionScore } from '../decision-shadow.js';
 import { isForwardPromiseReply, isStandingPromiseReply, isStandingStateClaimReply } from './ack-copy.js';
 import { detectDeliveryDenial, detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
 import { claimsDelivery } from './refused-delivery.js';
@@ -90,15 +92,33 @@ export interface ReplyAt { readonly agentId: string; readonly messageId?: string
 
 interface Asked {
   readonly key: string;
+  /** Each question's mode, resolved once when the reply asked; a question absent here is `rule`. */
+  readonly modes: Partial<Record<ReplyClaimQuestion, Mode>>;
+  /** The score of each question in `model`, read with its mode (its band is what the floor reads against). */
+  readonly scores: Partial<Record<ReplyClaimQuestion, QuestionScore>>;
   /** A question here is in `model`: the floors read the answer, so the turn waits for it. */
   readonly acts: boolean;
   /** undefined while in flight; null when the call gave no answer. */
   answers: Record<string, Answer> | null | undefined;
   settled: Promise<void>;
-  toldFallback: boolean;
 }
 /** Per agent, the one reply its floors are reading now; the next reply replaces it (so it never grows). */
 const asked = new Map<string, Asked>();
+
+/**
+ * THE OUTAGE, SAID ONCE (fix round 1): the first reply the decision model gives no answer for logs it, with why;
+ * the first answer after that says it is back. Between the two, every reply's rows carry no model answer — the
+ * logged provider failure those rows point to — and nothing more is logged per reply.
+ */
+let outage: FailureClass | 'threw' | null = null;
+function noted(failure: FailureClass | 'threw' | null, agentId: string): void {
+  if (failure !== null && outage === null) {
+    logger.warn('the decision model gave no answer; the rules decide, and reply-claim rows carry no model answer until it answers again', { failure }, agentId);
+  } else if (failure === null && outage !== null) {
+    logger.info('the decision model answers again', { after: outage }, agentId);
+  }
+  outage = failure;
+}
 
 /**
  * Ask the nine questions about this reply, ONCE however many floors read it (memoised on the reply's id).
@@ -111,9 +131,9 @@ export async function askReplyClaims(state: AgentTurnState, ctx: PostCallClassif
     if (!messageId || !reply || !reply.trim() || result.toolCalls.length > 0 || isBareNoReplySentinel(reply)) return;
     let entry = asked.get(agentId);
     if (entry?.key !== messageId) {
-      const modes = NAMES.map((q) => [q, modeFor(PURPOSE, q)] as const).filter(([, m]) => m !== 'rule');
-      if (modes.length === 0) return;
-      entry = ask(state, ctx, reply, modes.map(([q]) => q), modes.some(([, m]) => m === 'model'));
+      const modes = Object.fromEntries(NAMES.map((q) => [q, modeFor(PURPOSE, q)] as const).filter(([, m]) => m !== 'rule')) as Asked['modes'];
+      if (Object.keys(modes).length === 0) return;
+      entry = ask(state, ctx, reply, modes);
       asked.set(agentId, entry);
     }
     if (entry.acts) await entry.settled;
@@ -122,27 +142,43 @@ export async function askReplyClaims(state: AgentTurnState, ctx: PostCallClassif
   }
 }
 
-function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string, questions: ReplyClaimQuestion[], acts: boolean): Asked {
+function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string, modes: Asked['modes']): Asked {
   const { agentId, messageId } = ctx;
   const turnId = replyClaimsTurnId(messageId);
+  const questions = Object.keys(modes) as ReplyClaimQuestion[];
+  const acting = questions.filter((q) => modes[q] === 'model');
+  const scores = Object.fromEntries(acting.flatMap((q) => { const s = scoreQuestion(PURPOSE, q); return s ? [[q, s]] : []; })) as Asked['scores'];
   const counterpartyName = ctx.counterparty?.name ?? null;
   const ruleSaid = Object.fromEntries(questions.map((q) => [q, RULES[q](reply, counterpartyName)]));
-  const entry: Asked = { key: messageId, acts, answers: undefined, settled: Promise.resolve(), toldFallback: false };
+  const acts = acting.length > 0;
+  const entry: Asked = { key: messageId, modes, scores, acts, answers: undefined, settled: Promise.resolve() };
   const stateForModel = {
     reply,
     last_user_message: ctx.lastUserMessageContent ?? null,
     tool_calls_this_turn: state.toolResults.map((r) => r.name).filter(Boolean),   // C5: the whole turn's, not this pass's
   };
   // Nobody waits on a shadow call, so it waits for the agents' own local work and holds no slot of this
-  // agent's turn (no `agentId`: a call that outlives its turn is not that turn's work).
-  const opts = acts ? { purpose: PURPOSE, agentId, turnId } : { purpose: PURPOSE, turnId, background: true };
-  entry.settled = decide(stateForModel, Object.fromEntries(questions.map((q) => [q, REPLY_CLAIM_QUESTIONS[q]])), opts)
+  // agent's turn (a background ask cannot name an agent: a call that outlives its turn is not that turn's work).
+  // A call the turn waits on holds the agent's stop slot from the moment it queues. Either way its PATIENCE is the
+  // call's own measured timeout (`measuredDecideTimeoutMs`): no longer than the call itself is allowed.
+  const asking = Object.fromEntries(questions.map((q) => [q, REPLY_CLAIM_QUESTIONS[q]]));
+  let failure: FailureClass | 'threw' | null = null;
+  const onFailure = (f: FailureClass): void => { failure = f; };
+  const patienceMs = measuredDecideTimeoutMs(stateForModel, questions.length);
+  const opts: DecideOpts = acts
+    ? { purpose: PURPOSE, agentId, turnId, onFailure, patienceMs }
+    : { purpose: PURPOSE, turnId, onFailure, background: true, patienceMs };
+  const logRows = (answers: Record<string, Answer> | null): void => {
+    for (const q of questions) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId, ruleSaid: ruleSaid[q], modelSaid: answers?.[q] ?? null });
+  };
+  entry.settled = decide(stateForModel, asking, opts)
+    .catch(() => { failure = 'threw'; return null; })
     .then((answers) => {
       entry.answers = answers;
-      if (answers) for (const q of questions) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId, ruleSaid: ruleSaid[q], modelSaid: answers[q] ?? null });
+      noted(answers ? null : failure ?? 'transport', agentId);
+      logRows(answers);   // a call that gave no answer still leaves its rows: the rule's answer, no model answer
     })
     .catch((err) => {
-      entry.answers = null;
       logger.warn('reply claims could not be logged', { error: err instanceof Error ? err.message : String(err) }, agentId);
     });
   return entry;
@@ -154,17 +190,11 @@ function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string,
  */
 export function replyClaim(at: ReplyAt, question: ReplyClaimQuestion, ruleSaid: boolean): boolean {
   try {
-    if (modeFor(PURPOSE, question) !== 'model') return ruleSaid;
     const entry = asked.get(at.agentId);
-    const a = entry && entry.key === at.messageId ? entry.answers?.[question] : undefined;
-    const score = a?.type === 'noul' ? scoreQuestion(PURPOSE, question) : null;
-    if (!a || a.type !== 'noul' || !score) {
-      if (entry && !entry.toldFallback) {
-        entry.toldFallback = true;
-        logger.info('reply claims: no model answer for this reply; the rule decides', { question }, at.agentId);
-      }
-      return ruleSaid;
-    }
+    if (!entry || entry.key !== at.messageId || entry.modes[question] !== 'model') return ruleSaid;
+    const a = entry.answers?.[question];
+    const score = entry.scores[question];
+    if (!a || a.type !== 'noul' || !score) return ruleSaid;   // no answer: the outage is logged once, above
     return inWeakestBand(score, a.noul) ? ruleSaid : verdictOf(a).said === 'true';
   } catch {
     return ruleSaid;
@@ -185,5 +215,5 @@ export const commitmentClaimFor = (at: ReplyAt, reply: string) => (rule: Recorde
 
 /** Test-only: the reply's call has settled (answered, failed, or logged). */
 export const __replyClaimsSettledForTests = (agentId: string): Promise<void> => asked.get(agentId)?.settled ?? Promise.resolve();
-/** Test-only: forget every reply's call. */
-export function __forgetReplyClaimsForTests(): void { asked.clear(); }
+/** Test-only: forget every reply's call, and any outage. */
+export function __forgetReplyClaimsForTests(): void { asked.clear(); outage = null; }

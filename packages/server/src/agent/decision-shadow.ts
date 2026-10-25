@@ -30,7 +30,10 @@ let lastRotateCheck = 0;
 export function rotateDecisionShadow(now: number = Date.now()): number {
   lastRotateCheck = now;
   try {
-    return getDb().prepare('DELETE FROM decision_shadow WHERE created_at < ?').run(now - 2 * SHADOW_REPORT_WINDOW_MS).changes;
+    const before = now - 2 * SHADOW_REPORT_WINDOW_MS;
+    const t = loadedTallies();
+    if (t) for (const r of judgedRows('created_at < ?', before)) tally(t, r, -1);   // the judged rows leaving the score
+    return getDb().prepare('DELETE FROM decision_shadow WHERE created_at < ?').run(before).changes;
   } catch (err) {
     logger.warn('decision shadow rotation failed', { error: err instanceof Error ? err.message : String(err) });
     return 0;
@@ -54,8 +57,14 @@ export function recordShadow(row: {
  *  question is ever promoted to `model` and the summary check's pass mark stays 0.5 until a truth source
  *  (Part C's clusters, B5's measurement) calls this. */
 export function recordTruth(turnId: string, question: string, truth: unknown, src: string): void {
+  const judged = JSON.stringify(truth ?? null);
+  const t = loadedTallies();
+  // The rows this truth judges join the in-memory score as they are written (fix round 1): one indexed read by turn.
+  const joining = t ? getDb().prepare(`SELECT purpose, question, rule_said, model_said FROM decision_shadow
+    WHERE turn_id = ? AND question = ? AND truth IS NULL AND model_said IS NOT NULL`).all(turnId, question) as Array<Omit<JudgedRow, 'truth'>> : [];
   getDb().prepare(`UPDATE decision_shadow SET truth = ?, truth_src = ?, truth_at = ?
-    WHERE turn_id = ? AND question = ? AND truth IS NULL`).run(JSON.stringify(truth ?? null), src, Date.now(), turnId, question);
+    WHERE turn_id = ? AND question = ? AND truth IS NULL`).run(judged, src, Date.now(), turnId, question);
+  if (t) for (const r of joining) tally(t, { ...r, truth: judged }, 1);
 }
 
 export interface QuestionScore {
@@ -89,35 +98,65 @@ const decileOf = (p: number): number => Math.min(9, Math.max(0, Math.floor(p * 1
 export const inWeakestBand = (s: QuestionScore, p: number): boolean => decileOf(p) === Math.round(s.band[0] * 10);
 
 /**
+ * FIX ROUND 1 (t274 review, Important 1) — THE SCORE IS HELD IN MEMORY. Every reply asks the policy about nine
+ * questions, and reading the score off the log scanned every kept row of each, so a reply's cost grew with the
+ * box's traffic. The judged rows are read ONCE per process (the first time a score is asked for — at boot, in
+ * effect), then kept current as they change: a truth written joins it (`recordTruth`), a judged row rotated out
+ * leaves it (`rotateDecisionShadow`). With no truth recorded the score is an empty map, so the answer is O(1).
+ * Tied to the database it was read from, so a different one (a test's fresh body) is read afresh.
+ */
+interface JudgedRow { purpose: string; question: string; rule_said: string; model_said: string; truth: string }
+interface Tally { n: number; ruleRight: number; modelRight: number; buckets: Map<number, { n: number; right: number }> }
+let held: { from: unknown; byQuestion: Map<string, Tally> } | null = null;
+const keyOf = (purpose: string, question: string): string => `${purpose}\u0000${question}`;
+
+const judgedRows = (where: string, ...args: unknown[]): JudgedRow[] => getDb().prepare(`SELECT purpose, question, rule_said, model_said, truth
+  FROM decision_shadow WHERE ${where} AND truth IS NOT NULL AND model_said IS NOT NULL`).all(...args) as JudgedRow[];
+
+/** One judged row into (+1) or out of (-1) the score. A model answer that does not parse is not judged. */
+function tally(byQuestion: Map<string, Tally>, r: JudgedRow, sign: 1 | -1): void {
+  let v: { said: string; p: number };
+  try { v = verdictOf(JSON.parse(r.model_said) as Answer); } catch { return; }
+  const k = keyOf(r.purpose, r.question);
+  const t = byQuestion.get(k) ?? { n: 0, ruleRight: 0, modelRight: 0, buckets: new Map() };
+  const right = v.said === r.truth;
+  t.n += sign;
+  if (r.rule_said === r.truth) t.ruleRight += sign;
+  if (right) t.modelRight += sign;
+  const b = decileOf(v.p);
+  const cur = t.buckets.get(b) ?? { n: 0, right: 0 };
+  const next = { n: cur.n + sign, right: cur.right + (right ? sign : 0) };
+  if (next.n > 0) t.buckets.set(b, next); else t.buckets.delete(b);
+  if (t.n > 0) byQuestion.set(k, t); else byQuestion.delete(k);
+}
+
+/** The held score when it was already read from this database, else null (nothing to keep current yet). */
+function loadedTallies(): Map<string, Tally> | null {
+  try { return held && held.from === getDb() ? held.byQuestion : null; } catch { return null; }
+}
+function tallies(): Map<string, Tally> {
+  const db = getDb();
+  if (held && held.from === db) return held.byQuestion;
+  const byQuestion = new Map<string, Tally>();
+  for (const r of judgedRows('1 = 1')) tally(byQuestion, r, 1);
+  held = { from: db, byQuestion };
+  return byQuestion;
+}
+
+/**
  * The score over the judged rows still kept, or null when there are none. `band` is the tenth of the
  * probability range (deciles: the resolution a probability is read at) where the model was right least
- * often; a tie goes to the band with more rows.
+ * often; a tie goes to the band with more rows, then to the lower tenth.
  */
 export function scoreQuestion(purpose: string, question: string): QuestionScore | null {
-  const rows = getDb().prepare(`SELECT rule_said, model_said, truth FROM decision_shadow
-    WHERE purpose = ? AND question = ? AND truth IS NOT NULL AND model_said IS NOT NULL`).all(purpose, question) as
-    Array<{ rule_said: string; model_said: string; truth: string }>;
-  let ruleRight = 0;
-  let modelRight = 0;
-  const buckets = new Map<number, { n: number; right: number }>();
-  let n = 0;   // the rows actually judged (a model answer that does not parse is not one)
-  for (const r of rows) {
-    let v: { said: string; p: number };
-    try { v = verdictOf(JSON.parse(r.model_said) as Answer); } catch { continue; }
-    n++;
-    const right = v.said === r.truth;
-    if (r.rule_said === r.truth) ruleRight++;
-    if (right) modelRight++;
-    const b = decileOf(v.p);
-    const cur = buckets.get(b) ?? { n: 0, right: 0 };
-    buckets.set(b, { n: cur.n + 1, right: cur.right + (right ? 1 : 0) });
-  }
-  if (n === 0) return null;
+  const t = tallies().get(keyOf(purpose, question));
+  if (!t || t.n <= 0) return null;
   let weakest = -1;
-  for (const [b, s] of buckets) {
-    const w = weakest < 0 ? null : buckets.get(weakest)!;
+  for (const [b, s] of [...t.buckets].sort(([a], [c]) => a - c)) {
+    const w = weakest < 0 ? null : t.buckets.get(weakest)!;
     if (!w || s.right / s.n < w.right / w.n || (s.right / s.n === w.right / w.n && s.n > w.n)) weakest = b;
   }
+  const { n, ruleRight, modelRight } = t;
   return {
     purpose, question, n, ruleAcc: ruleRight / n, modelAcc: modelRight / n,
     ruleCI: wilson(ruleRight, n), modelCI: wilson(modelRight, n),
@@ -125,5 +164,5 @@ export function scoreQuestion(purpose: string, question: string): QuestionScore 
   };
 }
 
-/** Test-only: forget when rotation last ran. */
-export function __resetShadowRotationForTests(): void { lastRotateCheck = 0; }
+/** Test-only: forget when rotation last ran, and the held score (it is read afresh). */
+export function __resetShadowRotationForTests(): void { lastRotateCheck = 0; held = null; }

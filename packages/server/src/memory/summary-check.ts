@@ -19,7 +19,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { decide, type Answer, type Question } from '../agent/decide.js';
+import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts, type Question } from '../agent/decide.js';
 import { recordShadow, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
 import type { SummaryResult } from './summarize.js';
 import { decisionWindowTokens } from '../services/dojo-working-memory.js';
@@ -62,20 +62,27 @@ export async function checkSummary(
   { asked = askedQuestions(), background = false, checkId = summaryCheckId(agentId, [`source:${contentKey(sourceRows)}`]) } = {},
 ): Promise<SummaryCheck> {
   const questions = Object.fromEntries(asked.map((q) => [q, QUESTIONS[q]]));
-  const opts = { purpose: PURPOSE, agentId, background };
+  // t274 fix round 1: every ask states its patience — the call's own measured timeout, so nobody waits longer than
+  // the call is allowed — and a background ask names no agent (it holds no turn's stop slot).
+  const opts = (s: unknown): DecideOpts => {
+    const patienceMs = measuredDecideTimeoutMs(s, Object.keys(questions).length);
+    return background ? { purpose: PURPOSE, background: true, patienceMs } : { purpose: PURPOSE, agentId, patienceMs };
+  };
   const parts = sourceParts(sourceRows, summary, await decisionWindowTokens(), questions, decisionCharsPerToken(), getDecisionProvider()?.model ?? '');
   let answers: Record<string, Answer> | null;
   if (parts === null) {
     logger.warn('summary_check_unavailable the summary alone is larger than the decision model\'s window; it is kept unchecked', { summaryChars: summary.length }, agentId);
     answers = null;
   } else if (parts.length === 1) {
-    answers = await decide({ source_rows: sourceRows, summary }, questions, opts);
+    const s = { source_rows: sourceRows, summary };
+    answers = await decide(s, questions, opts(s));
   } else {
     // One part after another through decide()'s normal path, each with its own clock (fix round 5, NB4-6): the
     // local Ollama answers one request at a time, so parts dialled together would spend their clocks queued.
     const each: Array<Record<string, Answer> | null> = [];
     for (const [i, part] of parts.entries()) {
-      each.push(await decide({ source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` }, questions, opts));
+      const s = { source_rows: part, summary, source_part: `${i + 1} of ${parts.length}` };
+      each.push(await decide(s, questions, opts(s)));
     }
     answers = combineParts(each);
   }

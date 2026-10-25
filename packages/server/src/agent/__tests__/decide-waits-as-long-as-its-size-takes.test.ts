@@ -61,42 +61,42 @@ describe('the arithmetic (B5\'s worked examples)', () => {
 
 describe('decide() gives each call the time its own size takes', () => {
   it('resident (a call it answered left the model loaded): the warm formula for its state tokens and its questions', async () => {
-    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe', patienceMs: 60_000 });
     const state = { reply: 'w'.repeat(6_000) };
-    expect(await decide(state, Q3, { purpose: 'probe' })).not.toBeNull();
+    expect(await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 })).not.toBeNull();
     expect(callClock()).toBeGreaterThan(1_500);   // the provisional fixed figure would have cut it (B5)
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, true));
   });
 
   it('the cold path: the first call, and the first after any failure, get the load time too; no /api/ps is asked', async () => {
     const state = { reply: 'short' };
-    await decide(state, Q3, { purpose: 'probe' });
+    await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, false));
-    await decide(state, Q3, { purpose: 'probe' });
+    await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, true));
     ollama.up = false;
-    expect(await decide(state, Q3, { purpose: 'probe' })).toBeNull();
+    expect(await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 })).toBeNull();
     ollama.up = true;
-    await decide(state, Q3, { purpose: 'probe' });
+    await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state), 3, false));
     expect(ollama.fetches.every((p) => p === '/v1/systemone')).toBe(true);
   });
 
   it('T is counted at the decision model\'s OWN measured density when it has one', async () => {
     for (let i = 0; i < 3; i++) recordDensitySample('m-decision', 20_000, 10_000);   // 2.0 chars per token
-    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe', patienceMs: 60_000 });
     const state = { reply: 'd'.repeat(6_000) };
-    await decide(state, Q3, { purpose: 'probe' });
+    await decide(state, Q3, { purpose: 'probe', patienceMs: 60_000 });
     expect(callClock()).toBe(decideTimeoutMs(stateTokens(state, 2.0), 3, true));
   });
 
   it('a caller that owns its budget still passes its own', async () => {
-    await decide({ reply: 'x' }, Q3, { purpose: 'probe', timeoutMs: 777 });
+    await decide({ reply: 'x' }, Q3, { purpose: 'probe', patienceMs: 60_000, timeoutMs: 777 });
     expect(callClock()).toBe(777);
   });
 
   it('the summary check gets the formula too — the decision model\'s own time, not how long the writer took', async () => {
-    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe' });
+    await decide({ reply: 'warm it' }, Q3, { purpose: 'probe', patienceMs: 60_000 });
     const source = '[USER · the owner] draft the budget';
     const summary = 'The owner asked for a budget.';
     // A writer that answered at once (a fast cloud writer): its time says nothing about the decision model's.

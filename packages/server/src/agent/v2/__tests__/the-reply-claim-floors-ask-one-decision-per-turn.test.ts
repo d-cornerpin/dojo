@@ -31,11 +31,22 @@ vi.mock('../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: vi.fn(),
 }));
 vi.mock('../../../services/presence.js', () => ({ getPresence: () => 'away' }));
+/** Every log line the engine writes during a test, by component (fix round 1: outages are logged once). */
+const logs: Array<{ component: string; level: string; msg: string; data?: Record<string, unknown> }> = [];
+vi.mock('../../../logger.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createLogger: (component: string) => {
+    const at = (level: string) => (msg: string, data?: Record<string, unknown>) => { logs.push({ component, level, msg, data }); };
+    return { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error') };
+  },
+}));
 
 import { runMigrations } from '../../../db/migrations.js';
 import { STANDARD_DECISION_MODEL } from '../../../services/local-standard.js';
 import { __forgetResidencyForTests } from '../../decide.js';
 import { recordShadow, recordTruth, __resetShadowRotationForTests } from '../../decision-shadow.js';
+import { decide, measuredDecideTimeoutMs } from '../../decide.js';
+import { abortInFlight } from '../../shared-state.js';
 import { advance, initState, type AgentTurnState } from '../state.js';
 import { runPostCallClassify, POST_CALL_CLASSIFY_PHASE, type PostCallClassifyContext } from '../steps/post-call-classify/index.js';
 import {
@@ -150,6 +161,7 @@ beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   calls.length = 0;
+  logs.length = 0;
   modelSays = {};
   fallbackP = 0.5;
   respond = scripted;
@@ -382,5 +394,167 @@ describe('REVIEW FOCUS 5: the model is confidently wrong — the ledger still de
     modelSays = { claims_sent_to_third_party: 0.99 };
     const o = await observe('Done, that went out earlier.');
     expect(fired(o)).not.toContain('ungrounded-claim');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// FIX ROUND 1
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('fix round 1 (Important 1): a reply\'s cost does not grow with the shadow log', () => {
+  /** 20,000 kept rows per question, none judged — what about 1.4k replies a day leave over the 14-day keep. */
+  function fillShadowLog(perQuestion: number): void {
+    const ins = db().prepare(`INSERT INTO decision_shadow (purpose, question, agent_id, turn_id, rule_said, model_said, created_at)
+      VALUES (?, ?, ?, ?, 'false', '{"type":"noul","noul":0.99}', ?)`);
+    const now = Date.now();
+    db().transaction(() => {
+      for (const q of Object.keys(REPLY_CLAIM_QUESTIONS)) for (let i = 0; i < perQuestion; i++) ins.run(REPLY_CLAIM_PURPOSE, q, AGENT, `fill-${q}-${i}`, now);
+    })();
+  }
+
+  async function oneReplysReads(perQuestion: number): Promise<{ all: number; shadowReads: number }> {
+    installDecisionModel();
+    fillShadowLog(perQuestion);
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    respond = async (body) => { await held; return scripted(body); };
+    await observe('A first reply, after boot.', [], { messageId: 'boot' });   // the score is read once, here
+    __forgetReplyClaimsForTests();
+    const d = db() as unknown as { prepare: (sql: string) => unknown };
+    const real = d.prepare.bind(d);
+    const seen = { all: 0, shadowReads: 0 };
+    d.prepare = (sql: string) => {
+      seen.all++;
+      if (/decision_shadow/.test(sql) && /^\s*SELECT/i.test(sql)) seen.shadowReads++;
+      return real(sql);
+    };
+    try {
+      await observe('Here is the answer: the receipt total is $432.', [], { messageId: 'measured' });
+    } finally { d.prepare = real; }
+    release();
+    return seen;
+  }
+
+  it('20,000 shadow rows per question: no read of the shadow log per reply, and the same reads as an empty log', async () => {
+    const empty = await oneReplysReads(0);
+    await __replyClaimsSettledForTests(AGENT);
+    mockDb.current!.close();
+    mockDb.current = new Database(':memory:');
+    runMigrations(mockDb.current);
+    __forgetReplyClaimsForTests();
+    const full = await oneReplysReads(20_000);
+    expect(full.shadowReads).toBe(0);
+    expect(full.all).toBe(empty.all);
+  }, 60_000);
+
+  it('the policy still flips on measured evidence, and a truth written later moves the held score', async () => {
+    installDecisionModel();
+    modelSays = { claims_saved: 0.95 };
+    const reply = "All handled on my side, you won't have to repeat it.";
+    const before = await observe(reply, REJECTED_SAVE, { messageId: 'before' });   // the score is read: nothing judged
+    expect(fired(before)).not.toContain('failed-save-claim');
+    await __replyClaimsSettledForTests(AGENT);
+    proveModel('claims_saved');   // truth written AFTER the score was read joins it as it is written
+    const after = await observe(reply, REJECTED_SAVE, { messageId: 'after' });
+    expect(fired(after)).toContain('failed-save-claim');
+  });
+});
+
+describe('fix round 1 (Important 2): a waiting reply has a patience, and Stop cuts a queued call', () => {
+  /** A background call that sits at the head of the one queue until released (the review's 4,009 ms probe). */
+  function holdTheQueue(): { release: () => void; done: Promise<unknown> } {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    respond = async (body) => {
+      if ((body.state as Record<string, unknown>).ahead !== undefined) await held;
+      return scripted(body);
+    };
+    const done = decide({ ahead: 'a call already queued' }, { q: { type: 'noul', instructions: 'Is `ahead` a call?' } }, { purpose: 'probe', patienceMs: 60_000, background: true });
+    return { release, done };
+  }
+
+  it('the reply returns at its patience with the rule\'s answer; the queued call is never sent; the queue moves on', async () => {
+    installDecisionModel();
+    proveModel('claims_saved');
+    modelSays = { claims_saved: 0.95 };   // the model WOULD steer; patience ran out, so the rule (no claim) stands
+    const ahead = holdTheQueue();
+    await new Promise((r) => setTimeout(r, 20));
+    const behind = decide({ behind: 'a later caller' }, { q: { type: 'noul', instructions: 'Is `behind` a call?' } }, { purpose: 'probe-2', patienceMs: 60_000 });
+    const reply = "All handled on my side, you won't have to repeat it.";
+    const patience = measuredDecideTimeoutMs(
+      { reply, last_user_message: 'can you handle the receipt?', tool_calls_this_turn: ['vault_remember'] }, 9)!;
+    const started = Date.now();
+    const pending = observe(reply, REJECTED_SAVE);
+    await new Promise((r) => setTimeout(r, 50));
+    const after = decide({ after: 'queued behind the reply' }, { q: { type: 'noul', instructions: 'Is `after` a call?' } }, { purpose: 'probe-3', patienceMs: 60_000 });
+    const o = await pending;
+    const waited = Date.now() - started;
+    expect(fired(o)).not.toContain('failed-save-claim');   // the rule's answer
+    expect(waited).toBeGreaterThanOrEqual(patience - 50);   // it waited its patience, counted from when it asked…
+    expect(waited).toBeLessThan(patience + 2_000);          // …and no longer, though the call ahead is still held
+    expect(calls.filter((c) => Object.keys(c.questions as object).includes('claims_saved'))).toHaveLength(0);   // never sent
+    expect(calls.filter((c) => 'after' in (c.state as object))).toHaveLength(0);   // the call behind still waits its turn
+    ahead.release();
+    expect(await ahead.done).not.toBeNull();
+    expect(await behind).not.toBeNull();   // the queue's other callers are unaffected
+    expect(await after).not.toBeNull();
+  }, 30_000);
+
+  it('the owner\'s Stop releases a reply waiting in the queue at once, with the rule\'s answer', async () => {
+    installDecisionModel();
+    proveModel('claims_saved');
+    modelSays = { claims_saved: 0.95 };
+    const ahead = holdTheQueue();
+    await new Promise((r) => setTimeout(r, 20));
+    const started = Date.now();
+    const pending = observe('Saved that for you.', REJECTED_SAVE);
+    await new Promise((r) => setTimeout(r, 50));
+    abortInFlight(AGENT, 'user-stop', { scope: 'all' });
+    const o = await pending;
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(fired(o)).toContain('failed-save-claim');   // the rule's answer
+    ahead.release();
+    expect(await ahead.done).not.toBeNull();
+  });
+});
+
+describe('fix round 1 (minors): a call that gives no answer still leaves its rows, and an outage is said once', () => {
+  const FAILURES: Array<{ name: string; make: () => (body: Record<string, unknown>) => Promise<Response> }> = [
+    { name: 'an HTTP failure', make: () => async () => new Response('down', { status: 500 }) },
+    { name: 'a throwing transport', make: () => async () => { throw new Error('socket hang up'); } },
+    { name: 'garbage for an answer', make: () => async () => new Response('{"answers": {"claims_saved": "yes"', { status: 200 }) },
+  ];
+  for (const f of FAILURES) {
+    it(`shadow, ${f.name}: byte-identical to the rule, nine rows with no model answer, one outage line`, async () => {
+      const ruled = await observe('Saved that for you.', REJECTED_SAVE);
+      __forgetReplyClaimsForTests();
+      installDecisionModel();
+      respond = f.make();
+      const shadowed = await observe('Saved that for you.', REJECTED_SAVE);
+      expect(shadowed).toEqual(ruled);
+      await __replyClaimsSettledForTests(AGENT);
+      await observe('A second reply while it is still down.', [], { messageId: 'msg-2' });
+      await __replyClaimsSettledForTests(AGENT);
+      const rows = db().prepare('SELECT model_said FROM decision_shadow WHERE purpose = ?').all(REPLY_CLAIM_PURPOSE) as Array<{ model_said: string | null }>;
+      expect(rows).toHaveLength(18);
+      expect(rows.every((r) => r.model_said === null)).toBe(true);
+      const outage = logs.filter((l) => l.component === 'reply-claims' && l.level === 'warn');
+      expect(outage).toHaveLength(1);
+      expect(String(outage[0].data?.failure)).not.toBe('undefined');
+    });
+  }
+
+  it('model mode: an outage is logged once, not once per reply, and the model answering again is said once', async () => {
+    installDecisionModel();
+    proveModel('claims_saved');
+    respond = async () => new Response('down', { status: 500 });
+    await observe('Saved that for you.', REJECTED_SAVE);
+    await observe('Saved that again.', REJECTED_SAVE, { messageId: 'msg-2' });
+    await observe('And again.', REJECTED_SAVE, { messageId: 'msg-3' });
+    expect(logs.filter((l) => l.component === 'reply-claims' && l.level !== 'debug')).toHaveLength(1);
+    respond = scripted;
+    await observe('Back now.', [], { messageId: 'msg-4' });
+    await observe('Still back.', [], { messageId: 'msg-5' });
+    expect(logs.filter((l) => l.component === 'reply-claims' && l.level !== 'debug')).toHaveLength(2);
   });
 });

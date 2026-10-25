@@ -51,9 +51,9 @@ describe('a shadow check waiting for idle holds no other decide() call up', () =
     const release = (): void => { if (!released) { released = true; lock.release('ollama-local', 'agent-local:8b'); } };
     onTestFinished(release);   // the lock is the process's own: never left held for the next case
     let shadowDone = false;
-    const shadow = decide({ x: 'shadow' }, Q, { purpose: 'summary_check', background: true }).then((a) => { shadowDone = true; return a; });
+    const shadow = decide({ x: 'shadow' }, Q, { purpose: 'summary_check', patienceMs: 60_000, background: true }).then((a) => { shadowDone = true; return a; });
     await new Promise((r) => setTimeout(r, 20));
-    const rulePath = await within(decide({ x: 'rule-path' }, Q, { purpose: 'reply_floor' }), 3_000);
+    const rulePath = await within(decide({ x: 'rule-path' }, Q, { purpose: 'reply_floor', patienceMs: 60_000 }), 3_000);
     expect(rulePath).toMatchObject({ yes: { noul: 0.9 } });
     expect(sent).toEqual(['rule-path']);
     expect(shadowDone).toBe(false);   // still waiting for the agent's turn to end
@@ -63,8 +63,8 @@ describe('a shadow check waiting for idle holds no other decide() call up', () =
   });
 
   it('a call that throws releases its queue slot: the next call is still sent and answered', async () => {
-    await expect(decide({ x: 'first' }, Q, { purpose: 'ledger_breaks' })).rejects.toThrow('the cost ledger write failed');
-    expect(await within(decide({ x: 'second' }, Q, { purpose: 'reply_floor' }), 3_000)).toMatchObject({ yes: { noul: 0.9 } });
+    await expect(decide({ x: 'first' }, Q, { purpose: 'ledger_breaks', patienceMs: 60_000 })).rejects.toThrow('the cost ledger write failed');
+    expect(await within(decide({ x: 'second' }, Q, { purpose: 'reply_floor', patienceMs: 60_000 }), 3_000)).toMatchObject({ yes: { noul: 0.9 } });
     expect(sent.filter((x) => x === 'first' || x === 'second')).toEqual(['first', 'second']);
   });
 });

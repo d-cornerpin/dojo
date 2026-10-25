@@ -90,3 +90,25 @@ describe('REVIEW FOCUS 4: the log is bounded like the log file (the live window 
     expect(db().prepare('SELECT COUNT(*) AS n FROM decision_shadow').get()).toEqual({ n: 1 });
   });
 });
+
+describe('t274 fix round 1: the score is held in memory and kept current as the judged rows change', () => {
+  it('a truth written after the score was read joins it; a judged row rotated out leaves it — no re-read of the log', () => {
+    const now = Date.now();
+    expect(scoreQuestion('p', 'q')).toBeNull();   // read once: nothing judged
+    recordShadow({ purpose: 'p', question: 'q', turnId: 'live', ruleSaid: false, modelSaid: noul(0.9) });
+    db().prepare(`INSERT INTO decision_shadow (purpose, question, turn_id, rule_said, model_said, created_at)
+      VALUES ('p', 'q', 'old', 'true', '{"type":"noul","noul":0.2}', ?)`).run(now - 3 * SHADOW_REPORT_WINDOW_MS);
+    recordTruth('live', 'q', true, 'test');
+    recordTruth('old', 'q', true, 'test');
+    const prepare = db().prepare.bind(db());
+    let shadowScans = 0;
+    (db() as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (/^\s*SELECT[\s\S]*FROM decision_shadow WHERE 1 = 1/i.test(sql)) shadowScans++;
+      return prepare(sql);
+    };
+    expect(scoreQuestion('p', 'q')).toMatchObject({ n: 2, ruleAcc: 0.5, modelAcc: 0.5 });
+    rotateDecisionShadow(now);
+    expect(scoreQuestion('p', 'q')).toMatchObject({ n: 1, ruleAcc: 0, modelAcc: 1 });
+    expect(shadowScans).toBe(0);
+  });
+});

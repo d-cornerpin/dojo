@@ -75,7 +75,7 @@ describe('install makes the decision model\'s window real', () => {
     // A full 64 KiB body at this box's density fits it; it is no larger than the writer's job (the check's text).
     expect(made.parameters.num_ctx).toBeGreaterThanOrEqual(Math.ceil(64 * 1024 / B5_MEASURED_CHARS_PER_TOKEN));
     expect(made.parameters.num_ctx).toBeLessThanOrEqual(await writerJobWindowTokens(null));
-    await decide({ reply: 'Is it done?' }, Q, { purpose: 'probe' });
+    await decide({ reply: 'Is it done?' }, Q, { purpose: 'probe', patienceMs: 60_000 });
     expect(ollama.asked.map((a) => a.model)).toEqual([STANDARD_DECISION_MODEL.windowTag]);
   });
 
@@ -94,7 +94,7 @@ describe('install makes the decision model\'s window real', () => {
     ollama.createOk = false;
     await ensureStandardModels();
     expect(await decisionWindowTokens()).toBe(8_192);
-    await decide({ reply: 'x' }, Q, { purpose: 'probe' });
+    await decide({ reply: 'x' }, Q, { purpose: 'probe', patienceMs: 60_000 });
     expect(ollama.asked.map((a) => a.model)).toEqual([STANDARD_DECISION_MODEL.tag]);
     ollama.createOk = true;
     await ensureStandardModels();
@@ -105,10 +105,10 @@ describe('install makes the decision model\'s window real', () => {
 describe('decide()\'s requests fit that window and Ollama\'s 64 KiB body', () => {
   it('sends no num_ctx (Ollama ignores it), and never dials a body over 64 KiB', async () => {
     await ensureStandardModels();
-    await decide({ reply: 'x' }, Q, { purpose: 'probe' });
+    await decide({ reply: 'x' }, Q, { purpose: 'probe', patienceMs: 60_000 });
     expect(ollama.asked[0].keys).toEqual(['model', 'state', 'questions', 'keep_alive']);
     ollama.asked.length = 0;
-    expect(await decide({ reply: 'y'.repeat(70_000) }, Q, { purpose: 'probe' })).toBeNull();
+    expect(await decide({ reply: 'y'.repeat(70_000) }, Q, { purpose: 'probe', patienceMs: 60_000 })).toBeNull();
     expect(ollama.asked).toHaveLength(0);
   });
 
