@@ -9,9 +9,10 @@
 //      from every gate file. No path may reach `agent/decide.ts` or `agent/decision-ask.ts`. The engine files the
 //      gates import for other reasons (spawner, runtime, the iMessage bridge, the A2A transport) ask the decision
 //      model only through the leaf `agent/decision-hooks.ts`, which imports nothing, so no path runs through them.
-//      Three edges are declared, not hidden (EXEMPT_EDGES, each argued): `decision-window.ts` imports the measured
-//      request-size CONSTANT from `decide.ts` (a number, never a call), and the two doors into the B4 summary check
-//      (it consults the model about a summary, which is no gate's input). A new edge must be argued there.
+//      Six edges are declared, not hidden (EXEMPT_EDGES, each argued): `decision-window.ts` imports the measured
+//      request-size CONSTANT from `decide.ts` (a number, never a call); the two doors into the B4 summary check and the
+//      three into the reply-claim floors' module (each consults the model about a summary or a reply, neither of which
+//      is a gate's input). A new edge must be argued there.
 //   2. DIRECT: no gate file imports any module that asks (the judgment modules, the shadow log, the policy, the hooks).
 //   3. THE LEAF: `decision-hooks.ts` imports nothing of the engine; `decision-ask.ts` is imported only by the server's boot.
 //   4. BEHAVIOUR: with a decision model installed and every judged question proven, the pure gates answer exactly as
@@ -63,6 +64,11 @@ const EXEMPT_EDGES: Array<{ from: string; to: string; why: string }> = [
   // The summary check (v3.5 B4, shipped before this census) consults the model about a SUMMARY. The gates reach it only
   // because they import the runtime that writes summaries; nothing it asks is a gate's input. Declared, not hidden.
   { from: 'memory/summarize.ts', to: 'memory/summary-check.ts', why: 'the one door every summary is written through asks the B4 summary check; a summary is not a gate\'s input.' },
+  // The reply-claim floors (v3.5 C1) ask the model what the agent's own REPLY claims. They run after a model call, inside
+  // the runtime the gates also import; a reply is never a gate's input (the ledger still decides what was sent or saved).
+  ...['reply-floors', 'no-reply', 'promise-floor'].map((f) => ({
+    from: `agent/v2/steps/post-call-classify/${f}.ts`, to: 'agent/v2/reply-claims.ts', why: 'the nine reply-claim floors; a reply is no gate\'s input and the ledger still decides.',
+  })),
   { from: 'memory/out-of-view-fold.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
 ];
 
