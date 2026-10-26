@@ -352,7 +352,7 @@ function renderHorizontalRule(ctx: RenderCtx, block: PdfHorizontalRuleBlock): vo
   ctx.cursorY -= 6;
 }
 
-function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
+export function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
   const rows = block.rows ?? [];
   if (rows.length === 0) return;
   const cols = Math.max(...rows.map((r) => r.length));
@@ -369,10 +369,10 @@ function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
   const firstRowBold = block.first_row_bold ?? true;
 
   rows.forEach((row, rowIdx) => {
-    // Pre-compute wrapped lines per cell to know the row height.
-    const cellLines = row.map((cell, cIdx) => {
+    // Pre-compute wrapped lines per cell; a short row is padded to `cols` empty cells.
+    const cellLines = Array.from({ length: cols }, (_, cIdx) => {
       const f = rowIdx === 0 && firstRowBold ? ctx.fontBold : ctx.font;
-      return wrapText(cell ?? '', f, size, (widths[cIdx] ?? widths[0]) - 2 * padH);
+      return wrapText(row[cIdx] ?? '', f, size, (widths[cIdx] ?? widths[0]) - 2 * padH);
     });
     const rowHeight = Math.max(
       ...cellLines.map((ls) => ls.length * size * 1.4),
