@@ -42,9 +42,12 @@ export function authoredInputLines(name: string, input: unknown, keep: number): 
   for (const [field, value] of Object.entries(input as Record<string, unknown>)) {
     if (!AUTHORED_INPUT_FIELDS.has(field) || typeof value !== 'string' || value.trim().length === 0) continue;
     const kept = keep >= 1 ? value.length : Math.floor(value.length * Math.max(0, keep));
-    lines.push(kept >= value.length
+    // A cut between the two halves of an emoji leaves a lone surrogate, so the kept end snaps back
+    // to the character boundary, the way resultForSummary already does.
+    const cut = charBoundary(value, kept, 'back');
+    lines.push(cut >= value.length
       ? `  ${field}: ${value}`
-      : `  ${field}: ${value.slice(0, kept)}${kept > 0 ? ' ' : ''}[... ${value.length - kept} more chars of this text are not shown here]`);
+      : `  ${field}: ${value.slice(0, cut)}${cut > 0 ? ' ' : ''}[... ${value.length - cut} more chars of this text are not shown here]`);
   }
   return lines;
 }
