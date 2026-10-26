@@ -126,7 +126,7 @@ export function listContacts(opts: { limit?: number; offset?: number; sortBy?: '
 export function searchContacts(query: string, limit = 50, offset = 0): ContactRecord[] {
   const q = query.trim();
   if (!q) return listContacts({ limit, offset });
-  const like = `%${q.replace(/[%_]/g, ch => '\\' + ch)}%`;
+  const like = `%${q.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
   const safeLimit = Math.max(1, Math.min(500, limit));
   const safeOffset = Math.max(0, offset);
   const rows = getDb().prepare(`
@@ -153,7 +153,7 @@ export function countContacts(query?: string): number {
     const row = getDb().prepare('SELECT COUNT(*) as c FROM contacts').get() as { c: number };
     return row.c;
   }
-  const like = `%${q.replace(/[%_]/g, ch => '\\' + ch)}%`;
+  const like = `%${q.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
   const row = getDb().prepare(`
     SELECT COUNT(*) as c FROM contacts
     WHERE display_name LIKE ? ESCAPE '\\'
