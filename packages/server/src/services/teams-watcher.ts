@@ -100,6 +100,7 @@ function recordNotification(n: RecentNotification): void {
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let firstPollTimer: ReturnType<typeof setTimeout> | null = null;
 let ownUserId: string | null = null;
 
 // chatId → ISO timestamp of the newest message we processed from that chat
@@ -427,7 +428,7 @@ export function startTeamsWatcher(): void {
   }, POLL_INTERVAL_MS);
 
   // Initial poll after 15s — staggers behind Outlook watcher's 10s delay
-  setTimeout(() => {
+  firstPollTimer = setTimeout(() => {
     pollForNewMessages().catch(() => {});
   }, 15_000);
 }
@@ -436,6 +437,10 @@ export function stopTeamsWatcher(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+    if (firstPollTimer) {
+      clearTimeout(firstPollTimer);
+      firstPollTimer = null;
+    }
     chatLastMessageAt.clear();
     membersFetched.clear();
     logger.info('Teams watcher stopped');
