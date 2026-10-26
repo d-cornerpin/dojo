@@ -70,27 +70,45 @@ export async function pullOllamaModel(
     let lastStatus = '';
     // Track cumulative progress across all digests/layers
     const digestProgress = new Map<string, { total: number; completed: number }>();
+    // A network chunk can cut a JSON line in half: keep the unfinished tail so the next chunk
+    // completes it instead of dropping a line that neither half alone can parse.
+    let pending = '';
+
+    const handleLine = (line: string): PullOutcome | null => {
+      if (line === '') return null;
+      let json: { status?: string; error?: string; digest?: string; total?: number; completed?: number };
+      try { json = JSON.parse(line); } catch { return null; /* skip non-JSON lines */ }
+      lastStatus = json.status ?? lastStatus;
+      if (json.error) {
+        report({ model, status: 'error', completed: 0, total: 0, layers: 0, error: json.error });
+        return { ok: false, error: json.error, httpError: true };
+      }
+      if (json.digest && json.total) digestProgress.set(json.digest, { total: json.total, completed: json.completed ?? 0 });
+      let total = 0;
+      let completed = 0;
+      for (const [, dp] of digestProgress) { total += dp.total; completed += dp.completed; }
+      report({ model, status: json.status ?? 'downloading', completed, total, layers: digestProgress.size, error: null });
+      return null;
+    };
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       // t114 (U8): a progress line IS the proof the pull is moving. This is the whole fix.
       pullDeadline.bump();
-      const lines = decoder.decode(value, { stream: true }).trim().split('\n');
+      pending += decoder.decode(value, { stream: true });
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
       for (const line of lines) {
-        let json: { status?: string; error?: string; digest?: string; total?: number; completed?: number };
-        try { json = JSON.parse(line); } catch { continue; /* skip non-JSON lines */ }
-        lastStatus = json.status ?? lastStatus;
-        if (json.error) {
-          report({ model, status: 'error', completed: 0, total: 0, layers: 0, error: json.error });
-          return { ok: false, error: json.error, httpError: true };
-        }
-        if (json.digest && json.total) digestProgress.set(json.digest, { total: json.total, completed: json.completed ?? 0 });
-        let total = 0;
-        let completed = 0;
-        for (const [, dp] of digestProgress) { total += dp.total; completed += dp.completed; }
-        report({ model, status: json.status ?? 'downloading', completed, total, layers: digestProgress.size, error: null });
+        const outcome = handleLine(line);
+        if (outcome) return outcome;
       }
+    }
+    // Flush the decoder: the last line may have arrived with no trailing newline.
+    pending += decoder.decode();
+    if (pending !== '') {
+      const outcome = handleLine(pending);
+      if (outcome) return outcome;
     }
     return { ok: true, status: lastStatus };
   } catch (err) {
