@@ -44,10 +44,14 @@ interface OpenAiCompatibleModelResponse {
   }>;
 }
 
-const parsePrice = (s: string | undefined | null): number | null => {
+export const parsePrice = (s: string | undefined | null): number | null => {
   if (s === undefined || s === null || s === '') return null;
   const n = parseFloat(s) * 1_000_000;
-  return Number.isFinite(n) ? n : null;
+  // OpenRouter tags its variable-priced router models (the auto-router) with the
+  // text "-1" to mean "price varies." A negative result would overwrite a known
+  // row via COALESCE and poison every later cost estimate, so reject it the same
+  // way the sibling litellm-pricing-sync.ts does — 0 ("free") is still accepted.
+  return Number.isFinite(n) && n >= 0 ? n : null;
 };
 
 // DeepSeek's API doesn't return pricing on /models, so we skip it. Same
