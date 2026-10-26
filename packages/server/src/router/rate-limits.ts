@@ -73,8 +73,10 @@ export function isRateLimited(modelId: string): boolean {
     return false;
   }
 
-  // If remaining is 0, we're rate limited
-  if (state.remaining === 0) {
+  // A zero-remaining record is a block only while a known reset instant is still in
+  // the future. With no known reset instant there is no signal for how long it lasts,
+  // so it must not block (the next real 429 records its own retry-after).
+  if (state.remaining === 0 && state.resetAt > 0) {
     return true;
   }
 
