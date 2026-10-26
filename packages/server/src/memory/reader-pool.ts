@@ -246,6 +246,22 @@ export function readerQuery<T>(
   const w = worker;
 
   return new Promise<T[]>((resolve, reject) => {
+    const onAbort = (): void => {
+      // Discard: the entry goes, the worker keeps running to completion, and its reply lands on nobody.
+      const p = pending.get(id);
+      if (!p) return;
+      pending.delete(id);
+      clearTimeout(p.timer);
+      reject(new Error('aborted'));
+    };
+    // ⚠ `{ once: true }` only removes the listener after it FIRES. A query that finishes normally, fails,
+    // or hits its deadline would otherwise leave the one-shot listener parked on the caller's signal
+    // (Node warns past 10, and each leftover closes over `pending`, `reject` and the timer), so the
+    // wrapped resolve/reject strip it first — exactly once, on whichever way the query ends.
+    const cleanup = (): void => opts.signal?.removeEventListener('abort', onAbort);
+    const finishResolve = (rows: T[]): void => { cleanup(); resolve(rows); };
+    const finishReject = (err: unknown): void => { cleanup(); reject(err); };
+
     const timer = setTimeout(() => {
       // ⚠ TERMINATE, NOT A POLITE CANCEL. The worker is inside `sqlite3_step`; nothing in JavaScript can
       // ask it to stop. Killing the thread is the only honest way to end an overrun, and the next query
@@ -258,7 +274,7 @@ export function readerQuery<T>(
       // reject the queries that follow it onto the replacement.
       if (worker === w) worker = null;
       void w.terminate();
-      reject(new Error(`reader query '${label}' exceeded ${deadlineMs}ms and the worker was terminated`));
+      finishReject(new Error(`reader query '${label}' exceeded ${deadlineMs}ms and the worker was terminated`));
       // ⚠ AND EVERYTHING ELSE THAT WAS WAITING ON *THIS* WORKER (I7). The thread is about to die
       // inside `sqlite3_step`; its siblings will never be answered. Before this they waited out
       // their own 15 seconds and then each logged "terminating the reader worker" at a worker that
@@ -272,18 +288,10 @@ export function readerQuery<T>(
       label,
       timer,
       worker: w,
-      resolve: (rows) => resolve(rows as T[]),
-      reject,
+      resolve: (rows) => finishResolve(rows as T[]),
+      reject: finishReject,
     });
 
-    const onAbort = (): void => {
-      // Discard: the entry goes, the worker keeps running to completion, and its reply lands on nobody.
-      const p = pending.get(id);
-      if (!p) return;
-      pending.delete(id);
-      clearTimeout(p.timer);
-      reject(new Error('aborted'));
-    };
     opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
@@ -291,7 +299,7 @@ export function readerQuery<T>(
     } catch (err) {
       pending.delete(id);
       clearTimeout(timer);
-      reject(err instanceof Error ? err : new Error(String(err)));
+      finishReject(err instanceof Error ? err : new Error(String(err)));
     }
   });
 }
