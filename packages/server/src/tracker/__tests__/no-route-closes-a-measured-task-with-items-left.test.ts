@@ -373,4 +373,28 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     expect(out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
     expect(readWork(id).state).toBe('claimed');
   });
+
+  // fix round 7: a QUESTION is never approval. "Close it?" asks; it does not say.
+  for (const [owner, quote] of [
+    ['Close it? Not yet.', 'Close it'],
+    ['Close it?', 'Close it'],
+  ] as const) {
+    it(`a question is never approval: owner "${owner}", quoted "${quote}"`, async () => {
+      const r = await verdictOn(owner, quote);
+      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(r.state).toBe('claimed');
+    });
+  }
+  for (const [owner, quote] of [
+    ['Close it.', 'Close it'],
+    ['Close it', 'Close it'],
+    ['ok. Close it!', 'Close it'],
+    ['Close it.\nThe rest can wait', 'Close it'],
+  ] as const) {
+    it(`a statement still approves: ${JSON.stringify(owner)} / ${JSON.stringify(quote)}`, async () => {
+      const r = await verdictOn(owner, quote);
+      expect(r.out).not.toMatch(/^Error|Refused/);
+      expect(r.state).toBe('done');
+    });
+  }
 });

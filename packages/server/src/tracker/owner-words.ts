@@ -33,9 +33,21 @@ function ownerWords(m: Row): string | null {
   return o.kind === 'user' && o.relation === 'owner' ? stripInboundChannelMarker(m.content) : null;
 }
 
-/** The whole message and each whole sentence of it, normalised. */
-const quotableUnits = (words: string): string[] =>
-  [words, ...words.split(/[.!?]+|\n+/)].map(normalizeQuote).filter((u) => u.length > 0);
+/** The whole message (when it is a statement) and each whole sentence that did not end with a
+ *  question mark, normalised. A sentence the owner ended with "?" is a question — it asks, it
+ *  does not say — so it is never a quotable approval; statements ending in ".", "!", a newline
+ *  or the end of the message still match as before. */
+const quotableUnits = (words: string): string[] => {
+  const units: string[] = [];
+  if (!/\?[.!?\s]*$/.test(words)) units.push(words);
+  const parts = words.split(/([.!?]+|\n+)/);
+  for (let i = 0; i < parts.length; i += 2) {
+    const end = parts[i + 1];
+    if (end !== undefined && end.includes('?')) continue;
+    if (parts[i].length > 0) units.push(parts[i]);
+  }
+  return units.map(normalizeQuote).filter((u) => u.length > 0);
+};
 
 /** Did the owner himself write `quote` (a whole message or sentence), since the verdict on `taskId` was requested? */
 export function ownerSaidSinceVerdictAsked(taskId: string, quote: string): boolean {
