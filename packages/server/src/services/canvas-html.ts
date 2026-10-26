@@ -72,8 +72,20 @@ export function inlineHtmlAssets(htmlAbsPath: string): string {
     ref = ref.replace(/^file:\/\//i, '');          // file:///Users/x.png -> /Users/x.png
     const clean = resolveHome(ref.split(/[?#]/)[0]); // drop ?query / #hash, expand ~
     if (!clean) return null;
-    const abs = path.isAbsolute(clean) ? clean : path.resolve(baseDir, clean);
-    return toDataUri(abs);
+    // HTML refs are URLs, so a file called "my pic.png" is written "my%20pic.png".
+    // Try the percent-DECODED path first, then fall back to the text as written:
+    // a file literally named "a%20b.png" still resolves, and a malformed "%zz"
+    // ref (decodeURIComponent throws) is left alone instead of blowing up.
+    let decoded = clean;
+    try {
+      decoded = decodeURIComponent(clean);
+    } catch {
+      decoded = clean;
+    }
+    const absOf = (p: string) => (path.isAbsolute(p) ? p : path.resolve(baseDir, p));
+    const data = toDataUri(absOf(decoded));
+    if (data) return data;
+    return decoded === clean ? null : toDataUri(absOf(clean));
   };
 
   // Media tags: inline src / poster (NOT <a href>, which is navigation).
