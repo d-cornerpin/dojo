@@ -2099,6 +2099,36 @@ export async function runDreamerContinuationSweep(): Promise<void> {
 
 let dreamTimer: ReturnType<typeof setTimeout> | null = null;
 
+// A valid dreamTime is exactly HH:MM with hours 0-23 and minutes 0-59 (the
+// config default is '03:00'). Anything else — '', '9am', '3', '24:00', '7:75',
+// or a non-string — falls back to fallbackText and reports usedFallback so the
+// caller can warn. The target is the next strictly-later local time: setHours to
+// the wall-clock moment, then setDate(+1) when it has already passed (so an
+// exactly-now target moves to tomorrow and a NaN delay is never scheduled).
+export function nextDailyRunDelayMs(timeText: unknown, fallbackText: string, now: Date): { delayMs: number; usedFallback: boolean } {
+  let usedFallback = false;
+  let text = fallbackText;
+  if (typeof timeText === 'string' && /^(\d{1,2}):(\d{2})$/.test(timeText)) {
+    const [hours, minutes] = timeText.split(':').map(Number);
+    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+      text = timeText;
+    } else {
+      usedFallback = true;
+    }
+  } else {
+    usedFallback = true;
+  }
+
+  const [hours, minutes] = text.split(':').map(Number);
+  const next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+  }
+  const delayMs = next.getTime() - now.getTime();
+  return { delayMs, usedFallback };
+}
+
 export function scheduleDreamingCycle(): void {
   if (dreamTimer) {
     clearTimeout(dreamTimer);
@@ -2113,15 +2143,16 @@ export function scheduleDreamingCycle(): void {
     logger.info('Dreaming is disabled; scheduling nightly window for engine maintenance only');
   }
 
-  const [hours, minutes] = config.dreamTime.split(':').map(Number);
   const now = new Date();
-  const next = new Date();
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
+  const { delayMs, usedFallback } = nextDailyRunDelayMs(config.dreamTime, '03:00', now);
+  if (usedFallback) {
+    logger.warn('Invalid dreamTime text; falling back to 03:00', {
+      dreamTime: config.dreamTime,
+    });
   }
 
-  const delay = next.getTime() - now.getTime();
+  const delay = delayMs;
+  const next = new Date(now.getTime() + delay);
 
   logger.info('Dreaming cycle scheduled', {
     nextDream: next.toISOString(),
