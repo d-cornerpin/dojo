@@ -16,21 +16,25 @@ export function stripHtmlTags(html: string): string {
   // Remove HTML comments
   text = text.replace(/<!--[\s\S]*?-->/g, '');
   // Replace br and p tags with newlines
-  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<br\b[^>]*>/gi, '\n');
   text = text.replace(/<\/p>/gi, '\n\n');
   text = text.replace(/<\/div>/gi, '\n');
   text = text.replace(/<\/h[1-6]>/gi, '\n\n');
-  text = text.replace(/<li>/gi, '- ');
+  text = text.replace(/<li\b[^>]*>/gi, '- ');
   text = text.replace(/<\/li>/gi, '\n');
   // Strip remaining tags
   text = text.replace(/<[^>]+>/g, '');
-  // Decode common HTML entities
-  text = text.replace(/&amp;/g, '&');
-  text = text.replace(/&lt;/g, '<');
-  text = text.replace(/&gt;/g, '>');
-  text = text.replace(/&quot;/g, '"');
-  text = text.replace(/&#39;/g, "'");
-  text = text.replace(/&nbsp;/g, ' ');
+  // Decode common HTML entities in one pass so a decoded value is never decoded
+  // again: `&amp;lt;` must stay `&lt;`, not collapse to `<`.
+  const ENTITIES: Record<string, string> = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    '#39': "'",
+    nbsp: ' ',
+  };
+  text = text.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (match, name) => ENTITIES[name] ?? match);
   // Clean up whitespace
   text = text.replace(/\n{3,}/g, '\n\n');
   text = text.replace(/[ \t]+/g, ' ');
