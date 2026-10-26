@@ -176,6 +176,21 @@ function wallDayOfWeek(w: WallClock): number {
 }
 
 /**
+ * Add `totalMonths` to a wall clock in calendar space, CLAMPING the day to
+ * the target month's length instead of overflowing it (Jan 31 + 1 month is
+ * Feb 28, not "Feb 31" → Mar 3). Used for months/years, which must keep the
+ * anchor's day across short months; the other units keep normalizeWall's
+ * overflow so day 32 rolls into the next month as before.
+ */
+function addClampedMonths(w: WallClock, totalMonths: number): WallClock {
+  const month0 = w.month - 1 + totalMonths;
+  const year = w.year + Math.floor(month0 / 12);
+  const month = ((month0 % 12) + 12) % 12 + 1;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { ...w, year, month, day: Math.min(w.day, lastDay) };
+}
+
+/**
  * Advance a wall clock by `interval` of a CALENDAR `unit`, holding the
  * time-of-day fixed. For 'weekdays', advance `interval` calendar days and
  * then skip past Saturday/Sunday to Monday, so an interval of 1 means
@@ -192,9 +207,9 @@ function advanceWallByUnit(w: WallClock, interval: number, unit: string, daysCSV
     case 'weeks':
       return normalizeWall({ ...w, day: w.day + interval * 7 });
     case 'months':
-      return normalizeWall({ ...w, month: w.month + interval });
+      return addClampedMonths(w, interval);
     case 'years':
-      return normalizeWall({ ...w, year: w.year + interval });
+      return addClampedMonths(w, interval * 12);
     case 'weekdays': {
       let next = normalizeWall({ ...w, day: w.day + interval });
       const dow = wallDayOfWeek(next);
@@ -347,11 +362,18 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
   // 10k steps of daily catch-up is over 27 years, far more than any real
   // scenario.
   const MAX_ADVANCE_STEPS = 10_000;
-  let wall = instantToWall(baseTime.getTime(), tz);
+  // Month/year schedules keep their anchor's day, so each candidate is the
+  // anchor plus N x interval months, clamped to the target month's length.
+  // Deriving from the ANCHOR (not the previous clamped occurrence) is what
+  // lets Jan 31 -> Feb 28 -> Mar 31 come back to the 31st.
+  const anchorWall = instantToWall(baseTime.getTime(), tz);
+  let wall = anchorWall;
   let candidate = wallToInstant(wall, tz);
   let steps = 0;
   while (steps < MAX_ADVANCE_STEPS && candidate.getTime() <= notAfterMs) {
-    const advanced = advanceWallByUnit(wall, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
+    const advanced = (task.repeat_unit === 'months' || task.repeat_unit === 'years')
+      ? advanceWallByUnit(anchorWall, task.repeat_interval * (steps + 1), task.repeat_unit, task.repeat_days_of_week ?? null)
+      : advanceWallByUnit(wall, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
     if (advanced === wall) return null; // specific_days with no valid days configured
     wall = advanced;
     candidate = wallToInstant(wall, tz);
