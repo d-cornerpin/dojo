@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/twilio/__tests__/verify-signature.test.ts"],
+  "exclude": []
+}
