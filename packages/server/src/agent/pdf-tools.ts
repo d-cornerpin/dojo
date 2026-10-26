@@ -152,10 +152,10 @@ const PAGE_SIZES_PT: Record<string, PageSize> = {
   legal:  { width: 612, height: 1008 },
 };
 
-function hexToRgb01(hex: string | undefined): [number, number, number] {
+export function hexToRgb01(hex: string | undefined): [number, number, number] {
   if (!hex) return [0, 0, 0];
-  const clean = hex.replace(/^#/, '');
-  if (clean.length !== 6) return [0, 0, 0];
+  const clean = hex.replace(/^#/, '').replace(/^(.)(.)(.)$/, '$1$1$2$2$3$3');
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return [0, 0, 0];
   const r = parseInt(clean.slice(0, 2), 16) / 255;
   const g = parseInt(clean.slice(2, 4), 16) / 255;
   const b = parseInt(clean.slice(4, 6), 16) / 255;
