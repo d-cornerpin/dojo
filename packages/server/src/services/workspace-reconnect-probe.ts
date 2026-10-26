@@ -24,6 +24,7 @@ const PROBE_INTERVAL_MS = 30 * 60 * 1000;   // re-test benched accounts every ~3
 const FIRST_PROBE_DELAY_MS = 5 * 60 * 1000; // settle after boot before the first sweep
 
 let probeTimer: ReturnType<typeof setInterval> | null = null;
+let firstSweepTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function sweep(): Promise<void> {
   const [
@@ -77,8 +78,12 @@ export function startWorkspaceReconnectProbe(): void {
     });
   }, PROBE_INTERVAL_MS);
 
-  setTimeout(() => {
-    sweep().catch(() => { /* logged inside */ });
+  firstSweepTimer = setTimeout(() => {
+    sweep().catch(err => {
+      logger.error('Workspace reconnect probe cycle failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }, FIRST_PROBE_DELAY_MS);
 }
 
@@ -87,5 +92,9 @@ export function stopWorkspaceReconnectProbe(): void {
     clearInterval(probeTimer);
     probeTimer = null;
     logger.info('Workspace reconnect probe stopped');
+  }
+  if (firstSweepTimer) {
+    clearTimeout(firstSweepTimer);
+    firstSweepTimer = null;
   }
 }
