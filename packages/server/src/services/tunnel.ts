@@ -23,6 +23,10 @@ let tunnelStatus: 'inactive' | 'starting' | 'active' | 'error' = 'inactive';
 let tunnelError: string | null = null;
 let tunnelStartedAt: number | null = null;
 let restartAttempted = false;
+// Bumped by every stopTunnel; a delayed one-restart armed before a stop compares
+// against it so a tunnel stopped (or replaced) inside the restart window is not
+// started again by a timer that no longer belongs to anyone.
+let intentionalStopGeneration = 0;
 
 // ── Cross-boot state files ──
 //
@@ -502,6 +506,12 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
     proc.stderr?.on('data', handleOutput);
 
     proc.on('error', (err) => {
+      if (tunnelProcess !== proc) {
+        // A child that was stopped-and-replaced is no longer ours; its error must
+        // not overwrite the tunnel that replaced it.
+        logger.warn('Ignoring error from stale tunnel process', { error: err.message });
+        return;
+      }
       tunnelStatus = 'error';
       tunnelError = err.message;
       tunnelProcess = null;
@@ -510,6 +520,13 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
     });
 
     proc.on('exit', (code) => {
+      if (tunnelProcess !== proc) {
+        // A child that was stopped-and-replaced is no longer ours; its exit must
+        // not overwrite the new tunnel's status, pidfile or handle, nor arm a
+        // restart for a tunnel that is gone.
+        logger.warn('Ignoring exit from stale tunnel process', { pid: proc.pid, code });
+        return;
+      }
       clearStartWatch();   // t114 (U15): an exited child has no start deadline to keep
       const wasActive = tunnelStatus === 'active';
       const tail = outputBuffer.tail();
@@ -535,7 +552,11 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         // Non-throttle crash after a healthy start: attempt one restart.
         restartAttempted = true;
         logger.warn('Tunnel crashed, attempting restart', { exitCode: code, output: tail });
-        setTimeout(() => startQuickTunnel(port), 2000);
+        const gen = intentionalStopGeneration;
+        setTimeout(() => {
+          if (intentionalStopGeneration !== gen || tunnelProcess) return;
+          startQuickTunnel(port);
+        }, 2000);
       } else if (code !== 0 && code !== null) {
         // Recognized (non-throttle) failures get a one-line explanation at
         // WARN. Unrecognized failures keep ERROR + the full stderr tail so the
@@ -605,6 +626,10 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
     proc.stderr?.on('data', handleOutput);
 
     proc.on('error', (err) => {
+      if (tunnelProcess !== proc) {
+        logger.warn('Ignoring error from stale tunnel process', { error: err.message });
+        return;
+      }
       tunnelStatus = 'error';
       tunnelError = err.message;
       tunnelProcess = null;
@@ -613,6 +638,10 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
     });
 
     proc.on('exit', (code) => {
+      if (tunnelProcess !== proc) {
+        logger.warn('Ignoring exit from stale tunnel process', { pid: proc.pid, code });
+        return;
+      }
       const wasActive = tunnelStatus === 'active';
       const tail = outputBuffer.tail();
       tunnelStatus = 'inactive';
@@ -623,7 +652,11 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
       if (wasActive && !restartAttempted && code !== 0) {
         restartAttempted = true;
         logger.warn('Named tunnel crashed, attempting restart', { exitCode: code, output: tail });
-        setTimeout(() => startNamedTunnel(), 2000);
+        const gen = intentionalStopGeneration;
+        setTimeout(() => {
+          if (intentionalStopGeneration !== gen || tunnelProcess) return;
+          startNamedTunnel();
+        }, 2000);
       } else if (code !== 0 && code !== null) {
         tunnelStatus = 'error';
         tunnelError = formatTunnelExitError(code, tail);
@@ -644,15 +677,22 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
 }
 
 export function stopTunnel(): void {
+  // The stop invalidates any delayed restart armed before it, even when there is
+  // no live child to SIGTERM (a crash may already have nulled the handle).
+  intentionalStopGeneration++;
   if (tunnelProcess) {
+    const proc = tunnelProcess;
     try {
-      tunnelProcess.kill('SIGTERM');
-      // Force kill after 5s if still running
-      setTimeout(() => {
-        if (tunnelProcess) {
-          try { tunnelProcess.kill('SIGKILL'); } catch { /* ignore */ }
-        }
+      proc.kill('SIGTERM');
+      // Force kill after 5s if still running — on THIS child, captured by value,
+      // so a tunnel the owner restarts in its place is never SIGKILLed by the
+      // stale timer. The module handle is cleared at once below, which is why
+      // the timer must not re-read it.
+      const t = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
       }, 5000);
+      t.unref?.();
+      proc.once('exit', () => clearTimeout(t));
     } catch { /* ignore */ }
     tunnelProcess = null;
   }
