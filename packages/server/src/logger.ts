@@ -88,8 +88,43 @@ function flushBuffer(): void {
   });
 }
 
+/** Serialise one entry to a JSON line without ever throwing.
+ *
+ *  The common case stays a bare `JSON.stringify`, byte for byte. Only when that
+ *  throws — a BigInt in `meta`, or a value reached twice on the way down (a cycle) —
+ *  do we retry through a replacer that renders a BigInt as its decimal string and a
+ *  seen object as `[Circular]`. If even that throws, we keep just the fields this
+ *  logger controls, still opening with `{"timestamp":"` so log rotation recognises
+ *  the line as its own. */
+function serializeEntry(entry: LogEntry): string {
+  try {
+    return JSON.stringify(entry);
+  } catch {
+    const seen = new WeakSet<object>();
+    const replacer = (_key: string, value: unknown): unknown => {
+      if (typeof value === 'bigint') return value.toString();
+      if (value !== null && typeof value === 'object') {
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+      }
+      return value;
+    };
+    try {
+      return JSON.stringify(entry, replacer);
+    } catch {
+      return JSON.stringify({
+        timestamp: entry.timestamp,
+        level: entry.level,
+        component: entry.component,
+        message: entry.message,
+        meta: '[unserializable]',
+      });
+    }
+  }
+}
+
 function writeEntry(entry: LogEntry): void {
-  const line = JSON.stringify(entry) + '\n';
+  const line = serializeEntry(entry) + '\n';
   writeBuffer.push(line);
 
   // Broadcast only warn/error to dashboard (not info/debug — too noisy)
