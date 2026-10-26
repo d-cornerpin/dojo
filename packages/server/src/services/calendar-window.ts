@@ -80,6 +80,19 @@ function todayInTimezone(timezone: string): string {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/**
+ * The UTC instant of local midnight `days` calendar days after `dateStr` in
+ * `timezone`. The day arithmetic runs on the bare y-m-d components via
+ * Date.UTC so no timezone is involved, then localToUTC maps the resulting
+ * local midnight to UTC — which naturally accounts for the 23-hour spring and
+ * 25-hour fall DST days instead of assuming every day is 24 hours.
+ */
+function addDaysLocalMidnight(dateStr: string, days: number, timezone: string): Date {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const endDateStr = new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  return localToUTC(endDateStr, 0, 0, 0, timezone);
+}
+
 export interface CalendarWindowInput {
   /** Days to span (1 = single day, 7 = week). Default 1. */
   days?: number;
@@ -117,8 +130,7 @@ export function computeCalendarWindow(input: CalendarWindowInput): CalendarWindo
 
   if (input.start_date) {
     const start = localToUTC(input.start_date, 0, 0, 0, timezone);
-    const endDateMs = start.getTime() + days * 86400000;
-    const end = new Date(endDateMs);
+    const end = addDaysLocalMidnight(input.start_date, days, timezone);
     return { startISO: start.toISOString(), endISO: end.toISOString(), timezone, anchored: true };
   }
 
@@ -126,7 +138,7 @@ export function computeCalendarWindow(input: CalendarWindowInput): CalendarWindo
     // Snap to local midnight today in the given timezone.
     const today = todayInTimezone(timezone);
     const start = localToUTC(today, 0, 0, 0, timezone);
-    const end = new Date(start.getTime() + days * 86400000);
+    const end = addDaysLocalMidnight(today, days, timezone);
     return { startISO: start.toISOString(), endISO: end.toISOString(), timezone, anchored: true };
   }
 
