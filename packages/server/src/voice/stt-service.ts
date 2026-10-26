@@ -150,7 +150,15 @@ class WhisperEngine implements SttEngine {
         void this.maybeRestart();
       }
     });
-    await waitForServerReady(port);
+    try {
+      await waitForServerReady(port);
+    } catch (err) {
+      // The child is still alive and nothing holds its handle (this.server
+      // is still null), so kill it before rethrowing — otherwise it stays up
+      // holding its port while the next load() spawns a fresh one.
+      proc.kill('SIGKILL');
+      throw err;
+    }
     this.restartAttempts = 0;
     logger.info('whisper-server ready', { port, modelSize: this.modelSize });
     return { process: proc, port };
@@ -170,7 +178,14 @@ class WhisperEngine implements SttEngine {
     logger.info('Scheduling whisper-server restart', { attempt: this.restartAttempts, delayMs: delay });
     setTimeout(() => {
       if (this.disposed) return;
-      this.spawnServer().then((h) => { this.server = h; }).catch((err) => {
+      this.spawnServer().then((h) => {
+        if (this.disposed) {
+          // A dispose landed while this boot was in flight; nobody will stop it.
+          h.process.kill('SIGKILL');
+          return;
+        }
+        this.server = h;
+      }).catch((err) => {
         logger.error('whisper-server restart failed', { error: String(err) });
       });
     }, delay);
@@ -202,12 +217,22 @@ class WhisperEngine implements SttEngine {
     if (!h) return;
     this.server = null;
     await new Promise<void>((resolve) => {
-      h.process.once('exit', () => resolve());
-      h.process.kill('SIGTERM');
-      setTimeout(() => {
-        if (!h.process.killed) h.process.kill('SIGKILL');
+      // `killed` flips as soon as the signal is *sent*, not when the child
+      // dies — so decide "still running" from the exit state, which stays
+      // null until the process actually terminates (the case a model is
+      // still loading). Otherwise a SIGTERM-ignoring child is orphaned.
+      const timer = setTimeout(() => {
+        if (h.process.exitCode === null && h.process.signalCode === null) {
+          h.process.kill('SIGKILL');
+        }
         resolve();
       }, 2000);
+      timer.unref?.();
+      h.process.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      h.process.kill('SIGTERM');
     });
   }
 }
