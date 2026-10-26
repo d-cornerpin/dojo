@@ -2383,7 +2383,11 @@ configRouter.put('/settings/:key', async (c) => {
     const idRow = db.prepare('SELECT value FROM config WHERE key = ?').get(roleIdKey) as { value: string } | undefined;
     const targetId = idRow?.value;
     if (targetId && db.prepare('SELECT id FROM agents WHERE id = ?').get(targetId)) {
-      renameAgent(targetId, body.value);
+      const renameOutcome = renameAgent(targetId, body.value);
+      // E21 parked minor: the rename door refused a case-variant clash with another live agent.
+      // Short-circuit BEFORE the generic upsert, so the config key does not move with the row
+      // (the upsert below would rewrite the refused name into the key the getters read).
+      if (renameOutcome.refusal) return c.json({ ok: false, error: renameOutcome.refusal }, 400);
     }
   }
 

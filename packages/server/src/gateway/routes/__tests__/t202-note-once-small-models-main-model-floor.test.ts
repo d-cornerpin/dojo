@@ -198,6 +198,50 @@ describe('POST /setup/provision-agent — the setup wizard', () => {
   });
 });
 
+// E21 parked minor — the setup wizard is a create AND a rename door (it takes a user-chosen
+// name in both branches), so it must refuse a name that differs from another live agent's name
+// only by capital letters, the same way the other create/rename doors do. Re-running setup to
+// rename an agent to a different capitalisation of ITS OWN name stays allowed.
+describe('POST /setup/provision-agent — the name-clash door', () => {
+  const seedNamed = (id: string, name: string, modelId = 'big'): void => {
+    db().prepare(`
+      INSERT INTO agents (id, name, model_id, status, config, spawn_depth, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, 'idle', '{}', 0, 'owner', datetime('now'), datetime('now'))
+    `).run(id, name, modelId);
+  };
+  const nameOf = (id: string): string | null =>
+    (db().prepare('SELECT name FROM agents WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? null;
+
+  it('refuses a create that differs from a live agent only by case, and writes nothing', async () => {
+    seedNamed('h-1', 'Helper');
+    const res = await setupDepsRouter.request('/provision-agent',
+      json('POST', { id: 'first', name: 'helper' }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error)
+      .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(db().prepare('SELECT id FROM agents WHERE id = ?').get('first')).toBeUndefined();
+  });
+
+  it('refuses a rename (existing branch) that collides with another live agent only by case', async () => {
+    seedNamed('h-1', 'Helper');
+    seedNamed('first', 'First');
+    const res = await setupDepsRouter.request('/provision-agent',
+      json('POST', { id: 'first', name: 'HELPER' }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error)
+      .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(nameOf('first')).toBe('First');
+  });
+
+  it('renaming an agent to a different capitalisation of its own name is allowed', async () => {
+    seedNamed('first', 'Helper');
+    const res = await setupDepsRouter.request('/provision-agent',
+      json('POST', { id: 'first', name: 'helper' }));
+    expect(res.status).toBe(200);
+    expect(nameOf('first')).toBe('helper');
+  });
+});
+
 describe('an existing agent on a small model gets the existing notice, once', () => {
   it('opening the agent shows one chat:error warning, not one per open, and nothing is changed', async () => {
     seedAgent('legacy', 'tiny');

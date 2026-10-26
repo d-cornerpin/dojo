@@ -20,6 +20,7 @@ import type { AccessGrants, AgentDetail, Model, Message, AgentMessage } from '@d
 import { cloneGrants, deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
 import { resolveChildScope } from '../../agent/scope.js';
+import { caseVariantClash, caseVariantClashMessage } from '../../agent/agent-name-lookup.js';
 import { purgeAgentRows } from '../../agent/purge.js';
 import { getAgentPermissions } from '../../agent/permissions.js';
 import { renameAgent } from '../../prompt/agent-rename.js';
@@ -153,6 +154,11 @@ agentsRouter.post('/', async (c) => {
   try {
     const db = getDb();
     const agentId = uuidv4();
+
+    // E21 parked minor: a name that differs from a live agent's name only by capital letters would
+    // mint a second agent the case-insensitive lookup cannot tell apart. Refuse before any write.
+    const clash = caseVariantClash(body.name);
+    if (clash) return c.json({ ok: false, error: caseVariantClashMessage(clash.name) }, 400);
 
     // ── THE SAME VALIDATION PATH THE SPAWNER USES (PHASE-5 T5 Step 2) ──
     // This route used to write `JSON.stringify(body.permissions ?? {})` straight
@@ -352,6 +358,11 @@ agentsRouter.put('/:id', async (c) => {
 
   const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, agent.model_id, 'agent', () => refuseSmallMainModel(body.modelId, agent.model_id)) : null;   // before the rename
   if (refused) return c.json({ ok: false, error: refused }, 400);
+
+  // E21 parked minor: a new name that differs from another live agent's name only by capital
+  // letters is refused here, with the other 400 doors, so a refused Save writes nothing (246).
+  const nameClash = typeof body.name === 'string' && body.name.trim() ? caseVariantClash(body.name.trim(), id) : null;
+  if (nameClash) return c.json({ ok: false, error: caseVariantClashMessage(nameClash.name) }, 400);
 
   const updates: string[] = [];
   const params: unknown[] = [];

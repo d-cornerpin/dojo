@@ -1170,7 +1170,10 @@ export const agentsHandlers: ToolHandlerMap = {
           // three in the tree, and none of them touched the stored soul that had the old name
           // baked into it. `renameAgent` writes the row, carries the platform role name with it,
           // and re-fills the souls. The reported `changes` line is unchanged.
-          renameAgent(target.id, trimmedName);
+          const renameOutcome = renameAgent(target.id, trimmedName);
+          // E21 parked minor: the rename door refused a case-variant clash with another live agent.
+          // Surface the plain refusal in this door's own style — an error, not a changes line.
+          if (renameOutcome.refusal) { content = renameOutcome.refusal; isError = true; return { content, isError }; }
           changes.push(`name: "${target.name}" → "${trimmedName}"`);
           finalName = trimmedName;
         }

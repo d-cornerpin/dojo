@@ -25,6 +25,9 @@ import { getOllamaModelInfo } from '../../services/ollama.js';
 // t202 D10: the owner's 32K floor for an agent's MAIN model.
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 import { localModelFit } from '../../agent/local-model-fit.js';
+// E21 parked minor: a create/rename name must not mint a second agent the case-insensitive
+// lookup cannot tell apart.
+import { caseVariantClash, caseVariantClashMessage } from '../../agent/agent-name-lookup.js';
 
 const logger = createLogger('setup-deps');
 
@@ -482,6 +485,12 @@ setupDepsRouter.post('/provision-agent', async (c) => {
 
   // Check if agent already exists with this ID
   const existing = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
+
+  // E21 parked minor: this door creates AND renames (both branches take a user-chosen name), so
+  // refuse a name that differs from another live agent's name only by capital letters. Re-running
+  // setup to rename an agent to a different capitalisation of its own name stays allowed.
+  const clash = caseVariantClash(name, existing ? id : undefined);
+  if (clash) return c.json({ ok: false, error: caseVariantClashMessage(clash.name) }, 400);
 
   // t202 D10: the owner's 32K floor for an agent's MAIN model, asked before anything is written.
   // Re-running setup on the model an existing agent already has is not a change and never refused.

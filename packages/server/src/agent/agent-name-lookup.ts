@@ -19,6 +19,27 @@ export function liveAgentsNamed(name: string): LiveAgentByName[] {
   ).all(name) as LiveAgentByName[];
 }
 
+/**
+ * E21 parked minor: the live agent the create/rename doors must refuse, when `name` would mint a
+ * second agent the case-insensitive lookup cannot tell apart. Returns the existing row when a
+ * live agent's name differs from `name` only by capital letters; null for an exact byte-identical
+ * duplicate (pre-existing behaviour, still allowed), for an agent's own name (`selfId` is
+ * skipped — renaming "Helper" to "helper" is fine), and for terminated agents (never found by name).
+ */
+export function caseVariantClash(name: string, selfId?: string): LiveAgentByName | null {
+  const wanted = name.trim();
+  for (const row of liveAgentsNamed(wanted)) {
+    if (row.id === selfId) continue;
+    if (row.name !== wanted) return row;
+  }
+  return null;
+}
+
+/** The plain door error naming the clashing agent, in the style the doors already use. */
+export function caseVariantClashMessage(existingName: string): string {
+  return `An agent named "${existingName}" already exists; names are matched without regard to capital letters.`;
+}
+
 /** E21: when a name matches two live agents (differing only by case), the sender is told who got it. */
 export function sameNameNote(ref: string, named: ReadonlyArray<{ id: string; name: string }>): string {
   if (named.length < 2) return '';

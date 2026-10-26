@@ -44,6 +44,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { clearPlatformConfigCache } from '../config/platform.js';
 import { UNSUBSTITUTED } from './assembler.js';
+import { caseVariantClash, caseVariantClashMessage } from '../agent/agent-name-lookup.js';
 import { homeDir } from '../home.js';
 
 const logger = createLogger('agent-rename');
@@ -65,6 +66,13 @@ export interface RenameOutcome {
   readonly souls: readonly SoulRefill[];
   /** Souls left alone because they still carry `{{…}}` — see `readSoulFile`'s re-seed rule. */
   readonly skippedUnsubstituted: readonly string[];
+  /**
+   * E21 parked minor: set when the request was REFUSED because the new name differs from another
+   * live agent's name only by capital letters — the case-insensitive lookup could not tell the two
+   * apart. Nothing was written. Each caller surfaces this in its own door style (the tool returns
+   * it as an error, the routes return it as a 400).
+   */
+  readonly refusal?: string;
 }
 
 /**
@@ -148,6 +156,13 @@ export function renameAgent(agentId: string, requestedName: string): RenameOutco
   const newName = requestedName.trim();
   const noop: RenameOutcome = { renamed: false, agentId, oldName, newName, souls: [], skippedUnsubstituted: [] };
   if (!row || !newName || newName === oldName) return noop;
+
+  // E21 parked minor: a rename to a name that differs from ANOTHER live agent's name only by
+  // capital letters would mint a second agent the case-insensitive lookup cannot tell apart.
+  // Refuse, before any write. An agent renaming to a different capitalisation of ITS OWN name is
+  // allowed (selfId is excluded), and an exact byte-identical duplicate is the noop above.
+  const clash = caseVariantClash(newName, agentId);
+  if (clash) return { ...noop, refusal: caseVariantClashMessage(clash.name) };
 
   // The ROW and the ROLE NAME move together or not at all. They are two halves of one fact,
   // and a box that carries them apart is the exact staleness this task is about: the row says

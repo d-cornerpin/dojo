@@ -440,6 +440,80 @@ describe('the re-fill reaches the souls T59 made file-backed', () => {
   });
 });
 
+// ═══════════ E21 PARKED MINOR — A RENAME MUST NOT MINT A SECOND AGENT THE CASE-INSENSITIVE
+// LOOKUP CANNOT TELL APART ═══════════
+//
+// E21 made every name lookup case-insensitive, so "helper" reaches "Helper". But nothing stopped
+// an agent from being RENAMED to a name that differs from another live agent's name only by case —
+// and then the lookup could not tell them apart. The one rename door must refuse that, while an
+// agent renaming to a DIFFERENT CAPITALISATION OF ITS OWN NAME stays allowed (the owner may
+// decide "Helper" is now "helper"), and an exact byte-identical duplicate keeps its pre-existing
+// behaviour. The refusal is surfaced in each caller's own door style.
+
+describe('a rename refuses a case-variant clash with another live agent', () => {
+  it('renameAgent refuses when the new name differs from another live agent only by case', () => {
+    seedAgent('clash', 'Helper');
+    const out = renameAgent(SUB, 'helper');   // SUB is 'Max'; 'helper' clashes with 'Helper'
+    expect(out.renamed).toBe(false);
+    expect(out.refusal).toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(agentName(SUB)).toBe('Max');   // the rename wrote nothing
+  });
+
+  it('renaming an agent to a different capitalisation of ITS OWN name is allowed', () => {
+    seedAgent('self', 'Helper');
+    const out = renameAgent('self', 'helper');
+    expect(out.renamed).toBe(true);
+    expect(out.refusal).toBeUndefined();
+    expect(agentName('self')).toBe('helper');
+  });
+
+  it('a terminated clashing agent does not block a rename', () => {
+    seedAgent('dead', 'Helper');
+    mockDb.current!.prepare("UPDATE agents SET status = 'terminated' WHERE id = 'dead'").run();
+    const out = renameAgent(SUB, 'helper');
+    expect(out.renamed).toBe(true);
+    expect(out.refusal).toBeUndefined();
+    expect(agentName(SUB)).toBe('helper');
+  });
+
+  it('THE SETTINGS door refuses and returns 400, in its own style', async () => {
+    seedAgent('clash', 'Helper');
+    const res = await agentsRouter.request(`/${PM}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'helper' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error)
+      .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(agentName(PM)).toBe('Quilba');   // untouched
+  });
+
+  it('THE CONFIG door refuses and returns 400, before the generic upsert', async () => {
+    seedAgent('clash', 'Helper');
+    const res = await configRouter.request('/settings/pm_agent_name', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ value: 'helper' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error)
+      .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(getConfig('pm_agent_name')).toBe('Quilba');   // the config key did NOT move
+    expect(agentName(PM)).toBe('Quilba');                // the row did NOT move
+  });
+
+  it('THE TOOL door refuses and reports the plain message', async () => {
+    seedAgent('clash', 'Helper');
+    const out = await agentsHandlers['update_agent']!({
+      agentId: PRIMARY, args: { agent_id: SUB, name: 'helper' },
+    } as never);
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('An agent named "Helper" already exists; names are matched without regard to capital letters.');
+    expect(agentName(SUB)).toBe('Max');   // untouched
+  });
+});
+
 // ═══════════ THE MERGER, PINNED ═══════════
 
 describe('there is exactly one rename door', () => {

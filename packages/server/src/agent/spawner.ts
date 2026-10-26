@@ -10,6 +10,7 @@ import { resolveChildScope } from './scope.js';
 import { resolveSpawnGrants, GrantRefusedError } from './access/authorize.js';
 import { inspectGrantRefusal, withoutInheritedInspect } from '../inspect/grant.js';
 import { getAccessGrants } from './access/read.js';
+import { caseVariantClash, caseVariantClashMessage } from './agent-name-lookup.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
@@ -162,6 +163,13 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }
 
   const db = getDb();
+
+  // E21 parked minor: a name that differs from a live agent's name only by capital letters would
+  // mint a second agent the case-insensitive lookup cannot tell apart (the newest wins, silently).
+  // Refuse it here — at the row-writing door — before any permission or resource work. The bare
+  // message is thrown; `friendlyDbError` adds the `spawn_agent: ` prefix at the tool boundary.
+  const clash = caseVariantClash(name);
+  if (clash) throw new Error(caseVariantClashMessage(clash.name));
 
   // ── THE AUTHORITATIVE SPAWN GATE (PHASE-5 T5, RULING P5-R2) ──
   // Spawn permission is asked in two places and the ruling required T5 to say
