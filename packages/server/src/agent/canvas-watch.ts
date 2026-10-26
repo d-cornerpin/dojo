@@ -28,25 +28,31 @@
 import fs from 'node:fs';
 import { broadcast } from '../gateway/ws.js';
 
-const watchedPathByAgent = new Map<string, string>();
+// One watcher PER AGENT. Two agents can show the same file (a shared project
+// document), so the listener is remembered alongside the path: `unwatchFile`
+// with no listener argument removes EVERY listener for that path, which would
+// silently drop the other agent's watch. Stopping must pass the exact listener
+// that this agent registered.
+const watchedPathByAgent = new Map<string, { path: string; listener: (curr: fs.Stats, prev: fs.Stats) => void }>();
 
 export function stopCanvasWatch(agentId: string): void {
   const watched = watchedPathByAgent.get(agentId);
   if (watched) {
-    try { fs.unwatchFile(watched); } catch { /* best effort */ }
+    try { fs.unwatchFile(watched.path, watched.listener); } catch { /* best effort */ }
     watchedPathByAgent.delete(agentId);
   }
 }
 
 export function startCanvasWatch(agentId: string, filePath: string): void {
-  if (watchedPathByAgent.get(agentId) === filePath) return;
+  if (watchedPathByAgent.get(agentId)?.path === filePath) return;
   stopCanvasWatch(agentId);
   try {
-    fs.watchFile(filePath, { interval: 700 }, (curr, prev) => {
+    const listener = (curr: fs.Stats, prev: fs.Stats): void => {
       if (curr.mtimeMs !== prev.mtimeMs) {
         try { broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } }); } catch { /* best effort */ }
       }
-    });
-    watchedPathByAgent.set(agentId, filePath);
+    };
+    fs.watchFile(filePath, { interval: 700 }, listener);
+    watchedPathByAgent.set(agentId, { path: filePath, listener });
   } catch { /* best effort, never let watching break a canvas open */ }
 }
