@@ -48,10 +48,13 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
 
   // ── Currency ────────────────────────────────────────────────────────
   // "$5.99" → "5 dollars and 99 cents"; "$5" → "5 dollars".
-  [/\$(\d+)\.(\d{2})\b/g, (_m, whole: string, cents: string) =>
+  // Comma-grouped thousands stay as written: "$1,500" → "1,500 dollars",
+  // "$1,234.56" → "1,234 dollars and 56 cents". The comma form is tried
+  // before bare digits so a greedy \d+ can't stop at the thousands comma.
+  [/\$(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})\b/g, (_m, whole: string, cents: string) =>
     cents === '00' ? `${whole} dollars` : `${whole} dollars and ${cents} cents`,
   ],
-  [/\$(\d+)\b/g, '$1 dollars'],
+  [/\$(\d{1,3}(?:,\d{3})+|\d+)\b/g, '$1 dollars'],
 
   // ── Distance / size (number-attached or with space) ─────────────────
   // "in" is special: as a preposition it'd false-match ("5 in 10"). Only
