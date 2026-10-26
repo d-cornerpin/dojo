@@ -26,6 +26,10 @@ export interface Pattern {
   regex: RegExp;
   label: (m: RegExpExecArray) => string;
   hint: string;
+  // When set, only this 1-based capture group holds the secret; the replace
+  // callback swaps just that text so the surrounding syntax (a variable name,
+  // `=`, quotes, the word Bearer) survives the scrub.
+  secretGroup?: number;
 }
 
 // Pattern ordering matters: longer / more specific patterns first so a
@@ -113,6 +117,7 @@ export const PATTERNS: Pattern[] = [
     regex: /\b[Bb]earer\s+([a-zA-Z0-9._-]{20,})\b/g,
     label: () => 'BEARER_TOKEN',
     hint: 'Bearer token used in an Authorization header.',
+    secretGroup: 1,
   },
   {
     name: 'env-secret-assignment',
@@ -123,6 +128,7 @@ export const PATTERNS: Pattern[] = [
     regex: /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY|APIKEY|PASSWORD|PASSWD|PRIVATE_KEY))\s*[:=]\s*['"]?([^'"\s<>{}]{12,})['"]?/g,
     label: (m) => m[1].replace(/^[A-Z_]+_/, '') ? m[1] : m[1],
     hint: 'An environment variable holding a credential.',
+    secretGroup: 2,
   },
 ];
 
@@ -196,7 +202,15 @@ export function scrubFiles(files: Array<{ path: string; content: string }>): Scr
           placeholders.push({ label, hint: pattern.hint });
         }
         dirty = true;
-        return `{{NEEDS_FROM_USER:${label}}}`;
+        const placeholder = `{{NEEDS_FROM_USER:${label}}}`;
+        if (pattern.secretGroup !== undefined) {
+          const secret = rest[pattern.secretGroup - 1];
+          const idx = match.lastIndexOf(secret);
+          if (idx >= 0) {
+            return match.slice(0, idx) + placeholder + match.slice(idx + secret.length);
+          }
+        }
+        return placeholder;
       });
     }
 
