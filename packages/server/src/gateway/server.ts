@@ -70,7 +70,7 @@ export function createServer() {
   // process, and cost three stale-server incidents). Never throws; see `boot-stamp.ts`.
   writeBootStamp();
   const app = new Hono<AppEnv>();
-  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  const { wss, injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 
   // CORS for development
   app.use('*', cors({
@@ -359,5 +359,5 @@ export function createServer() {
     return c.json({ ok: false, error: 'Internal server error' }, 500);
   });
 
-  return { app, injectWebSocket };
+  return { app, injectWebSocket, wss };
 }

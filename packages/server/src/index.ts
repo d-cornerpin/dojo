@@ -1,6 +1,7 @@
 import { serve, type ServerType } from '@hono/node-server';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Server as HttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
@@ -13,6 +14,7 @@ import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/ask-settlement.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
+import { closeServers } from './gateway/close-servers.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
@@ -1099,7 +1101,7 @@ async function main(): Promise<void> {
 
   // 6. Boot is done: hand the already-listening socket its real handler. Up to
   // here it answered 503 (see bindPortFirst at the top of main).
-  const { app, injectWebSocket } = createServer();
+  const { app, injectWebSocket, wss } = createServer();
   appFetch = app.fetch;
   injectWebSocket(server);
   logger.info('Dojo Agent Platform is serving');
@@ -1314,8 +1316,13 @@ async function main(): Promise<void> {
     import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller()).catch(() => {});
     // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
-    // STEP 3 — `server.close` waits for open connections; its callback closes the DB and exits.
-    server.close(async () => {
+    // STEP 3 — close the gateway, in the order that lets `server.close()` finish. The
+    // ws server owns its clients, and an upgraded socket is an open connection to
+    // the http server, so if either stays up the close callback below never runs
+    // and the supervisor SIGKILLs the process before closeDb/process.exit — the
+    // cleanup inside it is skipped. See gateway/close-servers.ts.
+    // `serve()` is always HTTP/1 here (no http2 options), so the cast is sound.
+    void closeServers(server as unknown as HttpServer, wss).then(async () => {
       const { closeDb } = await import('./db/connection.js');
       closeDb();
       logger.info('Shutdown complete');
