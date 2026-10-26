@@ -20,6 +20,7 @@ const MIN_TRAIN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // retrain at most weekly
 const MIN_NEW_LABELS = 100;                           // ...and only with fresh data
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let kickoff: ReturnType<typeof setTimeout> | null = null;
 
 function getConfig(key: string): string | null {
   try {
@@ -85,8 +86,9 @@ export function startRouterMaintenance(): void {
   if (timer) return;
   timer = setInterval(() => { void runCycle(); }, CHECK_INTERVAL_MS);
   if (typeof timer.unref === 'function') timer.unref();
-  // A delayed first tick so it never piles onto cold boot.
-  const kickoff = setTimeout(() => { void runCycle(); }, 5 * 60 * 1000);
+  // A delayed first tick so it never piles onto cold boot. A one-shot: clear it
+  // when it fires, and stopRouterMaintenance can reach it otherwise.
+  kickoff = setTimeout(() => { kickoff = null; void runCycle(); }, 5 * 60 * 1000);
   if (typeof kickoff.unref === 'function') kickoff.unref();
   logger.info('Router maintenance loop started (sparse, gated)');
 }
@@ -95,5 +97,9 @@ export function stopRouterMaintenance(): void {
   if (timer) {
     clearInterval(timer);
     timer = null;
+  }
+  if (kickoff) {
+    clearTimeout(kickoff);
+    kickoff = null;
   }
 }
