@@ -13,6 +13,7 @@
 // Every command is a stub here: the real launchctl, the real Ollama and the Ollama app are NEVER touched.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import type { LogEntry } from '@dojo/shared';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -46,7 +47,7 @@ const BREW_SERVER = '/opt/homebrew/Cellar/ollama/0.40.6/bin/ollama';
 
 type Fake = OllamaLimitDeps & { sets: string[]; terms: number[]; launches: number; log: string[] };
 function fakeDeps(env: Record<string, string>, o: {
-  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean;
+  server?: string | null; appPids?: number[]; installed?: boolean; failSet?: boolean; neverQuits?: boolean; launchGate?: Promise<void>; neverAnswers?: boolean; failLaunch?: unknown;
 } = {}): Fake {
   const server = o.server === undefined ? APP_SERVER : o.server;
   const living = new Set<number>([...(o.appPids ?? (server === APP_SERVER ? [501] : [])), ...(server ? [502] : [])]);
@@ -59,7 +60,7 @@ function fakeDeps(env: Record<string, string>, o: {
     appInstalled: async () => o.installed ?? server === APP_SERVER,
     terminate: (pid) => { d.terms.push(pid); d.log.push('term'); if (!o.neverQuits) living.delete(pid); },
     alive: (pid) => living.has(pid),
-    launchApp: async () => { d.log.push('launch'); await o.launchGate; d.launches++; living.add(501); living.add(502); },
+    launchApp: async () => { d.log.push('launch'); if (o.failLaunch !== undefined) throw o.failLaunch; await o.launchGate; d.launches++; living.add(501); living.add(502); },
     answers: async () => !o.neverAnswers && living.has(502),
     sleep: async () => { /* the tick, instant in a test */ },
   };
@@ -385,5 +386,26 @@ describe('fix round 5', () => {
     env.OLLAMA_MAX_LOADED_MODELS = '8';
     expect(await ensureOllamaModelLimit(fakeDeps(env), 'darwin')).toBe('already');
     expect(healerOwnerCards().map((c) => c.words)).not.toContain(ollamaLimitManualWords(4));
+  });
+});
+
+describe('a failed `open` logs the real reason, never `[object Object]`', () => {
+  it('a failed relaunch (non-zero exit) logs the reason from its stderr', async () => {
+    const env: Record<string, string> = {};
+    const logged: LogEntry[] = [];
+    const { setLogBroadcast } = await import('../../logger.js');
+    setLogBroadcast((entry) => { logged.push(entry); });
+    try {
+      // The real `open` runs under `child-idle-bound.ts`, which rejects with a plain object
+      // (`{ code, stderr }`), not an Error — exactly the shape a failed relaunch takes.
+      const deps = fakeDeps(env, { failLaunch: { stdout: '', stderr: 'The application Ollama could not be found', code: 1 } });
+      expect(await ensureOllamaModelLimit(deps, 'darwin')).toBe('set');
+      await ollamaRestartSettled();
+      const errorTexts = logged.filter((e) => e.level === 'warn').map((e) => String(e.meta?.error ?? ''));
+      expect(errorTexts).toContain('The application Ollama could not be found');
+      expect(errorTexts.join(' | ')).not.toContain('[object Object]');
+    } finally {
+      setLogBroadcast(() => undefined);
+    }
   });
 });

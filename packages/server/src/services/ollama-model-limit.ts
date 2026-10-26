@@ -38,6 +38,7 @@ import { ownerCardFrame } from './owner-card-frames.js';
 import { holdWhenQuiet } from './ollama-quiet.js';
 import { checkOllamaHealth } from './ollama.js';
 import { attachIdleBound, type WatchableChild } from '../child-idle-bound.js';
+import { childFailureText } from '../update/child-failure.js';
 import {
   tellOwnerOnce, ownerConditionCleared, OLLAMA_LIMIT_SET_WORDS, OLLAMA_LIMIT_FAILED_WORDS, ollamaLimitManualWords,
 } from '../healer/owner-notices.js';
@@ -185,7 +186,7 @@ export async function ensureOllamaModelLimit(
 }
 
 function failed(err: unknown): void {
-  logger.warn('Could not raise Ollama\'s loaded-model limit (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+  logger.warn('Could not raise Ollama\'s loaded-model limit (non-fatal)', { error: childFailureText(err) });
   if (tellOwnerOnce('ollama-limit-failed')) ownerCardFrame(OLLAMA_LIMIT_FAILED_WORDS, 'warning');
 }
 
