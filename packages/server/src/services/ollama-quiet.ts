@@ -43,14 +43,20 @@ export function waitOutHold(providerId?: string, wait: HoldWait = {}): Promise<v
       if (wait.agentId) broadcast({ type: 'engine:activity', data: { id, kind: 'compaction', agentId: wait.agentId, label: 'Waiting for the local model to restart', startedAt, phase } });
     };
     emit('start');
+    // The listener is removed when the wait ends in ANY way (the hold released or the agent stopped): a
+    // `{ once: true }` listener that never fires stays on the signal for its whole life — a leak on a
+    // long-lived signal. `finally` runs on both the resolve and the abort path.
+    let rejectStop!: (reason?: unknown) => void;
+    const onAbort = (): void => rejectStop(wait.signal!.reason);
     const stopped = new Promise<never>((_, reject) => {
+      rejectStop = reject;
       if (wait.signal?.aborted) reject(wait.signal.reason);
-      wait.signal?.addEventListener('abort', () => reject(wait.signal!.reason), { once: true });
+      wait.signal?.addEventListener('abort', onAbort, { once: true });
     });
     stopped.catch(() => { /* raced below */ });
     try {
       for (let h = heldFor(providerId); h; h = heldFor(providerId)) await Promise.race([h, stopped]);
-    } finally { emit('end'); }
+    } finally { emit('end'); wait.signal?.removeEventListener('abort', onAbort); }
   })();
 }
 
