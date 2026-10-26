@@ -870,6 +870,30 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
 let healerTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Turn the stored "HH:MM" healer time text into the delay until the next run.
+ * Anything that is not a valid 24h clock time (hours 0-23, minutes 0-59) is
+ * rejected and replaced with the fallback, so the delay is never NaN and a bad
+ * text cannot make the cycle fire immediately.
+ */
+export function nextDailyRunDelayMs(
+  timeText: unknown,
+  fallbackText: string,
+  now: Date,
+): { delayMs: number; usedFallback: boolean } {
+  const match = typeof timeText === 'string' ? timeText.match(/^(\d{1,2}):(\d{2})$/) : null;
+  const hours = match ? Number(match[1]) : NaN;
+  const minutes = match ? Number(match[2]) : NaN;
+  const valid = match !== null && hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+  const [h, m] = (valid ? (timeText as string) : fallbackText).split(':').map(Number);
+  const next = new Date(now);
+  next.setHours(h, m, 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+  }
+  return { delayMs: next.getTime() - now.getTime(), usedFallback: !valid };
+}
+
 export function scheduleHealingCycle(): void {
   if (healerTimer) {
     clearTimeout(healerTimer);
@@ -884,19 +908,18 @@ export function scheduleHealingCycle(): void {
     return;
   }
 
-  const [hours, minutes] = config.healerTime.split(':').map(Number);
   const now = new Date();
-  const next = new Date();
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
+  const { delayMs, usedFallback } = nextDailyRunDelayMs(config.healerTime, '04:00', now);
+  if (usedFallback) {
+    logger.warn('Healing cycle used fallback time, invalid healer time text', {
+      healerTime: config.healerTime,
+      fallback: '04:00',
+    });
   }
 
-  const delay = next.getTime() - now.getTime();
-
   logger.info('Healing cycle scheduled', {
-    nextHealing: next.toISOString(),
-    delayMs: delay,
+    nextHealing: new Date(now.getTime() + delayMs).toISOString(),
+    delayMs,
     mode: config.healerMode,
   });
 
@@ -910,7 +933,7 @@ export function scheduleHealingCycle(): void {
     }
     // Reschedule for next day
     scheduleHealingCycle();
-  }, delay);
+  }, delayMs);
 }
 
 // ── Healer Log File ──
