@@ -41,12 +41,17 @@ import { getDb } from '../db/connection.js';
 // looking for a matching attachment row.
 export function resolveAttachmentPath(fileId: string): { path: string; filename: string; mimeType: string } | null {
   const db = getDb();
+  // Look the id up by the id itself, not by capping the scan: the `instr` pre-filter
+  // (bound, not string-built — so `%`/`_` in the id are literal, not wildcards) narrows
+  // the rows to those whose `attachments` JSON even contains the id, and the JS loop
+  // below still matches `a.fileId` exactly, so a substring hit in some other field is
+  // harmless. `instr` rather than `LIKE` is the literal-substring search the id wants.
   const rows = db.prepare(`
     SELECT attachments FROM messages
     WHERE attachments IS NOT NULL AND attachments != '' AND attachments != '[]'
+      AND instr(attachments, ?) > 0
     ORDER BY created_at DESC
-    LIMIT 500
-  `).all() as Array<{ attachments: string }>;
+  `).all(fileId) as Array<{ attachments: string }>;
   for (const row of rows) {
     try {
       const arr = JSON.parse(row.attachments) as Array<{ fileId: string; filename: string; mimeType: string; path: string }>;
