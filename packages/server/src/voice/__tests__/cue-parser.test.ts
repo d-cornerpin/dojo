@@ -1,0 +1,130 @@
+// voice/cue-parser — pinning the streaming-safe delivery-cue strip.
+//
+// `((deliver: ...))` cues are stripped off the front of a spoken reply so TTS
+// never reads "open paren open paren deliver colon" aloud. The cue can arrive
+// split across streaming chunks, which is the easy place to get wrong, so the
+// extractor's hold-then-resolve contract and the verbatim flush are pinned here.
+// Measured against v35; these are pinning tests and pass unchanged.
+
+import { describe, it, expect } from 'vitest';
+import {
+  parseDeliveryCue,
+  couldBeIncompleteCue,
+  createCueExtractor,
+} from '../cue-parser.js';
+
+describe('§1 parseDeliveryCue strips a leading cue', () => {
+  it('a complete cue yields its description and the trailing body', () => {
+    expect(parseDeliveryCue('((deliver: warm, slow)) Hello')).toEqual({
+      description: 'warm, slow',
+      body: 'Hello',
+    });
+  });
+
+  it('leading whitespace before the cue is consumed, result unchanged', () => {
+    expect(parseDeliveryCue('   ((deliver: warm, slow)) Hello')).toEqual({
+      description: 'warm, slow',
+      body: 'Hello',
+    });
+  });
+
+  it('text without a cue is returned unchanged with a null description', () => {
+    expect(parseDeliveryCue('Just talkin here, no cue.')).toEqual({
+      description: null,
+      body: 'Just talkin here, no cue.',
+    });
+  });
+
+  it('an empty cue body collapses to a null description but keeps the body', () => {
+    expect(parseDeliveryCue('((deliver: ))hi')).toEqual({
+      description: null,
+      body: 'hi',
+    });
+  });
+
+  it('the match is case-insensitive', () => {
+    expect(parseDeliveryCue('((DELIVER:calm))x')).toEqual({
+      description: 'calm',
+      body: 'x',
+    });
+  });
+
+  it('a cue in the middle of the text is NOT stripped', () => {
+    expect(parseDeliveryCue('hello ((deliver: warm)) world')).toEqual({
+      description: null,
+      body: 'hello ((deliver: warm)) world',
+    });
+  });
+});
+
+describe('§2 couldBeIncompleteCue decides hold-vs-release', () => {
+  it('a streaming prefix that could still become a cue holds', () => {
+    expect(couldBeIncompleteCue('((')).toBe(true);
+    expect(couldBeIncompleteCue('((deli')).toBe(true);
+    expect(couldBeIncompleteCue('((deliver: warm')).toBe(true);
+  });
+
+  it('non-cue and resolved text is released', () => {
+    expect(couldBeIncompleteCue('hello')).toBe(false);
+    expect(couldBeIncompleteCue('')).toBe(false);
+    expect(couldBeIncompleteCue('   ')).toBe(false);
+    // A complete cue is definitively NOT incomplete.
+    expect(couldBeIncompleteCue('((deliver: w)) x')).toBe(false);
+  });
+});
+
+describe('§3 the extractor resolves a cue split across chunks', () => {
+  it('holds a partial cue, resolves it, then passes later text straight through', () => {
+    const e = createCueExtractor();
+
+    expect(e.consume('((deli')).toEqual({ content: '', description: null });
+    expect(e.consume('ver: warm)) Hi')).toEqual({
+      content: 'Hi',
+      description: 'warm',
+    });
+    // Once resolved, text passes through untouched.
+    expect(e.consume(' there')).toEqual({ content: ' there', description: null });
+    expect(e.flush()).toEqual({ content: '', description: null });
+  });
+});
+
+describe('§4 text that is not a cue passes straight through', () => {
+  it('a plain chunk is emitted with a null description', () => {
+    expect(createCueExtractor().consume('Hello')).toEqual({
+      content: 'Hello',
+      description: null,
+    });
+  });
+});
+
+describe('§5 an unfinished cue at stream end is handed back, not swallowed', () => {
+  it('flush releases the held partial verbatim, and a second flush is empty', () => {
+    const e = createCueExtractor();
+    expect(e.consume('((deli')).toEqual({ content: '', description: null });
+    expect(e.flush()).toEqual({ content: '((deli', description: null });
+    expect(e.flush()).toEqual({ content: '', description: null });
+  });
+});
+
+describe('§6 a cue split one character at a time resolves exactly once', () => {
+  it('emits the description once and keeps the space that arrives after the cue', () => {
+    const e = createCueExtractor();
+    const text = '((deliver: gentle)) Okay';
+
+    let content = '';
+    const descriptions: string[] = [];
+    for (const ch of text) {
+      const r = e.consume(ch);
+      content += r.content;
+      if (r.description !== null) descriptions.push(r.description);
+    }
+    // The space after the cue arrives after the cue has resolved, so it is kept;
+    // the flush contributes nothing once resolved.
+    const end = e.flush();
+    content += end.content;
+    if (end.description !== null) descriptions.push(end.description);
+
+    expect(descriptions).toEqual(['gentle']);
+    expect(content).toBe(' Okay');
+  });
+});
