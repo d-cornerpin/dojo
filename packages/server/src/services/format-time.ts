@@ -21,7 +21,7 @@
 //   - convert_time agent tool
 //   - any future tool that surfaces a timestamp to an agent
 
-import { normalizeDbTimestamp } from '../scheduler/engine.js';
+import { normalizeDbTimestamp, wallToInstant, type WallClock } from '../scheduler/engine.js';
 
 const SYSTEM_TZ = (() => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
@@ -222,54 +222,33 @@ export function parseFlexibleTime(input: string | number, fromTz?: string): Date
  * a wall-clock time in the given IANA zone. Returns the absolute Date
  * (a moment in time) that corresponds to that wall-clock + zone.
  *
- * We do this by: parse as UTC, then compute the offset between UTC and
- * the target zone at THAT moment, then shift. One iteration is enough
- * for any zone whose offset doesn't depend on the wall-clock minute
- * (which is all real-world zones — DST transitions snap to hour boundaries).
+ * The exact converter is `wallToInstant` in scheduler/engine.ts: it probes
+ * the offsets on both sides of the target wall time, so a DST transition
+ * day resolves the same way everywhere — a time repeated by a clock going
+ * back picks the first occurrence, and a time skipped by a clock going
+ * forward lands on the next valid instant. The naive string is parsed into
+ * wall components and handed straight to it.
  */
 function interpretLocalAsTz(isoNaive: string, tz: string): Date | null {
-  // Treat the naive string as if it were UTC first.
-  const asUtc = new Date(isoNaive.endsWith('Z') ? isoNaive : isoNaive + 'Z');
-  if (isNaN(asUtc.getTime())) return null;
-  // Format that UTC moment in the target tz, parse back, compute offset.
-  //
-  // v2.7.26 — defensive try/catch around the Intl call. Some providers
-  // hand back non-IANA timezone names (Microsoft Graph used to return
-  // Windows zone names like "Pacific Standard Time" before we added the
-  // Prefer: outlook.timezone="UTC" header). Intl.DateTimeFormat throws
-  // RangeError on those. Without this catch, the throw propagated up
-  // through parseFlexibleTime into the calendar tools and made events
-  // render as "(invalid time: Invalid Date)" — confusing both the agent
-  // and the user. Return null on any failure so the caller's truthy
-  // check fails and a graceful "(could not parse)" fallback is used.
-  let parts;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/.exec(isoNaive);
+  if (!m) return null;
+  const wall: WallClock = {
+    year: Number(m[1]), month: Number(m[2]), day: Number(m[3]),
+    hour: Number(m[4]), minute: Number(m[5]), second: m[6] ? Number(m[6]) : 0,
+  };
+  let instant: Date;
   try {
-    parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, hour12: false,
-      // v2.7.26 — day MUST be '2-digit', not 'numeric'. `numeric` returns
-      // "1" rather than "01" for single-digit days, which then made the
-      // reconstructed ISO string "YYYY-MM-1T..." (not valid ISO),
-      // `new Date()` returned Invalid Date, and the whole event time
-      // surfaced as "(invalid time: Invalid Date)". This was the primary
-      // cause of the recurring-calendar-event report — events on June 1-9,
-      // July 1-9, etc. broke; days 10-31 happened to work because the
-      // formatter emits two digits naturally. Hour/minute/second were
-      // already '2-digit'; only day was wrong.
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(asUtc);
+    instant = wallToInstant(wall, tz);
   } catch {
+    // v2.7.26 — defensive catch for non-IANA timezone names. Some providers
+    // hand back Windows zone names ("Pacific Standard Time") — Intl throws
+    // RangeError on those, and wallToInstant resolves the zone through it.
+    // Return null so the caller's truthy check fails and a graceful
+    // "(could not parse)" fallback is used instead of a thrown error.
     return null;
   }
-  const lookup: Record<string, string> = {};
-  for (const p of parts) lookup[p.type] = p.value;
-  const asLocalStr = `${lookup.year}-${lookup.month}-${lookup.day}T${lookup.hour}:${lookup.minute}:${lookup.second}Z`;
-  const asLocal = new Date(asLocalStr);
-  if (isNaN(asLocal.getTime())) return null;
-  const offsetMs = asLocal.getTime() - asUtc.getTime();
-  // The wall-clock time we want is the naive input. To get the absolute
-  // moment whose wall-clock-in-tz equals that input, subtract the offset.
-  return new Date(asUtc.getTime() - offsetMs);
+  const fracMs = m[7] ? Math.round(Number(`0.${m[7]}`) * 1000) : 0;
+  return new Date(instant.getTime() + fracMs);
 }
 
 export { SYSTEM_TZ };
