@@ -21,10 +21,17 @@ export function formatForPlainTextChannel(input: string): string {
   // Images then links: ![alt](url) -> alt ; [text](url) -> text (url)
   s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-  // Emphasis: **bold**, __bold__, *italic*, _italic_, ~~strike~~
-  s = s.replace(/(\*\*|__)(.*?)\1/g, '$2');
-  s = s.replace(/(\*|_)(.*?)\1/g, '$2');
-  s = s.replace(/~~(.*?)~~/g, '$2');
+  // Emphasis: **bold**, __bold__, *italic*, _italic_, ~~strike~~. Markdown
+  // flanking rules keep plain text whole: an open marker must be followed by a
+  // non-space and a close marker preceded by one, so `*` used as an operator
+  // (2 * 3 * 4, a * b) is left alone. `__` / `_` also can't sit inside a word
+  // (snake_case_word): no letter or digit on the open side or after the close.
+  s = s.replace(/(\*\*)(?=\S)(.*?)(?<=\S)\1/g, '$2');
+  s = s.replace(/(?<![A-Za-z0-9])(__)(?=\S)(.*?)(?<=\S)\1(?![A-Za-z0-9])/g, '$2');
+  s = s.replace(/(\*)(?=\S)(.*?)(?<=\S)\1/g, '$2');
+  s = s.replace(/(?<![A-Za-z0-9])(_)(?=\S)(.*?)(?<=\S)\1(?![A-Za-z0-9])/g, '$2');
+  // Strikethrough keeps its inner text (the regex has one capture group).
+  s = s.replace(/~~(.*?)~~/g, '$1');
   // NOTE: these are line-oriented, so use [ \t] not \s inside character classes
   // and anchors, \s matches newlines and would merge adjacent lines together.
   // Headings: strip leading #'s.
