@@ -24,6 +24,7 @@ import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFa
 const logger = createLogger('outlook-watcher');
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let firstPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 const POLL_INTERVAL_MS = 300_000;
 const MAX_RESULTS_PER_POLL = 50;
@@ -493,7 +494,7 @@ export function startOutlookWatcher(): void {
     });
   }, POLL_INTERVAL_MS);
 
-  setTimeout(() => {
+  firstPollTimer = setTimeout(() => {
     pollAllAccounts().catch(() => { /* logged inside */ });
   }, 10_000);
 }
@@ -502,6 +503,10 @@ export function stopOutlookWatcher(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
+    if (firstPollTimer) {
+      clearTimeout(firstPollTimer);
+      firstPollTimer = null;
+    }
     logger.info('Outlook watcher stopped');
   }
 }
