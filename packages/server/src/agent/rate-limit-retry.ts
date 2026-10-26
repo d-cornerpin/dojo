@@ -257,10 +257,10 @@ function getAgentName(agentId: string): string {
   }
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.round((seconds % 3600) / 60);
-  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  const totalMinutes = Math.round(seconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  return hours > 0 ? (mins > 0 ? `${hours}h ${mins}m` : `${hours}h`) : `${totalMinutes}m`;
 }
