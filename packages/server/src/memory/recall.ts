@@ -32,6 +32,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { clauseFor, requestForAnotherTurn } from './awaiting-own-turn.js';
+import { charBoundary } from './tool-result-view.js';
 
 const logger = createLogger('memory-recall');
 
@@ -125,7 +126,12 @@ const ROLE_LABEL: Record<string, string> = {
 
 function clip(text: string, maxChars: number): { text: string; truncated: number } {
   if (text.length <= maxChars) return { text, truncated: 0 };
-  return { text: `${text.slice(0, maxChars)}…`, truncated: text.length - maxChars };
+  // Cut at a whole character, never between the two halves of an emoji: a UTF-16-unit cut can leave a
+  // lone surrogate in the text the model is shown (malformed; some providers reject it), and the "more
+  // chars" count then reflects a mid-pair position. `charBoundary` (the same fix the compaction view
+  // carries) backs off to a grapheme boundary; count the drop from there.
+  const cut = charBoundary(text, maxChars, 'back');
+  return { text: `${text.slice(0, cut)}…`, truncated: text.length - cut };
 }
 
 function formatTimestamp(iso: string): string {
