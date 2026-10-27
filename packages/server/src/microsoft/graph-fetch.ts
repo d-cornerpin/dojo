@@ -68,7 +68,11 @@ export const GRAPH_TIMEOUT_MS = 60_000;
 export async function graphFetch(
   agentId: string | undefined, url: string, init: RequestInit = {},
 ): Promise<Response> {
-  const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn', init.signal ?? undefined);
+  // The clock is computed ONCE and GIVEN to the slot, exactly as the sibling transports do:
+  // a site that brought no signal gets the finite deadline composed with the agent's stop,
+  // and a site that brought one keeps exactly that clock — no second default is stacked on it.
+  const clock = init.signal ?? AbortSignal.timeout(GRAPH_TIMEOUT_MS);
+  const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn', clock);
   if (slot?.refused) {
     slot.release();
     throw new Error(STOPPED_BY_USER);
@@ -76,9 +80,9 @@ export async function graphFetch(
   try {
     return await fetch(url, {
       ...init,
-      // The slot already composed the caller's own signal; a caller that brought none
-      // gets the finite deadline it was missing.
-      signal: slot?.signal ?? init.signal ?? AbortSignal.timeout(GRAPH_TIMEOUT_MS),
+      // The slot has already composed the clock with this agent's stop; with no slot the
+      // clock itself is the signal.
+      signal: slot?.signal ?? clock,
     });
   } catch (err) {
     if (slot?.cutByStop()) throw new Error(STOPPED_BY_USER);
