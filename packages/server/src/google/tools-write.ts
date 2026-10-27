@@ -1021,16 +1021,16 @@ const HOST_TIMEZONE = (() => {
   catch { return 'UTC'; }
 })();
 
-function isDateOnly(value: string): boolean {
+export function isDateOnly(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
 }
 
-function hasUtcOffset(value: string): boolean {
+export function hasUtcOffset(value: string): boolean {
   // Trailing 'Z' or +/-HH:MM (colon optional) marks an explicit offset.
   return /(?:Z|[+-]\d{2}:?\d{2})$/.test(value.trim());
 }
 
-function addOneCalendarDay(dateOnly: string): string {
+export function addOneCalendarDay(dateOnly: string): string {
   const [y, m, d] = dateOnly.trim().split('-').map(n => parseInt(n, 10));
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + 1);
@@ -2037,7 +2037,7 @@ export async function executeGoogleWriteTool(
 
 // ── Helpers for sheets_format ──
 
-function hexToRgb(hex: string): { red: number; green: number; blue: number } | null {
+export function hexToRgb(hex: string): { red: number; green: number; blue: number } | null {
   let h = hex.trim().replace(/^#/, '');
   if (h.length === 3) h = h.split('').map(c => c + c).join('');
   if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
@@ -2056,7 +2056,7 @@ function colLettersToIndex(letters: string): number {
   return n - 1;
 }
 
-function a1ToGridRange(
+export function a1ToGridRange(
   a1: string,
   sheets: Array<{ properties: { sheetId: number; title: string } }>,
 ): { sheetId: number; startRowIndex: number; endRowIndex: number; startColumnIndex: number; endColumnIndex: number } | { error: string } {
