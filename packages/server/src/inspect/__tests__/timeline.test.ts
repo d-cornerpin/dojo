@@ -5,11 +5,8 @@
 // REVIEW FOCUS 3: an agent that no longer exists is still answered from the records that
 // remain, labelled "(agent deleted)".
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 const h = vi.hoisted(() => ({ db: null as unknown, file: '' }));
 vi.mock('../../db/connection.js', () => ({
@@ -23,14 +20,15 @@ import { resolveWindow } from '../scope.js';
 import { seedTaskStory, TASK, PROJECT, SECOND_TASK, BEARER, at, sqlTime } from './seed.js';
 
 let db: Database.Database;
-beforeAll(() => {
-  const dir = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'inspect-timeline-'));
-  h.file = path.join(dir, 'dojo.db');
-  db = new Database(h.file);
+// One test purges the worker and its rows and two others add turns, so a database shared across
+// tests leaks its mutations into the next one in whatever order the runner runs them.
+function freshStory(): void {
+  db = new Database(':memory:');
   h.db = db;
   runMigrations();
   seedTaskStory(db);
-});
+}
+beforeEach(freshStory);
 
 const lines = (out: string): string[] => out.split('\n').filter((l) => l.startsWith('['));
 
