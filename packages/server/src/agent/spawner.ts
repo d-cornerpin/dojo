@@ -638,6 +638,17 @@ export function terminateAgent(agentId: string, reason?: string): void {
 
 // ── Complete Agent ──
 
+// SQLite writes created_at via datetime('now'): UTC wall-clock text with no zone,
+// which bare `new Date(text)` reads as LOCAL time. Read it as an instant the way
+// the timeout_at comparisons do; 0 when the text does not parse.
+export function runtimeSecondsSince(createdAt: string, nowMs: number = Date.now()): number {
+  const iso = createdAt.replace(' ', 'T');
+  const zoned = createdAt.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(createdAt) ? iso : `${iso}Z`;
+  const ms = new Date(zoned).getTime();
+  if (Number.isNaN(ms)) return 0;
+  return Math.floor((nowMs - ms) / 1000);
+}
+
 export async function completeAgent(
   agentId: string,
   status: 'complete' | 'fallen' | 'blocked',
@@ -678,9 +689,7 @@ export async function completeAgent(
     WHERE agent_id = ? AND action_type IN ('tool_call', 'file_read', 'file_write', 'exec')
   `).get(agentId) as { count: number };
 
-  const durationSeconds = Math.floor(
-    (Date.now() - new Date(agent.created_at).getTime()) / 1000,
-  );
+  const durationSeconds = runtimeSecondsSince(agent.created_at);
 
   // Sensei agents and anything explicitly marked `agent_type='persistent'`
   // are treated as persistent regardless of the config JSON. Pre-fix,
