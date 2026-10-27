@@ -168,7 +168,7 @@ function hexToRgb01(hex: string | undefined): [number, number, number] {
  * and break on whitespace. Falls back to per-character break for long
  * URL-like tokens that don't contain spaces.
  */
-function wrapText(
+export function wrapText(
   text: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   font: any,
@@ -252,7 +252,7 @@ function pickFont(ctx: RenderCtx, bold?: boolean, italic?: boolean): unknown {
   return ctx.font;
 }
 
-function alignX(align: Align | undefined, lineWidth: number, contentLeft: number, contentWidth: number): number {
+export function alignX(align: Align | undefined, lineWidth: number, contentLeft: number, contentWidth: number): number {
   switch (align) {
     case 'center': return contentLeft + (contentWidth - lineWidth) / 2;
     case 'right':  return contentLeft + contentWidth - lineWidth;
@@ -524,7 +524,7 @@ async function loadPdf(filePath: string): Promise<unknown> {
   return await PDFDocument.load(bytes);
 }
 
-function normalizePageList(input: number[] | undefined, total: number): number[] {
+export function normalizePageList(input: number[] | undefined, total: number): number[] {
   if (!input || input.length === 0) return [];
   // Accept either 0-based or 1-based — if any index is >= total, assume
   // the agent passed 1-based. Both forms are common in tool callers.
