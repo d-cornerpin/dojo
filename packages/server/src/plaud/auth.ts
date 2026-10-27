@@ -285,6 +285,9 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
 
   child.on('exit', async (code, signal) => {
     logger.info('Plaud login subprocess exited', { code, signal });
+    // A child that is no longer the live login was cancelled or replaced; its
+    // exit must not clear the current login's state or report a failure.
+    if (loginProcess !== child) return;
     const wasSuccessful = code === 0;
     loginProcess = null;
     pendingLoginUrl = null;
@@ -309,6 +312,9 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
 
   child.on('error', (err) => {
     logger.error('Plaud login subprocess error', { error: err.message });
+    // Same guard as the exit handler: a cancelled or replaced child's error
+    // must not clear the current login's state or report a failure.
+    if (loginProcess !== child) return;
     loginProcess = null;
     pendingLoginUrl = null;
     broadcast({ type: 'plaud:login_failed', error: err.message });
