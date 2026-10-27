@@ -1413,11 +1413,11 @@ async function uploadToOneDrive(
  * because docx-js's own default is A4, which silently produces wrong
  * margins for US users.
  */
-const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> = {
+export const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> = {
   letter:  { width: 12240, height: 15840 },
   a4:      { width: 11906, height: 16838 },
   legal:   { width: 12240, height: 20160 },
-  tabloid: { width: 17280, height: 22320 },
+  tabloid: { width: 15840, height: 24480 },
 };
 
 /**
