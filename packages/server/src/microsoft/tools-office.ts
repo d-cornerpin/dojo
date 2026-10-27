@@ -230,28 +230,28 @@ export function splitDocumentXml(documentXml: string): { prefix: string; bodyInn
 }
 
 /**
- * Split the body inner XML into a list of top-level block tokens.
- * In OOXML, body children are <w:p> (paragraphs), <w:tbl> (tables), or
- * <w:sectPr> (which we've already extracted). Returns the raw XML strings.
+ * Split the body inner XML into a list of top-level block tokens. Every child element is a
+ * block (w:p, w:tbl, w:sdt, bookmarks, ...), as raw XML; joining the list gives the body.
  */
-function parseBodyBlocks(bodyInner: string): string[] {
+export function parseBodyBlocks(bodyInner: string): string[] {
   const blocks: string[] = [];
+  const tagRe = /<(\/?)([\w.:-]+)([^>]*?)(\/?)>/g;
   let i = 0;
   while (i < bodyInner.length) {
-    // Skip whitespace between blocks
     const wsMatch = bodyInner.slice(i).match(/^\s+/);
     if (wsMatch) { i += wsMatch[0].length; continue; }
-    // Match the next block element
-    const openMatch = bodyInner.slice(i).match(/^<(w:p|w:tbl)\b/);
-    if (!openMatch) break;
-    const tag = openMatch[1];
-    // Find the matching close tag (non-nested for paragraphs; tables don't nest at top level)
-    const closeMarker = `</${tag}>`;
-    const closeIdx = bodyInner.indexOf(closeMarker, i);
-    if (closeIdx === -1) break;
-    const end = closeIdx + closeMarker.length;
-    blocks.push(bodyInner.slice(i, end));
-    i = end;
+    tagRe.lastIndex = i;
+    const open = tagRe.exec(bodyInner);
+    // Text we can't read as a tag becomes one last block rather than ending the scan.
+    if (!open || open.index !== i) { blocks.push(bodyInner.slice(i)); break; }
+    // A self-closing tag is the whole block; otherwise run to the SAME-name close matching THIS open.
+    let depth = open[4] ? 0 : 1, end = open[4] ? open.index + open[0].length : bodyInner.length, m: RegExpExecArray | null;
+    while (depth > 0 && (m = tagRe.exec(bodyInner)) !== null) {
+      if (m[2] !== open[2]) continue;
+      if (m[1]) { if (--depth === 0) end = m.index + m[0].length; }
+      else if (!m[4]) depth++;
+    }
+    blocks.push(bodyInner.slice(i, end)); i = end;
   }
   return blocks;
 }
