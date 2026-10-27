@@ -13,7 +13,7 @@
 // merge.* One statement per requirement, one enumeration over all of them.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 
 vi.mock('../../../config/platform.js', async () => {
   const actual = await vi.importActual<typeof import('../../../config/platform.js')>('../../../config/platform.js');
@@ -268,7 +268,11 @@ describe('the seventeen rows, one clause each', () => {
     expect(rowsFor('user_gmail_inbox', {}).some((x) => x.row === '17')).toBe(false);
   });
 
-  it('ALL SEVENTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 has two doors)', () => {
+  // in `afterAll`: the union `covered` builds only as the clauses above run, and
+  // vitest runs the clauses in shuffled order, so the check has to land AFTER
+  // every one of them — a hook, not a clause of its own, is the only order that
+  // guarantees it.
+  afterAll(() => {
     expect([...covered].sort()).toEqual(
       ['1', '10', '11', '12', '13', '14a', '14b', '15', '16', '17', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
     );
