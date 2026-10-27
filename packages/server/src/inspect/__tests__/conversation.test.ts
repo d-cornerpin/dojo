@@ -2,7 +2,7 @@
 // shared window (around, since/until), a pattern, engine rows on or off, the paging anchors,
 // the redaction, and an agent that no longer exists.
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,11 @@ beforeAll(() => {
   h.db = db;
   runMigrations();
   seedTaskStory(db);
+});
+afterEach(() => {
+  // The deleted-agent test removes the worker row from this file's shared fixture; put it
+  // back so a shuffled order shows every other test the seeded agent.
+  db.prepare("INSERT OR IGNORE INTO agents (id, name, classification) VALUES ('agent-worker', 'worker', 'apprentice')").run();
 });
 
 describe('conversation', () => {
