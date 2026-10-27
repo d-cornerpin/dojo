@@ -142,6 +142,11 @@ export async function performImport(
   // Where the decrypted inner zip is unpacked; the restore below reads this.
   const extractRoot = path.join(tmpDir, 'extracted');
 
+  // The backup THIS run makes (Step 6). Only it may be restored on failure — a failure
+  // before Step 6 means no backup was taken, and reaching for an older `.dojo-backup-*`
+  // some earlier run left behind would delete the user's live ~/.dojo.
+  let ownBackup: string | null = null;
+
   try {
     // Step 2: Stream the encrypted payload out of the outer zip to disk,
     // hashing it as it flows so the checksum is verified without buffering it.
@@ -233,6 +238,7 @@ export async function performImport(
     const backupDir = `${DOJO_DIR}-backup-${timestamp}`;
     if (fs.existsSync(DOJO_DIR)) {
       fs.renameSync(DOJO_DIR, backupDir);
+      ownBackup = backupDir;
       logger.info('Current dojo backed up', { backupDir });
     }
 
@@ -364,22 +370,19 @@ export async function performImport(
 
     return { manifest, checks };
   } catch (err) {
-    // On failure, try to restore the backup
-    const backupDir = `${DOJO_DIR}-backup-${Date.now()}`;
-    // The actual backup was made with a specific timestamp — find it
-    try {
-      const parentDir = path.dirname(DOJO_DIR);
-      const backups = fs.readdirSync(parentDir).filter(f => f.startsWith('.dojo-backup-'));
-      if (backups.length > 0) {
-        const latestBackup = path.join(parentDir, backups.sort().pop()!);
+    // On failure, restore ONLY the backup THIS run made. A failure before Step 6 means
+    // no backup was taken, so the live ~/.dojo is still the user's real data: do not delete
+    // it, and do not reach for some older `.dojo-backup-*` another run left behind.
+    if (ownBackup && fs.existsSync(ownBackup)) {
+      try {
         if (fs.existsSync(DOJO_DIR)) {
           fs.rmSync(DOJO_DIR, { recursive: true, force: true });
         }
-        fs.renameSync(latestBackup, DOJO_DIR);
+        fs.renameSync(ownBackup, DOJO_DIR);
         logger.info('Restored backup after failed import');
+      } catch (restoreErr) {
+        logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) });
       }
-    } catch (restoreErr) {
-      logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) });
     }
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
