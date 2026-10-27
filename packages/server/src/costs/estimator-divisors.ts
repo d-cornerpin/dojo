@@ -33,7 +33,7 @@ const UNMEASURED: MeasuredDivisors = { prose: null, dense: null };
 /** A reading is only a reading if it is a positive, finite number. A column can hold what a
  *  schema never approved (migration 167's own words about its reader), and the honest response
  *  to that is to treat it as unmeasured rather than to spend it. */
-function reading(value: unknown): number | null {
+export function reading(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
