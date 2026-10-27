@@ -29,6 +29,7 @@ import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
@@ -2339,6 +2340,11 @@ configRouter.put('/settings/:key', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.value !== 'string') {
     return c.json({ ok: false, error: 'value string is required' }, 400);
+  }
+
+  if (CLOCK_TIME_SETTING_KEYS.includes(key)) {
+    const badTime = refuseBadClockTime(body.value);
+    if (badTime) return c.json({ ok: false, error: badTime }, 400);
   }
 
   // The 32K main-model floor (owner decision 13) for a service agent's MAIN model, and (v3.5) the memory

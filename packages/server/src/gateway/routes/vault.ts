@@ -25,6 +25,7 @@ import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
 import { getDb } from '../../db/connection.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
+import { refuseBadClockTime } from '../../config/clock-time.js';
 
 const logger = createLogger('vault-routes');
 
@@ -240,6 +241,10 @@ vaultRouter.put('/dream/config', async (c) => {
   const current = (getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(getDreamerAgentId()) as { model_id: string | null } | undefined)?.model_id;
   const refused = await refuseUnfitLocalModel(newModel, current, 'agent', () => refuseSmallMainModel(newModel, current));
   if (refused) return c.json({ ok: false, error: refused }, 400);
+
+  const badTime = body.dreamTime === undefined ? null : refuseBadClockTime(body.dreamTime);
+  if (badTime) return c.json({ ok: false, error: badTime }, 400);
+
   setDreamingConfig({
     modelId: body.modelId,
     dreamTime: body.dreamTime,
