@@ -31,6 +31,7 @@ import { getPrimaryAgentId } from '../../config/platform.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
+import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
@@ -2512,7 +2513,7 @@ configRouter.get('/identity/:file', (c) => {
   // USER.md goes through its one source of truth (ruling #11); the route neither computes the
   // path nor composes the default any more.
   if (entry.filename === 'USER.md') {
-    return c.json({ ok: true, data: { content: readUserProfile() } });
+    return c.json({ ok: true, data: { content: readUserProfile(), mailboxes: ownerMailboxes() } });
   }
 
   const filePath = path.join(PROMPTS_DIR, entry.filename);
