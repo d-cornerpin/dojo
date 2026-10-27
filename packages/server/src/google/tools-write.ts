@@ -653,6 +653,7 @@ function buildRfc2822Email(
 interface GmailReplyContext {
   threadId: string;
   replyTo: string;
+  replyCc: string;
   replySubject: string;
   msgIdHeader: string;
 }
@@ -690,23 +691,37 @@ function splitAddressList(value: string): string[] {
   return out;
 }
 
-/** The reply-all recipient list: original From + To + Cc, minus the sending
- *  mailbox's own address(es), de-duplicated case-insensitively by bare address
- *  with the original display form kept. */
-function replyAllRecipients(from: string, to: string, cc: string, ownEmail: string | null): string {
+/** The reply-all recipient pair. To is the original From unless that is the
+ *  sending mailbox's own address (a reply to its own sent message), in which
+ *  case To is the original To minus itself. Cc is the original To and Cc,
+ *  minus the own address and everything already on To; a plain reply stays
+ *  just From. Both lists keep the original display form, deduped
+ *  case-insensitively by bare address. */
+function replyAllRecipients(from: string, to: string, cc: string, ownEmail: string | null): { to: string; cc: string } {
   const own = ownEmail?.trim().toLowerCase() ?? '';
+  const ownFrom = own !== '' && bareAddress(from).toLowerCase() === own;
   const seen = new Set<string>();
-  const kept: string[] = [];
-  for (const addr of [...splitAddressList(from), ...splitAddressList(to), ...splitAddressList(cc)]) {
+  const keptTo: string[] = [];
+  const keptCc: string[] = [];
+  for (const addr of ownFrom ? splitAddressList(to) : splitAddressList(from)) {
     const bare = bareAddress(addr);
     if (!bare) continue;
     const key = bare.toLowerCase();
     if (own && key === own) continue;
     if (seen.has(key)) continue;
     seen.add(key);
-    kept.push(addr);
+    keptTo.push(addr);
   }
-  return kept.join(', ');
+  for (const addr of [...splitAddressList(to), ...splitAddressList(cc)]) {
+    const bare = bareAddress(addr);
+    if (!bare) continue;
+    const key = bare.toLowerCase();
+    if (own && key === own) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keptCc.push(addr);
+  }
+  return { to: keptTo.join(', '), cc: keptCc.join(', ') };
 }
 
 async function gmailReplyContext(
@@ -728,11 +743,15 @@ async function gmailReplyContext(
   const to = headers.find(h => h.name === 'To')?.value ?? '';
   const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
   const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
+  const recipients = replyAll
+    ? replyAllRecipients(from, to, cc, ownEmail)
+    : { to: from, cc: '' };
   return {
     ok: true,
     ctx: {
       threadId: origData.threadId,
-      replyTo: replyAll ? replyAllRecipients(from, to, cc, ownEmail) : from,
+      replyTo: recipients.to,
+      replyCc: recipients.cc,
       replySubject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
       msgIdHeader: headers.find(h => h.name === 'Message-ID')?.value ?? '',
     },
@@ -1203,7 +1222,7 @@ export async function executeGoogleWriteTool(
 
       const context = await gmailReplyContext(messageId, replyAll, agentId, agentName, slot, 'gmail_reply_fetch', resolved.account.email ?? null);
       if (!context.ok) return context.error;
-      const { threadId, replyTo, replySubject, msgIdHeader } = context.ctx;
+      const { threadId, replyTo, replyCc, replySubject, msgIdHeader } = context.ctx;
 
       const prepared = await gmailAttachmentsWithOverflow(args.attachments as string[] | undefined, args.body as string, agentId, agentName, slot);
       if (!prepared.ok) return prepared.error;
@@ -1211,6 +1230,7 @@ export async function executeGoogleWriteTool(
       const overflow = { length: prepared.overflowCount };
 
       const raw = buildRfc2822Email(replyTo, replySubject, body, {
+        cc: replyCc || undefined,
         inReplyTo: msgIdHeader,
         references: msgIdHeader,
         attachments: inline,
@@ -1249,10 +1269,12 @@ export async function executeGoogleWriteTool(
       let subject = args.subject as string | undefined;
       let threadId: string | undefined;
       let msgIdHeader: string | undefined;
+      let replyCc: string | undefined;
 
       if (replyToId) {
         const context = await gmailReplyContext(replyToId, args.reply_all === true, agentId, agentName, slot, 'gmail_draft_fetch', resolved.account.email ?? null);
         if (!context.ok) return context.error;
+        replyCc = to === undefined ? (context.ctx.replyCc || undefined) : undefined;
         to = to ?? context.ctx.replyTo;
         subject = subject ?? context.ctx.replySubject;
         threadId = context.ctx.threadId;
@@ -1266,7 +1288,7 @@ export async function executeGoogleWriteTool(
       if (!prepared.ok) return prepared.error;
 
       const raw = buildRfc2822Email(to, subject, prepared.body, {
-        cc: args.cc as string | undefined,
+        cc: (args.cc as string | undefined) ?? replyCc,
         bcc: args.bcc as string | undefined,
         ...(msgIdHeader ? { inReplyTo: msgIdHeader, references: msgIdHeader } : {}),
         attachments: prepared.inline,
