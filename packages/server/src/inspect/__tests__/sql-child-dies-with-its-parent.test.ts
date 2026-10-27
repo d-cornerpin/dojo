@@ -98,8 +98,11 @@ afterAll(() => {
 describe('a dojo_inspect query outlives nothing', () => {
   it('t278: the parent is SIGKILLed mid-query (a server crash) and the endless query process is gone within the bound', async () => {
     let parentPid = 0;
+    // The mocked door appends a pid file for EVERY spawn in the file, and the other test may have
+    // run first and taken the earlier slots: ours is the one our own spawn adds, not [0].
+    const at = H.pidFiles.length;
     const run = mod.readInChild(ENDLESS, (p) => { parentPid = p; });
-    const pid = await queryPid(0);
+    const pid = await queryPid(at);
     expect(parentPid).toBeGreaterThan(0);
     // It is really running the endless read (an error would have ended it at once).
     await sleep(500);
