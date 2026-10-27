@@ -260,13 +260,13 @@ function parseBodyBlocks(bodyInner: string): string[] {
  * Extract a short text preview from a `<w:p>` paragraph block. Concatenates
  * all <w:t> text runs. Returns empty string if the block has no text.
  */
-function paragraphPreview(blockXml: string): { text: string; isHeading: boolean; level?: number } {
+export function paragraphPreview(blockXml: string): { text: string; isHeading: boolean; level?: number } {
   // Match all <w:t>...</w:t> contents (handles xml:space="preserve" too)
   const texts: string[] = [];
   const textRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
   let m: RegExpExecArray | null;
   while ((m = textRe.exec(blockXml)) !== null) texts.push(m[1]);
-  const text = texts.join('').trim();
+  const text = xmlUnescape(texts.join('')).trim();
   // Detect heading via pStyle. Headings use Heading1/Heading2/Heading3.
   const headingMatch = blockXml.match(/<w:pStyle w:val="Heading(\d)"\/?>/);
   return {
@@ -282,7 +282,7 @@ function paragraphPreview(blockXml: string): { text: string; isHeading: boolean;
  * `<w:t>` text runs. Returns rows as a 2D array of strings. Used by
  * office_read_word_document so agents can actually see table contents.
  */
-function extractTableText(blockXml: string): string[][] {
+export function extractTableText(blockXml: string): string[][] {
   const rows: string[][] = [];
   const rowRe = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
   let rowM: RegExpExecArray | null;
@@ -297,7 +297,7 @@ function extractTableText(blockXml: string): string[][] {
       const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
       let tM: RegExpExecArray | null;
       while ((tM = tRe.exec(cellInner)) !== null) texts.push(tM[1]);
-      cells.push(texts.join('').trim());
+      cells.push(xmlUnescape(texts.join('')).trim());
     }
     rows.push(cells);
   }
@@ -309,7 +309,7 @@ function extractTableText(blockXml: string): string[][] {
  * body. Title is the first text shape with a placeholder type of ctrTitle
  * or title; body is everything else. Used by office_read_presentation.
  */
-function extractSlideText(slideXml: string): { title: string; body: string[] } {
+export function extractSlideText(slideXml: string): { title: string; body: string[] } {
   // Title shape: find a <p:sp> shape that contains a placeholder of type
   // ctrTitle or title. Use \b after `sp` so we don't accidentally match
   // <p:spTree> (a wrapper element, not a shape).
@@ -321,7 +321,7 @@ function extractSlideText(slideXml: string): { title: string; body: string[] } {
     let m: RegExpExecArray | null;
     while ((m = re.exec(titleScope)) !== null) titleTexts.push(m[1]);
   }
-  const title = titleTexts.join('').trim();
+  const title = xmlUnescape(titleTexts.join('')).trim();
   // Body: walk each shape, extract its text. Skip the title shape if found.
   const body: string[] = [];
   const spRe = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/g;
@@ -338,7 +338,7 @@ function extractSlideText(slideXml: string): { title: string; body: string[] } {
       const tRe = /<a:t[^>]*>([^<]*)<\/a:t>/g;
       let tM: RegExpExecArray | null;
       while ((tM = tRe.exec(paraInner)) !== null) texts.push(tM[1]);
-      const line = texts.join('').trim();
+      const line = xmlUnescape(texts.join('')).trim();
       if (line) body.push(line);
     }
   }
@@ -396,42 +396,40 @@ function xmlEscape(s: string): string {
 }
 
 /**
- * Replace text inside <w:t> elements throughout the document. Find/replace
- * operates on the concatenated text of each <w:t> element individually —
- * this means it works when the find string is contained entirely within one
- * text run (the common case for short phrases), but cannot match text that
- * spans formatting boundaries (e.g. "hello **world**" stored as two runs).
- *
- * Returns { newXml, replacements } so the caller can report how many
- * substitutions happened.
+ * Decode the five XML entities `xmlEscape` produces, in one pass with `&amp;`
+ * first so `&amp;lt;` decodes once to the text `&lt;` rather than to `<`.
  */
-function replaceTextInDocumentXml(documentXml: string, find: string, replaceWith: string): { newXml: string; replacements: number } {
-  if (!find) return { newXml: documentXml, replacements: 0 };
+function xmlUnescape(s: string): string {
+  return s.replace(/&(?:amp|lt|gt|quot|apos);/g, (m) => m === '&amp;' ? '&' : m === '&lt;' ? '<' : m === '&gt;' ? '>' : m === '&quot;' ? '"' : "'");
+}
+
+/**
+ * Find/replace text inside text elements (`<w:t>` in Word, `<a:t>` in
+ * PowerPoint). Each node's inner text is decoded from XML entities, matched
+ * against the find, and re-escaped on write-back, so a find holding `&`, `<`,
+ * `>` or a stored apostrophe matches what the owner typed. A node that matches
+ * nothing is kept byte-for-byte; the find stays within one text run.
+ */
+function replaceTextInXml(xml: string, tag: string, find: string, replaceWith: string): { newXml: string; replacements: number } {
+  if (!find) return { newXml: xml, replacements: 0 };
   let replacements = 0;
   const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const escapedReplace = xmlEscape(replaceWith);
-  // Match <w:t>...</w:t> (and <w:t xml:space="preserve">) bodies and replace inside.
-  const newXml = documentXml.replace(/<w:t([^>]*)>([^<]*)<\/w:t>/g, (_full, attrs, inner) => {
-    const replaced = inner.replace(new RegExp(escapedFind, 'g'), () => { replacements++; return escapedReplace; });
-    return `<w:t${attrs}>${replaced}</w:t>`;
+  const nodeRe = new RegExp(`<${tag}([^>]*)>([^<]*)<\\/${tag}>`, 'g');
+  const newXml = xml.replace(nodeRe, (full, attrs, inner) => {
+    const decoded = xmlUnescape(inner);
+    const replaced = decoded.replace(new RegExp(escapedFind, 'g'), () => { replacements++; return replaceWith; });
+    if (replaced === decoded) return full;
+    return `<${tag}${attrs}>${xmlEscape(replaced)}</${tag}>`;
   });
   return { newXml, replacements };
 }
 
-/**
- * v2.5.10 — PowerPoint find/replace. The pptx XML uses DrawingML, so the
- * text-bearing element is <a:t> not <w:t>. Same single-run limitation.
- */
-function replaceTextInSlideXml(slideXml: string, find: string, replaceWith: string): { newXml: string; replacements: number } {
-  if (!find) return { newXml: slideXml, replacements: 0 };
-  let replacements = 0;
-  const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const escapedReplace = xmlEscape(replaceWith);
-  const newXml = slideXml.replace(/<a:t([^>]*)>([^<]*)<\/a:t>/g, (_full, attrs, inner) => {
-    const replaced = inner.replace(new RegExp(escapedFind, 'g'), () => { replacements++; return escapedReplace; });
-    return `<a:t${attrs}>${replaced}</a:t>`;
-  });
-  return { newXml, replacements };
+export function replaceTextInDocumentXml(documentXml: string, find: string, replaceWith: string): { newXml: string; replacements: number } {
+  return replaceTextInXml(documentXml, 'w:t', find, replaceWith);
+}
+
+export function replaceTextInSlideXml(slideXml: string, find: string, replaceWith: string): { newXml: string; replacements: number } {
+  return replaceTextInXml(slideXml, 'a:t', find, replaceWith);
 }
 
 /**
