@@ -396,6 +396,13 @@ export interface InboundMeta {
   smsToNumber?: string;
   phoneCallSid?: string;
   phoneFromNumber?: string;
+  /** P44: who an email went to, read from the provider's headers (never from the body). `authenticationResults` are the provider's own `Authentication-Results` header values, topmost first, unparsed. */
+  mailAddressing?: {
+    to: Array<{ address: string; display: string | null }>;
+    cc: Array<{ address: string; display: string | null }>;
+    placement: 'to' | 'cc' | 'neither';
+    authenticationResults: string[];
+  };
 }
 
 export interface OutboundRoutingMatch {
