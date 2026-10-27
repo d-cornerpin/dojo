@@ -160,6 +160,24 @@ async function ensureDir(dir: string): Promise<void> {
   await fsp.mkdir(dir, { recursive: true });
 }
 
+/**
+ * Attach the 'error' listener every download writer must have. Without one, a
+ * failed write (full disk, lost volume, permission error) is an uncaught
+ * exception, and index.ts answers those by exiting the process. The first
+ * error is remembered so the download loops throw the real cause; `close()`
+ * ends the stream without letting end()'s ERR_STREAM_DESTROYED replace it.
+ */
+function watchDownloadWriter(writer: fs.WriteStream) {
+  let firstError: Error | undefined;
+  writer.on('error', (err) => { if (!firstError) firstError = err; });
+  return {
+    firstError: () => firstError,
+    close: () => new Promise<void>((resolve, reject) => {
+      writer.end((err?: Error | null) => (!err || firstError ? resolve() : reject(err)));
+    }),
+  };
+}
+
 export function whisperPath(size: WhisperSize): string {
   return path.join(MODELS_DIR, WHISPER_MODELS[size].filename);
 }
@@ -200,6 +218,7 @@ export async function ensureWhisperModel(
 
   const reader = res.body.getReader();
   const writer = fs.createWriteStream(tmp);
+  const watch = watchDownloadWriter(writer);
 
   let bytesDownloaded = 0;
   let lastReport = 0;
@@ -209,7 +228,14 @@ export async function ensureWhisperModel(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      writer.write(Buffer.from(value));
+      // Await the write callback like the other downloaders: one write in
+      // flight at a time keeps memory flat when the disk is slower than the
+      // network. Failures arrive via the stream's 'error' event.
+      await new Promise<void>((resolve) => {
+        writer.write(Buffer.from(value), () => resolve());
+      });
+      const writeErr = watch.firstError();
+      if (writeErr) throw writeErr;
       bytesDownloaded += value.byteLength;
       if (onProgress && bytesDownloaded - lastReport >= REPORT_EVERY) {
         lastReport = bytesDownloaded;
@@ -217,10 +243,11 @@ export async function ensureWhisperModel(
       }
     }
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
+    await watch.close();
   }
+
+  const streamErr = watch.firstError();
+  if (streamErr) throw streamErr;
 
   await fsp.rename(tmp, dest);
   if (onProgress) {
@@ -368,6 +395,7 @@ async function ensureModelFiles(
 
     const reader = res.body.getReader();
     const writer = fs.createWriteStream(tmp);
+    const watch = watchDownloadWriter(writer);
     let lastReport = runningBytes;
     const REPORT_EVERY = 256 * 1024;
 
@@ -375,9 +403,11 @@ async function ensureModelFiles(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        await new Promise<void>((resolve, reject) => {
-          writer.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
+        await new Promise<void>((resolve) => {
+          writer.write(Buffer.from(value), () => resolve());
         });
+        const writeErr = watch.firstError();
+        if (writeErr) throw writeErr;
         runningBytes += value.byteLength;
         if (onProgress && runningBytes - lastReport >= REPORT_EVERY) {
           lastReport = runningBytes;
@@ -385,10 +415,11 @@ async function ensureModelFiles(
         }
       }
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
+      await watch.close();
     }
+
+    const streamErr = watch.firstError();
+    if (streamErr) throw streamErr;
 
     await fsp.rename(tmp, file.dest);
     logger.info(`${kind} file written`, { file: file.path });
@@ -462,6 +493,7 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
 
     const reader = res.body.getReader();
     const writer = fs.createWriteStream(tmp);
+    const watch = watchDownloadWriter(writer);
     let lastReport = runningBytes;
     const REPORT_EVERY = 256 * 1024; // 256 KB
 
@@ -469,9 +501,11 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        await new Promise<void>((resolve, reject) => {
-          writer.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
+        await new Promise<void>((resolve) => {
+          writer.write(Buffer.from(value), () => resolve());
         });
+        const writeErr = watch.firstError();
+        if (writeErr) throw writeErr;
         runningBytes += value.byteLength;
         if (onProgress && runningBytes - lastReport >= REPORT_EVERY) {
           lastReport = runningBytes;
@@ -483,10 +517,11 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
         }
       }
     } finally {
-      await new Promise<void>((resolve, reject) => {
-        writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
-      });
+      await watch.close();
     }
+
+    const streamErr = watch.firstError();
+    if (streamErr) throw streamErr;
 
     await fsp.rename(tmp, file.dest);
     logger.info('Kokoro file written', { file: file.path, bytes: runningBytes - alreadyHave });
