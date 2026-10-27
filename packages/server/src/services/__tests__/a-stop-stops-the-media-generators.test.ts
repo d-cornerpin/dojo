@@ -326,7 +326,14 @@ describe('§2 a stop cuts a TTS / music generation and the job lands in the stop
       prompt: 'read this aloud', voice: 'alloy',
     });
     jobs.enqueueAudioOrMusicJob(jobId);
-    await tick(40);
+    for (let i = 0; i < 200; i += 1) {
+      const st = (mockDb.current!.prepare('SELECT status FROM generation_jobs WHERE id = ?')
+        .get(jobId) as { status: string }).status;
+      const bubble = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ?")
+        .all(AGENT) as Array<{ content: string }>;
+      if (st === 'failed' && bubble.some((m) => /wasn't able to finish/i.test(m.content))) break;
+      await tick(5);
+    }
 
     const row = mockDb.current!.prepare('SELECT status, error FROM generation_jobs WHERE id = ?')
       .get(jobId) as { status: string; error: string | null };
