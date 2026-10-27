@@ -116,7 +116,7 @@ const SECTION_ORDER: Record<string, string> = {
  * newline. Exact rather than a fudge factor: a single item with hundreds of short fields
  * inflates by lines, not by bytes, and a ratio-based estimate is wrong exactly there.
  */
-function renderedCost(item: unknown): number {
+export function renderedCost(item: unknown): number {
   const s = JSON.stringify(item, null, 2) ?? 'null';
   return s.length + 4 * s.split('\n').length + 2;
 }
