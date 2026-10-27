@@ -164,14 +164,14 @@ async function loadLocalWorkbook(absPath: string): Promise<any> {
   return wb;
 }
 
-function colLettersToIndex(letters: string): number {
+export function colLettersToIndex(letters: string): number {
   let n = 0;
   for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
   return n; // 1-based
 }
 
 // Parse "A1", "A1:C3", "$B$2:$B$10" → 1-based inclusive bounds.
-function parseA1Range(range: string): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
+export function parseA1Range(range: string): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
   const m = range.replace(/\$/g, '').match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
   if (!m) return null;
   const c1 = colLettersToIndex(m[1]);
@@ -210,7 +210,7 @@ function resolveLocalSheet(wb: any, sheetName?: string): any {
  * paragraphs into the existing document without disturbing section properties
  * (page size, margins, headers/footers) that live in sectPr at the body end.
  */
-function splitDocumentXml(documentXml: string): { prefix: string; bodyInner: string; suffix: string } {
+export function splitDocumentXml(documentXml: string): { prefix: string; bodyInner: string; suffix: string } {
   const bodyOpenMatch = documentXml.match(/<w:body[^>]*>/);
   const bodyCloseIdx = documentXml.lastIndexOf('</w:body>');
   if (!bodyOpenMatch || bodyCloseIdx === -1) {
@@ -378,7 +378,7 @@ async function rewriteDocumentXml(buffer: Buffer, newDocumentXml: string): Promi
  * Used by office_append_spreadsheet_rows to compute the target range from
  * the appended-row dimensions.
  */
-function columnIndexToLetter(idx: number): string {
+export function columnIndexToLetter(idx: number): string {
   let result = '';
   let n = idx;
   while (n >= 0) {
@@ -391,7 +391,7 @@ function columnIndexToLetter(idx: number): string {
 /**
  * Escape a string for safe insertion into XML attribute or text content.
  */
-function xmlEscape(s: string): string {
+export function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
@@ -1276,7 +1276,7 @@ interface WordDocOptions {
  * this for professional typography — disabled by default so code
  * samples and technical content stay literal.
  */
-function smartenQuotes(text: string): string {
+export function smartenQuotes(text: string): string {
   if (!text) return text;
   return text
     .replace(/(^|[\s(\[{<])"/g, '$1“')         // opening double
@@ -1424,7 +1424,7 @@ export const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> =
  * Reference for content-width math: page width minus left+right margin
  * (in DXA). Used to size full-width tables and column-width arithmetic.
  */
-function contentWidthDxa(pageW: number, marginInches: number): number {
+export function contentWidthDxa(pageW: number, marginInches: number): number {
   return pageW - Math.round(marginInches * 1440 * 2);
 }
 
