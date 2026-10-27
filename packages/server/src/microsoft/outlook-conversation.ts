@@ -34,15 +34,19 @@ export interface OutlookCallContext { agentId: string; agentName: string; slot: 
 /** The `Conversation:` line the reads print, or nothing when Graph sent no id. */
 export const conversationLine = (id: string | undefined, lead = '\n'): string => (id ? `${lead}Conversation: ${id}` : '');
 
-/** Is this folder one whose move takes the whole conversation: named, or the id of that folder? */
-async function isPutAwayFolder(folderId: string, ctx: OutlookCallContext): Promise<boolean> {
+/** Is this folder one whose move takes the whole conversation: named, or the id of that folder?
+ *  null when Graph would not say whether the id is one of them. */
+async function isPutAwayFolder(folderId: string, ctx: OutlookCallContext): Promise<boolean | null> {
   if ((PUT_AWAY_FOLDERS as readonly string[]).includes(folderId.toLowerCase())) return true;
   // A folder id from outlook_list_folders: ask Graph which ids the two well-known names stand for.
   const ids = await Promise.all(PUT_AWAY_FOLDERS.map(async (name) => {
     const r = await msGraphRead(`me/mailFolders/${name}?$select=id`, ctx.agentId, ctx.agentName, 'outlook_move_to_folder:folder_lookup', { name }, ctx.slot);
     return r.ok ? (r.data as { id?: string } | null)?.id : undefined;
   }));
-  return ids.includes(folderId);
+  const lookedUp = ids.filter((id): id is string => typeof id === 'string');
+  if (lookedUp.includes(folderId)) return true;
+  // A failed lookup means we cannot tell "not a put-away folder" from "Graph would not say".
+  return lookedUp.length === ids.length ? false : null;
 }
 
 /** The ids of the Sent Items and Drafts folders (once per call); null if Graph would not say. */
@@ -132,12 +136,16 @@ export async function moveToFolder(args: Record<string, unknown>, ctx: OutlookCa
   if (messageId && given) return 'Error: pass message_id or conversation_id, not both.';
 
   if (given) {
-    if (!(await isPutAwayFolder(folderId, ctx))) return moveConversation(given, folderId, ctx);
+    const putAway = await isPutAwayFolder(folderId, ctx);
+    if (putAway === null) return 'Error: could not tell whether that folder is the Archive or Deleted Items (Graph would not say), so nothing was moved. Retry, or pass the folder name archive or deleteditems.';
+    if (!putAway) return moveConversation(given, folderId, ctx);
     const own = await sentAndDraftFolders(ctx);
     if (!own) return 'Error: could not identify the Sent Items and Drafts folders (so they cannot be left alone), and nothing was moved. Retry, or move one message with message_id and this_message_only=true.';
     return moveConversation(given, folderId, ctx, (f) => !f || !own.has(f));
   }
-  if (messageId && args.this_message_only !== true && await isPutAwayFolder(folderId, ctx)) {
+  const putAway = messageId && args.this_message_only !== true && (await isPutAwayFolder(folderId, ctx));
+  if (putAway === null) return 'Error: could not tell whether that folder is the Archive or Deleted Items (Graph would not say), so nothing was moved. Retry, or pass the folder name archive or deleteditems.';
+  if (putAway) {
     const found = await conversationOf(messageId, ctx);
     if (!found.ok) return found.error;
     return moveConversation(found.id, folderId, ctx, (f) => f === found.folder);
