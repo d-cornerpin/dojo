@@ -1079,20 +1079,27 @@ function buildCalendarTimes(
     out.end = { date: addOneCalendarDay(startTrim) };
   } else if (deriveMissingEnd && startTrim && out.start?.dateTime) {
     // Timed start with no end on CREATE: default to a one-hour event rather
-    // than bouncing the call (Google requires an end on inserts). Parse in the
-    // same zone semantics the start was given.
-    const startMs = new Date(startTrim).getTime();
-    if (!isNaN(startMs)) {
-      const endDate = new Date(startMs + 60 * 60 * 1000);
-      if (hasUtcOffset(startTrim)) {
+    // than bouncing the call (Google requires an end on inserts). Add the hour in
+    // the same zone semantics the start was given.
+    if (hasUtcOffset(startTrim)) {
+      // The start pins an exact instant, so a real +1h on that instant is correct.
+      const startMs = new Date(startTrim).getTime();
+      if (!isNaN(startMs)) {
+        const endDate = new Date(startMs + 60 * 60 * 1000);
         out.end = { dateTime: endDate.toISOString() };
-      } else {
-        // Offset-less start was interpreted as host-local by the Date parse,
-        // so re-emit the +1h end as an offset-less host-local string and let
-        // the shared timeZone field carry the zone, matching the start.
-        const pad = (n: number) => String(n).padStart(2, '0');
-        const localIso = `${endDate.getFullYear()}-${pad(endDate.getMonth() + 1)}-${pad(endDate.getDate())}T${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:${pad(endDate.getSeconds())}`;
-        out.end = { dateTime: localIso, timeZone: tz };
+      }
+    } else {
+      // Offset-less start is a wall-clock time in `tz` (it went out as-is with
+      // timeZone: tz), so the end is that same wall clock +1h. Do the math on the
+      // text itself — parse as if UTC, add an hour, read the UTC fields back as an
+      // offset-less string — so the end never depends on the host zone or a host
+      // DST change, and still carries `tz` like the start.
+      const wallMs = Date.parse(`${startTrim}Z`);
+      if (!isNaN(wallMs)) {
+        out.end = {
+          dateTime: new Date(wallMs + 60 * 60 * 1000).toISOString().slice(0, 19),
+          timeZone: tz,
+        };
       }
     }
   }
