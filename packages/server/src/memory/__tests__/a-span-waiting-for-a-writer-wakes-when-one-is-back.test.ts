@@ -74,9 +74,11 @@ import { insertMessage } from '../message-store.js';
 import { eligibleSummaryWriters, writerPassedOver, noteSummaryWriterOutcome, noteDidNotAnswerInTurn, __resetSummaryWriterHealthForTests } from '../summary-writer-health.js';
 import { __resetBrakesForTests, compactionIsBraked, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
+import { __resetWriterFallbackRoomForTests } from '../writer-fallback-room.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains, pendingWakeups } from '../../agent/shared-state.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
+import { endJobCarry } from '../../work/task-freshness.js';
 import { recordProviderSuccess, recordProviderError } from '../../gateway/routes/services.js';
 import { checkOllamaHealth } from '../../services/ollama.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
@@ -99,6 +101,8 @@ beforeEach(() => {
   ollama.psOk = true; ollama.showOk = true;
   backgroundDrains.clear(); pendingWakeups.clear();
   __resetBrakesForTests(); __resetBreakersForTests(); __resetSummaryWriterHealthForTests(); __resetCompactionFailuresForTests(); __resetFullContextWaitForTests();
+  __resetWriterFallbackRoomForTests();   // the memory-free outage a prior test left is over; the next unread read is told afresh
+  endJobCarry(AGENT); endJobCarry(OTHER);   // the job carry is process memory: a park's timer wake that never fired is spent, so a prior test's woken turn does not start here
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
   vi.spyOn(os, 'totalmem').mockImplementation(() => 16 * GIB);

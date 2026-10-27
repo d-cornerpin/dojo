@@ -56,3 +56,6 @@ export async function refuseFallbackOverFreeMemory(
   logger.warn('SUMMARY_REFUSED a fallback summary on the Dojo\'s writer needs more window than the memory free now holds; the span is halved', { need, free }, agentId);
   return { ok: false, reason: 'the memory free now cannot hold this span for the Dojo\'s writer', tooBig: true };
 }
+
+/** Test-only: the outage that left the memory unread is over, so the next read is told afresh (one warn per outage). */
+export function __resetWriterFallbackRoomForTests(): void { unreadable = false; }
