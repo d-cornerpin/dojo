@@ -314,13 +314,27 @@ function listTechniqueNames(): string[] {
   });
 }
 
-function createZipFromDir(dirPath: string, outputPath: string, exclude: string[] = []): Promise<void> {
+export function createZipFromDir(dirPath: string, outputPath: string, exclude: string[] = []): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
     const archive = archiver('zip', { zlib: { level: 6 } });
 
-    output.on('close', resolve);
+    // The OUTPUT stream can fail independently of the archive (disk full, a
+    // read-only or missing temp folder, a permission error). Its 'error' event
+    // has no listener here, so it becomes an uncaught exception that takes the
+    // whole server down — and the promise never settles, so the export's catch
+    // that deletes the staging folder never runs. Reject with it and stop
+    // feeding the dead stream; settle exactly once so a trailing 'close' cannot
+    // resolve a failed export.
+    let settled = false;
+    const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
+
+    output.on('close', () => settle(resolve));
     archive.on('error', reject);
+    output.on('error', (err) => {
+      try { archive.abort(); } catch { /* the stream is already gone */ }
+      settle(() => reject(err));
+    });
     archive.pipe(output);
 
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -338,13 +352,23 @@ function createZipFromDir(dirPath: string, outputPath: string, exclude: string[]
   });
 }
 
-function createFinalZip(outputPath: string, manifest: ExportManifest, payloadEncPath: string): Promise<void> {
+export function createFinalZip(outputPath: string, manifest: ExportManifest, payloadEncPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
     const archive = archiver('zip', { zlib: { level: 1 } }); // light compression, payload already compressed
 
-    output.on('close', resolve);
+    // Same output-stream failure handling as createZipFromDir: an 'error' on the
+    // WriteStream is otherwise an uncaught exception, and a trailing 'close'
+    // must not resolve a failed export.
+    let settled = false;
+    const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };
+
+    output.on('close', () => settle(resolve));
     archive.on('error', reject);
+    output.on('error', (err) => {
+      try { archive.abort(); } catch { /* the stream is already gone */ }
+      settle(() => reject(err));
+    });
     archive.pipe(output);
 
     // Manifest is unencrypted and first in the zip
