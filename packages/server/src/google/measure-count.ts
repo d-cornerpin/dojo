@@ -3,8 +3,9 @@
 // It reads the mailbox the agent's own `gmail_search` / `user_gmail_search` would read — the same
 // kind (the agent's account or the user's) and the same account resolver — so the count the
 // engine holds the task to is the count the agent would see if it ran the query itself.
-import { googleRead } from './client.js';
+import { googleSilentFetch } from './client.js';
 import { resolveGoogleAccountForRead } from './accounts.js';
+import { logGoogleActivity } from './activity-log.js';
 import type { GoogleAccountKind } from './accounts.js';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -21,14 +22,30 @@ export async function countGmailSearch(
   if ('error' in resolved) return { ok: false, error: resolved.error };
   const slot = resolved.account.id;
   let count = 0;
+  let pages = 0;
   let pageToken: string | undefined;
+  let lastEndpoint = '';
+  let failure: string | undefined;
   do {
     const url = `${GMAIL_BASE}/messages?q=${encodeURIComponent(args.query)}&maxResults=${PAGE}&fields=${encodeURIComponent('messages/id,nextPageToken')}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
-    const r = await googleRead(url, agentId, agentName, 'measure_count', { query: args.query, pageToken }, slot);
-    if (!r.ok) return { ok: false, error: r.error ?? 'unknown error' };
+    const r = await googleSilentFetch('GET', url, undefined, undefined, slot, agentId);
+    pages += 1;
+    lastEndpoint = r.apiEndpoint;
+    if (!r.ok) {
+      failure = r.error ?? 'unknown error';
+      break;
+    }
     const data = r.data as { messages?: Array<{ id: string }>; nextPageToken?: string } | null;
     count += data?.messages?.length ?? 0;
     pageToken = data?.nextPageToken;
   } while (pageToken);
+  logGoogleActivity({
+    agentId, agentName, action: 'measure_count', actionType: 'read',
+    details: JSON.stringify({ query: args.query, pages, count, account: slot }),
+    gwsCommand: lastEndpoint,
+    success: failure === undefined,
+    error: failure,
+  });
+  if (failure !== undefined) return { ok: false, error: failure };
   return { ok: true, count };
 }
