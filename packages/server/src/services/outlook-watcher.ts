@@ -256,7 +256,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
 
     const filter = s.lastCheckedAt ? `receivedDateTime gt ${s.lastCheckedAt}` : null;
     const filterClause = filter ? `&$filter=${encodeURIComponent(filter)}` : '';
-    const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;
+    const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId&$orderby=receivedDateTime desc`;
 
     const result = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter, account: accountId }, accountId);
 
@@ -266,7 +266,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       return;
     }
 
-    const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string }> };
+    const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string; conversationId?: string }> };
     if (!data?.value || data.value.length === 0) {
       s.lastCheckedAt = pollStartIso;
       saveLastCheckedAt(accountId, pollStartIso);
