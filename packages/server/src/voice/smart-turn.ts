@@ -77,19 +77,41 @@ export async function ensureSmartTurnModel(): Promise<string> {
   }
   const reader = res.body.getReader();
   const writer = fs.createWriteStream(tmp);
+  // A failed write (disk full) surfaces as an 'error' event on the writer;
+  // with no listener here that is an uncaught exception and takes the server
+  // down. Remember the first error and throw it once the writes below are
+  // awaited — after the stream is destroyed, end() only reports a generic
+  // ERR_STREAM_DESTROYED that would mask the real cause.
+  let streamError: Error | null = null;
+  writer.on('error', (err: Error) => {
+    if (!streamError) streamError = err;
+  });
   let bytes = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      writer.write(Buffer.from(value));
+      if (!writer.write(Buffer.from(value)) && !streamError) {
+        // Backpressure: wait for the drain, or for the stream to error/close.
+        await new Promise<void>((resolve) => {
+          writer.once('drain', resolve);
+          writer.once('error', () => resolve());
+          writer.once('close', resolve);
+        });
+      }
+      if (streamError) throw streamError;
       bytes += value.byteLength;
     }
   } finally {
     await new Promise<void>((resolve, reject) => {
-      writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
+      writer.end((err?: Error | null) => {
+        if (streamError) reject(streamError);
+        else if (err) reject(err);
+        else resolve();
+      });
     });
   }
+  if (streamError) throw streamError;
   await fsp.rename(tmp, MODEL_PATH);
   logger.info('Smart Turn v3 model downloaded', { bytes, approx: SMART_TURN_APPROX_BYTES });
   return MODEL_PATH;
@@ -114,29 +136,43 @@ let fePromise: Promise<FeatureExtractor> | null = null;
 
 async function getOrt(): Promise<OrtModule> {
   if (!ortPromise) {
-    ortPromise = (async () => {
+    const promise = (async () => {
       const ns = (await import('onnxruntime-node')) as unknown as { default?: OrtModule } & OrtModule;
       return (ns.default ?? ns) as OrtModule;
     })();
+    ortPromise = promise;
+    // If the load rejects, drop the cached promise so a later call actually
+    // retries instead of replaying the first failure for the server's whole
+    // lifetime (same fix as tts-service.ts's loadKokoro).
+    promise.catch(() => {
+      if (ortPromise === promise) ortPromise = null;
+    });
   }
   return ortPromise;
 }
 
 async function getSession() {
   if (!sessionPromise) {
-    sessionPromise = (async () => {
+    const promise = (async () => {
       await ensureSmartTurnModel();
       const ort = await getOrt();
       logger.info('Loading Smart Turn v3 ONNX session', { path: MODEL_PATH });
       return ort.InferenceSession.create(MODEL_PATH);
     })();
+    sessionPromise = promise;
+    // A first-time download failing (offline box, HF hiccup, full disk) must
+    // not disable smart-turn until restart: clear the cache on rejection so
+    // the next call re-downloads and retries.
+    promise.catch(() => {
+      if (sessionPromise === promise) sessionPromise = null;
+    });
   }
   return sessionPromise;
 }
 
 async function getFeatureExtractor(): Promise<FeatureExtractor> {
   if (!fePromise) {
-    fePromise = (async () => {
+    const promise = (async () => {
       const { WhisperFeatureExtractor } = (await import('@huggingface/transformers')) as unknown as {
         WhisperFeatureExtractor: new (config: Record<string, unknown>) => FeatureExtractor;
       };
@@ -153,6 +189,11 @@ async function getFeatureExtractor(): Promise<FeatureExtractor> {
         nb_max_frames: NB_MAX_FRAMES,
       });
     })();
+    fePromise = promise;
+    // Same retry-on-rejection as the loaders above.
+    promise.catch(() => {
+      if (fePromise === promise) fePromise = null;
+    });
   }
   return fePromise;
 }
