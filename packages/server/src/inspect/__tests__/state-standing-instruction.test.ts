@@ -2,7 +2,7 @@
 // each rendered section with its tokens and its share of the prefix, biggest first, read from
 // `prompt_sections` on the read-only connection the page already uses.
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,6 +35,22 @@ beforeAll(() => {
   seedTaskStory(db);
 });
 
+const putSection = (agentId: string, entryId: string, tokens: number, chars: number, baselineTokens: number): void => {
+  db.prepare('INSERT INTO prompt_sections (agent_id, entry_id, tokens, chars, measured_at, baseline_tokens, baseline_at) VALUES (?, ?, ?, ?, 1, ?, 1)')
+    .run(agentId, entryId, tokens, chars, baselineTokens);
+};
+// The measured sections two tests read; each seeds its own, so no test depends on another's rows.
+const putStandingInstruction = (): void => {
+  putSection('agent-primary', 'sys.soul', 600, 2400, 500);
+  putSection('agent-primary', 'sys.time', 100, 400, 100);
+  putSection('agent-primary', 'sys.voice-conduct', 300, 1200, 300);
+  putSection('agent-primary', 'lane.vault', 50, 0, 50);
+};
+
+beforeEach(() => {
+  db.prepare('DELETE FROM prompt_sections').run();
+});
+
 describe('state: the Standing instruction block', () => {
   it('is a section of the page, and before any assembly says nothing is measured yet', () => {
     expect(STATE_SECTIONS).toContain('Standing instruction');
@@ -44,11 +60,7 @@ describe('state: the Standing instruction block', () => {
   });
 
   it('lists each agent\'s sections biggest first with tokens and share, and skips an agent with none', () => {
-    const put = db.prepare('INSERT INTO prompt_sections (agent_id, entry_id, tokens, chars, measured_at, baseline_tokens, baseline_at) VALUES (?, ?, ?, ?, 1, ?, 1)');
-    put.run('agent-primary', 'sys.soul', 600, 2400, 500);
-    put.run('agent-primary', 'sys.time', 100, 400, 100);
-    put.run('agent-primary', 'sys.voice-conduct', 300, 1200, 300);
-    put.run('agent-primary', 'lane.vault', 50, 0, 50);
+    putStandingInstruction();
     const text = section(state(db));
     expect(text).toMatch(/primary \(agent-pr\)[^\n]*1,000 tokens/);
     const soul = text.indexOf('sys.soul'); const voice = text.indexOf('sys.voice-conduct'); const time = text.indexOf('sys.time');
@@ -62,13 +74,13 @@ describe('state: the Standing instruction block', () => {
   });
 
   it('shows what a section has grown by since its reference', () => {
+    putStandingInstruction();
     expect(section(state(db))).toMatch(/sys\.soul · 600 tokens · 60% · \+100 since the last reference/);
   });
 
   it('passes the same redaction as the rest of the page: key-shaped text in a section id is blanked', () => {
     const KEY = 'sk-proj-SyntheticSectionValue00000000000';
-    db.prepare('INSERT INTO prompt_sections (agent_id, entry_id, tokens, chars, measured_at, baseline_tokens, baseline_at) VALUES (?, ?, 5, 20, 1, 5, 1)')
-      .run('agent-primary', `lane.${KEY}`);
+    putSection('agent-primary', `lane.${KEY}`, 5, 20, 5);
     const text = section(state(db));
     expect(text).not.toContain(KEY);
     expect(text).toMatch(/<redacted-credential>/);
