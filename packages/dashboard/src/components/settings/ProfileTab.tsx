@@ -6,6 +6,9 @@
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 
+type OwnerMailboxRow = { address: string; provider: 'google' | 'microsoft'; accountId: string };
+const PROVIDER_LABEL: Record<OwnerMailboxRow['provider'], string> = { google: 'Google', microsoft: 'Microsoft' };
+
 
 // ── Profile Tab ──
 
@@ -18,6 +21,7 @@ export const ProfileTab = () => {
   const [savedName, setSavedName] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savedProfile, setSavedProfile] = useState(false);
+  const [mailboxes, setMailboxes] = useState<OwnerMailboxRow[]>([]);
 
   useEffect(() => {
     const load = async () => {
@@ -26,7 +30,10 @@ export const ProfileTab = () => {
       setLoadingName(false);
 
       const profileResult = await api.getIdentity('USER.md');
-      if (profileResult.ok) setUserProfile(profileResult.data.content);
+      if (profileResult.ok) {
+        setUserProfile(profileResult.data.content);
+        setMailboxes((profileResult.data as { mailboxes?: OwnerMailboxRow[] }).mailboxes ?? []);
+      }
       setLoadingProfile(false);
     };
     load();
@@ -73,6 +80,29 @@ export const ProfileTab = () => {
               {savedName && <span className="text-xs text-cp-teal">Saved!</span>}
             </div>
           </>
+        )}
+      </div>
+
+      {/* Your Mailboxes (owner ruling 2026-10-27): read-only, filled from the owner's connected accounts */}
+      <div className="tile space-y-3">
+        <div className="scard__title">Your Mailboxes</div>
+        <div className="scard__desc">
+          Filled in automatically from the Google and Microsoft accounts you connect as your own
+          (Settings, Google and Microsoft). Disconnect an account there to remove it here.
+        </div>
+        {loadingProfile ? (
+          <div className="h-10 glass-nested rounded-xl animate-pulse" />
+        ) : mailboxes.length === 0 ? (
+          <div className="scard__desc" style={{ marginBottom: 0 }}>None yet. Connect your own Google or Microsoft account and it appears here.</div>
+        ) : (
+          <ul className="space-y-1">
+            {mailboxes.map((m) => (
+              <li key={m.accountId} className="srow">
+                <span className="font-mono text-sm">{m.address}</span>
+                <span className="text-xs">{PROVIDER_LABEL[m.provider]}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
