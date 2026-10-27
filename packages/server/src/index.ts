@@ -14,7 +14,7 @@ import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/ask-settlement.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
-import { closeServers } from './gateway/close-servers.js';
+import { closeServers, trackRequests } from './gateway/close-servers.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
@@ -282,6 +282,10 @@ async function main(): Promise<void> {
         status: 503,
         headers: { 'content-type': 'application/json' },
       }));
+
+  // Track every in-flight response so shutdown can close its connection when the
+  // response finishes; see gateway/close-servers.ts.
+  trackRequests(server as unknown as HttpServer);
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     logger.error('Server error', { error: err.message, code: err.code ?? null });
