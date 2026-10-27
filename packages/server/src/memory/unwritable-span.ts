@@ -24,6 +24,7 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { eligibleSummaryWriters, summaryWriterCandidates } from './summary-writer-health.js';
+import { pruneRefusalsOtherThan } from './refusal-prune.js';
 
 const SCOPE = 'summary_unwritable';
 
@@ -46,7 +47,7 @@ export function recordRefusal(agentId: string, writer: string, items: readonly S
   try {
     const db = getDb();
     const set = setting();
-    db.prepare("DELETE FROM healer_state WHERE scope = ? AND key NOT LIKE '%|' || ? || '|%'").run(SCOPE, set);   // an earlier setting's refusals are over
+    pruneRefusalsOtherThan(db, SCOPE, set);   // an earlier setting's refusals are over
     db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms')
       .run(SCOPE, keyOf(agentId, set, writer, spanHash(items)), Date.now());
   } catch { /* best effort: a missing record costs one more try, never a summary */ }

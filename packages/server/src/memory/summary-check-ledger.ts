@@ -9,6 +9,7 @@ import { getDb } from '../db/connection.js';
 import { modeFor } from '../agent/decision-policy.js';
 import type { Answer } from '../agent/decide.js';
 import { recordTruth, SHADOW_REPORT_WINDOW_MS } from '../agent/decision-shadow.js';
+import { pruneRefusalsOtherThan } from './refusal-prune.js';
 
 /** The check's purpose and its three questions, as the decision shadow and B3's policy name them. */
 export const SUMMARY_CHECK_PURPOSE = 'summary_check';
@@ -103,7 +104,7 @@ export function recordRefusedSpan(keys: string[]): void {
     const db = getDb();
     // NB-9: refusals recorded under an earlier summary-writer setting are over (the setting changed): pruned.
     const setting = keys[0]?.split('|')[1];
-    if (setting !== undefined) db.prepare("DELETE FROM healer_state WHERE scope = ? AND key NOT LIKE '%|' || ? || '|%'").run(REFUSED_SCOPE, setting);
+    if (setting !== undefined) pruneRefusalsOtherThan(db, REFUSED_SCOPE, setting);
     const ins = db.prepare('INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms');
     for (const k of keys) ins.run(REFUSED_SCOPE, k, Date.now());
   } catch { /* best-effort: the worst case is one more try */ }
