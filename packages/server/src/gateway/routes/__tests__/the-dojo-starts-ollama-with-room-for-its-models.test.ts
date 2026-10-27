@@ -20,6 +20,7 @@ vi.mock('node:child_process', async (orig) => ({
 
 import { runMigrations } from '../../../db/migrations.js';
 import { setupDepsRouter } from '../setup-deps.js';
+import { getOllamaLock } from '../../../services/ollama-lock.js';
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -27,7 +28,16 @@ beforeEach(() => {
   spawned.calls.length = 0;
   vi.stubGlobal('fetch', vi.fn(async () => new Response('Ollama is running', { status: 200 })));
 });
-afterEach(() => { vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => {
+  // The lock is one per process, and its loadConfig keeps a cached setting when a later test's DB has no
+  // row for it — put it back here, while this test's DB is still open.
+  if (mockDb.current) {
+    mockDb.current.prepare(`INSERT INTO config (key, value) VALUES ('ollama_max_concurrent_models', '1')
+      ON CONFLICT(key) DO UPDATE SET value = '1'`).run();
+    getOllamaLock().reloadConfig();
+  }
+  vi.unstubAllGlobals(); mockDb.current?.close(); mockDb.current = null;
+});
 
 describe('setup starts Ollama with room for the Dojo\'s models', () => {
   it('OLLAMA_MAX_LOADED_MODELS = the embedder + the pair + the lock\'s agent slots (default 1 → 4)', async () => {
