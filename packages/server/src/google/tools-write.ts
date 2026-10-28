@@ -5,6 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { extractGmailBodyText } from './gmail-body.js';
 import { executeGmailLabel } from './gmail-label.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 import { writeToolReceipt } from '../receipts/store.js';
@@ -1322,15 +1323,7 @@ export async function executeGoogleWriteTool(
       const origSubject = headers.find(h => h.name === 'Subject')?.value ?? '';
       const origFrom = headers.find(h => h.name === 'From')?.value ?? '';
 
-      let origBody = '';
-      if (origData?.payload?.body?.data) {
-        origBody = Buffer.from(origData.payload.body.data, 'base64url').toString('utf-8');
-      } else if (origData?.payload?.parts) {
-        const textPart = origData.payload.parts.find(p => p.mimeType === 'text/plain');
-        if (textPart?.body?.data) {
-          origBody = Buffer.from(textPart.body.data, 'base64url').toString('utf-8');
-        }
-      }
+      const origBody = extractGmailBodyText(origData?.payload);
 
       // Pull the original message's attachments so the forward preserves them
       // (Gmail web does this automatically; our prior implementation stripped

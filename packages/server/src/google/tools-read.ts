@@ -8,6 +8,7 @@ import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { outsideSpan } from '../tools/external-content.js';
 import { googleRead } from './client.js';
+import { extractGmailBodyText } from './gmail-body.js';
 import { driveSearchQuery } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 import { executeGmailSearch, fmtEmailDate, GMAIL_BASE } from './gmail-search.js';
@@ -454,15 +455,7 @@ export async function executeGoogleReadTool(
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
       const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
 
-      let body = '';
-      if (data?.payload?.body?.data) {
-        body = Buffer.from(data.payload.body.data, 'base64url').toString('utf-8');
-      } else if (data?.payload?.parts) {
-        const textPart = data.payload.parts.find(p => p.mimeType === 'text/plain');
-        if (textPart?.body?.data) {
-          body = Buffer.from(textPart.body.data, 'base64url').toString('utf-8');
-        }
-      }
+      const body = extractGmailBodyText(data?.payload);
 
       // Phase 3.5 fix — surface attachment IDs so the agent can pass them to
       // gmail_read_attachment. Without this, gmail_read's "Attachments: 3 files"
