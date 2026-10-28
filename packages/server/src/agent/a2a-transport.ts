@@ -2858,23 +2858,3 @@ export async function failJoinPieceForAbandonedAsk(
     });
   }
 }
-/**
- * Helper to build a thread ID from a contextual seed.
- * Consistent thread IDs for the same context (e.g., task pokes)
- * keep related messages grouped together.
- */
-export // CAUTION (FA-C2 class): the id shape is 'thread-' + base36 hash + '-' + seed,
-// so ANY 8-char prefix is 'thread-' plus ONE hash character (~36 buckets) and
-// collides heavily. Matchers must compare the FULL id; never substr(...,1,8).
-// (conversationKey C-2, parkThreadCondition, and a2a-replies all learned this.)
-function makeThreadId(seed: string): string {
-  // Simple deterministic hash, same seed always produces the same thread ID
-  // This lets us group e.g. all pokes for a task into one thread
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    const char = seed.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0; // Convert to 32-bit integer
-  }
-  return `thread-${Math.abs(hash).toString(36)}-${seed.slice(0, 8)}`;
-}

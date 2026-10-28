@@ -382,11 +382,6 @@ export const recoveryRunStreak = new Map<
 // then escalate.
 export const MAX_INLOOP_RECOVERIES_SAME_INPUTS = 2;
 
-// Legacy export — kept so old callers still compile. v2.3.19 code paths
-// use MAX_INLOOP_RECOVERIES_SAME_INPUTS instead. Will be removed once
-// all callers migrate.
-export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
-
 // T81b (NO-DOOMED-DIALS), WIDENED BY T82b (ANSWER-ANYWAY) — which agents have already spent
 // their ONE forced-compaction attempt on a declared-patience exhaustion (`v2/recovery.ts`'s
 // `tryDeclaredPatienceCompactOnceRecovery`, widened by T82b from a pre-dial-refusal-only
