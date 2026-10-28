@@ -1,4 +1,4 @@
-import { KokoroTTS, TextSplitterStream } from 'kokoro-js';
+import { KokoroTTS } from 'kokoro-js';
 import { env as transformersEnv } from '@huggingface/transformers';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -79,7 +79,6 @@ function migrateLegacyKokoroCache(): void {
   }
 }
 
-export const KOKORO_SAMPLE_RATE = 24_000;
 export const DEFAULT_VOICE = 'am_michael';
 
 export type LoadProgress = {
@@ -220,35 +219,6 @@ export interface TtsChunk {
   text: string;
   pcm: Float32Array;
   sampleRate: number;
-}
-
-/**
- * Stream synthesis. Feed text via `splitter.push(...)`; call `splitter.close()`
- * when no more text is coming. Yields one PCM chunk per sentence.
- * Pass an AbortSignal to support barge-in cancellation.
- */
-export async function* synthesizeStream(
-  splitter: TextSplitterStream,
-  voice: string = DEFAULT_VOICE,
-  speed = 1,
-  signal?: AbortSignal,
-): AsyncGenerator<TtsChunk, void, void> {
-  const tts = await loadKokoro();
-  for await (const part of tts.stream(splitter, { voice: voice as keyof typeof tts.voices, speed })) {
-    if (signal?.aborted) {
-      logger.debug('TTS stream aborted by caller');
-      return;
-    }
-    yield {
-      text: part.text,
-      pcm: part.audio.audio,
-      sampleRate: part.audio.sampling_rate,
-    };
-  }
-}
-
-export function createTextSplitter(): TextSplitterStream {
-  return new TextSplitterStream();
 }
 
 /**

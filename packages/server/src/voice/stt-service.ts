@@ -4,7 +4,6 @@ import net from 'node:net';
 import os from 'node:os';
 import { createLogger } from '../logger.js';
 import {
-  DEFAULT_WHISPER,
   WHISPER_MODELS,
   ensureWhisperModel,
   isWhisperInstalled,
@@ -60,7 +59,6 @@ interface SttEngine {
 // pre-engine-abstraction version, just behind the SttEngine interface.
 
 const WHISPER_SERVER_BINARY = '/opt/homebrew/bin/whisper-server';
-const WHISPER_CLI_BINARY = '/opt/homebrew/bin/whisper-cli';
 
 export function isWhisperBinaryAvailable(): boolean {
   return fs.existsSync(WHISPER_SERVER_BINARY);
@@ -564,48 +562,6 @@ async function waitForServerReady(
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-}
-
-// ── CLI fallback (Whisper-only, used by voice-roundtrip.ts) ──
-
-export async function transcribeFileCli(
-  wavPath: string,
-  modelSize: WhisperSize = DEFAULT_WHISPER,
-): Promise<{ text: string; durationMs: number }> {
-  if (!isWhisperInstalled(modelSize)) await ensureWhisperModel(modelSize);
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const proc = spawn(WHISPER_CLI_BINARY, [
-      '-m', whisperPath(modelSize),
-      '-f', wavPath,
-      '--no-timestamps',
-      '--output-txt',
-      '--print-colors=false',
-    ]);
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    proc.on('exit', (code) => {
-      if (code !== 0) {
-        reject(new Error(`whisper-cli exit ${code}: ${stderr}`));
-        return;
-      }
-      const txtPath = wavPath + '.txt';
-      let text = '';
-      try {
-        if (fs.existsSync(txtPath)) {
-          text = fs.readFileSync(txtPath, 'utf-8').trim();
-          fs.unlinkSync(txtPath);
-        } else {
-          text = stdout.split('\n').map((l) => l.trim()).filter(Boolean).join(' ');
-        }
-      } catch {
-        text = stdout.trim();
-      }
-      resolve({ text, durationMs: Date.now() - start });
-    });
-  });
 }
 
 export { pcmFloatToWav } from './tts-service.js';
