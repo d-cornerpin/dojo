@@ -775,8 +775,10 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     try {
-      const result = createPublicShare({ sourcePath, entryFilename });
-      auditLog(agentId, 'share_publicly', sourcePath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
+      // The path the guard approved is the path that gets published — the guard
+      // expanded `~` into absPath, and createPublicShare only accepts absolutes.
+      const result = createPublicShare({ sourcePath: publishGuard.absPath, entryFilename });
+      auditLog(agentId, 'share_publicly', publishGuard.absPath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
       const tunnelLine = result.baseSource === 'tunnel'
         ? 'Cloudflare tunnel is active, this URL is reachable from anywhere on the internet.'
         : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.';
@@ -804,7 +806,7 @@ export const commsHandlers: ToolHandlerMap = {
       content = `Public URL: ${result.url}\n\n${tunnelLine}${assetLine}`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      auditLog(agentId, 'share_publicly', sourcePath, 'error', msg);
+      auditLog(agentId, 'share_publicly', publishGuard.absPath, 'error', msg);
       content = `Error sharing file: ${msg}`;
       isError = true;
     }
