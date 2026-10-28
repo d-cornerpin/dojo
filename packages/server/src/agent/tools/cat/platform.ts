@@ -49,6 +49,7 @@ import { buildChannelInspectReport } from '../../../services/channel-inspect.js'
 import { getUpdateCache, refreshUpdateCache, getUpdateChannel, applyUpdate } from '../../../gateway/routes/update.js';
 import { getCostSummary, getDailySpend } from '../../../costs/tracker.js';
 import { broadcast } from '../../../gateway/ws.js';
+import { coerceNumberArg } from '../pagination.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 export const platformHandlers: ToolHandlerMap = {
@@ -159,7 +160,7 @@ export const platformHandlers: ToolHandlerMap = {
 
   async set_voice({ args }) {
     const voiceArg = typeof args.voice === 'string' ? args.voice : undefined;
-    const speedArg = typeof args.speed === 'number' ? args.speed : undefined;
+    const speedArg = coerceNumberArg(args.speed) ?? undefined;
     if (voiceArg === undefined && speedArg === undefined) {
       return { content: 'Provide a voice and/or a speed to change.', isError: true };
     }

@@ -24,6 +24,7 @@
 
 import { getDb } from '../../../db/connection.js';
 import { vaultRememberInNamespace, vaultSearchInNamespace, resolveAgentNamespace } from '../../../vault/namespaces.js';
+import { coerceNumberArg } from '../pagination.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 export const contactsHandlers: ToolHandlerMap = {
@@ -104,7 +105,8 @@ export const contactsHandlers: ToolHandlerMap = {
     }
     const query = (args.query as string | undefined) ?? '';
     const tag = args.tag as string | undefined;
-    const limit = typeof args.limit === 'number' ? args.limit : 5;
+    const limitArg = coerceNumberArg(args.limit);
+    const limit = limitArg !== null && limitArg >= 1 ? Math.floor(limitArg) : 5;
     const matches = vaultSearchInNamespace({ namespace, query, tag, limit });
     if (matches.length === 0) {
       return { content: `No squad memory entries match in ${namespace}.`, isError: false };
