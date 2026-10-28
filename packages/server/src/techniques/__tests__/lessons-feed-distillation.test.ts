@@ -13,7 +13,7 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
-const deliver = vi.fn(async (_n: unknown, _label: string, _meta?: unknown) => undefined);
+const deliver = vi.fn(async (_n: unknown, _label: string, _meta?: unknown) => ({ delivered: true, threadId: 't' }));
 vi.mock('../../agent/a2a-notice.js', () => ({ deliverA2ANotice: (n: unknown, l: string, m?: unknown) => deliver(n, l, m) }));
 const notice = vi.fn();
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: (a: unknown) => notice(a) }));

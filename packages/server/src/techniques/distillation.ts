@@ -210,6 +210,13 @@ export async function runDistillationCycle(): Promise<void> {
 
   const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
 
+  // K34-fix — the delivery result matters. `deliverA2ANotice` does NOT throw on
+  // refusal; it returns `{ delivered: false, reason, threadId }` (e.g. a missing
+  // Trainer or SEMANTIC_DUPLICATE). A refused batch was received by NOBODY, so the
+  // lessons must NOT be marked fed (they are offered again next cycle) and the owner
+  // must NOT be told "Drafted N technique(s)". `undefined` counts as not delivered.
+  let batchDelivered = false;
+
   if (candidates.length > 0 || lessons.length > 0) {
     const bodies: string[] = [];
     if (candidates.length > 0) {
@@ -230,7 +237,7 @@ export async function runDistillationCycle(): Promise<void> {
       );
     }
     try {
-      await deliverA2ANotice({
+      const res = await deliverA2ANotice({
         intent: 'ASSIGN',
         threadId: uuidv4(),
         requiresResponse: false,
@@ -240,8 +247,17 @@ export async function runDistillationCycle(): Promise<void> {
         toAgent: getTrainerAgentId(),
         fromAgent: 'system',
       }, 'Technique-distillation draft batch to the Trainer', { count: candidates.length, lessons: lessons.length, toAgent: getTrainerAgentId() });
-      if (lessons.length > 0) markLessonsFed(lessons);
-      logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
+      batchDelivered = res?.delivered === true;
+      if (batchDelivered) {
+        if (lessons.length > 0) markLessonsFed(lessons);
+        logger.info('distillation: sent draft batch to Trainer', { count: candidates.length, lessons: lessons.length });
+      } else {
+        logger.warn('distillation: Trainer batch was not delivered', {
+          reason: res?.reason,
+          count: candidates.length,
+          lessons: lessons.length,
+        });
+      }
     } catch (err) {
       logger.error('distillation: Trainer batch failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -266,10 +282,14 @@ export async function runDistillationCycle(): Promise<void> {
   const RETIRE_NAME_CAP = 6;
   if (candidates.length > 0 || retireFlags.length > 0) {
     const lines: string[] = ['Nightly learning pass:'];
-    if (candidates.length > 0) {
+    let hadBullet = false;
+    // K34-fix — only claim drafts were made if the batch actually reached the
+    // Trainer. A refused batch is not a draft, and the owner is not told about one.
+    if (candidates.length > 0 && batchDelivered) {
       lines.push(
         `• Drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns (inert drafts until you promote them).`,
       );
+      hadBullet = true;
     }
     if (retireFlags.length > 0) {
       const named = retireFlags
@@ -283,8 +303,12 @@ export async function runDistillationCycle(): Promise<void> {
         `• Flagged ${retireFlags.length} published technique${retireFlags.length === 1 ? '' : 's'} for you to review (low success rate lately). ` +
         `These are suggestions only, nothing was auto-retired:\n${named}${overflow}`,
       );
+      hadBullet = true;
     }
     lines.push('Want me to promote any drafts or archive any flagged ones? Say the word; otherwise nothing changes.');
+    // K34-fix — if nothing was actually drafted and nothing was flagged, there is
+    // nothing to tell the owner; don't post an empty "Nightly learning pass:".
+    if (!hadBullet) return;
     postAgentNotice({
       toAgentId: getPrimaryAgentId(),
       fromName: 'Learning loop',
