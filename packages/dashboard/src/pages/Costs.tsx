@@ -70,6 +70,7 @@ const OpenRouterBudget = () => {
   const [threshold, setThreshold] = useState('');
   const [savingThreshold, setSavingThreshold] = useState(false);
   const [savedThreshold, setSavedThreshold] = useState(false);
+  const [thresholdError, setThresholdError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -94,12 +95,17 @@ const OpenRouterBudget = () => {
   const handleSaveThreshold = async () => {
     const val = parseFloat(threshold);
     if (isNaN(val) || val < 0) return;
+    setThresholdError(null);
     setSavingThreshold(true);
-    await api.request('/config/openrouter/threshold', {
+    const res = await api.request('/config/openrouter/threshold', {
       method: 'POST',
       body: JSON.stringify({ threshold: val }),
     });
     setSavingThreshold(false);
+    if (!res.ok) {
+      setThresholdError(res.error);
+      return;
+    }
     setSavedThreshold(true);
     setTimeout(() => setSavedThreshold(false), 2000);
   };
@@ -137,7 +143,7 @@ const OpenRouterBudget = () => {
             step="1"
             min="0"
             value={threshold}
-            onChange={(e) => setThreshold(e.target.value)}
+            onChange={(e) => { setThreshold(e.target.value); setThresholdError(null); }}
             placeholder="e.g., 10"
             aria-label="Warning threshold"
           />
@@ -150,6 +156,7 @@ const OpenRouterBudget = () => {
             {savingThreshold ? '...' : 'Save'}
           </button>
           {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+          {thresholdError && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{thresholdError}</span>}
         </span>
       </div>
     </div>
@@ -162,6 +169,7 @@ const DeepSeekBudget = () => {
   const [threshold, setThreshold] = useState('');
   const [savingThreshold, setSavingThreshold] = useState(false);
   const [savedThreshold, setSavedThreshold] = useState(false);
+  const [thresholdError, setThresholdError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -186,12 +194,17 @@ const DeepSeekBudget = () => {
   const handleSaveThreshold = async () => {
     const val = parseFloat(threshold);
     if (isNaN(val) || val < 0) return;
+    setThresholdError(null);
     setSavingThreshold(true);
-    await api.request('/config/deepseek/threshold', {
+    const res = await api.request('/config/deepseek/threshold', {
       method: 'POST',
       body: JSON.stringify({ threshold: val }),
     });
     setSavingThreshold(false);
+    if (!res.ok) {
+      setThresholdError(res.error);
+      return;
+    }
     setSavedThreshold(true);
     setTimeout(() => setSavedThreshold(false), 2000);
   };
@@ -233,7 +246,7 @@ const DeepSeekBudget = () => {
             step="1"
             min="0"
             value={threshold}
-            onChange={(e) => setThreshold(e.target.value)}
+            onChange={(e) => { setThreshold(e.target.value); setThresholdError(null); }}
             placeholder="e.g., 10"
             aria-label="Warning threshold"
           />
@@ -246,6 +259,7 @@ const DeepSeekBudget = () => {
             {savingThreshold ? '...' : 'Save'}
           </button>
           {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+          {thresholdError && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{thresholdError}</span>}
         </span>
       </div>
     </div>
@@ -313,20 +327,29 @@ const BudgetConfigTile = ({
 }: {
   budgets: BudgetData;
   agents: AgentOption[];
-  onUpdateGlobal: (limitUsd: number) => Promise<void>;
-  onUpdateAgent: (agentId: string, limitUsd: number, period: string) => Promise<void>;
+  onUpdateGlobal: (limitUsd: number) => Promise<string | null>;
+  onUpdateAgent: (agentId: string, limitUsd: number, period: string) => Promise<string | null>;
 }) => {
   const [globalLimit, setGlobalLimit] = useState(budgets.global?.limitUsd?.toString() ?? '');
   const [savingGlobal, setSavingGlobal] = useState(false);
   const [savedGlobal, setSavedGlobal] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
   const [agentsOpen, setAgentsOpen] = useState(false);
 
   const handleSaveGlobal = async () => {
     const val = parseFloat(globalLimit);
-    if (isNaN(val) || val < 0) return;
+    if (isNaN(val) || val <= 0) {
+      setGlobalError('Enter an amount above 0.');
+      return;
+    }
+    setGlobalError(null);
     setSavingGlobal(true);
-    await onUpdateGlobal(val);
+    const err = await onUpdateGlobal(val);
     setSavingGlobal(false);
+    if (err !== null) {
+      setGlobalError(err);
+      return;
+    }
     setSavedGlobal(true);
     setTimeout(() => setSavedGlobal(false), 2000);
   };
@@ -359,7 +382,7 @@ const BudgetConfigTile = ({
           step="0.01"
           min="0"
           value={globalLimit}
-          onChange={(e) => setGlobalLimit(e.target.value)}
+          onChange={(e) => { setGlobalLimit(e.target.value); setGlobalError(null); }}
           placeholder="e.g., 300"
           aria-label="Daily budget"
         />
@@ -372,6 +395,7 @@ const BudgetConfigTile = ({
           {savingGlobal ? '...' : 'Save'}
         </button>
         {savedGlobal && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+        {globalError && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{globalError}</span>}
         <span className="toolbar__spacer" />
         <span className="toolbar__label">Per-agent budgets</span>
         <button
@@ -433,19 +457,28 @@ const AgentBudgetRow = ({
   limitUsd: number;
   period: string;
   spentUsd: number;
-  onSave: (agentId: string, limitUsd: number, period: string) => Promise<void>;
+  onSave: (agentId: string, limitUsd: number, period: string) => Promise<string | null>;
 }) => {
   const [limit, setLimit] = useState(limitUsd > 0 ? limitUsd.toString() : '');
   const [selectedPeriod, setSelectedPeriod] = useState(period);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSave = async () => {
     const val = parseFloat(limit);
-    if (isNaN(val) || val < 0) return;
+    if (isNaN(val) || val <= 0) {
+      setError('Enter an amount above 0.');
+      return;
+    }
+    setError(null);
     setSaving(true);
-    await onSave(agentId, val, selectedPeriod);
+    const err = await onSave(agentId, val, selectedPeriod);
     setSaving(false);
+    if (err !== null) {
+      setError(err);
+      return;
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -463,7 +496,7 @@ const AgentBudgetRow = ({
           step="0.01"
           min="0"
           value={limit}
-          onChange={(e) => setLimit(e.target.value)}
+          onChange={(e) => { setLimit(e.target.value); setError(null); }}
           placeholder="--"
           aria-label={`${agentName} budget`}
         />
@@ -486,6 +519,7 @@ const AgentBudgetRow = ({
           {saving ? '...' : 'Set'}
         </button>
         {saved && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>OK</span>}
+        {error && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{error}</span>}
       </span>
     </div>
   );
@@ -679,12 +713,14 @@ export const Costs = () => {
           budgets={budgets}
           agents={agents}
           onUpdateGlobal={async (limitUsd) => {
-            await api.setGlobalBudget(limitUsd);
-            loadData();
+            const res = await api.setGlobalBudget(limitUsd);
+            if (res.ok) loadData();
+            return res.ok ? null : res.error;
           }}
           onUpdateAgent={async (agentId, limitUsd, agentPeriod) => {
-            await api.setAgentBudget(agentId, limitUsd, agentPeriod);
-            loadData();
+            const res = await api.setAgentBudget(agentId, limitUsd, agentPeriod);
+            if (res.ok) loadData();
+            return res.ok ? null : res.error;
           }}
         />
       )}
