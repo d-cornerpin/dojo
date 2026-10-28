@@ -270,20 +270,31 @@ export interface AgentBudget extends Budget {
   agentId: string;
 }
 
-export function getBudgets(): { global: Budget | null; agents: AgentBudget[] } {
+/** The budget row plus what the dashboard's `getBudgets` reads: the spend in the budget's window. */
+export interface BudgetWithSpend extends Budget {
+  spentUsd: number;
+}
+
+export interface AgentBudgetWithSpend extends AgentBudget {
+  spentUsd: number;
+  agentName: string;
+}
+
+export function getBudgets(): { global: BudgetWithSpend | null; agents: AgentBudgetWithSpend[] } {
   const db = getDb();
 
   const globalRow = db.prepare(`
     SELECT id, scope, limit_usd, period, created_at, updated_at FROM budgets WHERE id = 'global_daily'
   `).get() as { id: string; scope: string; limit_usd: number; period: string; created_at: string; updated_at: string } | undefined;
 
-  const globalBudget: Budget | null = globalRow ? {
+  const globalBudget: BudgetWithSpend | null = globalRow ? {
     id: globalRow.id,
     scope: globalRow.scope,
     limitUsd: globalRow.limit_usd,
     period: globalRow.period,
     createdAt: globalRow.created_at,
     updatedAt: globalRow.updated_at,
+    spentUsd: getDailySpend(),
   } : null;
 
   const agentRows = db.prepare(`
@@ -291,15 +302,21 @@ export function getBudgets(): { global: Budget | null; agents: AgentBudget[] } {
     WHERE id LIKE 'agent_%'
   `).all() as Array<{ id: string; scope: string; limit_usd: number; period: string; created_at: string; updated_at: string }>;
 
-  const agents: AgentBudget[] = agentRows.map(r => ({
-    id: r.id,
-    scope: r.scope,
-    limitUsd: r.limit_usd,
-    period: r.period,
-    agentId: r.id.replace('agent_', ''),
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  }));
+  const agents: AgentBudgetWithSpend[] = agentRows.map(r => {
+    const agentId = r.id.replace('agent_', '');
+    const nameRow = db.prepare(`SELECT name FROM agents WHERE id = ?`).get(agentId) as { name: string } | undefined;
+    return {
+      id: r.id,
+      scope: r.scope,
+      limitUsd: r.limit_usd,
+      period: r.period,
+      agentId,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      spentUsd: agentPeriodSpend(agentId, r.period),
+      agentName: nameRow?.name ?? agentId,
+    };
+  });
 
   return { global: globalBudget, agents };
 }
