@@ -2636,6 +2636,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'contact_search',
     description: 'Search the DOJO contacts store by partial match across name, preferred_name, company, role, emails, phones, imessage_handles, tags, and notes. Returns a compact one-line-per-contact list; call contact_get for the full record. Empty query returns the most recently updated contacts.',
     effects: [],
+    fields: { query: { allowEmpty: true } },
     input_schema: {
       type: 'object',
       properties: {
