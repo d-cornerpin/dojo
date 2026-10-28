@@ -64,6 +64,7 @@ import {
 import { recordedInstant } from './message-stamp.js';
 import { PRE_RESET_PAIR_TAG, sessionBoundaryMs } from './session-boundary.js';
 import { recalledRowLabel } from './party-label.js';
+import { ftsSafeQuery } from './fts-query.js';
 import {
   obligationVerdict, liveCommitments, hasCommitmentHistory, openBoardCounts,
   type LiveCommitment, type BoardCounts,
@@ -764,8 +765,7 @@ let lastEmbedDegradeWarnAt = 0;
 function ftsMessageHits(query: string, agentId: string, limit: number): RecallHit[] {
   try {
     const db = getDb();
-    const safe = query.replace(/["']/g, ' ').split(/\s+/).filter((w) => w.length > 2)
-      .slice(0, laneLimit(RECALL_LANE_ID, 'chars', 'queryWords')).join(' ');
+    const safe = ftsSafeQuery(query, laneLimit(RECALL_LANE_ID, 'chars', 'queryWords'));
     if (!safe) return [];
     const rows = db.prepare(
       `SELECT m.id FROM messages_fts fts JOIN messages m ON m.rowid = fts.rowid
