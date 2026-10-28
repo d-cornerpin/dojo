@@ -652,6 +652,11 @@ function escapeGraphSearch(q: string): string {
   return q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/** A value placed inside a single-quoted OData string: the apostrophe is written twice, then the text is URL-encoded. */
+function odataQuoted(value: string): string {
+  return encodeURIComponent(value.replace(/'/g, "''"));
+}
+
 /**
  * Map Graph's "Syntax error:" KQL/$search parser class (e.g. character '-' is
  * not valid at position N) to a corrective tool-error that names the accepted
@@ -882,7 +887,7 @@ export async function executeMicrosoftReadTool(
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
       const window = computeCalendarWindow({ days: daysAhead, timezone: requestedTz, start_date: startDate });
       const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end,isAllDay`,
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${odataQuoted(query)}')&$select=id,subject,start,end,isAllDay`,
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
@@ -1115,7 +1120,7 @@ export async function executeMicrosoftReadTool(
       const prefix = drivePrefix(driveId);
 
       const result = await msGraphRead(
-        `${prefix}root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
+        `${prefix}root/search(q='${odataQuoted(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
         agentId, agentName, 'onedrive_search', { query, maxResults, driveId },
       slot);
       if (!result.ok) return `Error searching OneDrive: ${result.error}`;
