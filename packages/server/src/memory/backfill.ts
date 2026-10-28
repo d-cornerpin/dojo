@@ -110,6 +110,11 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
 
     // Process in batches
     const batchSize = 10;
+
+    // storeEmbedding is best-effort: it swallows every failure and returns void,
+    // so a call that returned may have written NO row. Count the row that landed,
+    // not the call that returned.
+    const stored = db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ?');
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
 
@@ -117,7 +122,12 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
       for (const item of batch) {
         try {
           await storeEmbedding(item.type, item.id, item.agentId, item.content);
-          backfillProgress.completed++;
+          if (stored.get(item.type, item.id)) {
+            backfillProgress.completed++;
+          } else {
+            backfillProgress.failed++;
+            logger.debug('Backfill item not embedded', { type: item.type, id: item.id });
+          }
         } catch (err) {
           backfillProgress.failed++;
           logger.debug('Backfill item failed', {
