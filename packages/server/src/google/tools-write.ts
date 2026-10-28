@@ -1826,11 +1826,17 @@ export async function executeGoogleWriteTool(
       const data = result.data as { spreadsheetId?: string; spreadsheetUrl?: string };
       const sheetId = data?.spreadsheetId;
 
-      // Write headers if provided
+      // Write the header row to the first tab by a bare range (no tab name, so a
+      // non-English default tab name can't make the write fail), and report a
+      // failure instead of claiming the headers are in the sheet.
+      let sheetHeaderNote = '';
       if (sheetId && args.headers) {
         const headers = args.headers as string[];
-        const valuesUrl = `${SHEETS_BASE}/${sheetId}/values/Sheet1!A1?valueInputOption=USER_ENTERED`;
-        await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers }, undefined, slot);
+        const valuesUrl = `${SHEETS_BASE}/${sheetId}/values/A1?valueInputOption=USER_ENTERED`;
+        const headerResult = await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers }, undefined, slot);
+        if (!headerResult.ok) {
+          sheetHeaderNote = ` The spreadsheet exists, but writing the header row failed: ${headerResult.error ?? 'unknown error'}.`;
+        }
       }
 
       const sheetLink = data?.spreadsheetUrl ?? (sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit` : undefined);
@@ -1838,7 +1844,7 @@ export async function executeGoogleWriteTool(
         ? await shareCreatedFileWithOwner(sheetId, kind, slot, resolved.account.email, agentId, agentName)
         : '';
       const sheetTrailer = sheetLink ? '\n\nGive the user this link so they can open the sheet.' : '';
-      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetOwnerNote}${sheetTrailer}`;
+      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetHeaderNote}${sheetOwnerNote}${sheetTrailer}`;
     }
 
     case 'sheets_append': {
