@@ -65,6 +65,31 @@ import { activeRuns } from '../agent/shared-state.js';
 
 const logger = createLogger('scheduler');
 
+// ── The scheduler's own advance call sites build a `ScheduledTask` from a `work` row's
+// projected columns (`scheduleRowColumns`). The row carries its OWN declared zone (`tz`), and
+// `engine.calculateNextRun` reads it (`task.tz`, falling back to the box zone) — but these
+// literals left `tz` out, so a reminder created in its own zone ("9:00 in Auckland") drifted by
+// the zone difference after its first fire. One builder for the shared fields, per-site overrides.
+function scheduledTaskFromRow(row: Record<string, unknown>, over: Partial<ScheduledTask> = {}): ScheduledTask {
+  return {
+    id: row.id as string,
+    scheduled_start: row.scheduled_start as string | null,
+    repeat_interval: row.repeat_interval as number | null,
+    repeat_unit: row.repeat_unit as string | null,
+    repeat_end_type: row.repeat_end_type as string | null,
+    repeat_end_value: row.repeat_end_value as string | null,
+    run_count: (row.run_count as number) ?? 0,
+    is_paused: (row.is_paused as number) ?? 0,
+    last_run_at: row.last_run_at as string | null,
+    next_run_at: row.next_run_at as string | null,
+    schedule_status: row.schedule_status as string,
+    repeat_days_of_week: row.repeat_days_of_week as string | null,
+    anchor_time: row.anchor_time as string | null,
+    tz: row.tz as string | null,
+    ...over,
+  };
+}
+
 // ── Anchor-time / missed-runs helpers (v2.5.45) ──
 
 /**
@@ -667,21 +692,12 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
       const nowIso = new Date().toISOString();
       // Same computation as the model tool's SKIP action: pretend a run
       // just happened so the walk lands strictly on the next FUTURE anchor.
-      const nextRun = calculateNextRun({
-        id: taskId,
-        scheduled_start: task.scheduled_start as string | null,
-        repeat_interval: task.repeat_interval as number | null,
-        repeat_unit: task.repeat_unit as string | null,
-        repeat_end_type: task.repeat_end_type as string | null,
-        repeat_end_value: task.repeat_end_value as string | null,
-        run_count: (task.run_count as number) ?? 0,
+      const nextRun = calculateNextRun(scheduledTaskFromRow(task, {
         is_paused: 0,
         last_run_at: nowIso,
         next_run_at: null,
         schedule_status: 'waiting',
-        repeat_days_of_week: task.repeat_days_of_week as string | null,
-        anchor_time: task.anchor_time as string | null,
-      });
+      }));
 
       // Informational skip count, same approximation the detector used.
       const intervalMs = intervalApproxMs(task.repeat_unit as string | null, task.repeat_interval as number | null);
@@ -953,21 +969,13 @@ export async function checkScheduledTasks(): Promise<void> {
     // occurrence is a durable row, a crashed fire can no longer LOSE it either.
     const claimedOccurrenceMs = occurrenceOf(taskRow);
     const claimedOccurrence = taskRow.next_run_at as string;
-    const nextAtFire = calculateNextRun({
-      id: taskId,
-      scheduled_start: taskRow.scheduled_start as string | null,
-      repeat_interval: repeatInterval,
-      repeat_unit: repeatUnit,
-      repeat_end_type: taskRow.repeat_end_type as string | null,
-      repeat_end_value: taskRow.repeat_end_value as string | null,
+    const nextAtFire = calculateNextRun(scheduledTaskFromRow(taskRow, {
       run_count: runNumber, // count the run being fired now, so end conditions land exactly
       is_paused: 0,
       last_run_at: now, // the slot firing now is spent; walk to the one after it
       next_run_at: null,
       schedule_status: 'waiting',
-      repeat_days_of_week: taskRow.repeat_days_of_week as string | null,
-      anchor_time: taskRow.anchor_time as string | null,
-    });
+    }));
     // The occurrence id IS the claim token. The state assignment stays outside it — that is
     // `transition()`'s — and runs AFTER the claim is won, so two processes still cannot both
     // fire an occurrence.
@@ -1282,21 +1290,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 
   // Get updated task
   const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE w.id = ?`).get(taskId) as Record<string, unknown>;
-  const scheduledTask: ScheduledTask = {
-    id: task.id as string,
-    scheduled_start: task.scheduled_start as string | null,
-    repeat_interval: task.repeat_interval as number | null,
-    repeat_unit: task.repeat_unit as string | null,
-    repeat_end_type: task.repeat_end_type as string | null,
-    repeat_end_value: task.repeat_end_value as string | null,
-    run_count: (task.run_count as number) ?? 0,
-    is_paused: (task.is_paused as number) ?? 0,
-    last_run_at: now,
-    next_run_at: task.next_run_at as string | null,
-    schedule_status: task.schedule_status as string,
-    repeat_days_of_week: task.repeat_days_of_week as string | null,
-    anchor_time: task.anchor_time as string | null,
-  };
+  const scheduledTask = scheduledTaskFromRow(task, { last_run_at: now });
 
   // D21 advance-at-fire: the NEXT occurrence was already computed and
   // written when this run's occurrence was claimed. Honor the stored value;
@@ -1915,21 +1909,11 @@ function recoverMissingNextRun(taskId: string): void {
   if (task.next_run_at) return; // raced with another recovery path
   if (task.is_paused) return;
 
-  const scheduledTask: ScheduledTask = {
-    id: task.id as string,
-    scheduled_start: task.scheduled_start as string | null,
-    repeat_interval: task.repeat_interval as number | null,
-    repeat_unit: task.repeat_unit as string | null,
-    repeat_end_type: task.repeat_end_type as string | null,
-    repeat_end_value: task.repeat_end_value as string | null,
-    run_count: (task.run_count as number) ?? 0,
+  const scheduledTask = scheduledTaskFromRow(task, {
     is_paused: 0,
-    last_run_at: task.last_run_at as string | null,
     next_run_at: null,
     schedule_status: (task.schedule_status as string) ?? 'waiting',
-    repeat_days_of_week: task.repeat_days_of_week as string | null,
-    anchor_time: task.anchor_time as string | null,
-  };
+  });
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
@@ -2018,21 +2002,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
     return;
   }
 
-  const scheduledTask: ScheduledTask = {
-    id: task.id as string,
-    scheduled_start: task.scheduled_start as string | null,
-    repeat_interval: task.repeat_interval as number | null,
-    repeat_unit: task.repeat_unit as string | null,
-    repeat_end_type: task.repeat_end_type as string | null,
-    repeat_end_value: task.repeat_end_value as string | null,
-    run_count: (task.run_count as number) ?? 0,
-    is_paused: (task.is_paused as number) ?? 0,
-    last_run_at: task.last_run_at as string | null,
-    next_run_at: task.next_run_at as string | null,
-    schedule_status: task.schedule_status as string,
-    repeat_days_of_week: task.repeat_days_of_week as string | null,
-    anchor_time: task.anchor_time as string | null,
-  };
+  const scheduledTask = scheduledTaskFromRow(task);
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
