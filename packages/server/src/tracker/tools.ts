@@ -2603,7 +2603,13 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (priority !== undefined) updates.priority = priority;
     if (notes !== undefined) updates.notes = notes;
 
-    const task = updateTask(taskId, updates);
+    // A goal-only edit has already written its change above (the goal went
+    // through the attribute door with its own observation), so `updates` is
+    // empty here. An empty patch is the door's `no_change`/`empty-patch`, which
+    // updateTask() reports exactly like a vanished row — calling it on this path
+    // would answer "was deleted" about the row we just updated. Read the row
+    // back instead; the deleted answer stays reserved for a row truly gone.
+    const task = Object.keys(updates).length === 0 ? getTask(taskId) : updateTask(taskId, updates);
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
@@ -2708,6 +2714,9 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
 
     const changed: string[] = [];
     for (const k of Object.keys(updates)) changed.push(k);
+    // The goal-only edit changed the goal; `updates` never names it because it
+    // was written above, with its own observation. Name it on the reply.
+    if (changed.length === 0 && goal !== undefined) changed.push('goal');
 
     const editParts = [
       `[OK] task_id=${task.id}`,
