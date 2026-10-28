@@ -9,7 +9,7 @@ import {
   deleteContact,
   describeContacts,
   findMatchingContact,
-  getContactById,
+  getContactByIdOrPrefix,
   listContacts,
   searchContacts,
   updateContact,
@@ -75,11 +75,7 @@ export function executeContactList(args: Record<string, unknown>): string {
 export function executeContactGet(args: Record<string, unknown>): string {
   const id = typeof args.contact_id === 'string' ? args.contact_id : '';
   if (!id) return 'Error: contact_id is required.';
-  let record = getContactById(id);
-  if (!record) {
-    const candidates = listContacts({ limit: 200 });
-    record = candidates.find(c => c.id.startsWith(id)) ?? null;
-  }
+  const record = getContactByIdOrPrefix(id);
   if (!record) return `Error: no contact with id "${id}".`;
   return formatFull(record);
 }
@@ -134,11 +130,7 @@ export function executeContactUpdate(agentId: string, args: Record<string, unkno
     notes: typeof args.notes === 'string' ? args.notes : undefined,
     tags: asStringArray(args.tags),
   };
-  let record = getContactById(id);
-  if (!record) {
-    const candidates = listContacts({ limit: 200 });
-    record = candidates.find(c => c.id.startsWith(id)) ?? null;
-  }
+  const record = getContactByIdOrPrefix(id);
   if (!record) return `Error: no contact with id "${id}".`;
   const updated = updateContact(record.id, patch, agentId, mode);
   if (!updated) return `Error: contact ${record.id} disappeared mid-update.`;
@@ -148,11 +140,7 @@ export function executeContactUpdate(agentId: string, args: Record<string, unkno
 export function executeContactForget(args: Record<string, unknown>): string {
   const id = typeof args.contact_id === 'string' ? args.contact_id : '';
   if (!id) return 'Error: contact_id is required.';
-  let record = getContactById(id);
-  if (!record) {
-    const candidates = listContacts({ limit: 200 });
-    record = candidates.find(c => c.id.startsWith(id)) ?? null;
-  }
+  const record = getContactByIdOrPrefix(id);
   if (!record) return `Error: no contact with id "${id}".`;
   const ok = deleteContact(record.id);
   return ok ? `Contact "${record.displayName}" (id=${record.id.slice(0, 8)}) deleted.` : `Error: delete failed for ${record.id}.`;

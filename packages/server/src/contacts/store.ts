@@ -95,6 +95,19 @@ export function getContactById(id: string): ContactRecord | null {
   return row ? rowToRecord(row) : null;
 }
 
+/** Find a contact by its full id, or by an id prefix that matches exactly one contact. */
+export function getContactByIdOrPrefix(idOrPrefix: string): ContactRecord | null {
+  const text = idOrPrefix.trim();
+  if (!text) return null;
+  const exact = getContactById(text);
+  if (exact) return exact;
+  const like = `${text.replace(/[\\%_]/g, (ch) => '\\' + ch)}%`;
+  const rows = getDb()
+    .prepare("SELECT * FROM contacts WHERE id LIKE ? ESCAPE '\\' LIMIT 2")
+    .all(like) as ContactRow[];
+  return rows.length === 1 ? rowToRecord(rows[0]) : null;
+}
+
 export function listContacts(opts: { limit?: number; offset?: number; sortBy?: 'name' | 'company' | 'updated'; sortDir?: 'asc' | 'desc' } = {}): ContactRecord[] {
   const limit = Math.max(1, Math.min(500, opts.limit ?? 200));
   const offset = Math.max(0, opts.offset ?? 0);
