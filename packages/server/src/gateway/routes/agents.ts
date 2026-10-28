@@ -356,15 +356,6 @@ agentsRouter.put('/:id', async (c) => {
   const updates: string[] = [];
   const params: unknown[] = [];
 
-  if (typeof body.name === 'string' && body.name.trim()) {
-    // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `name = ?` in the batch below, one of
-    // THREE places the tree changed a display name — and a stored soul seeded with the old name
-    // stayed stale after every one of them. `renameAgent` writes the row, carries the platform
-    // role name with it (this card's own `saveName` used to make that second call itself, in
-    // the dashboard, where it could drift), and re-fills the souls that named the agent.
-    renameAgent(id, body.name.trim());
-  }
-
   if (typeof body.modelId === 'string') {
     if (body.modelId === 'auto') {
       updates.push("model_id = 'auto'");
@@ -376,14 +367,6 @@ agentsRouter.put('/:id', async (c) => {
       updates.push('model_id = ?');
       params.push(body.modelId);
     }
-  }
-
-  if (typeof body.systemPrompt === 'string') {
-    // UX-REPAIR T40: the same door the card READS through, so an edit reaches the prompt the
-    // model is actually given. Before this, a PM/trainer edit landed in a `role='system'`
-    // message row that the assembler's `tailRender` drops on the floor — the owner could
-    // rewrite his project manager's soul and change nothing.
-    writeAgentPromptSurface(id, body.systemPrompt);
   }
 
   if (body.permissions !== undefined) {
@@ -506,6 +489,26 @@ agentsRouter.put('/:id', async (c) => {
       updates.push('created_by_kind = ?');
       params.push(kind);
     }
+  }
+
+  // ── THE RENAME AND THE PROMPT WRITE, AFTER EVERY 400 DOOR (246) ──
+  // Both used to run before the model-exists, grants and silent-window refusals, so a Save
+  // carrying a new name or soul together with a value a later door refused came back 400 with
+  // half the edit applied. Nothing is written until every check that can answer 400 has passed.
+  if (typeof body.name === 'string' && body.name.trim()) {
+    // UX-REPAIR T50: ONE RENAME DOOR. This was an inline `name = ?` in the batch below, one of
+    // THREE places the tree changed a display name — and a stored soul seeded with the old name
+    // stayed stale after every one of them. `renameAgent` writes the row, carries the platform
+    // role name with it (this card's own `saveName` used to make that second call itself, in
+    // the dashboard, where it could drift), and re-fills the souls that named the agent.
+    renameAgent(id, body.name.trim());
+  }
+  if (typeof body.systemPrompt === 'string') {
+    // UX-REPAIR T40: the same door the card READS through, so an edit reaches the prompt the
+    // model is actually given. Before this, a PM/trainer edit landed in a `role='system'`
+    // message row that the assembler's `tailRender` drops on the floor — the owner could
+    // rewrite his project manager's soul and change nothing.
+    writeAgentPromptSurface(id, body.systemPrompt);
   }
 
   if (updates.length > 0) {
