@@ -18,6 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { outlookAddressingFacts } from './mail-inbound-facts.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
@@ -256,7 +257,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
 
     const filter = s.lastCheckedAt ? `receivedDateTime gt ${s.lastCheckedAt}` : null;
     const filterClause = filter ? `&$filter=${encodeURIComponent(filter)}` : '';
-    const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId&$orderby=receivedDateTime desc`;
+    const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId,toRecipients,ccRecipients&$orderby=receivedDateTime desc`;
 
     const result = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter, account: accountId }, accountId);
 
@@ -266,7 +267,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       return;
     }
 
-    const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string; conversationId?: string }> };
+    const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string; conversationId?: string; toRecipients?: Array<{ emailAddress?: { name?: string; address?: string } }>; ccRecipients?: Array<{ emailAddress?: { name?: string; address?: string } }> }> };
     if (!data?.value || data.value.length === 0) {
       s.lastCheckedAt = pollStartIso;
       saveLastCheckedAt(accountId, pollStartIso);
@@ -311,6 +312,11 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       // sender. User mailboxes are the human's mail — surface, never reply for them.
       const fromAddr = fromAddress.includes('@') ? fromAddress.toLowerCase() : '';
 
+      // 197: the email's To/Cc addressing facts — which list the watched mailbox sits
+      // on (To, Cc, or neither) — are collected here and stored on the structured meta.
+      // The notice text does not change; nothing consumes the field yet.
+      const mailAddressing = outlookAddressingFacts(msg, (kind === 'agent' ? [view.email, ...selfIdentities] : [view.email]).filter((a): a is string => !!a));
+
       // Requirement: the agent's own outbound must never wake it (cost plus
       // reply-loop risk). Outlook polls me/mailFolders/inbox, so unlike Gmail
       // there is no SENT label to lean on; the SENDER address is the decisive
@@ -353,6 +359,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         emailService: 'outlook' as const,
         emailAccount: notifyAccount,
         emailSubject: subject,
+        mailAddressing,
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this watcher just computed — never re-derived. recordInboundMeta
