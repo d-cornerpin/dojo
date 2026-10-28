@@ -3746,6 +3746,7 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   } catch (err) {
     anthWatchdog.finish();
     if (streamWasCutByWatchdog(anthWatchdog, params.abortSignal)) {
+      recordProviderError(modelInfo.providerId);
       const code = streamTimeoutCode(anthWatchdog, anthPatience);
       const msg = `${streamTimeoutPhrase(anthWatchdog, anthPatience)}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)${declaredPatienceClause(anthWatchdog, anthPatience, inputEstimate)}`;
       logger.warn(`Anthropic call aborted by stream watchdog: ${msg}`, {}, agentId);
