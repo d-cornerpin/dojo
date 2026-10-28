@@ -443,6 +443,8 @@ export function stopTeamsWatcher(): void {
     }
     chatLastMessageAt.clear();
     membersFetched.clear();
+    ownUserId = null;
+    userEmails.clear();
     logger.info('Teams watcher stopped');
   }
 }
