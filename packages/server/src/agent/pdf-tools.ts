@@ -561,16 +561,21 @@ async function extractPages(inputPath: string, pageIndices: number[], outputPath
   return { pageCount: pageIndices.length };
 }
 
-async function rotatePages(inputPath: string, rotations: Array<{ page: number; degrees: number }>, outputPath: string): Promise<void> {
+async function rotatePages(inputPath: string, rotations: Array<{ page: number; degrees: number }>, outputPath: string): Promise<{ rotated: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = await loadPdf(inputPath) as any;
   const total = src.getPageCount();
+  let rotated = 0;
   for (const r of rotations) {
     const idx = r.page >= total ? r.page - 1 : r.page; // tolerate 1-based
     if (idx < 0 || idx >= total) continue;
     src.getPage(idx).setRotation(degrees(r.degrees));
+    rotated++;
   }
+  // Not one rotation applied: write no copy, so a refusal leaves no file.
+  if (rotated === 0) return { rotated };
   effectFs.writeFileSync(outputPath, await src.save());
+  return { rotated };
 }
 
 async function reorderPages(inputPath: string, newOrder: number[], outputPath: string): Promise<void> {
@@ -586,19 +591,26 @@ async function reorderPages(inputPath: string, newOrder: number[], outputPath: s
   effectFs.writeFileSync(outputPath, await out.save());
 }
 
-async function deletePages(inputPath: string, removeIndices: number[], outputPath: string): Promise<{ pageCount: number }> {
+async function deletePages(
+  inputPath: string,
+  removeIndices: number[],
+  outputPath: string,
+): Promise<{ pageCount: number; removed: number; total: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = await loadPdf(inputPath) as any;
   const total = src.getPageCount();
   const toRemove = new Set(normalizePageList(removeIndices, total));
   const keep: number[] = [];
   for (let i = 0; i < total; i++) if (!toRemove.has(i)) keep.push(i);
+  const removed = total - keep.length;
+  // Nothing matched: write no copy, so a refusal leaves no file.
+  if (removed === 0) return { pageCount: keep.length, removed, total };
   const out = await PDFDocument.create();
   const copied = await out.copyPages(src, keep);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const page of copied) out.addPage(page);
   effectFs.writeFileSync(outputPath, await out.save());
-  return { pageCount: keep.length };
+  return { pageCount: keep.length, removed, total };
 }
 
 async function watermarkPdf(
@@ -995,8 +1007,9 @@ export async function executePdfTool(
           if (r.degrees % 90 !== 0) return `Error: rotation must be a multiple of 90; got ${r.degrees}.`;
         }
         const out = resolveOutputPath(agentId, outFile);
-        await rotatePages(p, rotations, out);
-        return `Rotated ${rotations.length} page(s) → ${out}.`;
+        const { rotated } = await rotatePages(p, rotations, out);
+        if (rotated === 0) return 'Error: none of the requested pages exist in this PDF (indices are zero-based), so nothing was rotated.';
+        return `Rotated ${rotated} page(s) → ${out}.`;
       }
       case 'pdf_reorder_pages': {
         const p = args.path as string;
@@ -1015,8 +1028,11 @@ export async function executePdfTool(
         if (!p || !pages || pages.length === 0 || !outFile) return 'Error: path, pages, and output_filename are required.';
         if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
-        const { pageCount } = await deletePages(p, pages, out);
-        return `Deleted ${pages.length} page(s); ${pageCount} remain → ${out}.`;
+        const { pageCount, removed, total } = await deletePages(p, pages, out);
+        if (removed === 0) {
+          return `Error: none of the pages ${JSON.stringify(pages)} exist in this ${total}-page PDF (indices are zero-based), so nothing was deleted.`;
+        }
+        return `Deleted ${removed} page(s); ${pageCount} remain → ${out}.`;
       }
       case 'pdf_watermark': {
         const p = args.path as string;
