@@ -26,6 +26,7 @@ import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.j
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { gmailAddressingFacts } from './mail-inbound-facts.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
@@ -330,7 +331,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         continue;
       }
 
-      const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
+      const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Authentication-Results`;
       const detail = await googleRead(detailUrl, 'system', 'Gmail Watcher', 'gmail_read', { messageId: msg.id, account: accountId }, accountId);
 
       if (!detail.ok) {
@@ -346,6 +347,12 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       };
 
       const headers = msgData?.payload?.headers ?? [];
+      // P44/t280: who the mail went to (To/Cc) and where the watched mailbox sits,
+      // plus the provider's own Authentication-Results, all folded into one fact
+      // that rides the inbound_meta. For an agent mailbox the agent's own identities
+      // count as "own"; a user mailbox is the owner's inbox, so only its own address
+      // counts there.
+      const mailAddressing = gmailAddressingFacts(headers, (kind === 'agent' ? [accountEmail, ...selfIdentities] : [accountEmail]).filter((a): a is string => !!a));
       const from = headers.find(h => h.name === 'From')?.value ?? 'Unknown sender';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
@@ -412,6 +419,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         emailService: 'gmail' as const,
         emailAccount: notifyAccount,
         emailSubject: subject,
+        mailAddressing,
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this watcher just computed — never re-derived. recordInboundMeta
