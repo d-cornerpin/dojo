@@ -1306,7 +1306,7 @@ const CreateTaskModal = ({
 
 // ── Schedule Editor for Task Detail Panel ──
 
-const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
+export const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
   const [schedule, setSchedule] = useState<ScheduleConfig>({
     scheduledStart: task.scheduledStart,
     repeatInterval: task.repeatInterval,
@@ -1318,10 +1318,12 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
   });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleChange = (config: ScheduleConfig) => {
     setSchedule(config);
     setDirty(true);
+    setSaveError(null);
   };
 
   const handleSave = async () => {
@@ -1340,9 +1342,16 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
       body.scheduled_start = null;
     }
 
-    await api.updateTask(task.id, body as Parameters<typeof api.updateTask>[1]);
-    setDirty(false);
+    setSaveError(null);
+    const res = await api.updateTask(task.id, body as Parameters<typeof api.updateTask>[1]);
     setSaving(false);
+    if (!res.ok) {
+      // The server refused the schedule: keep the owner's edit on screen and
+      // show why, instead of discarding it and reloading the old one.
+      setSaveError(res.error);
+      return;
+    }
+    setDirty(false);
     onUpdate();
   };
 
@@ -1374,10 +1383,13 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
         )}
 
         {dirty && (
-          <button onClick={handleSave} disabled={saving}
-            className="glass-btn glass-btn-primary text-xs mt-3 w-full py-2">
-            {saving ? 'Saving...' : 'Save Schedule'}
-          </button>
+          <>
+            {saveError && <p className="text-xs text-cp-coral mt-2">{saveError}</p>}
+            <button onClick={handleSave} disabled={saving}
+              className="glass-btn glass-btn-primary text-xs mt-3 w-full py-2">
+              {saving ? 'Saving...' : 'Save Schedule'}
+            </button>
+          </>
         )}
       </div>
     </div>
