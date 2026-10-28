@@ -9,7 +9,7 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
@@ -933,13 +933,16 @@ const specToDraft = (spec: GenerationParamSpec): Record<string, ParamFieldDraft>
   return out;
 };
 
-const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
+export const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
   const toast = useToast();
   const spec = model.generationParams;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, ParamFieldDraft>>(
     spec ? specToDraft(spec) : {},
   );
+  useEffect(() => {
+    setDraft(spec ? specToDraft(spec) : {});
+  }, [spec]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -1120,13 +1123,16 @@ const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSaved: () 
 // to null and lets the family seed re-apply on the next backfill.
 type VoiceDraft = { id: string; description: string; gender: 'male' | 'female' | 'neutral' };
 
-const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
+export const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
   const toast = useToast();
   const catalog = model.voiceCatalog;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<VoiceDraft[]>(
     catalog ? catalog.map((v) => ({ id: v.id, description: v.description, gender: v.gender })) : [],
   );
+  useEffect(() => {
+    setDraft(catalog ? catalog.map((v) => ({ id: v.id, description: v.description, gender: v.gender })) : []);
+  }, [catalog]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
