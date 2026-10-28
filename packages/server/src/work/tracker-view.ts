@@ -496,12 +496,6 @@ export const awaitingUserVerdictExpr = (a: string): string =>
   `(CASE WHEN COALESCE(${lastEvent(a, WORK_EVENT.userVerdictRequested, 'id')}, -1)`
   + ` > COALESCE(${lastEvent(a, WORK_EVENT.userVerdictCleared, 'id')}, -1) THEN 1 ELSE 0 END)`;
 
-/** `user_verdict_requested_at` — the request's own instant, and NULL once cleared, which is
- *  exactly what the column did. */
-export const userVerdictRequestedAtExpr = (a: string): string =>
-  `CASE WHEN ${awaitingUserVerdictExpr(a)} = 1`
-  + ` THEN ${msToText(lastEvent(a, WORK_EVENT.userVerdictRequested))} ELSE NULL END`;
-
 /** `revert_count` — a COUNT of thrown-back claims since the last reset, never a maintained
  *  integer. `work/store.ts:revertCount()` is the same count without the reset window; this
  *  expression is the one the tracker's own surfaces read because the legacy column WAS
