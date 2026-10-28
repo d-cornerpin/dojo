@@ -137,6 +137,13 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longPaused) {
+      // t261 (F4): same cause check as the daily-cycle fixer. A clock is not evidence a
+      // declared-patience refusal cleared, so the honest `paused` status stays in front of the owner.
+      const mayPaused = cooldownSweepMayRecover(a.id);
+      if (!mayPaused.ok) {
+        logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: a.id, why: mayPaused.why });
+        continue;
+      }
       writeAgentStatus(a.id, 'idle');
       broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
       logger.info('Frequent auto-fix: resumed long-paused agent', {
@@ -154,6 +161,13 @@ export function runFrequentAutoFixes(): void {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     for (const a of longErrored) {
+      // t261 (F4): same cause check as the daily-cycle fixer. A clock is not evidence a
+      // declared-patience refusal cleared, so the honest `error` status stays in front of the owner.
+      const mayError = cooldownSweepMayRecover(a.id);
+      if (!mayError.ok) {
+        logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: a.id, why: mayError.why });
+        continue;
+      }
       writeAgentStatus(a.id, 'idle');
       broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
       logger.info('Frequent auto-fix: reset long-errored agent', {
