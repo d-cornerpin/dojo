@@ -29,6 +29,7 @@ import { getEffectiveTranscriptionModel, type LocalTranscriptionEngine } from '.
 import { transcribeBuffer as localTranscribe, isWhisperBinaryAvailable } from '../voice/stt-service.js';
 import { DEFAULT_WHISPER } from '../voice/model-manager.js';
 import { phasedTransferDeadline } from './transfer-deadline.js';
+import { openAiCompatibleUrl } from './openai-compatible-url.js';
 
 // Audio length (in seconds, derived from 16 kHz mono PCM WAV size) beyond
 // which we transparently fall back from Moonshine to Whisper for local
@@ -314,12 +315,7 @@ async function dialTranscribeCloud(
   const providerRow = db.prepare('SELECT base_url FROM providers WHERE id = ?').get(providerId) as
     | { base_url: string | null }
     | undefined;
-  const baseUrl = (providerRow?.base_url ?? 'https://api.openai.com').replace(/\/+$/, '');
-  const endpoint = baseUrl.toLowerCase().endsWith('/api')
-    ? `${baseUrl}/v1/audio/transcriptions`
-    : baseUrl.toLowerCase().endsWith('/api/v1')
-      ? `${baseUrl}/audio/transcriptions`
-      : `${baseUrl}/v1/audio/transcriptions`;
+  const endpoint = openAiCompatibleUrl(providerRow?.base_url, 'audio/transcriptions');
 
   const start = Date.now();
   try {

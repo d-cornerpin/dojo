@@ -33,6 +33,7 @@ import { getProviderCredential } from '../config/loader.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
 import { idleStreamDeadline } from './idle-stream-deadline.js';
+import { openAiCompatibleUrl } from './openai-compatible-url.js';
 
 const logger = createLogger('audio-generation');
 
@@ -92,10 +93,7 @@ interface ProviderRow { id: string; type: string; base_url: string | null; }
 interface ModelRow { id: string; api_model_id: string; provider_id: string; }
 
 function resolveChatCompletionsEndpoint(baseUrl: string | null): string {
-  const root = (baseUrl ?? 'https://api.openai.com').replace(/\/+$/, '');
-  if (root.toLowerCase().endsWith('/api')) return `${root}/v1/chat/completions`;
-  if (root.toLowerCase().endsWith('/api/v1')) return `${root}/chat/completions`;
-  return `${root}/v1/chat/completions`;
+  return openAiCompatibleUrl(baseUrl, 'chat/completions');
 }
 
 /** Wrap raw little-endian PCM16 samples in a canonical 44-byte WAV header. */

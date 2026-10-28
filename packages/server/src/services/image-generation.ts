@@ -31,6 +31,7 @@ import { getProviderCredential } from '../config/loader.js';
 import { imagePixelDimensions } from '../memory/budget.js';
 import { openAgentCall, STOPPED_BY_USER, type AgentCallSlot } from '../agent/abortable-call.js';
 import { homeDir } from '../home.js';
+import { openAiCompatibleUrl } from './openai-compatible-url.js';
 
 const logger = createLogger('image-gen');
 
@@ -93,12 +94,9 @@ interface ModelRow {
 }
 
 function resolveChatCompletionsEndpoint(baseUrl: string | null): string {
-  const root = (baseUrl ?? 'https://api.openai.com').replace(/\/+$/, '');
   // Common OpenRouter base is `https://openrouter.ai/api`; others may be
   // `.../api/v1` or bare root.
-  if (root.toLowerCase().endsWith('/api/v1')) return `${root}/chat/completions`;
-  if (root.toLowerCase().endsWith('/api')) return `${root}/v1/chat/completions`;
-  return `${root}/v1/chat/completions`;
+  return openAiCompatibleUrl(baseUrl, 'chat/completions');
 }
 
 // Pixel dimensions from a raw image buffer, by sniffing the file magic.
