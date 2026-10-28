@@ -375,42 +375,59 @@ const NumbersSection = ({ config, reload }: { config: api.TwilioConfigDto; reloa
   );
 };
 
-const VoiceSettingsSection = ({ config, onPatch }: { config: api.TwilioConfigDto; onPatch: (p: api.TwilioSettingsPatchDto) => Promise<void> }) => (
-  <div className="border-t border-ui/[0.06] pt-3 space-y-2">
-    <h4 className="text-xs font-medium text-ui/70 uppercase tracking-wider">Voice settings</h4>
-    <FieldRow label="Unknown caller action">
-      <select
-        value={config.voiceUnknownCallerAction}
-        onChange={e => onPatch({ voiceUnknownCallerAction: e.target.value as 'reject' | 'voicemail' | 'agent' })}
-        className="glass-select text-xs"
-      >
-        <option value="reject">Reject (drop the call)</option>
-        <option value="voicemail">Voicemail (greeting + transcribe message)</option>
-        <option value="agent">Connect to agent (anyone can reach your agent)</option>
-      </select>
-    </FieldRow>
-    <FieldRow label="Max call duration (minutes)">
-      <input
-        type="number"
-        min={1}
-        max={120}
-        value={config.voiceMaxMinutesPerCall}
-        onChange={e => onPatch({ voiceMaxMinutesPerCall: Number(e.target.value) })}
-        className="glass-input w-24 text-xs"
-      />
-    </FieldRow>
-    {config.voiceUnknownCallerAction === 'voicemail' && (
-      <FieldRow label="Voicemail greeting">
-        <textarea
-          value={config.voiceVoicemailGreeting}
-          onChange={e => onPatch({ voiceVoicemailGreeting: e.target.value })}
-          rows={3}
-          className="glass-textarea w-full text-xs"
+export const VoiceSettingsSection = ({ config, onPatch }: { config: api.TwilioConfigDto; onPatch: (p: api.TwilioSettingsPatchDto) => Promise<void> }) => {
+  // The PATCH answer replaces `config`, so these two fields type into a local
+  // draft and save on blur — otherwise React puts the old value back after
+  // every key press and each keystroke is a server call.
+  const [minutes, setMinutes] = useState(String(config.voiceMaxMinutesPerCall));
+  const [greeting, setGreeting] = useState(config.voiceVoicemailGreeting);
+  useEffect(() => setMinutes(String(config.voiceMaxMinutesPerCall)), [config.voiceMaxMinutesPerCall]);
+  useEffect(() => setGreeting(config.voiceVoicemailGreeting), [config.voiceVoicemailGreeting]);
+  return (
+    <div className="border-t border-ui/[0.06] pt-3 space-y-2">
+      <h4 className="text-xs font-medium text-ui/70 uppercase tracking-wider">Voice settings</h4>
+      <FieldRow label="Unknown caller action">
+        <select
+          value={config.voiceUnknownCallerAction}
+          onChange={e => onPatch({ voiceUnknownCallerAction: e.target.value as 'reject' | 'voicemail' | 'agent' })}
+          className="glass-select text-xs"
+        >
+          <option value="reject">Reject (drop the call)</option>
+          <option value="voicemail">Voicemail (greeting + transcribe message)</option>
+          <option value="agent">Connect to agent (anyone can reach your agent)</option>
+        </select>
+      </FieldRow>
+      <FieldRow label="Max call duration (minutes)">
+        <input
+          type="number"
+          min={1}
+          max={120}
+          value={minutes}
+          onChange={e => setMinutes(e.target.value)}
+          onBlur={() => {
+            const n = Number(minutes);
+            if (Number.isInteger(n) && n >= 1 && n <= 120 && n !== config.voiceMaxMinutesPerCall) void onPatch({ voiceMaxMinutesPerCall: n });
+            else setMinutes(String(config.voiceMaxMinutesPerCall));
+          }}
+          className="glass-input w-24 text-xs"
         />
       </FieldRow>
-    )}
-  </div>
-);
+      {config.voiceUnknownCallerAction === 'voicemail' && (
+        <FieldRow label="Voicemail greeting">
+          <textarea
+            value={greeting}
+            onChange={e => setGreeting(e.target.value)}
+            onBlur={() => {
+              if (greeting !== config.voiceVoicemailGreeting) void onPatch({ voiceVoicemailGreeting: greeting });
+            }}
+            rows={3}
+            className="glass-textarea w-full text-xs"
+          />
+        </FieldRow>
+      )}
+    </div>
+  );
+};
 
 const SafeSenderSection = ({ kind }: { kind: 'sms' | 'voice' }) => {
   const toast = useToast();
