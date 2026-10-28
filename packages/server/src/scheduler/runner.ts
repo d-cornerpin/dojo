@@ -1341,11 +1341,14 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       entryKind: 'transition',
       fromStatus: 'in_progress',
       toStatus: nextRun ? 'on_deck' : (failedFinalRun ? 'fallen' : 'complete'),
+      // The counter was bumped above (bumpWorkAttempts) before the row was
+      // re-read, so run_count already counts THIS run: log it as read, or the
+      // owner reads every run one past the number the fire line gave it.
       actionTaken: nextRun
-        ? `scheduler ran #${(task.run_count as number) + 1}, next at ${nextRun}`
+        ? `scheduler ran #${task.run_count as number}, next at ${nextRun}`
         : (failedFinalRun
-            ? `scheduler ran final run #${(task.run_count as number) + 1}, run FAILED, task marked fallen (not complete) and owner notified`
-            : `scheduler ran final run #${(task.run_count as number) + 1}, no more runs`),
+            ? `scheduler ran final run #${task.run_count as number}, run FAILED, task marked fallen (not complete) and owner notified`
+            : `scheduler ran final run #${task.run_count as number}, no more runs`),
       reason: `run finished with status=${status}`,
       note: summary || null,
     });
