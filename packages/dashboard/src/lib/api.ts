@@ -965,7 +965,9 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine'
     if (!models.ok) continue;  // transient errors during polling are non-fatal
     const installed = kind === 'whisper'
       ? models.data.whisper.find(m => m.id === id)?.installed === true
-      : models.data.kokoro?.installed === true;
+      : kind === 'moonshine'
+        ? models.data.moonshine?.installed === true
+        : models.data.kokoro?.installed === true;
     if (installed) return { ok: true, data: { kind, id } };
   }
   return { ok: false, error: 'install timed out — check server logs' };
