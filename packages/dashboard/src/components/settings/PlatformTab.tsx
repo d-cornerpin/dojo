@@ -644,11 +644,12 @@ const RemoteAccessSettings = () => {
 
 // ── Ollama Settings ──
 
-const OllamaSettings = () => {
+export const OllamaSettings = () => {
   const [maxConcurrent, setMaxConcurrent] = useState('1');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -664,9 +665,14 @@ const OllamaSettings = () => {
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
-    await api.setSetting('ollama_max_concurrent_models', maxConcurrent);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setError(null);
+    const res = await api.setSetting('ollama_max_concurrent_models', maxConcurrent);
+    if (res.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } else {
+      setError(res.error);
+    }
     setSaving(false);
   };
 
@@ -699,6 +705,7 @@ const OllamaSettings = () => {
           {saving ? 'Saving...' : 'Save'}
         </button>
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+        {error && <span className="text-xs text-cp-coral">{error}</span>}
       </div>
       <div className="fhelp">
         When agents use more local models than this limit, requests queue until the current model finishes.
@@ -717,11 +724,12 @@ const AGENT_LIMIT_KEYS = [
   { key: 'spawn_default_timeout', label: 'Default Timeout (seconds)', description: 'How long a temp agent runs before auto-terminating. 900 = 15 minutes.', default: 900, min: 60, max: 86400 },
 ];
 
-const AgentLimitsSettings = () => {
+export const AgentLimitsSettings = () => {
   const [values, setValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -739,14 +747,21 @@ const AgentLimitsSettings = () => {
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
+    setError(null);
+    let failure: string | null = null;
     for (const item of AGENT_LIMIT_KEYS) {
       const val = values[item.key];
       if (val !== undefined) {
-        await api.setSetting(item.key, val);
+        const res = await api.setSetting(item.key, val);
+        if (!res.ok) {
+          failure = `${item.label}: ${res.error}`;
+          break;
+        }
       }
     }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaved(failure === null);
+    setError(failure);
+    if (failure === null) setTimeout(() => setSaved(false), 2000);
     setSaving(false);
   };
 
@@ -784,6 +799,7 @@ const AgentLimitsSettings = () => {
           {saving ? 'Saving...' : 'Save Limits'}
         </button>
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+        {error && <span className="text-xs text-cp-coral">{error}</span>}
       </div>
     </div>
   );
