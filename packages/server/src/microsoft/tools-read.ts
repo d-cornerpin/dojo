@@ -1001,21 +1001,23 @@ export async function executeMicrosoftReadTool(
       const mimeType = metaData?.file?.mimeType ?? '';
       if (mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('csv')) {
         try {
-          const token = (await import('./auth.js')).getAccessToken();
-          const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: AbortSignal.timeout(30000),
-          });
-          if (resp.ok) {
-            const text = await resp.text();
-            const paged = applyTextPagination(
-              text,
-              'onedrive_read',
-              { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
-              { file_id: args.file_id },
-              16_000,
-            );
-            return `File: ${outsideSpan(metaData.name)}\n\n${paged}`;
+          const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
+          if (token) {
+            const resp = await graphFetch(agentId, `https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
+              headers: { Authorization: `Bearer ${token}` },
+              signal: AbortSignal.timeout(30000),
+            });
+            if (resp.ok) {
+              const text = await resp.text();
+              const paged = applyTextPagination(
+                text,
+                'onedrive_read',
+                { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+                { file_id: args.file_id },
+                16_000,
+              );
+              return `File: ${outsideSpan(metaData.name)}\n\n${paged}`;
+            }
           }
         } catch { /* fall through to metadata */ }
       }

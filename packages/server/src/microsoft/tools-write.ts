@@ -1601,9 +1601,8 @@ export async function executeMicrosoftWriteTool(
       //    item we can read /content from. For other contentTypes (e.g.
       //    inline messages) fall back to fetching the contentUrl with
       //    the access token directly.
-      const { getValidAccessToken } = await import('./auth.js');
-      const token = await getValidAccessToken('agent');
-      if (!token) return 'Error: not authenticated with Microsoft (agent account).';
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
+      if (!token) return 'Error: not authenticated with Microsoft.';
 
       const fs = await import('node:fs');
       const nodePath = await import('node:path');
