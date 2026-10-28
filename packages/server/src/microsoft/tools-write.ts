@@ -1690,6 +1690,7 @@ export async function executeMicrosoftWriteTool(
       };
       const action = endpointMap[response];
       if (!action) return 'Error: response must be "accept", "decline", or "tentative"';
+      const pastTense: Record<string, string> = { accept: 'accepted', decline: 'declined', tentative: 'tentatively accepted' };
 
       const result = await msGraphWrite('POST', `me/events/${eventId}/${action}`, {
         comment: (args.comment as string) ?? '',
@@ -1697,7 +1698,7 @@ export async function executeMicrosoftWriteTool(
       }, agentId, agentName, 'calendar_respond_invite_ms', { eventId: args.event_id, response }, slot);
 
       if (!result.ok) return `Error responding to invite: ${result.error}`;
-      return `Meeting invite ${response}ed${args.comment ? ` with comment: "${args.comment}"` : ''}`;
+      return `Meeting invite ${pastTense[response]}${args.comment ? ` with comment: "${args.comment}"` : ''}`;
     }
 
     case 'calendar_accept_share_ms': {
