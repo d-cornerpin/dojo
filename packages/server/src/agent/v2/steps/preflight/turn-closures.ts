@@ -455,14 +455,22 @@ export function runTurnClosures(
         const fromNumber = turnCtx.state!.inboundContext?.smsToNumber ?? getDefaultFromNumber();
         if (fromNumber) {
           const smsTo = turnCtx.state!.inboundContext.smsFromNumber;
-          await withOutboundAsync(
+          // `sendSms` reports a refused send as `{ ok: false }` rather than throwing, so
+          // the marker — the record of what reached the person — is gated on `ok`, exactly
+          // as the end-of-turn SMS reply does in `finalize/channel-push.ts`.
+          const sent = await withOutboundAsync(
             {
               agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => sendSms(smsTo, text, fromNumber),
           );
-          persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', smsTo)}`);
+          if (sent.ok) persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', smsTo)}`);
+          else {
+            logger.warn('v2: engine user-ack SMS push failed (non-fatal; the ack still stands in chat)', {
+              agentId, error: sent.error,
+            }, agentId);
+          }
         }
       }
     } catch (err) {
