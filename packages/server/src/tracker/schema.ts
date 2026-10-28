@@ -1090,26 +1090,6 @@ export function addTaskNotes(id: string, notes: string): void {
   logger.info('Task notes added', { taskId: id, notesLength: notes.length });
 }
 
-/**
- * Replace the entire notes field on a task with the provided content.
- * Use when the existing notes are wrong or stale and need to be
- * rewritten wholesale. For appending without losing prior entries use
- * addTaskNotes instead.
- */
-export function setTaskNotes(id: string, notes: string): void {
-  noteUnsettled(patchWork(id, { notes }), 'setTaskNotes: notes replaced', { taskId: id });
-  logger.info('Task notes replaced', { taskId: id, notesLength: notes.length });
-}
-
-/**
- * Wipe the notes field on a task back to NULL. Use when the existing
- * notes are obsolete and no replacement content is appropriate.
- */
-export function clearTaskNotes(id: string): void {
-  noteUnsettled(patchWork(id, { notes: null }), 'clearTaskNotes: notes cleared', { taskId: id });
-  logger.info('Task notes cleared', { taskId: id });
-}
-
 // ── Poke Log ── REMOVED (PHASE-2 T8c item 1)
 //
 // `logPoke` / `getPokeLog` / `getLastPoke` / `clearPokeLog` and the `poke_log` table they

@@ -250,9 +250,6 @@ export function pmMayCall(name: string, args?: Record<string, unknown>): boolean
   return PM_ALLOWED_OTHER_TOOLS.includes(name);
 }
 
-// O(1) membership check for surface-level (name-only) callers. NOT the gate.
-export const PM_ALLOWED_TOOLS_SET: ReadonlySet<string> = new Set(PM_ALLOWED_TOOLS);
-
 // ── Ensure PM Agent Running ──
 
 export function ensurePMAgentRunning(): void {
