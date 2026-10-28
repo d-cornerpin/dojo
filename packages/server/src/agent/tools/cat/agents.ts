@@ -36,6 +36,7 @@ import { isPrimaryAgent, isHealerAgent } from '../../../config/platform.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../../prompt/agent-prompt-surface.js';
 import { renameAgent } from '../../../prompt/agent-rename.js';
 import { mismatchWarning } from '../assignment-capability.js';
+import { coerceNumberArg } from '../pagination.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
@@ -541,7 +542,7 @@ export const agentsHandlers: ToolHandlerMap = {
       callerAgentId: agentId,
       agentId: stdResolved.id,
       action: stdAction as 'extend' | 'terminate',
-      extendMinutes: typeof args.extend_minutes === 'number' ? (args.extend_minutes as number) : undefined,
+      extendMinutes: coerceNumberArg(args.extend_minutes) ?? undefined,
     });
     content = stdResult.message;
     isError = !stdResult.ok;

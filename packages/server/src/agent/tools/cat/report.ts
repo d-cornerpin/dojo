@@ -49,6 +49,7 @@ import { attachDraft, createReport, getReport, submitForApproval, type ReportBri
 import { deriveReportSignature, isFailureLane, FAILURE_LANES } from '../../../report/signature.js';
 import { ATTACHMENT_ECHO_CHARS, boundDocumentArrays } from '../../../report/bounds.js';
 import { draftHead, gatherHead, renderBrief, submitHead } from './report-prose.js';
+import { coerceNumberArg } from '../pagination.js';
 import type { WindowRequest } from '../../../report/window.js';
 
 /**
@@ -76,7 +77,7 @@ const ok = (content: string): { content: string; isError: boolean } => ({ conten
 const bad = (content: string): { content: string; isError: boolean } => ({ content, isError: true });
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
-const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+const num = (v: unknown): number | null => coerceNumberArg(v);
 
 /** The five brief fields on the wire. Named once; the schema and this list are the pair. */
 const BRIEF_ARGS = [

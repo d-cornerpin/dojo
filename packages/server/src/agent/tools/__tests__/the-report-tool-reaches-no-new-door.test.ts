@@ -263,12 +263,16 @@ const ALLOWED_CONSENT_CALLERS: readonly string[] = [
  *    one module that can read back what this feature wrote is now a single named door.
  *  · `− ../../../gateway/routes/update.js` (handler, v3.4 E3): the signature no longer hashes the
  *    platform version, so the handler stopped reading it. A narrowing: one edge fewer.
+ *  · `+ ../pagination.js` (handler): `coerceNumberArg`, so a provider that sends `"turns":"5"` as a
+ *    string is read as the window it asked for instead of the widest one. The same leaf the other
+ *    `cat/` doors already import for that repair; `pagination.ts` imports NOTHING of the server, so
+ *    it adds no edge of its own to either closure.
  */
 const HANDLER_IMPORTS: readonly string[] = [
   '../../../gateway/ws.js', '../../../report/bounds.js',
   '../../../report/bundle.js', '../../../report/gather.js', '../../../report/signature.js',
   '../../../report/store.js', '../../../report/telemetry-build.js', '../../../report/window.js',
-  '../handler.js', './report-prose.js',
+  '../handler.js', '../pagination.js', './report-prose.js',
 ];
 /**
  * ⚠ THE PROSE HALF IS PINNED TOO, AND IT IS PINNED BECAUSE IT WAS MEASURED UNPINNED (fix-round-2
