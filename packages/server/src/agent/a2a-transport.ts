@@ -1068,15 +1068,20 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
         const isImage = IMAGE_EXTS.includes(ext);
         const isAudio = AUDIO_EXTS.includes(ext);
         const isVideo = VIDEO_EXTS.includes(ext);
+        // The receiver's turn builds a document block only for category 'pdf', so a
+        // PDF stored any other way is invisible to the model.
+        const isPdf = ext === '.pdf';
         const category: UploadedFile['category'] = isImage
           ? 'image'
           : isAudio ? 'audio'
           : isVideo ? 'video'
+          : isPdf ? 'pdf'
           : 'unknown';
         const mimeType = isImage
-          ? `image/${ext.slice(1)}`
+          ? (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : `image/${ext.slice(1)}`)
           : isAudio ? AUDIO_MIME[ext]
           : isVideo ? VIDEO_MIME[ext]
+          : isPdf ? 'application/pdf'
           : 'application/octet-stream';
 
         attachmentsList.push({
