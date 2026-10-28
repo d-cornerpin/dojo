@@ -22,6 +22,12 @@ import {
 } from './types.js';
 // Side-effect: registers the migrated entries at module load.
 import './entries.js';
+import { createLogger } from '../../logger.js';
+
+const logger = createLogger('prompt-registry');
+// A section that throws throws on every turn, so the first failure of a given
+// entry id per process is the one line worth having; the rest would be spam.
+const warnedRenderFailures = new Set<string>();
 
 /**
  * Build the single context bundle threaded to every entry. Computes the cheap,
@@ -97,8 +103,17 @@ export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystem
     let r: string | string[] | null = null;
     try {
       r = (entry.when?.(ctx) ?? true) ? entry.render(ctx) : null;
-    } catch {
+    } catch (err) {
       r = null;
+      // Contained, but not silent: an entry missing from the prompt with no
+      // trace looks like an agent that lost an instruction. Warn once per id.
+      if (!warnedRenderFailures.has(entry.id)) {
+        warnedRenderFailures.add(entry.id);
+        logger.warn('a system prompt section failed to render and was left out of the prompt', {
+          entryId: entry.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     const texts = r == null ? [] : Array.isArray(r) ? r : [r];
     for (const t of texts) {
