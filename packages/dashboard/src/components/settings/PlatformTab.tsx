@@ -7,6 +7,7 @@
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { useTheme } from '../../themes';
 import { MigrationExport } from '../MigrationExport';
 import { ImportWizard } from '../ImportWizard';
@@ -431,7 +432,7 @@ const RemoteAccessSettings = () => {
 
   const copyUrl = () => {
     if (status?.url) {
-      navigator.clipboard.writeText(status.url);
+      void copyTextToClipboard(status.url);
     }
   };
 

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 // Twilio channel card. Lives on the Channels tab (it's a messaging channel,
 // like the iMessage bridge). A master-enable toggle gates the whole panel:
@@ -502,12 +503,9 @@ const SafeSenderSection = ({ kind }: { kind: 'sms' | 'voice' }) => {
 const WebhookSection = ({ config }: { config: api.TwilioConfigDto }) => {
   const toast = useToast();
   const copy = async (url: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.info(`${label} URL copied.`);
-    } catch {
-      toast.error('Clipboard copy failed.');
-    }
+    const ok = await copyTextToClipboard(url);
+    if (ok) toast.info(`${label} URL copied.`);
+    else toast.error('Clipboard copy failed.');
   };
   return (
     <div className="border-t border-ui/[0.06] pt-3 space-y-2">

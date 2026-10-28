@@ -8,6 +8,7 @@ import { formatDate, formatTimeOnly, formatTimestamp } from '../lib/dates';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 // FA-DB2: the Health page has no server-pushed health feed. The old
 // 'system:health' / 'provider:status' WS events were never emitted server-
@@ -107,10 +108,11 @@ const RemoteAccessCard = () => {
 
   const handleCopy = () => {
     if (!tunnel.url) return;
-    navigator.clipboard.writeText(tunnel.url).then(() => {
+    void copyTextToClipboard(tunnel.url).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+    });
   };
 
   return (
