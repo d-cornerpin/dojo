@@ -435,7 +435,7 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
         {error && (
           <div className="space-y-2">
             <p className="text-red-400 text-sm">{error}</p>
-            <button onClick={() => { restoreStartedRef.current = false; setStep('restore'); }} className="btn btn--primary text-xs">Retry</button>
+            <button onClick={() => { void runRestore(); }} className="btn btn--primary text-xs">Retry</button>
           </div>
         )}
       </div>
