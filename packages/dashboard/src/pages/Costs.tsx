@@ -512,10 +512,21 @@ export const Costs = () => {
       if (budgetRes.ok) {
         const bd = budgetRes.data as Record<string, unknown>;
         const globalRaw = bd.global as Record<string, unknown> | null;
-        const totalSpend = summaryRes.ok ? (summaryRes.data as CostSummary).totalSpend : 0;
+        // The budget's spent figure is the server's own, not the summary's period
+        // spend (the two disagree once a tab other than the default is selected).
+        const globalSpent = Number.isFinite(Number(globalRaw?.spentUsd)) ? Number(globalRaw?.spentUsd) : 0;
+        const agents = (bd.agents ?? []) as Array<Record<string, unknown>>;
         setBudgets({
-          global: globalRaw ? { limitUsd: globalRaw.limitUsd as number, spentUsd: totalSpend } : null,
-          agents: (bd.agents ?? []) as BudgetData['agents'],
+          global: globalRaw
+            ? { limitUsd: globalRaw.limitUsd as number, spentUsd: globalSpent }
+            : null,
+          agents: agents.map((a) => ({
+            agentId: String(a.agentId),
+            agentName: typeof a.agentName === 'string' && a.agentName ? a.agentName : String(a.agentId),
+            limitUsd: Number(a.limitUsd),
+            period: String(a.period),
+            spentUsd: Number.isFinite(Number(a.spentUsd)) ? Number(a.spentUsd) : 0,
+          })),
         });
       }
       if (agentsRes.ok) setAgents(agentsRes.data.map((a) => ({ id: a.id, name: a.name })));
