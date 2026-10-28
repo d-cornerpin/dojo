@@ -18,6 +18,13 @@ const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
+// Google omits `summary` for an event with no title (a quick block, a private slot
+// seen through a shared calendar); rendering it directly prints "undefined".
+const NO_TITLE = '(no title)';
+function eventTitle(summary: string | undefined | null): string {
+  return typeof summary === 'string' && summary.trim() !== '' ? summary : NO_TITLE;
+}
+
 // ── Tool Definitions (unchanged) ──
 
 export const googleReadToolDefinitions: ToolDefinition[] = [
@@ -361,13 +368,13 @@ export async function fetchAgendaItemsForAccount(
   const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days: opts?.days, timezone: tz, anchored: window.anchored, calendarId }, accountId);
   if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
 
-  const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
+  const data = result.data as { items?: Array<{ summary?: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
   const items: GoogleAgendaFetchItem[] = (data?.items ?? []).map(e => {
     const isAllDay = !!(e.start.date && !e.start.dateTime);
     const rawStart = e.start.dateTime ?? e.start.date ?? '';
     const rawEnd = e.end.dateTime ?? e.end.date ?? '';
     return {
-      title: e.summary,
+      title: eventTitle(e.summary),
       start: parseFlexibleTime(rawStart),
       end: parseFlexibleTime(rawEnd),
       rawStart,
@@ -602,7 +609,7 @@ export async function executeGoogleReadTool(
       const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId }, slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
-      const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };
+      const data = result.data as { items?: Array<{ summary?: string; start: { dateTime?: string; date?: string }; id: string }> };
       if (!data?.items || data.items.length === 0) return `No events matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
       const requestedTz = args.timezone as string | undefined;
@@ -614,7 +621,7 @@ export async function executeGoogleReadTool(
         const when = parsed
           ? formatTimeForAgent(parsed, { timezone: requestedTz, allDay: isAllDay })
           : `${raw} (could not parse)`;
-        return `- ${e.summary}\n  ${when}\n  [ID: ${e.id}]`;
+        return `- ${eventTitle(e.summary)}\n  ${when}\n  [ID: ${e.id}]`;
       });
       return `Found ${data.items.length} event(s) matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${events.map((item) => outsideSpan(item)).join('\n')}`;
     }
