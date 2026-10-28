@@ -285,13 +285,18 @@ const BATCH_BUDGET_CAP_RATIO = 0.35;
 // agree on what is plumbing vs. conversation. Imported below; the local
 // isPlatformNoise wrapper is kept so callers here are unchanged.
 
-// Conversational filler, acknowledgments and process narration. Drop the
-// whole message if its trimmed content matches. Length-bounded so prose
-// containing "got it" doesn't get false-positived.
-const FILLER_PATTERNS: RegExp[] = [
+// Conversational filler, acknowledgments. Drop the whole message if its
+// trimmed content matches. Length-bounded so prose containing "got it"
+// doesn't get false-positived.
+const ACK_FILLER_PATTERNS: RegExp[] = [
   /^(sure|got it|okay|ok|alright|understood|will do|on it|working on it now?|let me think( about (this|that))?|let me check|one moment|hmm|hmmm|right|yep|yes|no problem|sounds good|makes sense|of course)[.!]?$/i,
   /^(thanks|thank you)[.!]?$/i,
-  // Process narration the agent emits between tool calls, pure scaffolding.
+];
+
+// Process narration the agent emits between tool calls, pure scaffolding.
+// Only the assistant narrates its own process; a user opening with "I'll…"
+// or "First,…" is stating a plan or a fact, not scaffolding.
+const ASSISTANT_NARRATION_PATTERNS: RegExp[] = [
   /^(let me |i'?ll |i'?m going to |now i'?ll |first,? |next,? |then,? )/i,
   /^(checking|searching|reading|writing|looking at|analyzing|processing|continuing|proceeding)\b/i,
   /^(i found|i see|i notice|i can see|i'?ve found)\b/i,
@@ -301,14 +306,19 @@ function isPlatformNoise(content: string): boolean {
   return isSharedPlatformNoise(content);
 }
 
-function isFiller(content: string): boolean {
+function isFiller(content: string, role: string): boolean {
   const trimmed = content.trim();
   if (trimmed.length === 0) return true;
   // Allow process-narration patterns to be caught up to ~80 chars (one
   // sentence). True prose >100 chars is never filler.
   if (trimmed.length > 100) return false;
-  for (const pat of FILLER_PATTERNS) {
+  for (const pat of ACK_FILLER_PATTERNS) {
     if (pat.test(trimmed)) return true;
+  }
+  if (role === 'assistant') {
+    for (const pat of ASSISTANT_NARRATION_PATTERNS) {
+      if (pat.test(trimmed)) return true;
+    }
   }
   return false;
 }
@@ -440,11 +450,11 @@ function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] |
 //   3. From user messages whose content is purely tool_result blocks
 //      (a sub-agent reply container), drop them.
 //   4. Drop platform-noise messages (system nudges, cycle markers, etc.).
-//   5. Drop conversational filler and process narration ("let me check…",
-//      "now I'll search…").
+//   5. Drop conversational filler (acks, thanks) from either role, and the
+//      assistant's process narration ("let me check…", "now I'll search…").
 //   6. Drop messages with < 30 chars after compression, almost always
 //      acks, single words, or unhelpful fragments.
-function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMessage[] {
+export function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMessage[] {
   const filtered: ParsedArchiveMessage[] = [];
   for (const m of messages) {
     const role = (m.role ?? '').toLowerCase();
@@ -482,7 +492,7 @@ function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMess
     // (4) Platform noise.
     if (isPlatformNoise(content)) continue;
     // (5) Filler / process narration.
-    if ((role === 'assistant' || role === 'user') && isFiller(content)) continue;
+    if ((role === 'assistant' || role === 'user') && isFiller(content, role)) continue;
     // (6) Tiny / empty.
     if (content.trim().length < 30) continue;
 
