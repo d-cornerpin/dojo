@@ -152,7 +152,6 @@ export async function recordDispatchAndHold(
         agentRefusal: sudoHeldRefusal(commandText, getSudoPolicy()),
       });
       try {
-        broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
         broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: held.refusal.slice(0, 500) });
       } catch { /* best effort */ }
       return { state, refusal: { toolCallId: tc.id, name: tc.name, content: held.refusal, isError: !held.queued } };
@@ -243,7 +242,6 @@ export async function recordDispatchAndHold(
           });
         }
         try {
-          broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
           broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
         } catch { /* best effort */ }
         return { state, refusal: { toolCallId: tc.id, name: tc.name, content: refusal, isError: heldIsError } };
