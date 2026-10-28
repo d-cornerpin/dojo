@@ -169,8 +169,3 @@ export function resolveToolAlias(name: string, args: Record<string, unknown>): R
   const note = entry.note ?? `[Engine note: "${name}" is now "${entry.to}". Use the new name next time.]`;
   return { name: entry.to, args: nextArgs, note };
 }
-
-/** True when a name is a hidden alias (rename or tombstone). */
-export function isToolAlias(name: string): boolean {
-  return name in TOOL_ALIASES;
-}

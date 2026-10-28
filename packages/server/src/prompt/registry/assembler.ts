@@ -126,25 +126,6 @@ export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystem
   return { text: outParts.join(PART_JOINER), entryIds: outIds };
 }
 
-/**
- * Render a single message-side entry by id (R3 message-side PoC). Builds the
- * context, checks `when`, and returns the first rendered message (or null).
- * The loop calls this in registry mode at the legacy injection site, so the
- * injected message lands at the same position — byte-identical to legacy. R5
- * replaces this single-entry shim with a full message walk that owns all the
- * §3c sites in one ordered pass.
- */
-export function renderMessageEntryById(
-  id: string,
-  agentId: string,
-  modelId: string,
-  turnContext?: PromptTurnContext,
-  turnState?: AssemblyTurnState,
-): EngineMessage | null {
-  const ctx = buildAssemblyContext(agentId, modelId, turnContext, turnState);
-  return renderMessageEntry(id, ctx);
-}
-
 /** Render a single message-side entry against a prebuilt context. */
 export function renderMessageEntry(id: string, ctx: AssemblyContext): EngineMessage | null {
   const entry = getMessageEntries().find((e) => e.id === id);
