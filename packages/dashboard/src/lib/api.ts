@@ -113,11 +113,6 @@ export const validateProvider = async (id: string): Promise<ApiResponse<{ valid:
   });
 };
 
-export const getProviderModels = async (
-  id: string,
-): Promise<ApiResponse<ProviderModelsResponse>> => {
-  return request<ProviderModelsResponse>(`/config/providers/${id}/models`);
-};
 
 // ── Browse Models (OpenRouter / aggregator providers) ──
 
@@ -643,9 +638,6 @@ export const disconnectPlaud = async (): Promise<ApiResponse<{ disconnected: boo
   return request<{ disconnected: boolean }>('/plaud/disconnect', { method: 'POST' });
 };
 
-export const refreshPlaud = async (): Promise<ApiResponse<{ connected: boolean; email: string | null }>> => {
-  return request<{ connected: boolean; email: string | null }>('/plaud/refresh', { method: 'POST' });
-};
 
 // ── GitHub integration (DOJO-REPORT T5) ──
 // Device flow: the user presses Connect, the server asks GitHub for a code,
@@ -762,9 +754,6 @@ export const listContactsApi = async (params: { q?: string; sort_by?: 'updated' 
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return request<{ count: number; total: number; contacts: ContactDto[] }>(`/contacts${suffix}`);
 };
-export const getContactApi = async (id: string): Promise<ApiResponse<ContactDto>> => {
-  return request<ContactDto>(`/contacts/${encodeURIComponent(id)}`);
-};
 export const createContactApi = async (input: ContactInputDto): Promise<ApiResponse<ContactDto>> => {
   return request<ContactDto>('/contacts', { method: 'POST', body: JSON.stringify(input) });
 };
@@ -797,20 +786,6 @@ export const deleteContactApi = async (id: string): Promise<ApiResponse<{ delete
   return request<{ deleted: boolean }>(`/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
-// Bulk-reset every idle agent's session.
-// Returns count breakdown { reset, busy, errors, total }.
-export interface ResetIdleSessionsResponse {
-  reset: number;
-  busy: number;
-  errors: number;
-  total: number;
-  errorDetails?: Array<{ agentId: string; error: string }>;
-}
-export const resetIdleSessions = async (): Promise<ApiResponse<ResetIdleSessionsResponse>> => {
-  return request<ResetIdleSessionsResponse>('/system/reset-idle-sessions', {
-    method: 'POST',
-  });
-};
 
 // Email/Teams watchers — visible health surface for the integrations'
 // background polling. Returned shape mirrors WatcherStatus on the server.
@@ -857,12 +832,6 @@ export const getLogs = async (
 
 // ── Setup actions (password set during setup) ──
 
-export const setPassword = async (password: string): Promise<ApiResponse<void>> => {
-  return request<void>('/setup/password', {
-    method: 'POST',
-    body: JSON.stringify({ password }),
-  });
-};
 
 export const completeSetup = async (): Promise<ApiResponse<LoginResponse>> => {
   const result = await request<LoginResponse>('/setup/complete', {
@@ -887,9 +856,6 @@ export const setSetting = async (key: string, value: string): Promise<ApiRespons
   });
 };
 
-export const getAllSettings = async (): Promise<ApiResponse<Record<string, string>>> => {
-  return request<Record<string, string>>('/config/settings');
-};
 
 // ── Voice ──
 
@@ -1174,9 +1140,6 @@ export const getProjects = async (): Promise<ApiResponse<ProjectsListResponse>> 
   return request<ProjectsListResponse>('/tracker/projects');
 };
 
-export const getProjectDetail = async (id: string): Promise<ApiResponse<ProjectDetailResponse>> => {
-  return request<ProjectDetailResponse>(`/tracker/projects/${id}`);
-};
 
 export const createProject = async (data: CreateProjectRequest): Promise<ApiResponse<CreateProjectResponse>> => {
   return request<CreateProjectResponse>('/tracker/projects', {
@@ -1200,9 +1163,6 @@ export const getTasks = async (filter?: {
   return request<TasksListResponse>(`/tracker/tasks${query ? `?${query}` : ''}`);
 };
 
-export const getTaskDetail = async (id: string): Promise<ApiResponse<TaskDetailResponse>> => {
-  return request<TaskDetailResponse>(`/tracker/tasks/${id}`);
-};
 
 // Phase B.0: structured audit log for a task.
 export interface TaskLogEntry {
@@ -1401,38 +1361,6 @@ export const purgeAgent = async (id: string): Promise<ApiResponse<void>> => {
   });
 };
 
-export const sendAgentMessage = async (
-  agentId: string,
-  content: string,
-  attachments?: AttachmentInfo[],
-): Promise<ApiResponse<SendMessageResponse>> => {
-  return request<SendMessageResponse>(`/chat/${agentId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({ content, attachments: attachments?.length ? attachments : undefined }),
-  });
-};
-
-export const getAgentHistory = async (
-  agentId: string,
-  limit?: number,
-): Promise<ApiResponse<ChatHistoryResponse>> => {
-  const params = new URLSearchParams();
-  if (limit) params.set('limit', String(limit));
-  const query = params.toString();
-  return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
-};
-
-export const getAgentInterMessages = async (
-  agentId: string,
-  direction?: string,
-  limit?: number,
-): Promise<ApiResponse<AgentMessagesResponse>> => {
-  const params = new URLSearchParams();
-  if (direction) params.set('direction', direction);
-  if (limit) params.set('limit', String(limit));
-  const query = params.toString();
-  return request<AgentMessagesResponse>(`/agents/${agentId}/messages${query ? `?${query}` : ''}`);
-};
 
 // ── Router ──
 
@@ -1578,31 +1506,6 @@ export const getCostSummary = async (
   return request(`/costs/summary?period=${encodeURIComponent(period)}`);
 };
 
-export const getCostRecords = async (
-  filter?: { period?: string; agentId?: string; modelId?: string },
-): Promise<ApiResponse<{
-  records: Array<{
-    id: string;
-    time: string;
-    agentId: string;
-    agentName: string;
-    modelId: string;
-    modelName: string;
-    tier: string;
-    inputTokens: number;
-    outputTokens: number;
-    cost: number;
-    latencyMs: number;
-  }>;
-  total: number;
-}>> => {
-  const params = new URLSearchParams();
-  if (filter?.period) params.set('period', filter.period);
-  if (filter?.agentId) params.set('agentId', filter.agentId);
-  if (filter?.modelId) params.set('modelId', filter.modelId);
-  const query = params.toString();
-  return request(`/costs/records${query ? `?${query}` : ''}`);
-};
 
 export const getBudgets = async (): Promise<ApiResponse<{
   global: { limitUsd: number; spentUsd: number } | null;
@@ -1929,22 +1832,6 @@ export const getVaultEntries = async (params?: {
   return request<VaultEntry[]>(`/vault/entries?${q.toString()}`);
 };
 
-export const getVaultEntry = async (id: string): Promise<ApiResponse<VaultEntry>> => {
-  return request<VaultEntry>(`/vault/entries/${id}`);
-};
-
-export const createVaultEntry = async (body: {
-  content: string;
-  type: string;
-  tags?: string[];
-  pin?: boolean;
-  permanent?: boolean;
-}): Promise<ApiResponse<VaultEntry>> => {
-  return request<VaultEntry>('/vault/entries', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-};
 
 export const updateVaultEntry = async (id: string, body: {
   content?: string;
@@ -2401,8 +2288,6 @@ export interface ReportDelivery {
 export type PostChoice = { addToExisting: number } | { postSeparately: true };
 export const listOpenReports = async (): Promise<ApiResponse<ReportRow[]> & { destinationRepo?: string }> =>
   request<ReportRow[]>('/reports');
-export const getReport = async (id: string): Promise<ApiResponse<ReportRow>> =>
-  request<ReportRow>(`/reports/${encodeURIComponent(id)}`);
 /** Only the fields the owner actually changed. An empty patch is refused by the door. */
 export const editReportBrief = async (id: string, edits: Partial<ReportBrief>): Promise<ApiResponse<ReportRow>> =>
   request<ReportRow>(`/reports/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(edits) });
