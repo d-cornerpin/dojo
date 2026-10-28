@@ -2875,12 +2875,30 @@ export async function executeGoogleSlidesTool(
         const elementId = args.element_id as string;
         const xPt = args.x_pt as number;
         const yPt = args.y_pt as number;
+
+        // Fetch current transform: ABSOLUTE replaces the whole matrix, so the
+        // move must re-send the element's own scale (and shear, when present)
+        // or every move snaps a resized/scaled element back to 1:1.
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_move_element');
+        if (!pres.ok) return `Error reading presentation: ${pres.error}`;
+        const slides = (pres.data as { slides?: Array<{ pageElements?: Array<Record<string, unknown>> }> }).slides ?? [];
+        let target: Record<string, unknown> | null = null;
+        for (const s of slides) {
+          const found = (s.pageElements ?? []).find(e => e.objectId === elementId);
+          if (found) { target = found; break; }
+        }
+        if (!target) return err(`Element ${elementId} not found`);
+
+        const cur = (target.transform as { scaleX?: number; scaleY?: number; shearX?: number; shearY?: number } | undefined) ?? {};
         const r = await batchUpdate(presentationId, [{
           updatePageElementTransform: {
             objectId: elementId,
             applyMode: 'ABSOLUTE',
             transform: {
-              scaleX: 1, scaleY: 1,
+              scaleX: cur.scaleX ?? 1,
+              scaleY: cur.scaleY ?? 1,
+              ...(cur.shearX !== undefined ? { shearX: cur.shearX } : {}),
+              ...(cur.shearY !== undefined ? { shearY: cur.shearY } : {}),
               translateX: ptToEmu(xPt),
               translateY: ptToEmu(yPt),
               unit: 'EMU',
