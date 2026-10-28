@@ -695,12 +695,12 @@ export async function executeGoogleReadTool(
 
       // Google Docs: use Docs API (forwards offset/limit through)
       if (mimeType === 'application/vnd.google-apps.document') {
-        return executeGoogleReadTool('docs_read', { document_id: fileId, offset: args.offset, limit: args.limit }, agentId, agentName);
+        return executeGoogleReadTool(kind === 'user' ? 'user_docs_read' : 'docs_read', { document_id: fileId, offset: args.offset, limit: args.limit, account: args.account }, agentId, agentName);
       }
 
       // Google Sheets: use Sheets API (range is sheet-native pagination; offset/limit also forwarded)
       if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-        return executeGoogleReadTool('sheets_read', { spreadsheet_id: fileId, range: 'Sheet1', offset: args.offset, limit: args.limit }, agentId, agentName);
+        return executeGoogleReadTool(kind === 'user' ? 'user_sheets_read' : 'sheets_read', { spreadsheet_id: fileId, range: 'Sheet1', offset: args.offset, limit: args.limit, account: args.account }, agentId, agentName);
       }
 
       // Other files: export as text and paginate.
