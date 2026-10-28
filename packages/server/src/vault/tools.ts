@@ -33,7 +33,7 @@ const BLOAT_STRIP_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
   { re: /\b[Oo]n \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
   { re: /\b[Dd]uring (?:a|the) conversation on \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
   // "The user (mentioned|said|noted|stated|indicated) (that)?"
-  { re: /\b[Tt]he user (?:mentioned|said|noted|stated|indicated|told (?:[Kk]evin|me|us)|expressed) (?:that )?/g, replacement: '' },
+  { re: /\b[Tt]he user (?:mentioned|said|noted|stated|indicated|told (?:me|us)|expressed) (?:that )?/g, replacement: '' },
   // "It was (determined|noted|observed|found|decided) that"
   { re: /\b[Ii]t was (?:determined|noted|observed|found|decided|established|confirmed) that\s+/g, replacement: '' },
   // Narrative scaffolding
@@ -43,9 +43,17 @@ const BLOAT_STRIP_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
   { re: /\n{3,}/g, replacement: '\n\n' },
 ];
 
-function stripBloatPhrases(content: string): { stripped: string; charsRemoved: number } {
+function stripBloatPhrases(content: string, selfName: string | null): { stripped: string; charsRemoved: number } {
   const before = content;
   let after = content;
+  // "The user told <own name> (that)" is filler just like "told me". The name
+  // comes from the DB at call time so no name is ever written into the patterns
+  // above. Runs before the loop so its last two patterns collapse the
+  // whitespace this removal leaves.
+  if (selfName && /^[A-Za-z][A-Za-z0-9 _-]*$/.test(selfName)) {
+    const esc = selfName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    after = after.replace(new RegExp(`\\b[Tt]he user told ${esc} (?:that )?`, 'gi'), '');
+  }
   for (const { re, replacement } of BLOAT_STRIP_PATTERNS) {
     after = after.replace(re, replacement);
   }
@@ -266,7 +274,8 @@ export async function executeVaultRemember(
   if (!verbatim) {
     // Strip common narrative cruft silently (the SOUL notes the engine strips
     // bloat before measuring length, so this runs before the cap gate below).
-    const result = stripBloatPhrases(content);
+    const selfRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name?: string } | undefined;
+    const result = stripBloatPhrases(content, selfRow?.name ?? null);
     content = result.stripped;
     charsRemoved = result.charsRemoved;
   }
