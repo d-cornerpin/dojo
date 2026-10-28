@@ -40,7 +40,7 @@ export {
 export { authorizeNet, authorizeNetDomain } from './net.js';
 export {
   DENY_RULES, deniedTiers, denyRuleFor, isDeniedResource, tiersForKind,
-  isSensitivePath, isGlobalReadDenied, isGlobalWriteDenied, isGlobalDeleteDenied,
+  isSensitivePath,
   type DenyRule, type DenyTier,
 } from './deny.js';
 

@@ -296,21 +296,6 @@ export function isSensitivePath(absPath: string): boolean {
   return denyRuleFor(absPath, 'sensitive') !== null;
 }
 
-/** `permissions.ts`'s `GLOBAL_FILE_READ_DENY`, as a reader of the merged table. */
-export function isGlobalReadDenied(absPath: string): boolean {
-  return denyRuleFor(absPath, 'global_read') !== null;
-}
-
-/** `permissions.ts`'s `GLOBAL_FILE_WRITE_DENY`, as a reader of the merged table. */
-export function isGlobalWriteDenied(absPath: string): boolean {
-  return denyRuleFor(absPath, 'global_write') !== null;
-}
-
-/** `permissions.ts`'s `GLOBAL_FILE_DELETE_DENY`, as a reader of the merged table. */
-export function isGlobalDeleteDenied(absPath: string): boolean {
-  return denyRuleFor(absPath, 'global_delete') !== null;
-}
-
 /**
  * The broker-facing question: is this resource denied for this effect kind,
  * on ANY tier the kind consults? `fs_read` consults the read tier AND the

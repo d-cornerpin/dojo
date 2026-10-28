@@ -113,7 +113,7 @@ export interface ResolvedUrl {
   readonly [URL_BRAND]: true;
 }
 
-export type ResolveFailureCode = 'not_present' | 'not_a_string' | 'invalid_url' | 'not_absolute';
+export type ResolveFailureCode = 'not_present' | 'not_a_string' | 'invalid_url';
 
 export type Resolution<T> =
   | { readonly ok: true; readonly value: T }
@@ -230,10 +230,4 @@ export function resolveUrlArg(raw: unknown): Resolution<ResolvedUrl> {
  */
 export function resolveFixedHost(host: string): ResolvedUrl {
   return { raw: host, href: `https://${host}/`, hostname: host, protocol: 'https:' } as unknown as ResolvedUrl;
-}
-
-/** True when a resolved path escapes the directory it claims to live in. */
-export function escapesDirectory(resolved: ResolvedPath, dir: string): boolean {
-  const root = canonicalizeAgentPath(dir);
-  return !(resolved.lexical === root || resolved.lexical.startsWith(root + path.sep));
 }
