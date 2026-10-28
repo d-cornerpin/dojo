@@ -208,6 +208,7 @@ export const Health = () => {
   const [resources, setResources] = useState<ResourceData | null>(null);
   const [testMsg, setTestMsg] = useState('');
   const [sendingTest, setSendingTest] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const { subscribe } = useWebSocket();
 
   // Load initial data
@@ -318,9 +319,18 @@ export const Health = () => {
 
   const handleSendTest = async () => {
     if (!testMsg.trim()) return;
+    setTestResult(null);
     setSendingTest(true);
-    await api.sendTestIMessage(testMsg.trim());
-    setTestMsg('');
+    const res = await api.sendTestIMessage(testMsg.trim());
+    if (res.ok) {
+      setTestMsg('');
+      setTestResult({ ok: true, text: 'Sent.' });
+    } else {
+      // The text stays in the box: on a failed send the owner still has the
+      // message to fix or retry, and the bridge's own reason is next to the
+      // button.
+      setTestResult({ ok: false, text: res.error });
+    }
     setSendingTest(false);
   };
 
@@ -544,7 +554,7 @@ export const Health = () => {
                     <input
                       type="text"
                       value={testMsg}
-                      onChange={(e) => setTestMsg(e.target.value)}
+                      onChange={(e) => { setTestMsg(e.target.value); setTestResult(null); }}
                       placeholder="Test message..."
                       className="field"
                       style={{ flex: 1 }}
@@ -557,6 +567,7 @@ export const Health = () => {
                     >
                       {sendingTest ? '...' : 'Send'}
                     </button>
+                    {testResult && <span className="text-xs" style={{ color: testResult.ok ? 'var(--dojo3-green-ink)' : 'var(--dojo3-rust)' }}>{testResult.text}</span>}
                   </div>
                 )}
               </>
