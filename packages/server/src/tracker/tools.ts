@@ -2657,7 +2657,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         const row = db.prepare(`
           SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit,
                  repeat_end_type, repeat_end_value, repeat_days_of_week,
-                 anchor_local AS anchor_time,
+                 anchor_local AS anchor_time, tz,
                  attempts AS run_count, is_paused, ${msToText('last_run_at')} AS last_run_at,
                  ${msToText('next_run_at')} AS next_run_at, schedule_status
           FROM work WHERE id = ?
@@ -2670,6 +2670,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           repeat_end_value: string | null;
           repeat_days_of_week: string | null;
           anchor_time: string | null;
+          tz: string | null;
           run_count: number;
           is_paused: number;
           last_run_at: string | null;
@@ -4000,7 +4001,9 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
     last_run_at: task.last_run_at as string | null,
     next_run_at: null,
     schedule_status: 'waiting',
+    repeat_days_of_week: task.repeat_days_of_week as string | null,
     anchor_time: task.anchor_time as string | null,
+    tz: task.tz as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);
@@ -4070,6 +4073,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       schedule_status: 'waiting',
       repeat_days_of_week: task.repeat_days_of_week as string | null,
       anchor_time: task.anchor_time as string | null,
+      tz: task.tz as string | null,
     };
     const nextRun = calculateNextRun(scheduledTask);
     if (!nextRun) {
