@@ -32,6 +32,15 @@ import { recordedInstant } from '../../memory/message-stamp.js';
 
 const logger = createLogger('outbound-ledger');
 
+// tool_receipts is the receipt ledger for ALL side-effecting tools (store.ts
+// RECEIPT_TOOLS), including calendar_create/calendar_update — writes to a
+// calendar, not sends to a person. Both receipt-lane readers below answer
+// "what did the agent send, to whom", so they exclude the calendar tools: a
+// calendar row (recipient null, channel fallback 'a2a') rendered as
+// `agent -> unknown` in the RECENT OUTBOUND block and could ground a
+// delivery-denial correction on a message that was never sent.
+const NON_SEND_RECEIPT_TOOLS = ['calendar_create', 'calendar_update'] as const;
+
 export interface OutboundDelivery {
   tool: string;
   /** Human-facing channel label for the send tool, or 'a2a' for inter-agent. */
@@ -122,8 +131,9 @@ export function findRecentDeliveries(
       `SELECT * FROM tool_receipts
         WHERE agent_id = ?
           AND created_at >= datetime('now', ?)
+          AND tool NOT IN (${NON_SEND_RECEIPT_TOOLS.map(() => '?').join(', ')})
         ORDER BY created_at DESC`,
-    ).all(agentId, `-${hours} hours`) as ToolReceiptRow[];
+    ).all(agentId, `-${hours} hours`, ...NON_SEND_RECEIPT_TOOLS) as ToolReceiptRow[];
     const hint = (recipientHint ?? '').trim();
     if (!hint) return rows.map(rowToDelivery);
     const aliases = resolveRecipientAliases(hint);
@@ -155,9 +165,10 @@ export function getRecentOutbound(
       `SELECT * FROM tool_receipts
         WHERE agent_id = ?
           AND created_at >= datetime('now', ?)
+          AND tool NOT IN (${NON_SEND_RECEIPT_TOOLS.map(() => '?').join(', ')})
         ORDER BY created_at DESC
         LIMIT ?`,
-    ).all(agentId, `-${hours} hours`, n) as ToolReceiptRow[];
+    ).all(agentId, `-${hours} hours`, ...NON_SEND_RECEIPT_TOOLS, n) as ToolReceiptRow[];
     return rows.map(rowToDelivery);
   } catch (err) {
     logger.warn('getRecentOutbound failed (non-fatal)', {
