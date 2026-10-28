@@ -40,6 +40,10 @@ import {
   getHealerAgentId,
   getHealerAgentName,
   isSetupCompleted,
+  isPrimaryAgent,
+  isPMAgent,
+  isTrainerAgent,
+  isImaginerAgent,
 } from '../config/platform.js';
 import { homeDir } from '../home.js';
 import { nextDailyRunDelayMs } from '../config/clock-time.js';
@@ -928,7 +932,6 @@ const HEALER_ARCHIVE_DIR = path.join(homeDir(), '.dojo', 'logs', 'healer-archive
  */
 function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (!agentId) return 'unknown agent';
-  const { isPrimaryAgent, isPMAgent, isTrainerAgent, isImaginerAgent } = require('../config/platform.js');
   if (isPrimaryAgent(agentId)) return 'Main Agent';
   if (isPMAgent(agentId)) return 'PM Agent';
   if (isTrainerAgent(agentId)) return 'Trainer Agent';
