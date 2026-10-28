@@ -717,6 +717,11 @@ export async function completeAgent(
   } else {
     // Non-persistent: terminate immediately
     writeAgentStatus(agentId, 'terminated');
+
+    // Close browser session if open (same fire-and-forget as terminateAgent)
+    import('./browser.js').then(({ closeSession }) => {
+      closeSession(agentId).catch(() => {});
+    }).catch(() => {});
   }
 
   // Clear timeout timer
