@@ -212,13 +212,17 @@ export const Health = () => {
 
   // Load initial data
   useEffect(() => {
-    const load = async () => {
+    const load = async (withLogs: boolean) => {
       let healthResult, logsResult, providerResult, watchdogResult, imResult, resourceResult;
       try {
         [healthResult, logsResult, providerResult, watchdogResult, imResult, resourceResult] =
           await Promise.all([
           api.getHealth(),
-          api.getLogs(undefined, undefined, 100),
+          // The poll must not touch the log list the owner filtered or the live
+          // feed appended, so it fetches no unfiltered table — only the initial
+          // load does. Resolving `undefined` keeps the tuple aligned (index 1),
+          // so the `logsResult?.ok` guard below simply skips setLogs on a poll.
+          withLogs ? api.getLogs(undefined, undefined, 100) : Promise.resolve(undefined),
           api.getProviderHealth(),
           api.getWatchdogStatus(),
           api.getIMBridgeStatus(),
@@ -256,11 +260,11 @@ export const Health = () => {
       }
       setLoading(false);
     };
-    load();
+    load(true);
     // FA-DB2: re-run the same load() on a steady interval so provider/DB
     // status stays fresh while the page is mounted (replaces the dead WS
     // subscriptions removed below). One interval, cleaned up on unmount.
-    const pollTimer = setInterval(load, HEALTH_POLL_INTERVAL_MS);
+    const pollTimer = setInterval(() => load(false), HEALTH_POLL_INTERVAL_MS);
     return () => clearInterval(pollTimer);
   }, []);
 
