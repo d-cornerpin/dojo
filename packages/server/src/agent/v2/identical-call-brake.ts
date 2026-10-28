@@ -41,12 +41,26 @@ export interface RepeatEntry {
 
 export type RepeatCallState = Map<string, RepeatEntry>;
 
+// Stable JSON: object keys sorted at every depth (array order kept, undefined
+// props skipped) — a JSON.stringify replacer array would erase nested keys.
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of Object.keys(obj).sort()) {
+    const v = obj[key];
+    if (v === undefined) continue;
+    parts.push(`${JSON.stringify(key)}:${stableStringify(v)}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+
 /** Canonical signature: tool name + stable-stringified args. */
 export function identicalCallSignature(tool: string, args: unknown): string {
   let argsKey: string;
   try {
-    const obj = (args ?? {}) as Record<string, unknown>;
-    argsKey = JSON.stringify(obj, Object.keys(obj).sort());
+    argsKey = stableStringify(args ?? {});
   } catch {
     argsKey = String(args);
   }
