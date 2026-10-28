@@ -223,7 +223,12 @@ export class CallSession {
     const ms = Math.max(60_000, cfg.voiceMaxMinutesPerCall * 60_000);
     this.maxDurationTimer = setTimeout(() => {
       logger.warn('Call hit max duration cap, ending', { callSid: this.callSid });
-      this.end('max_duration_reached');
+      // Tear down through the module-level helper so the registry entry
+      // is cleared too (end() alone leaves the map pointing at the dead
+      // session), then tell Twilio to drop the call immediately — the
+      // cap must NOT wait for a goodbye window.
+      endCallSession(this.callSid, 'max_duration_reached');
+      void import('./client.js').then((m) => m.endCall(this.callSid)).catch((err) => logger.warn('Twilio hang-up after the time cap failed', { callSid: this.callSid, error: err instanceof Error ? err.message : String(err) }));
     }, ms);
   }
 
