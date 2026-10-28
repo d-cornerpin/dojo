@@ -718,6 +718,15 @@ const FIX_THROUGH_ESCAPE = [
   ['const zergoCount = 1;', 'Zergo', false],
   ['// marbles are not an agent', 'Arble', false],
 ];
+/** A name split by a case-pair character class inside a regex literal is still a name; a class
+ *  that is not a same-letter pair is left alone and never conjures one. */
+const FIX_THROUGH_CASE_CLASS = [
+  ["  { re: /\\b[Tt]he user told (?:[Zz]ergo|me|us) /g, replacement: '' },", 'Zergo', true],
+  ['const re = /[Zz]ergblatt said/;', 'Zergblatt', true],
+  ['const re = /[zZ]ergo/;', 'Zergo', true],
+  ['const re = /[Ab]rgo/;', 'Argo', false],
+  ['const re = /[Tt]he user/;', 'Zergo', false],
+];
 /**
  * THE FIXTURE ROSTER (t111-C3) — three INVENTED names, standing in for a live roster on any box
  * that has no database: CI, and every machine that has never run the platform.
@@ -767,7 +776,11 @@ const FIX_NEEDLE_FILTERS = (roles) => [
  * per-line reporting is unaffected (the RAW line is what gets printed).
  */
 function unescapeForMatching(line) {
-  return line.replace(/\\[nrtfv]/g, ' ');
+  return line
+    .replace(/\\[nrtfv]/g, ' ')
+    // A case-pair class `[Zz]` / `[zZ]` is one letter written two ways; read it as the capital so a
+    // name split by it (`[Zz]ergo`) is still the name. Only same-letter pairs: `[Ab]` stays as it is.
+    .replace(/\[([A-Za-z])([A-Za-z])\]/g, (m, a, b) => (a !== b && a.toLowerCase() === b.toLowerCase() ? a.toUpperCase() : m));
 }
 
 function stripComments(text) {
@@ -887,6 +900,14 @@ function selfTest() {
   for (const [line, name, want] of FIX_THROUGH_ESCAPE) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const got = new RegExp(`\\b${esc}\\b`, 'i').test(unescapeForMatching(line));
+    const ok = got === want;
+    if (!ok) bad++;
+    console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
+  }
+  console.log('── a name split by a case-pair class [Xx] inside a regex is still a name ──');
+  for (const [line, name, want] of FIX_THROUGH_CASE_CLASS) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const got = new RegExp(`\\b${esc}\\b`).test(unescapeForMatching(line));
     const ok = got === want;
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} "${name}" in ${line.trim().slice(0, 52)}`);
