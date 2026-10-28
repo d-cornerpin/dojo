@@ -29,6 +29,7 @@ import {
   type DependencyManifest,
   emptyDependencyManifest,
 } from './dependencies.js';
+import { VERSIONS_SUBDIR } from './versioning.js';
 import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent, isTrainerEnabled } from '../config/platform.js';
 import { mayUseTechnique } from '../agent/access/read.js';
 // (getDb is already imported above)
@@ -655,7 +656,9 @@ function formatSearch(technique: { name: string; directoryPath: string; instruct
           if (hits.length >= SEARCH_MAX_HITS) return;
           const rel = subdir ? path.join(subdir, entry.name) : entry.name;
           if (entry.isDirectory()) {
-            if (entry.name === '.versions' || entry.name === 'node_modules') continue;
+            // The technique's own snapshots only live at the top level; a deeper
+            // folder the author named `versions` is theirs and stays searchable.
+            if ((subdir === '' && entry.name === VERSIONS_SUBDIR) || entry.name === 'node_modules') continue;
             walk(rel);
           } else if (entry.isFile() && entry.name !== 'TECHNIQUE.md' && entry.name !== 'metadata.json') {
             try {
