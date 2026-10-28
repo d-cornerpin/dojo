@@ -189,53 +189,6 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
   }
 }
 
-// ── use_technique ──
-
-export function executeUseTechnique(agentId: string, agentName: string, agentGroupId: string | null, args: Record<string, unknown>): string {
-  const name = args.name as string;
-  if (!name) return 'Error: name is required.';
-
-  const resolved = resolveTechniqueRef(name);
-  if (!resolved.ok) return resolved.error;
-  const db = getDb();
-  const technique = getTechniqueDetail(resolved.id);
-  if (!technique) return `Error: Technique "${name}" not found.`;
-
-  // UX-ACCESS A4: this was a HAND-INLINED COPY of `checkTechniqueAccess` — the
-  // same three branches, one sentence apart ("can be used" vs "can be read by
-  // agents outside the build squad"). A4 adds a grant to the door, and a second
-  // copy of a door is a second place for the grant to be missing, so the copy
-  // folds onto the function. The wording the agent reads is the door's.
-  const accessErr = checkTechniqueAccess(technique, agentGroupId, agentId);
-  if (accessErr) return accessErr;
-
-  // Log usage
-  recordTechniqueUsage(technique.id, agentId, agentName);
-
-  // Build response with full instructions
-  const parts: string[] = [
-    `=== Technique: ${technique.name} ===`,
-    technique.description ?? '',
-    '',
-    technique.instructions ?? '(No instructions found)',
-  ];
-
-  // List supporting files
-  const supportingFiles = technique.files.filter(f => !f.isDirectory && f.path !== 'TECHNIQUE.md');
-  if (supportingFiles.length > 0) {
-    parts.push('');
-    parts.push('Supporting files in this technique:');
-    for (const f of supportingFiles) {
-      parts.push(`- ${f.path} (${f.size} bytes) — at ${technique.directoryPath}/${f.path}`);
-    }
-  }
-
-  parts.push(`=== End Technique ===`);
-
-  logger.info('Technique used', { techniqueId: technique.id, agentId }, agentId);
-  return wrapTechniqueResult(technique.name, parts.join('\n'));
-}
-
 // ── list_techniques ──
 
 export function executeListTechniques(agentId: string, classification: string, args: Record<string, unknown>): string {
