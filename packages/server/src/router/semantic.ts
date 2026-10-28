@@ -138,11 +138,6 @@ async function getCentroids(deadlineMs?: number): Promise<Centroids | null> {
   }
 }
 
-export function clearSemanticCache(): void {
-  centroidCache = null;
-  buildPromise = null;
-}
-
 // ── Classification ──
 
 export interface SemanticResult {

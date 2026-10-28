@@ -96,23 +96,6 @@ function extractScoringText(systemPrompt: string, messages: Array<{ role: string
   return parts.join('\n');
 }
 
-// Extract all text (for backward compat)
-function extractText(messages: Array<{ role: string; content: string | object[] }>): string {
-  const parts: string[] = [];
-  for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      parts.push(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (typeof block === 'object' && block !== null && 'text' in block) {
-          parts.push((block as { text: string }).text);
-        }
-      }
-    }
-  }
-  return parts.join('\n');
-}
-
 // ── Dimension scoring functions ──
 // Each returns a value from -1.0 to 1.0
 

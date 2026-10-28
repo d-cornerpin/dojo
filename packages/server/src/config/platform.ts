@@ -55,12 +55,6 @@ export function getSudoPolicyRaw(): string | null {
   return cache['sudo_policy'] ?? null;
 }
 
-// ── Platform ──
-
-export function getPlatformName(): string {
-  return get('platform_name', 'DOJO Agent Platform');
-}
-
 // ── Owner ──
 
 /**
@@ -259,10 +253,6 @@ export function getHouseholdAgentIds(): string[] {
   ids.add(getDreamerAgentId());
   householdCache = [...ids];
   return householdCache;
-}
-
-export function isPermanentAgent(agentId: string): boolean {
-  return isPrimaryAgent(agentId) || isPMAgent(agentId) || isTrainerAgent(agentId) || isHealerAgent(agentId) || isDreamerAgent(agentId);
 }
 
 /**
