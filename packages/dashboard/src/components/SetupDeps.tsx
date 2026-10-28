@@ -140,7 +140,11 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       gcloud: { installed: boolean };
     }>(`${API}/deps/check`);
 
-    if (!result.ok) return;
+    if (!result.ok) {
+      setDeps(d => ({ ...d, node: 'failed', brew: 'failed', ollama: 'failed', cliclick: 'failed', playwright: 'failed', nomic: 'failed', gws: 'failed', gcloud: 'failed' }));
+      setDepErrors({ node: result.error, brew: result.error, ollama: result.error, cliclick: result.error, playwright: result.error, nomic: result.error, gws: result.error, gcloud: result.error });
+      return;
+    }
     const d = result.data;
 
     setDeps({
