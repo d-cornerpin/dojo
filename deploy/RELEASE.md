@@ -10,7 +10,7 @@ bash deploy/release.sh <version>          # e.g. bash deploy/release.sh 3.0.4
 That script does the whole thing and **refuses to report success unless the
 release is actually complete**: preconditions → typecheck → bump → build →
 verify the version embedded in the zip → commit → tag → push → create the
-GitHub release **with both assets** → verify the published release.
+GitHub release **with all three assets** → verify the published release.
 
 ### Why this script exists
 
@@ -70,8 +70,9 @@ bash deploy/verify-release.sh 3.0.3      # checks a specific version
 # or: npm run release:verify -- 3.0.3
 ```
 
-It checks all four things that have to be true: the release exists, both assets
-are uploaded, `releases/latest` points at this tag, and the zip is actually
+It checks all four things that have to be true: the release exists, all three assets
+(the zip, the installer and the integrity manifest) are uploaded, and the manifest
+matches the zip, `releases/latest` points at this tag, and the zip is actually
 downloadable. **Run it after any release — including one done by hand.**
 
 If it reports a release is incomplete (the 3.0.3 situation), repair without
@@ -81,7 +82,7 @@ re-bumping or re-tagging — just build and attach the missing assets:
 npm run build:package
 gh release upload v<version> \
   deploy/dist/dojo-platform.zip deploy/dist/Agent-DOJO-Installer.pkg \
-  --repo d-cornerpin/dojo --clobber
+  deploy/dist/dojo-platform.zip.sha256 --repo d-cornerpin/dojo --clobber
 bash deploy/verify-release.sh <version>   # confirm it's green now
 ```
 
@@ -91,6 +92,6 @@ Don't, but if the script is unavailable, the asset upload is the step that gets
 skipped, so: build (`npm run build:package`), confirm the zip embeds the right
 version (`unzip -p deploy/dist/dojo-platform.zip dojo-platform/platform/package.json`),
 commit + tag + push, then `gh release create <tag> deploy/dist/dojo-platform.zip
-deploy/dist/Agent-DOJO-Installer.pkg ...`, and **finish with
+deploy/dist/Agent-DOJO-Installer.pkg deploy/dist/dojo-platform.zip.sha256 ...`, and **finish with
 `bash deploy/verify-release.sh <version>`**. If that exits non-zero, the release
 is not done.

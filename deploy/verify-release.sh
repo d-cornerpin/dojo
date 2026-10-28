@@ -20,6 +20,7 @@ set -uo pipefail
 REPO="d-cornerpin/dojo"
 ZIP_NAME="dojo-platform.zip"
 PKG_NAME="Agent-DOJO-Installer.pkg"
+SHA_NAME="dojo-platform.zip.sha256"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -77,7 +78,7 @@ if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "     bash deploy/release.sh <the same args you used>   # writes proper notes, uploads both assets"
   echo "   Repair (manual, if you must): build, then create the release WITH real notes:"
   echo "     npm run build:package && gh release create $TAG \\"
-  echo "       deploy/dist/$ZIP_NAME deploy/dist/$PKG_NAME --repo $REPO --title $TAG \\"
+  echo "       deploy/dist/$ZIP_NAME deploy/dist/$PKG_NAME deploy/dist/$SHA_NAME --repo $REPO --title $TAG \\"
   echo "       $([ "$PREFLIGHT" = "1" ] && echo '--prerelease ')--notes-file <notes>"
   echo "   then re-run: bash deploy/verify-release.sh $VERSION$([ "$PREFLIGHT" = "1" ] && echo ' --preflight')"
   exit 1
@@ -85,9 +86,11 @@ fi
 
 # 2. Both assets present and fully uploaded
 ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[] | "\(.name):\(.state)"' 2>/dev/null || true)"
-for name in "$ZIP_NAME" "$PKG_NAME"; do
+have_sha=0
+for name in "$ZIP_NAME" "$PKG_NAME" "$SHA_NAME"; do
   if printf '%s\n' "$ASSETS" | grep -qx "$name:uploaded"; then
     note "✓ asset present: $name"
+    [ "$name" = "$SHA_NAME" ] && have_sha=1
   else
     bad "missing or not-uploaded asset: $name"
   fi
@@ -137,6 +140,26 @@ else
   bad "$ZIP_NAME not downloadable (HTTP $CODE) at $URL"
 fi
 
+# The integrity manifest must match the zip — the self-updater refuses an update
+# whose manifest does not match (artifact-integrity.ts), and a missing manifest
+# makes it proceed silently unverified. Runs only when the manifest was uploaded.
+if [ "$have_sha" = "1" ]; then
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  if ! curl -sL -f -o "$TMP/$SHA_NAME" "https://github.com/$REPO/releases/download/$TAG/$SHA_NAME" || \
+     ! curl -sL -f -o "$TMP/$ZIP_NAME" "https://github.com/$REPO/releases/download/$TAG/$ZIP_NAME"; then
+    bad "could not download $SHA_NAME or $ZIP_NAME to check them against each other"
+  else
+    manifest_digest="$(grep -Eo '[0-9a-fA-F]{64}' "$TMP/$SHA_NAME" | head -1 | tr 'A-F' 'a-f')"
+    zip_digest="$(shasum -a 256 "$TMP/$ZIP_NAME" | cut -d' ' -f1)"
+    if [ -n "$manifest_digest" ] && [ "$manifest_digest" = "$zip_digest" ]; then
+      note "✓ integrity manifest matches the zip (sha256 ${zip_digest:0:12}…)"
+    else
+      bad "integrity manifest does not match the zip (manifest: ${manifest_digest:-none}, zip: ${zip_digest:0:12}…). Boxes refuse to install an update whose manifest does not match."
+    fi
+  fi
+fi
+
 # 5. Release notes are present. We ALWAYS ship notes. A bare GitHub
 #    "**Full Changelog**" auto-link or an empty body does NOT count — strip
 #    those and require something real to remain.
@@ -154,8 +177,9 @@ if [ "$ok" = "1" ]; then
   exit 0
 else
   echo "❌ $TAG is INCOMPLETE — self-update is broken until this is fixed."
+  echo "   The manifest is written by release.sh:  ( cd deploy/dist && shasum -a 256 $ZIP_NAME > $SHA_NAME )"
   echo "   If assets are missing: npm run build:package && gh release upload $TAG \\"
-  echo "             deploy/dist/$ZIP_NAME deploy/dist/$PKG_NAME --repo $REPO --clobber"
+  echo "             deploy/dist/$ZIP_NAME deploy/dist/$PKG_NAME deploy/dist/$SHA_NAME --repo $REPO --clobber"
   echo "   If notes are missing:  gh release edit $TAG --repo $REPO --notes-file <file>"
   if [ "$PREFLIGHT" = "1" ]; then
     echo "   If it does NOT rank above stable, or is NOT a pre-release: an --clobber can't"
