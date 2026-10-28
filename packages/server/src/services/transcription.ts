@@ -440,8 +440,3 @@ export async function transcribeAudio(req: TranscribeAudioRequest): Promise<Tran
   }
   return transcribeCloud(choice.modelId, choice.providerId, choice.apiModelId, workingReq);
 }
-
-// Convenience for the cost recorder: a model id that means "the local
-// pseudo-engine". When this is passed to recordCost, the dispatcher
-// should record $0 directly rather than looking up a non-existent row.
-export const LOCAL_TRANSCRIPTION_MODEL_ID = '__local_stt__';

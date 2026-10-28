@@ -81,11 +81,6 @@ export function repairDecisionWindowTag(baseUrl: string): Promise<number | null>
   return ensureDecisionWindowTag(baseUrl);
 }
 
-/** Resolves when the tag work running now (if any) has finished. Starts nothing. */
-export async function decisionWindowSettled(): Promise<void> {
-  await inFlight?.catch(() => undefined);
-}
-
 async function makeTag(baseUrl: string): Promise<number | null> {
   try {
     const want = await desiredDecisionWindowTokens();

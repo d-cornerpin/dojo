@@ -448,7 +448,3 @@ export function stopTeamsWatcher(): void {
     logger.info('Teams watcher stopped');
   }
 }
-
-export function isTeamsWatcherRunning(): boolean {
-  return pollTimer !== null;
-}

@@ -593,7 +593,3 @@ export function stopGmailWatcher(): void {
     firstPollTimer = null;
   }
 }
-
-export function isGmailWatcherRunning(): boolean {
-  return pollTimer !== null;
-}

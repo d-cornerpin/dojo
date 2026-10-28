@@ -17,8 +17,6 @@ const resolver = makeCapabilityModelResolver({
   loggerName: 'video-gen-model',
 });
 
-export const getConfiguredVideoGenModelId = (): string | null => resolver.getConfiguredModelId();
-
 export const setConfiguredVideoGenModelId = (modelId: string | null): void =>
   resolver.setConfiguredModelId(modelId);
 

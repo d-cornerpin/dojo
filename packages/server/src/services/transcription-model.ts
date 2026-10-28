@@ -38,10 +38,6 @@ function isLocalId(value: string): value is LocalTranscriptionId {
   return (LOCAL_TRANSCRIPTION_IDS as readonly string[]).includes(value);
 }
 
-export function getConfiguredTranscriptionModelId(): string | null {
-  return cloudResolver.getConfiguredModelId();
-}
-
 export function setConfiguredTranscriptionModelId(modelId: string | null): void {
   cloudResolver.setConfiguredModelId(modelId);
 }

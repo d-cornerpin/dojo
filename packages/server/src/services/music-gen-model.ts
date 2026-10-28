@@ -20,8 +20,6 @@ const resolver = makeCapabilityModelResolver({
   loggerName: 'music-gen-model',
 });
 
-export const getConfiguredMusicGenModelId = (): string | null => resolver.getConfiguredModelId();
-
 export const setConfiguredMusicGenModelId = (modelId: string | null): void =>
   resolver.setConfiguredModelId(modelId);
 

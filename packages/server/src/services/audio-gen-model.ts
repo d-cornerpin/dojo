@@ -21,8 +21,6 @@ const resolver = makeCapabilityModelResolver({
   loggerName: 'audio-gen-model',
 });
 
-export const getConfiguredAudioGenModelId = (): string | null => resolver.getConfiguredModelId();
-
 export const setConfiguredAudioGenModelId = (modelId: string | null): void => {
   resolver.setConfiguredModelId(modelId);
   // FA-TS1: the tts_create description embeds the effective audio model's voice

@@ -19,8 +19,6 @@ const resolver = makeCapabilityModelResolver({
   loggerName: 'image-gen-model',
 });
 
-export const getConfiguredImageGenModelId = (): string | null => resolver.getConfiguredModelId();
-
 export const setConfiguredImageGenModelId = (modelId: string | null): void =>
   resolver.setConfiguredModelId(modelId);
 

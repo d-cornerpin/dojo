@@ -286,10 +286,6 @@ export function broadcast(event: WsEvent): void {
 
 // ── Status ──
 
-export function getConnectedClientCount(): number {
-  return clients.size;
-}
-
 export function getWSStatus(): { connections: number; clients: Array<{ id: number; userId: string; connectedAt: number; missedPings: number }> } {
   return {
     connections: clients.size,

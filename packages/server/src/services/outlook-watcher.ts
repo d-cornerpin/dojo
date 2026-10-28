@@ -510,7 +510,3 @@ export function stopOutlookWatcher(): void {
     logger.info('Outlook watcher stopped');
   }
 }
-
-export function isOutlookWatcherRunning(): boolean {
-  return pollTimer !== null;
-}
