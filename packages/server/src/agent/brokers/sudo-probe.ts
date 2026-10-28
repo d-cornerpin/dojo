@@ -34,11 +34,12 @@ const logger = createLogger('sudo-probe');
 /**
  * Cached per process, because the answer changes only when a human edits sudoers.
  *
- * `null` = not yet probed. A positive answer (passwordless works) is cached for the life of the
- * process; a NEGATIVE answer is cached too, and that is the deliberate part — the alternative is
- * probing on every sudo call of a box that will keep saying no, and the message tells the human the
- * change needs a restart-free path only if they ask for one. `resetSudoProbeCache` exists for tests
- * and for the settings route to call when the policy changes.
+ * Only a YES is cached, for the life of the process. A NO is never stored — it is re-asked on the
+ * next sudo line, because the owner can fix sudoers (the one line the prompt message prints) while
+ * the server is still running, and a cached "no" would keep refusing every later sudo line with the
+ * same "wants a password" text until a restart the message never mentions. Re-asking costs one
+ * short `sudo -n true` only on a box that is refusing sudo anyway. `resetSudoProbeCache` exists
+ * for tests and for the settings route to call when the policy changes.
  */
 let passwordless: boolean | null = null;
 
@@ -73,9 +74,10 @@ export async function sudoWouldHang(command: string): Promise<string | null> {
   if (!isSudoLine(trimmed) && !/(^|[\s;&|(])sudo\s/.test(trimmed)) return null;
   const policy = getSudoPolicy();
   if (policy === 'blocked') return null;
-  if (passwordless === null) {
-    passwordless = await probePasswordless();
-    logger.info('sudo passwordless probe', { passwordless, policy });
+  if (passwordless !== true) {
+    const probe = await probePasswordless();
+    if (probe) passwordless = true;
+    logger.info('sudo passwordless probe', { passwordless: probe, policy });
   }
   if (passwordless) return null;
   return sudoPasswordPromptMessage(os.userInfo().username, policy);
