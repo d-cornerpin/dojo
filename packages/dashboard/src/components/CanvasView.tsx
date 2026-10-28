@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useRightDock, type DockSpec } from './RightDockProvider';
 import { useActiveAgent } from './ActiveAgentProvider';
@@ -114,38 +115,6 @@ function fileIdFromUrl(url?: string): string | null {
   if (!url) return null;
   const m = url.match(/\/api\/upload\/download\/([^/?#]+)/);
   return m ? m[1] : null;
-}
-
-/**
- * Copy text robustly. The async Clipboard API only works in a secure context
- * (https / localhost) with focus + permission — over a tunnel, a LAN IP, or
- * when the page isn't focused it throws. So we try it, then fall back to the
- * legacy execCommand('copy') via a hidden textarea, which works on plain http
- * and older setups. Returns whether anything actually landed on the clipboard.
- */
-async function copyTextToClipboard(text: string): Promise<boolean> {
-  if (navigator.clipboard && window.isSecureContext) {
-    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
-  }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '0';
-    ta.style.left = '0';
-    ta.style.opacity = '0';
-    ta.style.pointerEvents = 'none';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' }> }) {

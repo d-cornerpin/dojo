@@ -5,6 +5,7 @@ import {
   credentialChipTitle,
   CREDENTIAL_CHIP_LABEL,
 } from '../lib/credential-placeholder';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 /**
  * Lightweight markdown renderer for chat messages.
@@ -133,7 +134,8 @@ export const CodeBlock = ({ code, language }: { code: string; language: string }
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(code).then(() => {
+    void copyTextToClipboard(code).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
@@ -171,7 +173,8 @@ const SourceBlock = ({ body, label }: { body: string; label?: string }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(body).then(() => {
+    void copyTextToClipboard(body).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
