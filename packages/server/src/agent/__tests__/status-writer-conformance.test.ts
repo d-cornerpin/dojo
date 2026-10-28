@@ -65,7 +65,6 @@ const STATUS_OWNER_MODULE = 'agent/agent-status.ts';
  */
 const SWEEP_OWNED_WRITERS: Record<string, string> = {
   'gateway/routes/agents.ts': 'SWEEP-E — the dashboard doors',
-  'services/imessage-commands.ts': 'SWEEP-A — the channel commands',
   'vault/maintenance.ts': 'SWEEP-C — the Dreamer, + one member of the re-enrolment class',
   'imaginer/imaginer-agent.ts': 'SWEEP-G — the Imaginer (re-enrolment class)',
   'techniques/trainer-agent.ts': 'SWEEP-D — the Trainer (re-enrolment class)',

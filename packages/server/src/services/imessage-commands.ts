@@ -258,9 +258,16 @@ function resumePrimaryAgent(): string {
   try {
     const db = getDb();
     const primaryId = getPrimaryAgentId();
-    db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(primaryId);
-    logger.info('Primary agent resumed via iMessage', { primaryId });
-    return 'Agent resumed.';
+    const current = db.prepare('SELECT status FROM agents WHERE id = ?').get(primaryId) as { status: string } | undefined;
+    if (current && (current.status === 'paused' || current.status === 'error')) {
+      // s07 F6: through the one status writer, which clears a park's tag and closes the
+      // "agent has stopped" owner card — the raw UPDATE did neither, and never checked
+      // whether the agent was paused at all.
+      writeAgentStatus(primaryId, 'idle', { clearError: true });
+      logger.info('Primary agent resumed via iMessage', { primaryId });
+      return 'Agent resumed.';
+    }
+    return 'Agent is not paused.';
   } catch (err) {
     logger.error('Failed to resume primary agent', {
       error: err instanceof Error ? err.message : String(err),
