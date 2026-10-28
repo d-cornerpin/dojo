@@ -7,6 +7,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from './embeddings.js';
 import { embeddingSourceAliveSql } from './embedding-sources.js';
+import { ftsSafeQuery } from './fts-query.js';
+import { ftsCandidateRowidFloor } from './search-bounds.js';
 
 const logger = createLogger('vector-search');
 
@@ -149,28 +151,58 @@ export async function hybridSearch(
   // Run both searches in parallel
   const db = getDb();
 
-  // FTS5 search
+  // FTS5 search — the keyword arm. It must stay in line with `searchMessagesInner` in
+  // retrieval.ts, the path that owns it. Three drifts are corrected here, each the reason this
+  // half silently went dead in the field: the MATCH text is FTS-safe (`ftsSafeQuery`, so a `?`,
+  // `.`, `'` or `-` in the question does not throw a syntax error that the catch swallows and
+  // drops the keyword half entirely); it ranks only the newest `FTS_CANDIDATE_ROWS` rows (a
+  // common term over a large table is a full synchronous B-tree walk on the serving thread); and
+  // it drops the agent's own pure tool_use echo (`isPureToolCallMessage`), which would otherwise
+  // trigger the grep-the-grep loop.
   const ftsResults: Array<{ sourceType: string; sourceId: string; preview: string; score: number }> = [];
-  try {
-    const ftsRows = db.prepare(`
-      SELECT m.id, m.content, m.role, rank
-      FROM messages_fts fts
-      JOIN messages m ON m.rowid = fts.rowid
-      WHERE messages_fts MATCH ? AND m.agent_id = ?
-      ORDER BY rank
-      LIMIT ?
-    `).all(query, agentId, limit) as Array<{ id: string; content: string; role: string; rank: number }>;
+  const pattern = ftsSafeQuery(query, 8);
+  if (pattern.length > 0) {
+    try {
+      // Dynamic import: retrieval.ts already imports this module dynamically, so a static import
+      // here would close the cycle.
+      const { isPureToolCallMessage } = await import('./retrieval.js');
 
-    for (const row of ftsRows) {
-      ftsResults.push({
-        sourceType: 'message',
-        sourceId: row.id,
-        preview: row.content.slice(0, 200),
-        score: -row.rank, // FTS5 rank is negative (lower = better)
-      });
+      const maxSeq = (db.prepare('SELECT MAX(seq) AS r FROM messages WHERE agent_id = ?').get(agentId) as { r: number | null } | undefined)?.r ?? 0;
+      const candidateFloor = ftsCandidateRowidFloor(maxSeq);
+
+      // Over-fetch, then drop echoes, then keep the first `limit` — the same shape as
+      // `searchMessagesInner`, so the two arms cannot drift apart again.
+      const fetchLimit = limit * 3;
+      const params: unknown[] = [pattern, agentId];
+      let floorClause = '';
+      if (candidateFloor > 0) {
+        floorClause = ' AND fts.rowid > ?';
+        params.push(candidateFloor);
+      }
+      params.push(fetchLimit);
+
+      const ftsRows = db.prepare(`
+        SELECT m.id, m.content, m.role, rank
+        FROM messages_fts fts
+        JOIN messages m ON m.rowid = fts.rowid
+        WHERE messages_fts MATCH ? AND m.agent_id = ?${floorClause}
+        ORDER BY rank
+        LIMIT ?
+      `).all(...params) as Array<{ id: string; content: string; role: string; rank: number }>;
+
+      const kept = ftsRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit);
+      for (const row of kept) {
+        ftsResults.push({
+          sourceType: 'message',
+          sourceId: row.id,
+          preview: row.content.slice(0, 200),
+          score: -row.rank, // FTS5 rank is negative (lower = better)
+        });
+      }
+    } catch (error) {
+      // Message text only — never the query text, which is user input and must not land in logs.
+      logger.warn('hybrid search keyword arm failed', { patternChars: query.length, error });
     }
-  } catch {
-    // FTS query might fail on special characters
   }
 
   // Vector search

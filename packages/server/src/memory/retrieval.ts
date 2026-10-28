@@ -45,7 +45,7 @@ function crumbFor(subsystem: string, mode: string): string {
 // search results. Messages that mix text + tool_use still surface
 // (the text might be a real hit). tool_result messages still surface
 // (those are observations of the world, not the agent's own calls).
-function isPureToolCallMessage(content: string): boolean {
+export function isPureToolCallMessage(content: string): boolean {
   if (!content.startsWith('[')) return false;
   try {
     const parsed = JSON.parse(content);
