@@ -46,8 +46,20 @@ interface MessageRow {
 // SQLite stores timestamps as "YYYY-MM-DD HH:MM:SS" (no T, no Z). Agents
 // will reasonably pass ISO-8601 ("2026-05-12T00:33:00Z" or with offset), 
 // normalize to the SQLite shape so string comparison works correctly.
-function normalizeTimestampForSqlite(input: string): string {
-  let s = input.trim();
+export function normalizeTimestampForSqlite(input: string): string {
+  // An explicit zone (Z or a +hh:mm / -hh:mm offset) names an INSTANT: read it and keep the
+  // UTC clock time, not the local one — a dropped "+07:00" shifts the unixepoch boundary by the
+  // offset. A bare clock time has no zone to honor and falls through unchanged.
+  const trimmed = input.trim();
+  const zoned = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})$/i.exec(trimmed);
+  if (zoned) {
+    const time = zoned[2].split(':').length === 2 ? `${zoned[2]}:00` : zoned[2];
+    const rawZone = zoned[3].toUpperCase();
+    const zone = rawZone !== 'Z' && !rawZone.includes(':') ? `${rawZone.slice(0, 3)}:${rawZone.slice(3)}` : rawZone;
+    const d = new Date(`${zoned[1]}T${time}${zone}`);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  let s = trimmed;
   // Replace the T separator with a space.
   s = s.replace('T', ' ');
   // Drop a trailing Z.
