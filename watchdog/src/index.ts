@@ -292,7 +292,6 @@ function ensureLogDir(): void {
 }
 
 function log(level: string, message: string, meta?: Record<string, unknown>): void {
-  ensureLogDir();
   const entry = JSON.stringify({
     timestamp: new Date().toISOString(),
     level,
@@ -300,7 +299,16 @@ function log(level: string, message: string, meta?: Record<string, unknown>): vo
     message,
     ...(meta ? { meta } : {}),
   });
-  fs.appendFileSync(LOG_PATH, entry + '\n');
+  // The log file is best-effort, like every other write the watchdog makes: a full
+  // disk or an unwritable ~/.dojo must never kill the daemon — the first statement
+  // of every check cycle is a log() call, and the alternative to a degraded
+  // watchdog is NO watchdog. The console line below still goes to launchd's log.
+  try {
+    ensureLogDir();
+    fs.appendFileSync(LOG_PATH, entry + '\n');
+  } catch {
+    // Unwritable log (disk full, permissions); keep watching anyway.
+  }
   if (level === 'error' || level === 'warn') {
     console.error(`[${level}] ${message}`);
   } else {
