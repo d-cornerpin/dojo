@@ -21,6 +21,7 @@ import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/mes
 import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
+import { sanitizeForIMessage } from './imessage-sanitize.js';
 import { recordAtDoor, withOutbound, withOutboundAsync, withOutboundAsyncIfAbsent, currentOutboundDeliveryId, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
 import { runMessagesProgram, wasCutByTheStop, wasNeverStarted, getImsgPath, IMSG_CANDIDATE_PATHS, convertHeicToJpeg } from './imessage-run.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -1772,16 +1773,7 @@ async function textDoor(recipient: string, rawText: string, opts: SendOpts): Pro
 async function sendIMessageInner(recipient: string, rawText: string, opts: SendOpts): Promise<SendResult> {
   // Sanitize for iMessage, strip markdown, literal \n, excessive whitespace.
   // This runs on ALL iMessage paths so nothing gets through unsanitized.
-  let text = rawText;
-  text = text.replace(/\\n/g, '\n');               // literal \n → real newline
-  text = text.replace(/\*\*(.+?)\*\*/g, '$1');     // **bold** → bold
-  text = text.replace(/\*(.+?)\*/g, '$1');          // *italic* → italic
-  text = text.replace(/`([^`]+)`/g, '$1');          // `code` → code
-  text = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').trim()); // code blocks
-  text = text.replace(/^#{1,6}\s+/gm, '');          // # headers → plain
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
-  text = text.replace(/\n{3,}/g, '\n\n');           // collapse excessive newlines
-  text = text.trim();
+  const text = sanitizeForIMessage(rawText);
 
   try {
     const imsg = getImsgPath();
