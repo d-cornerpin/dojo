@@ -45,6 +45,14 @@ export const ContactsPanel = () => {
       offset: p * PAGE_SIZE,
     });
     if (result.ok) {
+      // A save or delete can shrink the list past the page we are on, and the
+      // server does not clamp the offset — an empty answer here means "step
+      // back", not "nothing left". Stay on `loading` and let the retry clear it.
+      const lastPage = Math.max(0, Math.ceil(result.data.total / PAGE_SIZE) - 1);
+      if (p > lastPage) {
+        setPage(lastPage);
+        return load(q, sb, sd, lastPage);
+      }
       setContacts(result.data.contacts);
       setTotal(result.data.total);
     } else {
