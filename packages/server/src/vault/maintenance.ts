@@ -33,6 +33,7 @@ import {
   createDreamReport,
   incrementArchiveAttempt,
   markArchivePoisoned,
+  sqlUtcStamp,
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
@@ -154,7 +155,7 @@ function getDefaultDreamModel(): string | null {
 
 // ── Engine-Level Maintenance (no LLM needed) ──
 
-function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
+export function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
   const db = getDb();
   let pruned = 0;
 
@@ -165,14 +166,14 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
   pruned += hardDeleted.changes;
 
   // Mark obsolete: confidence < 0.5, never retrieved, older than 7 days
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = sqlUtcStamp(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
   const lowConfidence = db.prepare(
     'UPDATE vault_entries SET is_obsolete = 1, updated_at = datetime(\'now\') WHERE confidence < 0.5 AND retrieval_count = 0 AND created_at < ? AND is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0'
   ).run(sevenDaysAgo);
   pruned += lowConfidence.changes;
 
   // Decay confidence: not retrieved in 30 days, not pinned, not permanent
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const thirtyDaysAgo = sqlUtcStamp(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const decayResult = db.prepare(`
     UPDATE vault_entries SET confidence = MAX(0, confidence - 0.1), updated_at = datetime('now')
     WHERE is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0
@@ -186,7 +187,7 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
   // reaching for this", if the agent's not reaching for it, it shouldn't
   // be earning premium context space. Permanent entries are exempt
   // (USER.md-grade facts that should always be top-of-context).
-  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const sixtyDaysAgo = sqlUtcStamp(new Date(Date.now() - 60 * 24 * 60 * 60 * 1000));
   const unpinResult = db.prepare(`
     UPDATE vault_entries SET is_pinned = 0, updated_at = datetime('now')
     WHERE is_pinned = 1 AND is_permanent = 0 AND is_obsolete = 0
@@ -200,7 +201,7 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
   // agent never reached for in 6 months are noise. They stay in the DB
   // (is_obsolete = 1) so they're still searchable via history_search if a
   // future agent needs them, but they don't burn vault retrieval slots.
-  const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+  const oneEightyDaysAgo = sqlUtcStamp(new Date(Date.now() - 180 * 24 * 60 * 60 * 1000));
   const agedOutResult = db.prepare(`
     UPDATE vault_entries SET is_obsolete = 1, updated_at = datetime('now')
     WHERE is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0

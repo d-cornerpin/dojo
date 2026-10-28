@@ -1247,6 +1247,11 @@ export function getLatestDreamReport(): DreamReport | null {
 
 // ── Stats ──
 
+// Render a Date as the UTC text datetime('now') writes: 'YYYY-MM-DD HH:MM:SS'.
+export function sqlUtcStamp(d: Date): string {
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 export function getVaultStats(): {
   totalEntries: number;
   byType: Record<string, number>;
@@ -1275,7 +1280,7 @@ export function getVaultStats(): {
   todayStart.setHours(0, 0, 0, 0);
   const retrievedToday = (db.prepare(
     'SELECT COUNT(*) as c FROM vault_entries WHERE last_retrieved_at >= ? AND is_obsolete = 0'
-  ).get(todayStart.toISOString()) as { c: number }).c;
+  ).get(sqlUtcStamp(todayStart)) as { c: number }).c;
 
   // FA-V4: poisoned archives are not "waiting to be dreamed", they were tried
   // and parked. Exclude them so DREAM_BACKLOG stays honest and a parked archive
