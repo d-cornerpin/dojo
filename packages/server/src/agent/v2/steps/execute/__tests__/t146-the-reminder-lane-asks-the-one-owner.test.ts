@@ -54,7 +54,7 @@ describe('the reminder lane asks the same owner question', () => {
   const reminderSend = async (recipient: string): Promise<string> => {
     const state = {
       sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
-      structuringToolCalledThisTurn: false, steerQueue: [], heavyLoadsThisTurn: 0, lastContextRatio: 0,
+      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
       loopCount: 0, closeOutGateSatisfied: true, danglingTaskIds: [], compileGateSatisfied: true, compileOwedAskIds: [],
     };
     const ctx = {

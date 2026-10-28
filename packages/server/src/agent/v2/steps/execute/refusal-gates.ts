@@ -1,7 +1,7 @@
 // ════════════════════════════════════════
 // PHASE-6 T7 (CUT 7) — THE GATES THAT CAN REFUSE A CALL BEFORE IT RUNS, moved
-// byte-faithfully out of `loop.ts`'s `execute` span: the reminder-delivery lane
-// and its owner-drift arm, the A2A re-send cap, the thrash gate, the anti-hoarding
+// byte-faithfully out of `loop.ts`'s `execute` span: the reminder-delivery lane,
+// the A2A re-send cap, the thrash gate, the anti-hoarding
 // ADVISORY (which refuses nothing — it nudges and falls through, and its own
 // comment says so), and the pre-turn close-out gate.
 //
@@ -15,7 +15,6 @@
 // ════════════════════════════════════════
 
 import { broadcast } from '../../../../gateway/ws.js';
-import { getPresence } from '../../../../services/presence.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
@@ -58,22 +57,17 @@ export function runRefusalGates(
   const ENGINE_BLOCK_ESCAPE_HATCH = engineBlockEscapeHatch;
 
 
-  // ── Reminder-delivery lane + owner-drift arm (destination-from-root) ──
-  // Two refuse-once guards on channel sends, each costing legitimate
+  // ── Reminder-delivery lane (destination-from-root) ──
+  // A refuse-once guard on channel sends, costing legitimate
   // work at most one corrective round (an identical re-send proceeds):
   //  1. Reminder lane: this turn serves a kind='reminder' task (read
   //     structurally off the claimed trigger's task_id, migration 112).
   //     Reminder output belongs to the OWNER; a send naming someone who
   //     is not the owner is refused once with guidance ("remind my
   //     wife" repeats and goes through).
-  //  2. Owner-drift, GENERAL form (P6 destination-from-root; the battery
-  //     found the A2A gap: an A2A-poked turn about owner-rooted work
-  //     texted the owner a completion report while the owner sat at the
-  //     dashboard, and the old engine-served-only arm never fired). Any
-  //     turn, ANY lane (engine, A2A, dashboard): a send TO the owner
-  //     while the owner is IN the dojo belongs in chat, unless the turn
-  //     itself is rooted in the owner's own text conversation (the
-  //     owner texted us; replying in-channel is the conversation).
+  //  A send TO the owner is never refused (owner ruling 2026-10-27, GitHub #27/#28): the
+  //  presence switch is not proof the owner is watching, and on a turn rooted in someone
+  //  else's text the "chat reply" goes to that person. The channel choice is the agent's.
   if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
     const served = turnCtx.servedWork;
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
@@ -91,27 +85,6 @@ export function runRefusalGates(
             `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
             `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
             `repeat the exact same send and it will go through.`,
-          isError: true,
-        } };
-      }
-    } else if (
-      recip && recipIsOwner && getPresence() === 'in_dojo' &&
-      !(counterparty.kind === 'user' && counterparty.relation === 'owner' &&
-        (counterparty.channel === 'imessage' || counterparty.channel === 'sms'))
-    ) {
-      const driftSig = `owner-drift|${tc.name}|${recip}`;
-      if (!reminderLaneRefusedSigs.has(driftSig)) {
-        reminderLaneRefusedSigs.add(driftSig);
-        const rootNote = served?.originConvKey === 'owner'
-          ? 'This work was asked for in the owner\'s dashboard conversation and the owner is currently IN the dojo'
-          : 'The owner is currently IN the dojo (at the dashboard)';
-        return { state, refusal: {
-          toolCallId: tc.id,
-          name: tc.name,
-          content:
-            `Refused once: ${rootNote}, so deliver this to the owner as your chat reply (just say it); ` +
-            `no channel send is needed. ` +
-            `If the owner explicitly asked to be texted, repeat the exact same send and it will go through.`,
           isError: true,
         } };
       }
