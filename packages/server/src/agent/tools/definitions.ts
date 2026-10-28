@@ -1573,6 +1573,14 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['agent_id', 'group_id'],
     },
+    fields: {
+      group_id: {
+        requiredNotEnforced:
+          'null is a legitimate value: it removes the agent from its group (the description says so); ' +
+          'the handler judges group_id itself and keeps the same messages the generic boundary used ' +
+          'for a missing, non-string or blank value',
+      },
+    },
   },
   // ── Agent & Group Visibility Tools ──
   {

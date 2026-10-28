@@ -1384,7 +1384,37 @@ export const agentsHandlers: ToolHandlerMap = {
     let isError = false;
     const atgAgent = resolveAgentRef(args.agent_id as string, 'assign_to_group');
     if (!atgAgent.ok) { content = atgAgent.error; isError = true; return { content, isError }; }
-    const atgGroup = resolveGroupRef(args.group_id as string, 'assign_to_group');
+    // `group_id` is handler-judged (see the `fields` declaration): the description
+    // tells the model to pass null to ungroup, so null must reach the writer. The
+    // three refusals below are byte-identical to the generic boundary's messages
+    // for every other bad value — the model reads and retries on those strings.
+    const atgGroupArg = args.group_id;
+    if (atgGroupArg === undefined) {
+      content = 'Error: `group_id` is required.';
+      isError = true;
+      return { content, isError };
+    }
+    if (atgGroupArg === null) {
+      const ungroupResult = assignAgentToGroup(atgAgent.id, null);
+      if (!ungroupResult.ok) {
+        content = `Error: ${ungroupResult.error}`;
+        isError = true;
+      } else {
+        content = `Agent ${atgAgent.id} removed from its group (now ungrouped)`;
+      }
+      return { content, isError };
+    }
+    if (typeof atgGroupArg !== 'string') {
+      content = `Error: \`group_id\` must be a string (got ${Array.isArray(atgGroupArg) ? 'array' : typeof atgGroupArg}).`;
+      isError = true;
+      return { content, isError };
+    }
+    if (!atgGroupArg.trim()) {
+      content = 'Error: `group_id` cannot be empty.';
+      isError = true;
+      return { content, isError };
+    }
+    const atgGroup = resolveGroupRef(atgGroupArg, 'assign_to_group');
     if (!atgGroup.ok) { content = atgGroup.error; isError = true; return { content, isError }; }
     const assignResult = assignAgentToGroup(atgAgent.id, atgGroup.id);
     if (!assignResult.ok) {

@@ -167,6 +167,9 @@ describe('validateToolArgs is oracle-equivalent to the checkRequired sites it re
   for (const { tool, spec } of oracle) {
     it(`${tool}: compiled validator === hand-rolled checkRequired on every shape`, () => {
       for (const args of shapes) {
+        // null group_id is a legitimate value for assign_to_group (it ungroups),
+        // and the boundary no longer judges that field — this shape is out of scope.
+        if (tool === 'assign_to_group' && args.group_id === null) continue;
         expect(validateToolArgs(def(tool), args), `${tool} with ${JSON.stringify(args)}`)
           .toBe(checkRequired(spec(args)));
       }
