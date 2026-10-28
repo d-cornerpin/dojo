@@ -48,7 +48,7 @@ export const ForensicSearchPanel = () => {
   const [lastPurge, setLastPurge] = useState<{ deleted: number; total: number; failures: PurgeResult[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSearch = async () => {
+  const handleSearch = async (keepPurgeResult = false) => {
     const q = query.trim();
     if (q.length < 2) {
       setError('Query must be at least 2 characters.');
@@ -56,7 +56,7 @@ export const ForensicSearchPanel = () => {
     }
     setError(null);
     setSearching(true);
-    setLastPurge(null);
+    if (!keepPurgeResult) setLastPurge(null);
     try {
       const result = await api.request<{ query: string; total: number; hits: ForensicHit[] }>(
         `/memory/forensic-search?q=${encodeURIComponent(q)}`,
@@ -113,7 +113,7 @@ export const ForensicSearchPanel = () => {
           failures: result.data.results.filter(r => !r.deleted),
         });
         // Re-run the search so the table reflects the deletions.
-        await handleSearch();
+        await handleSearch(true);
       } else {
         setError(result.error);
       }
@@ -146,12 +146,12 @@ export const ForensicSearchPanel = () => {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
             placeholder="exact substring to search for"
             className="glass-input flex-1"
           />
           <button
-            onClick={handleSearch}
+            onClick={() => { void handleSearch(); }}
             disabled={searching || query.trim().length < 2}
             className="px-4 py-1.5 glass-btn-primary text-xs rounded-lg disabled:opacity-30"
           >
