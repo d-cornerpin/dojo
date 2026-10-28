@@ -341,6 +341,10 @@ export async function callWithRetryAndFallback(
           logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
             attempt, modelId,
           }, agentId);
+          // Phone streaming: the retry re-dials the SAME model from the first word, so the
+          // abandoned attempt's unspoken fragment must not be carried into it. The fallback
+          // path below applies the identical clear and no more.
+          if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
           continue;
         }
         revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
