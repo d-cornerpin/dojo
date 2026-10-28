@@ -676,6 +676,20 @@ configRouter.post('/providers', async (c) => {
   return c.json({ ok: true, data: rowToProvider(row) }, 201);
 });
 
+/**
+ * Remove every reference the rest of the DB still holds to a model: the router tier rows it
+ * sits in and the config keys that can point at it. Shared by the provider delete (which
+ * forgets several models at once, with FKs off) and the single-model delete, so the two
+ * forget-lists cannot drift again.
+ */
+function forgetModelReferences(modelId: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(modelId);
+  for (const key of ['pm_agent_model', 'dreaming_model_id', 'imaginer_image_model', 'imaginer_brain_model']) {
+    db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, modelId);
+  }
+}
+
 // DELETE /providers/:id
 configRouter.delete('/providers/:id', (c) => {
   try {
@@ -696,17 +710,20 @@ configRouter.delete('/providers/:id', (c) => {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
     }
 
-    // Clear PM and Dreamer model configs if they reference these models
+    // Remove tier rows and clear the model config keys (same forget list as the model delete)
     for (const mid of modelIds) {
-      db.prepare("DELETE FROM config WHERE key = 'pm_agent_model' AND value = ?").run(mid);
-      db.prepare("DELETE FROM config WHERE key = 'dreaming_model_id' AND value = ?").run(mid);
+      forgetModelReferences(mid);
     }
 
-    // Temporarily disable FK constraints, delete everything, re-enable
-    db.exec('PRAGMA foreign_keys = OFF');
-    db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
-    db.prepare('DELETE FROM providers WHERE id = ?').run(id);
-    db.exec('PRAGMA foreign_keys = ON');
+    // Temporarily disable FK constraints, delete everything, re-enable — always restore the
+    // pragma, even when a delete throws, so the shared connection is never left unguarded.
+    try {
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
+      db.prepare('DELETE FROM providers WHERE id = ?').run(id);
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON');
+    }
     clearClientCache(id);
     clearSecretsCache();
     logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length });
@@ -1808,13 +1825,8 @@ configRouter.delete('/models/:id', async (c) => {
     }, 409);
   }
 
-  // Clean up config references
-  for (const key of ['pm_agent_model', 'dreaming_model_id', 'imaginer_image_model', 'imaginer_brain_model']) {
-    db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, id);
-  }
-
-  // Remove from router tiers
-  db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(id);
+  // Clean up config references and remove from router tiers
+  forgetModelReferences(id);
 
   // Delete the model
   db.prepare('DELETE FROM models WHERE id = ?').run(id);
