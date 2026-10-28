@@ -116,16 +116,12 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
     since = anchor?.last_reply ?? anchor?.began ?? null;
   }
   const rows = db.prepare(
-    `SELECT c.id AS conversation_id, c.channel AS channel,
-            MAX(m.created_at) AS last_at,
-            (SELECT m2.role FROM messages m2
-              WHERE m2.conversation_id = c.id AND m2.agent_id = ?
-              ORDER BY m2.created_at DESC, m2.seq DESC LIMIT 1) AS last_role
-       FROM conversations c JOIN messages m ON m.conversation_id = c.id
-      WHERE c.agent_id = ? AND m.agent_id = ? AND c.channel <> 'a2a' AND c.id <> COALESCE(?, '')
-      GROUP BY c.id
+    `SELECT c.id AS conversation_id, c.channel AS channel, n.created_at AS last_at, n.role AS last_role
+       FROM conversations c
+       JOIN messages n ON n.seq = (SELECT MAX(m.seq) FROM messages m WHERE m.conversation_id = c.id AND m.agent_id = ?)
+      WHERE c.agent_id = ? AND c.channel <> 'a2a' AND c.id <> COALESCE(?, '')
       ORDER BY last_at DESC`,
-  ).all(agentId, agentId, agentId, currentConversationId) as Array<{
+  ).all(agentId, agentId, currentConversationId) as Array<{
     conversation_id: string; channel: string; last_at: number; last_role: string | null;
   }>;
 
