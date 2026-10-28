@@ -12,6 +12,9 @@ export const HealerVitals = () => {
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyNote, setDenyNote] = useState('');
   const [resolving, setResolving] = useState<string | null>(null);
+  // A refusal or offline answer to approve/deny is shown in place — this card
+  // has no toast hook, and silence left the owner guessing why nothing moved.
+  const [answerError, setAnswerError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [proposalsResult, actionsResult] = await Promise.all([
@@ -42,9 +45,12 @@ export const HealerVitals = () => {
 
   const handleApprove = async (id: string) => {
     setResolving(id);
+    setAnswerError(null);
     const result = await api.resolveHealerProposal(id, 'approve');
     if (result.ok) {
       setProposals(prev => prev.map(p => p.id === id ? { ...p, status: 'approved' } : p));
+    } else {
+      setAnswerError(result.error);
     }
     setResolving(null);
   };
@@ -56,12 +62,17 @@ export const HealerVitals = () => {
       return;
     }
     setResolving(id);
+    setAnswerError(null);
     const result = await api.resolveHealerProposal(id, 'deny', denyNote || undefined);
     if (result.ok) {
       setProposals(prev => prev.map(p => p.id === id ? { ...p, status: 'denied', user_note: denyNote || null } : p));
+      // Only a kept decision closes the box; a failed one must not throw the
+      // owner's note away with the request that failed to carry it.
+      setDenyingId(null);
+      setDenyNote('');
+    } else {
+      setAnswerError(result.error);
     }
-    setDenyingId(null);
-    setDenyNote('');
     setResolving(null);
   };
 
@@ -102,6 +113,7 @@ export const HealerVitals = () => {
           {/* Pending proposals */}
           {pendingProposals.length > 0 && (
             <div className="space-y-2">
+              {answerError && <p className="text-xs text-cp-coral mt-1">{answerError}</p>}
               {pendingProposals.map(p => (
                 <div key={p.id} className="glass-card p-3 border-l-2 border-cp-amber">
                   <div className="flex items-start justify-between gap-2">
