@@ -492,6 +492,7 @@ const CreateProjectModal = ({
                       }}
                       className="glass-select"
                     >
+                      <option value="">Unassigned</option>
                       {activeAgents.map((a) => (
                         <option key={a.id} value={a.id}>{a.name}</option>
                       ))}
@@ -519,6 +520,7 @@ const CreateProjectModal = ({
                 onChange={(e) => setTaskAssignee(e.target.value)}
                 className="glass-select"
               >
+                <option value="">Unassigned</option>
                 {activeAgents.map((a) => (
                   <option key={a.id} value={a.id}>{a.name}</option>
                 ))}
