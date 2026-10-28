@@ -211,7 +211,7 @@ cat > "$DEST/README.md" << 'READMEEOF'
 
 ## After Install
 
-- Dashboard: http://localhost:3000
+- Dashboard: http://localhost:3001
 - Start: `~/.dojo/scripts/start.sh`
 - Stop: `~/.dojo/scripts/stop.sh`
 - Status: `~/.dojo/scripts/status.sh`
