@@ -31,6 +31,10 @@ export const SummaryDetail = ({
   const [detail, setDetail] = useState<SummaryDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Load failures still blank the panel via `error`; a failed save or delete is a
+  // transient condition that must not throw away what the owner is editing, so it
+  // rides a separate state that renders inside the panel above the content.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
@@ -41,6 +45,7 @@ export const SummaryDetail = ({
   const loadDetail = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setActionError(null);
     const result = await api.getSummaryDetail(agentId, summaryId);
     if (result.ok) {
       setDetail(result.data);
@@ -58,6 +63,7 @@ export const SummaryDetail = ({
 
   const handleSave = async () => {
     if (!detail) return;
+    setActionError(null);
     setSaving(true);
     const result = await api.updateSummary(agentId, summaryId, editContent);
     if (result.ok) {
@@ -65,18 +71,19 @@ export const SummaryDetail = ({
       setEditing(false);
       onUpdated();
     } else {
-      setError(result.error);
+      setActionError(result.error);
     }
     setSaving(false);
   };
 
   const handleDelete = async () => {
+    setActionError(null);
     setDeleting(true);
     const result = await api.deleteSummary(agentId, summaryId);
     if (result.ok) {
       onDeleted();
     } else {
-      setError(result.error);
+      setActionError(result.error);
     }
     setDeleting(false);
     setShowDeleteConfirm(false);
@@ -163,6 +170,12 @@ export const SummaryDetail = ({
           )}
         </div>
       </div>
+
+      {/* A failed save/delete rides here so the editor and its text survive; a load
+          failure still blanks the panel above. */}
+      {actionError && (
+        <div className="alert-banner alert-error text-xs">{actionError}</div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
