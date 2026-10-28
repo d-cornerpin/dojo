@@ -20,7 +20,7 @@ import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import {
   taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
-  statusToState, type TrackerStatus,
+  statusToState, tsToMs, type TrackerStatus,
 } from '../work/tracker-view.js';
 import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
@@ -1001,11 +1001,11 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.notes !== undefined) patch.notes = updates.notes;
   if (updates.title !== undefined) patch.title = updates.title;
   if (updates.description !== undefined) patch.description = updates.description;
-  if (updates.pausedUntil !== undefined) patch.paused_until = tsToMsOrNull(updates.pausedUntil);
+  if (updates.pausedUntil !== undefined) patch.paused_until = tsToMs(updates.pausedUntil);
   if (updates.dependsOn !== undefined) patch.depends_on = JSON.stringify(updates.dependsOn);
   if (updates.stepNumber !== undefined) patch.step_number = updates.stepNumber;
   if (updates.phase !== undefined) patch.phase = updates.phase;
-  if (updates.scheduledStart !== undefined) patch.scheduled_start = tsToMsOrNull(updates.scheduledStart);
+  if (updates.scheduledStart !== undefined) patch.scheduled_start = tsToMs(updates.scheduledStart);
   if (updates.repeatInterval !== undefined) patch.repeat_interval = updates.repeatInterval;
   if (updates.repeatUnit !== undefined) patch.repeat_unit = updates.repeatUnit;
   if (updates.repeatEndType !== undefined) patch.repeat_end_type = updates.repeatEndType;
@@ -1083,14 +1083,6 @@ export function setTaskStatusResult(id: string, status: TrackerStatus, input: Se
 // PM-ruled blocked row). Guarding both doors would have meant two copies of one predicate.
 // So the gate moved DOWN to the crossing point rather than being repeated, and these two
 // functions get its refusal through the result they already pass on unchanged.
-
-/** SQLite-form TEXT -> epoch ms, for the two legacy TEXT instants `updateTask` still takes
- *  from its callers (the tool arguments are ISO strings the model wrote). */
-function tsToMsOrNull(text: string | null): number | null {
-  if (text == null || text === '') return null;
-  const ms = Date.parse(/[TZ]|[+-]\d\d:?\d\d$/.test(text) ? text : `${text}Z`);
-  return Number.isNaN(ms) ? null : ms;
-}
 
 export function addTaskNotes(id: string, notes: string): void {
   const timestamp = new Date().toISOString();
