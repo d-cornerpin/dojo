@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { Project, Task, AgentDetail } from '@dojo/shared';
 import type { WsEvent, TrackerTaskUpdatedEvent, TrackerProjectUpdatedEvent } from '@dojo/shared';
@@ -852,6 +852,10 @@ export const Tracker = () => {
   }, [loadData]);
 
   // WebSocket subscriptions
+  // The subscriptions must not re-fire when the filter changes, so the task
+  // handler below reads the current filter through this ref.
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
   useEffect(() => {
     const unsubTask = subscribe('tracker:task_updated', (event: WsEvent) => {
       const e = event as TrackerTaskUpdatedEvent;
@@ -863,14 +867,20 @@ export const Tracker = () => {
         console.warn('[Tracker] tracker:task_updated missing data payload; ignoring', event);
         return;
       }
+      // A frame carries the task's own project; the board only shows the
+      // selected one. A foreign task already on the board has just been moved
+      // away — it leaves. One not yet held is not this board's news at all.
+      const sel = selectedProjectIdRef.current;
+      const belongs = sel === 'all' || e.data.projectId === sel;
       setTasks((prev) => {
         const idx = prev.findIndex((t) => t.id === e.data.id);
         if (idx >= 0) {
+          if (!belongs) return prev.filter((t) => t.id !== e.data.id);
           const updated = [...prev];
           updated[idx] = e.data;
           return updated;
         }
-        return [...prev, e.data];
+        return belongs ? [...prev, e.data] : prev;
       });
     });
 
