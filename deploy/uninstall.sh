@@ -30,10 +30,26 @@ launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
 BACKUP_DIR="$HOME/dojo-backup-$(date +%Y%m%d-%H%M%S)"
 echo "💾 Backing up data to $BACKUP_DIR..."
 mkdir -p "$BACKUP_DIR"
-cp "$DOJO_DIR/data/dojo.db" "$BACKUP_DIR/" 2>/dev/null || true
+if [ -f "$DOJO_DIR/data/dojo.db" ]; then
+  command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$DOJO_DIR/data/dojo.db" ".backup '$BACKUP_DIR/dojo.db'" 2>/dev/null || {
+    rm -f "$BACKUP_DIR/dojo.db"
+    cp "$DOJO_DIR/data/dojo.db" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$DOJO_DIR/data/dojo.db-wal" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$DOJO_DIR/data/dojo.db-shm" "$BACKUP_DIR/" 2>/dev/null || true
+  }
+fi
 cp "$DOJO_DIR/secrets.yaml" "$BACKUP_DIR/" 2>/dev/null || true
 cp -r "$DOJO_DIR/prompts" "$BACKUP_DIR/" 2>/dev/null || true
 cp -r "$DOJO_DIR/techniques" "$BACKUP_DIR/" 2>/dev/null || true
+if [ -f "$DOJO_DIR/data/dojo.db" ] && [ ! -s "$BACKUP_DIR/dojo.db" ]; then
+  echo "❌ Your database could not be copied to $BACKUP_DIR, so nothing was removed."
+  echo "   Free some disk space or fix the folder's permissions, then run the uninstaller again."
+  exit 1
+fi
+if [ -f "$DOJO_DIR/secrets.yaml" ] && [ ! -s "$BACKUP_DIR/secrets.yaml" ]; then
+  echo "❌ Your secrets file could not be copied to $BACKUP_DIR, so nothing was removed."
+  exit 1
+fi
 
 # Remove launchd plists
 echo "🗑  Removing system services..."
