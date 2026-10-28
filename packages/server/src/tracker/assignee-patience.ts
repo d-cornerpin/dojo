@@ -164,7 +164,8 @@ export function assigneeLastState(agentId: string | null | undefined): string {
   try {
     const row = getDb().prepare(
       `SELECT a.status AS status, a.updated_at AS updated_at,
-              (SELECT MAX(created_at) FROM messages WHERE agent_id = a.id) AS last_message_at
+              (SELECT strftime('%Y-%m-%d %H:%M:%S', MAX(created_at) / 1000, 'unixepoch')
+                 FROM messages WHERE agent_id = a.id) AS last_message_at
          FROM agents a WHERE a.id = ?`,
     ).get(agentId) as
       { status: string; updated_at: string | null; last_message_at: string | null } | undefined;

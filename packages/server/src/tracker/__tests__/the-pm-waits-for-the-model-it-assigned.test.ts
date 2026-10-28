@@ -110,10 +110,13 @@ function createAgentsTable(db: Database.Database): void {
     id TEXT PRIMARY KEY, name TEXT, status TEXT, model_id TEXT,
     updated_at TEXT, session_started_at TEXT)`);
 }
+/** `messages.created_at` is an epoch-ms INTEGER since migration 131; the fixture must match it,
+ *  or a reader that formats the column never sees what the real table would have returned. */
 function createMessagesTable(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS messages (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, agent_id TEXT NOT NULL,
-    role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    role TEXT NOT NULL, content TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000))`);
 }
 /** `models JOIN providers` — the shape `patienceFloorFor` reads, which is the shape migration
  *  163 rides and `agent/model.ts` already performs. */
@@ -518,6 +521,39 @@ describe('§3 a human reassignment is recorded at both of its doors', () => {
     // The ladder re-arm the call site used to do by itself now rides along, inseparably.
     expect(eventCount('t-moved', 'poke_remediation'),
       'the record and the re-arm must not be able to come apart').toBe(1);
+  });
+
+  it('the prior assignee\'s last activity is the newest message as a UTC date, never epoch digits', () => {
+    seedAssignee({ agentId: SLOW_AGENT, status: 'working' });
+    // `created_at` is epoch-ms INTEGER (migration 131): 1760000000000 ms is 2025-10-09 08:53:20 UTC.
+    mockDb.current!.prepare(
+      'INSERT INTO messages (agent_id, role, content, created_at) VALUES (?, ?, ?, ?)',
+    ).run(SLOW_AGENT, 'assistant', 'still thinking', 1_760_000_000_000);
+    seedStaleTask('t-digits', 10);
+
+    recordReassignment({
+      taskId: 't-digits', actor: 'user', fromAgentId: SLOW_AGENT, toAgentId: PRIMARY,
+      reason: 'owner moved it at the board',
+    });
+
+    const rows = auditRows('t-digits', PATIENCE_ENTRY.reassigned);
+    expect(rows.length).toBe(1);
+    expect(rows[0].payload, 'the note an owner reads to judge staleness must carry a date')
+      .toContain('last activity 2025-10-09 08:53:20');
+    expect(rows[0].payload, 'and never the raw 13 digits of the epoch-ms column')
+      .not.toContain('1760000000000');
+
+    // The control: with no message rows the agent's own `updated_at` text is still printed as-is.
+    seedAssignee({ agentId: 'quiet-agent', status: 'idle' });
+    seedStaleTask('t-quiet', 10);
+    recordReassignment({
+      taskId: 't-quiet', actor: 'user', fromAgentId: 'quiet-agent', toAgentId: PRIMARY,
+      reason: 'owner moved this one too',
+    });
+    const quiet = auditRows('t-quiet', PATIENCE_ENTRY.reassigned);
+    expect(quiet.length).toBe(1);
+    expect(quiet[0].payload, 'the no-message fallback is the agents.updated_at text, unchanged')
+      .toContain('last activity 2026-01-01');
   });
 
   it('WIRE: the dashboard\'s task update records it, reading the prior assignee first', () => {
