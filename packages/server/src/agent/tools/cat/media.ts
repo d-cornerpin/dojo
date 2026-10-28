@@ -96,6 +96,7 @@ import { getPresence } from '../../../services/presence.js';
 import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
+import { resolvePath } from '../../path-guards.js';
 import { recordCost } from '../../../costs/tracker.js';
 import { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } from '../../../services/transcription.js';
 import { submitVideoJob } from '../../../services/video-generation.js';
@@ -770,6 +771,9 @@ const handlers = {
     let audio: Buffer;
     let mimeType: string;
     let filename: string;
+    // What the audit line names this source as: the attachment id, the resolved
+    // file path, or the url — whichever branch actually produced the audio.
+    let sourceLabel: string;
     if (attachmentId) {
       const resolved = resolveAttachmentPath(attachmentId);
       if (!resolved) {
@@ -786,12 +790,13 @@ const handlers = {
       }
       mimeType = resolved.mimeType || 'audio/mpeg';
       filename = resolved.filename;
+      sourceLabel = `attachment ${attachmentId}`;
     } else if (pathArg) {
       // Sandbox the path to the dojo uploads dir to prevent the
       // agent from accidentally (or maliciously) reading arbitrary
       // files off disk.
       const uploadsRoot = pathModule.join(homeDir(), '.dojo', 'uploads');
-      const resolvedPath = pathModule.resolve(pathArg);
+      const resolvedPath = pathModule.resolve(resolvePath(pathArg));
       if (!resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
         content = `Error: path must be inside ~/.dojo/uploads/ (got ${resolvedPath}).`;
         isError = true;
@@ -820,6 +825,7 @@ const handlers = {
         ext === '.aac' ? 'audio/aac' :
         ext === '.flac' ? 'audio/flac' :
         'audio/mpeg';
+      sourceLabel = `path ${resolvedPath}`;
     } else {
       const fetched = await fetchAudioUrl(agentId, urlArg!);
       if ('error' in fetched) {
@@ -834,10 +840,11 @@ const handlers = {
       audio = fetched.buffer;
       mimeType = fetched.mimeType;
       filename = fetched.filename;
+      sourceLabel = `url ${urlArg}`;
     }
 
-    auditLog(agentId, 'transcribe_audio', null, 'success',
-      `Source ${attachmentId ? `attachment ${attachmentId}` : `url ${urlArg}`}, ${audio.length} bytes`);
+    auditLog(agentId, 'transcribe_audio', sourceLabel.slice(0, 200), 'success',
+      `Source ${sourceLabel}, ${audio.length} bytes`);
 
     const result = await transcribeAudio({ agentId, audio, mimeType, filename, language });
     if (!result.ok) {
