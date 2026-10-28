@@ -45,12 +45,6 @@
  */
 export const CREDENTIAL_PLACEHOLDER_SOURCE = '<redacted-credential(?::([a-z0-9]+))?>';
 
-/** Anchored at a leading run of non-placeholder text, for the inline renderer's
- *  candidate scan: `[1]` is the text before, `[2]` the handle (or undefined). */
-export function credentialPlaceholderLeadingRe(): RegExp {
-  return new RegExp(`^(.*?)${CREDENTIAL_PLACEHOLDER_SOURCE}`, 's');
-}
-
 /** One span of a message: ordinary text, or a credential the platform is holding. */
 export type CredentialSegment =
   | { kind: 'text'; text: string }
