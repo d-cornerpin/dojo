@@ -100,6 +100,11 @@ export class CallSession {
   private agentId: string | null = null;
   private startedAt = Date.now();
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  // Per-session caller-utterance counter, used to give every utterance of a
+  // call its own external message id (CA123:1, CA123:2, ...). The unique index
+  // on (agent_id, channel, external_message_id) would silently drop later
+  // utterances if they all shared the bare call sid.
+  private utteranceSeq = 0;
 
   // Inbound buffering + VAD state.
   private speechBuffer: Float32Array[] = [];
@@ -523,7 +528,7 @@ export class CallSession {
         role: 'user',
         content,
         conversationId,
-        externalMessageId: this.callSid ?? null,
+        externalMessageId: `${this.callSid}:${++this.utteranceSeq}`,
         channel: inboundMetaObj.channel,
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
