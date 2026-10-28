@@ -314,7 +314,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
             onAllChange={setWriteAll} onListChange={setWriteList} placeholder="~/Projects/**, /tmp/**" />
         </PermRow>
         <PermRow label="Delete Files" description="Allow this agent to permanently delete files" enabled={deleteOn} onToggle={setDeleteOn} warning>
-          <SubOption allLabel="All files" specificLabel="Specific folders" isAll={deleteAll} list={deleteList}
+          <SubOption allLabel="The temporary folder" specificLabel="Specific folders" isAll={deleteAll} list={deleteList}
             onAllChange={setDeleteAll} onListChange={setDeleteList} placeholder="/tmp/**" />
         </PermRow>
       </Section>
