@@ -11,7 +11,7 @@
 //   captureSiteScreenshot()  → full-page PNG of the rendered page
 // ════════════════════════════════════════════════════════════════════════
 
-import { chromium, type Browser } from 'playwright';
+import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { createLogger } from '../logger.js';
 import { openAgentCall, STOPPED_BY_USER } from './abortable-call.js';
 import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
@@ -114,16 +114,17 @@ export async function captureSiteScreenshot(url: string, agentId?: string): Prom
   // the in-flight navigation. Registering it is what makes the work visible to the stop at all
   // — the alternative is a 30 s render nobody can reach, which is the A-6 defect itself.
   const slot = agentId === undefined ? null : openAgentCall(agentId, 'turn');
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
-    userAgent: BROWSER_UA,
-  });
-  if (slot) {
-    slot.signal.addEventListener('abort', () => { void context.close().catch(() => {}); }, { once: true });
-    if (slot.refused) { slot.release(); await context.close().catch(() => {}); throw new Error(STOPPED_BY_USER); }
-  }
-  const page = await context.newPage();
+  let context: BrowserContext | undefined;
   try {
+    context = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: BROWSER_UA,
+    });
+    if (slot) {
+      slot.signal.addEventListener('abort', () => { void context?.close().catch(() => {}); }, { once: true });
+      if (slot.refused) { slot.release(); await context.close().catch(() => {}); throw new Error(STOPPED_BY_USER); }
+    }
+    const page = await context.newPage();
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     } catch {
@@ -137,6 +138,6 @@ export async function captureSiteScreenshot(url: string, agentId?: string): Prom
     return png;
   } finally {
     slot?.release();
-    await context.close().catch(() => { /* already gone */ });
+    await context?.close().catch(() => { /* already gone */ });
   }
 }
