@@ -1953,7 +1953,3 @@ export function renderVoiceConduct(
   }
   return null;
 }
-
-export function getPromptFilePath(filename: string): string {
-  return path.join(PROMPTS_DIR, filename);
-}

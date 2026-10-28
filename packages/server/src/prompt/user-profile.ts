@@ -88,15 +88,6 @@ export function defaultUserProfile(): string {
   return DEFAULT_USER_MD.replace(UNSET_NAME_LINE, `- Name: ${getOwnerName()}`);
 }
 
-/** Does this box have an edited profile on disk? */
-export function userProfileExists(): boolean {
-  try {
-    return fs.existsSync(userProfilePath());
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The box's profile: its edited copy, or the default seeded to disk on first read.
  *

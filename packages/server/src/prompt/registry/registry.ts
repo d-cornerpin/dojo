@@ -22,10 +22,6 @@ export function register(entry: PromptInjection): void {
   REGISTRY.push(entry);
 }
 
-export function registerAll(entries: PromptInjection[]): void {
-  for (const e of entries) register(e);
-}
-
 function bySlotThenOrder(a: PromptInjection, b: PromptInjection): number {
   const slotDelta = (a.slot as number) - (b.slot as number);
   if (slotDelta !== 0) return slotDelta;
