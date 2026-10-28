@@ -210,6 +210,17 @@ setupRouter.post('/complete', async (c) => {
     scheduleDreamingCycle();
   } catch { /* ignore */ }
 
+  // Start the scheduler clock. At boot it starts only when setup was already complete, so on a fresh
+  // box this is the only place it can start; it is idempotent, so a box that already runs it is unchanged.
+  try {
+    const { startScheduler } = await import('../../scheduler/clock.js');
+    startScheduler();
+  } catch (err) {
+    logger.error('Failed to start the scheduler clock after setup', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Run first-run profile bootstrap (Dreamer processes USER.md into vault)
   try {
     const { runFirstRunProfileBootstrap } = await import('../../vault/maintenance.js');
