@@ -23,6 +23,7 @@ import { homeDir } from './home.js';
 import { startStallSentinel } from './observability/stall-sentinel.js';
 import { terminateReaderPool, warmReaderPool } from './memory/reader-pool.js';
 import { scheduleFtsHealthCheck, stopFtsRepair } from './memory/fts-health.js';
+import { stopBackgroundClocks } from './shutdown-clocks.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -1290,7 +1291,13 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     logger.info('Shutting down...');
     clearInterval(timeoutInterval);
-    // ⚠ THE TWO WORKER THREADS GO FIRST (t89 I1). `process.exit()` JOINS a worker, and nothing in
+    // STEP 1 — STOP THE WORK CLOCKS FIRST. `server.close` waits for open connections, so the
+    // window between SIGTERM and exit can be long, and during it the three boot clocks (the work
+    // reaper, the scheduler, the PM poke loop) keep waking agents, sending owner notices and
+    // writing rows. Each stop is idempotent and safe if never started; each is guarded so one
+    // failure cannot skip the others.
+    stopBackgroundClocks();
+    // STEP 2 — THE TWO WORKER THREADS GO NEXT (t89 I1). `process.exit()` JOINS a worker, and nothing in
     // JavaScript preempts a native sqlite call — measured: an `unref`'d worker inside a 4.65s
     // statement held the exit to 5.6s. An FTS repair is minutes, so a SIGTERM during the
     // once-per-box rebuild hung until launchd SIGKILLed the process and the transaction rolled
@@ -1307,6 +1314,7 @@ async function main(): Promise<void> {
     import('./services/video-poller-lifetime.js').then(m => m.stopVideoJobPoller()).catch(() => {});
     // Stop tunnel gracefully
     import('./services/tunnel.js').then(m => m.stopTunnel()).catch(() => {});
+    // STEP 3 — `server.close` waits for open connections; its callback closes the DB and exits.
     server.close(async () => {
       const { closeDb } = await import('./db/connection.js');
       closeDb();
