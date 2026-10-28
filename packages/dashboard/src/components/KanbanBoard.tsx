@@ -269,7 +269,7 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
   const handleDrop = (taskId: string, newStatus: Task['status']) => {
     // Find the task to check if status actually changed
     const task = tasks.find(t => t.id === taskId);
-    if (task && task.status !== newStatus) {
+    if (task && columnKeyForStatus(task.status) !== newStatus) {
       onStatusChange(taskId, newStatus);
     }
   };
