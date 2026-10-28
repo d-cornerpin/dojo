@@ -100,15 +100,22 @@ export const Techniques = () => {
     setTechniques(sorted);
   };
 
+  // The event handlers below subscribe once (the real `subscribe` never
+  // changes), so calling `load` directly would freeze the mount render's
+  // filters — a frame would fetch the unfiltered list and replace what the
+  // owner is looking at. The ref keeps every handler on the LATEST `load`.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
   useEffect(() => { load(); }, [stateFilter, tagFilter]);
 
   // Refresh on technique events (used, created, published, updated)
   useEffect(() => {
-    const unsub1 = subscribe('technique:used', () => load());
-    const unsub2 = subscribe('technique:created', () => load());
-    const unsub3 = subscribe('technique:published', () => load());
-    const unsub4 = subscribe('technique:updated', () => load());
-    const unsub5 = subscribe('technique:state_changed', () => load());
+    const unsub1 = subscribe('technique:used', () => loadRef.current());
+    const unsub2 = subscribe('technique:created', () => loadRef.current());
+    const unsub3 = subscribe('technique:published', () => loadRef.current());
+    const unsub4 = subscribe('technique:updated', () => loadRef.current());
+    const unsub5 = subscribe('technique:state_changed', () => loadRef.current());
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); };
   }, [subscribe]);
 
