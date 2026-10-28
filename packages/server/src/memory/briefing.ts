@@ -19,16 +19,14 @@ export async function generateBriefing(
   const db = getDb();
 
   // Gather recent summaries (depth 1 and 2, last 48 hours)
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-
   const recentSummaries = db.prepare(`
     SELECT id, depth, kind, content, earliest_at, latest_at, token_count
     FROM summaries
     WHERE agent_id = ?
       AND depth >= 1
-      AND created_at >= ?
+      AND created_at >= datetime('now', '-48 hours')
     ORDER BY earliest_at ASC
-  `).all(agentId, cutoff) as Array<{
+  `).all(agentId) as Array<{
     id: string;
     depth: number;
     kind: string;
