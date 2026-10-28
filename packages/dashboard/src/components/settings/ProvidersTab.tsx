@@ -150,6 +150,7 @@ export const ProvidersTab = () => {
             loadProviders();
             setShowAdd(false);
           }}
+          onCreated={() => { loadProviders(); }}
           onCancel={() => setShowAdd(false)}
         />
       ) : (
@@ -555,7 +556,7 @@ const ProviderEditForm = ({ provider, onSaved, onCancel }: {
   );
 };
 
-const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) => {
+const AddProviderForm = ({ onAdded, onCreated, onCancel }: { onAdded: () => void; onCreated?: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
   // The dropdown 'preset' is a UI-only label. Several presets (deepseek,
   // openrouter, manual) all map to the same backend type 'openai-compatible'
@@ -656,6 +657,10 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       setStatus('idle');
       return;
     }
+
+    // The provider is stored whether or not the check below passes, so the list
+    // learns about it now — a failed check must not leave it invisible.
+    onCreated?.();
 
     // Validate the credential
     setStatus('validating');
