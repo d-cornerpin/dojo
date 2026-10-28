@@ -71,9 +71,3 @@ export function primaryReady(who: string, primaryId: string, retry: () => void):
   setTimeout(retry, 5_000);
   return false;
 }
-
-/** Test seam. Forgetting a count is always safe — the next cycle re-derives it. */
-export function forgetPrimaryWait(who?: string): void {
-  if (who === undefined) waited.clear();
-  else waited.delete(who);
-}

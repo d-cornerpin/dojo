@@ -290,14 +290,6 @@ export async function closeSession(agentId: string): Promise<void> {
   }
 }
 
-// Close all sessions on agent termination
-export async function closeAllSessions(): Promise<void> {
-  for (const [agentId, session] of sessions) {
-    await session.close();
-    sessions.delete(agentId);
-  }
-}
-
 // ── Tool Executor ──
 
 export async function executeWebBrowse(

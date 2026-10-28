@@ -250,17 +250,6 @@ export function renderPeerStatusLine(agentId: string): string {
   return `[Peer status: ${members.map(m => `${m.name} ${m.status}`).join(', ')}]`;
 }
 
-// ── Check if agents can message each other (intra-group) ──
-
-export function canMessageInGroup(senderId: string, recipientId: string): boolean {
-  const db = getDb();
-  const sender = db.prepare('SELECT group_id FROM agents WHERE id = ?').get(senderId) as { group_id: string | null } | undefined;
-  const recipient = db.prepare('SELECT group_id FROM agents WHERE id = ?').get(recipientId) as { group_id: string | null } | undefined;
-
-  if (!sender?.group_id || !recipient?.group_id) return false;
-  return sender.group_id === recipient.group_id;
-}
-
 // ── Ensure System Group exists and permanent agents are in it ──
 
 export function ensureSystemGroup(): void {
