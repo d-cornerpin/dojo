@@ -157,11 +157,11 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     const whisper = missing.find((m) => m.kind === 'whisper');
     if (kokoro) {
       const res = await api.installVoiceModel(kokoro.kind, kokoro.id);
-      if (!res.ok) { setError(res.error); return; }
+      if (!res.ok) { setError(res.error); setInstalling(false); return; }
     }
     if (whisper) {
       const res = await api.installVoiceModel(whisper.kind, whisper.id);
-      if (!res.ok) setError(res.error);
+      if (!res.ok) { setError(res.error); setInstalling(false); }
     }
   };
 
