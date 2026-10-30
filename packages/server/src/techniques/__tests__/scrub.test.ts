@@ -29,7 +29,7 @@ describe('scrubFiles — a recognised shape becomes a placeholder', () => {
 
     expect(scrubbed.get('a.md')).toBe(
       'key {{NEEDS_FROM_USER:ANTHROPIC_API_KEY}} and ' +
-        '{{NEEDS_FROM_USER:GITHUB_TOKEN}} {{NEEDS_FROM_USER:API_TOKEN}}',
+        '{{NEEDS_FROM_USER:GITHUB_TOKEN}} API_TOKEN={{NEEDS_FROM_USER:API_TOKEN}}',
     );
     expect(redactions.map((r) => r.pattern)).toEqual([
       'anthropic-key',
@@ -99,7 +99,7 @@ describe('scrubFiles — every remaining PATTERNS entry', () => {
       label: 'SERVICE_URL_WITH_CREDENTIALS',
       expected: '{{NEEDS_FROM_USER:SERVICE_URL_WITH_CREDENTIALS}}/db',
     },
-    { name: 'bearer-header', secret: 'Bearer ' + 'a'.repeat(24), label: 'BEARER_TOKEN' },
+    { name: 'bearer-header', secret: 'Bearer ' + 'a'.repeat(24), label: 'BEARER_TOKEN', expected: 'Bearer {{NEEDS_FROM_USER:BEARER_TOKEN}}' },
   ];
 
   for (const c of cases) {
