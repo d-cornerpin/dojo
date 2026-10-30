@@ -73,11 +73,12 @@ describe('A live technique event refreshes the list the filters drew, not the wh
     fireEvent.click(screen.getByRole('button', { name: 'Published' }));
     await waitFor(() => expect(mocked().request).toHaveBeenCalledWith('/techniques?state=published'));
 
-    // The page's own 300ms search-debounce fires the MOUNT render's load once
-    // more, unfiltered, whatever the chip says (measured in `a-failed-load-says-so`:
-    // the debounced effect runs once after mount). Let that settled call pass by
-    // before the frame arrives, so only the frame's reload can be its successor.
-    await waitFor(() => expect(lastCall()).toBe('/techniques?'), { timeout: 1500 });
+    // The page's own 300ms search-debounce fires once after mount (it used to
+    // fetch unfiltered under the chip — that was the bug, not the contract; it
+    // now reloads with the current filters). Let that call pass by before the
+    // frame arrives, so only the frame's reload can be its successor.
+    await waitFor(() => expect(mocked().request).toHaveBeenCalledTimes(3), { timeout: 1500 });
+    expect(lastCall()).toBe('/techniques?state=published');
 
     await act(async () => { emitFrame('technique:used', {}); });
 

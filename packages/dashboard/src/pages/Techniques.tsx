@@ -76,12 +76,17 @@ export const Techniques = () => {
 
   const allTags = [...new Set(techniques.flatMap(t => t.tags))].sort();
 
+  // Answers can arrive in any order; only the newest request may draw the list.
+  const latestLoad = useRef(0);
+
   const load = async () => {
+    const mine = ++latestLoad.current;
     const result = await fetchTechniques(
       stateFilter !== 'All' ? stateFilter : undefined,
       tagFilter || undefined,
       search || undefined,
     );
+    if (mine !== latestLoad.current) return;
     setLoading(false);
     if (!result.ok) {
       // SAY SO. An empty grid is what "you have none yet" looks like, so a
@@ -121,7 +126,9 @@ export const Techniques = () => {
 
   // Debounced search
   useEffect(() => {
-    const timer = setTimeout(() => load(), 300);
+    // Through the ref: the timer outlives the render that set it, and a tab or
+    // tag clicked meanwhile must not be fetched under the old filters.
+    const timer = setTimeout(() => loadRef.current(), 300);
     return () => clearTimeout(timer);
   }, [search]);
 
