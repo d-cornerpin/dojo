@@ -21,7 +21,7 @@ vi.mock('../../db/connection.js', async () => {
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => undefined, stampPersistedRow: (e: unknown) => e }));
 
-import { nextDailyRunDelayMs } from '../healer-agent.js';
+import { nextDailyRunDelayMs } from '../../config/clock-time.js';
 
 describe('nextDailyRunDelayMs', () => {
   const now = new Date(2026, 0, 15, 10, 30, 0, 0); // local time, so cases do not depend on the machine's zone

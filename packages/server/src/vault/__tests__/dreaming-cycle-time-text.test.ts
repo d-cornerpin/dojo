@@ -19,7 +19,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { nextDailyRunDelayMs } from '../maintenance.js';
+import { nextDailyRunDelayMs } from '../../config/clock-time.js';
 
 // Same hermetic mocks as dream-cycle-marker.test.ts so importing maintenance.js
 // (which the GREEN version does for the helper) stays self-contained.

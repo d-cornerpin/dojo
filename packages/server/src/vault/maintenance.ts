@@ -40,6 +40,7 @@ import { buildRoughTasksBatch, lessonsCensusSince, advanceLessonsCensus } from '
 import { announceLessons, lessonReportLines } from './lessons-announce.js';
 import { homeDir } from '../home.js';
 import { fenceExternal } from '../tools/external-content.js';
+import { nextDailyRunDelayMs } from '../config/clock-time.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2099,35 +2100,6 @@ export async function runDreamerContinuationSweep(): Promise<void> {
 
 let dreamTimer: ReturnType<typeof setTimeout> | null = null;
 
-// A valid dreamTime is exactly HH:MM with hours 0-23 and minutes 0-59 (the
-// config default is '03:00'). Anything else — '', '9am', '3', '24:00', '7:75',
-// or a non-string — falls back to fallbackText and reports usedFallback so the
-// caller can warn. The target is the next strictly-later local time: setHours to
-// the wall-clock moment, then setDate(+1) when it has already passed (so an
-// exactly-now target moves to tomorrow and a NaN delay is never scheduled).
-export function nextDailyRunDelayMs(timeText: unknown, fallbackText: string, now: Date): { delayMs: number; usedFallback: boolean } {
-  let usedFallback = false;
-  let text = fallbackText;
-  if (typeof timeText === 'string' && /^(\d{1,2}):(\d{2})$/.test(timeText)) {
-    const [hours, minutes] = timeText.split(':').map(Number);
-    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-      text = timeText;
-    } else {
-      usedFallback = true;
-    }
-  } else {
-    usedFallback = true;
-  }
-
-  const [hours, minutes] = text.split(':').map(Number);
-  const next = new Date(now);
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
-  }
-  const delayMs = next.getTime() - now.getTime();
-  return { delayMs, usedFallback };
-}
 
 export function scheduleDreamingCycle(): void {
   if (dreamTimer) {
