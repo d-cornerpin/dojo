@@ -653,7 +653,7 @@ function escapeGraphSearch(q: string): string {
 }
 
 /** A value placed inside a single-quoted OData string: the apostrophe is written twice, then the text is URL-encoded. */
-function odataQuoted(value: string): string {
+export function odataQuoted(value: string): string {
   return encodeURIComponent(value.replace(/'/g, "''"));
 }
 

@@ -18,6 +18,7 @@ const logger = createLogger('office-tools');
 
 import { graphFetch, GRAPH_BASE } from './graph-fetch.js';
 import { outsideSpan } from '../tools/external-content.js';
+import { odataQuoted } from './tools-read.js';
 
 // ─────────────────────────────────────────
 // v2.5.10 — Shared edit helpers
@@ -2968,7 +2969,7 @@ export async function executeOfficeTool(
 
         // Resolve sheet name if not specified — use the first one
         const sheetSegment = sheetName
-          ? `worksheets('${encodeURIComponent(sheetName)}')`
+          ? `worksheets('${odataQuoted(sheetName)}')`
           : `worksheets/$/Default`; // workbook default sheet
         let url: string;
         if (sheetName) {
@@ -2984,7 +2985,7 @@ export async function executeOfficeTool(
           const listData = await listResp.json() as { value?: Array<{ name: string }> };
           const firstSheet = listData.value?.[0]?.name;
           if (!firstSheet) return 'Error: workbook has no worksheets';
-          const seg = `worksheets('${encodeURIComponent(firstSheet)}')`;
+          const seg = `worksheets('${odataQuoted(firstSheet)}')`;
           url = range
             ? `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/${seg}/range(address='${encodeURIComponent(range)}')`
             : `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/${seg}/usedRange`;
@@ -3039,7 +3040,7 @@ export async function executeOfficeTool(
           resolvedSheet = listData.value?.[0]?.name;
           if (!resolvedSheet) return 'Error: workbook has no worksheets';
         }
-        const url = `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${encodeURIComponent(resolvedSheet)}')/range(address='${encodeURIComponent(range)}')`;
+        const url = `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/range(address='${encodeURIComponent(range)}')`;
         const resp = await graphFetch(agentId, url, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -3086,7 +3087,7 @@ export async function executeOfficeTool(
         }
 
         // Find the next empty row: read usedRange.address to get the bottom-right cell.
-        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${encodeURIComponent(resolvedSheet)}')/usedRange?$select=address,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
+        const usedResp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/usedRange?$select=address,rowCount,columnCount`, { headers: { Authorization: `Bearer ${token}` } });
         let firstAppendRow = 1;
         if (usedResp.ok) {
           const usedData = await usedResp.json() as { rowIndex?: number; rowCount?: number };
@@ -3095,7 +3096,7 @@ export async function executeOfficeTool(
         const colCount = (rows[0] as unknown[]).length;
         const endCol = columnIndexToLetter(colCount - 1);
         const range = `A${firstAppendRow}:${endCol}${firstAppendRow + rows.length - 1}`;
-        const url = `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${encodeURIComponent(resolvedSheet)}')/range(address='${encodeURIComponent(range)}')`;
+        const url = `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(resolvedSheet)}')/range(address='${encodeURIComponent(range)}')`;
         const resp = await graphFetch(agentId, url, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -3161,7 +3162,7 @@ export async function executeOfficeTool(
         const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
-        const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${encodeURIComponent(sheetName)}')`, {
+        const resp = await graphFetch(agentId, `${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${odataQuoted(sheetName)}')`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${token}` },
         });
