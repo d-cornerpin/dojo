@@ -148,12 +148,12 @@ function detailUrl(msgId: string): string {
 const G1: Mail = {
   id: 'g1', threadId: 'th-1', snippet: 'hello',
   headers: [
-    { name: 'From', value: 'Bob <bob@y.org>' },
+    { name: 'From', value: 'Bob <bob@y.test>' },
     { name: 'Subject', value: 'Plan' },
     { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
-    { name: 'To', value: 'Agent <agent@x.com>, carol@z.net' },
-    { name: 'Cc', value: 'dave@w.io' },
-    { name: 'Authentication-Results', value: 'mx.google.com; dmarc=pass header.from=y.org' },
+    { name: 'To', value: 'Agent <agent@x.com>, carol@z.test' },
+    { name: 'Cc', value: 'dave@w.test' },
+    { name: 'Authentication-Results', value: 'mx.google.com; dmarc=pass header.from=y.test' },
   ],
 };
 
@@ -187,29 +187,29 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
     await mailArrives([G1]);
     const { meta } = storedRow('g1');
     expect(meta.mailAddressing).toEqual({
-      to: [{ address: 'agent@x.com', display: 'Agent' }, { address: 'carol@z.net', display: null }],
-      cc: [{ address: 'dave@w.io', display: null }],
+      to: [{ address: 'agent@x.com', display: 'Agent' }, { address: 'carol@z.test', display: null }],
+      cc: [{ address: 'dave@w.test', display: null }],
       placement: 'to',
-      authenticationResults: ['mx.google.com; dmarc=pass header.from=y.org'],
+      authenticationResults: ['mx.google.com; dmarc=pass header.from=y.test'],
     });
   });
 
   it('case 3: the agent in Cc alone → cc; the agent nowhere (a mailing list) → neither', async () => {
     setMailbox('agent', 'agent@x.com');
     await mailArrives([{ ...G1, id: 'g3a', headers: [
-      { name: 'From', value: 'Bob <bob@y.org>' },
+      { name: 'From', value: 'Bob <bob@y.test>' },
       { name: 'Subject', value: 'Plan' },
       { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
-      { name: 'To', value: 'carol@z.net' },
+      { name: 'To', value: 'carol@z.test' },
       { name: 'Cc', value: 'Agent <agent@x.com>' },
     ] }]);
     expect(storedRow('g3a').meta.mailAddressing).toMatchObject({ placement: 'cc' });
     await mailArrives([{ ...G1, id: 'g3b', headers: [
-      { name: 'From', value: 'Bob <bob@y.org>' },
+      { name: 'From', value: 'Bob <bob@y.test>' },
       { name: 'Subject', value: 'Plan' },
       { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
-      { name: 'To', value: 'carol@z.net' },
-      { name: 'Cc', value: 'dave@w.io' },
+      { name: 'To', value: 'carol@z.test' },
+      { name: 'Cc', value: 'dave@w.test' },
     ] }]);
     expect(storedRow('g3b').meta.mailAddressing).toMatchObject({ placement: 'neither' });
   });
@@ -217,7 +217,7 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
   it('case 4: a user mailbox counts only its own address — the agent in To is not its "to"', async () => {
     setMailbox('user', 'owner@x.com');
     await mailArrives([{ ...G1, id: 'g4', headers: [
-      { name: 'From', value: 'Bob <bob@y.org>' },
+      { name: 'From', value: 'Bob <bob@y.test>' },
       { name: 'Subject', value: 'Plan' },
       { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
       { name: 'To', value: 'agent@x.com' },
@@ -234,7 +234,7 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
       channel: 'email',
       accountKind: 'agent',
       authorized: false,
-      sender: 'bob@y.org',
+      sender: 'bob@y.test',
       emailMessageId: 'g1',
       emailService: 'gmail',
       emailSubject: 'Plan',
@@ -243,7 +243,7 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
     // with the fence stripped (the ONLY difference between the two calls is that random code).
     expect(unfenceExternal(content)).toBe(unfenceExternal(mailNoticeContent({
       provider: 'GMAIL', accountSuffix: "agent's Google account", account: 'agent@x.com',
-      ownerName: 'Test Owner', kind: 'agent', fromAddr: 'bob@y.org', from: 'Bob <bob@y.org>',
+      ownerName: 'Test Owner', kind: 'agent', fromAddr: 'bob@y.test', from: 'Bob <bob@y.test>',
       subject: 'Plan', date: 'Mon, 12 Oct 2026 10:00:00 +0000', snippet: 'hello',
       messageId: 'g1', directToAgent: false, toolHint: 'gmail_read',
     })));
@@ -252,7 +252,7 @@ describe('P44 — the Gmail watcher stamps mail addressing on the inbound meta',
   it('case 6: a mail with no To/Cc/Authentication-Results headers still arrives with empty facts', async () => {
     setMailbox('agent', 'agent@x.com');
     await mailArrives([{ ...G1, id: 'g6', headers: [
-      { name: 'From', value: 'Bob <bob@y.org>' },
+      { name: 'From', value: 'Bob <bob@y.test>' },
       { name: 'Subject', value: 'Plan' },
       { name: 'Date', value: 'Mon, 12 Oct 2026 10:00:00 +0000' },
     ] }]);

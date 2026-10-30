@@ -100,14 +100,14 @@ function readStored(id: string): { meta: Record<string, unknown>; content: strin
 
 const MAIL: Record<string, unknown> = {
   id: 'o1',
-  from: { emailAddress: { name: 'Bob', address: 'bob@y.org' } },
+  from: { emailAddress: { name: 'Bob', address: 'bob@y.test' } },
   subject: 'Plan',
   bodyPreview: 'hello',
   toRecipients: [
     { emailAddress: { name: 'Agent', address: 'Agent@X.com' } },
-    { emailAddress: { address: 'carol@z.net' } },
+    { emailAddress: { address: 'carol@z.test' } },
   ],
-  ccRecipients: [{ emailAddress: { name: 'Dave', address: 'dave@w.io' } }],
+  ccRecipients: [{ emailAddress: { name: 'Dave', address: 'dave@w.test' } }],
 };
 
 function msg(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -138,8 +138,8 @@ describe('outlook watcher stamps email addressing', () => {
     setMailbox('agent', 'agent@x.com');
     await outlookPoll([MAIL]);
     expect(readStored('o1').meta.mailAddressing).toEqual({
-      to: [{ address: 'agent@x.com', display: 'Agent' }, { address: 'carol@z.net', display: null }],
-      cc: [{ address: 'dave@w.io', display: 'Dave' }],
+      to: [{ address: 'agent@x.com', display: 'Agent' }, { address: 'carol@z.test', display: null }],
+      cc: [{ address: 'dave@w.test', display: 'Dave' }],
       placement: 'to',
       authenticationResults: [],
     });
@@ -148,7 +148,7 @@ describe('outlook watcher stamps email addressing', () => {
   it('3a. agent address only in ccRecipients → placement cc', async () => {
     setMailbox('agent', 'agent@x.com');
     await outlookPoll([msg('o3a', {
-      toRecipients: [{ emailAddress: { address: 'carol@z.net' } }],
+      toRecipients: [{ emailAddress: { address: 'carol@z.test' } }],
       ccRecipients: [{ emailAddress: { address: 'Agent@X.com' } }],
     })]);
     expect(readStored('o3a').meta.mailAddressing).toMatchObject({ placement: 'cc' });
@@ -157,8 +157,8 @@ describe('outlook watcher stamps email addressing', () => {
   it('3b. agent address nowhere → placement neither', async () => {
     setMailbox('agent', 'agent@x.com');
     await outlookPoll([msg('o3b', {
-      toRecipients: [{ emailAddress: { address: 'carol@z.net' } }],
-      ccRecipients: [{ emailAddress: { address: 'dave@w.io' } }],
+      toRecipients: [{ emailAddress: { address: 'carol@z.test' } }],
+      ccRecipients: [{ emailAddress: { address: 'dave@w.test' } }],
     })]);
     expect(readStored('o3b').meta.mailAddressing).toMatchObject({ placement: 'neither' });
   });
@@ -179,13 +179,13 @@ describe('outlook watcher stamps email addressing', () => {
     expect(meta.channel).toBe('email');
     expect(meta.accountKind).toBe('agent');
     expect(meta.authorized).toBe(false);
-    expect(meta.sender).toBe('bob@y.org');
+    expect(meta.sender).toBe('bob@y.test');
     expect(meta.emailMessageId).toBe('o1');
     expect(meta.emailService).toBe('outlook');
     expect(meta.emailSubject).toBe('Plan');
     expect(content).toBe(mailNoticeContent({
       provider: 'OUTLOOK', accountSuffix: "agent's Microsoft account", account: 'agent@x.com',
-      ownerName: 'Test Owner', kind: 'agent', fromAddr: 'bob@y.org', from: 'Bob <bob@y.org>',
+      ownerName: 'Test Owner', kind: 'agent', fromAddr: 'bob@y.test', from: 'Bob <bob@y.test>',
       subject: 'Plan', date: '', snippet: 'hello', messageId: 'o1', directToAgent: false, toolHint: 'outlook_read',
     }));
   });

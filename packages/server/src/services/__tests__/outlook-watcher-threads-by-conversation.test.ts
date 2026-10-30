@@ -148,7 +148,7 @@ afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 // ── the cases ─────────────────────────────────────────────────────────────────────────────
 
-const BOB = { name: 'Bob', address: 'bob@y.org' };
+const BOB = { name: 'Bob', address: 'bob@y.test' };
 const MAIL = (id: string, conversationId: string | null, subject: string): Mail => ({
   id, conversationId,
   from: { emailAddress: BOB },

@@ -30,7 +30,7 @@ describe('extractFileReferences — the shapes a technique uses to name a file',
   it('URLs, mailto links, and bare commands / bare names in code are ignored', () => {
     // A link whose target is a URL or mailto is not a file; `npm install`,
     // `run.sh` and `ls -la` are argv, not path declarations.
-    expect(raws('[site](https://x.example/a.md) [mail](mailto:a@b.co) `npm install` `run.sh` `ls -la`'))
+    expect(raws('[site](https://x.example/a.md) [mail](mailto:a@b.test) `npm install` `run.sh` `ls -la`'))
       .toEqual([]);
   });
 

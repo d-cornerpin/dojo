@@ -36,17 +36,17 @@ describe('the profile read lists the owner mailboxes', () => {
   });
 
   it('lists the connected user accounts, google first, addresses lowercased', async () => {
-    const g = insertGoogleAccount({ kind: 'user', email: 'Me@Gmail.com', connected: true });
-    const m = insertMicrosoftAccount({ kind: 'user', email: 'me@work.com', connected: true });
+    const g = insertGoogleAccount({ kind: 'user', email: 'Me@Gmail.test', connected: true });
+    const m = insertMicrosoftAccount({ kind: 'user', email: 'me@work.test', connected: true });
     const res = await read();
     expect(res.data.mailboxes).toEqual([
-      { address: 'me@gmail.com', provider: 'google', accountId: g.id },
-      { address: 'me@work.com', provider: 'microsoft', accountId: m.id },
+      { address: 'me@gmail.test', provider: 'google', accountId: g.id },
+      { address: 'me@work.test', provider: 'microsoft', accountId: m.id },
     ]);
   });
 
   it("never lists an agent's mailbox as the owner's", async () => {
-    insertGoogleAccount({ kind: 'agent', email: 'bot@gmail.com', connected: true });
+    insertGoogleAccount({ kind: 'agent', email: 'bot@gmail.test', connected: true });
     const res = await read();
     expect(res.data.mailboxes).toEqual([]);
   });

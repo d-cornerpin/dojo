@@ -5,12 +5,12 @@ describe('ownerMailboxesFrom', () => {
   it('lists one mailbox per provider with the address cleaned', () => {
     expect(
       ownerMailboxesFrom(
-        [{ id: 'g1', email: 'Me@Gmail.com ' }],
-        [{ id: 'm1', email: 'me@work.com' }],
+        [{ id: 'g1', email: 'Me@Gmail.test ' }],
+        [{ id: 'm1', email: 'me@work.test' }],
       ),
     ).toEqual([
-      { address: 'me@gmail.com', provider: 'google', accountId: 'g1' },
-      { address: 'me@work.com', provider: 'microsoft', accountId: 'm1' },
+      { address: 'me@gmail.test', provider: 'google', accountId: 'g1' },
+      { address: 'me@work.test', provider: 'microsoft', accountId: 'm1' },
     ]);
   });
 

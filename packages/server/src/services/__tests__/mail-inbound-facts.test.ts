@@ -7,31 +7,31 @@ describe('gmailAddressingFacts', () => {
   it('reads To/Cc/Authentication-Results, ignoring the ARC look-alike header', () => {
     const facts = gmailAddressingFacts(
       [
-        { name: 'From', value: 'x@y.org' },
-        { name: 'To', value: 'Me <me@x.com>, bob@y.org' },
-        { name: 'Cc', value: 'carol@z.net' },
-        { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass; dmarc=pass (p=NONE) header.from=y.org' },
+        { name: 'From', value: 'x@y.test' },
+        { name: 'To', value: 'Me <me@x.com>, bob@y.test' },
+        { name: 'Cc', value: 'carol@z.test' },
+        { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass; dmarc=pass (p=NONE) header.from=y.test' },
         { name: 'ARC-Authentication-Results', value: 'i=1; mx.google.com; dmarc=pass' },
       ],
       ['me@x.com'],
     );
-    expect(facts.to).toEqual([{ address: 'me@x.com', display: 'Me' }, { address: 'bob@y.org', display: null }]);
-    expect(facts.cc).toEqual([{ address: 'carol@z.net', display: null }]);
+    expect(facts.to).toEqual([{ address: 'me@x.com', display: 'Me' }, { address: 'bob@y.test', display: null }]);
+    expect(facts.cc).toEqual([{ address: 'carol@z.test', display: null }]);
     expect(facts.placement).toBe('to');
-    expect(facts.authenticationResults).toEqual(['mx.google.com; dkim=pass; dmarc=pass (p=NONE) header.from=y.org']);
+    expect(facts.authenticationResults).toEqual(['mx.google.com; dkim=pass; dmarc=pass (p=NONE) header.from=y.test']);
   });
 
   it('reads the same header names regardless of their case', () => {
     const facts = gmailAddressingFacts(
       [
         { name: 'TO', value: 'Me <me@x.com>' },
-        { name: 'cc', value: 'carol@z.net' },
+        { name: 'cc', value: 'carol@z.test' },
         { name: 'AUTHENTICATION-RESULTS', value: 'result-x' },
       ],
       ['me@x.com'],
     );
     expect(facts.to).toEqual([{ address: 'me@x.com', display: 'Me' }]);
-    expect(facts.cc).toEqual([{ address: 'carol@z.net', display: null }]);
+    expect(facts.cc).toEqual([{ address: 'carol@z.test', display: null }]);
     expect(facts.placement).toBe('to');
     expect(facts.authenticationResults).toEqual(['result-x']);
   });
@@ -63,7 +63,7 @@ describe('gmailAddressingFacts', () => {
     expect(
       gmailAddressingFacts(
         [
-          { name: 'From', value: 'x@y.org' },
+          { name: 'From', value: 'x@y.test' },
           { name: 'Subject', value: 'hi' },
         ],
         ['me@x.com'],
@@ -87,14 +87,14 @@ describe('outlookAddressingFacts', () => {
       {
         toRecipients: [
           { emailAddress: { name: 'Me', address: 'Me@X.com' } },
-          { emailAddress: { address: 'bob@y.org' } },
+          { emailAddress: { address: 'bob@y.test' } },
         ],
-        ccRecipients: [{ emailAddress: { name: '  ', address: 'carol@z.net' } }],
+        ccRecipients: [{ emailAddress: { name: '  ', address: 'carol@z.test' } }],
       },
       ['me@x.com'],
     );
-    expect(facts.to).toEqual([{ address: 'me@x.com', display: 'Me' }, { address: 'bob@y.org', display: null }]);
-    expect(facts.cc).toEqual([{ address: 'carol@z.net', display: null }]);
+    expect(facts.to).toEqual([{ address: 'me@x.com', display: 'Me' }, { address: 'bob@y.test', display: null }]);
+    expect(facts.cc).toEqual([{ address: 'carol@z.test', display: null }]);
     expect(facts.placement).toBe('to');
     expect(facts.authenticationResults).toEqual([]);
   });

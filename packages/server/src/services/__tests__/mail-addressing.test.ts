@@ -7,11 +7,11 @@ const A = (address: string, display: string | null = null): MailAddress => ({ ad
 describe('parseAddressList', () => {
   it('splits the mixed example into three entries with display names', () => {
     expect(
-      parseAddressList('Ann Lee <Ann@X.com>, "Smith, Bob" <bob@y.org>, carol@z.net'),
+      parseAddressList('Ann Lee <Ann@X.com>, "Smith, Bob" <bob@y.test>, carol@z.test'),
     ).toEqual([
       { address: 'ann@x.com', display: 'Ann Lee' },
-      { address: 'bob@y.org', display: 'Smith, Bob' },
-      { address: 'carol@z.net', display: null },
+      { address: 'bob@y.test', display: 'Smith, Bob' },
+      { address: 'carol@z.test', display: null },
     ]);
   });
 

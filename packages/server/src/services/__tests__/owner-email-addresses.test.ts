@@ -13,9 +13,9 @@ describe('ownerEmailAddresses', () => {
         undefined,
         'not an email',
         'a@b',
-        'x@y.org',
+        'x@y.test',
       ]),
-    ).toEqual(['owner@x.com', 'x@y.org']);
+    ).toEqual(['owner@x.com', 'x@y.test']);
   });
 
   it('rejects a display-name form: angle brackets are not a bare address', () => {
@@ -45,6 +45,6 @@ describe('ownerEmailAddresses', () => {
   });
 
   it('skips a non-string slipped in by mistake without throwing', () => {
-    expect(ownerEmailAddresses([42 as never, 'z@z.io'])).toEqual(['z@z.io']);
+    expect(ownerEmailAddresses([42 as never, 'z@z.test'])).toEqual(['z@z.test']);
   });
 });

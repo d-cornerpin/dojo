@@ -34,8 +34,8 @@ import { ProfileTab } from '../components/settings/ProfileTab';
 const mocked = () => vi.mocked(api);
 
 const TWO_MAILBOXES = [
-  { address: 'me@gmail.com', provider: 'google', accountId: 'g1' },
-  { address: 'me@work.com', provider: 'microsoft', accountId: 'm1' },
+  { address: 'me@gmail.test', provider: 'google', accountId: 'g1' },
+  { address: 'me@work.test', provider: 'microsoft', accountId: 'm1' },
 ];
 
 /** What `getIdentity('USER.md')` answers for this case. */
@@ -53,8 +53,8 @@ describe('The Profile tab lists your mailboxes', () => {
     render(<ProfileTab />);
 
     await screen.findByText('Your Mailboxes');
-    expect(screen.getByText('me@gmail.com')).toBeTruthy();
-    expect(screen.getByText('me@work.com')).toBeTruthy();
+    expect(screen.getByText('me@gmail.test')).toBeTruthy();
+    expect(screen.getByText('me@work.test')).toBeTruthy();
     expect(screen.getByText('Google')).toBeTruthy();
     expect(screen.getByText('Microsoft')).toBeTruthy();
   });
