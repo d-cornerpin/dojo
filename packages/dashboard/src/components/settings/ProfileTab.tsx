@@ -32,7 +32,7 @@ export const ProfileTab = () => {
       const profileResult = await api.getIdentity('USER.md');
       if (profileResult.ok) {
         setUserProfile(profileResult.data.content);
-        setMailboxes((profileResult.data as { mailboxes?: OwnerMailboxRow[] }).mailboxes ?? []);
+        setMailboxes(profileResult.data.mailboxes ?? []);
       }
       setLoadingProfile(false);
     };

@@ -232,6 +232,10 @@ export function parseFlexibleTime(input: string | number, fromTz?: string): Date
 function interpretLocalAsTz(isoNaive: string, tz: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/.exec(isoNaive);
   if (!m) return null;
+  // An impossible date or time (month 13, hour 25) is not a time at all: wallToInstant would
+  // normalize the overflow into a confident wrong instant, so refuse it here as the old parse did.
+  const [mo, dd, hh, mi, ss] = [Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : 0];
+  if (mo < 1 || mo > 12 || dd < 1 || dd > 31 || hh > 23 || mi > 59 || ss > 59) return null;
   const wall: WallClock = {
     year: Number(m[1]), month: Number(m[2]), day: Number(m[3]),
     hour: Number(m[4]), minute: Number(m[5]), second: m[6] ? Number(m[6]) : 0,
@@ -247,7 +251,7 @@ function interpretLocalAsTz(isoNaive: string, tz: string): Date | null {
     // "(could not parse)" fallback is used instead of a thrown error.
     return null;
   }
-  const fracMs = m[7] ? Math.round(Number(`0.${m[7]}`) * 1000) : 0;
+  const fracMs = m[7] ? Math.floor(Number(`0.${m[7]}`) * 1000) : 0;
   return new Date(instant.getTime() + fracMs);
 }
 

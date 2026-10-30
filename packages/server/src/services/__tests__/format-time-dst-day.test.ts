@@ -47,6 +47,11 @@ describe('parseFlexibleTime — DST transition days', () => {
     expect(parseFlexibleTime('2026-05-20T09:00:00', 'Pacific Standard Time')).toBeNull();
   });
 
+  it('an impossible date or time in a zone is null, not a wrong instant', () => {
+    expect(parseFlexibleTime('2026-13-01T10:00:00', 'America/Los_Angeles')).toBeNull();
+    expect(parseFlexibleTime('2026-05-20T25:00:00', 'America/Los_Angeles')).toBeNull();
+  });
+
   it('a Z-suffixed ISO still parses without a fromTz', () => {
     const d = parseFlexibleTime('2026-05-20T09:00:00Z');
     expect(d).not.toBeNull();

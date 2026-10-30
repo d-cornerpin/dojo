@@ -47,7 +47,7 @@ vi.mock('../../db/connection.js', () => ({
   getDbPath: () => ':memory:',
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
-vi.mock('./imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
+vi.mock('../imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
 vi.mock('../../config/loader.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getProviderCredential: () => 'tok',
@@ -116,6 +116,16 @@ describe('stopTunnel escalation and stale-exit handling', () => {
     // The old child's own timer kills only the old child.
     expect(old.kill.mock.calls.map((c) => c[0])).toContain('SIGKILL');
     expect(fresh.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('the SIGKILL timer is cancelled when the stopped child exits first', () => {
+    tunnel.startTunnel('quick', 3000);
+    const first = child(0);
+    tunnel.stopTunnel();
+    vi.advanceTimersByTime(1000);
+    first.emit('exit', null);
+    vi.advanceTimersByTime(5000);
+    expect(first.kill.mock.calls.map((c) => c[0])).toEqual(['SIGTERM']);
   });
 
   it("a late exit from a stopped-and-replaced child leaves the new tunnel's state alone", () => {

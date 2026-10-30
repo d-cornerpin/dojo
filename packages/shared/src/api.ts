@@ -94,6 +94,8 @@ export type ModelsListResponse = Model[];
 // ── Identity ──
 export interface IdentityFileResponse {
   content: string;
+  /** USER.md only: the owner's mailboxes (connected Google/Microsoft accounts of kind 'user'). */
+  mailboxes?: Array<{ address: string; provider: 'google' | 'microsoft'; accountId: string }>;
 }
 
 export interface UpdateIdentityRequest {

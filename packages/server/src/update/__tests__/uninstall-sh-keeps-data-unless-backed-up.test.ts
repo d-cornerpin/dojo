@@ -7,7 +7,7 @@
 // plists", cut out of the file as shipped), prefixed with DOJO_DIR. The whole script must never
 // run in a test: it removes /Applications/DOJO.app and ~/.dojo, and these tests only ever touch a
 // scratch HOME.
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,7 @@ beforeEach(() => {
   scratch = fs.mkdtempSync(path.join(process.env.DOJO_TEST_HOME_ROOT || os.tmpdir(), 'uninstall-sh-'));
   dojo = path.join(scratch, '.dojo');
 });
-afterAll(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
+afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
 
 function backupDirs(): string[] {
   return fs.readdirSync(scratch)

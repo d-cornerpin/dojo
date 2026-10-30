@@ -7,7 +7,7 @@ set -uo pipefail
 # Read-only. Checks the four things that have to be true or every user's
 # self-update breaks:
 #   1. the release exists
-#   2. both assets (dojo-platform.zip + Agent-DOJO-Installer.pkg) are uploaded
+#   2. all three assets (dojo-platform.zip + Agent-DOJO-Installer.pkg + dojo-platform.zip.sha256) are uploaded and the .sha256 matches the zip
 #   3. releases/latest resolves to this tag (what the updater queries)
 #   4. the self-update zip is actually downloadable
 #
@@ -75,7 +75,7 @@ if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "   State: tag $TAG is NOT on the remote either, nothing was pushed."
   fi
   echo "   Repair (preferred, re-run; the late steps are idempotent and RESUME):"
-  echo "     bash deploy/release.sh <the same args you used>   # writes proper notes, uploads both assets"
+  echo "     bash deploy/release.sh <the same args you used>   # writes proper notes, uploads all three assets"
   echo "   Repair (manual, if you must): build, then create the release WITH real notes:"
   echo "     npm run build:package && gh release create $TAG \\"
   echo "       deploy/dist/$ZIP_NAME deploy/dist/$PKG_NAME deploy/dist/$SHA_NAME --repo $REPO --title $TAG \\"

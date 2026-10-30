@@ -19,8 +19,7 @@ vi.mock('../accounts.js', async (orig) => ({
 }));
 
 import { msGraphWrite } from '../client.js';
-import { executeMicrosoftWriteTool, microsoftWriteToolDefinitions } from '../tools-write.js';
-import { validateToolArgs } from '../../agent/tools/validate-args.js';
+import { executeMicrosoftWriteTool } from '../tools-write.js';
 
 beforeEach(() => {
   vi.mocked(msGraphWrite).mockClear();
