@@ -13,7 +13,7 @@
 //   vintage C — a fresh box with an EMPTY work_events table and no counter row at all.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -145,9 +145,25 @@ const seqOf = (db: Database.Database, workId: string, state: string, verdict = '
 describe('vintage A — a v3.3.2 box upgrades', () => {
   const built = vintage(null);
   const ids = seedBody(built);
-  const db = copyOf(built);
-  const before = snapshotEvents(db);
-  const nAdj = (db.prepare('SELECT COUNT(*) AS n FROM adjudications').get() as { n: number }).n;
+
+  // Each clause upgrades its OWN copy of the seeded body: what a clause applies to the box, and
+  // what it leaves behind, is its own business — no other clause sees either.
+  let db: Database.Database;
+  let before: string;
+  let nAdj: number;
+  beforeEach(() => {
+    db = copyOf(built);
+    before = snapshotEvents(db);
+    nAdj = (db.prepare('SELECT COUNT(*) AS n FROM adjudications').get() as { n: number }).n;
+  });
+
+  /** The subjects, in file order, through `upTo` — the files this clause's box has already run. */
+  const upgradeTo = (upTo: string): void => {
+    for (const f of SUBJECTS) {
+      if (f > upTo) break;
+      applyFile(db, f);
+    }
+  };
 
   it('the vintage is what it claims: 159\'s CHECK, 178\'s index, no event_seq, no person_told', () => {
     const ddl = (db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'work_events'`).get() as { sql: string }).sql;
@@ -172,6 +188,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('the widened CHECK admits person_told and still refuses an off-list kind', () => {
+    upgradeTo(M189);
     db.prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('w-auth', 'person_told', '{}', 'x', 1)`).run();
     expect(() => db.prepare(`INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES ('w-auth', 'person_tolled', '{}', 'x', 1)`).run())
       .toThrow(/CHECK/);
@@ -179,6 +196,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('189c applies over the corrupted payload without raising, and positions EVERY verdict', () => {
+    upgradeTo(M189);
     applyFile(db, M189C);
     const unpositioned = (db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE event_seq IS NULL').get() as { n: number }).n;
     expect(unpositioned).toBe(0);
@@ -187,6 +205,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('each backfill branch was REACHED, with the right answer (no branch passes by touching nothing)', () => {
+    upgradeTo(M189C);
     expect(seqOf(db, 'w-auth', 'blocked'), 'companion = its own transition').toBe(ids.authEntry);
     expect(seqOf(db, 'w-uphold', 'blocked'), 'companion = its claim_upheld').toBe(ids.upholdCompanion);
     expect(seqOf(db, 'w-reject', 'blocked', 'rejected'), 'companion = its claim_rejected').toBe(ids.rejectCompanion);
@@ -202,6 +221,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('fix round 1: 189d carries nothing on a body with no stamps, and 189e re-positions conservatively', () => {
+    upgradeTo(M189C);
     const before = (db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get() as { n: number }).n;
     applyFile(db, M189D);
     expect((db.prepare(`SELECT COUNT(*) AS n FROM work_events`).get() as { n: number }).n,
@@ -220,6 +240,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('THE POINT: the tie row now reads unvalidated by the sequence, and the auth row validated', async () => {
+    upgradeTo(M189C);
     const { validatedExpr } = await import('../../work/tracker-view.js');
     const v = (id: string) => (db.prepare(`SELECT ${validatedExpr('w', 'blocked')} AS v FROM work w WHERE w.id = ?`).get(id) as { v: number }).v;
     expect(v('w-tie')).toBe(0);
@@ -228,6 +249,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('the trigger stamps a NEW verdict with the id the next event receives — past the tail gap', () => {
+    upgradeTo(M189C);
     const seqNow = (db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'work_events'`).get() as { seq: number }).seq;
     const maxNow = (db.prepare('SELECT MAX(id) AS m FROM work_events').get() as { m: number }).m;
     expect(seqNow, 'the counter is still ahead of MAX(id)').toBeGreaterThan(maxNow);
@@ -246,6 +268,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
     // The 159/189 shape, replayed on this body after the trigger exists: build work_events_new,
     // copy, carry the counter, DROP, RENAME. SQLite >= 3.26 re-validates every trigger on the
     // RENAME, so a trigger that NAMED work_events would make this throw on the product's SQLite.
+    upgradeTo(M189C);
     const rebuild = fs.readFileSync(path.join(MIGRATIONS_DIR, M189), 'utf-8');
     const before = snapshotEvents(db);
     expect(() => db.transaction(() => db.exec(rebuild))()).not.toThrow();
@@ -260,6 +283,7 @@ describe('vintage A — a v3.3.2 box upgrades', () => {
   });
 
   it('a writer that supplies event_seq itself is left alone', () => {
+    upgradeTo(M189C);
     db.prepare(
       `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, note, created_at, event_seq) VALUES ('w-auth', 'paused', 'upheld', 'pm', 'n', 9, 4242)`,
     ).run();
