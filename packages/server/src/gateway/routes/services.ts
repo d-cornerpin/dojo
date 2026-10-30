@@ -7,7 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
-import { getIMBridgeStatus, sendIMessage, startIMBridge } from '../../services/imessage-bridge.js';
+import { getIMBridgeStatus, sendIMessage, startIMBridge, getDefaultSender, getSafeSenders, findSafeSenderByAddress } from '../../services/imessage-bridge.js';
 import { withOutboundAsyncIfAbsent, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
@@ -120,7 +120,9 @@ servicesRouter.get('/watchdog', (c) => {
 // GET /imessage — bridge status
 servicesRouter.get('/imessage', (c) => {
   const status = getIMBridgeStatus();
-  return c.json({ ok: true, data: status });
+  // The Health card's test box prefills its To field with the owner's own (starred)
+  // address; the dashboard only learns it here.
+  return c.json({ ok: true, data: { ...status, ownerAddress: getDefaultSender() } });
 });
 
 // POST /imessage/test — send test message
@@ -131,13 +133,24 @@ servicesRouter.post('/imessage/test', async (c) => {
     return c.json({ ok: false, error: 'recipient and message (strings) are required' }, 400);
   }
 
+  // The text path of `sendIMessage` revalidates nothing (the attachment path does),
+  // so this route is the door: only an address on the owner's approved list is sent
+  // to, and the send goes to the record's own address, not the free-typed text.
+  const approved = findSafeSenderByAddress(getSafeSenders(), body.recipient.trim());
+  if (!approved) {
+    return c.json({ ok: false, error: `"${body.recipient.trim()}" is not on your approved iMessage list. Add it in Settings → Channels (iMessage card) first.` }, 400);
+  }
+
   try {
     // PHASE-2 T5: PINNED §8 named both of this file's sends among the paths that record
     // nothing — an outbound to a real person, from a route. Both are the platform's.
-    await withOutboundAsyncIfAbsent(
-      { agentId: PLATFORM_SENDER, tool: 'imessage-test', channel: 'imessage', recipientId: body.recipient as string },
-      () => sendIMessage(body.recipient, body.message),
+    const sent = await withOutboundAsyncIfAbsent(
+      { agentId: PLATFORM_SENDER, tool: 'imessage-test', channel: 'imessage', recipientId: approved.address },
+      () => sendIMessage(approved.address, body.message),
     );
+    if (sent !== true) {
+      return c.json({ ok: false, error: 'The test message did not go through (neither the imsg tool nor AppleScript could send it).' }, 502);
+    }
     return c.json({ ok: true, data: { sent: true } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

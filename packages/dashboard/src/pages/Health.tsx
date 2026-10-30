@@ -61,6 +61,7 @@ interface WatchdogStatus {
 interface IMBridgeStatus {
   enabled: boolean;
   connected: boolean;
+  ownerAddress?: string | null;
 }
 
 interface OllamaLockData {
@@ -206,6 +207,7 @@ export const Health = () => {
   const [watchdog, setWatchdog] = useState<WatchdogStatus | null>(null);
   const [imBridge, setImBridge] = useState<IMBridgeStatus | null>(null);
   const [resources, setResources] = useState<ResourceData | null>(null);
+  const [testTo, setTestTo] = useState('');
   const [testMsg, setTestMsg] = useState('');
   const [sendingTest, setSendingTest] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -253,7 +255,13 @@ export const Health = () => {
       // UX-REPAIR T14: no remap. `api.ts` declares what these two routes actually emit, so
       // the payload IS the state — nothing to rename, nothing to guess a default for.
       if (watchdogResult?.ok) setWatchdog(watchdogResult.data);
-      if (imResult?.ok) setImBridge(imResult.data);
+      if (imResult?.ok) {
+        setImBridge(imResult.data);
+        // Prefill the test box's To field with the owner's own address — once. A
+        // later poll must not overwrite what the owner typed.
+        const ownerAddress = imResult.data.ownerAddress ?? '';
+        setTestTo((cur) => cur || ownerAddress);
+      }
       if (resourceResult?.ok) setResources(resourceResult.data as ResourceData);
       } catch {
         // Initial load failed; the page renders with whatever data arrived
@@ -318,10 +326,10 @@ export const Health = () => {
   const components = Array.from(new Set(logs.map((l) => l.component))).sort();
 
   const handleSendTest = async () => {
-    if (!testMsg.trim()) return;
+    if (!testTo.trim() || !testMsg.trim()) return;
     setTestResult(null);
     setSendingTest(true);
-    const res = await api.sendTestIMessage(testMsg.trim());
+    const res = await api.sendTestIMessage(testTo.trim(), testMsg.trim());
     if (res.ok) {
       setTestMsg('');
       setTestResult({ ok: true, text: 'Sent.' });
@@ -553,6 +561,15 @@ export const Health = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
                     <input
                       type="text"
+                      value={testTo}
+                      onChange={(e) => { setTestTo(e.target.value); setTestResult(null); }}
+                      placeholder="To (phone or email)"
+                      aria-label="Send the test to"
+                      className="field"
+                      style={{ flex: '0 0 220px' }}
+                    />
+                    <input
+                      type="text"
                       value={testMsg}
                       onChange={(e) => { setTestMsg(e.target.value); setTestResult(null); }}
                       placeholder="Test message..."
@@ -562,7 +579,7 @@ export const Health = () => {
                     <button
                       type="button"
                       onClick={handleSendTest}
-                      disabled={sendingTest || !testMsg.trim()}
+                      disabled={sendingTest || !testTo.trim() || !testMsg.trim()}
                       className="btn btn--primary btn--sm"
                     >
                       {sendingTest ? '...' : 'Send'}

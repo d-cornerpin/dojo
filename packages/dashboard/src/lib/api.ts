@@ -1558,14 +1558,15 @@ export const getIMBridgeStatus = async (): Promise<ApiResponse<{
   running: boolean;
   enabled: boolean;
   connected: boolean;
+  ownerAddress: string | null;
 }>> => {
   return request('/system/imessage');
 };
 
-export const sendTestIMessage = async (message: string): Promise<ApiResponse<void>> => {
+export const sendTestIMessage = async (recipient: string, message: string): Promise<ApiResponse<void>> => {
   return request<void>('/system/imessage/test', {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ recipient, message }),
   });
 };
 

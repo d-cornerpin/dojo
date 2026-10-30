@@ -11,7 +11,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactElement } from 'react';
 import { resetFrames } from './helpers/frames';
@@ -60,7 +60,7 @@ beforeEach(() => {
   mocked().getLogs.mockResolvedValue({ ok: true, data: [] } as never);
   mocked().getProviderHealth.mockResolvedValue({ ok: true, data: { providers: [] } } as never);
   mocked().getWatchdogStatus.mockResolvedValue({ ok: true, data: { running: true, lastHeartbeat: null, lastAlert: null } } as never);
-  mocked().getIMBridgeStatus.mockResolvedValue({ ok: true, data: { enabled: true, connected: true } } as never);
+  mocked().getIMBridgeStatus.mockResolvedValue({ ok: true, data: { enabled: true, connected: true, ownerAddress: '+15550100' } } as never);
   mocked().getResources.mockResolvedValue({ ok: true, data: { memory: { used: 1, total: 2, percentage: 50 }, cpu: {}, ollama: null } } as never);
   mocked().getHealerProposals.mockResolvedValue({ ok: true, data: [] } as never);
   mocked().getHealerActions.mockResolvedValue({ ok: true, data: [] } as never);
@@ -100,5 +100,19 @@ describe('the vitals test message says how it went', () => {
 
     await screen.findByText('Sent.');
     expect(box.value).toBe('');
+    // The typed To box carries the send: it started at the owner's own address.
+    expect(mocked().sendTestIMessage).toHaveBeenCalledWith('+15550100', 'hello');
+  });
+
+  it('⚠ the To box starts with the owner’s own address and the owner can change it', async () => {
+    const box = await mountVitals();
+    const to = await screen.findByLabelText('Send the test to');
+    expect((to as HTMLInputElement).value).toBe('+15550100');
+
+    fireEvent.change(to, { target: { value: 'friend@example.test' } });
+    fireEvent.change(box, { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(mocked().sendTestIMessage).toHaveBeenCalledWith('friend@example.test', 'hi'));
   });
 });
