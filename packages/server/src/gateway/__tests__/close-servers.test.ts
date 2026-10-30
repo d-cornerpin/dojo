@@ -201,6 +201,10 @@ describe('closeServers — the gateway is closed before shutdown waits', () => {
     await gatedRequested; // the /gated request is established and mid-flight
 
     const closing = closeServers(server, wss);
+    // Open the gate only once closeServers has called server.close() (the server stops listening at that call).
+    // By then closeIdleConnections() has already run and this connection counts as busy. Opened any earlier, the
+    // response finishes first, the connection is idle when closeIdleConnections() runs, and the test passes without the fix.
+    while (server.listening) await new Promise<void>((r) => setImmediate(r));
     openGate(); // let the mid-flight response finish
 
     await done;
