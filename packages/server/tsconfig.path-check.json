@@ -1,5 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "exclude": [],
-  "include": ["src/agent/__tests__/path-resolve-globs.test.ts"]
-}
