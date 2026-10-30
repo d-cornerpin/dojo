@@ -69,7 +69,7 @@ import { collectMessageLaneIds } from '../../../memory/message-lane-tag.js';
 import { __resetBrakesForTests, compactionBrakeMsLeft } from '../../../memory/compaction-brakes.js';
 import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
-import { pendingWakeups } from '../../shared-state.js';
+import { pendingWakeups, lastCompactionDividerAt } from '../../shared-state.js';
 import { withLock } from '../../../db/with-lock.js';
 import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
 import { resultReadHandlers } from '../../tools/cat/result-read.js';
@@ -96,6 +96,7 @@ async function seed(): Promise<void> {
   runMigrations();
   seen.cards.length = 0; seen.texts.length = 0; seen.summaries = 0; seen.wakes = 0; seen.throwIn = null;
   pendingWakeups.clear();
+  lastCompactionDividerAt.clear();
   __resetBrakesForTests();
   coldImport1.__resetStarvedWindowsForTests();
   db().prepare(`INSERT INTO providers (id, name, type, auth_type, is_validated, created_at, updated_at)
