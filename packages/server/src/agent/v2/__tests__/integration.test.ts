@@ -386,6 +386,10 @@ import {
 import { AgentError } from '../../errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../stream-patience.js';
 import { turnContext } from '../../turn-context.js';
+// The cross-turn untracked-work debt: turns that park on the turn-time budget never
+// answer, so their debt survives the turn. It is module state, and every clause below
+// starts from a clean DB — so it starts from a clean debt map too, like the maps beside it.
+import { untrackedWorkAcrossTurns } from '../../turn-state.js';
 import { currentTurnNumber } from '../turn-record.js';
 // T82d (ANSWER-ANYWAY) — the recovery cascade under test directly, for the ONE case
 // (engine/A2A/scheduled turns) this file has no existing fixture to drive end-to-end: nothing
@@ -567,6 +571,7 @@ beforeEach(() => {
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
   turnContinuationCounts.clear();
+  untrackedWorkAcrossTurns.clear();
   enqueueSteerSpy.mockClear();
   stampTasksSpy.mockClear();
   terminalDeliveryForTurnSpy.mockClear();
