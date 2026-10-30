@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { openAgentCall } from '../agent/abortable-call.js';
 import { localWorkBegins } from '../services/ollama-quiet.js';
+import { openAiCompatibleUrl } from '../services/openai-compatible-url.js';
 
 const logger = createLogger('embeddings');
 
@@ -183,7 +184,7 @@ export async function generateEmbedding(
 
   // OpenAI-compatible endpoint, C12: same adaptive halving retry on a context overflow.
   for (let attempt = 0; attempt < 3; attempt++) {
-    const response = await fetch(`${config.baseUrl}/v1/embeddings`, {
+    const response = await fetch(openAiCompatibleUrl(config.baseUrl, 'embeddings'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
