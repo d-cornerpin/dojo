@@ -76,6 +76,7 @@ vi.mock('../../agent/model.js', () => ({
 
 import { assembleContext } from '../assembler.js';
 import { checkAndCompact, estimateAssembledTokens } from '../compaction.js';
+import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-t56';
@@ -142,6 +143,7 @@ const stampOf = (id: string): number =>
 
 beforeEach(() => {
   seq = 0;
+  __resetBrakesForTests();
   mockDb.current = new Database(':memory:');
   runMigrations();
   seedModel();
