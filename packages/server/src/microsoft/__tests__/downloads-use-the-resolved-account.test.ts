@@ -64,7 +64,7 @@ describe('downloads use the resolved account token', () => {
 
   it('teams_download_attachment downloads with the resolved user account token', async () => {
     vi.mocked(msGraphRead).mockResolvedValue(ok({
-      attachments: [{ id: 'att1', name: 'f.txt', contentType: 'text/plain', contentUrl: 'https://contoso.example/files/f.txt' }],
+      attachments: [{ id: 'att1', name: 'f.txt', contentType: 'text/plain', contentUrl: 'https://graph.microsoft.com/v1.0/me/drive/items/f1/content' }],
     }));
     vi.mocked(graphFetch).mockResolvedValue({ ok: true, arrayBuffer: async () => new TextEncoder().encode('hi').buffer } as never);
     const out = await executeMicrosoftWriteTool(

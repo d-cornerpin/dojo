@@ -1637,9 +1637,14 @@ export async function executeMicrosoftWriteTool(
           }
           bytes = Buffer.from(await resp.arrayBuffer());
         } else {
-          // Non-SharePoint attachment, try a direct GET with the auth
-          // header. Inline message cards usually live at a Graph URL
-          // that accepts the token.
+          // Non-SharePoint attachment: a direct GET with the auth header,
+          // but the link comes from the message's sender, so the token
+          // goes only to a genuine Graph URL.
+          let target: URL | null = null;
+          try { target = new URL(att.contentUrl); } catch { /* not a URL */ }
+          if (!target || target.protocol !== 'https:' || target.hostname !== 'graph.microsoft.com' || target.port !== '') {
+            return `Error: attachment "${att.name ?? attachmentId}" was not downloaded. Its link is not hosted on Microsoft Graph or SharePoint/OneDrive, and the Microsoft sign-in token is only ever sent to Microsoft Graph.`;
+          }
           const resp = await graphFetch(agentId, att.contentUrl, {
             method: 'GET',
             headers: { Authorization: `Bearer ${token}` },
