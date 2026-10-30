@@ -274,14 +274,6 @@ export function getMessagesByIds(ids: string[]): Message[] {
   return rows.map(rowToMessage);
 }
 
-export function getMessageCountByAgent(agentId: string): number {
-  const db = getDb();
-  const row = db.prepare(
-    'SELECT COUNT(*) as count FROM messages WHERE agent_id = ?',
-  ).get(agentId) as { count: number };
-  return row.count;
-}
-
 // ── STRIP (PHASE-3 T9). `getTotalTokensByAgent(agentId)` is DELETED. ──
 //
 // It summed the current session's `messages.token_count`, estimating the NULL rows, and
