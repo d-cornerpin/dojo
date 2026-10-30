@@ -145,23 +145,6 @@ const ALLOWLIST = [
       'writer leaves the more expensive half standing.',
   },
   {
-    path: 'packages/dashboard/src/components/CostCharts.tsx',
-    date: '2026-07-28',
-    owner: 'SWEEP-E T5',
-    reason:
-      'SWEEP-E.md:35, same clause as ActiveJobsIndicator. It is also the SOLE importer of lib/theme.ts ' +
-      'below, so the two must be judged together or the walk will simply grow a new ghost.',
-  },
-  {
-    path: 'packages/dashboard/src/lib/theme.ts',
-    date: '2026-07-28',
-    owner: 'SWEEP-G Step 2',
-    reason:
-      'SWEEP-G.md:96 names the deletion and its evidence: unreachable from main.tsx, sole importer ' +
-      'CostCharts.tsx:1 is itself zero-importer and is Sweep E T5\'s. Two owners, one dependency, ' +
-      'already written down in both plans.',
-  },
-  {
     path: 'packages/server/src/agent/v2/classifiers/index.ts',
     date: '2026-07-28',
     owner: 'PHASE-6',
