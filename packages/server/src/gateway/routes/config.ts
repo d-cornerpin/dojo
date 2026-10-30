@@ -29,6 +29,7 @@ import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner
 import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
+import { parsePrice } from '../../services/pricing-sync.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
@@ -1007,12 +1008,6 @@ configRouter.post('/providers/:id/validate', async (c) => {
             updated_at = datetime('now')
           WHERE id = ?
         `);
-
-        const parsePrice = (s: string | undefined | null): number | null => {
-          if (s === undefined || s === null || s === '') return null;
-          const n = parseFloat(s) * 1_000_000;
-          return Number.isFinite(n) ? n : null;
-        };
 
         let updated = 0;
         for (const existing of existingModels) {
