@@ -104,6 +104,7 @@ function seedMessage(p: {
 }
 
 beforeEach(() => {
+  grantsOff.clear();   // the §7 grant matrix is file-shared; every test starts with all tools granted
   mockDb.current?.close();
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
@@ -461,7 +462,6 @@ describe('§7 the route sentence is grant-aware', () => {
     seedConversation('conv-im', { channel: 'imessage', counterpartyId: 'x', counterpartyName: 'a contact' });
     seedMessage({ conversationId: 'conv-im', role: 'user', content: 'q', atMs: hoursAgo(3) });
   };
-  beforeEach(() => { grantsOff.clear(); });
 
   it('all three granted → all three named', () => {
     withThread();
