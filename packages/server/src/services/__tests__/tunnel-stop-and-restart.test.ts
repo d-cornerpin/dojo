@@ -60,6 +60,8 @@ vi.mock('../../home.js', async () => {
   return { homeDir: () => H.home };
 });
 
+import * as tunnel from '../tunnel.js';
+
 interface FakeChild {
   pid: number;
   kill: ReturnType<typeof vi.fn>;
@@ -72,21 +74,20 @@ const URL = 'https://dojo-123.trycloudflare.com';
 const pidfile = (): string => path.join(H.home, '.dojo', 'tunnel.pid');
 const child = (n: number): FakeChild => H.children[n] as FakeChild;
 
-let tunnel: typeof import('../tunnel.js');
-
-beforeEach(async () => {
+beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllTimers();
   H.children.length = 0;
   H.seq = 0;
-  vi.resetModules();
-  tunnel = await import('../tunnel.js');
   // `writeTunnelPidfile` writes into ~/.dojo; the logger only creates it lazily on
   // flush, so the dir is made here rather than hoped for.
   fs.mkdirSync(path.join(H.home, '.dojo'), { recursive: true });
 });
 
 afterEach(() => {
+  tunnel.stopTunnel();
+  vi.runOnlyPendingTimers();
+  vi.useRealTimers();
   vi.clearAllTimers();
   vi.useRealTimers();
 });

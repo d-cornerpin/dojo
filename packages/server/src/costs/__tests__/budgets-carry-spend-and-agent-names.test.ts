@@ -72,6 +72,10 @@ vi.mock('../../services/imessage-run.js', async (importOriginal) => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
+import { recordCost } from '../tracker.js';
+import * as budget from '../budget.js';
+import * as spendModule from '../spend.js';
+import { setLogBroadcast } from '../../logger.js';
 
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import type { LogEntry } from '../../logger.js';
@@ -79,6 +83,7 @@ import type { LogEntry } from '../../logger.js';
 const db = (): Database.Database => mockDb.current!;
 
 const logs: LogEntry[] = [];
+setLogBroadcast((e) => { logs.push(e); });
 
 beforeEach(() => {
   fs.rmSync(HOME, { recursive: true, force: true });
@@ -97,7 +102,6 @@ beforeEach(() => {
 afterEach(() => {
   mockDb.current?.close();
   mockDb.current = null;
-  vi.resetModules();
 });
 
 function seed(): void {
@@ -114,18 +118,9 @@ function seed(): void {
              VALUES ('a1', 'Helper', 'mdl', 'idle', datetime('now'), datetime('now'))`).run();
 }
 
-/** The modules as a freshly booted process sees them. A "restart" is a new call. */
-async function boot(): Promise<{
-  recordCost: typeof import('../tracker.js').recordCost;
-  budget: typeof import('../budget.js');
-  spend: typeof import('../spend.js');
-}> {
-  vi.resetModules();
-  (await import('../../logger.js')).setLogBroadcast((e) => { logs.push(e); });
-  const tracker = await import('../tracker.js');
-  const budget = await import('../budget.js');
-  const spend = await import('../spend.js');
-  return { recordCost: tracker.recordCost, budget, spend };
+/** The modules under test, imported once above; each case's fresh state is the DB in `beforeEach`. */
+async function boot() {
+  return { recordCost, budget, spend: spendModule };
 }
 
 /** One model call costing `dollars`, through the real cost door. */

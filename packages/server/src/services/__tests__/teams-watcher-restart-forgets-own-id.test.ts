@@ -70,51 +70,47 @@ vi.mock('../../microsoft/client.js', () => ({
   msGraphRead,
 }));
 
+import { startTeamsWatcher, stopTeamsWatcher } from '../teams-watcher.js';
+
 // Only the `me?$select=id` endpoint starts with `me?`; the `me/chats?...` and
 // `chats/...` endpoints do not, so this counts only the "who am I" fetches.
 const meCalls = (): number =>
   msGraphRead.mock.calls.filter(([endpoint]) => endpoint.startsWith('me?')).length;
 
 describe('teams-watcher restart forgets own id', () => {
-  // `ownUserId` and `userEmails` are module state; reset the module before each
-  // case so the cache starts empty and one case cannot seed the next.
-  let startTeamsWatcher: (() => void) | undefined;
-  let stopTeamsWatcher: (() => void) | undefined;
-
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.useFakeTimers();
     msGraphRead.mockClear();
-    vi.resetModules();
-    const mod = await import('../teams-watcher.js');
-    startTeamsWatcher = mod.startTeamsWatcher;
-    stopTeamsWatcher = mod.stopTeamsWatcher;
   });
   afterEach(() => {
+    // `ownUserId` and `userEmails` are module state; the stop clears them, so one
+    // case cannot seed the next.
+    stopTeamsWatcher();
     vi.useRealTimers();
   });
 
   it('re-fetches the own user id after a stop/start under a new login', async () => {
-    startTeamsWatcher!();
+    startTeamsWatcher();
     await vi.advanceTimersByTimeAsync(16_000); // first poll runs at 15 s
     expect(meCalls()).toBe(1);
 
-    stopTeamsWatcher!();
+    stopTeamsWatcher();
     nextMeId.value = 'new-account';
-    startTeamsWatcher!();
+    startTeamsWatcher();
     await vi.advanceTimersByTimeAsync(16_000);
     expect(meCalls()).toBe(2); // v35: stays 1 because ownUserId is cached
 
-    stopTeamsWatcher!();
+    stopTeamsWatcher();
   });
 
   it('does not re-fetch the own user id on a second poll without a stop in between', async () => {
-    startTeamsWatcher!();
+    startTeamsWatcher();
     await vi.advanceTimersByTimeAsync(16_000);
     expect(meCalls()).toBe(1);
 
     await vi.advanceTimersByTimeAsync(15_000); // another poll, same run
     expect(meCalls()).toBe(1);
 
-    stopTeamsWatcher!();
+    stopTeamsWatcher();
   });
 });
