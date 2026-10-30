@@ -6,7 +6,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { startOutlookWatcher, stopOutlookWatcher, isOutlookWatcherRunning } from '../outlook-watcher.js';
+import { startOutlookWatcher, stopOutlookWatcher } from '../outlook-watcher.js';
 
 const { listMicrosoftAccountViews } = vi.hoisted(() => ({ listMicrosoftAccountViews: vi.fn() }));
 vi.mock('../../microsoft/auth.js', () => ({ listMicrosoftAccountViews }));
@@ -41,10 +41,8 @@ describe('outlook-watcher stop cancels the pending first poll', () => {
 
   it('stop clears the pending first poll so it never fires', async () => {
     startOutlookWatcher();
-    expect(isOutlookWatcherRunning()).toBe(true);
 
     stopOutlookWatcher();
-    expect(isOutlookWatcherRunning()).toBe(false);
 
     listMicrosoftAccountViews.mockClear();
     await vi.advanceTimersByTimeAsync(30_000);

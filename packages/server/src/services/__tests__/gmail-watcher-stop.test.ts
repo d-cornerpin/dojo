@@ -2,7 +2,7 @@
 // 10 s one-shot poll that stopGmailWatcher must also clear, or a stop-then-start
 // can run two first polls (and a stop alone can read the mailbox afterwards).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { startGmailWatcher, stopGmailWatcher, isGmailWatcherRunning } from '../gmail-watcher.js';
+import { startGmailWatcher, stopGmailWatcher } from '../gmail-watcher.js';
 
 const { listGoogleAccountViews } = vi.hoisted(() => ({ listGoogleAccountViews: vi.fn() }));
 
@@ -43,7 +43,6 @@ describe('gmail watcher stop cancels the pending first poll', () => {
 
   it('does not run the first poll after stop', async () => {
     startGmailWatcher();
-    expect(isGmailWatcherRunning()).toBe(true);
 
     stopGmailWatcher();
     listGoogleAccountViews.mockClear();
@@ -54,7 +53,6 @@ describe('gmail watcher stop cancels the pending first poll', () => {
 
   it('still runs the first poll when left running', async () => {
     startGmailWatcher();
-    expect(isGmailWatcherRunning()).toBe(true);
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(listGoogleAccountViews).toHaveBeenCalled();

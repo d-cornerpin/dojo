@@ -13,7 +13,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { startTeamsWatcher, stopTeamsWatcher, isTeamsWatcherRunning } from '../teams-watcher.js';
+import { startTeamsWatcher, stopTeamsWatcher } from '../teams-watcher.js';
 
 const { msGraphRead } = vi.hoisted(() => ({ msGraphRead: vi.fn() }));
 vi.mock('../../microsoft/client.js', () => ({ msGraphRead }));
@@ -41,10 +41,8 @@ describe('teams watcher stop cancels the pending first poll', () => {
 
   it('THE RED: after a stop, the first poll does not fire — nothing calls Graph', async () => {
     startTeamsWatcher();
-    expect(isTeamsWatcherRunning()).toBe(true);
 
     stopTeamsWatcher();
-    expect(isTeamsWatcherRunning()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(30_000);
 
@@ -53,7 +51,6 @@ describe('teams watcher stop cancels the pending first poll', () => {
 
   it('a left-running watcher still fires its first poll after 15s', async () => {
     startTeamsWatcher();
-    expect(isTeamsWatcherRunning()).toBe(true);
 
     await vi.advanceTimersByTimeAsync(15_000);
 

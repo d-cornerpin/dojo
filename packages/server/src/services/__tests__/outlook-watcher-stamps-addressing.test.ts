@@ -131,7 +131,7 @@ describe('outlook watcher stamps email addressing', () => {
   it('1. the poll asks for toRecipients and ccRecipients alongside the base select set', async () => {
     setMailbox('agent', 'agent@x.com');
     await outlookPoll([MAIL]);
-    expect(pollEndpoints[0]).toContain('$select=id,from,subject,receivedDateTime,bodyPreview,isRead,toRecipients,ccRecipients');
+    expect(pollEndpoints[0]).toContain('$select=id,from,subject,receivedDateTime,bodyPreview,isRead,conversationId,toRecipients,ccRecipients');
   });
 
   it('2. stored inbound meta carries the addressing facts (agent is on To)', async () => {
