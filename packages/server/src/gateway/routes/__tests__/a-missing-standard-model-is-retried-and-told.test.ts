@@ -1,7 +1,7 @@
 // v3.5 fix round 1 (A2, I-2) — A MISSING STANDARD MODEL IS RETRIED WHENEVER OLLAMA IS ANSWERING, NOT
 // ONLY AT A RESTART, AND THE OWNER IS TOLD ONCE THROUGH THE EXISTING NOTIFICATION SYSTEM. No timer:
 // the existing Ollama health check is the signal. Every Ollama call is a scripted fetch.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -22,6 +22,10 @@ function pullStream(): Response {
   const enc = new TextEncoder();
   return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(`${JSON.stringify({ status: 'success' })}\n`)); c.close(); } }), { status: 200 });
 }
+
+// The install lazy-imports decision-window.js; its chain loads playwright, whose bundle assigns
+// globalThis.fetch once at load. Evaluate it here so that write cannot land inside a test's stubbed fetch.
+beforeAll(async () => { await import('../../../services/decision-window.js'); });
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
