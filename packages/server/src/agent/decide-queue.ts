@@ -26,7 +26,7 @@ type Entry<T> = {
   onAbort: (() => void) | null;
 };
 
-let queue: Entry<any>[] = [];
+const queue: Entry<any>[] = [];
 let running = false;
 
 export async function inTurn<T>(
