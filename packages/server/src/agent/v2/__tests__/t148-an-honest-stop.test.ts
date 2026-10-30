@@ -409,7 +409,7 @@ import { healerOwnerCards } from '../../../healer/owner-notices.js';
 import { handleIMCommand } from '../../../services/imessage-commands.js';
 import { releaseClearedBudgetStops } from '../honest-stop-lock.js';
 import { configRouter } from '../../../gateway/routes/config.js';
-import { updateRateLimits } from '../../../router/rate-limits.js';
+import { updateRateLimits, clearRateLimits } from '../../../router/rate-limits.js';
 import * as tracker from '../../../costs/tracker.js';
 
 
@@ -472,6 +472,7 @@ beforeEach(async () => {
   mockDb.current = setupTestDb();
   tracker.invalidateDailySpendCache();
   coldImport1.__resetStarvedWindowsForTests();
+  clearRateLimits();
   for (const s of [broadcastSpy, callModelSpy, executeToolSpy, handleMessageSpy, onAgentInjuredSpy, recordCostSpy,
     loggerWarnSpy, loggerErrorSpy, assembleContextMock, recordErrorMock, sendAlertSpy]) s.mockClear();
   callModelSpy.mockReset();
