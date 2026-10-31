@@ -682,6 +682,13 @@ export const agentsHandlers: ToolHandlerMap = {
               }
             }
 
+            // 983: send_to_agent reaches OTHER agents. Naming yourself would store the message in your own inbox and wake you with it.
+            if (targetCheck && targetCheck.id === agentId) {
+              content = `Message not sent: "${targetCheck.name}" is you. send_to_agent reaches OTHER agents. If you need to remember something or plan your next step, do it in your own turn or with your own tools; to reach someone else, call list_agents and pick them.`;
+              isError = true;
+              return { content, isError };
+            }
+
             if (!isError) {
               const result = await deliverA2AMessage({
                 intent: intent as import('../../a2a-transport.js').A2AIntent,
