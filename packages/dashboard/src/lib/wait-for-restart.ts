@@ -24,6 +24,8 @@ export interface WaitForRestartOptions {
   /** Plain-language progress, called whenever the picture changes. */
   onStatus?: (text: string) => void;
   intervalMs?: number;
+  /** Wording only: a rollback calls its target "the version you chose". */
+  kind?: 'update' | 'rollback';
 }
 
 const bare = (v: string | null | undefined): string => (v ?? '').trim().replace(/^v/i, '');
@@ -45,6 +47,12 @@ export async function waitForRestart(o: WaitForRestartOptions): Promise<RestartO
   let lastStatus = '';
   const say = (text: string) => { if (text !== lastStatus) { lastStatus = text; o.onStatus?.(text); } };
 
+  // Words only, never a cut-off: after a few minutes the status says how long and where to look.
+  const startedAt = Date.now();
+  const waited = () => {
+    const min = Math.floor((Date.now() - startedAt) / 60_000);
+    return min >= 3 ? ` Still waiting after ${min} minutes. If Dojo does not come back, the menu bar app shows what the watchdog found.` : '';
+  };
   say('Waiting for the server to restart...');
   while (!o.signal.aborted) {
     await sleep(interval, o.signal);
@@ -56,32 +64,31 @@ export async function waitForRestart(o: WaitForRestartOptions): Promise<RestartO
 
     if (!r || !r.ok) {
       sawDown = true;
-      say('The server is restarting...');
+      say(`The server is restarting...${waited()}`);
       continue;
     }
 
     const running = bare(r.data.version);
+    // Arrival decides first: the expected version running is success whatever a leftover marker says.
+    if (expected ? running === expected : (running !== previous || sawDown)) return { state: 'ready' };
+
+    // Failure is only read from an episode that belongs to THIS request, which needs a known target.
     const episode = r.data.episode ?? null;
-    // An episode only counts when it is about THIS request's target; an older one is history.
-    const mine = episode && (expected ? bare(episode.targetVersion) === expected : true);
-    if (mine && episode) {
+    if (episode && expected && bare(episode.targetVersion) === expected) {
+      const what = o.kind === 'rollback' ? `The version you chose (${expected})` : `The new version (${expected})`;
       if (episode.phase === 'rolled-back') {
-        return { state: 'failed', message: `The new version${expected ? ` (${expected})` : ''} did not start properly, so Dojo went back to ${running}. Nothing was lost; check the logs before trying again.` };
+        return { state: 'failed', message: `${what} did not start properly, so Dojo went back to ${running}. Nothing was lost; check the logs before trying again.` };
       }
       if (episode.phase === 'failed-permanently') {
-        return { state: 'failed', message: `The new version${expected ? ` (${expected})` : ''} did not start and Dojo could not go back on its own. Check the machine.` };
+        return { state: 'failed', message: `${what} did not start and Dojo could not go back on its own. Check the machine.` };
       }
       if (episode.phase === 'interrupted') {
         return { state: 'failed', message: `The install was cut off before it changed anything. Dojo is still running ${running}.` };
       }
     }
-
-    const arrived = expected ? running === expected : (running !== previous || sawDown);
-    if (arrived) return { state: 'ready' };
-
     say(sawDown
-      ? `The server is back but still on ${running || 'the old version'}; waiting for ${expected || 'the new version'} to finish starting...`
-      : 'Waiting for the server to restart...');
+      ? `The server is back but still on ${running || 'the old version'}; waiting for ${expected || 'the new version'} to finish starting...${waited()}`
+      : `Waiting for the server to restart...${waited()}`);
   }
   return { state: 'cancelled' };
 }

@@ -97,6 +97,32 @@ describe('waitForRestart', () => {
     expect(await p).toEqual({ state: 'ready' });
   });
 
+  it('is ready when the expected version runs, even if a leftover episode says rolled-back for it', async () => {
+    mocked().getVersion.mockResolvedValue(up('2.0.0', ep('rolled-back', '2.0.0')));
+    const { p } = run();
+    await tick(2_000);
+    expect(await p).toEqual({ state: 'ready' });
+  });
+
+  it('takes no episode as this request\'s when the expected version is unknown', async () => {
+    mocked().getVersion.mockResolvedValue(up('1.0.0', ep('failed-permanently', '0.5.0')));
+    const { p, ac } = run({ expectedVersion: null });
+    let settled = false; void p.then(() => { settled = true; });
+    await tick(30_000);
+    expect(settled).toBe(false);
+    ac.abort();
+    await p;
+  });
+
+  it('after a few minutes the status says how long and points to the menu bar, and keeps waiting', async () => {
+    mocked().getVersion.mockResolvedValue(down());
+    const { p, ac, statuses } = run();
+    await tick(4 * 60_000);
+    expect(statuses[statuses.length - 1]).toMatch(/Still waiting after \d+ minutes.*menu bar/);
+    ac.abort();
+    expect(await p).toEqual({ state: 'cancelled' });
+  });
+
   it('stops polling when cancelled', async () => {
     mocked().getVersion.mockResolvedValue(up('1.0.0'));
     const { p, ac } = run();

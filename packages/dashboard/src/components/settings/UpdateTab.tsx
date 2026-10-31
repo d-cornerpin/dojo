@@ -256,7 +256,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
     const r = await api.rollbackToVersion(tag);
     if (r.ok) {
       setResult(r.data.message);
-      const failure = await restart.follow(r.data.newVersion ?? version, r.data.previousVersion ?? currentVersion);
+      const failure = await restart.follow(r.data.newVersion ?? version, r.data.previousVersion ?? currentVersion, 'rollback');
       if (failure) { setError(failure); setResult(null); setRollingBack(null); }
     } else {
       setError(r.error ?? 'Rollback failed');
