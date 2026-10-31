@@ -2384,17 +2384,29 @@ export async function runPokeCheck(): Promise<void> {
   // created tasks.
   try {
     const STALE_A2A_GRACE_MS = 30 * 60 * 1000;
+    // The receiver-active test lives IN the WHERE clause, not in a per-row check
+    // after the limit. It used to run in JavaScript, past LIMIT 50: rows whose
+    // receiver stayed silent failed it forever and refilled the window on every
+    // tick, so once 50 of them existed the scan never reached the newer rows this
+    // sweep CAN close. Silent receivers still stay for the in_progress poke chain —
+    // the EXISTS just stops the limit from tripping over them — and ORDER BY makes
+    // the window's "oldest first" a contract instead of the planner's accident.
+    // (work.opened_at and messages.created_at are both epoch ms, so the compare is
+    // exact now; the old one floored the task time to whole seconds.)
     const candidates = db.prepare(`
-      SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to,
-             ${msToText('t.opened_at')} AS created_at, t.parent_id AS project_id
+      SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to, t.parent_id AS project_id
       FROM work t
       WHERE ${taskScope('t')} AND t.state = 'on_deck'
         AND t.a2a_thread_id IS NOT NULL
         AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
         AND t.is_paused = 0
         AND t.updated_at < ?
+        AND EXISTS (SELECT 1 FROM messages m
+                    WHERE m.agent_id = t.agent_id AND m.role = 'assistant'
+                      AND m.created_at > t.opened_at)
+      ORDER BY t.updated_at ASC
       LIMIT 50
-    `).all(Date.now() - STALE_A2A_GRACE_MS) as Array<{ id: string; title: string; assigned_to: string; created_at: string; project_id: string | null }>;
+    `).all(Date.now() - STALE_A2A_GRACE_MS) as Array<{ id: string; title: string; assigned_to: string; project_id: string | null }>;
 
     if (candidates.length > 0) {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
@@ -2404,21 +2416,10 @@ export async function runPokeCheck(): Promise<void> {
           reason: 'stale A2A assignment: the receiver was active but never moved this ticket',
         }), 'pm: stale A2A assignment swept', { taskId: id }),
       };
-      const activeCheck = db.prepare(`
-        SELECT 1 FROM messages
-        WHERE agent_id = ? AND role = 'assistant' AND created_at > (unixepoch(?) * 1000)
-        LIMIT 1
-      `);
       let swept = 0;
       const sweptProjects = new Set<string>();
       const { writeTaskLog } = await import('./task-log.js');
       for (const t of candidates) {
-        // Only close if the receiver was active (sent any assistant
-        // message) after the task was created. If they were silent the
-        // whole time, the proper failure path is the in_progress poke
-        // chain, leave it for that, don't sweep silently.
-        const wasActive = activeCheck.get(t.assigned_to, t.created_at) as { 1: number } | undefined;
-        if (!wasActive) continue;
         closeStmt.run(t.id);
         if (t.project_id) sweptProjects.add(t.project_id);
         writeTaskLog({
