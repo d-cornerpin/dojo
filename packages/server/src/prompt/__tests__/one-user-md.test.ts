@@ -231,9 +231,13 @@ describe('§3 every door goes through the one module, and the rival text is gone
     expect(route).toMatch(/const user = readUserProfile\(\)/);
     // and the SOUL side seeds from the shipped default through the soul door — the composer
     // is APPLIED to the door's own fallback, so the two cannot disagree about the seed text.
-    expect(route).toMatch(/soulFileForAgent\(\s*getPrimaryAgentId\(\)\s*\)/);
-    expect(route).toMatch(/composePrimarySoul\(\s*\{\s*communicationStyle,\s*rules\s*\}\s*,\s*primarySoul\?\.fallback/);
-    expect(route).toMatch(/writeSoulFile\(\s*primarySoul,\s*soul\s*\)/);
+    // The route hands the wizard's fields to `writeOobeSoul`, which seeds from the door's own
+    // fallback and writes through the soul door (`prompt/soul-rerun.ts`).
+    expect(route).toMatch(/writeOobeSoul\(\s*\{\s*communicationStyle,\s*rules\s*\}/);
+    const rerun = readStripped('prompt/soul-rerun.ts');
+    expect(rerun).toMatch(/soulFileForAgent\(\s*getPrimaryAgentId\(\)\s*\)/);
+    expect(rerun).toMatch(/composePrimarySoul\(\s*fields\s*,\s*primarySoul\?\.fallback/);
+    expect(rerun).toMatch(/writeSoulFile\(\s*soul,\s*composed\s*\)/);
   });
 
   it('the dashboard read and edit doors are the same doors', () => {
