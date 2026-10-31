@@ -9598,7 +9598,7 @@
     "packages/dashboard/src/components/settings/ModelRows.tsx": 1282,
     "packages/dashboard/src/components/settings/ModelsTab.tsx": 708,
     "packages/dashboard/src/components/settings/PlatformTab.tsx": 1062,
-    "packages/dashboard/src/components/settings/ProvidersTab.tsx": 944,
+    "packages/dashboard/src/components/settings/ProvidersTab.tsx": 953,
     "packages/dashboard/src/components/settings/UpdateTab.tsx": 328,
     "packages/dashboard/src/components/settings/VoiceTab.tsx": 1247,
     "packages/dashboard/src/lib/access-edits.ts": 357,
