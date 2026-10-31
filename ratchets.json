@@ -9578,7 +9578,7 @@
   "files": {
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
-    "packages/dashboard/src/components/AccessPanel.tsx": 458,
+    "packages/dashboard/src/components/AccessPanel.tsx": 459,
     "packages/dashboard/src/components/AttachmentChips.tsx": 479,
     "packages/dashboard/src/components/CanvasView.tsx": 399,
     "packages/dashboard/src/components/ContactsPanel.tsx": 478,
@@ -9608,7 +9608,7 @@
     "packages/dashboard/src/lib/sudo-policy.ts": 85,
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283,
-    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
+    "packages/dashboard/src/pages/AgentConfigPanel.tsx": 446,
     "packages/dashboard/src/pages/Agents.tsx": 694,
     "packages/dashboard/src/pages/Chat.tsx": 2103,
     "packages/dashboard/src/pages/Costs.tsx": 750,
@@ -9754,10 +9754,10 @@
     "packages/server/src/credentials/store.ts": 437,
     "packages/server/src/db/migration-backup.ts": 399,
     "packages/server/src/db/migration-checksums.ts": 387,
-    "packages/server/src/gateway/routes/agents.ts": 1091,
+    "packages/server/src/gateway/routes/agents.ts": 1099,
     "packages/server/src/gateway/routes/automation-probe.ts": 241,
     "packages/server/src/gateway/routes/chat.ts": 492,
-    "packages/server/src/gateway/routes/config.ts": 3033,
+    "packages/server/src/gateway/routes/config.ts": 3041,
     "packages/server/src/gateway/routes/memory.ts": 642,
     "packages/server/src/gateway/routes/reports.ts": 250,
     "packages/server/src/gateway/routes/services.ts": 412,
@@ -9900,6 +9900,6 @@
     "packages/shared/src/visibility.ts": 996,
     "packages/shared/src/ws.ts": 1277,
     "watchdog/src/auto-rollback.ts": 322,
-    "watchdog/src/index.ts": 1225
+    "watchdog/src/index.ts": 1229
   }
 }
