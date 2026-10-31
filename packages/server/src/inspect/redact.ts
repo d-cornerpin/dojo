@@ -29,7 +29,7 @@ import { INSPECT_PATTERNS } from './credential-shapes.js';
 import { REDACTED_CREDENTIAL, redactHandedCredentials } from '../credentials/secret-values.js';
 
 export const DENIED_TABLES: readonly string[] = ['agent_credentials', 'google_accounts', 'microsoft_accounts', 'twilio_config', 'github_account', 'plaud', 'vault_entries' /* owner's private memory stays behind vault_* tools */];
-export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /password/i, /api_key/i, /refresh/i, /private/i];
+export const DENIED_COLUMN_PATTERNS: readonly RegExp[] = [/token/i, /secret/i, /passw(?:or)?d/i, /api[_-]?key/i, /refresh/i, /private/i];
 
 const NUMERIC_TYPE = /INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/i;
 
@@ -41,6 +41,12 @@ const isDeniedTable = (t: string): boolean => DENIED_TABLES.includes(t) || STAT_
 /** The schema pragmas name a table's columns and indexes, never its values, so the table they
  *  are asked about is not "reached". Their quoted argument is set aside before the name scan. */
 const SCHEMA_PRAGMA = /\bpragma_(table_info|table_xinfo|index_list|index_info|index_xinfo|foreign_key_list)\s*\(\s*'(?:[^']|'')*'\s*\)/gi;
+
+/** t285 F1: the child shows `config` through a TEMP VIEW of the same name whose credential values
+ *  are already blanked. A schema-qualified name (`main.config`, `"main"."config"`) would skip it. */
+const SCHEMA_QUALIFIED_CONFIG = /(?:"(?:[^"]|"")*"|\[[^\]]*\]|`[^`]*`|[A-Za-z_][\w$]*)\s*\.\s*(?:"config"|\[config\]|`config`|config\b)/i;
+const CONFIG_QUALIFIED = 'Refused: name the config table without a schema (from config, not main.config).';
+const stripLiterals = (sql: string): string => sql.replace(/'(?:[^']|'')*'/g, "''").replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
 
 /** A column name that says credential and is not a time. */
 export const columnNamesCredential = (name: string): boolean => namesCredential(name);
@@ -111,9 +117,8 @@ function schemaTrees(db: Database.Database): Map<number, Tree> {
 }
 
 /** `table.column` pairs this statement's compiled program reads, plus every table it opens. */
-function reads(sql: string, db: Database.Database): { tables: Set<string>; columns: Set<string>; configValueRead: boolean; configCursors: number } {
+function reads(sql: string, db: Database.Database): { tables: Set<string>; columns: Set<string> } {
   const tables = new Set<string>(); const columns = new Set<string>();
-  let configValueRead = false; let configCursors = 0;
   const program = db.prepare(`EXPLAIN ${sql}`).all() as Op[];
   const trees = schemaTrees(db);
   // A cursor number can be reused by another part of the program, so a cursor stands for EVERY
@@ -122,10 +127,7 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
   for (const op of program) {
     if ((op.opcode === 'OpenRead' || op.opcode === 'ReopenIdx') && op.p3 === 0) {
       const tree = trees.get(op.p2);
-      if (tree) {
-        cursors.set(op.p1, [...(cursors.get(op.p1) ?? []), tree]); tables.add(tree.table);
-        if (tree.table === 'config' && !tree.isIndex) configCursors++;
-      }
+      if (tree) { cursors.set(op.p1, [...(cursors.get(op.p1) ?? []), tree]); tables.add(tree.table); }
     }
   }
   for (const op of program) {
@@ -136,10 +138,9 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
       };
       if (op.opcode === 'Column') denied(tree.columns[op.p2]);
       else if (tree.isIndex) tree.columns.forEach(denied);
-      if (tree.table === 'config' && (op.opcode === 'Column' ? tree.columns[op.p2]?.name === 'value' : tree.isIndex && tree.columns.some((c) => c.name === 'value'))) configValueRead = true;
     }
   }
-  return { tables, columns, configValueRead, configCursors };
+  return { tables, columns };
 }
 
 /**
@@ -151,6 +152,7 @@ function reads(sql: string, db: Database.Database): { tables: Set<string>; colum
  */
 export function refuseDeniedSql(sql: string, db?: Database.Database): string | null {
   const ids = new Set(identifiers(sql.replace(SCHEMA_PRAGMA, 'pragma_$1(NULL)')));
+  if (SCHEMA_QUALIFIED_CONFIG.test(stripLiterals(sql))) return CONFIG_QUALIFIED;
   const named = [...ids].find(isDeniedTable);
   if (named) return tableRefusal(named);
   if (!db) return null;
@@ -164,25 +166,9 @@ export function refuseDeniedSql(sql: string, db?: Database.Database): string | n
   const opened = [...reached.tables].find(isDeniedTable);
   if (opened) return tableRefusal(opened);
   const [column] = [...reached.columns].sort();
-  if (!column && !explained && reached.configValueRead) {
-    // t285 R2: a config value is blanked by its row's KEY, so the key must come out in the same row.
-    // One reference to the table, one scan of it, and its key in the output: a second reference (a self-join,
-    // a subquery) could pair one row's key with another row's value.
-    const references = identifiers(inner).filter((i) => i === 'config').length;
-    if (references !== 1 || reached.configCursors !== 1 || !outputsConfigKey(inner, db)) {
-      return 'Refused: the statement reads config.value without selecting config.key from the same row, so it cannot be told whether the setting holds a credential. Select key and value together (select key, value from config where ...).';
-    }
-  }
   return column
     ? `Refused: the statement reads ${column}, which holds a credential and is not readable through dojo_inspect. Name the columns you need without it.`
     : null;
-}
-
-/** Does the statement's own output list carry `config.key` as a plain column? */
-function outputsConfigKey(sql: string, db: Database.Database): boolean {
-  try {
-    return db.prepare(sql).columns().some((c) => c.table === 'config' && c.column === 'key');
-  } catch { return false; }
 }
 
 function tableRefusal(table: string): string {
@@ -198,6 +184,8 @@ export function redactText(s: string, agentIds: readonly string[] = []): string 
     out = out.replace(p.regex, (match: string, ...rest: unknown[]) => {
       const groups = rest.slice(0, -2).filter((g): g is string => typeof g === 'string' && g.length > 0);
       const value = groups[groups.length - 1];
+      const keep = (p as { keep?: (v: string, m: string) => boolean }).keep;
+      if (keep && (!value || keep(value, match))) return match;
       // A URL with inline credentials keeps its scheme, user and host; only the password goes.
       if (!value) return p.name === 'url-creds' ? match.replace(/^([^:]+:\/\/[^:/@\s]+:)[^@\s]+@/, `$1${REDACTED_CREDENTIAL}@`) : REDACTED_CREDENTIAL;
       const at = match.lastIndexOf(value);

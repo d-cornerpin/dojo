@@ -142,7 +142,9 @@ const SEARCH_QUALIFIER = /(?:^|\s)-?"?(?:repo|org|user|owner|path|filename|exten
 export function neutraliseQualifiers(pattern: string): string {
   let prev: string; let out = ` ${pattern}`;
   do { prev = out; out = out.replace(SEARCH_QUALIFIER, ' '); } while (out !== prev);
-  return out.replace(/\s+/g, ' ').trim();
+  out = out.replace(/\s+/g, ' ').trim();
+  // A phrase the pattern opened and never closed would swallow the qualifiers this code appends.
+  return (out.match(/"/g) ?? []).length % 2 === 1 ? out.replace(/"/g, '').replace(/\s+/g, ' ').trim() : out;
 }
 
 /** GitHub's own documented page size ceiling for search results. */
@@ -163,12 +165,13 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
   }
   const prefix = pathPrefix ? repoPath(pathPrefix) : null;
   if (pathPrefix && prefix === null) return `${REFUSED_PATH(pathPrefix)}\n\n${pointerLine(ref)}`;
+  if (prefix && /[\s"'`()]|[A-Za-z_-]+:/.test(prefix)) return `${REFUSED_PATH(pathPrefix ?? '')}\n\n${pointerLine(ref)}`;
   const terms0 = neutraliseQualifiers(pattern);
   if (!terms0) return `Nothing to search for: the pattern held only search qualifiers (repo:, org:, path: and the like), which this search does not accept. Send the words or code to find; use the path argument to narrow to a folder.\n\n${pointerLine(ref)}`;
   const q = `${terms0} repo:${ref.owner}/${ref.repo}${prefix ? ` path:${prefix}` : ''}`;
   const headers = { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: `Bearer ${token}` };
   const paths: string[] = [];
-  let total = 0; let stopped = '';
+  let total = 0; let stopped = ''; let dropped = 0; let seen = 0;
   for (let page = 1; ; page++) {
     const got = await get(`${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=${SEARCH_PER_PAGE}&page=${page}`, agentId, headers);
     if (!got.ok) {
@@ -179,15 +182,20 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
       stopped = why;
       break;
     }
-    let body: { total_count?: number; items?: Array<{ path?: unknown }> } = {};
+    let body: { total_count?: number; items?: Array<{ path?: unknown; repository?: { full_name?: unknown } }> } = {};
     try { body = JSON.parse(got.body) as typeof body; } catch { stopped = 'GitHub answered the search with a body this box could not read.'; break; }
-    const items = (body.items ?? []).map((i) => i.path).filter((x): x is string => typeof x === 'string');
-    total = body.total_count ?? items.length;
+    // Whatever the query said, only a hit in the Dojo's own repository is kept.
+    const own = `${ref.owner}/${ref.repo}`.toLowerCase();
+    const all = body.items ?? [];
+    const items = all.filter((i) => typeof i.repository?.full_name === 'string' && i.repository.full_name.toLowerCase() === own)
+      .map((i) => i.path).filter((x): x is string => typeof x === 'string');
+    dropped += all.length - items.length; seen += all.length;
+    total = body.total_count ?? all.length;
     paths.push(...items);
-    if (items.length < SEARCH_PER_PAGE || paths.length >= total) break;
+    if (all.length < SEARCH_PER_PAGE || seen >= total) break;
   }
   if (paths.length === 0 && stopped) return `${stopped} Browse the source at ${ref.url}.\n\n${pointerLine(ref)}`;
-  if (paths.length === 0) return `No match for "${pattern}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
+  if (paths.length === 0) return `No match for "${terms0}"${prefix ? ` under ${prefix}` : ''} in the Dojo's source.\n\n${pointerLine(ref)}`;
   const terms = terms0.toLowerCase().split(/\s+/).filter((t) => t && !t.includes(':'));
   // One file at a time: no helper in this tree bounds a fan-out, and a broad pattern names up to
   // a thousand files, which must not become a thousand simultaneous reads. Sequential is the
@@ -198,6 +206,7 @@ export async function searchSource(pattern: string, pathPrefix?: string, agentId
     if (!got.ok && got.down && got.stopped) return STOPPED_BY_USER;
     files.push(hitLines(p, got, terms));
   }
-  const head = `${total} file${total === 1 ? '' : 's'} match "${pattern}"${prefix ? ` under ${prefix}` : ''}; lines are from the commit this box runs.`;
+  const shown = dropped > 0 ? new Set(paths).size : total;
+  const head = `${shown} file${shown === 1 ? '' : 's'} match "${terms0}"${prefix ? ` under ${prefix}` : ''}; lines are from the commit this box runs.`;
   return `${head}\n\n${files.join('\n\n')}${stopped ? `\n\n${stopped}` : ''}\n\n${pointerLine(ref)}`;
 }

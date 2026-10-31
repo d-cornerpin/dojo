@@ -1,14 +1,11 @@
 // t285 — three credential holes in dojo_inspect, each pinned (red before the fix, green after).
 //   R1  the text scrubber knows every credential shape the Dojo stores or handles.
-//   R2  a config value is blanked whenever its row's key names a credential, whatever columns
-//       the query selected; a statement that reads the value without its key is refused.
+//   R2  a config value is blanked at the source (config-shadow.test.ts).
 //   R3  code search can only search the Dojo's own repository (see source-remote-scope.test.ts).
 // Every credential below is a synthetic string built for the test; none is real.
 
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
-import { redactText, refuseDeniedSql } from '../redact.js';
-import { redactResultRow } from '../result-row.js';
+import { redactText } from '../redact.js';
 
 const BODY = 'Zq9Xk2Lm4Np6Rs8Tv0Wy1Ab3Cd5Ef7Gh';
 const MARK = '<redacted-credential>';
@@ -62,36 +59,53 @@ describe('R1: redactText knows every shape the Dojo stores or handles', () => {
   });
 });
 
-describe('R2: a config value is never returned when its row is a credential', () => {
-  const db = new Database(':memory:');
-  db.exec(`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
-           INSERT INTO config VALUES ('example_api_key', 'synthetic-secret-value-001', 'x'), ('theme', 'dark', 'x');`);
-  const refused = (q: string): boolean => /^Refused: .*config/.test(refuseDeniedSql(q, db) ?? '');
-
-  it('refuses every shape that reads the value without the key of the same row', () => {
-    for (const q of [
-      "select value from config where key like '%api_key%'",
-      "select value as v from config",
-      "select substr(value, 1, 5) from config",
-      "select (select value from config where key = 'example_api_key')",
-      "select a.value from config a join config b on a.key = b.key",
-      "select a.key, b.value from config a, config b",
-      "select length(value) from config",
-    ]) expect(refused(q), q).toBe(true);
+describe('F3: counts, flags and code are not credentials', () => {
+  it('lines about tokens as a quantity, and code, are unchanged', () => {
+    for (const s of [
+      'maxResultTokens: 2000', 'max_tokens: 4096', 'input_tokens: 1234', '"prompt_tokens":1500', 'tokenCount: null',
+      'token_budget: 50000', 'tokenizer=cl100k', 'secretary: Bob', 'secret_scanning: enabled',
+      'private_key_path=/etc/dojo/key.pem', 'const password = req.body.password;', 'if (token === undefined)',
+      'if (token == null) {', 'const hasToken = token !== undefined;', 'token: string;', 'WHERE token = ?',
+      'token=${token}; HttpOnly', 'refreshToken = acc?.refreshToken ?? null', "accessToken: 'access_token'",
+      'secret: true', 'password: undefined',
+    ]) expect(redactText(s), s).toBe(s);
   });
-  it('lets a statement through that selects the key with the value, and one that does not read the value', () => {
-    expect(refuseDeniedSql('select key, value from config', db)).toBeNull();
-    expect(refuseDeniedSql('select * from config', db)).toBeNull();
-    expect(refuseDeniedSql('select key, updated_at from config', db)).toBeNull();
-    expect(refuseDeniedSql('select count(*) from config', db)).toBeNull();
-  });
-  it('blanks every other cell of a credential-keyed config row, including an expression over the value', () => {
-    const cols = [
-      { name: 'key', column: 'key', table: 'config' },
-      { name: 'v', column: 'value', table: 'config' },
-      { name: 'substr(value,1,5)', column: null, table: null },
-    ];
-    expect(redactResultRow(cols, ['example_api_key', 'synthetic-secret-value-001', 'synth'], [])).toEqual(['example_api_key', MARK, MARK]);
-    expect(redactResultRow(cols, ['theme', 'dark', 'dark'], [])).toEqual(['theme', 'dark', 'dark']);
+  it('a generated secret in a pair is still blanked', () => {
+    for (const s of [`password=${BODY}`, `"client_secret": "${BODY}"`, `token = 'hunter22xyz'`, 'api_key: shppa_FAKE_a1b2c3d4e5f6']) {
+      expect(redactText(s), s).toContain(MARK);
+    }
   });
 });
+
+describe('F4: more shapes', () => {
+  const TAIL = 'Rest+Of/Token=Value!Here*$x~';
+  it('a Bearer value with + / = ! * $ ~ is blanked whole', () => {
+    expect(redactText(`Authorization: Bearer EwB4A${BODY}${TAIL}`)).toBe(`Authorization: Bearer ${MARK}`);
+    expect(redactText('Bearer ${credential}')).toBe('Bearer ${credential}');
+  });
+  it('a password in a URL of any scheme', () => {
+    for (const sch of ['wss', 'smtp', 'imaps', 'sftp', 'amqps']) {
+      expect(redactText(`${sch}://user:Pw${BODY}@host.example:25/x`), sch).not.toContain(BODY);
+    }
+  });
+  it('a credential flag with a space or = before its value', () => {
+    for (const s of [`cloudflared tunnel run --token ${BODY}`, `--password ${BODY}`, `--api-key=${BODY}`, `--secret '${BODY}'`]) {
+      expect(redactText(s), s).not.toContain(BODY);
+    }
+    expect(redactText('--max-tokens 4096 --token-file /x')).toBe('--max-tokens 4096 --token-file /x');
+  });
+  it('the bare tunnel token (long base64 starting eyJ, no dots)', () => {
+    const t = `eyJ${'hIjoiQWJjMTIzNDU2Nzg5MCIsInQiOiJ4eXoifQ'.repeat(3)}==`;
+    expect(redactText(`run ${t} now`)).toBe(`run ${MARK} now`);
+  });
+  it('JSON with escaped quotes (a tool result stored as a JSON string)', () => {
+    const stored = JSON.stringify({ content: JSON.stringify({ access_token: BODY, n: 1 }) });
+    expect(stored).toContain('\\"access_token\\"');
+    const out = redactText(stored);
+    expect(out).not.toContain(BODY);
+  });
+  it('a Cookie header value', () => {
+    expect(redactText(`Cookie: session=${BODY}; theme=dark`)).not.toContain(BODY);
+  });
+});
+

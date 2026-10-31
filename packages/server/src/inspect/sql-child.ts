@@ -38,6 +38,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { createRequire } from 'node:module';
+import { DENIED_COLUMN_PATTERNS } from './redact.js';
 import { getDbPath } from '../db/connection.js';
 import { spawnAuthorized } from '../agent/effects/proc.js';
 import { currentCapability } from '../agent/effects/capability.js';
@@ -59,6 +60,22 @@ const CHILD_SOURCE = `
       if (!/^(select|with|values)\\b/i.test(lead)) throw new Error('only a read runs here');
       const Database = require(req.betterSqlitePath);
       const db = new Database(req.dbPath, { readonly: true, fileMustExist: true });
+      // t285 F1: the credential values of \`config\` are blanked BEFORE any expression, filter, window or
+      // aggregate of the query can see them: a TEMP VIEW of the same name (temp is searched first)
+      // returns the placeholder for every row whose key names a credential. The parent refuses a
+      // schema-qualified name, which would skip the view.
+      const keyRules = req.credentialKeyPatterns.map((p) => new RegExp(p, 'i'));
+      db.function('dojo_credential_key', { deterministic: true }, (k) => (typeof k === 'string' && !/_at$/i.test(k) && keyRules.some((r) => r.test(k)) ? 1 : 0));
+      const cfg = db.prepare("SELECT name FROM pragma_table_info('config')").all().map((r) => r.name);
+      if (cfg.includes('key') && cfg.includes('value')) {
+        db.exec('CREATE TEMP VIEW config AS SELECT ' + cfg.map((n) => (n === 'value' ? "CASE WHEN dojo_credential_key(key) THEN '<redacted-credential>' ELSE value END AS value" : '"' + n + '"')).join(', ') + ' FROM main.config');
+        // A view of the main schema that reads \`config\` would still reach the real table (names inside it
+        // resolve through the same temp-first search only when the view itself is a temp view), so each is
+        // re-made in temp with its own text.
+        for (const v of db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view'").all()) {
+          try { db.exec(String(v.sql).replace(/^\\s*CREATE\\s+VIEW/i, 'CREATE TEMP VIEW')); } catch (e) { if (/config/i.test(String(v.sql))) throw new Error('a view of config could not be made safe: ' + e.message); }
+        }
+      }
       db.pragma('query_only = 1');
       db.pragma('busy_timeout = 2000');
       const stmt = db.prepare(req.sql);
@@ -132,6 +149,6 @@ export function readInChild(sql: string, onSpawn?: (pid: number) => void): Promi
     });
     child.stdin.on('error', () => undefined);
     // ONE line (JSON escapes every newline inside it), and stdin stays open: see t278 above.
-    child.stdin.write(`${JSON.stringify({ sql, dbPath: getDbPath(), betterSqlitePath: createRequire(import.meta.url).resolve('better-sqlite3') })}\n`);
+    child.stdin.write(`${JSON.stringify({ sql, dbPath: getDbPath(), betterSqlitePath: createRequire(import.meta.url).resolve('better-sqlite3'), credentialKeyPatterns: DENIED_COLUMN_PATTERNS.map((r) => r.source) })}\n`);
   });
 }

@@ -9,6 +9,7 @@ vi.mock('../../github/account.js', () => ({ getGithubToken: () => token.current 
 import { codeSearch, codeRead } from '../code.js';
 import { getCurrentVersion } from '../../gateway/routes/update.js';
 
+const REPO = { full_name: 'd-cornerpin/dojo' };
 const SHA = 'fedcba9876543210fedcba9876543210fedcba98';
 const fetchMock = vi.fn();
 const text = (body: string, status = 200): Response => new Response(body, { status });
@@ -27,7 +28,7 @@ describe('codeSearch', () => {
   it('renders file:line results grouped by file, from the running commit, with the pointer line', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.startsWith('https://api.github.com/search/code')) {
-        return json({ total_count: 2, items: [{ path: 'packages/server/src/work/moved.ts' }, { path: 'packages/server/src/tracker/board.ts' }] });
+        return json({ total_count: 2, items: [{ path: 'packages/server/src/work/moved.ts', repository: REPO }, { path: 'packages/server/src/tracker/board.ts', repository: REPO }] });
       }
       if (url.endsWith('/work/moved.ts')) return text('// header\nexport function taskMovedAtSql(): string {\n  return "x";\n}\n');
       return text('import { taskMovedAtSql } from "../work/moved.js";\n\nconst q = taskMovedAtSql();\n');

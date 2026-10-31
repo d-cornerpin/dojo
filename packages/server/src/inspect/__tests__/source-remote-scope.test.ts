@@ -38,4 +38,42 @@ describe('searchSource scope', () => {
     await searchSource('std::string http://x');
     expect(queryOf()).toBe('std::string http://x repo:d-cornerpin/dojo');
   });
+  it('F2: a path argument carrying whitespace, quotes or a qualifier is refused and nothing is sent', async () => {
+    for (const p of ['packages repo:someone/private', 'a/b org:acme', 'a/"b', "a/b'c", 'repo:x/y', 'a/(b)']) {
+      fetchMock.mockClear();
+      const out = await searchSource('foo', p);
+      expect(fetchMock, p).not.toHaveBeenCalled();
+      expect(out, p).toMatch(/not a path inside the Dojo repository/);
+    }
+  });
+  it('F2: a plain path still narrows the search, with exactly one repo: and one path:', async () => {
+    await searchSource('foo', 'packages/server/src');
+    expect(queryOf()).toBe('foo repo:d-cornerpin/dojo path:packages/server/src');
+  });
+  it('F2: an unbalanced quote in the pattern never leaves a phrase open over the appended qualifiers', async () => {
+    await searchSource('foo "bar baz');
+    expect(queryOf()).toBe('foo bar baz repo:d-cornerpin/dojo');
+    fetchMock.mockClear();
+    await searchSource('"foo bar" baz');
+    expect(queryOf()).toBe('"foo bar" baz repo:d-cornerpin/dojo');
+  });
+  it('F2: a hit from another repository is dropped, whatever the query said', async () => {
+    fetchMock.mockReset();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total_count: 2, items: [
+        { path: 'private/secrets.env', repository: { full_name: 'someone/private' } },
+        { path: 'src/ok.ts', repository: { full_name: 'd-cornerpin/dojo' } },
+      ] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('const foo = 1;\n', { status: 200 }));
+    const out = await searchSource('foo');
+    expect(out).not.toContain('private/secrets.env');
+    expect(out).not.toContain('someone/private');
+    expect(out).toContain('src/ok.ts');
+    expect(out).toContain('1 file match');
+  });
+  it('F2: the no-match line repeats what was searched, not the removed qualifiers', async () => {
+    const out = await searchSource('foo repo:someone/private');
+    expect(out).toContain('No match for "foo"');
+    expect(out).not.toContain('someone');
+  });
 });

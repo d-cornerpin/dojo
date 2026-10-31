@@ -19,6 +19,7 @@ vi.mock('../../github/account.js', () => ({ getGithubToken: () => token.current 
 import { sourceRef, readSourceFile, searchSource, pointerLine } from '../source-remote.js';
 import { getCurrentVersion } from '../../gateway/routes/update.js';
 
+const REPO = { full_name: 'd-cornerpin/dojo' };
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 const fetchMock = vi.fn();
 
@@ -116,7 +117,7 @@ describe('searchSource', () => {
   it('with the connection, searches the repo with the token and locates each hit at the running commit', async () => {
     token.current = 'synthetic-connection-value';
     fetchMock
-      .mockResolvedValueOnce(json({ total_count: 1, items: [{ path: 'packages/server/src/work/moved.ts' }] }))
+      .mockResolvedValueOnce(json({ total_count: 1, items: [{ path: 'packages/server/src/work/moved.ts', repository: REPO }] }))
       .mockResolvedValueOnce(text('import x;\nexport const taskMovedAtSql = 1;\nconst y = taskMovedAtSql + 1;\n'));
     const out = await searchSource('taskMovedAtSql', 'packages/server');
     const [searchUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -136,7 +137,7 @@ describe('searchSource', () => {
     token.current = 'synthetic-connection-value';
     let inFlight = 0; let most = 0;
     fetchMock.mockImplementation(async (url: string) => {
-      if (String(url).startsWith('https://api.github.com/')) return json({ total_count: 3, items: [{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }] });
+      if (String(url).startsWith('https://api.github.com/')) return json({ total_count: 3, items: [{ path: 'a.ts', repository: REPO }, { path: 'b.ts', repository: REPO }, { path: 'c.ts', repository: REPO }] });
       inFlight++; most = Math.max(most, inFlight);
       await new Promise((r) => setTimeout(r, 5));
       inFlight--;

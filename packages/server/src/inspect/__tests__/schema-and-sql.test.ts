@@ -298,7 +298,7 @@ describe('sql', () => {
     for (const stmt of ['pragma query_only = 0', `vacuum into '${copy}'`, `attach '${path.join(home, 'o.db')}' as o`,
       "with x as (select 1) delete from config where key = 'platform_name'", '/* select */ delete from config']) {
       const out = await asInspect(() => mod.readInChild(stmt));
-      expect(out, stmt).toEqual({ error: expect.stringMatching(/only a read runs here|readonly|read-only/) });
+      expect(out, stmt).toEqual({ error: expect.stringMatching(/only a read runs here|readonly|read-only|cannot modify config because it is a view/) });
     }
     expect(fs.existsSync(copy)).toBe(false);
   });
