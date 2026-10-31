@@ -101,6 +101,7 @@ beforeEach(() => {
 });
 
 import { generateToolsGuidance_v2, applySpawnCapabilityTruth } from '../assembler.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // The section as it stands at HEAD 18119c2, byte for byte. A spawn-capable
 // agent's prefix must still contain exactly this.
@@ -169,7 +170,7 @@ describe('sys.identity — the SOUL capability claim is manifest-conditional', (
   });
 
   it('leaves a soul that never made the claim untouched, either way', () => {
-    const owner = '# Identity\n\nYou are Zargo.\n\n# Rules\n\n- Be direct.\n';
+    const owner = `# Identity\n\nYou are ${FX.n4}.\n\n# Rules\n\n- Be direct.\n`;
     manifest.canSpawn = false;
     expect(applySpawnCapabilityTruth(owner, 'bot')).toBe(owner);
     manifest.canSpawn = true;

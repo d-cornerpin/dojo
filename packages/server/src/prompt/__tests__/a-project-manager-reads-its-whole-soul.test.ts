@@ -72,11 +72,12 @@ import { PM_ALLOWED_WORK_OPS } from '../../tracker/pm-agent.js';
 import { WORK_OPS } from '../../tools/work-verbs.js';
 import { pmSoulDefaultFrom, platformTemplateSearchPaths } from '../assembler.js';
 import * as platform from '../../config/platform.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
-const PM = 'quilba';
-const PRIMARY = 'zargo';
+const PM = FXID.n5;
+const PRIMARY = FXID.n4;
 
 /** The shipped template, read from the repo the way the runtime resolves it. */
 const SHIPPED = fs.readFileSync(
@@ -99,14 +100,14 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Zargo');
+  setConfig('primary_agent_name', FX.n4);
   setConfig('pm_agent_id', PM);
-  setConfig('pm_agent_name', 'Quilba');
-  setConfig('owner_name', 'Yorvak');
+  setConfig('pm_agent_name', FX.n5);
+  setConfig('owner_name', FX.n11);
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
-    .run(PM, 'Quilba');
+    .run(PM, FX.n5);
 });
 
 afterEach(() => {
@@ -133,9 +134,9 @@ describe('the PM runs on its whole soul', () => {
     const soul = getSoulContent(PM);
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('You are Quilba,');
-    expect(soul).toContain('Zargo');
-    expect(soul).toContain('Yorvak');
+    expect(soul).toContain(`You are ${FX.n5},`);
+    expect(soul).toContain(FX.n4);
+    expect(soul).toContain(FX.n11);
   });
 
   it('T40 HOLDS: the settings card shows exactly what the runtime reads', () => {
@@ -143,11 +144,11 @@ describe('the PM runs on its whole soul', () => {
   });
 
   it('an owner edit through the card still reaches the model, and is never re-seeded away', () => {
-    writeAgentPromptSurface(PM, '# Identity\n\nYou are Quilba and you validate closes. That is all.');
+    writeAgentPromptSurface(PM, `# Identity\n\nYou are ${FX.n5} and you validate closes. That is all.`);
 
-    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes. That is all.');
+    expect(getSoulContent(PM)).toBe(`# Identity\n\nYou are ${FX.n5} and you validate closes. That is all.`);
     // Read twice: a re-seed that fired on any read would clobber the owner's words.
-    expect(getSoulContent(PM)).toBe('# Identity\n\nYou are Quilba and you validate closes. That is all.');
+    expect(getSoulContent(PM)).toBe(`# Identity\n\nYou are ${FX.n5} and you validate closes. That is all.`);
     expect(readAgentPromptSurface(PM)).toBe(getSoulContent(PM));
   });
 
@@ -172,7 +173,7 @@ describe('the PM runs on its whole soul', () => {
     const soul = pmSoulDefaultFrom(() => null, (msg) => logs.push(msg));
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('Quilba');
+    expect(soul).toContain(FX.n5);
     expect(logs.join(' ')).toMatch(/PM-SOUL\.md/);
   });
 

@@ -93,11 +93,12 @@ import {
 } from '@dojo/shared';
 import { soulFileForAgent } from '../assembler.js';
 import * as platform from '../../config/platform.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
-const PRIMARY = 'zargo';
+const PRIMARY = FXID.n4;
 const HEALER = 'healer';
 // An ordinary sub-agent — the population that still resolves its identity through
 // `readStoredCharter`, and therefore the one the end-to-end clauses are demonstrated on.
@@ -133,12 +134,12 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Zargo');
+  setConfig('primary_agent_name', FX.n4);
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
-  setConfig('owner_name', 'Yorvak');
+  setConfig('owner_name', FX.n11);
   platform.clearPlatformConfigCache();
-  seedAgent(PRIMARY, 'Zargo');
+  seedAgent(PRIMARY, FX.n4);
   seedAgent(HEALER, 'Healer');            // charter NULL — the measured shape
 });
 

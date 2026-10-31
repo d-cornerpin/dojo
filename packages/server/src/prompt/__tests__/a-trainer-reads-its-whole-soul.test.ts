@@ -61,11 +61,12 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 import { runMigrations } from '../../db/migrations.js';
 import { getSoulContent, soulFileForAgent, trainerSoulDefaultFrom } from '../assembler.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
-const TRAINER = 'tyndo';
-const PRIMARY = 'zargo';
+const TRAINER = FXID.n6;
+const PRIMARY = FXID.n4;
 
 const SHIPPED = fs.readFileSync(
   path.resolve(__dirname, '../../../../../templates/TRAINER-SOUL.md'),
@@ -87,15 +88,15 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Zargo');
+  setConfig('primary_agent_name', FX.n4);
   setConfig('trainer_agent_id', TRAINER);
-  setConfig('trainer_agent_name', 'Tyndo');
-  setConfig('owner_name', 'Yorvak');
+  setConfig('trainer_agent_name', FX.n6);
+  setConfig('owner_name', FX.n11);
   const platform = await import('../../config/platform.js');
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
-    .run(TRAINER, 'Tyndo');
+    .run(TRAINER, FX.n6);
 });
 
 afterEach(() => {
@@ -122,7 +123,7 @@ describe('the Trainer runs on its whole soul', () => {
     const soul = getSoulContent(TRAINER);
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('You are Tyndo,');
+    expect(soul).toContain(`You are ${FX.n6},`);
   });
 
   it('T40 HOLDS: the settings card shows exactly what the runtime reads', () => {
@@ -130,7 +131,7 @@ describe('the Trainer runs on its whole soul', () => {
   });
 
   it('an owner edit through the card still reaches the model, and is never re-seeded away', () => {
-    const owned = '# Identity\n\nYou are Tyndo and you write techniques. That is all.';
+    const owned = `# Identity\n\nYou are ${FX.n6} and you write techniques. That is all.`;
     writeAgentPromptSurface(TRAINER, owned);
 
     expect(getSoulContent(TRAINER)).toBe(owned);
@@ -168,7 +169,7 @@ describe('the Trainer runs on its whole soul', () => {
     const soul = trainerSoulDefaultFrom(() => null, (msg) => logs.push(msg));
 
     expect(soul).not.toContain('{{');
-    expect(soul).toContain('Tyndo');
+    expect(soul).toContain(FX.n6);
     expect(logs.join(' ')).toMatch(/TRAINER-SOUL\.md/);
   });
 });

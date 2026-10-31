@@ -104,15 +104,16 @@ import { configRouter } from '../../gateway/routes/config.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { agentsHandlers } from '../../agent/tools/cat/agents.js';
 import * as platform from '../../config/platform.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
 const HOME = path.join(TEST_HOME_ROOT, HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 
-const PRIMARY = 'zargo';
-const PM = 'quilba';
-const TRAINER = 'tyndo';
+const PRIMARY = FXID.n4;
+const PM = FXID.n5;
+const TRAINER = FXID.n6;
 const HEALER = 'healer';
 const IMAGINER = 'imaginer';
 const SUB = 'maxbot';
@@ -154,32 +155,32 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Zargo');
+  setConfig('primary_agent_name', FX.n4);
   setConfig('pm_agent_id', PM);
-  setConfig('pm_agent_name', 'Quilba');
+  setConfig('pm_agent_name', FX.n5);
   setConfig('trainer_agent_id', TRAINER);
-  setConfig('trainer_agent_name', 'Tyndo');
+  setConfig('trainer_agent_name', FX.n6);
   // T59 (W42): two more file-backed souls to re-fill.
   setConfig('healer_agent_id', HEALER);
   setConfig('healer_agent_name', 'Healer');
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
-  setConfig('owner_name', 'Yorvak');
+  setConfig('owner_name', FX.n11);
   platform.clearPlatformConfigCache();
-  seedAgent(PRIMARY, 'Zargo');
-  seedAgent(PM, 'Quilba');
-  seedAgent(TRAINER, 'Tyndo');
+  seedAgent(PRIMARY, FX.n4);
+  seedAgent(PM, FX.n5);
+  seedAgent(TRAINER, FX.n6);
   seedAgent(HEALER, 'Healer');
   seedAgent(IMAGINER, 'Iris');
   seedAgent(SUB, 'Max');
 
   // The stored souls as a worn-in box carries them: SUBSTITUTED, no placeholders left.
   fs.writeFileSync(soulPath('SOUL.md'),
-    '# Zargo\n\nYou are Zargo, the Dojo Master. Quilba runs the tracker; ask Quilba before you plan.\n');
+    `# ${FX.n4}\n\nYou are ${FX.n4}, the Dojo Master. ${FX.n5} runs the tracker; ask ${FX.n5} before you plan.\n`);
   fs.writeFileSync(soulPath('PM-SOUL.md'),
-    '# Quilba — Project Manager\n\nYou are Quilba, the project manager. Escalate to Zargo.\nQuilba does not have iMessage.\n');
+    `# ${FX.n5} — Project Manager\n\nYou are ${FX.n5}, the project manager. Escalate to ${FX.n4}.\nQuilba does not have iMessage.\n`);
   fs.writeFileSync(soulPath('TRAINER-SOUL.md'),
-    '# Tyndo — Trainer\n\nYou are Tyndo, the technique trainer. Report to Zargo.\n');
+    `# ${FX.n6} — Trainer\n\nYou are ${FX.n6}, the technique trainer. Report to ${FX.n4}.\n`);
   fs.writeFileSync(soulPath('MAXBOT-SOUL.md'),
     '# Max\n\nYou are Max. Max reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
   // T59 (W42): the two souls this task made file-backed, in the shape their templates carry.
@@ -187,9 +188,9 @@ beforeEach(async () => {
   // placeholder, so the rename re-fill is the ONLY thing that can make a renamed Healer's own
   // doctrine call it by its name.
   fs.writeFileSync(soulPath('HEALER-SOUL.md'),
-    '# Identity\n\nYou are the Healer, the dojo\'s self-healing agent. Escalate to Zargo.\n');
+    `# Identity\n\nYou are the Healer, the dojo\'s self-healing agent. Escalate to ${FX.n4}.\n`);
   fs.writeFileSync(soulPath('IMAGINER-SOUL.md'),
-    '# Identity\n\nYou are Iris, the image specialist. Ask Zargo to run image_create.\n');
+    `# Identity\n\nYou are Iris, the image specialist. Ask ${FX.n4} to run image_create.\n`);
 });
 
 afterEach(() => {
@@ -215,7 +216,7 @@ describe('a rename reaches the soul, through every door', () => {
     const soul = readSoul('PM-SOUL.md');
     expect(soul).toContain('You are Karen, the project manager');
     expect(soul).toContain('Karen does not have iMessage');
-    expect(soul).not.toContain('Quilba');
+    expect(soul).not.toContain(FX.n5);
   });
 
   it('the CONFIG door (Trainer): the other measured casualty follows too', async () => {
@@ -227,7 +228,7 @@ describe('a rename reaches the soul, through every door', () => {
 
     expect(agentName(TRAINER)).toBe('Tock');
     expect(readSoul('TRAINER-SOUL.md')).toContain('You are Tock, the technique trainer');
-    expect(readSoul('TRAINER-SOUL.md')).not.toContain('Tyndo');
+    expect(readSoul('TRAINER-SOUL.md')).not.toContain(FX.n6);
   });
 
   it('the SETTINGS door: PUT /api/agents/:id renames and the soul follows', async () => {
@@ -245,13 +246,13 @@ describe('a rename reaches the soul, through every door', () => {
 
   it('the TOOL door: update_agent renames and the soul follows', async () => {
     const out = await agentsHandlers['update_agent']!({
-      agentId: PRIMARY, args: { agent_id: SUB, name: 'Zarnak' },
+      agentId: PRIMARY, args: { agent_id: SUB, name: FX.n7 },
     } as never);
 
     expect(out.isError).toBeFalsy();
-    expect(out.content).toContain('name: "Max" → "Zarnak"');    // the door's own words, unchanged
-    expect(agentName(SUB)).toBe('Zarnak');
-    expect(readSoul('MAXBOT-SOUL.md')).toContain('You are Zarnak');
+    expect(out.content).toContain(`name: "Max" → "${FX.n7}"`);    // the door's own words, unchanged
+    expect(agentName(SUB)).toBe(FX.n7);
+    expect(readSoul('MAXBOT-SOUL.md')).toContain(`You are ${FX.n7}`);
   });
 });
 
@@ -259,10 +260,10 @@ describe('a rename reaches the soul, through every door', () => {
 
 describe('the re-fill is exact', () => {
   it('MANDATORY CONTROL — a common word: "Max" never rewrites Maximum, Maxwell or climax', () => {
-    const out = renameAgent(SUB, 'Zarnak');
+    const out = renameAgent(SUB, FX.n7);
 
     const soul = readSoul('MAXBOT-SOUL.md');
-    expect(soul).toBe('# Zarnak\n\nYou are Zarnak. Zarnak reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n');
+    expect(soul).toBe(`# ${FX.n7}\n\nYou are ${FX.n7}. ${FX.n7} reviews the Maximum-effort queue with Maxwell, and never peaks at climax.\n`);
     expect(soul).toContain('Maximum-effort');
     expect(soul).toContain('Maxwell');
     expect(soul).toContain('climax');
@@ -273,7 +274,7 @@ describe('the re-fill is exact', () => {
     const before = fs.readFileSync(soulPath('TRAINER-SOUL.md'));
     const beforeStat = fs.statSync(soulPath('TRAINER-SOUL.md')).mtimeMs;
 
-    renameAgent(SUB, 'Zarnak');   // "Max" appears nowhere in the trainer's soul
+    renameAgent(SUB, FX.n7);   // "Max" appears nowhere in the trainer's soul
 
     expect(fs.readFileSync(soulPath('TRAINER-SOUL.md'))).toEqual(before);
     expect(fs.statSync(soulPath('TRAINER-SOUL.md')).mtimeMs).toBe(beforeStat);
@@ -285,14 +286,14 @@ describe('the re-fill is exact', () => {
 
     // The primary's own SOUL.md names the PM twice. The owner authored it; the ruling says it follows.
     expect(readSoul('SOUL.md')).toBe(
-      '# Zargo\n\nYou are Zargo, the Dojo Master. Karen runs the tracker; ask Karen before you plan.\n');
+      `# ${FX.n4}\n\nYou are ${FX.n4}, the Dojo Master. Karen runs the tracker; ask Karen before you plan.\n`);
     expect(out.souls.find((s) => s.file === 'SOUL.md')?.replacements).toBe(2);
     expect(out.souls.find((s) => s.file === 'PM-SOUL.md')?.replacements).toBe(3);
   });
 
   it('CONTROL: a `{{…}}`-carrying soul is LEFT to the existing re-seed rule, not rename-patched', () => {
     // The W24/W25 shape: an engine-seeded stub that never passed a substituting writer.
-    fs.writeFileSync(soulPath('PM-SOUL.md'), '# {{pm_agent_name}}\n\nYou are {{pm_agent_name}}, and Quilba is stale.\n');
+    fs.writeFileSync(soulPath('PM-SOUL.md'), `# {{pm_agent_name}}\n\nYou are {{pm_agent_name}}, and ${FX.n5} is stale.\n`);
 
     const out = renameAgent(PM, 'Karen');
 
@@ -308,7 +309,7 @@ describe('the re-fill is exact', () => {
 
   it('a no-op rename writes nothing at all', () => {
     const before = fs.readFileSync(soulPath('PM-SOUL.md'));
-    expect(renameAgent(PM, 'Quilba').renamed).toBe(false);
+    expect(renameAgent(PM, FX.n5).renamed).toBe(false);
     expect(renameAgent(PM, '   ').renamed).toBe(false);
     expect(fs.readFileSync(soulPath('PM-SOUL.md'))).toEqual(before);
   });
@@ -324,11 +325,11 @@ describe('the re-fill is exact', () => {
 
     expect(row.agent_id).toBe(PM);
     expect(row.action_type).toBe('file_write');
-    expect(row.target).toBe('Quilba → Karen');
+    expect(row.target).toBe(`${FX.n5} → Karen`);
     expect(row.result).toBe('success');
     const detail = JSON.parse(row.detail) as { kind: string; oldName: string; newName: string; replacements: number; souls: Array<{ file: string; replacements: number }> };
     expect(detail.kind).toBe('agent_rename');
-    expect(detail.oldName).toBe('Quilba');
+    expect(detail.oldName).toBe(FX.n5);
     expect(detail.newName).toBe('Karen');
     expect(detail.replacements).toBe(5);                                   // 3 in PM-SOUL.md + 2 in SOUL.md
     expect(detail.souls.map((s) => s.file).sort()).toEqual(['PM-SOUL.md', 'SOUL.md']);
@@ -336,11 +337,11 @@ describe('the re-fill is exact', () => {
 
   it('CONTROL: a rename that touched no soul writes no audit row — the log line is the record', () => {
     seedAgent('nobody', 'Nemo');
-    const out = renameAgent('nobody', 'Zubel');
+    const out = renameAgent('nobody', FX.n9);
 
     expect(out.renamed).toBe(true);
     expect(out.souls).toEqual([]);
-    expect(agentName('nobody')).toBe('Zubel');
+    expect(agentName('nobody')).toBe(FX.n9);
     expect(mockDb.current!.prepare("SELECT COUNT(*) c FROM audit_log WHERE detail LIKE '%agent_rename%'")
       .get() as { c: number }).toEqual({ c: 0 });
   });
@@ -486,7 +487,7 @@ describe('a rename refuses a case-variant clash with another live agent', () => 
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error)
       .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
-    expect(agentName(PM)).toBe('Quilba');   // untouched
+    expect(agentName(PM)).toBe(FX.n5);   // untouched
   });
 
   it('THE CONFIG door refuses and returns 400, before the generic upsert', async () => {
@@ -499,8 +500,8 @@ describe('a rename refuses a case-variant clash with another live agent', () => 
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error)
       .toBe('An agent named "Helper" already exists; names are matched without regard to capital letters.');
-    expect(getConfig('pm_agent_name')).toBe('Quilba');   // the config key did NOT move
-    expect(agentName(PM)).toBe('Quilba');                // the row did NOT move
+    expect(getConfig('pm_agent_name')).toBe(FX.n5);   // the config key did NOT move
+    expect(agentName(PM)).toBe(FX.n5);                // the row did NOT move
   });
 
   it('THE TOOL door refuses and reports the plain message', async () => {

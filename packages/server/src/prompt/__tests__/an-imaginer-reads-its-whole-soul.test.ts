@@ -60,11 +60,12 @@ import { getSoulContent, soulFileForAgent, imaginerSoulDefaultFrom } from '../as
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../agent-prompt-surface.js';
 import { PLATFORM_SOUL_PLACEHOLDERS } from '../assembler.js';
 import * as platform from '../../config/platform.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HOME = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir()), HOME_DIR_NAME);
 const PROMPTS = path.join(HOME, '.dojo', 'prompts');
 const IMAGINER = 'imaginer';
-const PRIMARY = 'zargo';
+const PRIMARY = FXID.n4;
 
 const SHIPPED = fs.readFileSync(
   path.resolve(__dirname, '../../../../../templates/IMAGINER-SOUL.md'),
@@ -87,10 +88,10 @@ beforeEach(async () => {
   mockDb.current = new Database(':memory:');
   runMigrations();
   setConfig('primary_agent_id', PRIMARY);
-  setConfig('primary_agent_name', 'Zargo');
+  setConfig('primary_agent_name', FX.n4);
   setConfig('imaginer_agent_id', IMAGINER);
   setConfig('imaginer_agent_name', 'Iris');
-  setConfig('owner_name', 'Yorvak');
+  setConfig('owner_name', FX.n11);
   platform.clearPlatformConfigCache();
   mockDb.current
     .prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')")
@@ -122,13 +123,13 @@ describe('the Imaginer runs on its whole soul', () => {
     expect(soul).not.toContain('{{');
     expect(soul).toContain('You are Iris, the dojo\'s image generation specialist');
     // The other two names the template uses come from the same door.
-    expect(soul).toContain('Zargo');
-    expect(soul).toContain('Yorvak');
+    expect(soul).toContain(FX.n4);
+    expect(soul).toContain(FX.n11);
     expect(soul).toBe(
       SHIPPED
         .replace(/\{\{imaginer_agent_name\}\}/g, 'Iris')
-        .replace(/\{\{primary_agent_name\}\}/g, 'Zargo')
-        .replace(/\{\{owner_name\}\}/g, 'Yorvak'),
+        .replace(/\{\{primary_agent_name\}\}/g, FX.n4)
+        .replace(/\{\{owner_name\}\}/g, FX.n11),
     );
   });
 
