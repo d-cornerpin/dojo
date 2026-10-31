@@ -77,9 +77,15 @@ export async function readOpenRouterCredits(credential: string): Promise<Read<Op
   logger.debug('OpenRouter credits raw response', { raw: JSON.stringify(raw) });
   // Normalize — the response may be { data: { ... } } or flat, with varying field names.
   const src = (raw.data ?? raw) as Record<string, unknown>;
+  // A 200 holding no figure at all (empty body, another wrapper, an error sent with status 200)
+  // is not a $0.00 balance — knowing nothing must not latch the threshold alert. The DeepSeek
+  // reader below refuses its no-info case the same way.
+  const hasFigure = [src.balance, src.remaining, src.total_credits, src.totalCredits].some((v) => typeof v === 'number');
+  if (!hasFigure) return { ok: false, error: 'OpenRouter returned no credit figures' };
   const totalCredits = (src.total_credits ?? src.totalCredits ?? src.limit ?? 0) as number;
   const totalUsage = (src.total_usage ?? src.totalUsage ?? src.usage ?? 0) as number;
   const balance = (src.balance ?? src.remaining ?? (totalCredits - totalUsage)) as number;
+  if (!Number.isFinite(balance)) return { ok: false, error: 'OpenRouter returned no credit figures' };
   return { ok: true, data: { total_credits: totalCredits, total_usage: totalUsage, balance } };
 }
 
