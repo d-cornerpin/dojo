@@ -351,6 +351,30 @@ export interface GoogleAgendaFetchItem {
   notes?: string;
 }
 
+/**
+ * Read every page of a Google events list. Google returns one page plus
+ * `nextPageToken` when more exist; keep asking until there is no token. Stops on
+ * the first failed call (returning its error) and when a token repeats, so it can
+ * never loop forever.
+ */
+export async function readAllEventPages<T>(
+  readPage: (pageToken: string | undefined) => ReturnType<typeof googleRead>,
+): Promise<{ ok: true; items: T[] } | { ok: false; error: string }> {
+  const items: T[] = [];
+  const seen = new Set<string>();
+  let pageToken: string | undefined;
+  for (;;) {
+    const result = await readPage(pageToken);
+    if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+    const data = result.data as { items?: T[]; nextPageToken?: string } | undefined;
+    if (data?.items) items.push(...data.items);
+    const next = data?.nextPageToken;
+    if (!next || seen.has(next)) return { ok: true, items };
+    seen.add(next);
+    pageToken = next;
+  }
+}
+
 /** Fetch + normalize one account's events for a window. `accountId` is the row id (slot). */
 export async function fetchAgendaItemsForAccount(
   accountId: string,
@@ -368,12 +392,16 @@ export async function fetchAgendaItemsForAccount(
     orderBy: 'startTime',
     timeZone: tz,
   });
-  const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-  const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days: opts?.days, timezone: tz, anchored: window.anchored, calendarId }, accountId);
-  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+  type AgendaEvent = { summary?: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string };
+  const result = await readAllEventPages<AgendaEvent>((pageToken) => {
+    const pageParams = new URLSearchParams(params);
+    if (pageToken) pageParams.set('pageToken', pageToken);
+    const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${pageParams.toString()}`;
+    return googleRead(url, agentId, agentName, 'calendar_agenda', { days: opts?.days, timezone: tz, anchored: window.anchored, calendarId }, accountId);
+  });
+  if (!result.ok) return { ok: false, error: result.error };
 
-  const data = result.data as { items?: Array<{ summary?: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
-  const items: GoogleAgendaFetchItem[] = (data?.items ?? []).map(e => {
+  const items: GoogleAgendaFetchItem[] = result.items.map(e => {
     const isAllDay = !!(e.start.date && !e.start.dateTime);
     const rawStart = e.start.dateTime ?? e.start.date ?? '';
     const rawEnd = e.end.dateTime ?? e.end.date ?? '';
@@ -582,12 +610,16 @@ export async function executeGoogleReadTool(
         orderBy: 'startTime',
         q: searchQuery,
       });
-      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId }, slot);
+      const result = await readAllEventPages<{ summary?: string; start: { dateTime?: string; date?: string }; id: string }>((pageToken) => {
+        const pageParams = new URLSearchParams(params);
+        if (pageToken) pageParams.set('pageToken', pageToken);
+        const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${pageParams.toString()}`;
+        return googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId }, slot);
+      });
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
-      const data = result.data as { items?: Array<{ summary?: string; start: { dateTime?: string; date?: string }; id: string }> };
-      if (!data?.items || data.items.length === 0) return `No events matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
+      const data = { items: result.items };
+      if (data.items.length === 0) return `No events matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
       const requestedTz = args.timezone as string | undefined;
       const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
