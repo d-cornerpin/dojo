@@ -4,6 +4,7 @@
 // NOT available to: PM agent
 // ════════════════════════════════════════
 
+import { docBlocksToText, type DocBlock } from './docs-text.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
 import { outsideSpan } from '../tools/external-content.js';
@@ -733,21 +734,10 @@ export async function executeGoogleReadTool(
       const result = await googleRead(url, agentId, agentName, 'docs_read', { documentId: docId }, slot);
       if (!result.ok) return `Error reading Google Doc: ${result.error}`;
 
-      const data = result.data as { title?: string; body?: { content?: Array<{ paragraph?: { elements?: Array<{ textRun?: { content: string } }> } }> } };
+      const data = result.data as { title?: string; body?: { content?: DocBlock[] } };
       const title = data?.title ?? 'Untitled';
 
-      let text = '';
-      if (data?.body?.content) {
-        for (const block of data.body.content) {
-          if (block?.paragraph?.elements) {
-            for (const element of block.paragraph.elements) {
-              if (element?.textRun?.content) {
-                text += element.textRun.content;
-              }
-            }
-          }
-        }
-      }
+      const text = docBlocksToText(data?.body?.content);
       const paged = applyTextPagination(
         text || '(empty document)',
         'docs_read',
