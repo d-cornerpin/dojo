@@ -51,11 +51,12 @@ import { runTurnClosures } from '../turn-closures.js';
 import { type TurnCounterparty } from '../../../counterparty.js';
 import type { PreflightContext, PreflightScratch } from '../index.js';
 import type { TurnContext } from '../../../../turn-context.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 

@@ -67,7 +67,7 @@ vi.mock('../../../../../contacts/resolve-recipient.js', () => ({
 // ── UX-ACCESS A4's CHANNEL DOOR, declared rather than borrowed (W83, v3.1.23 cut) ──
 // `turn-closures.ts` now asks `engineMayRouteTo` before any of its four push arms
 // fire. That predicate reads the agent's stored grants out of the DATABASE, and
-// this file's `AGENT` is the literal string `'zargo'` — the owner's own primary.
+// this file's `AGENT` is the literal string `'FXID.n4'` — the owner's own primary.
 // Until T74b gave the suite its own home, the door silently opened a real
 // `~/.dojo/data/dojo.db`, found the owner's live grants there and answered `true`,
 // so these three clauses passed on a fact about ONE DEVELOPER'S BOX. On a fresh
@@ -90,14 +90,15 @@ import { runTurnClosures } from '../turn-closures.js';
 import { engineAckReachesTheirChannel, isRoutedHumanCounterparty, type TurnCounterparty } from '../../../counterparty.js';
 import type { PreflightContext, PreflightScratch } from '../index.js';
 import type { TurnContext } from '../../../../turn-context.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CHAT_ID = '19:meeting_abcdef0123456789@thread.v2';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 
@@ -160,13 +161,13 @@ describe('the predicate: the door opens where the ack can now actually be pushed
     }
     // and it still refuses everyone the wider rule refuses
     expect(engineAckReachesTheirChannel(person({ channel: 'teams', relation: 'unknown' }))).toBe(false);
-    expect(engineAckReachesTheirChannel({ kind: 'agent', name: 'Tyndo' } as TurnCounterparty)).toBe(false);
+    expect(engineAckReachesTheirChannel({ kind: 'agent', name: FX.n6 } as TurnCounterparty)).toBe(false);
   });
 });
 
 describe('the delivery: the ack REACHES a Teams chat, through the send the router already uses', () => {
   it('RED→GREEN: the ack is pushed to the originating chat as a `teams_send_message`', async () => {
-    const deliver = ackFor(person({ channel: 'teams', senderId: 'yorvak@northwind.example' }), { chatId: CHAT_ID });
+    const deliver = ackFor(person({ channel: 'teams', senderId: `${FXID.n11}@northwind.example` }), { chatId: CHAT_ID });
     await deliver('On it — pulling the numbers now.', 'start_ack', null, 'agent-text');
 
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
@@ -221,7 +222,7 @@ describe('the delivery: the ack REACHES a Teams chat, through the send the route
   });
 
   it('CONTROL — EMAIL IS NOT PUSHED. The ack row is written and broadcast and that is all', async () => {
-    const deliver = ackFor(person({ channel: 'email', senderId: 'yorvak@northwind.example' }),
+    const deliver = ackFor(person({ channel: 'email', senderId: `${FXID.n11}@northwind.example` }),
       { emailMessageId: '<abc@mail>' });
     await deliver('On it.', 'start_ack', null, 'agent-text');
     expect(executeToolSpy).not.toHaveBeenCalled();
