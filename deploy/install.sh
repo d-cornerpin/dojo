@@ -154,29 +154,64 @@ if ! node "$SCRIPT_DIR/platform/packages/server/dist/update/install-tree-cli.js"
 fi
 
 # Copy watchdog
+# The new watchdog is STAGED beside the installed one (copy, version stamp, dependencies), and only
+# when all of that succeeded is it switched in by two renames. On any failure the installed
+# watchdog is untouched and still works; the staging folder is removed.
 # What to tell the person when the watchdog step fails. On a FIRST install nothing is loaded, so
 # "not started" is true. On a reinstall the earlier services are still loaded and the new platform
 # is already switched in, so say what is installed and what is still running.
 say_watchdog_stop_state() {
     if launchctl list 2>/dev/null | grep -q 'com\.dojo\.platform'; then
-        echo "   The new platform is installed, but the watchdog could not be updated. The Dojo that was already running is still running (it has not been restarted), but the watchdog's files were only partly updated and it may not restart until the installer is run again."
+        echo "   The new platform is installed, but the watchdog could not be updated. The old watchdog is still in place and the Dojo that was already running is still running (it has not been restarted)."
     else
         echo "   Dojo was not started."
     fi
 }
+WD_STAGE="$DOJO_DIR/watchdog.staging-$$"
+WD_OLD="$DOJO_DIR/watchdog.old-$$"
+rm -rf "$DOJO_DIR"/watchdog.staging-* 2>/dev/null   # left by an installer that was cut off
+wd_fail() { rm -rf "$WD_STAGE"; }
 if [[ -d "$SCRIPT_DIR/watchdog" ]]; then
-    if ! rsync -a "$SCRIPT_DIR/watchdog/" "$DOJO_DIR/watchdog/"; then
-        echo "❌ The watchdog (the part that repairs Dojo if an update goes wrong) could not be copied into $DOJO_DIR/watchdog."
+    rm -rf "$WD_STAGE"
+    if ! rsync -a "$SCRIPT_DIR/watchdog/" "$WD_STAGE/"; then
+        wd_fail
+        echo "❌ The watchdog (the part that repairs Dojo if an update goes wrong) could not be copied into $DOJO_DIR."
         say_watchdog_stop_state
         echo "   Check that the disk is not full, then run the installer again."
         exit 1
     fi
-fi
-# Stamp the watchdog version marker (ships inside platform/watchdog-dist) beside the
-# installed watchdog so the platform's boot-time self-refresh sees a fresh install as
-# already up-to-date and does not needlessly re-copy + kickstart on the first boot.
-if [[ -f "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" ]]; then
-    cp "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" "$DOJO_DIR/watchdog/watchdog.version"
+    # Stamp the watchdog version marker (ships inside platform/watchdog-dist) beside the
+    # installed watchdog so the platform's boot-time self-refresh sees a fresh install as
+    # already up-to-date and does not needlessly re-copy + kickstart on the first boot.
+    if [[ -f "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" ]]; then
+        cp "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" "$WD_STAGE/watchdog.version"
+    fi
+    # Watchdog deps (the platform's were installed and checked above, before the switch)
+    if [[ -f "$WD_STAGE/package.json" ]]; then
+        if ! ( cd "$WD_STAGE" && { npm ci --production 2>/dev/null || npm install --production; } ); then
+            wd_fail
+            echo "❌ The watchdog's supporting files could not be installed (the reason is above)."
+            echo "   The watchdog repairs Dojo if an update goes wrong, so the install is stopped."
+            say_watchdog_stop_state
+            echo "   Check your internet connection and the disk space, then run the installer again."
+            exit 1
+        fi
+    fi
+    # Switch in: old aside, new in, old removed. A failed second rename puts the old one back.
+    if [[ -d "$DOJO_DIR/watchdog" ]] && ! mv "$DOJO_DIR/watchdog" "$WD_OLD"; then
+        wd_fail
+        echo "❌ The new watchdog could not be switched in."
+        say_watchdog_stop_state
+        exit 1
+    fi
+    if ! mv "$WD_STAGE" "$DOJO_DIR/watchdog"; then
+        [[ -d "$WD_OLD" ]] && mv "$WD_OLD" "$DOJO_DIR/watchdog"
+        wd_fail
+        echo "❌ The new watchdog could not be switched in."
+        say_watchdog_stop_state
+        exit 1
+    fi
+    rm -rf "$WD_OLD"
 fi
 
 # Copy scripts
@@ -184,20 +219,6 @@ mkdir -p "$DOJO_DIR/scripts"
 cp "$SCRIPT_DIR/scripts/"*.sh "$SCRIPT_DIR/scripts/"*.md "$DOJO_DIR/scripts/" 2>/dev/null || true
 cp "$SCRIPT_DIR/uninstall.sh" "$DOJO_DIR/scripts/" 2>/dev/null || true
 chmod +x "$DOJO_DIR/scripts/"*.sh
-
-# ── Watchdog dependencies ── (the platform's were installed and checked above, before the switch)
-
-# Watchdog deps
-if [[ -f "$DOJO_DIR/watchdog/package.json" ]]; then
-    cd "$DOJO_DIR/watchdog"
-    if ! { npm ci --production 2>/dev/null || npm install --production; }; then
-        echo "❌ The watchdog's supporting files could not be installed (the reason is above)."
-        echo "   The watchdog repairs Dojo if an update goes wrong, so the install is stopped."
-        say_watchdog_stop_state
-        echo "   Check your internet connection and the disk space, then run the installer again."
-        exit 1
-    fi
-fi
 
 # ── Generate secrets ──
 

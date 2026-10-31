@@ -77,7 +77,7 @@ for entry in "$DOJO_DIR"/* "$DOJO_DIR"/.[!.]*; do
   [ -e "$entry" ] || continue
   name="$(basename "$entry")"
   case "$name" in
-    platform|platform.backup-*|platform.failed-*|platform.staging*|watchdog|scripts|bin|logs|dojologo.pdf|rollback.lock|secrets.yaml|prompts|techniques|.DS_Store) continue ;;
+    platform|platform.backup-*|platform.failed-*|platform.staging*|watchdog|watchdog.staging-*|watchdog.old-*|scripts|bin|logs|dojologo.pdf|rollback.lock|secrets.yaml|prompts|techniques|.DS_Store) continue ;;
     data)
       mkdir -p "$BACKUP_DIR/data" || { copy_failed="$copy_failed data"; continue; }
       for f in "$entry"/* "$entry"/.[!.]*; do

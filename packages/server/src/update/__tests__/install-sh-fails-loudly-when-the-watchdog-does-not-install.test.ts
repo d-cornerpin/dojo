@@ -79,8 +79,7 @@ describe('install.sh and the watchdog', () => {
     expect(out).not.toContain('was not started');
     expect(out).toContain('new platform is installed');
     expect(out).toContain('still running');
-    expect(out).not.toContain('it had before');
-    expect(out).toContain('partly updated');
+    expect(out).toContain('old watchdog is still in place');
   });
 
   it('on a first install (nothing loaded) it still says Dojo was not started', () => {
@@ -98,5 +97,48 @@ describe('install.sh and the watchdog', () => {
     const { out } = run();
     expect(out).not.toContain('was not started');
     expect(out).toContain('new platform is installed');
+  });
+
+  // The watchdog is staged and switched in by rename; any failure leaves the installed one intact.
+  const installOldWatchdog = (): string => {
+    const wd = path.join(scratch, '.dojo', 'watchdog');
+    fs.mkdirSync(path.join(wd, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(wd, 'dist', 'index.js'), '//OLD');
+    fs.writeFileSync(path.join(wd, 'old-only.txt'), 'x');
+    return wd;
+  };
+  const leftovers = (): string[] => fs.readdirSync(path.join(scratch, '.dojo')).filter((f) => /^watchdog\./.test(f));
+
+  it('a failed dependency install leaves the old watchdog byte for byte in place and no staging behind', () => {
+    const wd = installOldWatchdog();
+    stub('npm', 'exit 1');
+    stub('launchctl', 'if [ "$1" = list ]; then echo "1 0 com.dojo.platform"; fi; exit 0');
+    const { status, out } = run();
+    expect(status).not.toBe(0);
+    expect(fs.readFileSync(path.join(wd, 'dist', 'index.js'), 'utf-8')).toBe('//OLD');
+    expect(fs.existsSync(path.join(wd, 'old-only.txt'))).toBe(true);
+    expect(leftovers()).toEqual([]);
+    expect(out).toContain('old watchdog is still in place');
+  });
+
+  it('a failed copy leaves the old watchdog in place and no staging behind', () => {
+    const wd = installOldWatchdog();
+    stub('npm', 'exit 0');
+    stub('rsync', 'mkdir -p "${@: -1}"; echo half > "${@: -1}/half"; exit 23');
+    const { status } = run();
+    expect(status).not.toBe(0);
+    expect(fs.readFileSync(path.join(wd, 'dist', 'index.js'), 'utf-8')).toBe('//OLD');
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('success switches the new watchdog in whole, with no stale files and no staging or old folder left', () => {
+    const wd = installOldWatchdog();
+    stub('npm', 'exit 0');
+    const { status, out } = run();
+    expect(status).toBe(0);
+    expect(out).toContain('BLOCK_PASSED');
+    expect(fs.existsSync(path.join(wd, 'old-only.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(wd, 'dist', 'index.js'), 'utf-8')).toBe('//');
+    expect(leftovers()).toEqual([]);
   });
 });
