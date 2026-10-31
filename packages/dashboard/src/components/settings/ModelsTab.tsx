@@ -562,8 +562,11 @@ export const ModelsTab = () => {
   const [primaryError, setPrimaryError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
 
   const [primaryAgentId, setPrimaryAgentId] = useState('primary');
+  // False until both look-ups (which agent is primary, and its model) have answered.
+  const [primaryKnown, setPrimaryKnown] = useState(false);
 
   const loadData = async () => {
+    setPrimaryKnown(false);
     const pidResult = await api.getSetting('primary_agent_id');
     const pid = pidResult.ok && pidResult.data.value ? pidResult.data.value : 'primary';
     setPrimaryAgentId(pid);
@@ -574,6 +577,7 @@ export const ModelsTab = () => {
     ]);
     if (modelsResult.ok) setModels(modelsResult.data);
     if (agentResult.ok) setPrimaryModelId(agentResult.data.modelId);
+    setPrimaryKnown(pidResult.ok && agentResult.ok);
     if (providersResult.ok) setProviders(providersResult.data);
     setLoading(false);
   };
@@ -624,10 +628,11 @@ export const ModelsTab = () => {
   if (loading) return <div className="loading-state">Loading...</div>;
 
   const enabledModels = models.filter((m) => m.isEnabled);
-  const showWarning = !primaryModelId && enabledModels.length > 0;
+  const showWarning = primaryKnown && !primaryModelId && enabledModels.length > 0;
 
   return (
     <div className="space-y-3 max-w-4xl">
+      {!primaryKnown && <div className="note--warn">Could not read the primary agent's model right now.</div>}
       {/* Warning banner: primary agent has no model */}
       {showWarning && (
         <div className="alert-banner alert-warning flex items-center justify-between gap-4">
