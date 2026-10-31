@@ -4,6 +4,7 @@ import { ACCESS_CHANNELS } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { AccessCatalog } from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { useContentChange } from '../lib/use-content-change';
 import { TechniqueSelector } from './TechniqueSelector';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
 import { Check, Choice, Item, Row, Toggle, splitLabel } from './AccessControls';
@@ -94,7 +95,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
     [agent.permissions, agent.toolsPolicy, agent.config],
   );
   const [legacy, setLegacy] = useState<LegacyAccess>(storedLegacy);
-  useEffect(() => { setLegacy(storedLegacy); }, [storedLegacy]);
+  useContentChange(storedLegacy, setLegacy);
 
   // The dashboard's one collapse idiom, with the default the owner wants: the
   // card AND every row inside it open folded. The key is per-panel rather than
@@ -102,7 +103,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const { isCollapsed, toggle } = usePanelCollapse('agent.access.collapse', true);
   const collapsed = isCollapsed('access');
 
-  useEffect(() => { setDraft(agent.effectiveGrants ? clone(agent.effectiveGrants) : null); }, [agent.effectiveGrants]);
+  useContentChange(agent.effectiveGrants ?? null, (next) => setDraft(next ? clone(next) : null));
 
   useEffect(() => {
     const load = async () => {
