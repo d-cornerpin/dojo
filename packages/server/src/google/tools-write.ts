@@ -502,7 +502,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         spreadsheet_id: { type: 'string', description: 'Spreadsheet ID' },
-        values: { type: 'string', description: 'Comma-separated values to append as a new row' },
+        values: { type: 'string', description: 'Comma-separated values for ONE new row. A comma inside a value splits it into two cells (no quoting is possible here); to put a value that contains a comma in a single cell, use sheets_write instead.' },
         range: { type: 'string', description: "Sheet name or range (default: 'Sheet1')" },
       },
       required: ['spreadsheet_id', 'values'],
