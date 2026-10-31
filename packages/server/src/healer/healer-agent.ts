@@ -157,7 +157,8 @@ function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMess
   return { message, contextWindow, trimmed };
 }
 
-export type HealerMode = 'active' | 'monitor' | 'off';
+export const HEALER_MODES = ['active', 'monitor', 'off'] as const;
+export type HealerMode = typeof HEALER_MODES[number];
 
 // ── Config ──
 

@@ -19,7 +19,7 @@ import {
   getLatestDreamReport,
   bulkDiscardUnprocessedConversations,
 } from '../../vault/store.js';
-import { runDreamingCycle, getDreamingConfig, setDreamingConfig } from '../../vault/maintenance.js';
+import { runDreamingCycle, getDreamingConfig, setDreamingConfig, DREAM_MODES } from '../../vault/maintenance.js';
 import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
 import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
@@ -254,6 +254,15 @@ vaultRouter.put('/dream/config', async (c) => {
 
   const badTime = body.dreamTime === undefined ? null : refuseBadClockTime(body.dreamTime);
   if (badTime) return c.json({ ok: false, error: badTime }, 400);
+
+  // The nightly dream reads the mode back by exact word, so refuse any other value (a stray
+  // word or a non-text one) here, before any write, instead of storing one it reads as neither.
+  if (body.dreamMode !== undefined && !DREAM_MODES.includes(body.dreamMode)) {
+    return c.json({ ok: false, error: `Dreaming mode must be one of: ${DREAM_MODES.join(', ')}.` }, 400);
+  }
+  if (body.modelId !== undefined && typeof body.modelId !== 'string') {
+    return c.json({ ok: false, error: 'Model id must be text.' }, 400);
+  }
 
   setDreamingConfig({
     modelId: body.modelId,

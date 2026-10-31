@@ -49,7 +49,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logger = createLogger('vault-dreaming');
 
-export type DreamMode = 'full' | 'light' | 'off';
+export const DREAM_MODES = ['full', 'light', 'off'] as const;
+export type DreamMode = typeof DREAM_MODES[number];
 
 // ── Dreamer liveness (RC-15 unstick) ──
 //

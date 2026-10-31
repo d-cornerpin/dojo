@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
-import { getHealerConfig, setHealerConfig, scheduleHealingCycle, runHealingCycle, sendHealerReport, getHealerLogContent } from '../../healer/healer-agent.js';
+import { getHealerConfig, setHealerConfig, scheduleHealingCycle, runHealingCycle, sendHealerReport, getHealerLogContent, HEALER_MODES } from '../../healer/healer-agent.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
@@ -37,6 +37,15 @@ healerRouter.post('/config', async (c) => {
 
   const badTime = body.healerTime === undefined ? null : refuseBadClockTime(body.healerTime);
   if (badTime) return c.json({ ok: false, error: badTime }, 400);
+
+  // The nightly healing run reads the mode back by exact word, so refuse any other value (a
+  // stray word or a non-text one) here, before any write, instead of storing one it reads as neither.
+  if (body.healerMode !== undefined && !HEALER_MODES.includes(body.healerMode)) {
+    return c.json({ ok: false, error: `Healer mode must be one of: ${HEALER_MODES.join(', ')}.` }, 400);
+  }
+  if (body.modelId !== undefined && typeof body.modelId !== 'string') {
+    return c.json({ ok: false, error: 'Model id must be text.' }, 400);
+  }
 
   setHealerConfig({
     modelId: body.modelId,
