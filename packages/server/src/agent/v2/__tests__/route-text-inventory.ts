@@ -25,7 +25,7 @@ export const SWEEP: readonly SweepEntry[] = [
  {
   "id": "S001",
   "file": "agent/a2a-transport.ts",
-  "line": 862,
+  "line": 863,
   "old": "threadInfo = `\\n\\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the user, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;",
   "new": "threadInfo = `\\n\\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the owner, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;",
   "how": "static: these A2A ambient-thread notes reach an agent with no human on the other end; the person who matters is the owner"
@@ -33,7 +33,7 @@ export const SWEEP: readonly SweepEntry[] = [
  {
   "id": "S002",
   "file": "agent/a2a-transport.ts",
-  "line": 869,
+  "line": 870,
   "old": "threadInfo = `\\n\\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the user should know about, take action next time you wake (e.g. iMessage them).]`;",
   "new": "threadInfo = `\\n\\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the owner should know about, take action next time you wake (e.g. iMessage them).]`;",
   "how": "static: these A2A ambient-thread notes reach an agent with no human on the other end; the person who matters is the owner"
@@ -49,7 +49,7 @@ export const SWEEP: readonly SweepEntry[] = [
  {
   "id": "S004",
   "file": "agent/a2a-transport.ts",
-  "line": 1780,
+  "line": 1781,
   "old": "+ `user that plainly, in its own voice, so they are not left waiting. If the user should `",
   "new": "+ `${askerWords} that plainly, in its own voice, so they are not left waiting. If ${askerWords} should `",
   "how": "in tellAgentTheJoinFailed(join, what), first line: const askerWords = compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner'; (the line above this one, `told the`, stays). The previous line ends `The platform has told the ` so the sentence reads `told the <askerWords>`: drop the word `the` there only when askerWords is a name, i.e. build the phrase as: askerWords === 'the owner' ? 'the owner' : askerWords and write `told ${askerWords}` (drop the hard `the `)"
@@ -57,7 +57,7 @@ export const SWEEP: readonly SweepEntry[] = [
  {
   "id": "S005",
   "file": "agent/a2a-transport.ts",
-  "line": 1782,
+  "line": 1783,
   "old": "+ `your own words on your next turn, directly in the conversation.`,",
   "new": "+ `your own words on your next turn, as your written reply if that turn is talking to them, otherwise in an explicit send that names them.`,",
   "how": "same function; no address needed (the next turn's own block names who it is talking to)"
@@ -65,7 +65,7 @@ export const SWEEP: readonly SweepEntry[] = [
  {
   "id": "S006",
   "file": "agent/a2a-transport.ts",
-  "line": 2451,
+  "line": 2452,
   "old": "+ `came back. TELL THE OWNER NOW, in your own words, directly in this conversation: what you asked for, `",
   "new": "+ `came back. TELL ${askerWords.toUpperCase()} NOW, in your own words, as your written reply: what you asked for, `",
   "how": "in steerAgentToTellOwnerStuck(join, rung): add as first statement const askerWords = (same expression as above); also change the line above `+ `The owner is still waiting on the request you delegated, ...` so `The owner` becomes `${askerWords}` (capitalised first letter if it is a sentence start: use askerWords === 'the owner' ? 'The owner' : askerWords)"
