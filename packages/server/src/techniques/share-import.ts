@@ -16,6 +16,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
+import { insideTechniqueDir, isSafeTechniqueId } from './inside-folder.js';
 
 const logger = createLogger('technique-share-import');
 
@@ -100,132 +101,148 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   if (!manifest.technique?.id || !manifest.technique?.name) {
     throw new Error('manifest.json is missing technique.id or technique.name.');
   }
+  // The package's id becomes a folder name here, so it must be a single plain name (the same shape
+  // the store gives every technique id) and must not be anything else, whatever the package says.
+  if (typeof manifest.technique.name !== 'string' || !isSafeTechniqueId(manifest.technique.id)) {
+    throw new Error('manifest.json technique id must be a single plain name (letters, digits and dashes); nothing was imported.');
+  }
 
   // ── 2. Pick a free slug & make the target directory ──
   const originalId = manifest.technique.id;
   const newId = pickAvailableId(originalId);
-  const dirPath = path.join(TECHNIQUES_DIR, newId);
+  // Prove the folder sits directly inside the techniques folder before anything is made there.
+  const dirPath = insideTechniqueDir(TECHNIQUES_DIR, newId);
+  if (dirPath === null || path.dirname(dirPath) !== path.resolve(TECHNIQUES_DIR)) {
+    throw new Error('Technique folder would fall outside the techniques folder; nothing was imported.');
+  }
   if (fs.existsSync(dirPath)) {
     // Shouldn't happen given pickAvailableId, but stay safe.
     throw new Error(`Target directory ${dirPath} already exists.`);
   }
   fs.mkdirSync(dirPath, { recursive: true });
+  // From here on, any failure removes the folder THIS import made (and only that one).
+  try {
 
-  // ── 3. Extract every entry except manifest.json (we store it separately) ──
-  const entries = zip.getEntries();
-  let extractedCount = 0;
-  let hasInstructions = false;
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    const entryPath = entry.entryName.replace(/^\/+/, '');
-    if (!entryPath || entryPath === 'manifest.json') continue;
+    // ── 3. Extract every entry except manifest.json (we store it separately) ──
+    const entries = zip.getEntries();
+    let extractedCount = 0;
+    let hasInstructions = false;
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      const entryPath = entry.entryName.replace(/^\/+/, '');
+      if (!entryPath || entryPath === 'manifest.json') continue;
 
-    // Reject zip-slip — entries that try to escape the technique dir.
-    if (entryPath.includes('..') || path.isAbsolute(entryPath)) {
-      logger.warn('Rejecting suspicious zip entry', { entryPath });
-      continue;
+      // Reject zip-slip — entries that try to escape the technique dir.
+      if (entryPath.includes('..') || path.isAbsolute(entryPath)) {
+        logger.warn('Rejecting suspicious zip entry', { entryPath });
+        continue;
+      }
+
+      const dest = insideTechniqueDir(dirPath, entryPath);
+      if (dest === null) {
+        logger.warn('Zip entry escapes target dir, skipping', { entryPath });
+        continue;
+      }
+
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, entry.getData());
+      extractedCount++;
+      if (entryPath === 'TECHNIQUE.md') hasInstructions = true;
     }
 
-    const dest = path.join(dirPath, entryPath);
-    const resolvedDest = path.resolve(dest);
-    if (!resolvedDest.startsWith(path.resolve(dirPath) + path.sep) && resolvedDest !== path.resolve(dirPath)) {
-      logger.warn('Zip entry escapes target dir, skipping', { entryPath, resolvedDest });
-      continue;
+    if (!hasInstructions) {
+      // Clean up and bail — every technique needs TECHNIQUE.md
+      fs.rmSync(dirPath, { recursive: true, force: true });
+      throw new Error('Package is missing TECHNIQUE.md.');
     }
 
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, entry.getData());
-    extractedCount++;
-    if (entryPath === 'TECHNIQUE.md') hasInstructions = true;
-  }
+    // ── 4. Persist the import manifest for the Trainer to read during setup ──
+    const importManifestPath = path.join(dirPath, 'IMPORT_MANIFEST.json');
+    fs.writeFileSync(importManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
 
-  if (!hasInstructions) {
-    // Clean up and bail — every technique needs TECHNIQUE.md
-    fs.rmSync(dirPath, { recursive: true, force: true });
-    throw new Error('Package is missing TECHNIQUE.md.');
-  }
+    // ── 5. Write metadata.json so the disk layout matches a normal technique ──
+    const tags = Array.isArray(manifest.technique.tags) ? manifest.technique.tags : [];
+    const needsSetup = Array.isArray(manifest.placeholders) && manifest.placeholders.length > 0;
+    const initialState = needsSetup ? 'needs_setup' : 'draft';
 
-  // ── 4. Persist the import manifest for the Trainer to read during setup ──
-  const importManifestPath = path.join(dirPath, 'IMPORT_MANIFEST.json');
-  fs.writeFileSync(importManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    const metadata = {
+      id: newId,
+      name: manifest.technique.name,
+      description: manifest.technique.description,
+      state: initialState,
+      author_agent_id: null,
+      author_agent_name: manifest.technique.author_agent_name,
+      tags,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      published_at: null,
+      version: 1, // start fresh on the importing Dojo
+      enabled: true,
+      usage_count: 0,
+      last_used_at: null,
+      build_project_id: null,
+      build_squad_id: null,
+      imported_from_id: originalId,
+      imported_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8');
 
-  // ── 5. Write metadata.json so the disk layout matches a normal technique ──
-  const tags = Array.isArray(manifest.technique.tags) ? manifest.technique.tags : [];
-  const needsSetup = Array.isArray(manifest.placeholders) && manifest.placeholders.length > 0;
-  const initialState = needsSetup ? 'needs_setup' : 'draft';
+    // ── 6. Insert into the techniques table ──
+    const db = getDb();
+    const instructions = fs.readFileSync(path.join(dirPath, 'TECHNIQUE.md'), 'utf-8');
+    db.prepare(`
+      INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
+                              directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
+                              created_at, updated_at, published_at)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 1, 0, NULL, NULL,
+              datetime('now'), datetime('now'), NULL)
+    `).run(
+      newId,
+      manifest.technique.name,
+      manifest.technique.description ?? null,
+      initialState,
+      manifest.technique.author_agent_name ?? null,
+      JSON.stringify(tags),
+      dirPath,
+    );
 
-  const metadata = {
-    id: newId,
-    name: manifest.technique.name,
-    description: manifest.technique.description,
-    state: initialState,
-    author_agent_id: null,
-    author_agent_name: manifest.technique.author_agent_name,
-    tags,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    published_at: null,
-    version: 1, // start fresh on the importing Dojo
-    enabled: true,
-    usage_count: 0,
-    last_used_at: null,
-    build_project_id: null,
-    build_squad_id: null,
-    imported_from_id: originalId,
-    imported_at: new Date().toISOString(),
-  };
-  fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8');
+    // Snapshot v1
+    db.prepare(`
+      INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
+      VALUES (?, ?, 1, ?, 'import', ?, '[]', datetime('now'))
+    `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
 
-  // ── 6. Insert into the techniques table ──
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
-                            directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
-                            created_at, updated_at, published_at)
-    VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 1, 0, NULL, NULL,
-            datetime('now'), datetime('now'), NULL)
-  `).run(
-    newId,
-    manifest.technique.name,
-    manifest.technique.description ?? null,
-    initialState,
-    manifest.technique.author_agent_name ?? null,
-    JSON.stringify(tags),
-    dirPath,
-  );
+    embedTechniqueIntent(newId); // so recall can find it by what it is for, like one made by hand
 
-  // Snapshot v1
-  db.prepare(`
-    INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
-    VALUES (?, ?, 1, ?, 'import', ?, '[]', datetime('now'))
-  `).run(uuidv4(), newId, fs.readFileSync(path.join(dirPath, 'TECHNIQUE.md'), 'utf-8'), `Imported from ${originalId} (export ${manifest.exported_at})`);
-  embedTechniqueIntent(newId); // so recall can find it by what it is for, like one made by hand
+    logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
+    broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
 
-  logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
-  broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
-
-  // ── 7. Hand off to the trainer agent ──
-  // The trainer is the owner of techniques on this dojo, so importing
-  // = dropping a message in the trainer's chat with the staged path,
-  // any dependency manifest, and any placeholders that need filling.
-  // The trainer's prompt teaches them how to install deps and
-  // finalize. Fire-and-forget — a failed handoff doesn't fail the
-  // import (the user can still see the technique sitting in needs_setup
-  // and message the trainer manually).
-  void notifyTrainerOfImport(newId, manifest.technique.name, dirPath, manifest.placeholders ?? []).catch((err) => {
-    logger.warn('Trainer notification after import failed (non-fatal)', {
-      newId, error: err instanceof Error ? err.message : String(err),
+    // ── 7. Hand off to the trainer agent ──
+    // The trainer is the owner of techniques on this dojo, so importing
+    // = dropping a message in the trainer's chat with the staged path,
+    // any dependency manifest, and any placeholders that need filling.
+    // The trainer's prompt teaches them how to install deps and
+    // finalize. Fire-and-forget — a failed handoff doesn't fail the
+    // import (the user can still see the technique sitting in needs_setup
+    // and message the trainer manually).
+    void notifyTrainerOfImport(newId, manifest.technique.name, dirPath, manifest.placeholders ?? []).catch((err) => {
+      logger.warn('Trainer notification after import failed (non-fatal)', {
+        newId, error: err instanceof Error ? err.message : String(err),
+      });
     });
-  });
 
-  return {
-    techniqueId: newId,
-    originalId,
-    name: manifest.technique.name,
-    state: initialState,
-    placeholders: manifest.placeholders ?? [],
-    needsSetup,
-  };
+    return {
+      techniqueId: newId,
+      originalId,
+      name: manifest.technique.name,
+      state: initialState,
+      placeholders: manifest.placeholders ?? [],
+      needsSetup,
+    };
+  } catch (err) {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 /**
