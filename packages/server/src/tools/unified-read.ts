@@ -420,6 +420,13 @@ async function enumerateAccounts(service: 'calendar' | 'mail'): Promise<Enumerat
 
 // ── Executors ──
 
+/** Keep items inside the last `days` days; `days <= 0` keeps all, and an unparseable date (0) is never hidden. */
+function withinDays<T extends { dateSortMs: number }>(items: T[], days: number): T[] {
+  if (!(days > 0)) return items;
+  const cutoff = Date.now() - days * 86400000;
+  return items.filter(it => it.dateSortMs === 0 || it.dateSortMs >= cutoff);
+}
+
 /**
  * Merged agenda across EVERY connected calendar (agent + owner, Google +
  * Microsoft). The `account` arg is intentionally ignored: this view spans all
@@ -540,7 +547,8 @@ export async function unifiedEmailSearch(
           return { acc, res: res.ok ? { ok: true as const, items: res.items } : res };
         }
         const res = await searchMailForAccountMs(acc.accountId, query, limit, agentId, agentName);
-        return { acc, res };
+        // Outlook search takes no date bound: apply `days` here (0 = unparseable date, kept).
+        return { acc, res: res.ok ? { ok: true as const, items: withinDays(res.items, days) } : res };
       } catch (err) {
         return { acc, res: { ok: false as const, error: err instanceof Error ? err.message : String(err) } };
       }
@@ -692,7 +700,7 @@ export async function otherMailboxesCountSection(
           return { acc, count: res.ok ? res.total : null, error: res.ok ? null : res.error };
         }
         const res = await searchMailForAccountMs(acc.accountId, query, perMailboxLimit, agentId, agentName);
-        return { acc, count: res.ok ? res.items.length : null, error: res.ok ? null : res.error };
+        return { acc, count: res.ok ? withinDays(res.items, days).length : null, error: res.ok ? null : res.error };
       } catch (err) {
         return { acc, count: null, error: err instanceof Error ? err.message : String(err) };
       }
