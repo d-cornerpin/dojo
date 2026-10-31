@@ -11,6 +11,8 @@ export async function readAllPages<T = unknown>(
   action: string,
   details: Record<string, unknown>,
   accountId?: string,
+  /** Stop once this many items are read (and give back exactly that many). Absent: read to the end. */
+  limit?: number,
 ): Promise<{ ok: true; value: T[] } | { ok: false; error: string }> {
   const value: T[] = [];
   const seen = new Set<string>();
@@ -22,6 +24,7 @@ export async function readAllPages<T = unknown>(
     const data = page.data as { value?: T[]; '@odata.nextLink'?: string } | null;
     value.push(...(data?.value ?? []));
     next = data?.['@odata.nextLink'];
+    if (limit !== undefined && value.length >= limit) break;
   }
-  return { ok: true, value };
+  return { ok: true, value: limit !== undefined ? value.slice(0, limit) : value };
 }
