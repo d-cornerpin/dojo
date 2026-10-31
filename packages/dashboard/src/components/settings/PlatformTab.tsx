@@ -354,6 +354,7 @@ const RemoteAccessSettings = () => {
   const [namedUrl, setNamedUrl] = useState('');
   const [acting, setActing] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = async () => {
     const result = await api.request<TunnelStatus>('/system/tunnel');
@@ -388,46 +389,70 @@ const RemoteAccessSettings = () => {
 
   const handleSaveNamedUrl = async () => {
     setActing(true);
-    await api.request('/system/tunnel/named-url', {
-      method: 'POST',
-      body: JSON.stringify({ url: namedUrl.trim() || null }),
-    });
-    await load();
-    setActing(false);
+    setActionError(null);
+    try {
+      const result = await api.request('/system/tunnel/named-url', {
+        method: 'POST',
+        body: JSON.stringify({ url: namedUrl.trim() || null }),
+      });
+      if (!result.ok) setActionError(result.error);
+    } finally {
+      await load();
+      setActing(false);
+    }
   };
 
   const handleEnable = async () => {
     setActing(true);
-    if (mode === 'named' && token.trim()) {
-      await api.request('/system/tunnel/token', {
+    setActionError(null);
+    try {
+      if (mode === 'named' && token.trim()) {
+        const saved = await api.request('/system/tunnel/token', {
+          method: 'POST',
+          body: JSON.stringify({
+            token: token.trim(),
+            // Send the URL alongside the token so it's persisted in the same call
+            url: namedUrl.trim() || null,
+          }),
+        });
+        if (!saved.ok) {
+          setActionError(saved.error);
+          return;
+        }
+      }
+      const result = await api.request('/system/tunnel/enable', {
         method: 'POST',
-        body: JSON.stringify({
-          token: token.trim(),
-          // Send the URL alongside the token so it's persisted in the same call
-          url: namedUrl.trim() || null,
-        }),
+        body: JSON.stringify({ mode }),
       });
+      if (!result.ok) setActionError(result.error);
+    } finally {
+      await load();
+      setActing(false);
     }
-    await api.request('/system/tunnel/enable', {
-      method: 'POST',
-      body: JSON.stringify({ mode }),
-    });
-    await load();
-    setActing(false);
   };
 
   const handleDisable = async () => {
     setActing(true);
-    await api.request('/system/tunnel/disable', { method: 'POST' });
-    await load();
-    setActing(false);
+    setActionError(null);
+    try {
+      const result = await api.request('/system/tunnel/disable', { method: 'POST' });
+      if (!result.ok) setActionError(result.error);
+    } finally {
+      await load();
+      setActing(false);
+    }
   };
 
   const handleInstall = async () => {
     setInstalling(true);
-    await api.request('/system/tunnel/install-cloudflared', { method: 'POST' });
-    await load();
-    setInstalling(false);
+    setActionError(null);
+    try {
+      const result = await api.request('/system/tunnel/install-cloudflared', { method: 'POST' });
+      if (!result.ok) setActionError(result.error);
+    } finally {
+      await load();
+      setInstalling(false);
+    }
   };
 
   const copyUrl = () => {
@@ -461,6 +486,12 @@ const RemoteAccessSettings = () => {
         <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           Could not read the tunnel status: {loadError}{' '}
           <button type="button" className="btn btn--ghost btn--sm" onClick={() => { void load(); }}>Retry</button>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-xs text-cp-coral">
+          {actionError}
         </div>
       )}
 
