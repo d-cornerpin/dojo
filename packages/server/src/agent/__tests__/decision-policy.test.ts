@@ -102,6 +102,13 @@ describe('the Healer report carries the score', () => {
     expect(compileDiagnosticReport().reportText).toContain('reply_claims / claims_saved: n=60');
   });
 
+  it('a question with no judged turns says it is scored offline only, and never that truth is coming', () => {
+    recordShadow({ purpose: 'reply_claims', question: 'claims_sent', turnId: 'turn-unjudged', ruleSaid: true, modelSaid: { type: 'noul', noul: 0.9 } });
+    const detail = getDecisionScoreItems()[0].detail;
+    expect(detail).toContain('reply_claims / claims_sent: scored offline only (no production truth), mode shadow');
+    expect(detail).not.toContain('yet');
+  });
+
   it('a box that has asked nothing has no section', () => {
     expect(getDecisionScoreItems()).toEqual([]);
   });

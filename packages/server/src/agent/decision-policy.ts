@@ -49,7 +49,7 @@ export function getDecisionScoreItems(): DiagnosticItem[] {
   const lines = questions.map(({ purpose, question }) => {
     const s = scoreQuestion(purpose, question);
     const mode = modeFor(purpose, question);
-    if (!s) return `${purpose} / ${question}: no judged turns yet, mode ${mode}`;
+    if (!s) return `${purpose} / ${question}: scored offline only (no production truth), mode ${mode}`;
     return `${purpose} / ${question}: n=${s.n}, rule ${pct(s.ruleAcc)}% [${pct(s.ruleCI[0])}–${pct(s.ruleCI[1])}], `
       + `model ${pct(s.modelAcc)}% [${pct(s.modelCI[0])}–${pct(s.modelCI[1])}], mode ${mode}`;
   });
