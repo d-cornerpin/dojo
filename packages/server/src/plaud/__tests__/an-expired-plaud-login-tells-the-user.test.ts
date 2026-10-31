@@ -12,7 +12,7 @@
 // eight `plaud_*` tools turns it into a sentence for the MODEL
 // (`tools-read.ts`) and returns. Nothing flips the stored `plaud_connected`
 // flag, so `getPlaudStatus()` keeps reporting connected (the card kept saying
-// "Connected as yorvak@northwind.example since 25 May" — the live box's own config rows
+// "Connected as FXID.n11@northwind.example since 25 May" — the live box's own config rows
 // at the time of this fix), `isPlaudConnected()` keeps offering the tools, and
 // the user is told nothing at all. The ONE path that did flip the flag,
 // `refreshPlaudAccountInfo()`, is reachable only from `POST /api/plaud/refresh`
@@ -35,6 +35,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../../../../..');
@@ -81,7 +82,7 @@ const { getPlaudStatus, isPlaudConnected } = await import('../auth.js');
 function connected(): void {
   config.clear();
   config.set('plaud_connected', 'true');
-  config.set('plaud_email', 'yorvak@example.com');
+  config.set('plaud_email', `${FXID.n11}@example.com`);
   config.set('plaud_connected_at', '2026-05-25T23:02:02.310Z');
 }
 const toasts = (): Array<Record<string, unknown>> => broadcasts.filter((b) => b.type === 'chat:error');
@@ -95,7 +96,7 @@ beforeEach(() => {
 
 describe('an expired Plaud login tells the user, exactly once per episode', () => {
   it('THE RED: the first tool call that hits the expiry flips the stored state and toasts', async () => {
-    const out = await runPlaudCommand(['files'], { agentId: 'zargo' });
+    const out = await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(out.needsReauth).toBe(true);
 
     // The stored truth moved: the card and the tool gate both read this.
@@ -105,7 +106,7 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
     // ONE toast, on the existing path, at the severity that stays put.
     expect(toasts()).toHaveLength(1);
     const t = toasts()[0];
-    expect(t.agentId).toBe('zargo');
+    expect(t.agentId).toBe(FXID.n4);
     expect(t.severity).toBe('error');
     expect(t.code).toBe('AUTH_INVALID');
     expect(String(t.error)).toMatch(/Plaud/i);
@@ -115,33 +116,33 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
   });
 
   it('THE RED, second half: every later failing call in the SAME episode stays quiet', async () => {
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
     broadcasts.length = 0;
-    await runPlaudCommand(['recent'], { agentId: 'zargo' });
-    await runPlaudCommand(['transcript', 'abc'], { agentId: 'zargo' });
-    await runPlaudCommand(['me'], { agentId: 'zargo' });
+    await runPlaudCommand(['recent'], { agentId: FXID.n4 });
+    await runPlaudCommand(['transcript', 'abc'], { agentId: FXID.n4 });
+    await runPlaudCommand(['me'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(0);
     expect(disconnects()).toHaveLength(0);
   });
 
   it('a NEW episode after a reconnect toasts again', async () => {
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(1);
     connected();                       // the user reconnected
     broadcasts.length = 0;
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(1);
   });
 
   it('the stored email and connected-at SURVIVE the expiry, so the card can name the account', async () => {
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
-    expect(config.get('plaud_email')).toBe('yorvak@example.com');
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
+    expect(config.get('plaud_email')).toBe(`${FXID.n11}@example.com`);
     expect(config.get('plaud_connected_at')).toBe('2026-05-25T23:02:02.310Z');
   });
 
   it('`getPlaudStatus` reports reauthRequired — distinguishable from never-connected', async () => {
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
-    expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: true, email: 'yorvak@example.com' });
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
+    expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: true, email: `${FXID.n11}@example.com` });
 
     config.clear();                    // never connected at all
     expect(getPlaudStatus()).toMatchObject({ connected: false, reauthRequired: false });
@@ -151,7 +152,7 @@ describe('an expired Plaud login tells the user, exactly once per episode', () =
 describe('the controls — what must NOT speak', () => {
   it('a NON-reauth failure says nothing and leaves the state alone', async () => {
     cliBehaviour = { code: 1, stdout: '', stderr: 'network unreachable' };
-    const out = await runPlaudCommand(['files'], { agentId: 'zargo' });
+    const out = await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(out.needsReauth).toBe(false);
     expect(config.get('plaud_connected')).toBe('true');
     expect(toasts()).toHaveLength(0);
@@ -159,7 +160,7 @@ describe('the controls — what must NOT speak', () => {
 
   it('an intentional `logout` reporting "not logged in" is not an expiry', async () => {
     cliBehaviour = { code: 2, stdout: '', stderr: 'not logged in' };
-    await runPlaudCommand(['logout'], { agentId: 'zargo' });
+    await runPlaudCommand(['logout'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(0);
     expect(disconnects()).toHaveLength(0);
   });
@@ -176,7 +177,7 @@ describe('the controls — what must NOT speak', () => {
 
   it('a SUCCESSFUL command says nothing', async () => {
     cliBehaviour = { code: 0, stdout: 'ok', stderr: '' };
-    await runPlaudCommand(['files'], { agentId: 'zargo' });
+    await runPlaudCommand(['files'], { agentId: FXID.n4 });
     expect(toasts()).toHaveLength(0);
     expect(config.get('plaud_connected')).toBe('true');
   });
