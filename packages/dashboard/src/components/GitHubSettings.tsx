@@ -46,9 +46,14 @@ export const GitHubSettings = () => {
 
   // REFETCH ON EVENT, never a partial merge: a frame says "something changed", and the answer
   // to what is now true comes from the door that owns it.
+  // Only the newest answer is applied: a slow older one must not put an old screen back.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadSeq = useRef(0);
   const loadStatus = async () => {
+    const seq = ++loadSeq.current;
     const result = await api.getGithubStatus();
-    if (result.ok) setStatus(result.data);
+    if (seq !== loadSeq.current) return;
+    if (result.ok) { setLoadError(null); setStatus(result.data); } else setLoadError(result.error);
   };
 
   useEffect(() => {
@@ -89,9 +94,9 @@ export const GitHubSettings = () => {
 
   const handleCancel = async () => {
     setBusy(true);
-    await api.cancelGithubConnect();
+    const result = await api.cancelGithubConnect();
     setBusy(false);
-    setProblem(null);
+    setProblem(result.ok ? null : problemText(result.error, CONNECT_REFUSED_FALLBACK));
     loadStatus();
   };
 
@@ -112,7 +117,12 @@ export const GitHubSettings = () => {
     return (
       <div className="tile">
         <h3 className="scard__title">GitHub</h3>
-        <p className="text-xs text-ui/40 mt-2">Loading…</p>
+        {loadError ? (
+          <div className="mt-2 space-y-2">
+            <p className="text-xs text-ui/55">Could not load GitHub status: {loadError}</p>
+            <button className="btn btn--sm" onClick={loadStatus}>Retry</button>
+          </div>
+        ) : <p className="text-xs text-ui/40 mt-2">Loading…</p>}
       </div>
     );
   }
