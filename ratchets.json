@@ -9551,6 +9551,27 @@
       "to": 363,
       "by": "t281b follow-ups (R1), 2026-10-31",
       "why": "+1: the reminder-lane refusal reads the live address (one import line). From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/pages/Costs.tsx",
+      "from": 736,
+      "to": 750,
+      "by": "sq-overflow10 (2026-10-31), gate-side, no product file",
+      "why": "+14: the load-failure note and the two refresh/threshold messages the Costs page was silent about (8101, 8102). From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/ModelsTab.tsx",
+      "from": 695,
+      "to": 708,
+      "by": "sq-overflow10 (2026-10-31), gate-side, no product file",
+      "why": "+13: the in-use check that failed now asks first, a refused switch shows its reason, and a failed primary-agent look-up is told apart from no model (8103, 8104). From here this file may only shrink."
+    },
+    {
+      "path": "packages/dashboard/src/components/settings/ModelRows.tsx",
+      "from": 1267,
+      "to": 1273,
+      "by": "sq-overflow10 (2026-10-31), gate-side, no product file",
+      "why": "+6: the two open editors key their draft on content so an unrelated save cannot erase unsaved edits (8106). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9574,8 +9595,8 @@
     "packages/dashboard/src/components/orb/dojoOrbEngine.ts": 2298,
     "packages/dashboard/src/components/settings/CapabilityModelCards.tsx": 611,
     "packages/dashboard/src/components/settings/IMBridgeSettings.tsx": 520,
-    "packages/dashboard/src/components/settings/ModelRows.tsx": 1267,
-    "packages/dashboard/src/components/settings/ModelsTab.tsx": 695,
+    "packages/dashboard/src/components/settings/ModelRows.tsx": 1273,
+    "packages/dashboard/src/components/settings/ModelsTab.tsx": 708,
     "packages/dashboard/src/components/settings/PlatformTab.tsx": 1062,
     "packages/dashboard/src/components/settings/ProvidersTab.tsx": 944,
     "packages/dashboard/src/components/settings/UpdateTab.tsx": 328,
@@ -9590,7 +9611,7 @@
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 400,
     "packages/dashboard/src/pages/Agents.tsx": 694,
     "packages/dashboard/src/pages/Chat.tsx": 2103,
-    "packages/dashboard/src/pages/Costs.tsx": 736,
+    "packages/dashboard/src/pages/Costs.tsx": 750,
     "packages/dashboard/src/pages/Health.tsx": 694,
     "packages/dashboard/src/pages/Memory.tsx": 533,
     "packages/dashboard/src/pages/Settings.tsx": 193,
