@@ -22,17 +22,20 @@ export async function defaultRoleModel(models: readonly Model[]): Promise<string
 }
 
 /** Save a role agent's model, name and id. The model goes first so a refusal writes nothing else;
- *  returns the server's sentence when it refused. */
+ *  returns the server's sentence when it refused and any later write that fails. */
 export async function saveRoleAgent(role: 'pm' | 'trainer', name: string, modelId: string): Promise<string | null> {
   const put = (key: string, value: string) => request(`/config/settings/${key}`, { method: 'PUT', body: JSON.stringify({ value }) });
   if (name.trim() && modelId) {
     const r = await put(`${role}_agent_model`, modelId);
     if (!r.ok) return r.error;
   }
-  await put(`${role}_agent_enabled`, 'true');
+  const en = await put(`${role}_agent_enabled`, 'true');
+  if (!en.ok) return en.error;
   if (name.trim()) {
-    await put(`${role}_agent_name`, name.trim());
-    await put(`${role}_agent_id`, name.trim().toLowerCase().replace(/[^a-z0-9]/g, '-'));
+    const nm = await put(`${role}_agent_name`, name.trim());
+    if (!nm.ok) return nm.error;
+    const id = await put(`${role}_agent_id`, name.trim().toLowerCase().replace(/[^a-z0-9]/g, '-'));
+    if (!id.ok) return id.error;
   }
   return null;
 }
