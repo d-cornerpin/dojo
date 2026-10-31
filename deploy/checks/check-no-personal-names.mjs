@@ -84,7 +84,7 @@ import { checkStandIns, describeCollision } from './fixture-names.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const VERBOSE = process.argv.includes('--verbose');
-// `--hash <name>` prints the SHA-256 line to add to known-real-name-hashes.json, so the name never has to be written into a file.
+// `--hash <name>` prints the SHA-256 line to add to .superpowers/known-real-name-hashes.json (never tracked), so the name never has to be written into a file.
 if (process.argv.includes('--hash')) {
   const w = process.argv[process.argv.indexOf('--hash') + 1] ?? '';
   console.log(crypto.createHash('sha256').update(w.toLowerCase()).digest('hex'));
@@ -895,12 +895,30 @@ function stripComments(text) {
 /**
  * ── HALF 1d: REAL FIRST NAMES KNOWN ONLY BY HASH (lane t29) ──────────────────────────────────
  * The roster, owner and git reads cannot know a real person who merely reported a bug. Their first names are therefore held as
- * SHA-256 hashes of the lowercased word in `known-real-name-hashes.json` (never as words: this file may not contain a name), and every
+ * SHA-256 hashes of the lowercased word in an UNTRACKED local file (never as words: this file may not contain a name), and every
  * word-token of a scanned line is hashed and looked up. A voice-catalog key (`am_<name>:`) is a vendor identifier and is exempt by shape.
  */
+// The list is NOT part of the tracked tree (R33: nothing that names a real person ships, not even as hashes).
+// It is read from an untracked local file: `$DOJO_REAL_NAME_HASHES`, else `.superpowers/known-real-name-hashes.json`
+// beside this checkout (or beside the main checkout when this is a worktree). When no file is there the other
+// rules still run, and the gate says out loud that the hash list was not loaded.
+function hashListCandidates() {
+  const out = [];
+  if (process.env.DOJO_REAL_NAME_HASHES) out.push(process.env.DOJO_REAL_NAME_HASHES);
+  out.push(path.join(ROOT, '.superpowers', 'known-real-name-hashes.json'));
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    out.push(path.join(path.dirname(common), '.superpowers', 'known-real-name-hashes.json'));
+  } catch { /* not a git checkout we can ask */ }
+  return out;
+}
+let HASH_LIST_SOURCE = null;
 const REAL_NAME_HASHES = (() => {
-  try { return new Set(JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'known-real-name-hashes.json'), 'utf8')).sha256 ?? []); }
-  catch { return new Set(); }
+  for (const f of hashListCandidates()) {
+    try { const set = new Set(JSON.parse(fs.readFileSync(f, 'utf8')).sha256 ?? []); HASH_LIST_SOURCE = f; return set; }
+    catch { /* try the next place */ }
+  }
+  return new Set();
 })();
 const SHA_MEMO = new Map(); // a token's digest never changes; the same words recur on most lines of most files
 const sha = (w) => {
@@ -908,11 +926,14 @@ const sha = (w) => {
   if (h === undefined) { h = crypto.createHash('sha256').update(w.toLowerCase()).digest('hex'); SHA_MEMO.set(w, h); }
   return h;
 };
-const VENDOR_VOICE_LINE = /(?:^|[^A-Za-z0-9_])[a-z]{2}_[a-z]+['"]?\s*:/;
+// Only the vendor voice KEY (`am_<voice>:`, with the `{ name: '...' }` entry it labels) is exempt, never the rest of its line:
+// `my_note: told <name>` carries the same shape and must still be checked.
+const VENDOR_VOICE_KEY = /(?<![A-Za-z0-9_])[a-z]{2}_[a-z]+['"]?\s*:(?:\s*\{\s*name\s*:\s*['"][^'"]*['"][^}]*\})?/g;
 function hashedNameHits(line, hashes = REAL_NAME_HASHES) {
-  if (hashes.size === 0 || VENDOR_VOICE_LINE.test(line)) return [];
+  if (hashes.size === 0) return [];
+  const rest = line.replace(VENDOR_VOICE_KEY, ' ');
   const out = [];
-  for (const m of line.matchAll(/(?<![A-Za-z0-9_])[A-Za-z]{3,15}(?![A-Za-z0-9_])/g)) if (hashes.has(sha(m[0]))) out.push(m[0]);
+  for (const m of rest.matchAll(/(?<![A-Za-z0-9_])[A-Za-z]{3,15}(?![A-Za-z0-9_])/g)) if (hashes.has(sha(m[0]))) out.push(m[0]);
   return out;
 }
 
@@ -979,7 +1000,7 @@ function selfTest() {
   console.log('── a real first name known only by hash (coined word hashed for the proof) ──');
   {
     const probe = new Set([sha('Zergblatt')]);
-    for (const [line, want] of [['// told Zergblatt about it', true], ['// ZERGBLATT came back', true], ['    am_zergblatt: { name: \'Zergblatt\' },', false], ['const zergblattCount = 1;', false], ['// told someone about it', false]]) {
+    for (const [line, want] of [['// told Zergblatt about it', true], ['// ZERGBLATT came back', true], ['    am_zergblatt: { name: \'Zergblatt\' },', false], ['const zergblattCount = 1;', false], ['    my_note: told Zergblatt about it', true], ['    am_zergblatt: { name: \'Zergblatt\' }, to_owner: Zergblatt', true], ['// told someone about it', false]]) {
       const got = hashedNameHits(line, probe).length > 0;
       const ok = got === want;
       if (!ok) bad++;
@@ -1300,6 +1321,7 @@ for (const f of live) {
   if (!byFile.has(f.rel)) byFile.set(f.rel, []);
   byFile.get(f.rel).push(f);
 }
+if (HASH_LIST_SOURCE === null) console.log('note: the real-name hash list was not loaded (no untracked .superpowers/known-real-name-hashes.json and no $DOJO_REAL_NAME_HASHES); every other rule ran.');
 if (live.length === 0) {
   console.log(`✓ no personal or agent names in the shipped surfaces`
     + (ALLOWLIST.length ? ` (${ALLOWLIST.length} allowlisted above, each with its adjudication)` : ''));

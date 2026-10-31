@@ -67,3 +67,6 @@ packages/dashboard/public/ort/
 # Local audit reports (never commit)
 DOJO-AUDIT-*.md
 /.superpowers/
+
+# Untracked local-only gate inputs (e.g. the real-name hash list; R33: never shipped, never tracked)
+.superpowers/
