@@ -172,7 +172,8 @@ export async function runReleaseSteps(opts?: { currentVersion?: string }): Promi
     }
   }
 
-  if (report.ran.length > 0 || report.skipped.length === RELEASE_STEPS.length) recordVersion(to);
+  // A step that failed stays owed: moving the marker past it would drop it for good.
+  if (report.failed.length === 0 && (report.ran.length > 0 || report.skipped.length === RELEASE_STEPS.length)) recordVersion(to);
   logger.info('Release steps complete', {
     from, to, ran: report.ran, skipped: report.skipped, failed: report.failed,
   });
