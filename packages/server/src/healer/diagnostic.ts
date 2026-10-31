@@ -114,6 +114,26 @@ export function capItemsByText(
   return kept;
 }
 
+/**
+ * `capItemsByText` plus one visible line when it left items out, so the report never drops items
+ * silently (R25): the person reading it sees "N more were left out" for that check.
+ */
+export function capItemsShowingOmissions(
+  items: DiagnosticItem[],
+  maxChars: number,
+  collectorLabel: string,
+): DiagnosticItem[] {
+  const kept = capItemsByText(items, maxChars, collectorLabel);
+  const omitted = items.length - kept.length;
+  if (omitted <= 0) return kept;
+  return [...kept, {
+    severity: 'info',
+    code: 'items_left_out',
+    title: `${omitted} more ${omitted === 1 ? 'item was' : 'items were'} left out of the ${collectorLabel.replace(/_/g, ' ')} check`,
+    detail: `The ${collectorLabel.replace(/_/g, ' ')} check found ${items.length} items; the report had room for ${kept.length}. The ${omitted} left out are the lower-priority ones.`,
+  }];
+}
+
 export interface DiagnosticItem {
   severity: 'critical' | 'warning' | 'info';
   code: string;
@@ -966,19 +986,19 @@ export function compileDiagnosticReport(): DiagnosticReport {
   // Per-collector caps keep a runaway collector from drowning the report (warning/info items drop
   // first); each check runs in `collect`, so one that throws shows as a warning instead of sinking it.
   const items: DiagnosticItem[] = [
-    ...collect('agent status', () => capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
-    ...collect('error digest', () => capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
-    ...collect('model performance', () => capItemsByText(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
-    ...collect('context health', () => capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
-    ...collect('tracker health', () => capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
-    ...collect('tool health', () => capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
+    ...collect('agent status', () => capItemsShowingOmissions(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
+    ...collect('error digest', () => capItemsShowingOmissions(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
+    ...collect('model performance', () => capItemsShowingOmissions(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
+    ...collect('context health', () => capItemsShowingOmissions(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
+    ...collect('tracker health', () => capItemsShowingOmissions(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
+    ...collect('tool health', () => capItemsShowingOmissions(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
     ...getHarnessSections(),   // guarded one section at a time inside
-    ...collect('dream health', () => capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
-    ...collect('nudge statistics', () => capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
-    ...collect('provider outage', () => capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage')),
-    ...collect('budget', () => capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
-    ...collect('update check', () => capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
-    ...collect('automatic rollback', () => capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
+    ...collect('dream health', () => capItemsShowingOmissions(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
+    ...collect('nudge statistics', () => capItemsShowingOmissions(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
+    ...collect('provider outage', () => capItemsShowingOmissions(getProviderOutagePatterns(), 1500, 'provider_outage')),
+    ...collect('budget', () => capItemsShowingOmissions(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
+    ...collect('update check', () => capItemsShowingOmissions(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
+    ...collect('automatic rollback', () => capItemsShowingOmissions(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
     ...collect('decision scores', () => getDecisionScoreItems()),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
   ];
 
