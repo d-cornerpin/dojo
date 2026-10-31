@@ -39,7 +39,10 @@ export interface GoogleMailFetchItem {
   read: boolean | undefined;
 }
 
-/** Search one account's Gmail. `total` is the raw match count on THIS page (pre-detail-fetch). */
+/**
+ * Search one account's Gmail. `total` is the raw match count on THIS page (pre-detail-fetch).
+ * `unfetched` lists the ids whose per-message detail fetch failed — they are NOT in `items`.
+ */
 export async function searchMailForAccount(
   accountId: string,
   query: string,
@@ -47,7 +50,7 @@ export async function searchMailForAccount(
   agentId: string,
   agentName: string,
   pageToken?: string,
-): Promise<{ ok: true; total: number; items: GoogleMailFetchItem[]; nextPageToken?: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; total: number; items: GoogleMailFetchItem[]; unfetched: string[]; nextPageToken?: string } | { ok: false; error: string }> {
   const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}` +
     (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
   const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults, pageToken }, accountId);
@@ -55,9 +58,10 @@ export async function searchMailForAccount(
 
   const data = result.data as { messages?: Array<{ id: string; threadId: string }>; nextPageToken?: string };
   // An empty page can still carry a nextPageToken; dropping it would end a sweep early.
-  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [], nextPageToken: data?.nextPageToken || undefined };
+  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [], unfetched: [], nextPageToken: data?.nextPageToken || undefined };
 
   const items: GoogleMailFetchItem[] = [];
+  const unfetched: string[] = [];
   for (const msg of data.messages.slice(0, maxResults)) {
     const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
     const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, accountId);
@@ -71,9 +75,11 @@ export async function searchMailForAccount(
       const snippet = msgData?.snippet ?? '';
       const parsed = date ? parseFlexibleTime(date) : null;
       items.push({ id: msg.id, from, to, subject, dateDisplay: fmtEmailDate(date), dateSortMs: parsed ? parsed.getTime() : 0, snippet, read: undefined });
+    } else {
+      unfetched.push(msg.id);
     }
   }
-  return { ok: true, total: data.messages.length, items, nextPageToken: data.nextPageToken || undefined };
+  return { ok: true, total: data.messages.length, items, unfetched, nextPageToken: data.nextPageToken || undefined };
 }
 
 /** The `gmail_search` tool body. */
@@ -101,6 +107,10 @@ export async function executeGmailSearch(
   const paging = fetched.nextPageToken
     ? `\n\nnext_page_token: ${fetched.nextPageToken}\nMore results exist: re-call with page_token="${fetched.nextPageToken}"`
     : '';
+  // Failed detail fetches must stay visible: name the ids so the worker can read them itself.
+  const note = fetched.unfetched.length > 0
+    ? `\n\nNote: ${fetched.unfetched.length} of ${fetched.total} messages on this page could not be fetched and are not shown (ids ${fetched.unfetched.join(', ')}); read one with gmail_read(message_id=<id>) or search again.`
+    : '';
   if (fetched.total === 0) return `No emails found matching that query${inAcct}${paging ? ' on this page' : ''}.${paging}` + others;
 
   const details: string[] = fetched.items.map(it => {
@@ -112,9 +122,9 @@ export async function executeGmailSearch(
     return `- ${it.dateDisplay} | ${it.from} — ${it.subject}\n  ID: ${it.id} | ${shortSnippet}`;
   });
 
-  if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
-  // v3.5 K33: only the emails are outside text; the paging line, the other-mailbox counts and the re-call hints are the platform's.
-  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.map((item) => outsideSpan(item)).join(verbose ? '\n---\n' : '\n')}${paging}`;
+  if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.${note}` + others;
+  // v3.5 K33: only the emails are outside text; the paging line, the missing-ids note, the other-mailbox counts and the re-call hints are the platform's.
+  const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.map((item) => outsideSpan(item)).join(verbose ? '\n---\n' : '\n')}${paging}${note}`;
   if (verbose) return header + others;
   return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
 }
