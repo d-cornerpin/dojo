@@ -2384,6 +2384,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     // RC-18: local wall-clock schedule input on edit too. Convert local_time to
     // scheduled_start engine-side before the field reads below. Explicit
     // scheduled_start wins if both are given.
+    let editedScheduleZone: string | null = null;
     if (args.local_time !== undefined && args.local_time !== null && args.local_time !== ''
         && args.scheduledStart === undefined && args.scheduled_start === undefined) {
       if (typeof args.local_time !== 'string') {
@@ -2393,6 +2394,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       const resolvedWall = resolveLocalWallClock(args.local_time, typeof tz === 'string' ? tz : undefined);
       if (!resolvedWall.ok) return resolvedWall.error;
       args.scheduled_start = resolvedWall.iso;
+      editedScheduleZone = resolvedWall.zone;
     }
 
     const title = args.title as string | undefined;
@@ -2661,6 +2663,11 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       repeatDaysOfWeek !== undefined ||
       anchorTime !== undefined
     );
+    // Record the zone the new time was resolved in BEFORE the recompute, so the recompute's own
+    // read of `tz` already sees it (the create door does the same).
+    if (editedScheduleZone !== null) {
+      noteUnsettled(patchWork(taskId, { tz: editedScheduleZone }, { touch: false }), 'trackerEditTask: schedule zone recorded', { taskId });
+    }
     if (scheduleChanged) {
       try {
         const db = getDb();
