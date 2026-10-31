@@ -70,7 +70,19 @@ export function fencedMailBlock(m: { account: string; from: string; subject: str
 
 /** What the provider's own check said about an email whose From is one of the owner's own addresses
  *  (P44; `services/mail-owner-intake.ts`). `confirmed` carries the owner's NEW words, quoted text left out. */
-export type OwnerEmailNotice = { state: 'confirmed'; words: string } | { state: 'unconfirmed' };
+export type UnconfirmedReason = 'bcc' | 'seen_before' | 'no_message_id' | 'check_failed' | 'outlook_closed';
+export type OwnerEmailNotice = { state: 'confirmed'; words: string } | { state: 'unconfirmed'; reason: UnconfirmedReason };
+
+/** Why a mail naming the owner's own address is not treated as the owner speaking: the REAL reason for each state (C11). */
+function unconfirmedWhy(owner: string, reason: UnconfirmedReason): string {
+  switch (reason) {
+    case 'bcc': return `This email names ${owner}'s own address as the sender, but your mailbox was not on its To or Cc (it reached you as a blind copy or a list delivery), so it is NOT treated as ${owner} speaking. `;
+    case 'seen_before': return `This email names ${owner}'s own address as the sender, but a mail with this same Message-ID was already seen earlier, so this copy is NOT treated as ${owner} speaking again. `;
+    case 'no_message_id': return `This email names ${owner}'s own address as the sender, but it has no Message-ID, so it cannot be told apart from a replay and is NOT treated as ${owner} speaking. `;
+    case 'outlook_closed': return `This email names ${owner}'s own address as the sender, but the platform does not confirm owner emails that arrive over Outlook, so it is NOT treated as ${owner} speaking. `;
+    default: return `This email names ${owner}'s own address as the sender, but the mail provider's own check could not confirm that it really came from them, so it is NOT treated as ${owner} speaking. `;
+  }
+}
 
 /** An address as the platform prints it outside the fence: header text with nothing a line could be forged from. */
 const plainAddress = (a: MailAddress): string => a.address.replace(/[^\w.+%@'-]/g, '');
@@ -108,7 +120,7 @@ export function mailNoticeContent(m: { provider: 'GMAIL' | 'OUTLOOK'; accountSuf
       `Message ID: ${m.messageId}\n`;
   }
   // t141: no "surface it" steer — the EVENTS lane marks each notice NEW or HANDLED (OR-V333-SET 7).
-  const unconfirmed = m.kind === 'agent' && m.ownerEmail?.state === 'unconfirmed' ? `This email names ${owner}'s own address as the sender, but the mail provider's own check could not confirm that it really came from them, so it is NOT treated as ${owner} speaking. You can ask ${owner}, on the channel they usually use, to confirm the email was theirs. ` : '';
+  const unconfirmed = m.kind === 'agent' && m.ownerEmail?.state === 'unconfirmed' ? `${unconfirmedWhy(owner, m.ownerEmail.reason)}You can ask ${owner}, on the channel they usually use, to confirm the email was theirs. ` : '';
   const sentence = m.directToAgent
     ? `[EMAIL FROM A KNOWN CONTACT] ${m.fromAddr} is a known contact on this channel, and this email reached your mailbox ${m.account}. ${where}${unconfirmed}` + decide
     : `[MAILBOX EVENT] ${owner}'s ${m.account} inbox just received an email. ` +

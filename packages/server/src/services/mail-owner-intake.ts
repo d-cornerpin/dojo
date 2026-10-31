@@ -56,13 +56,13 @@ export interface OwnerEmailInput {
  *  the provider's own item id) as the row's value, and any later look at the SAME delivery is the same sighting, so a poll that
  *  threw part-way and re-reads a message gives the same verdict. A DIFFERENT delivery carrying the Message-ID is a replay: false.
  *  A record that cannot be written or read is false (fail closed). */
-function firstSighting(messageId: string, deliveryRef: string): boolean {
+function firstSighting(messageId: string, deliveryRef: string): 'first' | 'seen_before' | 'failed' {
   try {
     const key = `owner_mail_seen:${messageId.replace(/^<|>$/g, '')}`;
     const db = getDb();
-    if (db.prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, deliveryRef).changes === 1) return true;
-    return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef;
-  } catch { return false; }
+    if (db.prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, deliveryRef).changes === 1) return 'first';
+    return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef ? 'first' : 'seen_before';
+  } catch { return 'failed'; }
 }
 
 const NOT_ABOUT_OWNER = new Set(['no_owner_addresses', 'from_not_single', 'from_not_owner']);
@@ -73,18 +73,20 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   // Is the From an owner address at all? (No headers needed to answer that, so no extra fetch otherwise.)
   const claim = ownerEmailVerdict({ provider: i.provider, from: i.from, headers: [], ownerAddresses });
   if (claim.verdict === 'unconfirmed' && NOT_ABOUT_OWNER.has(claim.reason)) return { state: 'none' };
-  if (claim.verdict === 'unconfirmed' && claim.reason === 'outlook_not_open') return { state: 'unconfirmed' };   // Outlook confirmation is closed (`outlook-owner-gate.ts`): no fetch
-  if (i.placement === 'neither') return { state: 'unconfirmed' };
+  if (claim.verdict === 'unconfirmed' && claim.reason === 'outlook_not_open') return { state: 'unconfirmed', reason: 'outlook_closed' };   // Outlook confirmation is closed (`outlook-owner-gate.ts`): no fetch
+  if (i.placement === 'neither') return { state: 'unconfirmed', reason: 'bcc' };
   const headers = await i.headers().catch(() => null);
   // The provider's list must show the From it judged: none at all is a list it did not really give.
-  if (!headers || !headers.some((h) => h.name.toLowerCase() === 'from')) return { state: 'unconfirmed' };
+  if (!headers || !headers.some((h) => h.name.toLowerCase() === 'from')) return { state: 'unconfirmed', reason: 'check_failed' };
   // Mail the platform itself sent (from the owner's own mailbox, send-as) is never the owner speaking, whatever its DMARC says.
   if (isPlatformSent(headers)) return { state: 'none' };
-  if (ownerEmailVerdict({ provider: i.provider, from: i.from, headers, ownerAddresses }).verdict !== 'owner') return { state: 'unconfirmed' };
+  if (ownerEmailVerdict({ provider: i.provider, from: i.from, headers, ownerAddresses }).verdict !== 'owner') return { state: 'unconfirmed', reason: 'check_failed' };
   // A genuine owner email delivered again (a replay) carries the same Message-ID: each id counts once, and a message with none never.
   if (await i.isMeeting().catch(() => true)) return { state: 'none' };
   const messageId = headers.find((h) => h.name.toLowerCase() === 'message-id')?.value.trim().toLowerCase();
-  if (!messageId || !firstSighting(messageId, i.deliveryRef)) return { state: 'unconfirmed' };
+  if (!messageId) return { state: 'unconfirmed', reason: 'no_message_id' };
+  const sighting = firstSighting(messageId, i.deliveryRef);
+  if (sighting !== 'first') return { state: 'unconfirmed', reason: sighting === 'seen_before' ? 'seen_before' : 'check_failed' };
   const body = await i.newBody().catch(() => null);
   return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };
 }

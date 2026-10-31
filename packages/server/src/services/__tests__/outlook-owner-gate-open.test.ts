@@ -42,14 +42,14 @@ describe('Outlook owner confirmation is open (C3, 2026-10-31)', () => {
   });
 
   it('same-tenant internal mail with no Microsoft-stamped topmost header stays unconfirmed (fail closed)', async () => {
-    expect(await arrives(['dkim=none (message not signed); dmarc=none action=none header.from=home.test'])).toEqual({ state: 'unconfirmed' });
+    expect(await arrives(['dkim=none (message not signed); dmarc=none action=none header.from=home.test'])).toEqual({ state: 'unconfirmed', reason: 'check_failed' });
     // a lower Microsoft-looking header is never looked for
-    expect(await arrives(['spf=none; dmarc=pass header.from=home.test', REAL])).toEqual({ state: 'unconfirmed' });
-    expect(await arrives([])).toEqual({ state: 'unconfirmed' });
+    expect(await arrives(['spf=none; dmarc=pass header.from=home.test', REAL])).toEqual({ state: 'unconfirmed', reason: 'check_failed' });
+    expect(await arrives([])).toEqual({ state: 'unconfirmed', reason: 'check_failed' });
   });
 
   it('a failing dmarc under the real shape is unconfirmed', async () => {
-    expect(await arrives([REAL.replace('dmarc=pass', 'dmarc=fail')])).toEqual({ state: 'unconfirmed' });
+    expect(await arrives([REAL.replace('dmarc=pass', 'dmarc=fail')])).toEqual({ state: 'unconfirmed', reason: 'check_failed' });
   });
 
   it('a stranger is still just "none"', async () => {
