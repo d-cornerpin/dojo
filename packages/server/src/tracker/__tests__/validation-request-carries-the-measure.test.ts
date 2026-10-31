@@ -102,12 +102,12 @@ describe('E1: the request text itself, from the real assembly', () => {
     const text = unvalidatedCompleteText(TASK, parts());
     const at = (needle: string): number => { const i = text.indexOf(needle); expect(i, needle).toBeGreaterThan(-1); return i; };
     const order = ['UNVALIDATED_COMPLETE: "the mailbox sweep"', '\n  Goal: no message carries the label\n', '\n  Result: done\n', '\n  Evidence:\n    1. [receipt] cleared @ x\n  Measure: gmail_search "label:Sweep-1": 0 remaining of 25 at start',
-      '\n  Ledger: 2 items touched (gmail_label 2)\n  Priority=normal, revert_count=0.\n  Read the file/audit log/output referenced in evidence BEFORE validating'].map(at);
+      '\n  Ledger: 2 items touched (gmail_label 2)\n  Owner words recorded on this task: none\n  Priority=normal, revert_count=0.\n  Read the file/audit log/output referenced in evidence BEFORE validating'].map(at);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
   it('states how a measured and an unmeasured close are judged, and the real escalation route', async () => {
     const text = unvalidatedCompleteText(TASK, parts());
-    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text.');
+    expect(text).toContain('A measured task: validate when the measure reads 0, or when the named remainder\'s reason holds against the goal; reject and state the count when it does not; when you cannot tell whether the owner would want those items left, ask the owner through the main agent: send_to_agent to the main agent with the count and the worker\'s reason. An unmeasured task: judge the ledger and receipts above, not the result text. A task whose job is a decision (nothing to file or send) is delivered when the owner\'s recorded words or the recorded answer above settle it; the agent\'s own notes quoting the owner do not count. With no such record and nothing touched, reject it.');
     expect(text).not.toContain('the same escalation you use for a block');
     expect(text).toContain(`task_id="${TASK}", valid=true)`);
     expect(text).toContain('target_status="in_progress") when it does not.');
