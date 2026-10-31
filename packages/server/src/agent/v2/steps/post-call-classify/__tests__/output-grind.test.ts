@@ -61,6 +61,7 @@ import { steerFired, nextSteer, STEER_PRECEDENCE } from '../../../steer-queue.js
 import { outputTruncationClassifier } from '../../../classifiers/output.js';
 import { resolveProviderStopReason } from '../../../../provider-stop-reason.js';   // t239: the one shared rule, for every transport
 import type { PostCallClassifyContext } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const reArmSpy = vi.fn();
 
@@ -79,7 +80,7 @@ const modelResult = (
 // GRIND, with nobody waiting — so every grind assertion below is about the grind rung alone
 // and never borrows the owed path's behaviour.
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   turnNumber: 7,
   chosenConvKey: null,
   result: modelResult(),
@@ -100,7 +101,7 @@ const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
 
 function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   const base = initState({
-    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
+    agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'do the thing',
     lastUserMessageId: 'msg-user-1',
@@ -296,7 +297,7 @@ describe('TB8 JOB 1 — the grind rung: detect, steer once, then the existing su
 
 describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () => {
   const pmCtx = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext =>
-    ctxFor({ agentId: 'quilba', ...over });
+    ctxFor({ agentId: FXID.n5, ...over });
 
   it("a PM validation turn that burns its whole output budget with no tool call is STEERED", () => {
     const out = runEmptyResponse(freshState(), pmCtx({

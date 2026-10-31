@@ -54,13 +54,14 @@ import { runTerminalText } from '../terminal-text.js';
 import { runPersistAssistant } from '../persist-assistant.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const TURN = 77;
 const FETCHED = 'ruling13-chat-gate-0000';
 
 const OWNER_ON_DASHBOARD: TurnCounterparty = {
-  kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'dashboard',
+  kind: 'user', name: FX.n11, relation: 'owner', channel: 'dashboard',
   senderId: null, threadId: null, senderIsAgent: false,
 };
 
@@ -72,7 +73,7 @@ function ctxFor(text: string, toolCalls: ToolCall[], over: Partial<PostCallClass
       deferredUserReplyWithTools: null, root: null,
     } as never,
     turnNumber: TURN, db: mockDb.current,
-    agent: { id: AGENT, name: 'Zargo' } as never,
+    agent: { id: AGENT, name: FX.n4 } as never,
     counterparty: OWNER_ON_DASHBOARD as never,
     counterpartyIsAgentSender: false,
     hasUnansweredUser: true,
@@ -125,7 +126,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   frames.length = 0;
   forgetHandedCredentialValues();

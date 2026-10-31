@@ -41,7 +41,7 @@ import Database from 'better-sqlite3';
 import type { ToolCall } from '@dojo/shared';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const TURN = 6169;
 const ROW = 'msg-the-refused-reply';
@@ -79,6 +79,7 @@ import { stoppedAgents, stopFencedRuns, activeRuns } from '../../../../shared-st
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import { isStopFenced } from '../../../../shared-state.js';
 import { latchEngineCut } from '../../../engine-exit.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** The answer the owner refused — the blast's leaked row was this shape: the turn's final text. */
 const THE_REFUSED_ANSWER = 'Here is the whole comparison you asked for, with prices.';
@@ -104,7 +105,7 @@ const noteTerminalAnswer = vi.fn();
 function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, turnCtx: turnCtxFor() as never, turnNumber: TURN, db: mockDb.current,
-    agent: { id: AGENT, name: 'Zargo' } as never,
+    agent: { id: AGENT, name: FX.n4 } as never,
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard', senderId: null, senderIsAgent: false } as never,
     counterpartyIsAgentSender: false,
     chosenConvKey: 'dashboard:owner',
@@ -160,7 +161,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'working', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'working', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

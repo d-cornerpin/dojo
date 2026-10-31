@@ -65,8 +65,9 @@ import { STEER_PRECEDENCE, steerPriority } from '../../../steer-queue.js';
 import { TURN_ENDING_FAMILY, runNoToolCalls } from '../no-tool-calls.js';
 import { runGoingIdle } from '../going-idle.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const TURN = 5100;
 
@@ -78,7 +79,7 @@ beforeEach(() => {
   mockDb.current = d;
   runMigrations();
   d.pragma('foreign_keys = ON');
-  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
+  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`).run(AGENT);
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
   broadcastSpy.mockClear();
   engineEventSpy.mockClear();
@@ -110,7 +111,7 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     turnCtx: { lastAssembledAtIso: new Date().toISOString(), conversationId: CONV, root: undefined },
     turnNumber: TURN,
     db: db(),
-    agent: { id: AGENT, name: 'Zargo' },
+    agent: { id: AGENT, name: FX.n4 },
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',

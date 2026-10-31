@@ -50,8 +50,9 @@ import { initState, type AgentTurnState } from '../../../state.js';
 import { runTerminalText } from '../terminal-text.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../../work/deliverable-declaration.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 interface TurnBag {
   deferredUserReplyWithTools: string | null;
@@ -88,7 +89,7 @@ function ctxFor(turnCtx: TurnBag, over: Partial<PostCallClassifyContext> = {}): 
     turnCtx: turnCtx as unknown as PostCallClassifyContext['turnCtx'],
     turnNumber: 4602,
     db: fakeDb,
-    agent: { id: AGENT, name: 'Zargo' } as unknown as PostCallClassifyContext['agent'],
+    agent: { id: AGENT, name: FX.n4 } as unknown as PostCallClassifyContext['agent'],
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',

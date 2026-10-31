@@ -49,6 +49,7 @@ import {
   POST_CALL_CLASSIFY_PHASE,
   type PostCallClassifyContext,
 } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── The step's outside world ──
 // Each mock stands in for a DOOR the span already went through; none of them changes
@@ -83,7 +84,7 @@ const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
   return {
-    agentId: 'zargo',
+    agentId: FXID.n4,
     kind: 'user',
     convKey: 'ck-1',
     conversationId: 'conv-1',
@@ -108,11 +109,11 @@ const modelResult = (
 
 function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
-    agentId: 'zargo',
+    agentId: FXID.n4,
     turnCtx: turnCtxFor(),
     turnNumber: 7,
     db: fakeDb,
-    agent: { id: 'zargo', name: 'Zargo' } as unknown as PostCallClassifyContext['agent'],
+    agent: { id: FXID.n4, name: FX.n4 } as unknown as PostCallClassifyContext['agent'],
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' } as unknown as PostCallClassifyContext['counterparty'],
     counterpartyIsAgentSender: false,
     chosenConvKey: 'ck-1',
@@ -151,7 +152,7 @@ function freshState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   // positionally: `state.modelId` is one of this step's four outputs, so a state built
   // sloppily would make that output read `undefined` and the clause prove nothing.
   const base = initState({
-    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
+    agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 7, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'what is the answer?',
     lastUserMessageId: 'msg-user-1',

@@ -51,6 +51,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { enqueueSteer } from '../../../steer-queue.js';
 import { runEmptyResponse } from '../empty-response.js';
 import type { PostCallClassifyContext } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PLAIN: ModelContract = {
   id: 'test-model',
@@ -73,7 +74,7 @@ const modelResult = (
 } as unknown as PostCallClassifyContext['result']);
 
 const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext => ({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   turnNumber: 11,
   configuredModelId: 'test-model',
   result: modelResult(),
@@ -104,7 +105,7 @@ const GUARD_STEER =
  */
 function stateWithPendingGuard(over: Partial<AgentTurnState> = {}): AgentTurnState {
   const base = initState({
-    agentId: 'zargo', contextWindow: 128_000, isAutoRouted: false,
+    agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 11, triggeredByIMessage: false,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: 'did you text Michael?',
   } as Parameters<typeof initState>[0]);

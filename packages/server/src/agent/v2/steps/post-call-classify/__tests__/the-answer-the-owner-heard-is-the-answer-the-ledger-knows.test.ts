@@ -90,8 +90,9 @@ import { runNoReply } from '../no-reply.js';
 import { runPersistAssistant } from '../persist-assistant.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 import type { StepOutcome } from '../../step-outcome.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const TURN = 5649;
 
@@ -159,7 +160,7 @@ const persistAndBroadcastSystemRow = vi.fn();
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, turnCtx: turnCtx as never, turnNumber: TURN, db: mockDb.current,
-    agent: { id: AGENT, name: 'Zargo' } as never,
+    agent: { id: AGENT, name: FX.n4 } as never,
     counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard', senderId: null, senderIsAgent: false } as never,
     counterpartyIsAgentSender: false,
     chosenConvKey: 'dashboard:owner',
@@ -266,7 +267,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

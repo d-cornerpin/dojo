@@ -69,6 +69,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { enqueueSteer, nextSteer } from '../../../steer-queue.js';
 import { runPromiseFloor } from '../promise-floor.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
 const TURN = 4712; // the S5 turn
@@ -252,7 +253,7 @@ describe('T33 controls: the recognizer stays conservative', () => {
   });
 
   it('an honest disclosure of what it cannot do is an accepted outcome, not a steer', () => {
-    quiet("From now on I'll post reminders here, but I can't text your phone — only the primary agent can send SMS, so you would need to ask Zargo.");
+    quiet(`From now on I'll post reminders here, but I can't text your phone — only the primary agent can send SMS, so you would need to ask ${FX.n4}.`);
   });
 
   it('a plain answer with no standing scope is untouched', () => {
