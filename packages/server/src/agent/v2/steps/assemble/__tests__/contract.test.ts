@@ -48,6 +48,7 @@ import {
   ASSEMBLE_PHASE,
   type AssembleContext,
 } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── The step's outside world ──
 // Each mock stands in for a DOOR the span already went through; none of them
@@ -95,7 +96,7 @@ const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(): AssembleContext['turnCtx'] {
   return {
-    agentId: 'zargo',
+    agentId: FXID.n4,
     conversationId: 'conv-1',
     lastAssembledAtIso: null,
     freshTailDropWarned: false,
@@ -109,7 +110,7 @@ function turnCtxFor(): AssembleContext['turnCtx'] {
 
 function ctxFor(overrides: Partial<AssembleContext> = {}): AssembleContext {
   return {
-    agentId: 'zargo',
+    agentId: FXID.n4,
     turnCtx: turnCtxFor(),
     turnNumber: 7,
     db: fakeDb,
@@ -138,11 +139,11 @@ function ctxFor(overrides: Partial<AssembleContext> = {}): AssembleContext {
  *  context-gap, multistep) are gated on `loopCount === 1`, and a clause that wants
  *  them says so. */
 function freshState(loopCount = 2): AgentTurnState {
-  return advance(initState('zargo', 'test-model'), { phase: ASSEMBLE_PHASE, loopCount });
+  return advance(initState(FXID.n4, 'test-model'), { phase: ASSEMBLE_PHASE, loopCount });
 }
 
 const ASSEMBLED = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  systemPrompt: 'you are zargo',
+  systemPrompt: `you are ${FXID.n4}`,
   messages: [{ role: 'user', content: 'hello' }],
   consumedOneShotFlags: [],
   freshTailDropped: 0,
@@ -185,7 +186,7 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     // as "produced by assemble, inside this same iteration" before this cut existed.
     expect(out.assembled).toBeDefined();
     expect(out.messages).toBe(out.assembled.messages);   // the array, not a copy: the injections appended to it
-    expect(out.systemPrompt).toBe('you are zargo');
+    expect(out.systemPrompt).toBe(`you are ${FXID.n4}`);
     expect(typeof out.volatileFrom).toBe('number');
     expect(out.modelContext).toBeDefined();
     expect(out.steerAwaitingConfirm).toBeNull();          // nothing queued on this turn
@@ -297,7 +298,7 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     await runAssemble(freshState(), ctxFor());
 
     expect(clearConsumedOneShotFlagsSpy).toHaveBeenCalledTimes(1);
-    expect(clearConsumedOneShotFlagsSpy).toHaveBeenCalledWith('zargo', ['a2aPreempt']);
+    expect(clearConsumedOneShotFlagsSpy).toHaveBeenCalledWith(FXID.n4, ['a2aPreempt']);
   });
 
   it('FA-M1: the overhead and the eviction latch are written to the TURN\'S BAG, not to the step', async () => {

@@ -35,10 +35,11 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runSteerCheckpoint } from '../steer-checkpoint.js';
 import { START_ACK_STEER_TEXT } from '../start-ack-door.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE = path.resolve(HERE, '../../..');
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))

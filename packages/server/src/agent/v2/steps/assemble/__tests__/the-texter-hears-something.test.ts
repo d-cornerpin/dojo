@@ -71,6 +71,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { detectMultistepAndScaffold } from '../multistep-detection.js';
 import { START_ACK_STEER_TEXT } from '../steer-checkpoint.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
+import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-one';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -93,7 +94,7 @@ const bag = (over: Partial<Bag> = {}): Bag => ({
 });
 
 const person = (over: Partial<TurnCounterparty> = {}): TurnCounterparty => ({
-  kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'imessage',
+  kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage',
   senderId: '+15550000000', threadId: null, senderIsAgent: false, ...over,
 } as TurnCounterparty);
 

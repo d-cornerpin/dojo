@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runAssemble, ASSEMBLE_PHASE, type AssembleContext } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const assembleContextSpy = vi.fn();
 vi.mock('../../../../../memory/assembler.js', () => ({
@@ -40,14 +41,14 @@ vi.mock('../../../../../prompt/registry/assembler.js', async (importOriginal) =>
 
 function turnCtxFor(): AssembleContext['turnCtx'] {
   return {
-    agentId: 'zargo', conversationId: 'conv-1', lastAssembledAtIso: null, 
+    agentId: FXID.n4, conversationId: 'conv-1', lastAssembledAtIso: null, 
     freshTailDropWarned: false, startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
     startAckSteersInjected: 0, startAckSteerInjectedAtLoop: 0, inboundClassifiedAsWork: false,
   } as unknown as AssembleContext['turnCtx'];
 }
 function ctxFor(): AssembleContext {
   return {
-    agentId: 'zargo', turnCtx: turnCtxFor(), turnNumber: 7, db: fakeDb, contextModelId: 'test-model',
+    agentId: FXID.n4, turnCtx: turnCtxFor(), turnNumber: 7, db: fakeDb, contextModelId: 'test-model',
     contextWindow: 200000,
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as AssembleContext['counterparty'],
     counterpartyIsAgentSender: false, chosenConvKey: 'ck-1', hasUnansweredUser: true, isA2ATurn: false,
@@ -56,12 +57,12 @@ function ctxFor(): AssembleContext {
     engineStartAckDeliveredThisTurn: false, startAckRepliedNow: () => false,
   };
 }
-const state = (): AgentTurnState => advance(initState('zargo', 'test-model'), { phase: ASSEMBLE_PHASE, loopCount: 2 });
+const state = (): AgentTurnState => advance(initState(FXID.n4, 'test-model'), { phase: ASSEMBLE_PHASE, loopCount: 2 });
 
 beforeEach(() => {
   vi.clearAllMocks();
   assembleContextSpy.mockResolvedValue({
-    systemPrompt: 'you are zargo', messages: [{ role: 'user', content: 'hello' }], consumedOneShotFlags: [],
+    systemPrompt: `you are ${FXID.n4}`, messages: [{ role: 'user', content: 'hello' }], consumedOneShotFlags: [],
     freshTailDropped: 5, reserveTokens: 100, systemEntryIds: [], messageEntryIds: [], allocation: null,
   });
 });
