@@ -188,8 +188,8 @@ fi
 
 # ── 2. Choose the candidate ──
 if [ "$FROM" = "__latest__" ]; then
-    FROM="$(collect | head -1)"
-    [ -n "$FROM" ] || { echo "REFUSING: there are no restore points on this machine."; echo "Run this script with no arguments to see where they would be."; exit 1; }
+    FROM="$(collect | grep -v '/dojo-replaced-[^/]*$' | head -1)"
+    [ -n "$FROM" ] || { echo "REFUSING: there are no pre-update restore points on this machine."; echo "Run this script with no arguments to see where they would be."; echo "Copies this script set aside (dojo-replaced-*) are listed by running it with no arguments; restore one on purpose with --from <file>."; exit 1; }
     echo "Newest restore point: $FROM"
 fi
 [ -n "$FROM" ] || { echo "ERROR: no backup given. Run with no arguments to see the list."; exit 2; }
