@@ -422,9 +422,10 @@ export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   return null;
 }
 
-/** Where a soul file lives on disk. */
-export function soulFilePath(soul: AgentSoulFile): string {
-  return path.join(PROMPTS_DIR, soul.file);
+/** Throws if the soul file exists but cannot be read (so an editor reports a failed read, not a blank). */
+export function assertSoulReadable(soul: AgentSoulFile): void {
+  const onDisk = path.join(PROMPTS_DIR, soul.file);
+  if (fs.existsSync(onDisk)) fs.accessSync(onDisk, fs.constants.R_OK);
 }
 
 /** Read a soul file's STORED bytes — what an editor edits, before any truth pass. */
