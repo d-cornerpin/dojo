@@ -75,6 +75,6 @@ Then end your turn. Nothing else.
 ## Error cases
 
 - **No image model configured:** the call returns an error immediately and nothing is generated. This is the one case that IS yours to speak: tell the user image generation is unavailable until a model is picked in Settings → Dojo → Image Generation Model, and do not retry.
-- **Generation failed** (model error, content policy, provider outage): the engine writes the failure into the chat itself, as "I wasn't able to generate that image: …". You do not need to relay it. Do not fire the same description again on a whim; change the description or wait, and only if the user asks.
+- **Generation failed** (model error, content policy, provider outage): the engine says nothing to the person. You get a notice on your next turn naming the provider error; YOU tell the person, in your own words, on the channel they asked from. Do not fire the same description again on a whim; change the description or wait, and only if the user asks.
 - **The user pressed stop:** the generation is cancelled, no image is made, and nothing is said to anyone. Don't announce a cancellation the user just performed.
 - **Delivery failed** (rare): the engine writes a note into the chat carrying the file path of the image it could not attach. If you see one, you may tell the user the image was generated and where it is.

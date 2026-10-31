@@ -1,4 +1,5 @@
-// A failed image generation must reach the person who asked over iMessage, not only the dashboard.
+// A failed image generation reaches the AGENT (a notice naming the error and who asked), so the agent tells the person
+// in its own words. The engine writes no text to the person and no dashboard bubble in the agent's voice (C1/P1, R1).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -23,7 +24,7 @@ vi.mock('../../../../memory/message-store.js', () => ({
   deliveredResult: () => ({}),
   insertMessageIfAbsent: vi.fn(),
 }));
-vi.mock('../../../../work/ask-settlement.js', () => ({ settleAskOnAsyncResult: vi.fn() }));
+vi.mock('../../../../work/ask-settlement.js', () => ({ settleAskOnAsyncResult: vi.fn(), settleAskOnJobEnded: vi.fn() }));
 vi.mock('../../../../services/generation-jobs.js', () => ({
   createGenerationJob: () => 'job-1',
   setRunning: () => true,
@@ -51,6 +52,8 @@ vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 import { mediaHandlers } from '../media.js';
 import { sendResponseViaIMessage } from '../../../../services/imessage-bridge.js';
+import { postAgentNotice } from '../../../agent-notice.js';
+import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
 import { generateImage } from '../../../../services/image-generation.js';
 
 const sendSpy = vi.mocked(sendResponseViaIMessage);
@@ -60,6 +63,8 @@ beforeEach(() => {
   mockDb.current.exec(`CREATE TABLE agents (id TEXT PRIMARY KEY, status TEXT, model_id TEXT);
     INSERT INTO agents VALUES ('a1', 'idle', NULL);`);
   sendSpy.mockClear();
+  vi.mocked(postAgentNotice).mockClear();
+  vi.mocked(insertMessageIfAbsent).mockClear();
   vi.mocked(generateImage).mockClear();
   hoisted.recipient = null;
   hoisted.presence = 'present';
@@ -75,21 +80,25 @@ async function call() {
   });
 }
 
-describe('image_create failure note', () => {
-  it('texts the failure to the iMessage requester', async () => {
+describe('image_create failure', () => {
+  it('tells the agent, naming the error and the iMessage requester, and texts nobody itself', async () => {
     hoisted.recipient = '+15550100';
     await call();
-    await vi.waitFor(() => expect(sendSpy).toHaveBeenCalledTimes(1));
-    const [text, agent, to] = sendSpy.mock.calls[0];
-    expect(text).toContain('provider said no');
-    expect(agent).toBe('a1');
-    expect(to).toBe('+15550100');
+    await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalledTimes(1));
+    const n = vi.mocked(postAgentNotice).mock.calls[0][0];
+    expect(n.toAgentId).toBe('a1');
+    expect(n.brief).toContain('provider said no');
+    expect(n.brief).toContain('+15550100');
+    expect(n.intent).toBe('image_delivery_outcome');
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();   // no engine-written bubble in the agent's voice
   });
 
-  it('does not text anyone when the request was not over iMessage and the owner is present', async () => {
+  it('tells the agent on the dashboard too, with no text and no bubble', async () => {
     await call();
-    await vi.waitFor(() => expect(vi.mocked(generateImage)).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(postAgentNotice).mock.calls[0][0].brief).toContain('provider said no');
     expect(sendSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(insertMessageIfAbsent)).not.toHaveBeenCalled();
   });
 });

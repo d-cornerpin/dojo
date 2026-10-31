@@ -78,7 +78,7 @@ import { broadcast } from '../../../gateway/ws.js';
 import { writeAgentStatus } from '../../agent-status.js';
 import { deliveredResult, insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
-import { settleAskOnAsyncResult } from '../../../work/ask-settlement.js';
+import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../../../work/ask-settlement.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
 import * as effectFs from '../../effects/fs.js';
 import pathModule from 'node:path';
@@ -93,7 +93,7 @@ import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js'
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
-import { getTurnScopedImRecipient, sendIMessageWithAttachment, sendResponseViaIMessage, getDefaultSender } from '../../../services/imessage-bridge.js';
+import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { resolvePath } from '../../path-guards.js';
@@ -105,17 +105,6 @@ import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
-
-/** Text a short plain-words failure note to whoever the success path would have texted the image to. Never throws. */
-async function textImageFailureNote(agentId: string, requesterIMessage: string | null, triggeredByIMessage: boolean, note: string): Promise<void> {
-  try {
-    if (!mayUseChannel(agentId, 'imessage')) return;
-    let send = triggeredByIMessage;
-    if (!send) { try { send = getPresence() === 'away'; } catch { /* presence unavailable */ } }
-    if (!send) return;
-    await sendResponseViaIMessage(note, agentId, requesterIMessage, requesterIMessage === null);
-  } catch { /* best effort; the dashboard note already stands */ }
-}
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -268,7 +257,7 @@ const handlers = {
 
         if (!result.ok) {
           // A-5: honest stop identity. The user's own button is not a generation failure —
-          // no `failed` row, no error column, and no "I wasn't able to generate that image"
+          // no `failed` row, no error column, and no failure line
           // bubble for work he called off himself.
           if (result.code === 'STOPPED') {
             setImgCancelled(imgJobId);
@@ -284,28 +273,25 @@ const handlers = {
 
           setImgFailed(imgJobId, result.error);
 
-          // Deliver error directly as an assistant message in the
-          // requesting agent's own chat. No second LLM turn.
-          const errMsgId = uuidv4();
-          const errContent =
-            `I wasn't able to generate that image:\n\n` +
-            `> ${result.error}\n\n` +
-            `You could try simplifying the description or trying again in a moment.`;
-          insertMessageIfAbsent({ id: errMsgId, agentId, role: 'assistant', content: errContent, ...resultSubject });
-          broadcast({
-            type: 'chat:message', agentId,
-            message: {
-              id: errMsgId, agentId, role: 'assistant' as const, content: errContent,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          broadcast({
-            type: 'chat:chunk', agentId,
-            messageId: errMsgId, content: '', done: true, modelId: null,
-          });
-          await textImageFailureNote(agentId, requesterIMessage, triggeredByIMessage, `I wasn't able to generate that image. ${result.error}`);
-          settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: errMsgId });   // t152: the owner was told; no job out, the ask settles
+          // C1/P1 (R1): the engine writes nothing to the person and nothing in the agent's voice. The
+          // failure reaches the AGENT as a notice on its next turn, so it tells the person in its own
+          // words, on the channel the request came from.
+          const askedBy = requesterIMessage
+            ? `the person who asked over iMessage (${requesterIMessage})`
+            : 'the person who asked (in the dashboard chat)';
+          try {
+            postAgentNotice({
+              toAgentId: agentId,
+              fromName: 'Image generation',
+              brief:
+                `the image you asked for could not be generated. The provider said: ${result.error}. ` +
+                `Nothing was sent to ${askedBy}. Tell them in your own words that it failed and offer a next step; ` +
+                `do not call image_create again with the same description unless they ask.`,
+              intent: 'image_delivery_outcome',
+              selfIntro: false,
+            });
+          } catch { /* awareness note is best-effort */ }
+          settleAskOnJobEnded(agentId, imgJobId);   // t152: no bubble was posted; the request is re-asked now that the job ended
           return;
         }
 
