@@ -9777,7 +9777,7 @@
     "packages/server/src/healer/diagnostic.ts": 1088,
     "packages/server/src/healer/healer-agent.ts": 1167,
     "packages/server/src/healer/injury-recovery.ts": 1239,
-    "packages/server/src/index.ts": 1364,
+    "packages/server/src/index.ts": 1367,
     "packages/server/src/memory/assembler.ts": 2839,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 713,
