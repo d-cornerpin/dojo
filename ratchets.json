@@ -9834,7 +9834,7 @@
     "packages/server/src/services/generation-jobs.ts": 464,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 474,
-    "packages/server/src/services/imessage-bridge.ts": 2166,
+    "packages/server/src/services/imessage-bridge.ts": 2181,
     "packages/server/src/services/local-standard.ts": 317,
     "packages/server/src/services/num-ctx-calculator.ts": 536,
     "packages/server/src/services/ollama-lock.ts": 467,
