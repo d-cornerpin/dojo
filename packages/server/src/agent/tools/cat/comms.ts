@@ -667,7 +667,7 @@ export const commsHandlers: ToolHandlerMap = {
     if (!result.ok && result.sentFiles.length === 0 && !result.textSent) {
       const route = routedReplyWords(agentId);
       content =
-        'iMessage delivery failed at the system level - neither the imsg CLI nor AppleScript could deliver. ' +
+        'iMessage NOT sent - nothing went out. Either neither the imsg CLI nor AppleScript could deliver it, or the owner pressed Stop. ' +
         (route ? `${route.failed} ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +
         'The user can check System Settings - Privacy & Security - Automation to grant Messages access if AppleScript is the issue.';
       isError = true;
