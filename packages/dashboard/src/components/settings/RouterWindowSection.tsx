@@ -25,11 +25,14 @@ const k = (tokens: number): string => `${Math.round(tokens / 1000)}k`;
 export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWindowData | null }) => {
   const [value, setValue] = useState(routerWindow?.tokens ?? 0);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => { setValue(routerWindow?.tokens ?? 0); }, [routerWindow?.tokens]);
 
   const save = async (): Promise<void> => {
+    setError(null); setSaved(false);
     const res = await api.setSetting('router.context_window', String(value));
     if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); }
+    else { setError(res.error); setValue(routerWindow?.tokens ?? 0); }
   };
 
   return (
@@ -49,7 +52,7 @@ export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWind
               aria-label="Context window for automatic choice"
               min={Math.min(routerWindow.minTokens, routerWindow.floorTokens)} max={routerWindow.floorTokens}
               value={value}
-              onChange={(e) => setValue(Number(e.target.value))}
+              onChange={(e) => { setValue(Number(e.target.value)); setError(null); }}
               onMouseUp={() => void save()}
               onTouchEnd={() => void save()}
               onKeyUp={() => void save()}
@@ -57,6 +60,7 @@ export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWind
             />
             {saved && <span className="text-xs text-cp-teal">Saved!</span>}
           </div>
+          {error && <p className="text-xs text-cp-coral">{error}</p>}
           <p className="text-sm font-mono text-ui">{k(value)} — the smallest model on the router is {routerWindow.floorModelName} ({k(routerWindow.floorTokens)})</p>
           {routerWindow.minAgentName && routerWindow.minTokens > routerWindow.floorTokens && (
             <p className="text-xs text-cp-coral">
