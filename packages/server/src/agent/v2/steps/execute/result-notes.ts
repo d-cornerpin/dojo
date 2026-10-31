@@ -25,7 +25,7 @@ import { answerReceiptForAsk, substantiveReplySince } from '../../answered-edge.
 //
 // Trade-off: ~50 tokens per triggering tool result, vs. spending the
 // same tokens in the system prompt every turn whether or not relevant.
-const VISIBILITY_HINT = `\n\n[VISIBILITY: tool results are shown only to you, not to the user. The user sees only your reply text and any files you attach via show_to_user. If you want them to have a URL or detail from this result, include it inline in your reply, they cannot "see above". If there's nothing here worth surfacing, no action needed.]`;
+const VISIBILITY_HINT = `\n\n[VISIBILITY: tool results are shown only to you, not to the person you are talking to. The person you are talking to sees only your reply text and any files you attach via show_to_user. If you want them to have a URL or detail from this result, include it inline in your reply, they cannot "see above". If there's nothing here worth surfacing, no action needed.]`;
 
 // Match http(s) URLs OR file paths under the shared uploads dir.
 // Conservative: only triggers on patterns that are typically things the
@@ -65,7 +65,7 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
   'credential_delete',
 ]);
 
-const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
+const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the person you are talking to just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the person you are talking to already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
 // Marker-aware variant. When the task being closed is an ENGINE-OPENED row
 // (`root_kind='engine_scaffold'` — T8c item 3's rekey of the old prose marker), the
@@ -75,7 +75,7 @@ const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If t
 // [no-reply] option entirely and asks plainly for the outcome + any link. The
 // generic note above stays for genuinely incidental / self-initiated
 // bookkeeping, where silence is still the right call.
-const BOOKKEEPING_NUDGE_USER_REQUESTED = `\n\n[Engine note: the user asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a "Link:", "Open:", or "Share link:" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;
+const BOOKKEEPING_NUDGE_USER_REQUESTED = `\n\n[Engine note: the person you are talking to asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a "Link:", "Open:", or "Share link:" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;
 export function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: boolean }>(toolResult: T): T {
   // Skip on errors, error messages aren't artifacts to share.
   if (toolResult.isError) return toolResult;

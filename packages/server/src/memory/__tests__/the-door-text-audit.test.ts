@@ -207,7 +207,7 @@ describe('§3 the audit\'s KEEP verdicts are pinned, not asserted', () => {
   // day a tranche moves it, which is precisely how a KEEP verdict would rot into drift.
   it('T33 — the standing-promise steer text is unchanged', () => {
     const floor = engineFileWithBoth(
-      'Your reply made a STANDING promise to the user',
+      'Your reply made a STANDING promise to ${userWords(ctx.turnCtx.address)}',
       'Do not repeat the promise without recording it.',
     );
     expect(floor.text).toContain('A promise that lives only in this conversation does not survive a ');
@@ -215,7 +215,7 @@ describe('§3 the audit\'s KEEP verdicts are pinned, not asserted', () => {
 
   it('T36 — the standing-state steer text is unchanged, bounded retry included', () => {
     const floor = engineFileWithBoth(
-      'Your reply told the user what is currently scheduled or owed',
+      'Your reply told ${userWords(ctx.turnCtx.address)} what is currently scheduled or owed',
       'do not pick up new work you were not asked for.',
     );
     expect(floor.text).toContain('This round is for ');

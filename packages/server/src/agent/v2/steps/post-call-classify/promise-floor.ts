@@ -24,6 +24,7 @@ import { replyClaim, replyClaimOf } from '../../reply-claims.js';   // v3.5 C1: 
 import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -237,27 +238,27 @@ export function runPromiseFloor(
           // matched the board reached the owner twice. The reply is already persisted and shown
           // (`persist-assistant.ts` keys it as the answer first); the round now checks, then ends
           // with `[no-reply]` or says only the correction.
-          `[System] Your reply told the user what is currently scheduled or owed ('${quoted}'), ` +
+          `[System] Your reply told ${userWords(ctx.turnCtx.address)} what is currently scheduled or owed ('${quoted}'), ` +
           `but nothing this turn read the board, so that came from memory rather than from a row. ` +
           `Check it before you assert it: work_update(action="list") for the live tracker, plus ` +
-          `calendar_agenda if you named a calendar event. The user already has your reply, so do ` +
+          `calendar_agenda if you named a calendar event. ${userWords(ctx.turnCtx.address, true)} already has your reply, so do ` +
           `not say it again: if every line matches what the board actually holds, end the turn ` +
-          `with [no-reply]; if a line is wrong, tell the user only that correction, in a line or ` +
+          `with [no-reply]; if a line is wrong, tell ${userWords(ctx.turnCtx.address)} only that correction, in a line or ` +
           `two, without repeating the lines that were right — a row that is abandoned, closed, or ` +
           `was never created is not "on deck" and will not fire. This round is for checking THAT ` +
           `answer: do not pick up new work you were not asked for.`
         ) : standingPromise ? (
           // T33: the same floor, a different order — there is no work to "do now" for a promise
           // about future occasions, and the engine speaks to the MODEL, never to the user (OR2).
-          `[System] Your reply made a STANDING promise to the user ('${quoted}') — a commitment ` +
+          `[System] Your reply made a STANDING promise to ${userWords(ctx.turnCtx.address)} ('${quoted}') — a commitment ` +
           `about every future occasion — but nothing durable was written this turn, so nothing ` +
           `will carry it out. A promise that lives only in this conversation does not survive a ` +
           `session reset. Either record what you can actually deliver where it will be kept ` +
           `(vault_remember with verbatim:true and pin:true for a standing instruction; work_open ` +
-          `for a tracked task or a scheduled reminder), or tell the user honestly what you can ` +
+          `for a tracked task or a scheduled reminder), or tell ${userWords(ctx.turnCtx.address)} honestly what you can ` +
           `and cannot do. Do not repeat the promise without recording it.`
         ) : (
-          `[System] Your reply to the user was a promise to start ('${quoted}') but the turn ` +
+          `[System] Your reply to ${userWords(ctx.turnCtx.address)} was a promise to start ('${quoted}') but the turn ` +
           `was about to end with no work done. Do the work NOW with tool calls and deliver the ` +
           `result. Do not narrate what you are about to do again.`
         );

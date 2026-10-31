@@ -42,6 +42,7 @@ import { persistEngineSteer } from '../../engine-steer.js';
 import { progressClassifier, buildSpinningNudge } from '../../classifiers/progress.js';
 import { agentCanSelfCompleteById } from '../../../tools/util.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { userWords, currentAddress } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -150,7 +151,7 @@ export function runPostExecution(state: AgentTurnState, ctx: PostExecutionContex
           agentId, turnNumber, floor: 'no-results', atLoop: state.loopCount,
           content:
             '[System: Multiple searches returned no results. The information may not exist in memory. ' +
-            'Try responding based on what you already know, or ask the user for clarification.]',
+            `Try responding based on what you already know, or ask ${userWords(currentAddress(agentId))} for clarification.]`,
         }, { broadcast });
         state = advance(state, { consecutiveNoResultTools: 0 });
         return continueLoop(state);

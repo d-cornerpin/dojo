@@ -103,7 +103,7 @@ export function shareDeny(resource: ResolvedPath, toolName: string): Verdict | n
       `[BLOCKED] ${toolName} refused: ${resource.lexical} is on the sensitive-files block list ` +
         `(secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never publishes ` +
         `secret files or reads them into the conversation. If you need a value from this file, ` +
-        `ask the user, those values live in process memory only.`,
+        `ask the person you are talking to, those values live in process memory only.`,
     );
   }
   return null;

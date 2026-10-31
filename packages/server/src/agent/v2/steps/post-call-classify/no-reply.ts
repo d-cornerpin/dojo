@@ -27,6 +27,7 @@ import { recordedAnswerInConversation } from '../../answered-edge.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { DECLINE_OPENER_RE, replyClaim } from '../../reply-claims.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -218,7 +219,7 @@ export async function runNoReply(
           const said = (readPersistedRow(promotedRowId)?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
           if (said.length > 0) {
             promotedSight =
-              ' ENGINE RECORD: the user HAS heard one line from you this turn — while you were '
+              ` ENGINE RECORD: ${userWords(turnCtx.address)} HAS heard one line from you this turn — while you were `
               + `working, the engine surfaced your own words to them: "${said}". The ask ledger `
               + 'still shows their question OPEN, because nothing is recorded as its answer yet. '
               + 'If that line WAS your answer, say so now in one ordinary reply so it is on the '
@@ -227,9 +228,9 @@ export async function runNoReply(
         } catch { /* the sight is a courtesy; the steer stands without it */ }
       }
       const steerText =
-        '[Engine hint: you ended with [no-reply], but this message is a direct request from the user. ' +
+        `[Engine hint: you ended with [no-reply], but this message is a direct request from ${userWords(turnCtx.address)}. ` +
         'A direct ask never ends in silence. If this exact work was already delivered (check the RECENTLY ANSWERED engine record and your tracker), ' +
-        'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.' +
+        `reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if ${userWords(turnCtx.address)} asked for one.` +
         promotedSight + ']';
       try {
         persistAndBroadcastSystemRow(steerText);
@@ -258,7 +259,7 @@ export async function runNoReply(
           .replace(/\s+/g, ' ').trim().slice(0, 220);
         if (excerpt.length > 0) {
           const steer2 =
-            `[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
+            `[Engine record: you again ended with [no-reply] on ${userWords(turnCtx.address)}'s direct ask, but you already answered this earlier. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
           try {
             persistAndBroadcastSystemRow(steer2);
           } catch { /* dashboard row is best effort */ }

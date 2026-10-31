@@ -127,6 +127,7 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     chosenConvKey: 'ck-1',
     isEngineTurn: false,
     maxToolLoops: 75,
+    turnCtx: {},
     ...over,
   } as unknown as PostCallClassifyContext;
 }

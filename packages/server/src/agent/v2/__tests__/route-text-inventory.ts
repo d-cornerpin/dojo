@@ -95,14 +95,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S010",
-  "file": "agent/brokers/fs.ts",
-  "line": 106,
-  "old": "`ask the user, those values live in process memory only.`,",
-  "new": "`ask the person you are talking to, those values live in process memory only.`,",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S011",
   "file": "agent/brokers/proc.ts",
   "line": 130,
@@ -503,30 +495,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
-  "id": "S077",
-  "file": "agent/v2/steps/execute/result-notes.ts",
-  "line": 28,
-  "old": "const VISIBILITY_HINT = `\\n\\n[VISIBILITY: tool results are shown only to you, not to the user. The user sees only your reply text and any files you attach via show_to_user. If you want them to have a URL or detail from this result, include it inline in your reply, they cannot \"see above\". If there's nothing here worth surfacing, no action needed.]`;",
-  "new": "const VISIBILITY_HINT = `\\n\\n[VISIBILITY: tool results are shown only to you, not to the person you are talking to. The person you are talking to sees only your reply text and any files you attach via show_to_user. If you want them to have a URL or detail from this result, include it inline in your reply, they cannot \"see above\". If there's nothing here worth surfacing, no action needed.]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S078",
-  "file": "agent/v2/steps/execute/result-notes.ts",
-  "line": 68,
-  "old": "const BOOKKEEPING_NUDGE = `\\n\\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. \"save my key\", \"remember that\", \"delete X\"), reply with ONE short line confirming it is done (e.g. \"Saved.\", \"Got it, stored your OpenWeather key.\") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \\`[no-reply]\\` rather than a generic \"Done.\" / \"All set.\" / \"Got it.\" closeout.]`;",
-  "new": "const BOOKKEEPING_NUDGE = `\\n\\n[Engine note: this was internal bookkeeping. If the person you are talking to just asked you to do exactly this (e.g. \"save my key\", \"remember that\", \"delete X\"), reply with ONE short line confirming it is done (e.g. \"Saved.\", \"Got it, stored your OpenWeather key.\") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the person you are talking to already has what they needed, end the turn with literal \\`[no-reply]\\` rather than a generic \"Done.\" / \"All set.\" / \"Got it.\" closeout.]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S079",
-  "file": "agent/v2/steps/execute/result-notes.ts",
-  "line": 78,
-  "old": "const BOOKKEEPING_NUDGE_USER_REQUESTED = `\\n\\n[Engine note: the user asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a \"Link:\", \"Open:\", or \"Share link:\" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;",
-  "new": "const BOOKKEEPING_NUDGE_USER_REQUESTED = `\\n\\n[Engine note: the person you are talking to asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a \"Link:\", \"Open:\", or \"Share link:\" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S081",
   "file": "agent/v2/steps/post-call-classify/going-idle.ts",
   "line": 80,
@@ -540,38 +508,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 81,
   "old": "`Silently going idle after a work_note leaves the user with no idea what is happening.]`",
   "new": "`Silently going idle after a work_note leaves ${userWords(turnCtx.address)} with no idea what is happening.]`",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S083",
-  "file": "agent/v2/steps/post-call-classify/no-reply.ts",
-  "line": 221,
-  "old": "' ENGINE RECORD: the user HAS heard one line from you this turn — while you were '",
-  "new": "` ENGINE RECORD: ${userWords(turnCtx.address)} HAS heard one line from you this turn — while you were `",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S084",
-  "file": "agent/v2/steps/post-call-classify/no-reply.ts",
-  "line": 230,
-  "old": "'[Engine hint: you ended with [no-reply], but this message is a direct request from the user. ' +",
-  "new": "`[Engine hint: you ended with [no-reply], but this message is a direct request from ${userWords(turnCtx.address)}. ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S085",
-  "file": "agent/v2/steps/post-call-classify/no-reply.ts",
-  "line": 232,
-  "old": "'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.' +",
-  "new": "`reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if ${userWords(turnCtx.address)} asked for one.` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S086",
-  "file": "agent/v2/steps/post-call-classify/no-reply.ts",
-  "line": 261,
-  "old": "`[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: \"${excerpt}\". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;",
-  "new": "`[Engine record: you again ended with [no-reply] on ${userWords(turnCtx.address)}'s direct ask, but you already answered this in this conversation. Your recorded answer: \"${excerpt}\". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;",
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
@@ -613,62 +549,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "`, note=\"<the user's own words>\"). ` +",
   "new": "`, note=\"<${userWords(turnCtx.address)}'s own words>\"). ` +",
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S092",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 240,
-  "old": "`[System] Your reply told the user what is currently scheduled or owed ('${quoted}'), ` +",
-  "new": "`[System] Your reply told ${userWords(ctx.turnCtx.address)} what is currently scheduled or owed ('${quoted}'), ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S093",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 243,
-  "old": "`calendar_agenda if you named a calendar event. The user already has your reply, so do ` +",
-  "new": "`calendar_agenda if you named a calendar event. ${userWords(ctx.turnCtx.address, true)} already has your reply, so do ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S094",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 245,
-  "old": "`with [no-reply]; if a line is wrong, tell the user only that correction, in a line or ` +",
-  "new": "`with [no-reply]; if a line is wrong, tell ${userWords(ctx.turnCtx.address)} only that correction, in a line or ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S095",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 252,
-  "old": "`[System] Your reply made a STANDING promise to the user ('${quoted}') — a commitment ` +",
-  "new": "`[System] Your reply made a STANDING promise to ${userWords(ctx.turnCtx.address)} ('${quoted}') — a commitment ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S096",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 257,
-  "old": "`for a tracked task or a scheduled reminder), or tell the user honestly what you can ` +",
-  "new": "`for a tracked task or a scheduled reminder), or tell ${userWords(ctx.turnCtx.address)} honestly what you can ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S097",
-  "file": "agent/v2/steps/post-call-classify/promise-floor.ts",
-  "line": 260,
-  "old": "`[System] Your reply to the user was a promise to start ('${quoted}') but the turn ` +",
-  "new": "`[System] Your reply to ${userWords(ctx.turnCtx.address)} was a promise to start ('${quoted}') but the turn ` +",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S102",
-  "file": "agent/v2/steps/post-execution/index.ts",
-  "line": 153,
-  "old": "'Try responding based on what you already know, or ask the user for clarification.]',",
-  "new": "`Try responding based on what you already know, or ask ${userWords(currentAddress(agentId))} for clarification.]`,",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
   "id": "S109",
@@ -781,30 +661,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the user asks about it, say it is too large for the current model to see.';",
   "new": "const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the person you are talking to asks about it, say it is too large for the current model to see.';",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S125",
-  "file": "microsoft/tools-office.ts",
-  "line": 1330,
-  "old": "const shareLine = `To give the user a downloadable URL for this file, call share_file with path=\"${outPath}\" — do NOT invent or guess a URL.`;",
-  "new": "const shareLine = `To give the person you are talking to a downloadable URL for this file, call share_file with path=\"${outPath}\" — do NOT invent or guess a URL.`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S128",
-  "file": "prompt/registry/entries.ts",
-  "line": 278,
-  "old": "`If the user asks you to do something that requires tools (file access, web search, tracker, etc.), ` +",
-  "new": "`If the person you are talking to asks you to do something that requires tools (file access, web search, tracker, etc.), ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S129",
-  "file": "prompt/registry/entries.ts",
-  "line": 336,
-  "old": "parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);",
-  "new": "parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask ${userWords(tc?.address)} once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);",
-  "how": "A=tc?.address (the turn context in renderTurnContext); import userWords from agent/v2/turn-address.js"
  },
  {
   "id": "S134",

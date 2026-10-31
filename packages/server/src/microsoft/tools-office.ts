@@ -1327,7 +1327,7 @@ async function saveOfficeBuffer(
   const outPath = path.join(dir, safe);
   effectFs.writeFileSync(outPath, buffer);
   const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
-  const shareLine = `To give the user a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL.`;
+  const shareLine = `To give the person you are talking to a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL.`;
   // Word and Excel are editable IN PLACE on disk — their edit tools accept a
   // local `path`. This is the key affordance: without it the model regenerates
   // the whole file on every change and the canvas churns. PowerPoint edits still

@@ -38,6 +38,7 @@ import {
 import { assembleGroupContext, renderPeerStatusLine } from '../../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../../techniques/index-builder.js';
 import { detectContextGap } from '../../agent/v2/classifiers/context-gap.js';
+import { userWords } from '../../agent/v2/turn-address.js';
 
 // ── System-prompt entries (R3 proof-of-concept: one static, one computed) ──
 const SYSTEM_ENTRIES: SystemInjection[] = [
@@ -275,7 +276,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
 // representative: sync, standalone, conditional, message-side.
 const TOOL_NOTE_TEXT =
   `[System note: Your current model does not support tool calling. You can only respond with text. ` +
-  `If the user asks you to do something that requires tools (file access, web search, tracker, etc.), ` +
+  `If the person you are talking to asks you to do something that requires tools (file access, web search, tracker, etc.), ` +
   `explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`;
 
 // C28 Part 1: the per-turn volatile routing/presence context, rendered as ONE
@@ -333,7 +334,7 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
   }
   // conversational-turn hint (moved verbatim; suppressed when othersWaiting covers it).
   if (tc?.conversationalTurn && !(tc?.othersWaiting && tc.othersWaiting > 0)) {
-    parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);
+    parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask ${userWords(tc?.address)} once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);
   }
 
   if (parts.length === 0) return null;
