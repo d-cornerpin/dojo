@@ -30,7 +30,7 @@ const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation:
 const peer: TurnCounterparty = { kind: 'agent', name: 'peer-agent', relation: 'agent', channel: 'a2a', senderId: null, threadId: 't1', senderIsAgent: false };
 
 function block(counterparty: TurnCounterparty, over: { isEngineTurn?: boolean; inbound?: 'imessage' | 'dashboard' | null; presence?: 'in_dojo' | 'away'; voice?: boolean } = {}): string {
-  const address = computeTurnAddress({
+  const address = computeTurnAddress({ autoRoutes: true,
     counterparty, isEngineTurn: over.isEngineTurn ?? false, isNotificationTurn: false,
     inboundChannel: over.inbound === undefined ? 'imessage' : over.inbound, inboundContext: null,
     presence: over.presence ?? 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null,

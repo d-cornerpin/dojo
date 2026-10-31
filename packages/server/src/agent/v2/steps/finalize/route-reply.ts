@@ -20,6 +20,7 @@ import { createLogger } from '../../../../logger.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { recordAffinityPromotion, affinityPromotionRefusedNoBasis } from '../../owner-affinity.js';
 import { outboundRoot } from '../../outbound-root.js';
+import { resolveDeliveryChannel } from '../../turn-address.js';
 import { steerFired } from '../../steer-queue.js';
 import type { AgentTurnState } from '../../state.js';
 import { appendUndeliveredLinks } from './link-backstop.js';
@@ -72,7 +73,6 @@ export async function routeTerminalReply(
       // t141: this turn's own rows were labelled with their conversation AT INSERT
       // (`memory/message-store.ts ownRowSubject`); the late re-tag that stood here is deleted.
 
-      const { resolveReplyDestination } = await import('../../reply-destination.js');
       const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
       const { sendResponseViaIMessage } = await import('../../../../services/imessage-bridge.js');
 
@@ -109,18 +109,21 @@ export async function routeTerminalReply(
         }, agentId);
       }
       const effectiveOwnerAffinity = affinityRefused ? null : turnCtx.ownerAffinityDestination;
-      const destination = counterparty.kind === 'agent'
-        ? 'dashboard'
-        : resolveReplyDestination({
-            state: { inboundChannel: boundInbound },
-            presence: presenceNow,
-            imessageBridgeConfigured: isImessageConfigured(),
-            // RC-10: owner-channel affinity, resolved once at turn start (rate limited
-            // per conversation). Only the owner qualifies, never a contact. Nulled
-            // above when affinity would be the sole basis (phantom-outreach fix).
-            counterpartyIsOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
-            ownerAffinityChannel: effectiveOwnerAffinity,
-          });
+      // ONE source for the rule: the same resolver that told the agent where its reply goes.
+      // An agent counterparty never auto-routes to a person (invariant #2 above); the address
+      // already says so, and the fallback (no address) says it from the counterparty.
+      const routeAddress = turnCtx.address ?? {
+        kind: counterparty.kind === 'agent' ? 'agent' as const : 'person' as const,
+        isOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
+        boundChannel: state.inboundChannel, autoRoutes: true,
+      };
+      const destination = resolveDeliveryChannel(routeAddress, {
+        presence: presenceNow,
+        imessageBridgeConfigured: isImessageConfigured(),
+        // RC-10 affinity (rate limited, resolved at turn start); the resolver nulls an
+        // affinity-only promotion itself (phantom-outreach fix), mirrored in the log above.
+        ownerAffinityChannel: turnCtx.ownerAffinityDestination,
+      });
       // RC-10: if the affinity promotion is what put this reply on iMessage (the away
       // override would have promoted regardless, but affinity is a distinct, rate-
       // limited mechanism), record it so a background-wake storm can't become a text

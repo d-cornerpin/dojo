@@ -36,6 +36,7 @@ import { resolveTurnCounterparty, type TurnCounterparty, type WaitingConversatio
 import { computeTurnAddressLive, type TurnAddress } from '../../turn-address.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed } from '../../owner-affinity.js';
 import { resetProactiveSendStreak } from '../../proactive-budget.js';
+import { isPrimaryAgent } from '../../../../config/platform.js';
 import { startTurn } from '../../turn-record.js';
 import { declaredPatienceHonestFailTurn } from '../../../shared-state.js';
 import type { PreflightContext, PreflightScratch } from './index.js';
@@ -168,7 +169,7 @@ export async function runCounterpartyAndRecord(
   // ── 3.5: THE TURN'S ADDRESS, computed once, here (`turn-address.ts`) ──
   turnCtx.address = await computeTurnAddressLive({
     counterparty, isEngineTurn, isNotificationTurn: input.isNotificationTurn ?? false,
-    inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination,
+    inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination, autoRoutes: isPrimaryAgent(agentId),
     settledContextWakeTurn: input.settledContextWakeTurn,
     restoredFrom: isHumanContinuation ? continuation?.address : undefined,
   });

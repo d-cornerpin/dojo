@@ -1,0 +1,92 @@
+// 3.5 fix round 1: delivery is not a source regex, it is behaviour. `routeTerminalReply` hands the
+// push the destination the SAME resolver gives the agent (`resolveDeliveryChannel`), whatever
+// the newest row, the trigger row or the owner's presence says; and the channel the agent is told
+// (`liveAddress`) equals the channel used, including after a presence flip.
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const { pushSpy, presence, bridge } = vi.hoisted(() => ({
+  pushSpy: vi.fn(async () => undefined),
+  presence: { current: 'in_dojo' as 'in_dojo' | 'away' },
+  bridge: { on: true },
+}));
+vi.mock('../channel-push.js', () => ({ pushReplyToChannel: pushSpy }));
+vi.mock('../link-backstop.js', () => ({ appendUndeliveredLinks: async (s: unknown) => s }));
+vi.mock('../../../../../config/platform.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), isPrimaryAgent: () => true }));
+vi.mock('../../../../../services/presence.js', () => ({ getPresence: () => presence.current, isImessageConfigured: () => bridge.on }));
+vi.mock('../../../../../services/imessage-bridge.js', () => ({ sendResponseViaIMessage: vi.fn() }));
+vi.mock('../../../../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
+
+import { routeTerminalReply } from '../route-reply.js';
+import { computeTurnAddress } from '../../../turn-address.js';
+import { liveAddress } from '../../../turn-address-live.js';
+import type { TurnCounterparty } from '../../../counterparty.js';
+
+const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
+const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
+
+function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, now: 'in_dojo' | 'away', primary = true) {
+  return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: now, imessageBridgeConfigured: true, ownerAffinityChannel: null });
+}
+async function destinationOf(cp: TurnCounterparty, address: ReturnType<typeof addressFor>, stateInbound: 'imessage' | 'dashboard' | null): Promise<string> {
+  pushSpy.mockClear();
+  const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
+  await routeTerminalReply(state, ctx, false);
+  expect(pushSpy).toHaveBeenCalledTimes(1);
+  return (pushSpy.mock.calls[0] as unknown as [unknown, unknown, { destination: string }])[2].destination;
+}
+
+beforeEach(() => { presence.current = 'in_dojo'; bridge.on = true; });
+
+describe('delivery follows the turn address', () => {
+  it('a contact\'s iMessage turn is delivered by iMessage, whatever the owner\'s presence', async () => {
+    for (const p of ['in_dojo', 'away'] as const) {
+      presence.current = p;
+      expect(await destinationOf(contact, addressFor(contact, 'imessage', p), 'imessage')).toBe('imessage');
+    }
+  });
+
+  it('a continuation (no trigger row, state inbound empty) still delivers to the address\'s bound channel', async () => {
+    const restored = computeTurnAddress({
+      autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
+      presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null,
+      restoredFrom: addressFor(contact, 'imessage', 'in_dojo'),
+    });
+    expect(await destinationOf(contact, restored, null)).toBe('imessage');
+  });
+
+  it('an A2A turn never delivers to a person', async () => {
+    const peer: TurnCounterparty = { kind: 'agent', name: 'peer-agent', relation: 'agent', channel: 'a2a', senderId: null, threadId: 't1', senderIsAgent: false };
+    presence.current = 'away';
+    expect(await destinationOf(peer, addressFor(peer, 'dashboard', 'away'), 'dashboard')).toBe('dashboard');
+  });
+});
+
+describe('what the agent is told equals what is used, including after a presence flip', () => {
+  it('owner on the dashboard: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
+    const address = addressFor(owner, 'dashboard', 'in_dojo');
+    expect(address.deliveryChannel).toBe('dashboard');
+    expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
+    presence.current = 'away';
+    const told = liveAddress(address)!;
+    expect(told.deliveryChannel).toBe('imessage');
+    expect(told.routed).toBe(true);
+    expect(await destinationOf(owner, address, 'dashboard')).toBe(told.deliveryChannel);
+  });
+
+  it('and back again: the owner returns, both say dashboard', async () => {
+    presence.current = 'away';
+    const address = addressFor(owner, 'dashboard', 'away');
+    presence.current = 'in_dojo';
+    expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
+    expect(await destinationOf(owner, address, 'dashboard')).toBe('dashboard');
+  });
+
+  it('a sub-agent\'s reply stays in the dashboard even with the owner away (no iMessage promise)', () => {
+    presence.current = 'away';
+    const sub = addressFor(owner, 'dashboard', 'away', false);
+    expect(sub.deliveryChannel).toBe('dashboard');
+    expect(sub.routed).toBe(false);
+    expect(liveAddress(sub)?.deliveryChannel).toBe('dashboard');
+  });
+});

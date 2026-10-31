@@ -15,7 +15,7 @@ const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation:
 function turnWith(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard', isEngineTurn = false): void {
   endTurnContext(AGENT);
   const t = openTurnContext(AGENT);
-  t.address = computeTurnAddress({ counterparty: cp, isEngineTurn, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
 }
 
 beforeEach(() => endTurnContext(AGENT));

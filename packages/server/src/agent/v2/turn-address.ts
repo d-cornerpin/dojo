@@ -47,6 +47,14 @@ export interface TurnAddress {
   /** True when the written reply goes out on a routed channel (iMessage, SMS, email, Teams,
    *  phone) rather than staying in the dashboard. */
   readonly routed: boolean;
+  /** Whether the engine auto-routes THIS agent's written reply to a channel at all. Only the
+   *  primary agent's is; a sub-agent's reply stays in the dashboard whatever presence says. */
+  readonly autoRoutes: boolean;
+  /** The owner-affinity promotion resolved at preflight (null = none); kept so the live
+   *  resolver can re-apply the same rule with current presence. */
+  readonly ownerAffinity: 'imessage' | null;
+  /** A settled-context wake with no inbound: the text is held in the dashboard, not pushed. */
+  readonly heldWake: boolean;
 }
 
 export interface ComputeTurnAddressInput {
@@ -59,6 +67,8 @@ export interface ComputeTurnAddressInput {
   presence: 'in_dojo' | 'away';
   imessageBridgeConfigured: boolean;
   ownerAffinityChannel: 'imessage' | null;
+  /** `isPrimaryAgent(agentId)`: only the primary agent's written reply is auto-routed to a channel. */
+  autoRoutes: boolean;
   /** True when every visible conversation was already answered at turn start; nothing is
    *  pushed to a channel on such a wake (it is held), so the agent is not told it will be. */
   settledContextWakeTurn?: boolean;
@@ -79,11 +89,11 @@ export interface LiveDeliveryInputs {
  * WHO or about which inbound the reply is bound to.
  */
 export function resolveDeliveryChannel(
-  addr: Pick<TurnAddress, 'kind' | 'isOwner' | 'boundChannel'>,
+  addr: Pick<TurnAddress, 'kind' | 'isOwner' | 'boundChannel' | 'autoRoutes'>,
   live: LiveDeliveryInputs,
 ): ReplyDestination {
   // Agent and notification turns never auto-route to a person.
-  if (addr.kind === 'agent' || addr.kind === 'notification') return 'dashboard';
+  if (addr.kind === 'agent' || addr.kind === 'notification' || !addr.autoRoutes) return 'dashboard';
   const affinityRefused = affinityPromotionRefusedNoBasis({
     ownerAffinityChannel: live.ownerAffinityChannel,
     inboundChannel: addr.boundChannel,
@@ -118,7 +128,7 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
   // so its delivery channel is the real one; the agent is simply not told to "reply" on it.
   if (kind === 'person' || kind === 'engine') {
     deliveryChannel = resolveDeliveryChannel(
-      { kind, isOwner, boundChannel },
+      { kind, isOwner, boundChannel, autoRoutes: input.autoRoutes },
       { presence: input.presence, imessageBridgeConfigured: input.imessageBridgeConfigured, ownerAffinityChannel: input.ownerAffinityChannel },
     );
     // Held wake: the text stays in the dashboard, so do not promise a channel hop.
@@ -137,6 +147,9 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
     inboundContext,
     deliveryChannel,
     routed: kind === 'person' && ROUTED.has(deliveryChannel),
+    autoRoutes: input.autoRoutes,
+    ownerAffinity: input.ownerAffinityChannel,
+    heldWake: !!input.settledContextWakeTurn && boundChannel === null,
   };
 }
 
@@ -237,4 +250,9 @@ export function addresseeByChannel(addr: TurnAddress | undefined): string | null
 export function userWords(addr: TurnAddress | undefined, cap = false): string {
   if (addr?.kind === 'person') return addr.name;
   return cap ? 'The user' : 'the user';
+}
+
+/** The same address with its delivery channel replaced (and `routed` re-derived from it). */
+export function withDelivery(addr: TurnAddress, deliveryChannel: ReplyDestination): TurnAddress {
+  return { ...addr, deliveryChannel, routed: addr.kind === 'person' && ROUTED.has(deliveryChannel) };
 }

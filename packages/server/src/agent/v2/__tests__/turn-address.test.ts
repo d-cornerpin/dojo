@@ -19,7 +19,7 @@ const peer: TurnCounterparty = {
 };
 
 function addr(over: Partial<ComputeTurnAddressInput> & { counterparty: TurnCounterparty }) {
-  return computeTurnAddress({
+  return computeTurnAddress({ autoRoutes: true,
     isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
     presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null, ...over,
   });
@@ -97,11 +97,15 @@ describe('the turn address: who the written reply really goes to', () => {
   });
 });
 
-describe('delivery is bound to the address, not to the trigger row alone', () => {
-  it('route-reply binds the destination to the address\'s inbound (a continuation has no trigger row)', async () => {
-    const fs = await import('node:fs');
-    const src = fs.readFileSync(new URL('../steps/finalize/route-reply.ts', import.meta.url), 'utf8');
-    expect(src).toMatch(/turnCtx\.address \? turnCtx\.address\.boundChannel : state\.inboundChannel/);
-    expect(src).toMatch(/state: \{ inboundChannel: boundInbound \}/);
+describe('only the primary agent\'s written reply is texted to an away owner', () => {
+  it('a sub-agent\'s address says the dashboard and is not routed, away or not', () => {
+    const a = addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away', autoRoutes: false });
+    expect(a.deliveryChannel).toBe('dashboard');
+    expect(a.routed).toBe(false);
+    expect(renderTailRestatement(a)).toBeNull();
+    expect(resolveDeliveryChannel(a, { presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('dashboard');
+  });
+  it('the primary agent\'s says iMessage for the same away owner', () => {
+    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('imessage');
   });
 });
