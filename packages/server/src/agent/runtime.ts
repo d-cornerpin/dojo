@@ -148,7 +148,7 @@ export async function enforceModelCapabilities(
             {
               type: 'text' as const,
               text:
-                'Describe this image in detail for an assistant who cannot see it but will use your description to discuss it with the user. ' +
+                `Describe this image in detail for an assistant who cannot see it but will use your description to discuss it with ${userWords(currentAddress(agentId))}. ` +
                 'Include: what is shown, notable text and signage, layout / composition, mood or context, anything else relevant. ' +
                 'Plain text only, no preamble like "This image shows", just the description.',
             },
@@ -294,27 +294,27 @@ export async function enforceModelCapabilities(
           // to use the captions, the description text is authoritative
           // about what the image shows; don't go beyond it.
           nudge = (
-            `[System: Your current model can't see images directly, but the user sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +
+            `[System: Your current model can't see images directly, but ${userWords(currentAddress(agentId))} sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +
             `${fallback?.apiModelId}` +
             `) described ${imagesCaptioned === 1 ? 'it' : 'them'} for you above. ` +
             `Respond based on those descriptions. Treat them as the authoritative account of what the image${imagesCaptioned === 1 ? '' : 's'} contain${imagesCaptioned === 1 ? 's' : ''}, do NOT speculate about details outside what was described. ` +
-            `If the user asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`
+            `If ${userWords(currentAddress(agentId))} asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`
           );
         } else if (imagesCaptioned > 0 && imagesStripped > 0) {
           // Mixed: some captioned, some failed.
           nudge = (
-            `[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of the user's image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +
-            `Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell the user you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`
+            `[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of ${userWords(currentAddress(agentId))}'s image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +
+            `Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell ${userWords(currentAddress(agentId))} you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`
           );
         } else {
           // Pure strip (no fallback configured or every caption failed).
           nudge = (
-            `[System: The user just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +
+            `[System: ${userWords(currentAddress(agentId), true)} just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +
             `The image${imagesStripped === 1 ? '' : 's'} ${imagesStripped === 1 ? 'was' : 'were'} dropped, you literally cannot see ${imagesStripped === 1 ? 'it' : 'them'}. ` +
             (fallbackUsable
               ? `The platform's fallback vision model is configured but every caption attempt failed (network or provider error). `
               : `The platform also has no fallback vision model configured, once one is set in Settings → Dojo, future uploads will be auto-captioned for you. `) +
-            `Reply briefly telling the user you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +
+            `Reply briefly telling ${userWords(currentAddress(agentId))} you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +
             `Do NOT try to describe the image. Do NOT continue any prior topic, respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
           );
         }
@@ -419,6 +419,7 @@ import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEvent
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from './attachment-fence.js';
+import { userWords, currentAddress } from './v2/turn-address.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
 // so v2/recovery.ts and v1 catch share the same per-agent streak tracking.

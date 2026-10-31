@@ -144,7 +144,7 @@ describe('§1 an ask the user called off settles `abandoned`, with their words',
     const askId = ownerAsk('m-earbuds', 'Compare earbuds');
     const res = await call({ id: askId, disposition: 'dropped' });
     expect(res.isError).toBe(true);
-    expect(res.content).toContain('what the user actually said');
+    expect(res.content).toContain('what the person you are talking to actually said');
     expect(row(askId).state).toBe('open');
   });
 

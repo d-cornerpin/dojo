@@ -30,6 +30,7 @@ import { advance } from '../../state.js';
 import type { WaitingConversation } from '../../counterparty.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { PreflightContext } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 /** The gate message's first words: the dedupe below finds a recent one by them. */
 export const GATE_MSG_HEAD = '[System: tracker check before this turn.';
@@ -191,7 +192,7 @@ export async function runCloseoutGate(
         `work_update(action="status", status="paused" with resume_at, or "blocked") if you are waiting; status="complete" (or action="complete_step") only for one that is done (a measured task closes when its measure reads 0; if some of its items genuinely cannot or should not be done, pass remainder naming them and why); ` +
         `work_update(action="close_project", project_id, status="cancelled", reason="...") only if the whole project is no longer wanted (a duplicate, or superseded). ` +
         `Until one tracker call lands the engine refuses other tool calls; after it, the rest of the turn is yours. ` +
-        `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`
+        `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.]`
       );
       // F2.4: dedupe the gate message per wakeup batch. Queued wakeups re-arm this
       // gate on every attempt (three duplicate inserts were observed in 20s). The

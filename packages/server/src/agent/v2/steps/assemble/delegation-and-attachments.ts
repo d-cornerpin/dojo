@@ -88,10 +88,10 @@ export function detectExplicitDelegation(text: string): boolean {
 // EVENTS-lane row). Advice voice per the precedence ladder (tier-7), never an
 // order. No em-dashes; plain layman language.
 const DELEGATION_HINT_BODY =
-  'the user explicitly asked for this to be delegated to one of your agents. ' +
+  'the person you are talking to explicitly asked for this to be delegated to one of your agents. ' +
   'Either delegate it (spawn_agent for a fresh helper, or send_to_agent to task ' +
-  'an existing one) and synthesize the result back to the user, or, if doing it ' +
-  'yourself is clearly better here, briefly tell the user you are handling it ' +
+  'an existing one) and synthesize the result back to the person you are talking to, or, if doing it ' +
+  'yourself is clearly better here, briefly tell the person you are talking to you are handling it ' +
   'directly and why. Do not silently override their routing instruction.';
 
 export interface DelegationAndAttachmentsInput {

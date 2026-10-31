@@ -61,7 +61,7 @@ export function bracketed(fence: AttachmentFence | null, block: Anthropic.Conten
 // must never kill the turn); this note is what makes the skip honest. A contact's file name is
 // theirs, so it goes inside a fence below the engine's note.
 export function droppedAttachmentNote(fence: AttachmentFence | null, kind: string, filename: string, reason: string): Anthropic.ContentBlockParam {
-  const rest = `${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the user asks about it, say it failed to load and ask them to re-send it.]`;
+  const rest = `${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the person you are talking to asks about it, say it failed to load and ask them to re-send it.]`;
   return {
     type: 'text',
     text: fence

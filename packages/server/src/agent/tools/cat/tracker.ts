@@ -234,7 +234,7 @@ const tableOfHandlers: ToolHandlerMap = {
         `Error: a recurring task needs a first-run time — either scheduled_start (an ISO 8601 UTC instant) ` +
         `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
         `Without one the scheduler has no anchor, no next_run_at gets written, and the task will never fire. ` +
-        `Ask the user when the first run should happen (or pick the next sensible slot, e.g. "tomorrow at 6 AM"); ` +
+        `Ask the person you are talking to when the first run should happen (or pick the next sensible slot, e.g. "tomorrow at 6 AM"); ` +
         `if you need the current time to resolve a relative phrase, call get_current_time first.`;
       isError = true;
       return { content, isError };
@@ -353,7 +353,7 @@ const tableOfHandlers: ToolHandlerMap = {
       content =
         `Error: a recurring reminder needs a first-fire time — either \`when\` (an ISO 8601 UTC instant) ` +
         `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
-        `Without one the scheduler has no anchor. Ask the user when the first reminder should fire and re-call with one of them set.`;
+        `Without one the scheduler has no anchor. Ask the person you are talking to when the first reminder should fire and re-call with one of them set.`;
       isError = true;
       return { content, isError };
     }
@@ -676,7 +676,7 @@ const tableOfHandlers: ToolHandlerMap = {
       if (!crNote) {
         // The note is the whole point of the leg: a withdrawal whose reason is not the user's
         // words is the engine guessing, which is what this task exists to stop.
-        content = `Not dropped: pass \`note\` with what the user actually said when they called `
+        content = `Not dropped: pass \`note\` with what the person you are talking to actually said when they called `
           + `"${crRow.title ?? crRow.id}" off. The reason goes on the record.`;
         isError = true;
         return { content, isError };

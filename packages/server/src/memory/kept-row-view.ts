@@ -132,7 +132,7 @@ export function oversizeMediaNote(b: StoredBlock): StoredBlock {
 /** The note's words, from what the attachment is (also priced before injection, `turn-attachments.ts`). */
 export function mediaNoteText(m: { image: boolean; mediaType: string; title?: string; bytes: number; tokens: number }): string {
   const kind = m.image ? 'image' : m.mediaType === 'application/pdf' ? 'PDF' : 'document';
-  const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the user asks about it, say it is too large for the current model to see.';
+  const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the person you are talking to asks about it, say it is too large for the current model to see.';
   return `[Engine note: the attached ${kind} ${m.title ? `"${m.title}" ` : ''}(${m.mediaType}, ${m.bytes.toLocaleString('en-US')} bytes, ~${m.tokens.toLocaleString('en-US')} tokens) `
     + `is larger than the room this model has for the conversation, so it is NOT shown to you. Do not describe or assume its contents.${reader}]`;
 }

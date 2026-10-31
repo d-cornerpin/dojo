@@ -87,14 +87,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "same function as S006"
  },
  {
-  "id": "S009",
-  "file": "agent/attachment-fence.ts",
-  "line": 64,
-  "old": "const rest = `${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the user asks about it, say it failed to load and ask them to re-send it.]`;",
-  "new": "const rest = `${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the person you are talking to asks about it, say it failed to load and ask them to re-send it.]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S011",
   "file": "agent/brokers/proc.ts",
   "line": 130,
@@ -109,62 +101,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "`[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,",
   "new": "`[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the person you are talking to, those values live in process memory only, not in agent context.`,",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S014",
-  "file": "agent/runtime.ts",
-  "line": 151,
-  "old": "'Describe this image in detail for an assistant who cannot see it but will use your description to discuss it with the user. ' +",
-  "new": "`Describe this image in detail for an assistant who cannot see it but will use your description to discuss it with ${userWords(currentAddress(agentId))}. ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S015",
-  "file": "agent/runtime.ts",
-  "line": 297,
-  "old": "`[System: Your current model can't see images directly, but the user sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +",
-  "new": "`[System: Your current model can't see images directly, but ${userWords(currentAddress(agentId))} sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S016",
-  "file": "agent/runtime.ts",
-  "line": 301,
-  "old": "`If the user asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`",
-  "new": "`If ${userWords(currentAddress(agentId))} asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S017",
-  "file": "agent/runtime.ts",
-  "line": 306,
-  "old": "`[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of the user's image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +",
-  "new": "`[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of ${userWords(currentAddress(agentId))}'s image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S018",
-  "file": "agent/runtime.ts",
-  "line": 307,
-  "old": "`Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell the user you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`",
-  "new": "`Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell ${userWords(currentAddress(agentId))} you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S019",
-  "file": "agent/runtime.ts",
-  "line": 312,
-  "old": "`[System: The user just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +",
-  "new": "`[System: ${userWords(currentAddress(agentId), true)} just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S020",
-  "file": "agent/runtime.ts",
-  "line": 317,
-  "old": "`Reply briefly telling the user you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +",
-  "new": "`Reply briefly telling ${userWords(currentAddress(agentId))} you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
   "id": "S027",
@@ -221,30 +157,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "`If you paste the transcript to the user, paste it verbatim INSIDE a fenced \\`\\`\\`source/transcript ... \\`\\`\\` block. Do not paraphrase the words unless the user asks for a summary.\\n\\n` +",
   "new": "`If you paste the transcript to ${userWords(currentAddress(agentId))}, paste it verbatim INSIDE a fenced \\`\\`\\`source/transcript ... \\`\\`\\` block. Do not paraphrase the words unless ${userWords(currentAddress(agentId))} asks for a summary.\\n\\n` +",
   "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S034",
-  "file": "agent/tools/cat/tracker.ts",
-  "line": 237,
-  "old": "`Ask the user when the first run should happen (or pick the next sensible slot, e.g. \"tomorrow at 6 AM\"); ` +",
-  "new": "`Ask the person you are talking to when the first run should happen (or pick the next sensible slot, e.g. \"tomorrow at 6 AM\"); ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S035",
-  "file": "agent/tools/cat/tracker.ts",
-  "line": 356,
-  "old": "`Without one the scheduler has no anchor. Ask the user when the first reminder should fire and re-call with one of them set.`;",
-  "new": "`Without one the scheduler has no anchor. Ask the person you are talking to when the first reminder should fire and re-call with one of them set.`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S036",
-  "file": "agent/tools/cat/tracker.ts",
-  "line": 679,
-  "old": "content = `Not dropped: pass \\`note\\` with what the user actually said when they called `",
-  "new": "content = `Not dropped: pass \\`note\\` with what the person you are talking to actually said when they called `",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
   "id": "S037",
@@ -447,30 +359,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S071",
-  "file": "agent/v2/steps/assemble/delegation-and-attachments.ts",
-  "line": 91,
-  "old": "'the user explicitly asked for this to be delegated to one of your agents. ' +",
-  "new": "'the person you are talking to explicitly asked for this to be delegated to one of your agents. ' +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S072",
-  "file": "agent/v2/steps/assemble/delegation-and-attachments.ts",
-  "line": 93,
-  "old": "'an existing one) and synthesize the result back to the user, or, if doing it ' +",
-  "new": "'an existing one) and synthesize the result back to the person you are talking to, or, if doing it ' +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S073",
-  "file": "agent/v2/steps/assemble/delegation-and-attachments.ts",
-  "line": 94,
-  "old": "'yourself is clearly better here, briefly tell the user you are handling it ' +",
-  "new": "'yourself is clearly better here, briefly tell the person you are talking to you are handling it ' +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S074",
   "file": "agent/v2/steps/execute/delegation-exit.ts",
   "line": 163,
@@ -548,14 +436,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 207,
   "old": "`, note=\"<the user's own words>\"). ` +",
   "new": "`, note=\"<${userWords(turnCtx.address)}'s own words>\"). ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S109",
-  "file": "agent/v2/steps/preflight/closeout-gate.ts",
-  "line": 194,
-  "old": "`Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`",
-  "new": "`Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.]`",
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
@@ -652,14 +532,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 1922,
   "old": "const sheetTrailer = sheetLink ? '\\n\\nGive the user this link so they can open the sheet.' : '';",
   "new": "const sheetTrailer = sheetLink ? '\\n\\nGive the person you are talking to this link so they can open the sheet.' : '';",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S124",
-  "file": "memory/kept-row-view.ts",
-  "line": 135,
-  "old": "const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the user asks about it, say it is too large for the current model to see.';",
-  "new": "const reader = kind === 'PDF' ? ' Where its Path is given with the attachment, pdf_read reads its text.' : ' If the person you are talking to asks about it, say it is too large for the current model to see.';",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
