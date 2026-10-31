@@ -416,18 +416,26 @@ export const ModelRow = ({
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
       onPricingChange();
+    } else {
+      toast.error(result.error ?? 'The price could not be saved.');
     }
     setSaving(false);
   };
 
   const handleUnitToggle = async (next: PricingUnitChoice) => {
     if (next === pricingUnit) return;
+    const prev = pricingUnit;
     setPricingUnit(next);
     // Persist the mode change immediately so the model is consistent
     // even if the user navigates away without typing a new number.
     setSaving(true);
     const result = await api.updateModelPricing(model.id, { pricingUnit: next });
-    if (result.ok) onPricingChange();
+    if (result.ok) {
+      onPricingChange();
+    } else {
+      setPricingUnit(prev);
+      toast.error(result.error ?? 'The price unit could not be changed.');
+    }
     setSaving(false);
   };
 
@@ -437,6 +445,7 @@ export const ModelRow = ({
     const result = await api.updateModelThinking(model.id, next);
     if (!result.ok) {
       setThinkingEnabled(!next); // roll back
+      toast.error(result.error ?? 'Could not change thinking.');
     } else {
       onPricingChange();
     }
