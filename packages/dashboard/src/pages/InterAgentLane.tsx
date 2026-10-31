@@ -101,8 +101,7 @@ export function InterAgentLane() {
   const loadHistory = useCallback(async () => {
     const mine = ++loadTicket.current;
     const forAgent = agentId;
-    setLoading(true);
-    setLoadError(null);
+    setLoading(true); setLoadError(null);
     const result = await api.getInterAgentMessages(forAgent, 200);
     if (mine !== loadTicket.current) return;
     if (result.ok) {
@@ -111,19 +110,14 @@ export function InterAgentLane() {
         const known = new Set(result.data.map((m) => m.id));
         return [...result.data, ...prev.filter((m) => !known.has(m.id))];
       });
-    } else {
-      setLoadError(result.error || 'unknown error');
-    }
+    } else setLoadError(result.error || 'unknown error');
     setLoading(false);
   }, [agentId]);
 
   // Reload whenever the viewed agent changes (the list starts empty for the new agent).
   useEffect(() => {
-    setMessages([]);
-    void loadHistory();
-    return () => {
-      loadTicket.current++;
-    };
+    setMessages([]); void loadHistory();
+    return () => { loadTicket.current++; };
   }, [loadHistory]);
 
   // A reconnect re-asks for the newest messages and merges them in: the frames sent while the
@@ -209,9 +203,7 @@ export function InterAgentLane() {
         <p className="text-tertiary" style={{ fontSize: 12 }}>Loading…</p>
       ) : loadError !== null && groups.length === 0 ? (
         <div className="text-tertiary" style={{ fontSize: 12 }}>
-          <p>Could not load inter-agent messages: {loadError}</p>
-          <button type="button" className="btn btn-secondary mt-2" onClick={() => void loadHistory()}>Retry</button>
-        </div>
+          <p>Could not load inter-agent messages: {loadError}</p><button type="button" className="btn btn-secondary mt-2" onClick={() => void loadHistory()}>Retry</button></div>
       ) : groups.length === 0 ? (
         <p className="text-tertiary" style={{ fontSize: 12 }}>
           No inter-agent messages yet. Agent-to-agent coordination and engine notices for {agentName || 'this agent'} show up here.
