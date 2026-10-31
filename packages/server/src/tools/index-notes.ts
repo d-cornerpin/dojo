@@ -69,6 +69,6 @@ export const INDEX_NOTES: Readonly<Record<string, string>> = {
  * `__tests__/the-index-names-what-the-agent-can-call.test.ts`.
  */
 export function renderIndexName(name: string): string {
-  const note = INDEX_NOTES[name];
+  const note = Object.hasOwn(INDEX_NOTES, name) ? INDEX_NOTES[name] : undefined;
   return note === undefined ? `\`${name}\`` : `\`${name}\` (${note})`;
 }

@@ -77,7 +77,8 @@ const CREDENTIALS_HEADING = '\n## Credentials';
  *        the primary seeds from.
  */
 export function composePrimarySoul(fields: OobeSoulFields, base: string = DEFAULT_SOUL_MD): string {
-  const style = OOBE_STYLE_GUIDES[fields.communicationStyle ?? ''] ?? OOBE_STYLE_GUIDES.balanced;
+  const asked = fields.communicationStyle ?? '';
+  const style = (Object.hasOwn(OOBE_STYLE_GUIDES, asked) ? OOBE_STYLE_GUIDES[asked] : undefined) ?? OOBE_STYLE_GUIDES.balanced;
   const extraRules = (fields.rules ?? '').trim();
 
   let soul = base;

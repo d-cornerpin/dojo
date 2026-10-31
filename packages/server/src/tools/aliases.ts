@@ -160,7 +160,7 @@ export interface ResolvedAlias {
  * pointer error in `tombstone` (the caller returns it as a tool error).
  */
 export function resolveToolAlias(name: string, args: Record<string, unknown>): ResolvedAlias {
-  const entry = TOOL_ALIASES[name];
+  const entry = Object.hasOwn(TOOL_ALIASES, name) ? TOOL_ALIASES[name] : undefined;
   if (!entry) return { name, args };
   if (isTombstone(entry)) {
     return { name, args, tombstone: entry.tombstone };
