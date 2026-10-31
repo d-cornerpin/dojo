@@ -21,6 +21,7 @@ import { getDailySpend } from '../costs/tracker.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getHarnessSections } from './harness-sections.js';
+import { collect } from './collect-guard.js';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
@@ -960,32 +961,11 @@ function getModelName(modelId: string): string {
   } catch { return modelId; }
 }
 
-/**
- * Run one report check inside a guard. If it throws, the report still gets built: the missing
- * items are replaced by ONE warning that names the check (no stack, no row data; the reason is in
- * the server log), so a failed check never reads as "all good". The failure item is never capped.
- * Exported for harness-sections.ts.
- */
-export function collect(label: string, fn: () => DiagnosticItem[]): DiagnosticItem[] {
-  try {
-    return fn();
-  } catch (err) {
-    logger.warn(`Healer check "${label}" failed: ${err instanceof Error ? err.message : String(err)}`);
-    return [{
-      severity: 'warning',
-      code: 'COLLECTOR_FAILED',
-      title: `The ${label} check could not run`,
-      detail: `The ${label} part of the health report could not be built, so it is missing from this report. The reason is in the server log.`,
-    }];
-  }
-}
-
 // ── Main Compiler ──
 
 export function compileDiagnosticReport(): DiagnosticReport {
-  // v2.3.19 — apply per-collector caps so a runaway collector can't
-  // drown the report. Critical items are always preserved; warning/info
-  // items get dropped first when the cap fires.
+  // Per-collector caps keep a runaway collector from drowning the report (warning/info items drop
+  // first); each check runs in `collect`, so one that throws shows as a warning instead of sinking it.
   const items: DiagnosticItem[] = [
     ...collect('agent status', () => capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
     ...collect('error digest', () => capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),

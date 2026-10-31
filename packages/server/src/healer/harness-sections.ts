@@ -9,7 +9,8 @@
 // healer-agent.ts, derived from the Healer model's window), which elides with a visible marker.
 // ════════════════════════════════════════
 
-import { collect, type DiagnosticItem } from './diagnostic.js';
+import type { DiagnosticItem } from './diagnostic.js';
+import { collect } from './collect-guard.js';
 import { getLessonItems } from './lessons-section.js';
 import { getPromptCostItems } from './prompt-cost-section.js';
 import { getRecurringToolErrors } from './recurring-tool-errors.js';
