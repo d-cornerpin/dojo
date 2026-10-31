@@ -162,12 +162,22 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
     // default and got its cap silently overwritten by the heuristic.
     let maxOutputExplicit = false;
 
-    // model_info often has context_length or num_ctx
+    // model_info often has context_length or num_ctx. The model's own window is the exact
+    // `<arch>.context_length` key — the one num-ctx-calculator reads. A loose walk over all
+    // keys is only the fallback when that key is absent, and it must skip rope-scaling figures
+    // (`*.rope.scaling.original_context_length`), which sort after the real key and used to win.
     if (data.model_info) {
-      for (const [key, value] of Object.entries(data.model_info)) {
-        const keyLower = key.toLowerCase();
-        if ((keyLower.includes('context_length') || keyLower === 'num_ctx') && typeof value === 'number') {
-          contextWindow = value;
+      const arch = data.model_info['general.architecture'];
+      const ownWindow = typeof arch === 'string' ? data.model_info[`${arch}.context_length`] : undefined;
+      if (typeof ownWindow === 'number' && ownWindow > 0) {
+        contextWindow = ownWindow;
+      } else {
+        for (const [key, value] of Object.entries(data.model_info)) {
+          const keyLower = key.toLowerCase();
+          if (keyLower.includes('rope') || keyLower.endsWith('original_context_length')) continue;
+          if ((keyLower.includes('context_length') || keyLower === 'num_ctx') && typeof value === 'number') {
+            contextWindow = value;
+          }
         }
       }
     }
