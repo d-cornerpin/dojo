@@ -1611,7 +1611,10 @@ export function reloadApprovedSenders(): void {
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
   const parsed = parseSafeSenders(sendersRow?.value ?? null);
-  if (parsed.length > 0) {
+  // A saved list that reads as a valid (even empty) list is the owner's decision: removing the last
+  // sender means nobody is heard (pollMessages does nothing on an empty list). Only a missing or
+  // unreadable value keeps the list in memory, since that is a fault, not a removal.
+  if (parsed.length > 0 || savedValueIsAList(sendersRow?.value)) {
     approvedSenders = parsed;
     logger.info('Reloaded approved senders from config', {
       count: approvedSenders.length,
@@ -1619,7 +1622,12 @@ export function reloadApprovedSenders(): void {
     });
     return;
   }
-  logger.warn('reloadApprovedSenders called but config key empty/invalid - leaving in-memory list unchanged');
+  logger.warn('reloadApprovedSenders called but config key missing/unreadable - leaving in-memory list unchanged');
+}
+
+function savedValueIsAList(raw: string | undefined): boolean {
+  if (!raw) return false;
+  try { return Array.isArray(JSON.parse(raw)); } catch { return false; }
 }
 
 // ── iMessage sending via imsg CLI ──────────────────────────────────────
