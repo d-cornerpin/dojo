@@ -31,6 +31,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { FX } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 vi.mock('../../../../db/connection.js', () => ({
   getDb: () => ({ prepare: () => ({ get: () => ({ name: 'zargo' }), run: () => undefined }) }),
@@ -105,7 +106,7 @@ describe('the mail-read ownership header', () => {
   // ── CLAUSE 2: THE BEHAVIOUR, PER TOOL, BOTH PROVIDERS ──
   it.each([...USER_MAILBOX_READ_TOOLS])('%s names the OWNER and carries the injection guard', async (name) => {
     const out = await call(name);
-    expect(out.content.startsWith('[Mailbox: Yorvak\'s inbox — owner@'), `${name} lost its mailbox header`).toBe(true);
+    expect(out.content.startsWith(`[Mailbox: ${FX.n11}\'s inbox — owner@`), `${name} lost its mailbox header`).toBe(true);
     for (const sentence of INJECTION_GUARD) expect(out.content).toContain(sentence);
     expect(out.isError).toBe(false);
   });
@@ -114,7 +115,7 @@ describe('the mail-read ownership header', () => {
   it.each([...AGENT_MAILBOX_READ_TOOLS])('%s names the AGENT\'s own account', async (name) => {
     const out = await call(name);
     expect(out.content.startsWith('[Mailbox: your OWN inbox — agent@'), `${name} says nothing about whose inbox it is`).toBe(true);
-    expect(out.content).toContain('not Yorvak\'s');
+    expect(out.content).toContain(`not ${FX.n11}\'s`);
     expect(out.isError).toBe(false);
   });
 
@@ -152,7 +153,7 @@ describe('the mail-read ownership header', () => {
 
   // ── CLAUSE 5: THE FUNCTION'S OWN CONTRACT ──
   it('headers only the sixteen declared names and passes everything else through', () => {
-    expect(prependMailboxOwnerHeader('X', 'user_gmail_read', {}).startsWith('[Mailbox: Yorvak')).toBe(true);
+    expect(prependMailboxOwnerHeader('X', 'user_gmail_read', {}).startsWith(`[Mailbox: ${FX.n11}`)).toBe(true);
     expect(prependMailboxOwnerHeader('X', 'gmail_read', {}).startsWith('[Mailbox: your OWN')).toBe(true);
     expect(prependMailboxOwnerHeader('X', 'user_calendar_list', {})).toBe('X');
     expect(prependMailboxOwnerHeader('X', 'calendar_agenda', {})).toBe('X');
