@@ -82,6 +82,8 @@ export const GoogleWorkspaceSettings = () => {
   const [showActivity, setShowActivity] = useState(false);
   const [connecting, setConnecting] = useState<ConnectingState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Which account card the message belongs under (a refusal on a user account must not appear under the agent's).
+  const [errorKind, setErrorKind] = useState<Slot>('agent');
   const { isCollapsed, toggle } = usePanelCollapse('channels.collapse.google', true);
 
   useEffect(() => { loadStatus(); }, []);
@@ -118,6 +120,7 @@ export const GoogleWorkspaceSettings = () => {
   // Connect a kind's first account (creates the position-1 row) or add another.
   const handleAdd = async (kind: Slot, isFirst: boolean) => {
     setError(null);
+    setErrorKind(kind);
     const connected = (status?.accounts ?? []).filter(a => a.kind === kind && a.connected);
     setConnecting({ key: `add:${kind}`, kind, mode: 'add', baselineCount: connected.length, baselineVerified: null });
     const path = isFirst ? `/google/connect?slot=${kind}` : `/google/connect?add=true&kind=${kind}`;
@@ -128,6 +131,7 @@ export const GoogleWorkspaceSettings = () => {
 
   const handleReconnect = async (acc: AccountView) => {
     setError(null);
+    setErrorKind(acc.kind);
     setConnecting({ key: acc.id, kind: acc.kind, mode: 'reconnect', baselineCount: 0, baselineVerified: acc.lastVerified });
     const result = await api.request<{ authUrl: string }>(`/google/connect?accountId=${acc.id}`, { method: 'POST' });
     if (result.ok) openOAuth(result.data.authUrl);
@@ -141,7 +145,10 @@ export const GoogleWorkspaceSettings = () => {
       ? `Disconnect ${who}? Tools using this account will stop working.`
       : `Remove ${who}? This account will be deleted from the Dojo.`;
     if (!confirm(msg)) return;
-    await api.request(`/google/disconnect?accountId=${acc.id}`, { method: 'POST' });
+    setError(null);
+    setErrorKind(acc.kind);
+    const result = await api.request(`/google/disconnect?accountId=${acc.id}`, { method: 'POST' });
+    if (!result.ok) setError(result.error);
     await loadStatus();
   };
 
@@ -150,7 +157,10 @@ export const GoogleWorkspaceSettings = () => {
     acc: AccountView,
     body: Record<string, unknown>,
   ) => {
-    await api.request(`/google/${kindOrPath}?accountId=${acc.id}`, { method: 'PUT', body: JSON.stringify(body) });
+    setError(null);
+    setErrorKind(acc.kind);
+    const result = await api.request(`/google/${kindOrPath}?accountId=${acc.id}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (!result.ok) setError(result.error);
     await loadStatus();
   };
 
@@ -280,7 +290,7 @@ export const GoogleWorkspaceSettings = () => {
               <CollapseToggle collapsed={collapsed} onClick={() => toggle(kind)} label={meta.title} />
             </div>
 
-            {error && kind === 'agent' && <div className="alert-banner alert-error">{error}</div>}
+            {error && kind === errorKind && <div className="alert-banner alert-error">{error}</div>}
 
             {collapsed ? (
               <div className="space-y-2">

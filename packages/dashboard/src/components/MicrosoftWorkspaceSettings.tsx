@@ -66,6 +66,8 @@ export const MicrosoftWorkspaceSettings = () => {
   const [showActivity, setShowActivity] = useState(false);
   const [connecting, setConnecting] = useState<ConnectingState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Which account card the message belongs under (a refusal on a user account must not appear under the agent's).
+  const [errorKind, setErrorKind] = useState<Slot>('agent');
   const { isCollapsed, toggle } = usePanelCollapse('channels.collapse.microsoft', true);
 
   useEffect(() => {
@@ -102,6 +104,7 @@ export const MicrosoftWorkspaceSettings = () => {
 
   const handleAdd = async (kind: Slot, isFirst: boolean) => {
     setError(null);
+    setErrorKind(kind);
     const connected = (status?.accounts ?? []).filter(a => a.kind === kind && a.connected);
     setConnecting({ key: `add:${kind}`, kind, mode: 'add', baselineCount: connected.length, baselineVerified: null });
     const redirectUri = 'http://localhost:3001/api/microsoft/callback';
@@ -113,6 +116,7 @@ export const MicrosoftWorkspaceSettings = () => {
 
   const handleReconnect = async (acc: AccountView) => {
     setError(null);
+    setErrorKind(acc.kind);
     setConnecting({ key: acc.id, kind: acc.kind, mode: 'reconnect', baselineCount: 0, baselineVerified: acc.lastVerified });
     const redirectUri = 'http://localhost:3001/api/microsoft/callback';
     const result = await api.request<{ authUrl: string }>(`/microsoft/connect?accountId=${acc.id}`, { method: 'POST', body: JSON.stringify({ redirectUri }) });
@@ -127,17 +131,26 @@ export const MicrosoftWorkspaceSettings = () => {
       ? `Disconnect ${who}? Tools using this account will stop working.`
       : `Remove ${who}? This account will be deleted from the Dojo.`;
     if (!confirm(msg)) return;
-    await api.request(`/microsoft/disconnect?accountId=${acc.id}`, { method: 'POST' });
+    setError(null);
+    setErrorKind(acc.kind);
+    const result = await api.request(`/microsoft/disconnect?accountId=${acc.id}`, { method: 'POST' });
+    if (!result.ok) setError(result.error);
     await loadStatus();
   };
 
   const handleToggle = async (path: 'services' | 'watch-email' | 'send-email', acc: AccountView, body: Record<string, unknown>) => {
-    await api.request(`/microsoft/${path}?accountId=${acc.id}`, { method: 'PUT', body: JSON.stringify(body) });
+    setError(null);
+    setErrorKind(acc.kind);
+    const result = await api.request(`/microsoft/${path}?accountId=${acc.id}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (!result.ok) setError(result.error);
     await loadStatus();
   };
 
   const handleInstallOffice = async () => {
-    await api.request('/microsoft/install-office-tools', { method: 'POST' });
+    setError(null);
+    setErrorKind('agent');
+    const result = await api.request('/microsoft/install-office-tools', { method: 'POST' });
+    if (!result.ok) { setError(result.error); return; }
     setTimeout(loadStatus, 5000);
   };
 
@@ -265,7 +278,7 @@ export const MicrosoftWorkspaceSettings = () => {
               <CollapseToggle collapsed={collapsed} onClick={() => toggle(kind)} label={meta.title} />
             </div>
 
-            {error && kind === 'agent' && <div className="alert-banner alert-error">{error}</div>}
+            {error && kind === errorKind && <div className="alert-banner alert-error">{error}</div>}
 
             {collapsed ? (
               <div className="space-y-2">
