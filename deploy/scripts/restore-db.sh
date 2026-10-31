@@ -249,16 +249,28 @@ if [ -f "$DB" ]; then
     n=1; while [ -e "$SAFETY" ]; do n=$((n+1)); SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP-$n.db"; done
     echo ""
     echo "Copying your CURRENT database aside first..."
-    if ! sqlite3 "$DB" "VACUUM INTO '$SAFETY'" 2>/dev/null; then
+    # The copy counts only when it is WHOLE. A snapshot must exit 0 and pass quick_check. A plain
+    # copy (a database too damaged to snapshot) must have every cp succeed and match the original's
+    # size; a full disk cuts a copy short, and an ignored exit status once let the restore replace
+    # the only good copy of the owner's data with a cut-off file.
+    KEPT=0
+    if sqlite3 "$DB" "VACUUM INTO '$SAFETY'" 2>/dev/null \
+       && [ "$(sqlite3 "$SAFETY" 'PRAGMA quick_check;' 2>/dev/null | head -1)" = "ok" ]; then
+        KEPT=1
+    else
+        rm -f "$SAFETY" "$SAFETY-wal" "$SAFETY-shm"
         # A body too damaged to snapshot still deserves to be kept, byte for byte.
-        cp -f "$DB" "$SAFETY" 2>/dev/null
-        cp -f "$DB-wal" "$SAFETY-wal" 2>/dev/null
-        cp -f "$DB-shm" "$SAFETY-shm" 2>/dev/null
-        echo "  (plain copy — this database could not be snapshotted, which is itself worth knowing)"
+        KEPT=1
+        cp -f "$DB" "$SAFETY" 2>/dev/null || KEPT=0
+        [ "$(stat -f %z "$SAFETY" 2>/dev/null || echo -1)" = "$(stat -f %z "$DB" 2>/dev/null || echo -2)" ] || KEPT=0
+        if [ -e "$DB-wal" ]; then cp -f "$DB-wal" "$SAFETY-wal" 2>/dev/null || KEPT=0; fi
+        if [ -e "$DB-shm" ]; then cp -f "$DB-shm" "$SAFETY-shm" 2>/dev/null || KEPT=0; fi
+        [ "$KEPT" = 1 ] && echo "  (plain copy — this database could not be snapshotted, which is itself worth knowing)"
     fi
-    if [ ! -s "$SAFETY" ]; then
+    if [ "$KEPT" != 1 ] || [ ! -s "$SAFETY" ]; then
+        rm -f "$SAFETY" "$SAFETY-wal" "$SAFETY-shm"
         echo ""
-        echo "REFUSING: could not keep a copy of your current database, so it will not be replaced."
+        echo "REFUSING: could not keep a whole copy of your current database (is the disk full?), so it will not be replaced."
         echo "Nothing has been changed."
         exit 1
     fi
