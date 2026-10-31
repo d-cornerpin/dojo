@@ -29,6 +29,10 @@ beforeEach(() => {
   put('voice/models/big.bin', 'weights');
   put('tools/build_deck.py', 'print(1)');
   put('tools/doc.md', 'regenerated');
+  put('tools/mine/helper.py', 'print(2)');
+  put('data/dojo.sqlite', 'legacy-db');
+  put('data/sub/deep.json', '{}');
+  put('voice/imports/other.mp3', 'mp3');
   put('platform/package.json', '{}');
   put('platform.backup-3.1.17/package.json', '{}');
   put('platform.partial-3.1.18-123/package.json', '{}');
@@ -65,6 +69,16 @@ describe('the uninstaller keeps the person\'s uploads and other data', () => {
     expect(has('secrets.yaml')).toBe(true);
   });
 
+  it('keeps ALL owner data: the whole data folder, every voice file but re-downloadable models, whole tools folder', () => {
+    const { backup } = runBlock();
+    const has = (rel: string): boolean => fs.existsSync(path.join(backup!, rel));
+    expect(has('data/dojo.sqlite')).toBe(true);
+    expect(has('data/sub/deep.json')).toBe(true);
+    expect(has('voice/imports/other.mp3')).toBe(true);
+    expect(has('tools/mine/helper.py')).toBe(true);
+    expect(has('tools/doc.md')).toBe(true);
+  });
+
   it('does not copy app code, update backups, logs, re-downloadable models or regenerated docs', () => {
     const { backup } = runBlock();
     const has = (rel: string): boolean => fs.existsSync(path.join(backup!, rel));
@@ -75,7 +89,6 @@ describe('the uninstaller keeps the person\'s uploads and other data', () => {
     expect(has('watchdog')).toBe(false);
     expect(has('logs')).toBe(false);
     expect(has('voice/models')).toBe(false);
-    expect(has('tools/doc.md')).toBe(false);
   });
 
   it('refuses to remove anything, and says which folder, when the uploads cannot be copied', () => {
