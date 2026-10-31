@@ -28,10 +28,8 @@ vi.mock('../auth.js', () => ({
 
 // The recipient is on the allowlist: a safe-sender whose address matches.
 vi.mock('../../services/channel-safe-senders.js', () => ({
-  getTwilioSmsSafeSenders: () => [{ name: 'Owner', address: '+15550000001' }],
+  getTwilioSmsSafeSenders: () => [{ name: 'Owner', address: '+15550000002' }],
 }));
-
-vi.mock('../../services/imessage-bridge.js', () => ({ addressesMatch: () => true }));
 
 // The slot the Stop lives in: a signal that is, or is not, already aborted.
 vi.mock('../../agent/abortable-call.js', () => ({ openAgentCall: openAgentCallMock }));

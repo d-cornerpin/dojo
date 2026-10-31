@@ -12,7 +12,7 @@ import {
   isSmsEnabled,
 } from './auth.js';
 import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
-import { addressesMatch } from '../services/imessage-bridge.js';
+import { findApprovedNumber } from './approved-number.js';
 import { openAgentCall } from '../agent/abortable-call.js';
 
 const logger = createLogger('twilio-sms-outbound');
@@ -33,7 +33,7 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   if (!isSmsEnabled()) {
     return { ok: false, message: 'SMS NOT sent - Twilio SMS is not enabled. The owner needs to configure and enable Twilio in Settings → Channels.' };
   }
-  const to = (input.to ?? '').trim();
+  let to = (input.to ?? '').trim();
   const body = (input.body ?? '').trim();
   if (!to) return { ok: false, message: 'SMS NOT sent - recipient (to) is required.' };
   if (!body) return { ok: false, message: 'SMS NOT sent - body is required.' };
@@ -46,8 +46,8 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   // recipient is on the allowlist (avoids the agent spamming
   // arbitrary numbers if jailbroken or fooled).
   const safeSenders = getTwilioSmsSafeSenders();
-  const recipientIsKnown = safeSenders.some(s => addressesMatch(s.address, to));
-  if (!recipientIsKnown) {
+  const approved = findApprovedNumber(safeSenders, to);
+  if (!approved) {
     const valid = safeSenders.length === 0
       ? '(none configured yet)'
       : safeSenders.map(s => `${s.name} <${s.address}>`).join(', ');
@@ -60,6 +60,9 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
       ),
     };
   }
+
+  // Text the SAVED number, never the text the agent typed.
+  to = approved.address;
 
   // Resolve from-number. Explicit `from` arg wins, then per-number
   // SMS-enabled flag, then default. Verifies the from-number is one
