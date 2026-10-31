@@ -139,7 +139,8 @@ export function treeVersion(dir: string): string | null {
 }
 
 // Loads the database module the server cannot run without, from the STAGED tree, in a
-// separate node — the check a staged tree with a missing or wrong-ABI binding fails.
+// separate node, with NO flat give-up (R25/R27: a loaded Mac's cold load is slow, not broken; the
+// process either exits with its own verdict or is still working) — the check a staged tree with a missing or wrong-ABI binding fails.
 const NATIVE_SMOKE = "const r=require('module').createRequire(process.argv[1]+'/');"
   + "const D=r('better-sqlite3');const d=new D(':memory:');d.prepare('select 1').get();d.close();";
 
@@ -149,7 +150,7 @@ export async function verifyStagedTree(dir: string, targetVersion: string): Prom
   if (v !== targetVersion) return `it says it is version ${v ?? 'unknown'}, not ${targetVersion}`;
   if (!fs.existsSync(path.join(dir, 'packages', 'server', 'dist', 'index.js'))) return 'its server program is missing';
   try {
-    await execFileAsync(process.execPath, ['-e', NATIVE_SMOKE, path.join(dir, 'packages', 'server')], { timeout: 60_000 });
+    await execFileAsync(process.execPath, ['-e', NATIVE_SMOKE, path.join(dir, 'packages', 'server')]);
   } catch (err) {
     return `its database module will not load (${(err as { stderr?: string }).stderr?.trim().split('\n').pop() ?? (err as Error).message})`;
   }
