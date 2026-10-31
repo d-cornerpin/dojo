@@ -26,16 +26,13 @@ import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
-import { soulFileForAgent } from '../../prompt/assembler.js';
 import { writeOobeSoul } from '../../prompt/soul-rerun.js';
 import { isPastFirstRun } from '../../config/setup-state.js';
-import { getPrimaryAgentId } from '../../config/platform.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
-import { composePrimarySoul } from '../../prompt/oobe-soul.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
 

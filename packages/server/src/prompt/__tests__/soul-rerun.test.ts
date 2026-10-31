@@ -9,7 +9,10 @@ const home = vi.hoisted(() => ({ dir: '' }));
 vi.mock('../../home.js', () => ({ homeDir: () => home.dir }));
 vi.mock('../assembler.js', () => ({
   writeSoulFile: (s: { file: string }, c: string) => { const d = path.join(home.dir, '.dojo', 'prompts'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, s.file), c); },
+  readSoulFile: (s: { file: string; fallback: string }) => { try { return fs.readFileSync(path.join(home.dir, '.dojo', 'prompts', s.file), 'utf-8'); } catch { return s.fallback; } },
+  soulFileForAgent: () => null,
 }));
+vi.mock('../../config/platform.js', () => ({ getPrimaryAgentId: () => 'x' }));
 import { writeSoulOnRerun } from '../soul-rerun.js';
 
 const soul = { file: 'SOUL.md', fallback: 'SHIPPED', spawnTruth: true };
