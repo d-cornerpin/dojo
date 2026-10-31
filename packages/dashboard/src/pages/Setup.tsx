@@ -1347,7 +1347,7 @@ const SETUP_SHARING_LEVEL_HINTS: Record<SetupSharingLevel, string> = {
   project_only: 'Discuss only the specific project this contact is on.',
 };
 
-const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
+export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [enabled, setEnabled] = useState(false);
   const [senders, setSenders] = useState<SetupSafeSender[]>([]);
   const [newAddress, setNewAddress] = useState('');
@@ -1460,12 +1460,17 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
     }
     const primary = normalized.find(s => s.is_primary);
     const effectiveDefault = primary?.address ?? '';
-    await Promise.all([
+    const writes = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
       api.setSetting('imessage_approved_senders', JSON.stringify(normalized)),
       api.setSetting('imessage_recipient', normalized[0]?.address ?? ''),
       api.setSetting('imessage_default_sender', effectiveDefault),
     ]);
+    const refused = writes.find((w) => !w.ok);
+    if (refused && !refused.ok) {
+      setError(`iMessage settings were not saved: ${refused.error}`);
+      return;
+    }
 
     // Send welcome message to start the bridge and verify it works
     if (enabled && effectiveDefault) {
