@@ -6,6 +6,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
+import { readAllPages } from './graph-pages.js';
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { conversationLine } from './outlook-conversation.js';
 
@@ -601,6 +602,9 @@ export interface MsMailFetchItem {
   read: boolean | undefined;
 }
 
+type MsAgendaRaw = { id: string; subject: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string }; location?: { displayName?: string }; bodyPreview?: string; isAllDay?: boolean };
+type MsSearchRaw = { id: string; subject: string; start: { dateTime: string; timeZone?: string }; end?: { dateTime: string; timeZone?: string }; isAllDay?: boolean };
+
 /** Fetch + normalize one account's events for a window. `accountId` is the row id (slot). */
 export async function fetchAgendaItemsForAccountMs(
   accountId: string,
@@ -610,13 +614,13 @@ export async function fetchAgendaItemsForAccountMs(
   opts?: { calendarId?: string; days?: number },
 ): Promise<{ ok: true; items: MsAgendaFetchItem[] } | { ok: false; error: string }> {
   const calendarId = opts?.calendarId;
-  const result = await msGraphRead(
-    `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
+  const result = await readAllPages<MsAgendaRaw>(
+    `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$top=100&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
     agentId, agentName, 'calendar_agenda_ms', { days: opts?.days, calendarId, anchored: window.anchored }, accountId,
   );
   if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
 
-  const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string }; location?: { displayName?: string }; bodyPreview?: string; isAllDay?: boolean }> };
+  const data = { value: result.value };
   // Microsoft Graph returns start/end as naked ISO with no offset; the timeZone
   // field on each side tells us how to interpret it (defaults to UTC). Parse
   // here so both renderers get real Dates.
@@ -886,14 +890,14 @@ export async function executeMicrosoftReadTool(
       const requestedTz = (args.timezone as string | undefined);
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
       const window = computeCalendarWindow({ days: daysAhead, timezone: requestedTz, start_date: startDate });
-      const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${odataQuoted(query)}')&$select=id,subject,start,end,isAllDay`,
+      const result = await readAllPages<MsSearchRaw>(
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$top=100&$filter=contains(subject,'${odataQuoted(query)}')&$select=id,subject,start,end,isAllDay`,
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end?: { dateTime: string; timeZone?: string }; isAllDay?: boolean }> };
-      if (!data?.value || data.value.length === 0) return `No events matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
+      const data = { value: result.value };
+      if (data.value.length === 0) return `No events matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
       const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
       const events = data.value.map(e => {
