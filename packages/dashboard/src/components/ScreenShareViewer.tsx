@@ -34,6 +34,9 @@ export function ScreenShareViewer() {
   const savedPasswordRef = useRef<string | null>(null);
   const triedSavedRef = useRef(false);
   const pendingSaveRef = useRef<string | null>(null);
+  // Why the last attempt's password was refused. noVNC never asks twice: a wrong password ends the
+  // connection with a security failure, so the reason is carried to the next attempt's prompt.
+  const retryNoteRef = useRef('');
 
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [controlling, setControlling] = useState(false);
@@ -160,28 +163,33 @@ export function ScreenShareViewer() {
         // Auto-fill a saved password once (password-only auth; not account auth).
         if (saved && !wantsUsername && !triedSavedRef.current) {
           triedSavedRef.current = true;
+          retryNoteRef.current = '';
           setStatus('connecting');
           armTimer('Timed out connecting with your saved password.');
           rfb.sendCredentials({ password: saved });
           return;
         }
-        // A saved password that just got rejected: forget it and re-prompt.
-        if (saved && triedSavedRef.current) {
-          savedPasswordRef.current = null;
-          setHasSaved(false);
-          void forgetVncPassword();
-          setError('Your saved password no longer works. Enter it again.');
-          setSavePref(true);
-        } else if (submittedRef.current) {
-          setError('Incorrect password. Try again.');
-          submittedRef.current = false;
+        // The prompt (also after a refused password, carried over from the last attempt).
+        if (retryNoteRef.current) {
+          setError(retryNoteRef.current);
+          retryNoteRef.current = '';
         }
         setStatus('credential');
       });
       rfb.addEventListener('securityfailure', (ev: Event) => {
         clearTimer();
         const reason = (ev as CustomEvent).detail?.reason;
-        setError(reason || 'Login failed. Check the VNC password.');
+        if (triedSavedRef.current && !submittedRef.current) {
+          // The saved password was refused: forget it so the next Reconnect asks for it again.
+          savedPasswordRef.current = null;
+          setHasSaved(false);
+          void forgetVncPassword();
+          retryNoteRef.current = 'Your saved password no longer works. Enter it again.';
+          setSavePref(true);
+        } else if (submittedRef.current) {
+          retryNoteRef.current = 'Incorrect password. Try again.';
+        }
+        setError(retryNoteRef.current || reason || 'Login failed. Check the VNC password.');
         setStatus('error');
       });
 
@@ -307,6 +315,11 @@ export function ScreenShareViewer() {
         )}
         {(status === 'error' || status === 'disconnected') && (
           <button type="button" className="btn btn--sm" onClick={reconnect}>Reconnect</button>
+        )}
+        {status === 'error' && hasSaved && (
+          <button type="button" className="btn btn--sm" onClick={forgetSaved} title="Forget the saved VNC password on this dojo">
+            Forget password
+          </button>
         )}
         {showCancel && (
           <button type="button" className="btn btn--sm" onClick={cancel}>Cancel</button>
