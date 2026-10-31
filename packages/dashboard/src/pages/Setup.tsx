@@ -1286,6 +1286,10 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
   const [newSharingLevel, setNewSharingLevel] = useState<SetupSharingLevel>('dont_overshare');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
+  // The exact stored list text this step was built on; the save names it so a stale list is refused.
+  const baseRaw = useRef<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -1301,18 +1305,22 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
         api.getSetting('imessage_approved_senders'),
       ]);
       if (cancelled) return;
+      // A failed or unreadable read is not an empty list: nothing may be saved from it.
+      let readable = sendersRes.ok;
+      let parsed: unknown = [];
+      if (sendersRes.ok && sendersRes.data.value) {
+        try { parsed = JSON.parse(sendersRes.data.value); readable = Array.isArray(parsed); } catch { readable = false; }
+      }
+      if (!readable) { setLoadFailed(true); return; }
+      setLoadFailed(false);
+      baseRaw.current = sendersRes.ok ? (sendersRes.data.value ?? null) : null;
       const configured = enRes.ok && enRes.data.value !== null;
       if (enRes.ok && enRes.data.value === 'true') setEnabled(true);
-      if (sendersRes.ok && sendersRes.data.value) {
-        try {
-          const parsed = JSON.parse(sendersRes.data.value);
-          if (Array.isArray(parsed) && parsed.length > 0) setSenders(parsed as SetupSafeSender[]);
-        } catch { /* malformed — ignore */ }
-      }
+      if (Array.isArray(parsed) && parsed.length > 0) setSenders(parsed as SetupSafeSender[]);
       if (configured) setSaved(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const addSender = () => {
     const address = newAddress.trim();
@@ -1390,9 +1398,16 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
     }
     const primary = normalized.find(s => s.is_primary);
     const effectiveDefault = primary?.address ?? '';
+    const listText = JSON.stringify(normalized);
+    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current);
+    if (!listResult.ok) {
+      setError(listResult.error || 'Failed to save the approved senders.');
+      setLoadTry((n) => n + 1);
+      return;
+    }
+    baseRaw.current = listText;
     const writes = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imessage_approved_senders', JSON.stringify(normalized)),
       api.setSetting('imessage_recipient', normalized[0]?.address ?? ''),
       api.setSetting('imessage_default_sender', effectiveDefault),
     ]);
@@ -1419,6 +1434,19 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
 
     setSaved(true);
   };
+
+  if (loadFailed) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-cp-coral">
+          Could not load your approved senders, so they can&apos;t be edited right now. Your saved list has not been changed.
+        </p>
+        <button type="button" onClick={() => setLoadTry((n) => n + 1)} className="text-sm text-cp-amber hover:text-cp-amber/80">
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

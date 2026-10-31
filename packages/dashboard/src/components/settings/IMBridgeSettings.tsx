@@ -4,7 +4,7 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../../lib/api';
 
@@ -42,6 +42,13 @@ const SHARING_LEVEL_HINTS: Record<SharingLevel, string> = {
 
 const isSharingLevel = (v: unknown): v is SharingLevel =>
   v === 'open_book' || v === 'dont_overshare' || v === 'cautious' || v === 'project_only';
+
+// A stored value that is not a JSON list cannot be told apart from "empty" by `parseSenders`, so
+// the load checks it here first: an unreadable list is never edited or saved over.
+const isReadableList = (raw: string | null | undefined): boolean => {
+  if (!raw) return true;
+  try { return Array.isArray(JSON.parse(raw)); } catch { return false; }
+};
 
 // Accept both the legacy string[] shape (older installs) and the new object
 // shape so reading an unmigrated config doesn't lose data.
@@ -95,9 +102,12 @@ export const IMBridgeSettings = () => {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  // The exact stored list text the editor was built on; the save names it so the server can refuse a stale one.
+  const baseRaw = useRef<string | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
+  const load = useCallback(async () => {
+      setLoading(true);
       // `permissions/check` reports which executable does the reading; only the server knows it.
       // ⚠ NO LEADING `/api` — the door prepends it. This read spent its whole life
       // asking for `/api/api/setup/permissions/check`, so it 404'd every time and
@@ -112,6 +122,15 @@ export const IMBridgeSettings = () => {
         api.getSetting('imessage_approved_senders'),
         api.getSetting('imessage_default_sender'),
       ]);
+
+      // A failed or unreadable read must not look like an empty list: nothing is offered to edit.
+      if (!sendersResult.ok || !isReadableList(sendersResult.data.value)) {
+        setLoadFailed(true);
+        setLoading(false);
+        return;
+      }
+      setLoadFailed(false);
+      baseRaw.current = sendersResult.data.value ?? null;
 
       if (enabledResult.ok && enabledResult.data.value) {
         setEnabled(enabledResult.data.value === 'true');
@@ -139,9 +158,9 @@ export const IMBridgeSettings = () => {
       }
       setSenders(loaded);
       setLoading(false);
-    };
-    load();
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -176,9 +195,18 @@ export const IMBridgeSettings = () => {
     }
     const primary = normalized.find(s => s.is_primary);
 
+    // The list goes first, built on the text that was loaded. If the server says it moved, nothing else is written.
+    const listText = JSON.stringify(normalized);
+    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current);
+    if (!listResult.ok) {
+      setError(listResult.error || 'Failed to save settings');
+      setSaving(false);
+      await load();
+      return;
+    }
+    baseRaw.current = listText;
     const results = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imessage_approved_senders', JSON.stringify(normalized)),
       // Keep legacy fields in sync so older code paths (and any external
       // tools that read them directly) keep working until everything reads
       // the new shape via the bridge helpers.
@@ -262,6 +290,20 @@ export const IMBridgeSettings = () => {
   };
 
   if (loading) return null;
+
+  if (loadFailed) {
+    return (
+      <div className="tile space-y-4">
+        <div className="scard__title">iMessage Bridge</div>
+        <p className="text-xs text-cp-coral">
+          Could not load your approved senders, so they can&apos;t be edited right now. Your saved list has not been changed.
+        </p>
+        <button type="button" onClick={() => { void load(); }} className="text-xs text-cp-amber hover:text-cp-amber/80">
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="tile space-y-4">
