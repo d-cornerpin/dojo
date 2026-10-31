@@ -76,10 +76,15 @@ export const Memory = () => {
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load DAG
+  // Load DAG. A request counter makes late answers lose: a slow answer for the
+  // previous agent must not overdraw the new agent's DAG (and must not clear
+  // the spinner the newest request still needs).
+  const dagSeq = useRef(0);
   const loadDag = useCallback(async () => {
+    const mine = ++dagSeq.current;
     setDagLoading(true);
     const result = await api.getMemoryDag(agentId);
+    if (mine !== dagSeq.current) return;
     if (result.ok) {
       setSummaries(result.data.summaries);
       setLinks(result.data.links);
@@ -113,8 +118,11 @@ export const Memory = () => {
     };
   }, [subscribe, agentId, loadDag, rightPanel]);
 
-  // Load vault entries
+  // Load vault entries — same counter: an answer for an older keystroke never
+  // overdraws the newest search's entries or stats.
+  const vaultSeq = useRef(0);
   const loadVault = useCallback(async () => {
+    const mine = ++vaultSeq.current;
     setVaultLoading(true);
     const [entriesResult, statsResult] = await Promise.all([
       api.getVaultEntries({
@@ -124,6 +132,7 @@ export const Memory = () => {
       }),
       api.getVaultStats(),
     ]);
+    if (mine !== vaultSeq.current) return;
     if (entriesResult.ok) setVaultEntries(entriesResult.data);
     if (statsResult.ok) setVaultStats(statsResult.data);
     setVaultLoading(false);
