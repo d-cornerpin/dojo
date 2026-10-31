@@ -1106,17 +1106,18 @@ export const injectMemory = async (
 
 export const getBriefing = async (
   agentId: string,
-): Promise<ApiResponse<BriefingResponse>> => {
-  return request<BriefingResponse>(`/memory/${agentId}/briefing`);
+): Promise<ApiResponse<BriefingResponse | null>> => {   // null = a successful "none yet"
+  return request<BriefingResponse | null>(`/memory/${agentId}/briefing`);
 };
 
 export const updateBriefing = async (
   agentId: string,
   content: string,
+  baseId?: string,   // the briefing this edit was built on; the server refuses it if a newer one exists
 ): Promise<ApiResponse<void>> => {
   return request<void>(`/memory/${agentId}/briefing`, {
     method: 'PUT',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(baseId === undefined ? { content } : { content, baseId }),
   });
 };
 

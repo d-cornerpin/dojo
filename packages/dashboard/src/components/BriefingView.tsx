@@ -1,63 +1,55 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import type { Briefing } from '@dojo/shared';
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
+import { useGuardedLoad } from '../lib/load-guard';
 
 interface BriefingViewProps {
   agentId: string;
 }
 
 export const BriefingView = ({ agentId }: BriefingViewProps) => {
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Read through the shared load guard: a failed read is not "none yet", and an answer for a
+  // different agent is dropped (lib/load-guard.ts).
+  const load = useGuardedLoad<Briefing | null>(agentId, async (id) => api.getBriefing(id));
+  const briefing = load.canSave(agentId) ? load.data : null;
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
-  const loadBriefing = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    const result = await api.getBriefing(agentId);
-    if (result.ok) {
-      setBriefing(result.data);
-    } else {
-      setError(result.error);
-    }
-    setLoading(false);
-  }, [agentId]);
-
-  useEffect(() => {
-    loadBriefing();
-  }, [loadBriefing]);
+  useEffect(() => { setEditing(false); setError(null); }, [agentId]);
 
   const handleSave = async () => {
+    if (!briefing || !load.canSave(agentId)) return;
     setSaving(true);
-    const result = await api.updateBriefing(agentId, editContent);
+    const result = await api.updateBriefing(agentId, editContent, briefing.id);
     if (result.ok) {
       setEditing(false);
-      await loadBriefing();
+      load.reload();
     } else {
       setError(result.error);
+      load.reload();
     }
     setSaving(false);
   };
 
   const handleRegenerate = async () => {
+    if (!load.canSave(agentId)) return;
+    if (briefing?.editedByOwner && !window.confirm('You edited this briefing by hand. Regenerating replaces your edits. Continue?')) return;
     setRegenerating(true);
     setError(null);
     const result = await api.regenerateBriefing(agentId);
     if (result.ok) {
-      setBriefing(result.data);
+      load.adopt(result.data);
     } else {
       setError(result.error);
     }
     setRegenerating(false);
   };
 
-
-  if (loading) {
+  if (load.status === 'loading') {
     return (
       <div className="flex items-center justify-center h-full text-ui/40 text-sm">
         Loading briefing...
@@ -65,10 +57,22 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
     );
   }
 
-  if (error && !briefing) {
+  if (load.status === 'failed') {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3">
+        <p className="text-ui/40 text-sm">Could not load the briefing, so it can&apos;t be changed right now. Nothing has been replaced.</p>
+        <button onClick={load.reload} className="px-4 py-2 text-sm rounded-lg glass-btn-primary transition-colors">
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!briefing) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3">
         <p className="text-ui/40 text-sm">No briefing available yet.</p>
+        {error && <p className="text-xs text-cp-coral">{error}</p>}
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
@@ -79,8 +83,6 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
       </div>
     );
   }
-
-  if (!briefing) return null;
 
   return (
     <div className="flex flex-col h-full">
