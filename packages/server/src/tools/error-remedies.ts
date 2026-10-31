@@ -41,8 +41,10 @@ const REMEDIES: readonly ErrorRemedy[] = [
     // Exactly the text microsoft/client.ts gives a Graph 403 'Forbidden' (the status survives masking).
     pattern: /access denied \(http 403 forbidden\)/,
     remedy: () =>
-      'Teams requires a Microsoft work/school account (Entra ID). Personal Microsoft accounts ' +
-      '(outlook.com, hotmail.com, live.com) do not support Teams.',
+      'Teams said access denied (403). Teams only works on a Microsoft work/school account (Entra ID); ' +
+      'personal accounts (outlook.com, hotmail.com, live.com) do not support it. If this IS a work/school ' +
+      'account, the Teams permission may not be granted or you may not be a member of that chat: tell the ' +
+      'owner rather than retrying.',
   },
 ];
 
