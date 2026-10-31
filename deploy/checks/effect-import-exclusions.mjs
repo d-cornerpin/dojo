@@ -230,6 +230,8 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   { file: 'voice/smart-turn.ts', klass: 'platform-internal', why: 'the turn-detection model files, platform-named.' },
   { file: 'voice/voice-assets.ts', klass: 'platform-internal', why: 'the bundled voice assets in the install tree.' },
   { file: 'migration/checks.ts', klass: 'platform-internal', why: 'the migration tool\'s own preflight checks.' },
+  { file: 'agent/effects/toolbox-ledger.ts', klass: 'platform-internal', why: 'the boot-time ledger of process groups the toolbox started: reads and writes ONE platform-literal file under the Dojo home and signals only the groups it recorded, each re-checked against the process identity (v3.5 t29-p6). No path or command comes from an agent.' },
+  { file: 'process-identity.ts', klass: 'platform-internal', why: 'asks `ps` for the start time and command of one integer process id: a fixed program, argv form, no shell, no agent input (v3.5 t29-p6).' },
   { file: 'migration/export.ts', klass: 'platform-internal', why: 'the machine-to-machine migration EXPORT writer. The migration tool is an operator-run utility that packages one install for another box; it runs outside the server tool surface entirely and its paths are the install tree and the export bundle.' },
   { file: 'migration/fs-copy.ts', klass: 'platform-internal', why: 'the migration tree copier: it walks the install tree and the export bundle, both platform-named, for the operator-run migration utility. No tool reaches it.' },
   { file: 'migration/import.ts', klass: 'platform-internal', why: 'the machine-to-machine migration IMPORT reader: it unpacks an export bundle onto a fresh install for the operator. Its paths are the bundle and the install tree, never an argument.' },
