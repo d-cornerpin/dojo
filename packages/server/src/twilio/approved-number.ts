@@ -14,6 +14,9 @@ export function normalisePhone(raw: string): string | null {
   const s = (raw ?? '').trim();
   if (!/^\+?[\d\s().-]+$/.test(s)) return null;
   let digits = s.replace(/\D/g, '');
+  // International dialling prefixes (00 anywhere, 011 from the US) mean "+". No real number starts with 0,
+  // so stripping them can only turn the typed form into the saved one, never into a different line.
+  if (!s.startsWith('+')) digits = digits.replace(/^(?:00|011)(?=[1-9])/, '');
   if (digits.length === 10) digits = '1' + digits;
   return digits.length >= 8 ? digits : null;
 }

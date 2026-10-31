@@ -68,6 +68,7 @@ import { executeSmsSend } from '../../../twilio/sms-outbound.js';
 import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
 import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
 import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
+import { iMessageListHasHumanOwner } from '../../../services/safe-senders.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';
@@ -329,6 +330,14 @@ export const commsHandlers: ToolHandlerMap = {
         const db = getDb();
         const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
         const existing = parseSafeSenders(row?.value ?? null);
+        // The agent never creates or changes the owner. With no owner in the list the human set,
+        // refuse: the entry would sit alone and the owner rights must come only from Settings.
+        if (!iMessageListHasHumanOwner()) {
+          content = 'I cannot add this person yet: no owner is set for iMessage. Ask the owner to set their own number in Settings, Channels first, then I can add others.';
+          isError = true;
+          auditLog(agentId, 'add_safe_sender', `imessage:${address}`, 'denied', `no owner set; quote: "${auditQuote}"`);
+          return { content, isError };
+        }
         const target = address.toLowerCase();
         if (existing.some(s => s.address.toLowerCase() === target)) {
           content = `${name} (${address}) is already on the iMessage safe-sender list. No change.`;
@@ -336,11 +345,8 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'add_safe_sender', `imessage:${address}`, 'success', `already on list; quote: "${auditQuote}"`);
           return { content, isError };
         }
-        // Preserve at least one primary record (first entry stars by default).
+        // Always a non-owner entry (is_primary false); the owner record is never touched.
         const next = [...existing, sender];
-        if (!next.some(s => s.is_primary) && next.length > 0) {
-          next[0].is_primary = true;
-        }
         db.prepare(`
           INSERT INTO config (key, value, updated_at) VALUES ('imessage_approved_senders', ?, datetime('now'))
           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')

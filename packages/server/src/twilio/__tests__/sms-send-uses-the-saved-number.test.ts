@@ -40,6 +40,14 @@ describe('sms_send recipient', () => {
     expect(res.message).toContain('+15550100198');
   });
 
+  it('the same number typed with an international dialling prefix texts the saved number', async () => {
+    for (const typed of ['001 555 010 0198', '011 1 555 010 0198']) {
+      const res = await executeSmsSend({ to: typed, body: 'hi' }, 'agent-1');
+      expect(res.ok, typed).toBe(true);
+      expect(sendSmsMock.mock.calls.at(-1)?.[0]).toBe('+15550100198');
+    }
+  });
+
   it('the saved number itself still works', async () => {
     const res = await executeSmsSend({ to: '+15550100198', body: 'hi' }, 'agent-1');
     expect(res.ok).toBe(true);
