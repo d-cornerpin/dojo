@@ -8,7 +8,8 @@ import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { invalidateSavedVoiceSettings } from '../../hooks/useVoiceMode';
-import { useVoiceSaveError } from './voice-save-error';
+import { useToast } from '../../hooks/useToast';
+import { voiceSaveRefusal } from './voice-save-error';
 import { VAD_OPTIONS, STT_LABELS, formatBytes } from './voice-options';
 
 
@@ -39,7 +40,7 @@ export const VoiceTab = () => {
   const defaultWakePhrase = `hey ${primaryAgentName.toLowerCase()}`;
 
   const [savedKey, setSavedKey] = useState<string | null>(null);
-  const { saveError, noteSave } = useVoiceSaveError();
+  const toast = useToast();
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
@@ -337,7 +338,9 @@ export const VoiceTab = () => {
   };
 
   const saveSetting = async (key: string, value: string, uiKey: string) => {
-    const stored = noteSave(uiKey, await api.setSetting(key, value));
+    const res = await api.setSetting(key, value);
+    const stored = res.ok;
+    if (!res.ok) toast.error(voiceSaveRefusal(uiKey, res.error));
     if (stored) flashSaved(uiKey);
     return stored;
   };
@@ -462,7 +465,6 @@ export const VoiceTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
-      {saveError && <div className="alert-banner alert-error">{saveError}</div>}
       {/* TTS engine sub-tabs (Local Kokoro | Cloud Hume). The Cloud tab is
           selectable even without a key — picking it shows the key entry
           form. The engine setting (voice.tts_engine) only persists as

@@ -25,7 +25,14 @@ vi.mock('../hooks/useWebSocket', async () => {
   return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: ReactElement }) => children };
 });
 
+vi.mock('../hooks/useToast', async () => {
+  const { fakeToast } = await import('./helpers/frames');
+  const t = fakeToast();
+  return { useToast: () => t.value, __calls: t.calls };
+});
+
 import * as api from '../lib/api';
+import * as toastMod from '../hooks/useToast';
 import { VoiceTab } from '../components/settings/VoiceTab';
 
 const sfxSwitch = async () => (await screen.findByLabelText(/play voice mode sound effects/i)) as HTMLInputElement;
@@ -33,6 +40,7 @@ const sfxSwitch = async () => (await screen.findByLabelText(/play voice mode sou
 beforeEach(() => {
   resetFrames();
   vi.mocked(api.setSetting).mockReset();
+  (toastMod as unknown as { __calls: unknown[] }).__calls.length = 0;
 });
 
 describe('Voice settings and refused saves', () => {
@@ -42,7 +50,9 @@ describe('Voice settings and refused saves', () => {
     const box = await sfxSwitch();
     const before = box.checked;
     fireEvent.click(box);
-    await screen.findByText(/was not saved: disk full/);
+    const calls = (toastMod as unknown as { __calls: Array<{ level: string; message: string }> }).__calls;
+    await waitFor(() => expect(calls.some((c) => c.level === 'error' && /was not saved: disk full/.test(c.message))).toBe(true));
+    expect(document.querySelector('.alert-banner')).toBeNull();
     await waitFor(() => expect(box.checked).toBe(before));
   });
 
