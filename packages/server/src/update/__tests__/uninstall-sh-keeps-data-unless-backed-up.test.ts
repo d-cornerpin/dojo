@@ -193,7 +193,7 @@ describe('the uninstaller keeps data unless it is backed up', () => {
   it('on any refusal, loads both services again and says Dojo was started again', () => {
     const { bin } = failingShims();
     const log = path.join(scratch, 'launchctl.log');
-    fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/bash\necho "$@" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'launchctl'), launchctlStub(log, true), { mode: 0o755 });
     writeSecrets();
     const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
     expect(status).toBe(1);
@@ -202,4 +202,34 @@ describe('the uninstaller keeps data unless it is backed up', () => {
     expect(lines.some((l) => l.includes('load') && l.includes('com.dojo.watchdog.plist'))).toBe(true);
     expect(out).toContain('Dojo has been started again; nothing was changed.');
   });
+
+  // Review (combined) 4b: "started again" is checked against launchctl list, one rule everywhere.
+  it('names a service launchd does not list after the reload instead of claiming Dojo is running', () => {
+    const { bin } = failingShims();
+    const log = path.join(scratch, 'launchctl.log');
+    fs.writeFileSync(path.join(bin, 'launchctl'), launchctlStub(log, false), { mode: 0o755 });
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    expect(out).not.toContain('Dojo has been started again');
+    expect(out).toContain('did not start');
+    expect(out).toContain('platform');
+    expect(out).toContain('watchdog');
+  });
 });
+
+/** Stateful stub: `load` lists the label when `loadTakes`; `list` prints the loaded labels. */
+function launchctlStub(log: string, loadTakes: boolean): string {
+  const st = path.join(scratch, 'ls');
+  fs.mkdirSync(st, { recursive: true });
+  return [
+    '#!/bin/bash',
+    `echo "$@" >> "${log}"`,
+    'lab() { b="${1##*/}"; b="${b%.plist}"; echo "${b##*.}"; }',
+    'case "$1" in',
+    `  list) for l in "${st}"/*; do [ -e "$l" ] && printf "1\\t0\\tcom.dojo.%s\\n" "$(basename "$l")"; done ;;`,
+    `  load) ${loadTakes ? `touch "${st}/$(lab "$2")"` : ':'} ;;`,
+    `  unload) rm -f "${st}/$(lab "$2")" ;;`,
+    'esac', 'exit 0', '',
+  ].join('\n');
+}

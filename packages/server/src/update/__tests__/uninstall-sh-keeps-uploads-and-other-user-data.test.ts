@@ -31,6 +31,7 @@ beforeEach(() => {
   put('tools/doc.md', 'regenerated');
   put('platform/package.json', '{}');
   put('platform.backup-3.1.17/package.json', '{}');
+  put('platform.partial-3.1.18-123/package.json', '{}');
   put('watchdog/index.js', '//');
   put('logs/x.log', 'log');
 });
@@ -68,6 +69,7 @@ describe('the uninstaller keeps the person\'s uploads and other data', () => {
     const has = (rel: string): boolean => fs.existsSync(path.join(backup!, rel));
     expect(has('platform')).toBe(false);
     expect(has('platform.backup-3.1.17')).toBe(false);
+    expect(has('platform.partial-3.1.18-123')).toBe(false);
     expect(has('watchdog')).toBe(false);
     expect(has('logs')).toBe(false);
     expect(has('voice/models')).toBe(false);

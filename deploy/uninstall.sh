@@ -31,10 +31,24 @@ BACKUP_DIR="$HOME/dojo-backup-$(date +%Y%m%d-%H%M%S)"
 echo "💾 Backing up data to $BACKUP_DIR..."
 # A refusal must leave the box running: the services were stopped above, so every "nothing was
 # removed" exit starts both again first and says so.
+# "Up" is decided by launchd's own list (the one rule start.sh and rollback.sh use), not by the exit
+# status of `launchctl load`.
+service_loaded() {
+  local listing
+  listing="$(launchctl list 2>/dev/null)"
+  grep -Eq "(^|[[:space:]])com\.dojo\.$1\$" <<<"$listing"
+}
 restart_services() {
-  launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
-  launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
-  echo "   Dojo has been started again; nothing was changed."
+  local svc down=""
+  for svc in platform watchdog; do
+    launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null
+    service_loaded "$svc" || down="${down:+$down and }the $svc"
+  done
+  if [ -n "$down" ]; then
+    echo "   Nothing was changed, but $down did not start. Run ~/.dojo/scripts/start.sh or restart Dojo from the menu bar."
+  else
+    echo "   Dojo has been started again; nothing was changed."
+  fi
 }
 copy_failed=""
 mkdir -p "$BACKUP_DIR" || copy_failed="$copy_failed backup-folder"
@@ -77,7 +91,7 @@ for entry in "$DOJO_DIR"/* "$DOJO_DIR"/.[!.]*; do
   [ -e "$entry" ] || continue
   name="$(basename "$entry")"
   case "$name" in
-    platform|platform.backup-*|platform.failed-*|platform.staging*|watchdog|watchdog.staging-*|watchdog.old-*|scripts|bin|logs|dojologo.pdf|rollback.lock|secrets.yaml|prompts|techniques|.DS_Store) continue ;;
+    platform|platform.backup-*|platform.failed-*|platform.partial-*|platform.staging*|watchdog|watchdog.staging-*|watchdog.old-*|scripts|bin|logs|dojologo.pdf|rollback.lock|secrets.yaml|prompts|techniques|.DS_Store) continue ;;
     data)
       mkdir -p "$BACKUP_DIR/data" || { copy_failed="$copy_failed data"; continue; }
       for f in "$entry"/* "$entry"/.[!.]*; do
