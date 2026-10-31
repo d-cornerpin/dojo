@@ -23,8 +23,7 @@ import { getContextWindow } from '../agent/model.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { isIMBridgeRunning } from '../services/imessage-bridge.js';
-import { getPresence, isImessageConfigured } from '../services/presence.js';
-import { resolveReplyDestination, type ReplyDestination } from '../agent/v2/reply-destination.js';
+import type { ReplyDestination } from '../agent/v2/reply-destination.js';
 import { resolveInbound } from '../agent/v2/inbound-channel.js';
 import { getTwilioConfig } from '../twilio/auth.js';
 
