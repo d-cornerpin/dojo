@@ -50,6 +50,7 @@ vi.mock('../hooks/useWebSocket', async () => {
 
 import * as api from '../lib/api';
 import { Techniques } from '../pages/Techniques';
+import { ToastProvider } from '../hooks/useToast';
 
 const mocked = () => vi.mocked(api);
 
@@ -67,7 +68,7 @@ afterEach(() => { vi.clearAllMocks(); });
 
 describe('A live technique event refreshes the list the filters drew, not the whole table', () => {
   it('⚠ technique:used while the Published chip is on reloads the PUBLISHED list', async () => {
-    render(<MemoryRouter><Techniques /></MemoryRouter>);
+    render(<ToastProvider><MemoryRouter><Techniques /></MemoryRouter></ToastProvider>);
     await waitFor(() => expect(mocked().request).toHaveBeenCalledWith('/techniques?'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Published' }));
@@ -87,7 +88,7 @@ describe('A live technique event refreshes the list the filters drew, not the wh
   });
 
   it('⚠ technique:published while a search is typed reloads the SEARCHED list', async () => {
-    render(<MemoryRouter><Techniques /></MemoryRouter>);
+    render(<ToastProvider><MemoryRouter><Techniques /></MemoryRouter></ToastProvider>);
     await waitFor(() => expect(mocked().request).toHaveBeenCalledWith('/techniques?'));
 
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'alpha' } });

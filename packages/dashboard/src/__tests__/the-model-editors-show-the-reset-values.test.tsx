@@ -32,6 +32,13 @@ const model = (props: Record<string, unknown>): Model =>
   ({ id: 'm1', ...props } as unknown as Model);
 
 const seededVoice = () => [{ id: 'v1', description: 'seeded', gender: 'male' }];
+// What the owner had saved before pressing "Reset to defaults": different STORED content, so the
+// reload is a real change of the stored value (a reload that brings back identical content keeps
+// half-typed edits on purpose — see 8106).
+const savedVoice = () => [{ id: 'v1', description: 'saved before the reset', gender: 'male' }];
+const savedSpec = () => ({
+  aspect_ratio: { accepted: true, values: ['4:3'], default: '4:3', wireField: 'aspect_ratio', wireType: 'string' },
+});
 const seededSpec = () => ({
   aspect_ratio: {
     accepted: true,
@@ -51,7 +58,7 @@ beforeEach(() => {
 describe('the model editors after a reload', () => {
   it('the voice catalog editor re-seeds the form from the reloaded catalog', () => {
     const { rerender } = render(
-      <VoiceCatalogEditor model={model({ voiceCatalog: seededVoice() })} onSaved={() => {}} />,
+      <VoiceCatalogEditor model={model({ voiceCatalog: savedVoice() })} onSaved={() => {}} />,
     );
     fireEvent.click(screen.getByRole('button', { name: /voices \(1\)/i }));
     const description = () =>
@@ -66,7 +73,7 @@ describe('the model editors after a reload', () => {
 
   it('the generation params editor re-seeds the form from the reloaded spec', () => {
     const { rerender } = render(
-      <GenerationParamsEditor model={model({ generationParams: seededSpec() })} onSaved={() => {}} />,
+      <GenerationParamsEditor model={model({ generationParams: savedSpec() })} onSaved={() => {}} />,
     );
     fireEvent.click(screen.getByRole('button', { name: /generation parameters/i }));
     const values = () =>
