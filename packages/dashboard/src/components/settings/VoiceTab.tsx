@@ -8,6 +8,7 @@ import { useState, useEffect, useRef } from 'react';
 import * as api from '../../lib/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { invalidateSavedVoiceSettings } from '../../hooks/useVoiceMode';
+import { useVoiceSaveError } from './voice-save-error';
 
 
 // ── Voice Tab ──
@@ -57,6 +58,7 @@ export const VoiceTab = () => {
   const defaultWakePhrase = `hey ${primaryAgentName.toLowerCase()}`;
 
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  const { saveError, noteSave } = useVoiceSaveError();
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
@@ -348,8 +350,9 @@ export const VoiceTab = () => {
   };
 
   const saveSetting = async (key: string, value: string, uiKey: string) => {
-    const res = await api.setSetting(key, value);
-    if (res.ok) flashSaved(uiKey);
+    const stored = noteSave(uiKey, await api.setSetting(key, value));
+    if (stored) flashSaved(uiKey);
+    return stored;
   };
 
   const handlePreview = async (previewVoice: string) => {
@@ -462,6 +465,7 @@ export const VoiceTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {saveError && <div className="alert-banner alert-error">{saveError}</div>}
       {/* TTS engine sub-tabs (Local Kokoro | Cloud Hume). The Cloud tab is
           selectable even without a key — picking it shows the key entry
           form. The engine setting (voice.tts_engine) only persists as
@@ -864,7 +868,7 @@ export const VoiceTab = () => {
             onChange={(e) => {
               const next = e.target.checked;
               setBargeInEnabled(next);
-              void saveSetting('voice.barge_in_enabled', String(next), 'barge');
+              void saveSetting('voice.barge_in_enabled', String(next), 'barge').then((stored) => { if (!stored) setBargeInEnabled(!next); });
               invalidateSavedVoiceSettings();
             }}
             className="accent-cp-teal"
@@ -892,7 +896,7 @@ export const VoiceTab = () => {
             onChange={(e) => {
               const next = e.target.checked;
               setSoundEffectsEnabled(next);
-              void saveSetting('voice.sound_effects_enabled', String(next), 'sfx');
+              void saveSetting('voice.sound_effects_enabled', String(next), 'sfx').then((stored) => { if (!stored) setSoundEffectsEnabled(!next); });
               invalidateSavedVoiceSettings();
             }}
             className="accent-cp-teal"
@@ -921,7 +925,7 @@ export const VoiceTab = () => {
             onChange={(e) => {
               const next = e.target.checked;
               setWakeWordEnabled(next);
-              void saveSetting('voice.wake_word_enabled', String(next), 'wake');
+              void saveSetting('voice.wake_word_enabled', String(next), 'wake').then((stored) => { if (!stored) setWakeWordEnabled(!next); });
               invalidateSavedVoiceSettings();
             }}
             className="accent-cp-teal"
