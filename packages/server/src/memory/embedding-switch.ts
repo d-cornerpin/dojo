@@ -42,10 +42,13 @@ async function reembedAllStale(): Promise<void> {
   const startedWith = embeddingModelKey();
   let why = 'none left';
   try {
-    const { runBackfill } = await import('./backfill.js');
+    const { runBackfill, isBackfillRunning } = await import('./backfill.js');
     const { reembedStaleVaultEntries } = await import('../vault/embedding-refresh.js');
     let before = countMemoriesOnOtherModels();
     for (;;) {
+      if (embeddingModelKey() !== startedWith) { why = 'switched again; that switch decides'; return; }
+      // A drain already running (the scheduled one) is waited for, not skipped: it may have chosen its rows before the switch.
+      while (isBackfillRunning()) await new Promise((r) => setTimeout(r, 200));
       if (embeddingModelKey() !== startedWith) { why = 'switched again; that switch decides'; return; }
       try { await runBackfill({ includeStale: true }); } catch { /* already running, or the embedder is down */ }
       await reembedStaleVaultEntries();

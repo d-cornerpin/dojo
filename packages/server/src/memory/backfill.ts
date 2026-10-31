@@ -49,6 +49,9 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
   // A row to do: no vector yet, or (when asked) a vector made by another model.
   const todo = includeStale ? '(e.id IS NULL OR e.embedding_model IS NOT ?)' : 'e.id IS NULL';
   const todoParams: unknown[] = includeStale ? [model] : [];
+  // Taking old-model rows back: the newest first, so the memories most likely to be asked about come back first.
+  // The plain drain of never-embedded rows keeps its oldest-first order.
+  const dir = includeStale ? 'DESC' : 'ASC';
 
   try {
     // Collect un-embedded messages (with sufficient content), oldest first, capped
@@ -59,7 +62,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       FROM messages m
       LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id
       WHERE ${todo} AND length(m.content) >= 20
-      ORDER BY m.created_at ASC
+      ORDER BY m.created_at ${dir}
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
@@ -69,7 +72,7 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       FROM summaries s
       LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
       WHERE ${todo} AND s.kind != 'uncondensed'   -- t140: a not-yet-condensed note is not knowledge
-      ORDER BY s.created_at ASC
+      ORDER BY s.created_at ${dir}
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
@@ -80,15 +83,16 @@ export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ 
       FROM techniques t
       LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id
       WHERE ${todo}
-      ORDER BY t.created_at ASC
+      ORDER BY t.created_at ${dir}
       LIMIT ?
     `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
 
     // One combined per-run budget across all three sources (messages first, so a
     // deep message backlog drains before the small summary/technique tails).
+    const messageItems = messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content }));
+    const summaryItems = summaries.map(s => ({ type: 'summary' as const, id: s.id, agentId: s.agent_id, content: s.content }));
     const items: Array<{ type: 'message' | 'summary' | 'technique'; id: string; agentId: string | null; content: string }> = [
-      ...messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content })),
-      ...summaries.map(s => ({ type: 'summary' as const, id: s.id, agentId: s.agent_id, content: s.content })),
+      ...(includeStale ? [...summaryItems, ...messageItems] : [...messageItems, ...summaryItems]),
       ...techniques.map(t => {
         let tags: string[] = [];
         try { tags = JSON.parse(t.tags ?? '[]'); } catch { /* malformed tags column */ }

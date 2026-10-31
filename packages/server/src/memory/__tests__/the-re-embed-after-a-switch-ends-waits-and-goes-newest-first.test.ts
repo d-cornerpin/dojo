@@ -136,3 +136,32 @@ describe('the loop stops when the count stops falling', () => {
   });
 });
 
+describe('a switch while the scheduled drain is running', () => {
+  it('waits for that drain, then re-embeds everything', async () => {
+    addMessage('fresh', '2026-03-01 00:00:00');   // no vector yet: the drain has work and runs slowly
+    for (let i = 0; i < 3; i++) { addMessage(`old-${i}`, `2026-01-0${i + 1} 00:00:00`); addVector(`e-${i}`, `old-${i}`, OLD); }
+    setModel('new-embedder');
+    delayMs = 120;
+    const drain = runBackfill({ includeStale: false });
+    await new Promise((r) => setTimeout(r, 30));
+    await handleEmbeddingModelSwitch(OLD);   // the drain is mid-flight
+    await drain;
+    await until(() => staleCount() === 0);
+    expect(staleCount()).toBe(0);
+  });
+});
+
+describe('order', () => {
+  it('stale memories are re-embedded newest first, summaries ahead of messages', async () => {
+    addMessage('a-oldest', '2026-01-01 00:00:00');
+    addMessage('b-middle', '2026-02-01 00:00:00');
+    addMessage('c-newest', '2026-03-01 00:00:00');
+    for (const id of ['a-oldest', 'b-middle', 'c-newest']) addVector(`e-${id}`, id, OLD);
+    db().prepare("INSERT INTO summaries (id, agent_id, content, kind, token_count, earliest_at, latest_at, created_at) VALUES ('s-1', ?, 'a summary long enough to be embedded: s-1', 'leaf', 10, '2026-01-15', '2026-01-15', ?)").run(AGENT, Date.parse('2026-01-15T00:00:00Z'));
+    addVector('e-s1', 's-1', OLD, 'summary');
+    setModel('new-embedder');
+    await runBackfill({ includeStale: true });
+    const order = fetched.map((b) => /(a-oldest|b-middle|c-newest|s-1)/.exec(b)![1]);
+    expect(order).toEqual(['s-1', 'c-newest', 'b-middle', 'a-oldest']);
+  });
+});
