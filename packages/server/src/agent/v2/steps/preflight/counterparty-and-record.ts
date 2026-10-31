@@ -33,6 +33,7 @@ import { initState } from '../../state.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import { resolveTurnCounterparty, type TurnCounterparty, type WaitingConversation } from '../../counterparty.js';
+import { computeTurnAddressLive, type TurnAddress } from '../../turn-address.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed } from '../../owner-affinity.js';
 import { resetProactiveSendStreak } from '../../proactive-budget.js';
 import { startTurn } from '../../turn-record.js';
@@ -44,7 +45,7 @@ const logger = createLogger('v2-loop');
 /** What the sections before this one produced that it reads. */
 export interface CounterpartyAndRecordInputs {
   readonly isHumanContinuation: boolean;
-  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty } | undefined;
+  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: TurnAddress } | undefined;
   readonly a2aCounterpartyIdentity: { intent: string; threadShort: string; fromName: string } | null;
   readonly lastUserMessageContent: string;
   readonly lastUserMessageId: string | null;
@@ -64,6 +65,8 @@ export interface CounterpartyAndRecordInputs {
   readonly contextWindow: number;
   readonly isAutoRouted: boolean;
   readonly configuredModelId: string;
+  readonly isNotificationTurn?: boolean;
+  readonly settledContextWakeTurn?: boolean;
   readonly notificationTriggerRowid: number | null;  // t141: a notice wake's own reason (by seq)
 }
 
@@ -161,6 +164,14 @@ export async function runCounterpartyAndRecord(
       } catch { /* best effort; a resolution failure just leaves the reply on the dashboard */ }
     }
   }
+
+  // ── 3.5: THE TURN'S ADDRESS, computed once, here (`turn-address.ts`) ──
+  turnCtx.address = await computeTurnAddressLive({
+    counterparty, isEngineTurn, isNotificationTurn: input.isNotificationTurn ?? false,
+    inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination,
+    settledContextWakeTurn: input.settledContextWakeTurn,
+    restoredFrom: isHumanContinuation ? continuation?.address : undefined,
+  });
 
   // ── P4 turn record: allocate this turn's IDENTITY and record what it SERVES ──
   //
@@ -289,8 +300,9 @@ export async function runCounterpartyAndRecord(
     triggeredByA2AReplyIntent: a2aReplyContext,
     lastUserMessageContent,
     lastUserMessageId,
-    inboundChannel,
-    inboundContext,
+    // A continuation has no trigger row; the address restored the original's.
+    inboundChannel: turnCtx.address?.boundChannel ?? inboundChannel,
+    inboundContext: turnCtx.address?.inboundContext ?? inboundContext,
     pendingTechniqueAck: initialPendingTechniqueAck,
   });
 

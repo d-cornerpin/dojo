@@ -55,6 +55,9 @@ export const continuationContext = new Map<string, {
    *  a conversation the producer never resolved a row for (non-door inserts). */
   conversationId: string | null;
   counterparty: import('./v2/counterparty.js').TurnCounterparty;
+  /** 3.5: the stashed turn's address, so the continuation keeps who it was talking to and the
+   *  reply context (chat id, sms numbers) its own empty trigger cannot supply. */
+  address?: import('./v2/turn-address.js').TurnAddress;
 }>();
 
 // A2A turn isolation (v3.1.10).

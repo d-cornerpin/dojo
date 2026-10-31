@@ -95,9 +95,12 @@ export async function routeTerminalReply(
       // a human iMessage counterparty (Layer 1) and the away-owner promotion (Layer
       // 2), and the model-initiated imessage_send TOOL path is a separate, explicit
       // act that never reaches here.
+      // 3.5: the inbound this reply is bound to comes from the turn's ADDRESS (restored on a
+      // continuation, which has no trigger row), not from `state.inboundChannel` alone.
+      const boundInbound = turnCtx.address ? turnCtx.address.boundChannel : state.inboundChannel;
       const affinityRefused = affinityPromotionRefusedNoBasis({
         ownerAffinityChannel: turnCtx.ownerAffinityDestination,
-        inboundChannel: state.inboundChannel,
+        inboundChannel: boundInbound,
         presence: presenceNow,
       });
       if (affinityRefused) {
@@ -109,7 +112,7 @@ export async function routeTerminalReply(
       const destination = counterparty.kind === 'agent'
         ? 'dashboard'
         : resolveReplyDestination({
-            state,
+            state: { inboundChannel: boundInbound },
             presence: presenceNow,
             imessageBridgeConfigured: isImessageConfigured(),
             // RC-10: owner-channel affinity, resolved once at turn start (rate limited
@@ -158,7 +161,7 @@ export async function routeTerminalReply(
       // Design law untouched: only the PUSH is withheld; the reply stays persisted, broadcast
       // and visible in the dashboard exactly as it already is.
       const routeRoot = outboundRoot({
-        inboundChannel: state.inboundChannel,
+        inboundChannel: boundInbound,
         settledContextWakeTurn,
         counterpartyKind: counterparty.kind,
         isEngineTurn,

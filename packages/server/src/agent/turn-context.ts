@@ -138,6 +138,10 @@ export interface TurnContext {
    *  person, not whoever messaged most recently during a multi-conversation drain. */
   imRecipient: string | undefined;
 
+  /** 3.5: who this turn talks to and where the written reply lands; computed once in
+   *  preflight (`v2/turn-address.ts`), read by delivery, the agent's notes and engine texts. */
+  address: import('./v2/turn-address.js').TurnAddress | undefined;
+
   /** P6b: the per-turn model-request id, the JOIN between the router's decision
    *  (router_log.request_id) and the spend it produced (cost_records.request_id).
    *  Minted once at turn start; out-of-turn model calls (background summarizers and
@@ -510,6 +514,7 @@ export function openTurnContext(agentId: string): TurnContext {
     convKey: undefined,
     conversationId: undefined,
     imRecipient: undefined,
+    address: undefined,
     modelRequestId: undefined,
     turnNumber: undefined,
     root: undefined,

@@ -105,7 +105,7 @@ export function runTurnClosures(
   // null). On a continuation-of-a-continuation, chosenConvKey is the restored value, so it
   // re-stashes and the chain holds.
   const stashContinuationIfHuman = () => {
-    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, conversationId: chosenConversationId, counterparty });
+    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, conversationId: chosenConversationId, counterparty, address: turnCtx.address });
   };
 
   // Persist + broadcast an outbound routing marker (a role='system'

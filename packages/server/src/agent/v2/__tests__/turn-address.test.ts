@@ -1,0 +1,104 @@
+import { describe, it, expect } from 'vitest';
+import type { TurnCounterparty } from '../counterparty.js';
+import {
+  computeTurnAddress, resolveDeliveryChannel, renderReplyGoesTo, renderTailRestatement,
+  type ComputeTurnAddressInput,
+} from '../turn-address.js';
+
+const contact: TurnCounterparty = {
+  kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage',
+  senderId: '+15550100', threadId: null, senderIsAgent: false,
+};
+const owner: TurnCounterparty = {
+  kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard',
+  senderId: null, threadId: null, senderIsAgent: false,
+};
+const peer: TurnCounterparty = {
+  kind: 'agent', name: 'peer-agent', relation: 'agent', channel: 'a2a',
+  senderId: null, threadId: 'thr1', senderIsAgent: false,
+};
+
+function addr(over: Partial<ComputeTurnAddressInput> & { counterparty: TurnCounterparty }) {
+  return computeTurnAddress({
+    isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
+    presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null, ...over,
+  });
+}
+
+describe('the turn address: who the written reply really goes to', () => {
+  it('A1: a contact texted and the owner also wrote on the dashboard: the address is the contact by iMessage', () => {
+    // The turn's counterparty and inbound are the TRIGGER's (the contact's iMessage); the
+    // owner's newer dashboard row never enters the address.
+    const a = addr({ counterparty: contact, inboundChannel: 'imessage' });
+    expect(a.deliveryChannel).toBe('imessage');
+    expect(a.routed).toBe(true);
+    expect(a.name).toBe('Pat Example');
+    expect(renderReplyGoesTo(a)).toBe('Your written reply goes to Pat Example (a known contact) by iMessage.');
+  });
+
+  it('A2: nothing arriving later can change it; the same inputs give the same address', () => {
+    const first = addr({ counterparty: contact, inboundChannel: 'imessage' });
+    const second = addr({ counterparty: contact, inboundChannel: 'imessage' });
+    expect(second).toEqual(first);
+  });
+
+  it('A3: a continuation has no inbound of its own and keeps the original address', () => {
+    const original = addr({ counterparty: contact, inboundChannel: 'imessage', inboundContext: { chatId: 'c1' } });
+    const cont = addr({ counterparty: contact, inboundChannel: null, inboundContext: null, restoredFrom: original });
+    expect(cont.boundChannel).toBe('imessage');
+    expect(cont.inboundContext).toEqual({ chatId: 'c1' });
+    expect(cont.deliveryChannel).toBe('imessage');
+    // Without the restore it would have fallen to the dashboard.
+    expect(addr({ counterparty: contact, inboundChannel: null }).deliveryChannel).toBe('dashboard');
+  });
+
+  it('A4: an owner turn promoted by affinity or by being away is told the promoted channel', () => {
+    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('imessage');
+    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('imessage');
+    // Affinity alone with no inbound is refused (phantom-outreach rule).
+    expect(addr({ counterparty: owner, inboundChannel: null, ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
+  });
+
+  it('A4: affinity never promotes a contact', () => {
+    const a = addr({ counterparty: { ...contact, channel: 'dashboard' }, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' });
+    expect(a.deliveryChannel).toBe('dashboard');
+  });
+
+  it('A5: an A2A turn is not routed to a person and names no human', () => {
+    const a = addr({ counterparty: peer, inboundChannel: 'dashboard', presence: 'away' });
+    expect(a.kind).toBe('agent');
+    expect(a.deliveryChannel).toBe('dashboard');
+    expect(a.routed).toBe(false);
+    expect(renderReplyGoesTo(a)).toBeNull();
+  });
+
+  it('A6: engine and notification turns are not routed to a person', () => {
+    const e = addr({ counterparty: owner, isEngineTurn: true, presence: 'away' });
+    const n = addr({ counterparty: owner, isNotificationTurn: true });
+    for (const a of [e, n]) { expect(a.deliveryChannel).toBe('dashboard'); expect(a.routed).toBe(false); expect(renderReplyGoesTo(a)).toBeNull(); }
+    expect(e.kind).toBe('engine');
+    expect(n.kind).toBe('notification');
+  });
+
+  it('delivery reads the address: live presence still applies, the bound inbound does not move', () => {
+    const a = addr({ counterparty: owner, inboundChannel: 'dashboard' });
+    expect(resolveDeliveryChannel(a, { presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null })).toBe('imessage');
+    const c = addr({ counterparty: contact, inboundChannel: 'imessage' });
+    expect(resolveDeliveryChannel(c, { presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('imessage');
+  });
+
+  it('the tail restatement exists only for a routed reply', () => {
+    expect(renderTailRestatement(addr({ counterparty: contact, inboundChannel: 'imessage' }))).toBe('[Reply goes to Pat Example by iMessage.]');
+    expect(renderTailRestatement(addr({ counterparty: owner, inboundChannel: 'dashboard' }))).toBeNull();
+    expect(renderTailRestatement(null)).toBeNull();
+  });
+});
+
+describe('delivery is bound to the address, not to the trigger row alone', () => {
+  it('route-reply binds the destination to the address\'s inbound (a continuation has no trigger row)', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../steps/finalize/route-reply.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/turnCtx\.address \? turnCtx\.address\.boundChannel : state\.inboundChannel/);
+    expect(src).toMatch(/state: \{ inboundChannel: boundInbound \}/);
+  });
+});

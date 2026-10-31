@@ -44,7 +44,7 @@ export interface TurnTriggerOutputs {
   readonly contextWindow: number;
   readonly waitingConvs: WaitingConversation[];
   readonly openHumanWorkAtTurnStart: boolean;
-  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty } | undefined;
+  readonly continuation: { convKey: string; conversationId: string | null; counterparty: TurnCounterparty; address?: import('../../turn-address.js').TurnAddress } | undefined;
   readonly isHumanContinuation: boolean;
   readonly chosenConvKey: string;
   readonly chosenConversationId: string | null;
