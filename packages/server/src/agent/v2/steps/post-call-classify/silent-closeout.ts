@@ -17,6 +17,7 @@ import { closedWithoutDelivery, owesAnswer } from '../../answered-edge.js';
 import { msToText, taskScope, tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -115,12 +116,12 @@ export async function runSilentCloseout(
           const steerText =
             `[Engine record: this turn marked ${whichTask} complete. ` +
             (receipts.length > 0
-              ? `The engine recorded this delivery: ${receipts.slice(0, 220)}. The user has not heard anything about it. `
+              ? `The engine recorded this delivery: ${receipts.slice(0, 220)}. ${userWords(turnCtx.address, true)} has not heard anything about it. `
               : 'The engine has NO recorded delivery for it (no file artifact, no channel send). ') +
             'WRITE one short reply in this conversation now, in your own words: ' +
             (receipts.length > 0
-              ? 'tell the user it is done and include the deliverable or link. '
-              : 'if the work truly reached the user, say where; if it did NOT, say honestly what remains instead of claiming it is done. ') +
+              ? `tell ${userWords(turnCtx.address)} it is done and include the deliverable or link. `
+              : `if the work truly reached ${userWords(turnCtx.address)}, say where; if it did NOT, say honestly what remains instead of claiming it is done. `) +
             'Do NOT call imessage_send or any other send tool; the engine routes your written reply automatically. Do not re-open or re-do the task.]';
           try {
             persistAndBroadcastSystemRow(steerText);

@@ -845,7 +845,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   // T85 — what it advertises is what the CALL CARRIES: `partitionToolsForApiCall`'s head, the same expression `model.ts` builds the wire array from, never what the role DECLARES.
   // The measured defect (30 advertised vs 29 shipped) and the argument live at the line that renders it, in `tools/categories.ts`'s `generateToolIndex`.
   const shippedAlwaysLoaded = partitionToolsForApiCall(agentId, agentTools, getAgentAlwaysLoadedTools(agentId)).alwaysLoaded.map((t) => t.name);
-  lines.push('Your current tools, rebuilt every turn, if it\'s listed, you have it now. Don\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');
+  lines.push('Your current tools, rebuilt every turn, if it\'s listed, you have it now. Don\'t tell the person you are talking to a capability is missing from memory or an old message; check here (or just try it) first.');
   lines.push(generateToolIndex(agentTools, shippedAlwaysLoaded));
   lines.push('');
 
@@ -1484,7 +1484,7 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
         ? `- When an image arrives in your context, the engine routes it through the fallback vision model and substitutes a marked text description: \`[Image content (described by fallback vision model "..."): <description>]\`. That description is your authoritative account of the image; do not speculate beyond it.\n` +
           `- To see something on demand: \`screen_screenshot\` (host display) and \`web_browse\` with action="screenshot" (web page) return descriptions via the same fallback. For deep multi-image analysis, delegate to a vision-capable peer via \`send_to_agent\`.\n`
         : `- No fallback vision model is configured either. When an image arrives, the engine substitutes a text marker; the pixels never reach you. \`screen_screenshot\` and \`web_browse\` screenshots will error until a fallback is set.\n` +
-          `- For tasks that need vision, tell the user to set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\n`;
+          `- For tasks that need vision, tell the person you are talking to that the owner can set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\n`;
       return (
         `**Your current model does NOT support image input${fallbackUsable ? '; the platform has a fallback vision model configured' : ', and NO fallback vision model is configured'}.**\n\n` +
         `What this means for you:\n` +

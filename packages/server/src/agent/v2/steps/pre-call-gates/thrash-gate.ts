@@ -36,6 +36,7 @@ import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PreCallGatesContext, PreCallGatesExitReason } from './index.js';
+import { currentAddress, userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -96,7 +97,7 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
       const driftNudge =
         `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
         `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
-        `work_update(action="status") (or work_note), then continue. If you are stuck, tell the user ` +
+        `work_update(action="status") (or work_note), then continue. If you are stuck, tell ${userWords(currentAddress(agentId))} ` +
         `where things stand and what you need. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
       // ── T53 (owner ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
       // This rung used to write the nudge TWICE: an events-lane row (lifted into
@@ -225,10 +226,10 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         agentId,
         content:
           `[System] The engine auto-blocked your current task because ${breakerReasonSecondPerson}. Next turn, either ` +
-          `re-state the goal and resume (work_update(action="status")), or tell the user it is blocked and why. ` +
-          `If the user should know this — and if they were waiting on this work, they should — WRITE it to them ` +
+          `re-state the goal and resume (work_update(action="status")), or tell ${userWords(currentAddress(agentId))} it is blocked and why. ` +
+          `If ${userWords(currentAddress(agentId))} should know this — and if they were waiting on this work, they should — WRITE it to them ` +
           `in your own words, directly in the conversation (the engine routes your reply; do not call a send tool). ` +
-          `If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,
+          `If this block looks wrong and is stopping something ${userWords(currentAddress(agentId))} needs, tell them what you were attempting so they can decide.`,
         sourceAgentId: null,
         originIntent: 'thrash_block',
         turnNumber,
@@ -351,9 +352,9 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
         `further calls with these exact args are refused.\n\n` +
         `Your next action MUST be one of:\n` +
         `  (a) Continue the work from that result: the next item or step, or \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
-        `  (b) Reply to the user with the answer you can give using the data you already have, if that is what they asked for.\n` +
+        `  (b) Reply to ${userWords(currentAddress(agentId))} with the answer you can give using the data you already have, if that is what they asked for.\n` +
         `  (c) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
-        `  (d) Send the user a specific question if you need clarification.\n` +
+        `  (d) Send ${userWords(currentAddress(agentId))} a specific question if you need clarification.\n` +
         `  (e) Only if a tracker task is done: work_update(action="status", status='complete') with a result + evidence.\n\n` +
         `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
       logger.warn('v2: thrash gate activated for signature', {

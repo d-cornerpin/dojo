@@ -944,7 +944,7 @@ export async function executePdfTool(
         effectFs.writeFileSync(out, buf);
         return (
           `PDF created at ${out} (${buf.length} bytes, ${blocks.length} block(s) rendered). ` +
-          `To give the user a downloadable URL for this file, call share_file with path="${out}" — do NOT invent or guess a URL.`
+          `To give the person you are talking to a downloadable URL for this file, call share_file with path="${out}" — do NOT invent or guess a URL.`
         );
       }
       case 'pdf_get_info': {

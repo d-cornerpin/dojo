@@ -4119,7 +4119,7 @@ describe('PHASE-6 CUT 7: the execute span kept the A2A re-send cap nobody tested
 // tranche's span was greped for across BOTH repos' test corpora:
 //   git grep -l "'failed-save-claim'" -- '…/__tests__/…'   → nothing
 //   git grep -l "failed-save-claim"   (the whole kit repo)  → nothing
-//   git grep -l "You told the user you saved that"         → nothing, either repo
+//   git grep -l "You told TestUser you saved that"         → nothing, either repo
 // Of the fifteen floors this span declares, it is the only one with no test, no kit
 // scenario and no clause naming its steer text anywhere.
 //
@@ -4191,7 +4191,7 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
     // steer — with the rejected COUNT in it and both honest ways out named.
     expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
     const steer = messagesOfCall(2);
-    expect(steer).toContain('You told the user you saved that');
+    expect(steer).toContain('You told TestUser you saved that');
     expect(steer).toContain('all 2 vault_remember calls this turn');
     expect(steer).toContain('were REJECTED and nothing was stored');
     expect(steer).toContain('tell the counterpart truthfully that it is not saved yet');
@@ -4208,7 +4208,7 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
     });
 
     expect(callModelSpy).toHaveBeenCalledTimes(2);
-    expect(messagesOfCall(1)).not.toContain('You told the user you saved that');
+    expect(messagesOfCall(1)).not.toContain('You told TestUser you saved that');
   });
 
   it('THE SCOPE ARM: a rejected save with NO claim in the reply is not this floor\'s business', async () => {
@@ -4219,7 +4219,7 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
     });
 
     expect(callModelSpy).toHaveBeenCalledTimes(2);
-    expect(messagesOfCall(1)).not.toContain('You told the user you saved that');
+    expect(messagesOfCall(1)).not.toContain('You told TestUser you saved that');
   });
 
   it('ONE SHOT: the model repeats the claim after the steer and the engine does NOT steer again', async () => {
@@ -4235,7 +4235,7 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
     // number of rows IS the number of times the floor fired — a count the prompt text
     // cannot give, because once persisted the steer rides every later assembly.
     const rows = mockDb.current!
-      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'system' AND content LIKE '%You told the user you saved that%'")
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'system' AND content LIKE '%You told TestUser you saved that%'")
       .get() as { n: number };
     // POSITIVE CONTROL: it fired at all, so "exactly one" is a latch and not an absence.
     expect(rows.n).toBe(1);

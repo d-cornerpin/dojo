@@ -14,7 +14,7 @@ describe('t196 (A4) - the two steers that were untagged', () => {
   it('failed-save-claim carries the author head', () => {
     const guard = TRUTH_GUARDS.find((g) => g.floor === 'failed-save-claim')!;
     const state = { steerQueue: EMPTY, toolResults: [{ name: 'vault_remember', isError: true }, { name: 'vault_remember', isError: true }] } as never;
-    const verdict = guard.decide(state, { agentId: 'a' } as never, 'Saved that for you.');
+    const verdict = guard.decide(state, { agentId: 'a', turnCtx: {} } as never, 'Saved that for you.');
     expect(verdict, 'the guard fires on all-rejected saves').not.toBeNull();
     expect(verdict!.content).toMatch(TAGGED);
     expect(verdict!.content).toContain('You told the user you saved that');

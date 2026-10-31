@@ -36,6 +36,7 @@ import { askReplyClaims, commitmentClaimFor, replyClaim, SAVE_CLAIM_RE } from '.
 import { tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -199,7 +200,7 @@ const TRUTH_GUARD_SET: TruthGuard[] = [
       }, agentId);
       return {
         content:
-          `[System: You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
+          `[System: You told ${userWords(ctx.turnCtx.address)} you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `
           + `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool `
           + `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.]`,
       };

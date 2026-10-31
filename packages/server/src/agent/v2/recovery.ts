@@ -39,6 +39,7 @@ import {
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import { tryHonestStopRecovery } from './honest-stop.js';
 import type { AgentTurnState } from './state.js';
+import { currentAddress, userWords } from './turn-address.js';
 import {
   formatErrorForHuman,
   formatTierBNoteForAgent,
@@ -53,7 +54,7 @@ const logger = createLogger('v2-recovery');
 // wording lives in one place.
 const RATE_LIMIT_RETRY_NOTE =
   `[System: The model provider returned a rate limit error. The platform is retrying ` +
-  `automatically. Give it a moment, and tell the user there is a short delay if they are waiting.]`;
+  `automatically. Give it a moment, and tell the person you are talking to there is a short delay if they are waiting.]`;
 
 // ── T82d (ANSWER-ANYWAY) — OWNER'S RULING R3 ──
 //
@@ -540,7 +541,7 @@ async function tryOutputTruncationRecovery(
   const note =
     `[System: Your last response was rejected because it exceeded the output token limit. ` +
     `Be more concise — produce a shorter response, or break the task into smaller pieces. ` +
-    `If a tool result is too large to summarize in one turn, call complete_task or update the user with what you've done so far and continue next turn.]`;
+    `If a tool result is too large to summarize in one turn, call complete_task or update the person you are talking to with what you've done so far and continue next turn.]`;
   persistAndBroadcastSystemNote(agentId, note);
   queueSelfWake(agentId, 'recovery-output-cap-note');
   return true;
@@ -599,7 +600,7 @@ async function tryProviderRecovery(
     const giveUpNote =
       `[System: We have tried this recovery ${newCount} times with the same approach and it keeps failing. ` +
       `The Healer is being notified to investigate. ` +
-      `If the user is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;
+      `If ${userWords(currentAddress(agentId))} is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;
     persistAndBroadcastSystemNote(agentId, giveUpNote);
     // Fall through so recoverFromError calls recordInjury — but per
     // spec Phase 1, recordInjury now persists a Tier B note first AND
@@ -818,7 +819,7 @@ async function recordInjury(
     persistAndBroadcastSystemNote(
       agentId,
       `[System: Your last turn hit an unexpected error that the platform could not classify or auto-recover. ` +
-      `Apologize to the user, end your turn cleanly, and the Healer will look into it.]`,
+      `Apologize to ${userWords(currentAddress(agentId))}, end your turn cleanly, and the Healer will look into it.]`,
     );
   }
 

@@ -429,7 +429,7 @@ async function dialImage(req: GenerateImageRequest, slot: AgentCallSlot): Promis
         notes.push(
           `Requested aspect ratio ${req.aspectRatio} was not honored: the provider returned ` +
           `${dimensions.width}x${dimensions.height}. This image model sizes to its own native ` +
-          `output and ignores ratio hints. Tell the user, or retry with a model that accepts a size parameter.`,
+          `output and ignores ratio hints. Tell the person you are talking to, or retry with a model that accepts a size parameter.`,
         );
         logger.info('Image aspect ratio not honored by provider', {
           modelId: req.modelId,

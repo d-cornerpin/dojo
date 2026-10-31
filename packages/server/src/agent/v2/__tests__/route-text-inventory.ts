@@ -119,14 +119,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S013",
-  "file": "agent/pdf-tools.ts",
-  "line": 947,
-  "old": "`To give the user a downloadable URL for this file, call share_file with path=\"${out}\" — do NOT invent or guess a URL.`",
-  "new": "`To give the person you are talking to a downloadable URL for this file, call share_file with path=\"${out}\" — do NOT invent or guess a URL.`",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S014",
   "file": "agent/runtime.ts",
   "line": 151,
@@ -455,38 +447,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S066",
-  "file": "agent/v2/recovery.ts",
-  "line": 56,
-  "old": "`automatically. Give it a moment, and tell the user there is a short delay if they are waiting.]`;",
-  "new": "`automatically. Give it a moment, and tell the person you are talking to there is a short delay if they are waiting.]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S067",
-  "file": "agent/v2/recovery.ts",
-  "line": 543,
-  "old": "`If a tool result is too large to summarize in one turn, call complete_task or update the user with what you've done so far and continue next turn.]`;",
-  "new": "`If a tool result is too large to summarize in one turn, call complete_task or update the person you are talking to with what you've done so far and continue next turn.]`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S068",
-  "file": "agent/v2/recovery.ts",
-  "line": 602,
-  "old": "`If the user is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;",
-  "new": "`If ${userWords(currentAddress(agentId))} is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S069",
-  "file": "agent/v2/recovery.ts",
-  "line": 821,
-  "old": "`Apologize to the user, end your turn cleanly, and the Healer will look into it.]`,",
-  "new": "`Apologize to ${userWords(currentAddress(agentId))}, end your turn cleanly, and the Healer will look into it.]`,",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
   "id": "S070",
   "file": "agent/v2/refused-delivery.ts",
   "line": 108,
@@ -703,91 +663,11 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
-  "id": "S098",
-  "file": "agent/v2/steps/post-call-classify/reply-floors.ts",
-  "line": 202,
-  "old": "`[System: You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `",
-  "new": "`[System: You told ${userWords(ctx.turnCtx.address)} you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn `",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S099",
-  "file": "agent/v2/steps/post-call-classify/silent-closeout.ts",
-  "line": 118,
-  "old": "? `The engine recorded this delivery: ${receipts.slice(0, 220)}. The user has not heard anything about it. `",
-  "new": "? `The engine recorded this delivery: ${receipts.slice(0, 220)}. ${userWords(turnCtx.address, true)} has not heard anything about it. `",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S100",
-  "file": "agent/v2/steps/post-call-classify/silent-closeout.ts",
-  "line": 122,
-  "old": "? 'tell the user it is done and include the deliverable or link. '",
-  "new": "? `tell ${userWords(turnCtx.address)} it is done and include the deliverable or link. `",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S101",
-  "file": "agent/v2/steps/post-call-classify/silent-closeout.ts",
-  "line": 123,
-  "old": ": 'if the work truly reached the user, say where; if it did NOT, say honestly what remains instead of claiming it is done. ') +",
-  "new": ": `if the work truly reached ${userWords(turnCtx.address)}, say where; if it did NOT, say honestly what remains instead of claiming it is done. `) +",
-  "how": "A=turnCtx.address; convert the literal to a template string (the line before it, 'tell the user it is done and include the deliverable or link. ', is its own entry)"
- },
- {
   "id": "S102",
   "file": "agent/v2/steps/post-execution/index.ts",
   "line": 153,
   "old": "'Try responding based on what you already know, or ask the user for clarification.]',",
   "new": "`Try responding based on what you already know, or ask ${userWords(currentAddress(agentId))} for clarification.]`,",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S103",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 99,
-  "old": "`work_update(action=\"status\") (or work_note), then continue. If you are stuck, tell the user ` +",
-  "new": "`work_update(action=\"status\") (or work_note), then continue. If you are stuck, tell ${userWords(currentAddress(agentId))} ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S104",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 228,
-  "old": "`re-state the goal and resume (work_update(action=\"status\")), or tell the user it is blocked and why. ` +",
-  "new": "`re-state the goal and resume (work_update(action=\"status\")), or tell ${userWords(currentAddress(agentId))} it is blocked and why. ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S105",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 229,
-  "old": "`If the user should know this — and if they were waiting on this work, they should — WRITE it to them ` +",
-  "new": "`If ${userWords(currentAddress(agentId))} should know this — and if they were waiting on this work, they should — WRITE it to them ` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S106",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 231,
-  "old": "`If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,",
-  "new": "`If this block looks wrong and is stopping something ${userWords(currentAddress(agentId))} needs, tell them what you were attempting so they can decide.`,",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S107",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 354,
-  "old": "`  (b) Reply to the user with the answer you can give using the data you already have, if that is what they asked for.\\n` +",
-  "new": "`  (b) Reply to ${userWords(currentAddress(agentId))} with the answer you can give using the data you already have, if that is what they asked for.\\n` +",
-  "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S108",
-  "file": "agent/v2/steps/pre-call-gates/thrash-gate.ts",
-  "line": 356,
-  "old": "`  (d) Send the user a specific question if you need clarification.\\n` +",
-  "new": "`  (d) Send ${userWords(currentAddress(agentId))} a specific question if you need clarification.\\n` +",
   "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
@@ -911,22 +791,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S126",
-  "file": "prompt/assembler.ts",
-  "line": 848,
-  "old": "lines.push('Your current tools, rebuilt every turn, if it\\'s listed, you have it now. Don\\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');",
-  "new": "lines.push('Your current tools, rebuilt every turn, if it\\'s listed, you have it now. Don\\'t tell the person you are talking to a capability is missing from memory or an old message; check here (or just try it) first.');",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S127",
-  "file": "prompt/assembler.ts",
-  "line": 1487,
-  "old": "`- For tasks that need vision, tell the user to set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\\n`;",
-  "new": "`- For tasks that need vision, tell the person you are talking to that the owner can set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\\n`;",
-  "how": "static wording (cached system prompt, one-time rebuild): the owner is the actor, the person on the turn is the one told"
- },
- {
   "id": "S128",
   "file": "prompt/registry/entries.ts",
   "line": 278,
@@ -941,14 +805,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);",
   "new": "parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask ${userWords(tc?.address)} once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);",
   "how": "A=tc?.address (the turn context in renderTurnContext); import userWords from agent/v2/turn-address.js"
- },
- {
-  "id": "S132",
-  "file": "services/image-generation.ts",
-  "line": 432,
-  "old": "`output and ignores ratio hints. Tell the user, or retry with a model that accepts a size parameter.`,",
-  "new": "`output and ignores ratio hints. Tell the person you are talking to, or retry with a model that accepts a size parameter.`,",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
   "id": "S134",
