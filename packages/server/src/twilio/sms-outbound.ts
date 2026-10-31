@@ -12,7 +12,7 @@ import {
   isSmsEnabled,
 } from './auth.js';
 import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
-import { findApprovedNumber } from './approved-number.js';
+import { resolveRecipient } from './approved-number.js';
 import { openAgentCall } from '../agent/abortable-call.js';
 
 const logger = createLogger('twilio-sms-outbound');
@@ -46,7 +46,7 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   // recipient is on the allowlist (avoids the agent spamming
   // arbitrary numbers if jailbroken or fooled).
   const safeSenders = getTwilioSmsSafeSenders();
-  const approved = findApprovedNumber(safeSenders, to);
+  const approved = resolveRecipient(safeSenders, to);
   if (!approved) {
     const valid = safeSenders.length === 0
       ? '(none configured yet)'

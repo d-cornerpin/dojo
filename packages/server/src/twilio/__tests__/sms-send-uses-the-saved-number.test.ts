@@ -21,6 +21,10 @@ vi.mock('../../agent/abortable-call.js', () => ({
   openAgentCall: () => ({ signal: new AbortController().signal, release: () => {} }),
 }));
 
+vi.mock('../../services/safe-senders.js', () => ({
+  ownerIMessageRecords: () => [{ name: 'Me', address: '+15550123456' }],
+}));
+
 const { executeSmsSend } = await import('../sms-outbound.js');
 
 describe('sms_send recipient', () => {
@@ -54,6 +58,18 @@ describe('sms_send recipient', () => {
       const res = await executeSmsSend({ to: partial, body: 'hi' }, 'agent-1');
       expect(res.ok, partial).toBe(false);
     }
+    expect(sendSmsMock).not.toHaveBeenCalled();
+  });
+
+  it('the owner\'s own number is always allowed, even off the list', async () => {
+    const res = await executeSmsSend({ to: '(555) 012-3456', body: 'hi' }, 'agent-1');
+    expect(res.ok).toBe(true);
+    expect(sendSmsMock.mock.calls[0][0]).toBe('+15550123456');
+  });
+
+  it('a fragment of the owner\'s number is refused', async () => {
+    const res = await executeSmsSend({ to: '0123456', body: 'hi' }, 'agent-1');
+    expect(res.ok).toBe(false);
     expect(sendSmsMock).not.toHaveBeenCalled();
   });
 });

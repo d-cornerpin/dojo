@@ -28,6 +28,10 @@ vi.mock('../../services/channel-safe-senders.js', () => ({
   getTwilioVoiceSafeCallers: () => [{ name: 'Owner', address: '+15550100198' }],
 }));
 
+vi.mock('../../services/safe-senders.js', () => ({
+  ownerIMessageRecords: () => [{ name: 'Me', address: '+15550123456' }],
+}));
+
 const { executeVoiceCall } = await import('../voice-outbound.js');
 
 describe('voice_call recipient', () => {
@@ -61,6 +65,18 @@ describe('voice_call recipient', () => {
       const res = await executeVoiceCall({ to: partial });
       expect(res.ok, partial).toBe(false);
     }
+    expect(placeMock).not.toHaveBeenCalled();
+  });
+
+  it('the owner\'s own number is always allowed, even off the list', async () => {
+    const res = await executeVoiceCall({ to: '(555) 012-3456' });
+    expect(res.ok).toBe(true);
+    expect(placeMock.mock.calls[0][0]).toBe('+15550123456');
+  });
+
+  it('a fragment of the owner\'s number is refused', async () => {
+    const res = await executeVoiceCall({ to: '0123456' });
+    expect(res.ok).toBe(false);
     expect(placeMock).not.toHaveBeenCalled();
   });
 });

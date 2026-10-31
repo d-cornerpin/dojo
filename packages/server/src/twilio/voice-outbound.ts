@@ -28,7 +28,7 @@ import {
 import { CallSession, getCallSession, registerCallSession, listActiveCallSessions } from './call-session.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
-import { findApprovedNumber } from './approved-number.js';
+import { resolveRecipient } from './approved-number.js';
 
 const logger = createLogger('twilio-voice-outbound');
 
@@ -56,7 +56,7 @@ export async function executeVoiceCall(input: VoiceCallInput): Promise<VoiceCall
 
   // Only a number the owner approved may be rung, matched exactly; the SAVED number is the one dialled.
   const callers = getTwilioVoiceSafeCallers();
-  const approved = findApprovedNumber(callers, to);
+  const approved = resolveRecipient(callers, to);
   if (!approved) {
     const valid = callers.length === 0 ? '(none configured yet)' : callers.map(s => `${s.name} <${s.address}>`).join(', ');
     return {
