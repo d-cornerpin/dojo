@@ -1047,7 +1047,9 @@ export async function executeMicrosoftReadTool(
 
     case 'teams_read_messages': {
       const chatId = args.chat_id as string | undefined;
-      const maxResults = (args.max_results as number) ?? 10;
+      // Graph caps $top at 50 on message reads; a bigger value answers 400. A non-number falls back to the default 10.
+      const rawTop = args.max_results;
+      const maxResults = Math.min(Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1), 50);
 
       // If no chat_id, list available chats
       if (!chatId) {
@@ -1281,7 +1283,9 @@ export async function executeMicrosoftReadTool(
     case 'teams_read_channel_messages': {
       const teamId = encodeURIComponent(args.team_id as string);
       const channelId = encodeURIComponent(args.channel_id as string);
-      const maxResults = (args.max_results as number) ?? 10;
+      // Graph caps $top at 50 on message reads; a bigger value answers 400. A non-number falls back to the default 10.
+      const rawTop = args.max_results;
+      const maxResults = Math.min(Math.max(Math.floor(Number.isFinite(rawTop) ? (rawTop as number) : 10), 1), 50);
 
       const result = await msGraphRead(
         `teams/${teamId}/channels/${channelId}/messages?$top=${maxResults}`,
