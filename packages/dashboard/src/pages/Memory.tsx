@@ -9,6 +9,7 @@ import { MemorySearch } from '../components/MemorySearch';
 import { BriefingView } from '../components/BriefingView';
 import { VaultEntryCard } from '../components/VaultEntryCard';
 import { VaultStats } from '../components/VaultStats';
+import { VaultLoadError } from '../components/VaultLoadError';
 import { ForensicSearchPanel } from '../components/ForensicSearchPanel';
 import { CredentialsPanel } from '../components/CredentialsPanel';
 import { ContactsPanel } from '../components/ContactsPanel';
@@ -41,6 +42,10 @@ export const Memory = () => {
   const [vaultTypeFilter, setVaultTypeFilter] = useState<string>('');
   const [vaultSearch, setVaultSearchText] = useState('');
   const [dreaming, setDreaming] = useState(false);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [dreamNote, setDreamNote] = useState<string | null>(null);
+  const dreamNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (dreamNoteTimer.current) clearTimeout(dreamNoteTimer.current); }, []);
   const [dreamReports, setDreamReports] = useState<api.DreamReport[]>([]);
   // Always points at the latest loaders, so a dream finishing reloads with the search
   // words and filter on screen now, not the ones from when the subscription was made.
@@ -132,8 +137,9 @@ export const Memory = () => {
       }),
       api.getVaultStats(),
     ]);
-    if (mine !== vaultSeq.current) return;
-    if (entriesResult.ok) setVaultEntries(entriesResult.data);
+    if (mine !== vaultSeq.current) return; // a newer search was asked; its answer wins
+    if (entriesResult.ok) { setVaultEntries(entriesResult.data); setVaultError(null); }
+    else { setVaultEntries([]); setVaultError(entriesResult.error); }
     if (statsResult.ok) setVaultStats(statsResult.data);
     setVaultLoading(false);
   }, [vaultTypeFilter, vaultSearch]);
@@ -151,8 +157,14 @@ export const Memory = () => {
 
   const handleDreamNow = async () => {
     setDreaming(true);
-    await api.triggerDream();
+    const result = await api.triggerDream();
     setDreaming(false);
+    if (!result.ok) {
+      setDreamNote(result.error);
+      if (dreamNoteTimer.current) clearTimeout(dreamNoteTimer.current);
+      dreamNoteTimer.current = setTimeout(() => setDreamNote(null), 6000);
+      return;
+    }
     loadVault();
     loadDreamReports();
   };
@@ -304,9 +316,10 @@ export const Memory = () => {
       {mainTab === 'vault' && (
         <>
           <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />
+          {vaultError && <VaultLoadError message={vaultError} onRetry={loadVault} />}
           {vaultLoading ? (
             <div className="stub"><p className="stub__line">Loading vault entries...</p></div>
-          ) : vaultEntries.length === 0 ? (
+          ) : vaultError ? null : vaultEntries.length === 0 ? (
             <div className="stub">
               <p className="stub__line">
                 No vault entries yet. Agents will populate the vault as they learn, or the dreaming cycle will extract knowledge from conversations.
@@ -442,6 +455,7 @@ export const Memory = () => {
             <button type="button" className="btn btn--sm" onClick={handleDreamNow} disabled={dreaming}>
               {dreaming ? 'Dreaming...' : 'Dream Now'}
             </button>
+            {dreamNote && <span className="note--warn" role="status">{dreamNote}</span>}
           </div>
           {dreamReports.length === 0 ? (
             <div className="stub">
