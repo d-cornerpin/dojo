@@ -341,7 +341,7 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   // still records the full blob (from/to numbers, reply address).
   // insertMessageIfAbsent keeps the MessageSid de-duplication the INSERT OR IGNORE
   // leaned on (the unique index on external_message_id).
-  insertInboundMessageIfAbsent({
+  const persisted = insertInboundMessageIfAbsent({
     id: msgId,
     agentId: primaryId,
     role: 'user',
@@ -353,6 +353,12 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     senderId: inboundMetaObj.sender,
     authorized: inboundMetaObj.authorized,
   });
+  // A Twilio retry that arrived while this call was still downloading photos lost the
+  // insert race: the row is already stored by the other call, which shows and wakes it.
+  if (persisted === null) {
+    logger.info('Inbound SMS already ingested (concurrent retry), skipping', { messageSid: payload.messageSid });
+    return true;
+  }
   recordInboundMeta(msgId, inboundMetaObj);
 
   broadcast({
