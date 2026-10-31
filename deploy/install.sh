@@ -161,7 +161,9 @@ fi
 # "not started" is true. On a reinstall the earlier services are still loaded and the new platform
 # is already switched in, so say what is installed and what is still running.
 say_watchdog_stop_state() {
-    if launchctl list 2>/dev/null | grep -q 'com\.dojo\.platform'; then
+    # Read the list into a variable first (no pipe, so no SIGPIPE false "missing"); exact label.
+    local listing; listing="$(launchctl list 2>/dev/null)"
+    if grep -Eq '(^|[[:space:]])com\.dojo\.platform$' <<<"$listing"; then
         echo "   The new platform is installed, but the watchdog could not be updated. The old watchdog is still in place and the Dojo that was already running is still running (it has not been restarted)."
     else
         echo "   Dojo was not started."
@@ -170,6 +172,14 @@ say_watchdog_stop_state() {
 WD_STAGE="$DOJO_DIR/watchdog.staging-$$"
 WD_OLD="$DOJO_DIR/watchdog.old-$$"
 rm -rf "$DOJO_DIR"/watchdog.staging-* 2>/dev/null   # left by an installer that was cut off
+# An installer killed between the two renames below leaves NO watchdog, only watchdog.old-<pid>.
+# Put the newest one back before anything else, so a working watchdog is in place even if this run
+# stops later; with a watchdog in place, the old folders are stale and go.
+if [[ ! -d "$DOJO_DIR/watchdog" ]]; then
+    wd_prev="$(ls -dt "$DOJO_DIR"/watchdog.old-* 2>/dev/null | head -1)"
+    [[ -n "$wd_prev" ]] && mv "$wd_prev" "$DOJO_DIR/watchdog"
+fi
+[[ -d "$DOJO_DIR/watchdog" ]] && rm -rf "$DOJO_DIR"/watchdog.old-* 2>/dev/null
 wd_fail() { rm -rf "$WD_STAGE"; }
 if [[ -d "$SCRIPT_DIR/watchdog" ]]; then
     rm -rf "$WD_STAGE"

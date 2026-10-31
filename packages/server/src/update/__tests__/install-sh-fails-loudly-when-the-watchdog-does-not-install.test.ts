@@ -141,4 +141,28 @@ describe('install.sh and the watchdog', () => {
     expect(fs.readFileSync(path.join(wd, 'dist', 'index.js'), 'utf-8')).toBe('//');
     expect(leftovers()).toEqual([]);
   });
+
+  // Combined review 5: an installer killed between its two renames leaves no watchdog at all, only
+  // watchdog.old-<pid>. The next run puts it back FIRST, so a working watchdog is in place even if
+  // this run then fails, and removes stale old folders once a watchdog is in place.
+  it('puts a watchdog.old-* back when the watchdog folder is missing, even if this run then fails', () => {
+    const dojo = path.join(scratch, '.dojo');
+    fs.mkdirSync(path.join(dojo, 'watchdog.old-999', 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(dojo, 'watchdog.old-999', 'dist', 'index.js'), '//OLD');
+    stub('npm', 'exit 1');
+    const { status } = run();
+    expect(status).not.toBe(0);
+    expect(fs.readFileSync(path.join(dojo, 'watchdog', 'dist', 'index.js'), 'utf-8')).toBe('//OLD');
+    expect(fs.existsSync(path.join(dojo, 'watchdog.old-999'))).toBe(false);
+  });
+
+  it('removes a stale watchdog.old-* when a watchdog is already in place', () => {
+    installOldWatchdog();
+    const dojo = path.join(scratch, '.dojo');
+    fs.mkdirSync(path.join(dojo, 'watchdog.old-5'), { recursive: true });
+    stub('npm', 'exit 0');
+    const { status } = run();
+    expect(status).toBe(0);
+    expect(fs.existsSync(path.join(dojo, 'watchdog.old-5'))).toBe(false);
+  });
 });
