@@ -50,9 +50,10 @@ for (const f of plan) console.log(`  ${String(f.n).padStart(4)}  ${f.rel}`);
 if (dry) { console.log('(nothing was changed)'); process.exit(0); }
 
 for (const f of plan) fs.writeFileSync(f.abs, f.text.replace(re, (m) => caseOf(m, newName)));
-// the registry follows (it is one of the tracked files above, so it already says <new> where it said <old>; make the spare pool consistent)
+// the registry follows. It is NOT in the file list above (trackedTextFiles skips it: it holds the stand-ins by design, so the names gate
+// must not read it as a leak), so the codemod moves it here itself: <old> is retired, <new> takes its place, and leaves the spare pool.
 const after = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-after.standIns = [...new Set(after.standIns.map((w) => (lc(w) === lc(newName) ? newName : w)))];
+after.standIns = [...new Set(after.standIns.map((w) => (lc(w) === lc(oldName) ? newName : w)))];
 after.spare = (after.spare ?? []).filter((w) => lc(w) !== lc(newName));
 fs.writeFileSync(registryPath, `${JSON.stringify(after, null, 2)}\n`);
 console.log(`renamed. Re-running the names gate...`);
