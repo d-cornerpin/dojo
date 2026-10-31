@@ -464,13 +464,10 @@ export function getCostRecords(filter?: {
            cr.cost_usd, cr.latency_ms, cr.request_type, cr.created_at,
            COALESCE(a.name, 'Deleted Agent (' || substr(cr.agent_id, 1, 6) || ')') as agent_name,
            COALESCE(m.name, 'Unknown Model (' || substr(cr.model_id, 1, 6) || ')') as model_name,
-           rl.tier_id as tier
+           (SELECT rl.tier_id FROM router_log rl WHERE rl.selected_model_id = cr.model_id AND rl.agent_id = cr.agent_id AND rl.created_at = cr.created_at ORDER BY rl.rowid DESC LIMIT 1) as tier
     FROM cost_records cr
     LEFT JOIN agents a ON a.id = cr.agent_id
     LEFT JOIN models m ON m.id = cr.model_id
-    LEFT JOIN router_log rl ON rl.selected_model_id = cr.model_id
-      AND rl.agent_id = cr.agent_id
-      AND rl.created_at = cr.created_at
     WHERE ${where}
     ORDER BY cr.created_at DESC
     LIMIT ? OFFSET ?
