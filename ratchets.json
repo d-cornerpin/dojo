@@ -9739,6 +9739,7 @@
     "packages/server/src/gateway/routes/config.ts": 2986,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/reports.ts": 250,
+    "packages/server/src/gateway/routes/services.ts": 412,
     "packages/server/src/gateway/routes/setup-deps.ts": 531,
     "packages/server/src/gateway/routes/tracker.ts": 1039,
     "packages/server/src/gateway/routes/twilio.ts": 509,
