@@ -26,22 +26,39 @@ export const SudoPolicyCard = () => {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void (async () => {
-      const r = await api.getSetting(SUDO_POLICY_KEY);
-      setPolicy(readSudoPolicy(r.ok ? r.data.value : null));
+  // A failed read is shown as a failed read, never as the default policy: the dropdown stays
+  // disabled until the stored value is known.
+  const load = async () => {
+    setLoadError(null);
+    const r = await api.getSetting(SUDO_POLICY_KEY);
+    if (r.ok) {
+      setPolicy(readSudoPolicy(r.data.value));
       setLoaded(true);
-    })();
-  }, []);
+    } else {
+      setLoadError(r.error);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
 
   const choose = async (next: SudoPolicy) => {
+    const previous = policy;
     setPolicy(next);
     setSaving(true);
     setSaved(false);
+    setSaveError(null);
     const r = await api.setSetting(SUDO_POLICY_KEY, next);
     setSaving(false);
-    if (r.ok) setSaved(true);
+    if (r.ok) {
+      setSaved(true);
+    } else {
+      // The server still enforces the old policy; the screen must say the same.
+      setPolicy(previous);
+      setSaveError(r.error);
+    }
   };
 
   const warning = sudoPolicyWarning(policy);
@@ -68,6 +85,13 @@ export const SudoPolicyCard = () => {
           ))}
         </select>
         <p className="text-xs text-ui/25 mt-1">{SUDO_POLICY_HINTS[policy]}</p>
+        {saveError && <p className="text-xs text-cp-coral mt-1">Not saved: {saveError}</p>}
+        {loadError && (
+          <p className="text-xs text-cp-coral mt-1">
+            Could not read the current policy: {loadError}{' '}
+            <button type="button" className="btn btn--sm" onClick={() => void load()}>Retry</button>
+          </p>
+        )}
       </div>
       {warning && (
         <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
