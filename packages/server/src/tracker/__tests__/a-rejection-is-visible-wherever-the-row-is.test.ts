@@ -10,7 +10,7 @@
 //     reason:"No summary file was ever delivered — …"}     ← the PM ruling
 //   • 24600 `transition` blocked→paused by the agent
 //   • 24601 `audit` {entry_kind:'observation', action_taken:'notes attached to
-//     status=paused', note:"Waiting on Yorvak to name the notes folder …"}  ← the pause reason
+//     status=paused', note:"Waiting on FX.n11 to name the notes folder …"}  ← the pause reason
 //   • 24602 `claim_upheld` {claim_state:'paused'}          ← NOT a close: a blessed wait
 //
 // Twenty-four hours later the agent told the owner the deliverables "were delivered" and that
@@ -56,20 +56,21 @@ import {
 } from '../../work/tracker-store.js';
 import { trackerListActive, trackerGetStatus } from '../tools.js';
 import { writeTaskLog } from '../task-log.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
-const PM = 'quilba';
+const PM = FXID.n5;
 
 /** Verbatim from event 24599 — the PM's recorded rejection reason. */
 const REJECT_REASON =
   'No summary file was ever delivered — the only on-record delivery for this task is your '
   + 'interim "checking likely locations" message, which does not meet the goal (list notes '
   + 'folder, read two largest, write summary file); there is no notes folder, so set this '
-  + 'task to blocked and ask Yorvak which folder he means instead of claiming completion.';
+  + `task to blocked and ask ${FX.n11} which folder he means instead of claiming completion.`;
 
 /** Verbatim from event 24601 — the pause reason the reply never surfaced. */
 const PAUSE_NOTE =
-  'Waiting on Yorvak to name the notes folder for the reorganization (asked in dashboard '
+  `Waiting on ${FX.n11} to name the notes folder for the reorganization (asked in dashboard `
   + '2026-08-15: options are create ~/Documents/Project-Notes, keep loose .md files in home, '
   + 'or his own path). HarnessBot should hold until his answer is relayed.';
 
@@ -182,7 +183,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'HarnessBot', 'idle', '1970-01-01')`).run(AGENT);
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Quilba', 'idle', '1970-01-01')`).run(PM);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n5}', 'idle', '1970-01-01')`).run(PM);
   projectId = openTrackerProject({
     title: 'Notes reorg', createdBy: AGENT,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
@@ -199,7 +200,7 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
     const body = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):');
     const joined = body.join('\n');
     expect(joined, 'the pause reason is the row\'s own recorded words').toContain(
-      'Waiting on Yorvak to name the notes folder for the reorganization',
+      `Waiting on ${FX.n11} to name the notes folder for the reorganization`,
     );
   });
 
@@ -212,7 +213,7 @@ describe('T49 (a): a stopped row states its own recorded reason on the board', (
   it('the clause is TRUNCATED — one line on a board row, never the whole note', () => {
     seedS4Row();
     const clause = section(trackerListActive(AGENT, {}), 'Paused Tasks (1):')
-      .find((l) => l.includes('Waiting on Yorvak'))!;
+      .find((l) => l.includes(`Waiting on ${FX.n11}`))!;
     expect(clause, 'a board row is one line').not.toContain('\n');
     expect(clause.length).toBeLessThan(200);
     expect(clause, 'the tail is cut, so the note is not reproduced whole')

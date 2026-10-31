@@ -46,6 +46,7 @@ import {
   checkIdenticalCallRefusal, identicalCallSignature, isSignatureTerminal,
   recordIdenticalCallResult, type RepeatCallState,
 } from '../../agent/v2/identical-call-brake.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const readSrc = (rel: string): string =>
@@ -278,7 +279,7 @@ describe('SPIN-RECOVERY — the PM inherits the platform’s own recovery', () =
     // Driven, on the PM's own recorded spin shape. The brake stops the SPIN; it does not
     // touch the tracker row, so nothing here can make an item un-approvable.
     const state: RepeatCallState = new Map();
-    const sig = identicalCallSignature('work_update', { action: 'get', task_id: 'Nudge Zargo' });
+    const sig = identicalCallSignature('work_update', { action: 'get', task_id: `Nudge ${FX.n4}` });
     for (let i = 0; i < IDENTICAL_CALL_REFUSE_AT; i++) {
       recordIdenticalCallResult(state, sig, true, 'not found');
     }

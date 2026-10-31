@@ -8,7 +8,7 @@
 //
 //   PM poke loop ticks                                     89
 //   validation reviews that reached the report stage       43
-//   PM (`quilba`) model calls                               85
+//   PM (`FXID.n5`) model calls                               85
 //   PM verdicts actually written (claim_upheld/rejected)   4 + 1
 //
 // The PM shows up. `audit` was simply the wrong instrument: `tracker/task-log.ts:119`
@@ -49,6 +49,7 @@ import {
   validationCoverageAfterReview,
 } from '../pm-agent.js';
 import { VALIDATION_ESCALATION_MIN } from '../../scheduler/runner.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pmSource = (): string =>

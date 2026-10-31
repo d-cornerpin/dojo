@@ -53,6 +53,7 @@ import {
 } from '../../work/tracker-view.js';
 import { trackerValidateComplete, trackerValidatePause } from '../tools.js';
 import { writeTaskLog } from '../task-log.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
 const PM = 'pm-agent';
@@ -78,7 +79,7 @@ function seedS5(): { project: string; done: string; paused: string; delivery: st
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
   const paused = openTrackerTask({
-    projectId: project, title: 'Delete confirmed junk after Yorvak approves',
+    projectId: project, title: `Delete confirmed junk after ${FX.n11} approves`,
     status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
     origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
   });
@@ -95,7 +96,7 @@ function seedS5(): { project: string; done: string; paused: string; delivery: st
   });
   writeTaskLog({
     taskId: paused, fromEntity: `agent:${AGENT}`, entryKind: 'observation',
-    note: "Waiting on Yorvak's approval of the deletion list before removing anything.",
+    note: `Waiting on ${FX.n11}'s approval of the deletion list before removing anything.`,
   });
   // The approval arrives, the work is done and delivered, and the agent files its close FROM
   // the paused row — the exact call that produced event 22401.

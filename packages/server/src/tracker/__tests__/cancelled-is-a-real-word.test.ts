@@ -26,7 +26,7 @@
 // real and §4 is its test: a cancelled row is VISIBLE, in the terminal column, labelled with
 // its own word. The board is fixed first; only then does the word become storable.
 //
-// SCOPE NOTE, honest: existing `failed` rows are NOT migrated. The four July Zargo rows the
+// SCOPE NOTE, honest: existing `failed` rows are NOT migrated. The four July FX.n4 rows the
 // round-3 investigation examined were genuine failures and stay `fallen`/Failed.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -74,6 +74,7 @@ import { isTerminalTaskStatus } from '../../agent/tool-helpers.js';
 import {
   TERMINAL_COLUMN_STATUSES, columnKeyForStatus, terminalOutcomeLabel, KANBAN_COLUMN_KEYS,
 } from '../../../../dashboard/src/lib/task-status';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'a1';
 const TASK = 'task-cancel-0001';
@@ -137,7 +138,7 @@ describe('§1 status:"cancelled" lands on the spine as `abandoned`', () => {
     seedTrackerTask(mockDb.current!, { id: TASK, title: 'Take the trash out', status: 'on_deck' });
     const out = trackerUpdateStatus(AGENT, {
       taskId: TASK, status: 'cancelled',
-      notes: 'Cancelled per Yorvak: he\'ll take the trash out tonight instead.',
+      notes: `Cancelled per ${FX.n11}: he\'ll take the trash out tonight instead.`,
     });
     expect(out).toContain('[OK]');
     expect(rowOf().state).toBe('abandoned');
@@ -298,7 +299,7 @@ describe('§3 terminality is not a list of two words any more', () => {
 //
 // It is REVIEWED here rather than widened, and the reason is this clause. A terminal row does
 // not belong in a listing whose trailer says "No active tasks", and the round-3 evidence is
-// what settles it in BOTH directions: the four July Zargo rows the review flagged as "open
+// what settles it in BOTH directions: the four July FX.n4 rows the review flagged as "open
 // work the agent missed" are `state='failed'` with `closed_at` set — surfacing them as active
 // would have made the agent report closed July failures as live work, which is strictly worse
 // than the silence. So `cancelled` joins `fallen` OUTSIDE this list, deliberately, and this

@@ -42,6 +42,7 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { updateTask } from '../schema.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const T = 1_700_000_000_000;
 
@@ -65,25 +66,25 @@ beforeEach(() => {
 
 describe("M7 / P706 — the tracker's clear-assignee protocol", () => {
   it('THE DEFECT: an explicit null must clear the assignee, not crash on NOT NULL', () => {
-    seedTask('t1', 'zargo', 'zargo');
+    seedTask('t1', FXID.n4, FXID.n4);
     expect(() => updateTask('t1', { assignedTo: null })).not.toThrow();
     const r = row('t1');
     expect(r.assignee_agent).toBeNull();
-    expect(r.agent_id).toBe('zargo'); // the holder survives; NOT NULL is not violated
+    expect(r.agent_id).toBe(FXID.n4); // the holder survives; NOT NULL is not violated
   });
 
   it('CONTROL: a real assignee is still written to agent_id', () => {
-    seedTask('t1', 'zargo', 'zargo');
+    seedTask('t1', FXID.n4, FXID.n4);
     updateTask('t1', { assignedTo: 'dana' });
     expect(row('t1').agent_id).toBe('dana');
   });
 
   it('an omitted assignee leaves both columns alone', () => {
-    seedTask('t1', 'zargo', 'zargo');
+    seedTask('t1', FXID.n4, FXID.n4);
     updateTask('t1', { priority: 'high' });
     const r = row('t1');
-    expect(r.agent_id).toBe('zargo');
-    expect(r.assignee_agent).toBe('zargo');
+    expect(r.agent_id).toBe(FXID.n4);
+    expect(r.assignee_agent).toBe(FXID.n4);
     expect(r.priority).toBe('high');
   });
 });

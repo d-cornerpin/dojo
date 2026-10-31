@@ -57,9 +57,10 @@ import { isWorkReadOp } from '../../tools/work-verbs.js';
 import { classifyConcurrency } from '../../agent/v2/classifiers/concurrency.js';
 import { unknownArgsAgainstSchema } from '../../agent/tools/index.js';
 import { toolDefinitionsByName } from '../../agent/tools/definitions.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
-const OTHER = 'tyndo';
+const OTHER = FXID.n6;
 
 /** Local midnight for the box zone, in epoch ms — the door's own default window start. */
 function localMidnightMs(): number {

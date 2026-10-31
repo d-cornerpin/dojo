@@ -52,8 +52,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { resolveTaskId, formatResolveError } from '../schema.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const MINE = 'zargo';
+const MINE = FXID.n4;
 const THEIRS = 'sensei';
 const T = 1_700_000_000_000;
 

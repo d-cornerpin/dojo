@@ -42,8 +42,9 @@ import {
   composeTurnDeliverySummary, renderTaskStamps, isTangibleDeliverySummary,
   NON_TANGIBLE_DELIVERY_SUMMARIES,
 } from '../task-stamps.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const TURN = 4601;
 
 const db = (): Database.Database => mockDb.current!;

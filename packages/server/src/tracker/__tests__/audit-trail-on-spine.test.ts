@@ -58,8 +58,9 @@ import {
 } from '../task-log.js';
 import { transition } from '../../work/store.js';
 import { upholdClaim } from '../../work/tracker-store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 const SRC = path.join(__dirname, '..', '..');
 
@@ -88,7 +89,7 @@ beforeEach(() => {
   runMigrations();
   mockDb.current.prepare(
     `INSERT INTO agents (id, name, status, config, created_by) VALUES (?, ?, 'idle', '{}', 'system')`,
-  ).run(AGENT, 'Zargo');
+  ).run(AGENT, FX.n4);
 });
 
 const events = (kind?: string): Array<{ kind: string; payload: string | null; actor: string; created_at: number }> =>
@@ -104,7 +105,7 @@ describe('the audit trail round-trips through the spine', () => {
   it('an observation is written and read back with every field intact', () => {
     seedWork('w1');
     const id = writeTaskLog({
-      taskId: 'w1', fromEntity: 'agent:zargo', entryKind: 'observation',
+      taskId: 'w1', fromEntity: `agent:${FXID.n4}`, entryKind: 'observation',
       reason: 'why it matters', actionTaken: 'notes attached to status=blocked',
       note: 'Both fanout agents are terminated — no codewords on disk.',
     });
@@ -113,7 +114,7 @@ describe('the audit trail round-trips through the spine', () => {
     const [e] = listTaskLog('w1');
     expect(e).toBeDefined();
     expect(e.taskId).toBe('w1');
-    expect(e.fromEntity).toBe('agent:zargo');
+    expect(e.fromEntity).toBe(`agent:${FXID.n4}`);
     expect(e.entryKind).toBe('observation');
     expect(e.reason).toBe('why it matters');
     expect(e.actionTaken).toBe('notes attached to status=blocked');
@@ -183,7 +184,7 @@ describe('a state change is recorded ONCE, by the spine', () => {
     seedWork('w1');
     const before = events().length;
     const id = writeTaskLog({
-      taskId: 'w1', fromEntity: 'agent:zargo', entryKind: 'transition',
+      taskId: 'w1', fromEntity: `agent:${FXID.n4}`, entryKind: 'transition',
       fromStatus: 'in_progress', toStatus: 'blocked', reason: 'waiting on the owner',
     });
     expect(id).toBeNull();
@@ -229,7 +230,7 @@ describe('a state change is recorded ONCE, by the spine', () => {
        VALUES ('d1', ?, 'send_message', 'chat', 'delivered')`,
     ).run(AGENT);
     seedWork('w1', { state: 'done', closed_at: T, result_delivery_id: 'd1' });
-    upholdClaim('w1', 'done', 'pm', 'quilba', 'PM blessed the complete');
+    upholdClaim('w1', 'done', 'pm', FXID.n5, 'PM blessed the complete');
 
     // ONE line, and it names itself a verdict rather than a transition with equal endpoints —
     // RULING 10's "record them as what they ARE", applied to the live writer as well as to
@@ -266,7 +267,7 @@ describe('what the owner reads is unchanged', () => {
   it('formatEntryLine keeps its parts and order', () => {
     seedWork('w1');
     writeTaskLog({
-      taskId: 'w1', fromEntity: 'agent:zargo', entryKind: 'observation',
+      taskId: 'w1', fromEntity: `agent:${FXID.n4}`, entryKind: 'observation',
       actionTaken: 'notes attached', reason: 'because', note: 'the prose',
     });
     const line = formatEntryLine(listTaskLog('w1')[0]);
