@@ -121,10 +121,12 @@ export function recipientNoteFor(
  * not go through: ..."). From the turn's address. Null when the reply stays in the dashboard,
  * where the dashboard wording is already true.
  */
-export function routedReplyWords(agentId: string): string | null {
+export function routedReplyWords(agentId: string): { name: string; where: string } | null {
   const addr = currentLiveAddress(agentId);
-  if (addr?.kind === 'person' && addr.routed) {
-    return `your written reply this turn goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there`;
+  if (addr?.kind !== 'person' || !addr.routed) return null;
+  // The bridge being down also stops THIS turn's written reply when that reply goes by iMessage.
+  if (addr.deliveryChannel === 'imessage') {
+    return { name: addr.name, where: `your written reply cannot go to ${addr.name} by iMessage either while it is down, so it will stay in the dashboard chat` };
   }
-  return null;
+  return { name: addr.name, where: `your written reply this turn goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there` };
 }

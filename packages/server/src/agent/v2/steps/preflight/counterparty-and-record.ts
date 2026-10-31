@@ -113,14 +113,6 @@ export async function runCounterpartyAndRecord(
         inboundChannel,
       });
 
-  // T-4: publish this turn's iMessage recipient (the human counterparty) so an
-  // explicit no-recipient imessage_send / image_create reply goes to THIS person.
-  if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-    turnCtx.imRecipient = counterparty.senderId;
-  } else {
-    turnCtx.imRecipient = undefined;
-  }
-
   // RC-10: owner-channel affinity, resolved ONCE here so the SAME value drives both the
   // counterparty header (so the model is never told "dashboard" on a turn the engine
   // will text) and the end-of-turn reply routing. Applies only when: the counterparty

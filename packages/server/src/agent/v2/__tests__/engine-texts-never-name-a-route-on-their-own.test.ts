@@ -98,10 +98,11 @@ describe('a contact\'s turn never gets owner-route text, on any outbound path th
       'compile steer (asker = this contact)': compileSteerText({ total: 2, pieces: ['x'], attempt: 1, bound: 3, asker: { name: contact.name, channel: 'iMessage' } }),
       'no-recipient refusal': refuseSendWithNoRecipient('primary', 'imessage_send', { message: 'x' }, 'c')!.content,
       'send note (someone else)': recipientNoteFor('primary', 'sms_send', { to: '+15550123', body: 'x' }),
-      'failure words': routedReplyWords('primary') ?? '',
+      'failure words': routedReplyWords('primary')?.where ?? '',
     };
     for (const [name, text] of Object.entries(texts)) {
-      expect(text, name).not.toMatch(FORBIDDEN);
+      // The failure words for a down bridge truthfully say the reply stays in the dashboard chat.
+      expect(text, name).not.toMatch(name === 'failure words' ? /the owner is watching|reply to the owner|as your chat reply|owner's channel/i : FORBIDDEN);
       expect(text.length, name).toBeGreaterThan(0);
     }
     // And the contact is named wherever a text says who it is talking to.

@@ -131,13 +131,6 @@ export interface TurnContext {
    *  columns are themselves rekeyed. Same three-state contract, exactly. */
   conversationId: string | null | undefined;
 
-  /** T-4: the iMessage address this turn is conversing with (the turn counterparty's
-   *  senderId, when it is a human iMessage turn). This is the ONLY iMessage recipient
-   *  state (the racy per-agent last-inbound map was stripped, P5c), so an explicit
-   *  imessage_send with no recipient, and an image_create reply, go to THIS turn's
-   *  person, not whoever messaged most recently during a multi-conversation drain. */
-  imRecipient: string | undefined;
-
   /** 3.5: who this turn talks to and where the written reply lands; computed once in
    *  preflight (`v2/turn-address.ts`), read by delivery, the agent's notes and engine texts. */
   address: import('./v2/turn-address.js').TurnAddress | undefined;
@@ -513,7 +506,6 @@ export function openTurnContext(agentId: string): TurnContext {
     kind: undefined,
     convKey: undefined,
     conversationId: undefined,
-    imRecipient: undefined,
     address: undefined,
     modelRequestId: undefined,
     turnNumber: undefined,

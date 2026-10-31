@@ -22,6 +22,7 @@ import { computeTurnAddress } from '../turn-address.js';
 import { refuseSendWithNoRecipient, recipientNoteFor, routedReplyWords } from '../send-recipient.js';
 import type { TurnCounterparty } from '../counterparty.js';
 import { executeTool, toolResultOf } from '../../tools/index.js';
+import { getTurnScopedImRecipient } from '../../../services/imessage-bridge.js';
 
 const AGENT = 'primary';
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
@@ -129,7 +130,11 @@ describe('a send says who it went to', () => {
 describe('failure results say where the written reply goes, from the address', () => {
   it('a contact\'s routed turn: the written reply goes to them on their channel', () => {
     turnWith(contact, 'imessage');
-    expect(routedReplyWords(AGENT)).toContain('goes to Pat Example by iMessage');
+    const r = routedReplyWords(AGENT)!;
+    expect(r.name).toBe('Pat Example');
+    // The turn's own reply goes by iMessage, so a down bridge stops it too.
+    expect(r.where).toContain('cannot go to Pat Example by iMessage either');
+    expect(r.where).toContain('stay in the dashboard chat');
   });
   it('a dashboard turn: nothing to say, the dashboard wording is already true', () => {
     turnWith(owner, 'dashboard');
@@ -146,4 +151,21 @@ describe('the executor enforces it at the one door', () => {
     expect(r.content).toContain('was NOT run');
     expect(r.content).toContain('Pat Example');
   }, 60_000);
+});
+
+describe('minors: the failure words, the iMessage recipient and the tool description', () => {
+  it('an SMS-routed turn is told its written reply still reaches the person there', () => {
+    endTurnContext(AGENT);
+    const t = openTurnContext(AGENT);
+    t.address = computeTurnAddress({ autoRoutes: true, counterparty: { ...contact, channel: 'sms' }, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'sms', inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+    expect(routedReplyWords(AGENT)!.where).toContain('goes to Pat Example by SMS, so tell them there');
+  });
+  it('the image path reads the iMessage recipient from the address, not a second field', async () => {
+    turnWith(contact, 'imessage');
+    expect(getTurnScopedImRecipient(AGENT)).toBe('+15550100');
+    turnWith(owner, 'dashboard');
+    expect(getTurnScopedImRecipient(AGENT)).toBeNull();
+    endTurnContext(AGENT);
+    expect(getTurnScopedImRecipient(AGENT)).toBeNull();
+  });
 });

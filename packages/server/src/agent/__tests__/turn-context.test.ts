@@ -49,7 +49,7 @@ const read = (p: string): string => readFileSync(path.join(SRC, p), 'utf8');
  *  only if it dies with the turn, and the clause below makes that decision visible. */
 const THE_TURN_OWNS = [
   'agentId',
-  'kind', 'convKey', 'conversationId', 'imRecipient', 'modelRequestId',
+  'kind', 'convKey', 'conversationId', 'modelRequestId',
   'address',   // 3.5: who this turn talks to and where the reply lands; computed once in preflight, read by delivery, the assembler and the send tools
   'turnNumber', 'root', 'servedWork', 'triggerMessageId', 'receiptIds', 'recallTokens',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)

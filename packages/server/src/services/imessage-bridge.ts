@@ -591,7 +591,9 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
  * content to whatever contact happened to text moments earlier.
  */
 export function getTurnScopedImRecipient(agentId: string): string | null {
-  return turnContext(agentId)?.imRecipient ?? null;
+  // 3.5: read from the turn's ADDRESS (the one record of who this turn talks to), not a second field.
+  const a = turnContext(agentId)?.address;
+  return a && a.kind === 'person' && a.inboundChannel === 'imessage' && a.senderId ? a.senderId : null;
 }
 
 // P5c STRIP: the agent-initiated (relay) contact set is gone. Its three
