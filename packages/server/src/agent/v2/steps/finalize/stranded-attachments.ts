@@ -101,7 +101,6 @@ export async function surfaceStrandedAttachments(
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         let fileSendFailed = false;
         try {
-          const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
           // Design ruling 13: this is the SIXTH outbound arm — the one that does not go
           // through `channel-push.ts`'s single derivation, because it runs after the
           // router and carries a caption rather than the reply. It leaves the box all the
@@ -109,14 +108,10 @@ export async function surfaceStrandedAttachments(
           // "one derivation for every arm" claim wider than the code.
           const { redactHandedCredentials } = await import('../../../../credentials/secret-fields.js');
           const captionOut = redactHandedCredentials(agentId, captionText);
-          let first = true;
-          for (const att of stranded.attachments as Array<{ path?: string }>) {
-            if (att.path) {
-              const landed = await sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionOut : '');
-              if (!landed) fileSendFailed = true;
-              first = false;
-            }
-          }
+          // The helper also tells the agent (so its reply does not claim the file arrived).
+          const { textFilesToRequester } = await import('../text-files-to-requester.js');
+          const allLanded = await textFilesToRequester(agentId, counterparty.senderId, stranded.attachments as Array<{ path?: string; filename?: string }>, captionOut);
+          if (!allLanded) fileSendFailed = true;
         } catch (err) {
           fileSendFailed = true;
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
