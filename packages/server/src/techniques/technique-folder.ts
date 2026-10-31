@@ -22,11 +22,16 @@ export function isSafeTechniqueId(id: unknown): id is string {
   return typeof id === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(id) && id.length <= 200;
 }
 
-/** The real path of the nearest part of `p` that exists (so a link anywhere along it is followed). */
-function realOfNearestExisting(p: string): string {
+/**
+ * The real path of the nearest part of `p` that exists (so a link anywhere along it is followed),
+ * or null when an entry exists but cannot be resolved (a broken link or a link loop): a write
+ * through it could land anywhere, so the caller must treat it as outside.
+ */
+function realOfNearestExisting(p: string): string | null {
   let cur = p;
   for (;;) {
-    try { return fs.realpathSync(cur); } catch { /* not there yet */ }
+    try { return fs.realpathSync(cur); } catch { /* not resolvable: missing, or a dead link */ }
+    try { fs.lstatSync(cur); return null; } catch { /* truly not there yet */ }
     const parent = path.dirname(cur);
     if (parent === cur) return cur;
     cur = parent;
@@ -44,6 +49,7 @@ export function insideTechniqueDir(dirPath: string, rel: string): string | null 
   if (!resolved.startsWith(root + path.sep)) return null;
   const realRoot = realOfNearestExisting(root);
   const realTarget = realOfNearestExisting(resolved);
+  if (realRoot === null || realTarget === null) return null;
   if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) return null;
   return resolved;
 }
