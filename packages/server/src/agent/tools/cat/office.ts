@@ -59,6 +59,9 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
     const OFFICE_CREATE_TOOLS = new Set([
       'office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation',
     ]);
+    const OFFICE_READ_ONLY_TOOLS = new Set([
+      'office_get_word_document_outline', 'office_read_word_document', 'office_get_spreadsheet_range',
+    ]);
     // OneDrive/Graph-only ops with no local mode (they operate on a file_id).
     const OFFICE_MS_ACCOUNT_ONLY_TOOLS = new Set([
       'office_get_presentation_outline', 'office_read_presentation',
@@ -93,12 +96,15 @@ const officeBody: ToolHandler = async ({ agentId, name, args }) => {
       const localDest = typeof args.path === 'string' && (args.path as string).trim().length > 0
         ? (args.path as string).trim()
         : path.join(homeDir(), '.dojo', 'uploads', agentId, localFilename);
+      // The three read-only tools skip it: their declared fs_read effect is their gate.
+      if (!OFFICE_READ_ONLY_TOOLS.has(name)) {
       const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
       if (!perm.allowed) {
         auditLog(agentId, name, localDest, 'denied', perm.reason);
         content = permissionDeniedMessage(perm.reason, agentId);
         isError = true;
         return { content, isError };
+      }
       }
     }
     const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
