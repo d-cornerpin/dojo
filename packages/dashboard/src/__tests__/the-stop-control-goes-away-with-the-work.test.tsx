@@ -65,6 +65,7 @@ import { RightDockProvider } from '../components/RightDockProvider';
 import { TechniqueSessionProvider } from '../components/TechniqueSessionProvider';
 import { OrbProvider } from '../components/orb/OrbProvider';
 import { ThemeProvider } from '../themes/ThemeProvider';
+import { FX } from '../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** The agent the ActiveAgentProvider defaults to with no selection and no list. */
 const AGENT = 'primary';
@@ -85,7 +86,7 @@ const shell = (page: ReactElement) => (
  */
 async function arrive(status: string, inFlight: { turn: number; background: number }) {
   vi.mocked(api).getAgent.mockResolvedValue({
-    ok: true, data: { id: AGENT, name: 'Zargo', status, inFlight },
+    ok: true, data: { id: AGENT, name: FX.n4, status, inFlight },
   } as unknown as Awaited<ReturnType<typeof api.getAgent>>);
   render(shell(<Chat />));
   // The composer mounts with the stage; the arrival read resolves a tick later.
