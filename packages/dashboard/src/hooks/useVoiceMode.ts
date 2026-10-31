@@ -138,8 +138,13 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
   const clientRef = useRef<VoiceClient | null>(null);
 
   // Tear down whenever agentId disappears or component unmounts.
+  const mountedRef = useRef(true);
+  const inFlightRef = useRef<Promise<VoiceClient | null> | null>(null);
+  const startingRef = useRef(false);
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       void clientRef.current?.stop();
       clientRef.current = null;
     };
@@ -153,7 +158,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     }
   }, [agentId]);
 
-  const ensureClient = useCallback(async (): Promise<VoiceClient | null> => {
+  const buildClient = useCallback(async (): Promise<VoiceClient | null> => {
     if (!agentId) return null;
     if (clientRef.current && clientRef.current.agentId !== agentId) {
       void clientRef.current.stop();
@@ -164,6 +169,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       // the user's picker selections (voice, speed, STT model, VAD sensitivity,
       // wake-word setup) actually take effect when they toggle voice mode on.
       const saved = await loadSavedVoiceSettings();
+      if (!mountedRef.current) return null;   // left the page while settings loaded: build nothing
       const effectiveWakeWordEnabled = wakeWordEnabled ?? saved.wakeWordEnabled;
       const effectiveWakePhrase = wakePhrase ?? saved.wakePhrase;
       const effectiveBargeInEnabled = bargeInEnabled ?? saved.bargeInEnabled;
@@ -217,9 +223,17 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     return clientRef.current;
   }, [agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled, soundEffectsEnabled]);
 
+  // One build at a time: a second caller waits for the first one's client instead of making another.
+  const ensureClient = useCallback((): Promise<VoiceClient | null> => {
+    if (inFlightRef.current) return inFlightRef.current;
+    const pending = buildClient().finally(() => { inFlightRef.current = null; });
+    inFlightRef.current = pending;
+    return pending;
+  }, [buildClient]);
+
   const startVoice = useCallback(async () => {
     const client = await ensureClient();
-    if (!client) return;
+    if (!client || !mountedRef.current) return;
     setError(null);
     await client.start();
   }, [ensureClient]);
@@ -230,6 +244,9 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       if (clientRef.current) await clientRef.current.stop();
       return;
     }
+    if (startingRef.current) return;   // a start is already under way: ignore the extra click
+    startingRef.current = true;
+    try {
     // Turning ON — check that the required models are installed first.
     // Without this, a fresh user clicks the mic and gets silence for 20s
     // while whisper-server downloads + Kokoro loads, with zero indication
@@ -249,6 +266,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       }
     } catch { /* If the check itself fails, fall through and try to start anyway. */ }
     await startVoice();
+    } finally { startingRef.current = false; }
   }, [state, sttModel, startVoice]);
 
   const completeSetup = useCallback(async () => {
