@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
 
 // v2.7.24 — per-channel safe-sender allowlist (Gmail / Outlook / Teams).
@@ -38,11 +38,13 @@ const SHARING_LEVEL_HINTS: Record<SharingLevel, string> = {
 const isSharingLevel = (v: unknown): v is SharingLevel =>
   v === 'open_book' || v === 'dont_overshare' || v === 'cautious' || v === 'project_only';
 
-function parseSenders(raw: string | undefined): SafeSender[] {
+// Returns null when a stored value exists but cannot be read as a list, so the caller never
+// mistakes "unreadable" for "empty" and saves over it.
+function parseSenders(raw: string | undefined): SafeSender[] | null {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) return null;
     return parsed.flatMap((item): SafeSender[] => {
       if (item && typeof item === 'object' && typeof item.address === 'string' && item.address.trim()) {
         return [{
@@ -56,7 +58,7 @@ function parseSenders(raw: string | undefined): SafeSender[] {
       return [];
     });
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -79,6 +81,7 @@ export const ChannelSafeSenders = ({
 }: ChannelSafeSendersProps) => {
   const [senders, setSenders] = useState<SafeSender[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,31 +90,62 @@ export const ChannelSafeSenders = ({
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newSharingLevel, setNewSharingLevel] = useState<SharingLevel>('dont_overshare');
+  // The last list that was successfully read or saved, and the exact stored text it came from.
+  // Every edit is built on these, never on a failed or blank state.
+  const goodList = useRef<SafeSender[]>([]);
+  const goodRaw = useRef<string | null>(null);
+  const busy = useRef(false);
+
+  const load = useCallback(async (): Promise<boolean> => {
+    setLoading(true);
+    const res = await api.getSetting(configKey);
+    const raw = res.ok ? (res.data.value ?? null) : null;
+    const parsed = res.ok ? parseSenders(raw ?? undefined) : null;
+    if (!res.ok || parsed === null) {
+      setLoadFailed(true);
+      setLoading(false);
+      return false;
+    }
+    goodList.current = parsed;
+    goodRaw.current = raw;
+    setSenders(parsed);
+    setLoadFailed(false);
+    setLoading(false);
+    return true;
+  }, [configKey]);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const res = await api.getSetting(configKey);
-      if (cancelled) return;
-      if (res.ok) {
-        setSenders(parseSenders(res.data.value ?? undefined));
-      }
-      setLoading(false);
-    })();
+    goodList.current = [];
+    goodRaw.current = null;
+    setSenders([]);
+    (async () => { if (!cancelled) await load(); })();
     return () => { cancelled = true; };
-  }, [configKey]);
+  }, [load]);
 
-  const persist = async (next: SafeSender[]) => {
+  // `edit` receives the last good list and returns the new one (or null for "nothing to save").
+  const persist = async (edit: (current: SafeSender[]) => SafeSender[] | null) => {
+    if (busy.current || loadFailed) return;
+    const next = edit(goodList.current);
+    if (!next) return;
+    busy.current = true;
     setSaving(true);
     setError(null);
-    const res = await api.setSetting(configKey, JSON.stringify(next));
+    const text = JSON.stringify(next);
+    const res = await api.setSetting(configKey, text, goodRaw.current);
     setSaving(false);
+    busy.current = false;
     if (res.ok) {
+      goodList.current = next;
+      goodRaw.current = text;
       setSenders(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } else {
-      setError('Failed to save');
+      // The server refuses a save built on an out-of-date list; show its plain message and
+      // bring in the list as it is now.
+      await load();
+      setError(res.error || 'Failed to save');
     }
   };
 
@@ -121,42 +155,51 @@ export const ChannelSafeSenders = ({
       setError('Address is required');
       return;
     }
-    if (senders.some((s) => s.address.toLowerCase() === address.toLowerCase())) {
+    if (goodList.current.some((s) => s.address.toLowerCase() === address.toLowerCase())) {
       setError(`"${address}" is already on the list`);
       return;
     }
-    const next: SafeSender[] = [
-      ...senders,
-      {
-        address,
-        name: newName.trim() || address,
-        description: newDescription.trim() || undefined,
-        is_primary: false,
-        sharing_level: newSharingLevel,
-      },
-    ];
+    const entry: SafeSender = {
+      address,
+      name: newName.trim() || address,
+      description: newDescription.trim() || undefined,
+      is_primary: false,
+      sharing_level: newSharingLevel,
+    };
     setNewAddress('');
     setNewName('');
     setNewDescription('');
     setNewSharingLevel('dont_overshare');
     setShowAdd(false);
-    await persist(next);
+    await persist((current) => [...current, entry]);
   };
 
   const handleRemove = async (address: string) => {
-    const next = senders.filter((s) => s.address !== address);
-    await persist(next);
+    await persist((current) => current.filter((s) => s.address !== address));
   };
 
   const handleChangeSharing = async (address: string, level: SharingLevel) => {
-    const next = senders.map((s) =>
+    await persist((current) => current.map((s) =>
       s.address === address ? { ...s, sharing_level: level } : s,
-    );
-    await persist(next);
+    ));
   };
 
   if (loading) {
     return <div className="text-xs text-ui/40 italic">Loading {channelLabel} safe senders…</div>;
+  }
+
+  if (loadFailed) {
+    return (
+      <div className="mt-3 pt-3 border-t border-ui/[0.08]">
+        <span className="text-sm text-ui/70">Safe {channelLabel} senders</span>
+        <p className="text-xs text-cp-coral mt-1">
+          Could not load your {channelLabel} safe senders, so they can&apos;t be edited right now. Your saved list has not been changed.
+        </p>
+        <button onClick={() => { void load(); }} className="text-xs text-cp-amber hover:text-cp-amber/80 mt-1">
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -189,6 +232,7 @@ export const ChannelSafeSenders = ({
               <select
                 value={s.sharing_level}
                 onChange={(e) => handleChangeSharing(s.address, e.target.value as SharingLevel)}
+                disabled={saving}
                 className="text-xs rounded border border-ui/[0.12] bg-ui/[0.04] text-ui/70 px-1.5 py-0.5"
                 title={SHARING_LEVEL_HINTS[s.sharing_level]}
               >
@@ -198,6 +242,7 @@ export const ChannelSafeSenders = ({
               </select>
               <button
                 onClick={() => handleRemove(s.address)}
+                disabled={saving}
                 className="text-xs text-cp-coral/70 hover:text-cp-coral px-1.5"
                 title={`Remove ${s.name}`}
               >

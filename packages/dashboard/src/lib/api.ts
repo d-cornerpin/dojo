@@ -849,10 +849,12 @@ export const getSetting = async (key: string): Promise<ApiResponse<{ key: string
   return request<{ key: string; value: string | null }>(`/config/settings/${key}`);
 };
 
-export const setSetting = async (key: string, value: string): Promise<ApiResponse<{ key: string; value: string }>> => {
+// `base` is for the safe-sender lists: the exact saved text this edit was built on (null = nothing
+// was saved). The server refuses the save if the stored list has moved since.
+export const setSetting = async (key: string, value: string, base?: string | null): Promise<ApiResponse<{ key: string; value: string }>> => {
   return request<{ key: string; value: string }>(`/config/settings/${key}`, {
     method: 'PUT',
-    body: JSON.stringify({ value }),
+    body: JSON.stringify(base === undefined ? { value } : { value, base }),
   });
 };
 
