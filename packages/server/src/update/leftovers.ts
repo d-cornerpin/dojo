@@ -39,10 +39,24 @@ export function writersInto(dirs: string[]): number[] {
   return [...found];
 }
 
-function stopWriters(dirs: string[]): void {
-  for (const pid of writersInto(dirs)) {
+/** Gone, or a zombie nobody has reaped yet (it holds nothing). */
+function exited(pid: number): boolean {
+  if (!pidAlive(pid)) return true;
+  try { return /^Z/.test(execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim()); } catch { return true; }
+}
+
+/**
+ * Stops every writer and WAITS until each has really exited. A SIGKILL takes effect only when the
+ * process leaves the kernel call it is in, and `cp -Rc` is one `clonefile` of the whole tree: the
+ * clone can land after the kill, so a folder removed before the writer is gone is filled again and
+ * the removal reports "directory not empty". This waits on the exit itself (no fixed delay).
+ */
+async function stopWriters(dirs: string[]): Promise<void> {
+  const pids = writersInto(dirs);
+  for (const pid of pids) {
     try { process.kill(pid, 'SIGKILL'); logger.info('Stopped a process still writing into a dead installer\'s work dir', { pid }); } catch { /* already gone */ }
   }
+  while (pids.some((pid) => !exited(pid))) await new Promise((r) => setTimeout(r, 25));
 }
 
 /**
@@ -76,11 +90,11 @@ export async function cleanUpdateLeftovers(dojoDir: string): Promise<{ deleted: 
   // The writers go first. A SIGKILLed server leaves its `cp` running, and removing a folder under a
   // live writer is what left it behind for good. Once they are stopped (a kill takes effect at once),
   // a removal that still finds an entry in the folder is the dying writer's last one: ask again.
-  stopWriters(leftovers);
+  await stopWriters(leftovers);
   const removeStopped = async (p: string): Promise<void> => {
     try { await removeOne(p); } catch (err) {
       if (!fs.existsSync(p)) return;
-      stopWriters(leftovers);
+      await stopWriters(leftovers);
       await removeOne(p);
       void err;
     }
