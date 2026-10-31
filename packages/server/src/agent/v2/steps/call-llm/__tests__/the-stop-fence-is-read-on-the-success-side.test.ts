@@ -41,9 +41,10 @@ import { fileURLToPath } from 'node:url';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { stoppedAgents, preemptedAgents, stopFencedRuns, activeRuns } from '../../../../shared-state.js';
 import { runCallLLM, CALL_LLM_PHASE, type CallLLMContext } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 // ── The step's outside world, in the same shape its sibling clause files use ──
 const callModelSpy = vi.fn();

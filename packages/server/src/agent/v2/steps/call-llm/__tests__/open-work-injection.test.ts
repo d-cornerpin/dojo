@@ -29,6 +29,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { injectAndRecord, type PreCallInjectionInputs } from '../pre-call-injections.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const OPEN_WORK = 'OPEN WORK (still owed; close each one when it is delivered):\n1. [cmt:abc123] you promised: send the summary (Owner, just now)';
 
@@ -60,22 +61,22 @@ type Msg = { role: 'user' | 'assistant'; content: string };
 
 function inputsFor(messages: Msg[]): PreCallInjectionInputs {
   return {
-    agentId: 'zargo',
+    agentId: FXID.n4,
     turnNumber: 2,
     modelId: 'test-model',
     messages: messages as unknown as PreCallInjectionInputs['messages'],
-    systemPrompt: 'you are zargo',
+    systemPrompt: `you are ${FXID.n4}`,
     ctx: {} as PreCallInjectionInputs['ctx'],
     mctx: {} as PreCallInjectionInputs['mctx'],
     volatileFrom: 1,
     counterparty: { kind: 'user', id: 'owner', name: 'Owner', senderId: 'owner' } as unknown as PreCallInjectionInputs['counterparty'],
     steerAwaitingConfirm: null,
-    turnCtx: { agentId: 'zargo', conversationId: 'conv-1', root: { conversationId: 'conv-1' } } as unknown as PreCallInjectionInputs['turnCtx'],
+    turnCtx: { agentId: FXID.n4, conversationId: 'conv-1', root: { conversationId: 'conv-1' } } as unknown as PreCallInjectionInputs['turnCtx'],
     db: null as unknown as PreCallInjectionInputs['db'],
   };
 }
 
-const freshState = (): AgentTurnState => advance(initState('zargo', 'test-model'), { loopCount: 1 });
+const freshState = (): AgentTurnState => advance(initState(FXID.n4, 'test-model'), { loopCount: 1 });
 
 /** The injected texts, in array order. */
 const texts = (messages: Msg[]): string[] => messages.map((m) => String(m.content));

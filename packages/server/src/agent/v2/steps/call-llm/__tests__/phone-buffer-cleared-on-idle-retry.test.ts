@@ -63,6 +63,7 @@ import { clearSecretsCache } from '../../../../../config/loader.js';
 import { clearClientCache } from '../../../../model.js';
 import { callWithRetryAndFallback, type ModelCallInputs } from '../model-call.js';
 import type { AgentTurnState } from '../../../../v2/state.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // Real sockets and cases that deliberately wait out a bound. Comfortably inside the
 // default 5 s, but the margin is stated rather than assumed.
@@ -161,7 +162,7 @@ const seedOpenAI = (firstChunkMs: number | null, idleMs: number | null): void =>
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -200,7 +201,7 @@ describe('T65b — the phone buffer is cleared on the idle retry', () => {
     const turnCtx = { phoneStreamBuffer: '', phoneStreamFlushedAny: false, phoneStreamCallSid } as unknown as ModelCallInputs['turnCtx'];
     currentTurnCtx = turnCtx as unknown as typeof currentTurnCtx;
     return {
-      agentId: 'zargo',
+      agentId: FXID.n4,
       turnCtx,
       turnNumber: 1,
       messageId: 'msg-1',

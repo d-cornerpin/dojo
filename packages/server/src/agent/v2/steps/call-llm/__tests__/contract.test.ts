@@ -47,6 +47,7 @@ import {
   CALL_LLM_PHASE,
   type CallLLMContext,
 } from '../index.js';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── The step's outside world ──
 // Each mock stands in for a DOOR the span already went through; none of them
@@ -84,8 +85,8 @@ const revertTriggerStampOnAbortSpy = vi.fn();
 
 function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
   return {
-    agentId: 'zargo',
-    turnCtx: { agentId: 'zargo', conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
+    agentId: FXID.n4,
+    turnCtx: { agentId: FXID.n4, conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
     turnNumber: 7,
     db: null as unknown as CallLLMContext['db'],
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],
@@ -95,7 +96,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
     // t212: the model is chosen (and built for) in `assemble`; the call step reads the selection.
     selection: { modelId: 'test-model', routerTier: null, routerConfidence: 0, routerFreshDecision: false, excludedModels: [] },
     messages: [{ role: 'user', content: 'hello' }] as unknown as CallLLMContext['messages'],
-    systemPrompt: 'you are zargo',
+    systemPrompt: `you are ${FXID.n4}`,
     assembled: {
       systemEntryIds: [], messageEntryIds: [], allocation: null, freshTailDropped: 0,
       systemVolatile: '', reserveTokens: 0,
@@ -109,7 +110,7 @@ function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
 }
 
 function freshState(): AgentTurnState {
-  return advance(initState('zargo', 'test-model'), { phase: CALL_LLM_PHASE, loopCount: 1 });
+  return advance(initState(FXID.n4, 'test-model'), { phase: CALL_LLM_PHASE, loopCount: 1 });
 }
 
 const OK_RESULT = {
@@ -157,12 +158,12 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     const proceed = await runCallLLM(freshState(), ctxFor());
     expect(proceed.state.phase).toBe(CALL_LLM_PHASE);
 
-    stoppedAgents.add('zargo');
+    stoppedAgents.add(FXID.n4);
     callModelSpy.mockRejectedValue(new Error('aborted'));
     const stopped = await runCallLLM(freshState(), ctxFor());
     expect(stopped.state.phase).toBe(CALL_LLM_PHASE);
 
-    preemptedAgents.add('zargo');
+    preemptedAgents.add(FXID.n4);
     const preempted = await runCallLLM(freshState(), ctxFor());
     expect(preempted.state.phase).toBe(CALL_LLM_PHASE);
 
@@ -204,7 +205,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
   });
 
   it('ABANDON, STOPPED: the agent goes idle, the turn is asked to end, and the flag SURVIVES', async () => {
-    stoppedAgents.add('zargo');
+    stoppedAgents.add(FXID.n4);
     callModelSpy.mockRejectedValue(new Error('aborted mid-stream'));
 
     const out = await runCallLLM(freshState(), ctxFor());
@@ -217,7 +218,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // the end-of-run drains can still see that the user stopped this agent and
     // refuse to wake it again. The preempt clause below is UNCHANGED and still
     // consumes at its checkpoint — a preempt exists so a queued wakeup CAN fire.
-    expect(stoppedAgents.has('zargo')).toBe(true);
+    expect(stoppedAgents.has(FXID.n4)).toBe(true);
     // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
     // is GONE, and so is the `setAgentStatus` it was handed — `CallLLMContext` no longer declares one, so
     // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
@@ -227,7 +228,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
   });
 
   it('ABANDON, PREEMPTED: same shape, its own reason, and the queued wakeup is left to fire', async () => {
-    preemptedAgents.add('zargo');
+    preemptedAgents.add(FXID.n4);
     callModelSpy.mockRejectedValue(new Error('aborted mid-stream'));
 
     const out = await runCallLLM(freshState(), ctxFor());
@@ -235,7 +236,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     expect(out.directive).toBe('abandon');
     if (out.directive !== 'abandon') throw new Error('unreachable');
     expect(out.reason).toContain('preempted');
-    expect(preemptedAgents.has('zargo')).toBe(false);
+    expect(preemptedAgents.has(FXID.n4)).toBe(false);
     // T83 FIX ROUND 2: the spy-based "this step does not write idle" assertion that stood here
     // is GONE, and so is the `setAgentStatus` it was handed — `CallLLMContext` no longer declares one, so
     // the step cannot reach a status writer at all. The guarantee did not weaken; it moved to
@@ -257,7 +258,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // extra tool batch, 49 s past the button). The step now reads the flag at
     // the instant the call becomes interruptible. The "no retry" arm it was
     // written for is asserted directly below, on a stop that lands MID-call.
-    stoppedAgents.add('zargo');
+    stoppedAgents.add(FXID.n4);
     callModelSpy.mockRejectedValue(new Error('aborted mid-stream'));
 
     await runCallLLM(freshState(), ctxFor({ isAutoRouted: true }));   // 3 attempts available
@@ -272,7 +273,7 @@ describe('PHASE-6 CUT 5: the `callLLM` step\'s contract', () => {
     // `stopAgent`'s abort produces), and the auto-router's three attempts must
     // not be spent re-dialling something the user stopped.
     callModelSpy.mockImplementation(async () => {
-      stoppedAgents.add('zargo');
+      stoppedAgents.add(FXID.n4);
       throw new Error('aborted mid-stream');
     });
 
