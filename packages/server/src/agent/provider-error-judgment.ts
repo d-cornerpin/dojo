@@ -48,6 +48,7 @@ export async function judgeProviderError(facts: ProviderErrorFacts, text: string
   if ((facts.basis !== 'text' && facts.basis !== 'none') || !text) return rule;   // the provider's own answer settled it
   const said = await judgment({ purpose: PROVIDER_ERROR_PURPOSE, agentId, subject: subjectKey(agentId, text), state: { error: text }, questions: { error_class: ERROR_CLASS } })
     .alongside('error_class', rule.choice, { strict: true });
+  if (said === rule.choice) return rule;
   const cls = typeof said === 'string' ? CLASS_OF[said] : undefined;
   return cls ? { facts: { ...facts, class: cls, basis: 'text' }, choice: said as string } : rule;
 }
