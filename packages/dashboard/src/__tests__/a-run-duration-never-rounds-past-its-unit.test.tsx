@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest';
 import { formatDuration } from '../components/TaskRunHistory';
 
 const START = '2026-10-28T12:00:00.000Z';
-const after = (ms: number) => new Date(Date.parse(START) + ms).toISOString();
+const startMs = Date.parse(START);
+const after = (ms: number) => new Date(startMs + ms).toISOString();
 
 describe('a run duration never rounds past its unit', () => {
   it('a 59.6-second run says 59s, not 60s', () => {
