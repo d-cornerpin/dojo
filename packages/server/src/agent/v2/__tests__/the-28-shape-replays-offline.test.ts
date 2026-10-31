@@ -95,8 +95,7 @@ describe('replay of #28: a contact texts, the job needs the owner told, both are
 
     // 4. It names the owner: the send goes, and the result says plainly that the owner is NOT the person this turn is talking to.
     const note = recipientNoteFor(AGENT, 'imessage_send', { recipient: OWNER_ADDRESS, message: 'Pat asked about the thing' });
-    expect(note).toContain(`NOT the person this turn is talking to (that is ${CONTACT_ADDRESS})`);
-    expect(note).toContain(`your written reply still goes to ${CONTACT_ADDRESS}`);
+    expect(note).toContain(`This is not the person this turn is talking to (${CONTACT_ADDRESS}); your written reply still goes to ${CONTACT_ADDRESS}.`);
 
     // 5. The agent's written answer: delivery follows the address (the contact, iMessage), whatever else is newer or the owner's presence.
     for (const presence of ['in_dojo', 'away'] as const) {

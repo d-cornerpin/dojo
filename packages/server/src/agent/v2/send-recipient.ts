@@ -20,7 +20,10 @@ import { turnContext } from '../turn-context.js';
 import { outboundChannelForTool, outboundRecipientForTool } from './outbound.js';
 import { describeAddressee, deliveryLabel, type TurnAddress } from './turn-address.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
-import { addressesMatch } from '../../services/safe-senders.js';
+import { addressesMatch, isOwnerIMessageRecipient } from '../../services/safe-senders.js';
+import { getSafeSenders } from '../../services/imessage-bridge.js';
+import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
+import { currentLiveAddress } from './turn-address-live.js';
 
 /** The send tools whose recipient is a plain argument, with the argument names that carry it. */
 const RECIPIENT_ARGS: Readonly<Record<string, readonly string[]>> = {
@@ -55,24 +58,37 @@ export function refuseSendWithNoRecipient(
 ): ToolResult | null {
   const base = baseName(toolName);
   if (!(base in RECIPIENT_ARGS) || namedRecipient(base, args)) return null;
-  const talkingTo = describeAddressee(turnContext(agentId)?.address);
+  const addr = currentLiveAddress(agentId);
+  const talkingTo = describeAddressee(addr) + (addr?.kind === 'person' && addr.senderId ? ` (address ${addr.senderId})` : '');
+  const list = reachablePeople(base);
   const content =
     `${toolName} was NOT run: it needs a recipient, and it never defaults to the person this turn is talking to. ` +
     `This turn is talking to: ${talkingTo}. ` +
-    `Tell me who this message is for by passing the recipient explicitly. If it is for the person this turn is ` +
-    `talking to, pass their address; if it is for someone else, name that person.`;
+    (list ? `People you can reach with ${base}: ${list}. ` : '') +
+    `Call again with the recipient set to the address of the person this message is for.`;
   return { toolCallId, name: toolName, content, isError: true };
+}
+
+/** The people this send tool can reach, as `Name <address>`, so the very next call can be right. */
+function reachablePeople(base: string): string {
+  try {
+    if (base === 'imessage_send') {
+      return getSafeSenders().map((x) => `${x.name} <${x.address}>${x.is_primary ? ' [the owner]' : ''}`).join(', ');
+    }
+    if (base === 'sms_send') {
+      const r = getSmsReachability();
+      return r.live ? describeSmsRecipients(r) : '';
+    }
+  } catch { /* no list is better than a failed refusal */ }
+  return '';
 }
 
 function sameAsAddressee(addr: TurnAddress, channel: string, recipient: string): boolean {
   if (addr.kind !== 'person') return false;
   if (channel === 'teams') return !!addr.inboundContext?.chatId && addr.inboundContext.chatId === recipient;
   if (addr.senderId && addressesMatch(addr.senderId, recipient)) return true;
-  if (addr.isOwner) {
-    // The owner has no address on the dashboard; match them by the name the recipient resolves to.
-    const shown = resolveRecipientDisplay(channel as ChannelKind, recipient);
-    return shown === addr.name;
-  }
+  // The owner has no address of their own on the dashboard: the one owner rule decides, never a name.
+  if (addr.isOwner) { try { return isOwnerIMessageRecipient(recipient); } catch { return false; } }
   return false;
 }
 
@@ -89,17 +105,15 @@ export function recipientNoteFor(
   if (channel === null) return '';
   const raw = outboundRecipientForTool(toolName, args);
   if (!raw) return '';
-  const addr = turnContext(agentId)?.address;
+  const addr = currentLiveAddress(agentId);
   let shown = raw;
   try { shown = resolveRecipientDisplay(channel as ChannelKind, raw); } catch { /* the raw handle is the honest fallback */ }
   const who = shown === raw ? raw : `${shown} (${raw})`;
+  const sent = `Sent to ${who} by ${deliveryLabel(channel as never)}.`;
   // Routed channels only: a turn whose reply stays in the dashboard needs no contrast.
-  if (!addr || !addr.routed) return ` Recipient: ${who}, by ${channel}.`;
-  if (sameAsAddressee(addr, channel, raw)) {
-    return ` Recipient: ${who}, by ${channel}. This is the person this turn is talking to.`;
-  }
-  return ` Recipient: ${who}, by ${channel}. This is NOT the person this turn is talking to (that is ${addr.name}); ` +
-    `your written reply still goes to ${addr.name}. Confirm this was intended.`;
+  if (!addr || !addr.routed) return ` ${sent}`;
+  if (sameAsAddressee(addr, channel, raw)) return ` ${sent} This is the person this turn is talking to.`;
+  return ` ${sent} This is not the person this turn is talking to (${addr.name}); your written reply still goes to ${addr.name}.`;
 }
 
 /**
@@ -108,7 +122,7 @@ export function recipientNoteFor(
  * where the dashboard wording is already true.
  */
 export function routedReplyWords(agentId: string): string | null {
-  const addr = turnContext(agentId)?.address;
+  const addr = currentLiveAddress(agentId);
   if (addr?.kind === 'person' && addr.routed) {
     return `your written reply this turn goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there`;
   }

@@ -1,7 +1,22 @@
 // 3.5: a channel send tool called with no recipient does not run (it never falls back silently to
 // the turn's counterparty); a send that ran says who it went to and whether that is the person
 // this turn is talking to.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const { ownerAddresses, senders, presence } = vi.hoisted(() => ({
+  presence: { now: 'in_dojo' as 'in_dojo' | 'away' },
+  ownerAddresses: new Set<string>(),
+  senders: [] as Array<{ name: string; address: string; is_primary?: boolean }>,
+}));
+vi.mock('../../../services/safe-senders.js', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  isOwnerIMessageRecipient: (a: string) => ownerAddresses.has(a),
+}));
+vi.mock('../../../services/presence.js', () => ({ getPresence: () => presence.now, isImessageConfigured: () => true }));
+vi.mock('../../../services/imessage-bridge.js', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getSafeSenders: () => senders,
+}));
 import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import { computeTurnAddress } from '../turn-address.js';
 import { refuseSendWithNoRecipient, recipientNoteFor, routedReplyWords } from '../send-recipient.js';
@@ -18,7 +33,12 @@ function turnWith(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard', isEng
   t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
 }
 
-beforeEach(() => endTurnContext(AGENT));
+beforeEach(() => {
+  endTurnContext(AGENT);
+  presence.now = 'in_dojo';
+  ownerAddresses.clear();
+  senders.length = 0;
+});
 
 describe('no recipient, no send', () => {
   it('imessage_send with no recipient on a contact\'s turn does not run and names who the turn is talking to', () => {
@@ -28,7 +48,7 @@ describe('no recipient, no send', () => {
     expect(r?.content).toContain('was NOT run');
     expect(r?.content).toContain('Pat Example');
     expect(r?.content).toContain('by iMessage');
-    expect(r?.content).toMatch(/who this message is for/i);
+    expect(r?.content).toMatch(/person this message is for/i);
   });
 
   it('the same for sms_send, gmail_send and outlook_send, and for a blank recipient', () => {
@@ -52,26 +72,52 @@ describe('no recipient, no send', () => {
   });
 });
 
+describe('the refusal makes the next call obvious (#27: never block the main agent from texting the owner)', () => {
+  it('imessage_send lists the people it can reach, the owner marked, and the turn person\'s own address', () => {
+    senders.push({ name: 'Owner Example', address: '+15550199', is_primary: true }, { name: 'Pat Example', address: '+15550100' });
+    turnWith(contact, 'imessage');
+    const c = refuseSendWithNoRecipient(AGENT, 'imessage_send', { message: 'x' }, 'c')!.content;
+    expect(c).toContain('Owner Example <+15550199> [the owner]');
+    expect(c).toContain('Pat Example <+15550100>');
+    expect(c).toContain('(address +15550100)');
+    expect(c).toContain('Call again with the recipient set to the address of the person this message is for.');
+    expect(c).not.toMatch(/\bme\b/);
+  });
+});
+
+describe('the owner is recognised by the one owner rule, never by a display name', () => {
+  it('an owner turn texting the owner\'s address is "the person this turn is talking to" even when the record name differs', () => {
+    ownerAddresses.add('+15550199');
+    presence.now = 'away';
+    endTurnContext(AGENT);
+    const t = openTurnContext(AGENT);
+    t.address = computeTurnAddress({ autoRoutes: true, counterparty: owner, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'dashboard', inboundContext: null, presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+    const n = recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550199', message: 'x' });
+    expect(n).toContain('This is the person this turn is talking to.');
+    expect(recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550123', message: 'x' })).toContain('is not the person this turn is talking to');
+  });
+});
+
 describe('a send says who it went to', () => {
   it('to the person the turn is talking to: says so', () => {
     turnWith(contact, 'imessage');
     const n = recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550100', message: 'x' });
-    expect(n).toContain('by imessage');
+    expect(n).toContain('Sent to +15550100 by iMessage.');
     expect(n).toContain('This is the person this turn is talking to.');
   });
 
   it('to someone else on a routed turn: says plainly that it is NOT the person, and where the written reply still goes', () => {
     turnWith(contact, 'imessage');
     const n = recipientNoteFor(AGENT, 'sms_send', { to: '+15550123', body: 'x' });
-    expect(n).toContain('NOT the person this turn is talking to (that is Pat Example)');
-    expect(n).toContain('your written reply still goes to Pat Example');
+    expect(n.trim()).toBe('Sent to +15550123 by SMS. This is not the person this turn is talking to (Pat Example); your written reply still goes to Pat Example.');
+    expect(n).not.toMatch(/confirm/i);
   });
 
   it('a dashboard turn needs no contrast: it just names the recipient', () => {
     turnWith(owner, 'dashboard');
     const n = recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550123', message: 'x' });
-    expect(n).toContain('Recipient:');
-    expect(n).not.toContain('NOT the person');
+    expect(n).toContain('Sent to +15550123 by iMessage.');
+    expect(n).not.toMatch(/not the person/i);
   });
 
   it('a reply tool (no recipient argument) adds nothing; its own result names the thread', () => {
