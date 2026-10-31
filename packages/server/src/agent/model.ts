@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
+import { extractTextToolCalls } from './text-tool-fallback.js';
 import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
@@ -2658,123 +2659,13 @@ async function callOpenAIModel(
 
     recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
-    // ── Text-based tool call fallback ──
-    // Some models (MiniMax, older Gemini) occasionally fall back to
-    // outputting tool calls as XML text instead of using the structured
-    // tool_calls mechanism. When that happens, toolCalls is empty but
-    // fullText contains `<invoke name="X">` or similar patterns. We
-    // detect and parse these so the runtime can execute them normally.
-    if (toolCalls.length === 0 && (
-      fullText.includes('<invoke name="') ||
-      fullText.includes('<tool_call>') ||
-      fullText.includes('<|tool_call>') ||
-      fullText.includes('<function_call') ||
-      /```json\s*\{\s*"name"\s*:/.test(fullText)
-    )) {
-      // Pattern 1: <invoke name="tool"><parameter name="key">value</parameter></invoke>
-      const invokeRegex = /<invoke name="([^"]+)">([\s\S]*?)<\/invoke>/g;
-      let match;
-      while ((match = invokeRegex.exec(fullText)) !== null) {
-        const toolName = match[1];
-        const paramsBlock = match[2];
-        const args: Record<string, unknown> = {};
-        const paramRegex = /<parameter name="([^"]+)">([\s\S]*?)<\/parameter>/g;
-        let paramMatch;
-        while ((paramMatch = paramRegex.exec(paramsBlock)) !== null) {
-          const val = paramMatch[2].trim();
-          try { args[paramMatch[1]] = JSON.parse(val); } catch { args[paramMatch[1]] = val; }
-        }
-        toolCalls.push({
-          id: `text_tool_${Date.now()}_${toolCalls.length}`,
-          name: toolName,
-          arguments: args,
-        });
-      }
-      // Pattern 2: <tool_call><name>tool</name><arguments>{...}</arguments></tool_call>
-      if (toolCalls.length === 0) {
-        const tcRegex = /<tool_call>\s*<name>([^<]+)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_call>/g;
-        let tcMatch;
-        while ((tcMatch = tcRegex.exec(fullText)) !== null) {
-          const tcName = tcMatch[1].trim();
-          let tcArgs: Record<string, unknown> = {};
-          try { tcArgs = JSON.parse(tcMatch[2].trim()); } catch { /* skip unparseable */ }
-          toolCalls.push({
-            id: `text_tool_${Date.now()}_${toolCalls.length}`,
-            name: tcName,
-            arguments: tcArgs,
-          });
-        }
-      }
-
-      // Pattern 3: ```json\n{"name": "tool", "arguments": {...}}\n```
-      if (toolCalls.length === 0) {
-        const jsonBlockRegex = /```json\s*(\{[\s\S]*?\})\s*```/g;
-        let jbMatch;
-        while ((jbMatch = jsonBlockRegex.exec(fullText)) !== null) {
-          try {
-            const obj = JSON.parse(jbMatch[1]);
-            if (obj.name && typeof obj.name === 'string') {
-              toolCalls.push({
-                id: `text_tool_${Date.now()}_${toolCalls.length}`,
-                name: obj.name,
-                arguments: (obj.arguments ?? obj.parameters ?? {}) as Record<string, unknown>,
-              });
-            }
-          } catch { /* not valid JSON tool call */ }
-        }
-      }
-
-      // Pattern 4: <function_call name="tool" arguments='{"key": "value"}' />
-      if (toolCalls.length === 0) {
-        const fcRegex = /<function_call\s+name="([^"]+)"\s+arguments='([^']*)'\s*\/>/g;
-        let fcMatch;
-        while ((fcMatch = fcRegex.exec(fullText)) !== null) {
-          let fcArgs: Record<string, unknown> = {};
-          try { fcArgs = JSON.parse(fcMatch[2]); } catch { /* skip */ }
-          toolCalls.push({
-            id: `text_tool_${Date.now()}_${toolCalls.length}`,
-            name: fcMatch[1],
-            arguments: fcArgs,
-          });
-        }
-      }
-
-      // Pattern 5: <|tool_call>call:tool_name(key="value", ...)<tool_call|>
-      // Used by some Qwen/DeepSeek-derived models
-      if (toolCalls.length === 0) {
-        const pipeRegex = /<\|tool_call>call:(\w+)\(([^)]*)\)<(?:tool_call\||\|tool_call)>/g;
-        let pipeMatch;
-        while ((pipeMatch = pipeRegex.exec(fullText)) !== null) {
-          const toolName = pipeMatch[1];
-          const rawArgs = pipeMatch[2];
-          const args: Record<string, unknown> = {};
-          // Parse key="value" or key=value pairs
-          const argPairs = rawArgs.matchAll(/(\w+)="([^"]*)"/g);
-          for (const pair of argPairs) {
-            args[pair[1]] = pair[2];
-          }
-          // Also try key=value (unquoted)
-          const unquotedPairs = rawArgs.matchAll(/(\w+)=([^,)"]+)/g);
-          for (const pair of unquotedPairs) {
-            if (!(pair[1] in args)) args[pair[1]] = pair[2].trim();
-          }
-          toolCalls.push({
-            id: `text_tool_${Date.now()}_${toolCalls.length}`,
-            name: toolName,
-            arguments: args,
-          });
-        }
-      }
-
-      if (toolCalls.length > 0) {
-        // Strip all recognized tool call patterns from visible text
-        fullText = fullText.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, '')
-          .replace(/<invoke name="[^"]*">[\s\S]*?<\/invoke>/g, '')
-          .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-          .replace(/<\|tool_call>[\s\S]*?<(?:tool_call\||\|tool_call)>/g, '')
-          .replace(/<function_call[^>]*\/>/g, '')
-          .replace(/```json\s*\{[\s\S]*?\}\s*```/g, '')
-          .trim();
+    // ── Text-based tool call fallback ── (models that print a tool call as text; only a tool
+    // this call offered is taken — see text-tool-fallback.ts)
+    if (toolCalls.length === 0 && openaiTools) {
+      const extracted = extractTextToolCalls(fullText, openaiTools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
+      if (extracted.toolCalls.length > 0) {
+        toolCalls.push(...extracted.toolCalls);
+        fullText = extracted.cleanText;
         logger.info('Extracted text-based tool calls (fallback)', {
           model: modelInfo.apiModelId,
           extractedCount: toolCalls.length,
