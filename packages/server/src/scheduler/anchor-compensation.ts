@@ -293,8 +293,6 @@ export function runAnchorCompensationPass(
     const result = scanForCompensatedAnchors({
       windowClosedAtMs: firstBoot ? Date.parse(firstBoot) : Date.now(),
     });
-    setCfg(SCAN_RECORD_KEY, JSON.stringify(result));
-
     logger.info('compensated-anchor scan complete', {
       examined: result.examined,
       suspects: result.suspects.length,
@@ -307,8 +305,11 @@ export function runAnchorCompensationPass(
       logger.warn('compensated-anchor suspects found — reported, NOT rewritten', {
         suspects: result.suspects,
       });
-        notify(describeSuspects(result));
+      // The record is saved only after the notice has gone out: a failed send
+      // throws to the catch below, leaves the scan open, and the next boot retries.
+      notify(describeSuspects(result));
     }
+    setCfg(SCAN_RECORD_KEY, JSON.stringify(result));
     return result;
   } catch (err) {
     // A maintenance scan never fails a boot.
