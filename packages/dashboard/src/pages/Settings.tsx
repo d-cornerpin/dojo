@@ -44,8 +44,7 @@ import { SecurityTab, SudoPolicyCard } from '../components/settings/SecurityTab'
 import { DreamingTab } from '../components/settings/DreamingTab';
 import { UpdateTab } from '../components/settings/UpdateTab';
 import { VoiceTab } from '../components/settings/VoiceTab';
-
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'channels' | 'integrations' | 'voice' | 'update';
+import { SETTINGS_TABS, isTab, type Tab } from '../lib/settings-tabs';
 
 export const Settings = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -54,11 +53,12 @@ export const Settings = () => {
   // 'integrations' into a new 'channels' tab (they're all communication
   // channels with safe-sender lists, auto-routing, etc.). Old deep links
   // map forward so bookmarks don't 404.
-  const tabFromUrl = (
+  const mappedTab =
     rawTab === 'workspace' || rawTab === 'microsoft' || rawTab === 'imessage'
       ? 'channels'
-      : rawTab
-  ) as Tab | null;
+      : rawTab;
+  // An unknown name (old bookmark, typo) falls back to the first tab and the link is corrected.
+  const tabFromUrl: Tab | null = isTab(mappedTab) ? mappedTab : null;
   const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl || 'platform');
 
   // Sync tab with URL query param so mobile hamburger sub-menu links work
@@ -66,6 +66,7 @@ export const Settings = () => {
     if (tabFromUrl && tabFromUrl !== activeTab) {
       setActiveTab(tabFromUrl);
     }
+    if (rawTab !== null && !tabFromUrl) setSearchParams({ tab: 'platform' }, { replace: true });
   }, [tabFromUrl]);
 
   // Agent-driven deep-link: when navigated with ?section=, scroll the matching
@@ -96,19 +97,7 @@ export const Settings = () => {
     setSearchParams({ tab });
   };
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'platform', label: 'Dojo' },
-    { key: 'providers', label: 'Providers' },
-    { key: 'models', label: 'Models' },
-    { key: 'router', label: 'Router' },
-    { key: 'profile', label: 'Profile' },
-    { key: 'security', label: 'Security' },
-    { key: 'sensei', label: 'Sensei' },
-    { key: 'channels', label: 'Channels' },
-    { key: 'integrations', label: 'Integrations' },
-    { key: 'voice', label: 'Voice' },
-    { key: 'update', label: 'Update' },
-  ];
+  const tabs = SETTINGS_TABS;
 
   return (
     <div className="settings-page">
