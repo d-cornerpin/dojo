@@ -122,35 +122,29 @@ const TreeNode = ({ summary, childrenMap, selectedId, onSelect, level }: TreeNod
 
 export const DagTree = ({ summaries, links, selectedId, onSelect }: DagTreeProps) => {
   const { roots, childrenMap } = useMemo(() => {
-    // Build a map of summaryId -> parentIds
-    const parentMap = new Map<string, string[]>();
-    links.forEach((link) => {
-      parentMap.set(link.summaryId, link.parentIds);
-    });
-
-    // Build children map: parentId -> children summaries
+    // A link row says: `summaryId` is a condensed summary, `parentIds` are the
+    // older summaries it was condensed FROM. So the condensed summary is the
+    // tree parent and each source is its child.
     const cMap = new Map<string, Summary[]>();
     const summaryMap = new Map<string, Summary>();
     summaries.forEach((s) => summaryMap.set(s.id, s));
 
-    // For each summary, if it has parents, add it as a child of each parent
-    const hasParent = new Set<string>();
+    const isSource = new Set<string>();
     links.forEach((link) => {
-      link.parentIds.forEach((parentId) => {
-        if (!cMap.has(parentId)) {
-          cMap.set(parentId, []);
-        }
-        const child = summaryMap.get(link.summaryId);
-        if (child) {
-          cMap.get(parentId)!.push(child);
-          hasParent.add(link.summaryId);
-        }
+      if (!summaryMap.has(link.summaryId)) return;
+      link.parentIds.forEach((sourceId) => {
+        const source = summaryMap.get(sourceId);
+        if (!source) return;
+        if (!cMap.has(link.summaryId)) cMap.set(link.summaryId, []);
+        cMap.get(link.summaryId)!.push(source);
+        isSource.add(sourceId);
       });
     });
+    cMap.forEach((kids) => kids.sort((a, b) => a.earliestAt.localeCompare(b.earliestAt)));
 
-    // Root nodes are those with no parents (highest depth or unlinked)
+    // Roots are summaries nobody was condensed from: highest depth first.
     const rootNodes = summaries
-      .filter((s) => !hasParent.has(s.id))
+      .filter((s) => !isSource.has(s.id))
       .sort((a, b) => b.depth - a.depth || b.createdAt.localeCompare(a.createdAt));
 
     return { roots: rootNodes, childrenMap: cMap };
