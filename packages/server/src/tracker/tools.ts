@@ -2599,6 +2599,10 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         } catch {
           updates.scheduledStart = scheduledStart;
         }
+        // A moved start moves the anchor too (create does the same): the old anchor would keep the
+        // old time of day and could put the next run before the new start. An explicit anchor_time
+        // in the same call is read below and wins.
+        if (anchorTime === undefined) updates.anchorTime = updates.scheduledStart;
       }
     }
     if (repeatInterval !== undefined) updates.repeatInterval = repeatInterval;
