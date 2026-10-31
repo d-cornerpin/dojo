@@ -7,6 +7,7 @@
  *
  * Entirely skippable. Settings → Voice can do all of this later.
  */
+import { noteVoiceInstallFailure } from '../lib/voice-install-failures';
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -73,7 +74,7 @@ export const VoiceSetupStep = () => {
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
       const { kind, modelId, error: reason } = event.data;
-      api.noteVoiceInstallFailure(kind, modelId, reason);
+      noteVoiceInstallFailure(kind, modelId, reason);
       setError(`${kind} download failed: ${reason}`);
       setDownloadStarted(false);
       setDownloads((prev) => {

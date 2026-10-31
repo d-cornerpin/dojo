@@ -48,6 +48,7 @@ import type {
 // re-exported from here, so every caller keeps importing from `lib/api` and
 // `vi.mock('../lib/api')` stays the one seam that mocks the network.
 import { setToken, request, requestRaw, requestForm } from './door';
+import { takeVoiceInstallFailure, clearVoiceInstallFailure } from './voice-install-failures';
 
 export { request, requestRaw, requestForm, fetchUrl, getToken, clearToken } from './door';
 export type { RawResult } from './door';
@@ -920,30 +921,19 @@ export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>
   return request('/voice/models');
 };
 
-// The server's own "this install failed" word (the `voice:model_install_error` frame). The screens
-// that already listen for that frame hand it here, so a waiting install ends on the real signal
-// instead of a clock (R25: no fixed give-up).
-const voiceInstallFailures = new Map<string, string>();
-export const noteVoiceInstallFailure = (kind: string, modelId: string, reason: string): void => {
-  voiceInstallFailures.set(`${kind}/${modelId}`, reason);
-};
-
 export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
   // The server returns 202 immediately and streams progress over the
   // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
   // HTTP response open for ~2 minutes hits Cloudflare's free-tier 524 cap).
   // We poll the models endpoint here so the caller's `await installVoiceModel`
-  // still resolves when the file is actually on disk — matches the old UX
-  // without anyone having to refactor.
+  // still resolves when the file is actually on disk.
   const kicked = await request<{ kind: string; id: string }>(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
   if (!kicked.ok) return kicked;
-  voiceInstallFailures.delete(`${kind}/${id}`);
-  // No clock: a slow line may take as long as it takes. The loop ends when the model is on disk or
-  // the server reports the install failed.
+  clearVoiceInstallFailure(kind, id);  // no clock: ends on the model landing or a reported failure
   for (;;) {
     await new Promise(r => setTimeout(r, 1500));
-    const failed = voiceInstallFailures.get(`${kind}/${id}`);
-    if (failed !== undefined) { voiceInstallFailures.delete(`${kind}/${id}`); return { ok: false, error: failed }; }
+    const failed = takeVoiceInstallFailure(kind, id);
+    if (failed !== undefined) return { ok: false, error: failed };
     const models = await request<VoiceModelsResponse>('/voice/models');
     if (!models.ok) continue;  // transient errors during polling are non-fatal
     const installed = kind === 'whisper'

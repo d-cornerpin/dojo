@@ -10,6 +10,7 @@
  *   - On all-complete, auto-dismisses and signals the parent to start voice.
  */
 
+import { noteVoiceInstallFailure } from '../lib/voice-install-failures';
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -75,7 +76,7 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     const unsub = ws.subscribe('voice:model_install_error', (event) => {
       if (event.type !== 'voice:model_install_error') return;
       const { kind, modelId, error: reason } = event.data;
-      api.noteVoiceInstallFailure(kind, modelId, reason);
+      noteVoiceInstallFailure(kind, modelId, reason);
       setError(`${kind} download failed: ${reason}`);
       setInstalling(false);
       setDownloads((prev) => {

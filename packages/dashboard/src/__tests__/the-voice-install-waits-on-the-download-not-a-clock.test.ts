@@ -9,6 +9,7 @@ vi.mock('../lib/door', async () => {
 });
 
 import * as api from '../lib/api';
+import { noteVoiceInstallFailure } from '../lib/voice-install-failures';
 import { request } from '../lib/door';
 
 let kokoroInstalled = false;
@@ -38,7 +39,7 @@ describe('installVoiceModel has no clock', () => {
     vi.useFakeTimers();
     const p = api.installVoiceModel('kokoro', 'k');
     await vi.advanceTimersByTimeAsync(3000);
-    api.noteVoiceInstallFailure('kokoro', 'k', 'disk full');
+    noteVoiceInstallFailure('kokoro', 'k', 'disk full');
     await vi.advanceTimersByTimeAsync(2000);
     expect(await p).toEqual({ ok: false, error: 'disk full' });
   });
