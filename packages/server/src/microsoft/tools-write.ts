@@ -18,14 +18,11 @@ import {
   ATTACHMENTS_ROOT_FOLDER,
 } from '../services/email-attachments.js';
 import type { AccountSlot } from './auth.js';
+import { ONEDRIVE_CHUNK_BYTES } from './onedrive-chunk.js';
 import { moveToFolder } from './outlook-conversation.js';
 import { homeDir } from '../home.js';
 import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
-
-// Graph upload sessions: every fragment except the last must be a multiple of 320 KiB
-// (327,680 bytes), per "Upload large files with an upload session" in the Graph docs.
-const ONEDRIVE_CHUNK_BYTES = 320 * 1024 * 12; // 3,932,160
 
 // ── Tool Definitions ──
 
@@ -1852,8 +1849,7 @@ export async function executeMicrosoftWriteTool(
           if (!session.uploadUrl) return { path: filePath, ok: false, message: 'No upload URL returned' };
 
           const fd = fs.openSync(filePath, 'r');
-          let offset = 0;
-          let confirmed = false;
+          let offset = 0, confirmed = false;
           try {
             while (offset < fileSize) {
               const chunkSize = Math.min(ONEDRIVE_CHUNK_BYTES, fileSize - offset);
