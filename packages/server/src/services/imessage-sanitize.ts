@@ -11,7 +11,8 @@ export function sanitizeForIMessage(rawText: string): string {
   text = text.replace(/\*\*(?!\s)(.+?)(?<!\s)\*\*/g, '$1');                    // **bold** -> bold
   text = text.replace(/(^|[^\w*])\*(?![\s*])([^*\n]+?)(?<![\s*])\*(?!\w)/g, '$1$2'); // *italic* -> italic (never "a * b * c")
   text = text.replace(/^#{1,6}\s+/gm, '');                                     // # headers -> plain
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');                          // [text](url) -> text (unchanged behaviour)
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');                          // ![alt](url) -> alt (an image has no use in a text)
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => (label.trim() === url.trim() ? url : `${label} (${url})`)); // [text](url) -> text (url), the address is kept
   text = text.replace(/\n{3,}/g, '\n\n');
   return text.trim();
 }
