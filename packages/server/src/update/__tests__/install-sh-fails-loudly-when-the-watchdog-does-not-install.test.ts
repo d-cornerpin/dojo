@@ -79,6 +79,8 @@ describe('install.sh and the watchdog', () => {
     expect(out).not.toContain('was not started');
     expect(out).toContain('new platform is installed');
     expect(out).toContain('still running');
+    expect(out).not.toContain('it had before');
+    expect(out).toContain('partly updated');
   });
 
   it('on a first install (nothing loaded) it still says Dojo was not started', () => {

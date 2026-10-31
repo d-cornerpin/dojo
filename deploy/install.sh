@@ -159,7 +159,7 @@ fi
 # is already switched in, so say what is installed and what is still running.
 say_watchdog_stop_state() {
     if launchctl list 2>/dev/null | grep -q 'com\.dojo\.platform'; then
-        echo "   The new platform is installed, but the watchdog could not be updated. The Dojo that was already running is still running (it has not been restarted), with the watchdog it had before."
+        echo "   The new platform is installed, but the watchdog could not be updated. The Dojo that was already running is still running (it has not been restarted), but the watchdog's files were only partly updated and it may not restart until the installer is run again."
     else
         echo "   Dojo was not started."
     fi
