@@ -2973,7 +2973,8 @@ export function checkDependencies(completedTaskId: string): void {
   // Find tasks that depend on the completed task
   const dependentTasks = db.prepare(`
     SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
-           w.agent_id AS assigned_to, w.depends_on AS depends_on
+           w.agent_id AS assigned_to, w.depends_on AS depends_on,
+           w.scheduled_start AS scheduled_start, w.next_run_at AS next_run_at
     FROM work w
     WHERE ${taskScope('w')} AND w.state IN ('on_deck', 'blocked')
       AND w.depends_on LIKE ?
@@ -2983,6 +2984,8 @@ export function checkDependencies(completedTaskId: string): void {
     status: string;
     assigned_to: string | null;
     depends_on: string;
+    scheduled_start: number | null;
+    next_run_at: number | null;
   }>;
 
   for (const row of dependentTasks) {
@@ -3003,14 +3006,25 @@ export function checkDependencies(completedTaskId: string): void {
     });
 
     if (allDepsComplete) {
-      // Unblock the task. v2.8.x rule: tasks without a future schedule
-      // land in 'in_progress' so they stay visible. 'on_deck' is reserved
-      // for scheduled-for-later. A previously-blocked task whose deps just
-      // cleared is ready to be worked on now, not parked.
-      noteUnsettled(setTrackerStatus(row.id, 'in_progress', {
-        by: 'pm', actorId: getPMAgentId(),
-        reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
-      }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
+      // A dependency validating makes the task ELIGIBLE; it does not start it ahead of its own schedule.
+      // A task with a start still in the future waits on deck and the scheduler fires it then (it was only
+      // skipping it for the unmet dependency). v2.8.x rule for the rest: tasks without a future schedule
+      // land in 'in_progress' so they stay visible; 'on_deck' is reserved for scheduled-for-later.
+      const nowMs = Date.now();
+      const startsLater = (row.scheduled_start ?? 0) > nowMs || (row.next_run_at ?? 0) > nowMs;
+      if (startsLater) {
+        if (row.status !== 'on_deck') {
+          noteUnsettled(setTrackerStatus(row.id, 'on_deck', {
+            by: 'pm', actorId: getPMAgentId(),
+            reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)}); it waits for its own scheduled start`,
+          }), 'pm: dependencies cleared, task waits for its scheduled start', { taskId: row.id });
+        }
+      } else {
+        noteUnsettled(setTrackerStatus(row.id, 'in_progress', {
+          by: 'pm', actorId: getPMAgentId(),
+          reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
+        }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
+      }
 
       logger.info('Task unblocked by dependency completion', {
         taskId: row.id,
@@ -3023,7 +3037,8 @@ export function checkDependencies(completedTaskId: string): void {
       const task = getTask(row.id);
 
       if (task) {
-        const message = `Task "${task.title}" (${task.id}) is now unblocked. All dependencies are complete.\n\n` +
+        const message = `Task "${task.title}" (${task.id}) is now unblocked. All dependencies are complete.`
+          + (startsLater ? ` It starts at its own scheduled time (${task.scheduledStart ?? 'later'}), not before.` : '') + '\n\n' +
           `Priority: ${task.priority}\n` +
           (task.description ? `Description: ${task.description}\n` : '') +
           `Previously blocked on: ${dependsOn.join(', ')}`;
