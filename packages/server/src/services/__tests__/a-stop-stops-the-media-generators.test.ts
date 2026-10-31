@@ -82,6 +82,7 @@ vi.mock('../../agent/effects/fs.js', () => ({
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: vi.fn(async () => undefined) }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'a5-media-agent';
 const MODEL = 'model-media';
@@ -181,7 +182,7 @@ function seed(): void {
      VALUES (?, ?, 'Media', 'api/media', '["image_generation","audio_generation","video_generation","transcription"]', 1, 'token', 0)`,
   ).run(MODEL, PROVIDER);
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
 }
 
