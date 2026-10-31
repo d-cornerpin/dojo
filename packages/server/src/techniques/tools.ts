@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import * as effectFs from '../agent/effects/fs.js';
-import { supportingFileTargets } from './technique-folder.js';
+import { insideTechniqueDir, supportingFileTargets } from './technique-folder.js';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -712,15 +712,10 @@ function formatListFiles(technique: { name: string; files: Array<{ path: string;
 function formatReadFile(technique: { name: string; directoryPath: string }, args: Record<string, unknown>): string {
   const file = args.file as string | undefined;
   if (!file) return 'Error: file is required for action="read_file" (use action="list_files" to see available files).';
-  // Prevent path traversal
-  const normalized = path.normalize(file).replace(/^(\.\.[\\/])+/, '');
-  if (normalized.startsWith('..') || path.isAbsolute(normalized)) {
-    return `Error: file must be a relative path within the technique directory.`;
-  }
-  const full = path.join(technique.directoryPath, normalized);
-  if (!full.startsWith(technique.directoryPath)) {
-    return `Error: file path escapes the technique directory.`;
-  }
+  // The one folder check (also guards the writes): absolute, climbing and link-out paths are refused.
+  const normalized = path.normalize(file);
+  const full = insideTechniqueDir(technique.directoryPath, normalized);
+  if (full === null) return `Error: file must be a relative path that stays inside the technique folder.`;
   if (!effectFs.existsSync(full)) {
     return `Error: file "${normalized}" not found in "${technique.name}". Use action="list_files" to see available files.`;
   }
