@@ -228,6 +228,7 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   { file: 'prompt/user-profile.ts', klass: 'platform-internal', why: 'the ONE source of truth for `~/.dojo/prompts/USER.md` (owner ruling #11, t111-A3), split out of prompt/assembler.ts above, which is on this list for the same reason and was doing this work inline before. NOT ONE BYTE OF THE PATH COMES FROM AN AGENT: `userProfilePath()` is `homeDir()` joined with three platform literals, there is no parameter in it, and the only argument any writer takes is the profile TEXT. Its readers are the assembler slot and the two dashboard routes (the Settings edit door and the OOBE form); no tool reaches it, and nothing an agent says can name a different file. Routing it through `agent/effects/fs.ts` was refused for the reason RULING P5-R12 gives: the capability would record an agent-facing fs site that does not exist.' },
   { file: 'providers/anthropic-sdk-auth.ts', klass: 'platform-internal', why: 'runs the provider CLI\'s own auth helper; no argument comes from a tool.' },
   { file: 'healer/healer-agent.ts', klass: 'platform-internal', why: 'the healer\'s own log and report files, at platform paths.' },
+  { file: 'techniques/share-disk.ts', klass: 'platform-internal', why: 'the disk work of the technique package export and import (walk and read a technique folder, unpack a package, make and remove the folder an import made). Its only importers are techniques/share-import.ts and techniques/share-export.ts, both reached only from gateway/routes/techniques.ts, the dashboard route; no tool dispatches it.' },
   { file: 'boot-stamp.ts', klass: 'platform-internal', why: 'the boot-time LOADED-CODE stamp (infra lane, ce91ab13): written once at boot before any agent exists, exactly the index-generator shape; node:fs writes the stamp beside the DB, node:child_process reads only this process\'s own start facts. The kit probe READS the stamp; nothing agent-reachable imports this module (the wiring walk holds the edge).' },
   { file: 'tools/index-generator.ts', klass: 'platform-internal', why: 'the boot-time tool-doc GENERATOR after SURFACE SPLIT 1 (T8F): its one production caller is the boot step in index.ts, before any agent exists. The dispatch-time READER left for tools/tool-doc-read.ts, which holds no restricted import.' },
   { file: 'microsoft/office-packages.ts', klass: 'platform-internal', why: 'installs the office npm packages into the platform tree; the package set is a literal.' },
@@ -274,8 +275,8 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
   {
     file: 'techniques/technique-folder.ts',
     klass: 'honest-label',
-    why: 'The technique folder\'s one disk door: the "resolve inside this folder" check that the tool-facing supporting-file writes (techniques/tools.ts, techniques/store.ts) consult, plus the disk work of the dashboard-driven technique package import and export (factored out of techniques/share-import.ts and techniques/share-export.ts, which therefore hold no disk access of their own). The check only reads; the import and export halves are driven by the dashboard routes.',
-    residual: 'the import and export halves share a module with the tool-facing check, so the module is reachable from dispatch even though only the check is.',
+    why: 'The technique folder\'s "resolve inside this folder" check, consulted by the tool-facing supporting-file writes (techniques/tools.ts, techniques/store.ts) and by the dashboard import and export. The check only reads the disk.',
+    residual: 'the check only reads; the write it guards is made by its caller, which is trusted to use the returned path.',
   },
   {
     file: 'techniques/store.ts',
