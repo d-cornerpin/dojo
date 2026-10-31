@@ -15,6 +15,7 @@ import {
   FallbackVisionModelCard, ImageGenModelCard, VideoGenModelCard, AudioGenModelCard,
   MusicGenModelCard, TranscriptionModelCard, CompactionModelCard,
 } from './CapabilityModelCards';
+import { ModalShell } from '../ModalShell';
 
 
 // ── Browse Models (for aggregator providers like OpenRouter) ──
@@ -201,11 +202,17 @@ const AddModelPricingModal = ({
   const activeInputLabel = ADD_MODAL_UNITS.find(u => u.unit === unit)?.inputLabel ?? '$ / unit';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/50" />
-      <div
-        className="glass-modal-bg relative z-10 w-full max-w-md p-5 rounded-2xl shadow-xl"
-        onClick={(e) => e.stopPropagation()}
+    <>
+      {/* The dim stays its own layer: the `.dojo3-stage` backdrop reset only ever
+          makes the backdrop transparent, so folding it in would dim nothing. */}
+      <div className="fixed inset-0 bg-black/50" />
+      <ModalShell
+        onClose={onClose}
+        label="Add model"
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center p-4"
+        panelClassName="glass-modal-bg relative z-10 w-full max-w-md p-5 rounded-2xl shadow-xl"
+        closeOnEscape={!adding}
+        closeOnBackdrop={!adding}
       >
         <h3 className="text-sm font-semibold text-ui/90">Add model</h3>
         <p className="text-xs text-ui/50 mt-0.5 truncate">{model.name}</p>
@@ -295,8 +302,8 @@ const AddModelPricingModal = ({
             {adding ? 'Adding…' : 'Add model'}
           </button>
         </div>
-      </div>
-    </div>
+      </ModalShell>
+    </>
   );
 };
 

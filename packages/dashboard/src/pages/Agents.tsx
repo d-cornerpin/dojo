@@ -10,6 +10,7 @@ import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
 import { PermissionsEditor, DEFAULT_SUBAGENT_PERMISSIONS, DEFAULT_SUBAGENT_TOOLS_POLICY } from '../components/PermissionsEditor';
 import { TechniqueSelector } from '../components/TechniqueSelector';
+import { ModalShell } from '../components/ModalShell';
 
 // ── Create Agent Modal ──
 
@@ -77,8 +78,14 @@ const CreateAgentModal = ({
   };
 
   return (
-    <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
+    <ModalShell
+      onClose={onClose}
+      label="Recruit Agent"
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal p-6 max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto"
+      closeOnEscape={!saving}
+      closeOnBackdrop={false}
+    >
         <h3 className="text-lg font-semibold text-ui mb-4">Recruit Agent</h3>
 
         {error && (
@@ -223,8 +230,7 @@ const CreateAgentModal = ({
             {saving ? 'Creating...' : 'Recruit Agent'}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 
@@ -612,8 +618,14 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
   };
 
   return (
-    <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-md w-full mx-4">
+    <ModalShell
+      onClose={onClose}
+      label="Form Squad"
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal p-6 max-w-md w-full mx-4"
+      closeOnEscape={!saving}
+      closeOnBackdrop={false}
+    >
         <h3 className="text-lg font-semibold text-ui mb-4">Form Squad</h3>
         <p className="text-sm text-ui/40 mb-4">Groups organize agents around a shared purpose. The description is injected into all member agents' context.</p>
 
@@ -636,8 +648,7 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
             {saving ? 'Creating...' : 'Form Squad'}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

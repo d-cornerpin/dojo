@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { requestRaw } from '../lib/api';
 import { localDateStamp } from '../lib/dates';
+import { ModalShell } from './ModalShell';
 
 export const MigrationExport = () => {
   const [showModal, setShowModal] = useState(false);
@@ -85,8 +86,14 @@ export const MigrationExport = () => {
           stays readable. The stage has no transform/filter, so `fixed inset-0`
           still resolves to the viewport. Falls back to <body> if no stage. */}
       {showModal && createPortal(
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
-          <div className="glass-modal-bg rounded-xl p-6 max-w-md w-full">
+        <ModalShell
+          onClose={() => setShowModal(false)}
+          label="Export Your Dojo"
+          backdropClassName="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4"
+          panelClassName="glass-modal-bg rounded-xl p-6 max-w-md w-full"
+          closeOnEscape={!exporting}
+          closeOnBackdrop={false}
+        >
             <h2 className="text-lg font-bold text-ui mb-2">Export Your Dojo</h2>
             <p className="text-ui/55 text-sm mb-4">
               This will create an encrypted backup of your entire dojo: all agents, settings, vault,
@@ -169,8 +176,7 @@ export const MigrationExport = () => {
                 <p className="text-sm text-ui/55 text-center">{stage}</p>
               </div>
             )}
-          </div>
-        </div>,
+        </ModalShell>,
         document.querySelector('.dojo3-stage') ?? document.body
       )}
     </>

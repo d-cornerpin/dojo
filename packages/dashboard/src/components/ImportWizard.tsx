@@ -4,6 +4,7 @@ import type { PostMigrationCheck } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { request } from '../lib/api';
 import type { ExportManifest } from './PostMigrationBanner';
+import { ModalShell } from './ModalShell';
 
 // FENG-SHUI EXEMPTION: the migration flow uses standard Tailwind status colors
 // (green/amber/red/blue) for universal success/warning/error/progress. Migration
@@ -653,11 +654,16 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   if (!asModal) return content;
 
   return createPortal(
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
-      <div className="glass-modal-bg rounded-xl p-6 max-w-2xl w-full max-h-[88vh] overflow-y-auto">
-        {content}
-      </div>
-    </div>,
+    <ModalShell
+      onClose={() => onClose?.()}
+      label="Import a Dojo"
+      backdropClassName="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4"
+      panelClassName="glass-modal-bg rounded-xl p-6 max-w-2xl w-full max-h-[88vh] overflow-y-auto"
+      closeOnEscape={!(scanning || restoring || depRunning || pullingModel !== null)}
+      closeOnBackdrop={false}
+    >
+      {content}
+    </ModalShell>,
     document.querySelector('.dojo3-stage') ?? document.body,
   );
 };

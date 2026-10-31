@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { ModalShell } from '../components/ModalShell';
 import { formatDate } from '../lib/dates';
 
 // Contacts panel — rendered as a tab on the Vault page. Searchable
@@ -336,10 +337,14 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50" onClick={onClose}>
-      <div
-        className="glass-modal-bg w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl border border-ui/[0.08] shadow-xl"
-        onClick={e => e.stopPropagation()}
+    <>
+      <ModalShell
+        onClose={onClose}
+        label={contact ? 'Edit contact' : 'New contact'}
+        backdropClassName="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50"
+        panelClassName="glass-modal-bg w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl border border-ui/[0.08] shadow-xl"
+        closeOnEscape={!saving && !deleting}
+        closeOnBackdrop={!saving && !deleting}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-ui/[0.06]">
           <h3 className="text-base font-semibold text-ui">
@@ -418,17 +423,15 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
             </button>
           </div>
         </div>
-      </div>
+      </ModalShell>
 
       {conflictCurrent && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]"
-          onClick={() => setConflictCurrent(null)}
+        <ModalShell
+          onClose={() => setConflictCurrent(null)}
+          label="Contact changed while you were editing"
+          backdropClassName="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]"
+          panelClassName="glass-modal-bg max-w-md w-[92vw] rounded-xl border border-ui/[0.12] shadow-2xl p-5 space-y-3"
         >
-          <div
-            className="glass-modal-bg max-w-md w-[92vw] rounded-xl border border-ui/[0.12] shadow-2xl p-5 space-y-3"
-            onClick={e => e.stopPropagation()}
-          >
             <h4 className="text-sm font-semibold text-ui">Contact changed while you were editing</h4>
             <p className="text-xs text-ui/70 leading-relaxed">
               An agent (or another browser tab) modified <span className="font-medium text-ui">{conflictCurrent.display_name}</span> after you opened it. The server's current copy was last updated {formatDate(conflictCurrent.updated_at)}.
@@ -463,10 +466,9 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
                 Cancel
               </button>
             </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
-    </div>
+    </>
   );
 };
 

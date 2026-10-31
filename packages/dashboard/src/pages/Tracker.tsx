@@ -11,6 +11,7 @@ import { KanbanBoard } from '../components/KanbanBoard';
 import { OverrideQueuePanel } from '../components/OverrideQueuePanel';
 import { TaskRunHistory } from '../components/TaskRunHistory';
 import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../components/TaskScheduleForm';
+import { ModalShell } from '../components/ModalShell';
 
 // ── Task Detail Slide-Out Panel ──
 
@@ -86,11 +87,14 @@ const TaskDetailPanel = ({
   };
 
   return (
-    <div className="glass-modal-backdrop" onClick={onClose}>
-      <div
-        className="glass-modal max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalShell
+      onClose={onClose}
+      label={task.title}
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto"
+      closeOnEscape={!saving}
+      closeOnBackdrop={!saving}
+    >
         <div className="p-6 space-y-6">
           {/* Header */}
           <div className="flex items-start justify-between">
@@ -359,8 +363,7 @@ const TaskDetailPanel = ({
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 
@@ -432,8 +435,14 @@ const CreateProjectModal = ({
   };
 
   return (
-    <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto">
+    <ModalShell
+      onClose={onClose}
+      label="Create Project"
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto"
+      closeOnEscape={!saving}
+      closeOnBackdrop={false}
+    >
         <h3 className="text-lg font-semibold text-ui mb-4">Create Project</h3>
 
         {error && (
@@ -552,8 +561,7 @@ const CreateProjectModal = ({
             {saving ? 'Creating...' : 'Create Project'}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 
@@ -1064,8 +1072,14 @@ const CloseProjectModal = ({
   };
 
   return (
-    <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-md w-full mx-4">
+    <ModalShell
+      onClose={onClose}
+      label={`Close project: ${projectTitle}`}
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal p-6 max-w-md w-full mx-4"
+      closeOnEscape={!saving}
+      closeOnBackdrop={false}
+    >
         <h3 className="text-lg font-semibold text-ui mb-4">Close project: {projectTitle}</h3>
 
         {error && (
@@ -1114,8 +1128,7 @@ const CloseProjectModal = ({
             {saving ? 'Closing...' : `Close & resolve ${openTaskCount} task${openTaskCount === 1 ? '' : 's'}`}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 
@@ -1179,8 +1192,14 @@ const CreateTaskModal = ({
   };
 
   return (
-    <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-lg w-full mx-4">
+    <ModalShell
+      onClose={onClose}
+      label="Create Task"
+      backdropClassName="glass-modal-backdrop"
+      panelClassName="glass-modal p-6 max-w-lg w-full mx-4"
+      closeOnEscape={!saving}
+      closeOnBackdrop={false}
+    >
         <h3 className="text-lg font-semibold text-ui mb-4">Create Task</h3>
 
         {error && <div className="mb-4 px-3 py-2 rounded-xl bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
@@ -1238,8 +1257,7 @@ const CreateTaskModal = ({
             {saving ? 'Creating...' : 'Create Task'}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 };
 

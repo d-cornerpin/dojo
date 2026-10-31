@@ -13,6 +13,7 @@ import { VaultLoadError } from '../components/VaultLoadError';
 import { ForensicSearchPanel } from '../components/ForensicSearchPanel';
 import { CredentialsPanel } from '../components/CredentialsPanel';
 import { ContactsPanel } from '../components/ContactsPanel';
+import { ModalShell } from '../components/ModalShell';
 import { formatDate } from '../lib/dates';
 
 type RightPanel = 'detail' | 'search' | 'briefing' | 'none';
@@ -490,8 +491,14 @@ export const Memory = () => {
 
       {/* Inject Memory modal */}
       {injectOpen && (
-        <div className="glass-modal-backdrop fixed inset-0 z-50 flex items-center justify-center">
-          <div className="glass-modal rounded-2xl w-full max-w-lg mx-4">
+        <ModalShell
+          onClose={() => setInjectOpen(false)}
+          label="Inject Memory"
+          backdropClassName="glass-modal-backdrop fixed inset-0 z-50 flex items-center justify-center"
+          panelClassName="glass-modal rounded-2xl w-full max-w-lg mx-4"
+          closeOnEscape={!injecting}
+          closeOnBackdrop={false}
+        >
             <div className="px-5 py-4 border-b border-ui/[0.06]">
               <h3 className="text-sm font-medium text-ui">Inject Memory</h3>
               <p className="text-xs text-ui/40 mt-1">
@@ -539,8 +546,7 @@ export const Memory = () => {
                 {injecting ? 'Injecting...' : 'Inject'}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
     </>
   );
