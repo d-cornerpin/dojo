@@ -44,6 +44,8 @@ export const VoiceSetupStep = () => {
       if (presetsRes.ok) {
         setVoices(presetsRes.data.voices);
         setVoice(vSetting.ok && vSetting.data.value ? vSetting.data.value : presetsRes.data.defaultVoice);
+      } else {
+        setError('Could not load the voice list.');
       }
       if (modelsRes.ok) setModels(modelsRes.data);
     });
@@ -108,21 +110,32 @@ export const VoiceSetupStep = () => {
     if (whisper && !whisper.installed) {
       jobs.push(api.installVoiceModel('whisper', whisper.id));
     }
-    const results = await Promise.all(jobs);
-    for (const r of results) {
-      if (typeof r === 'object' && r !== null && 'ok' in r && (r as { ok: boolean }).ok === false) {
-        setError((r as { error?: string }).error ?? 'install failed');
+    try {
+      const results = await Promise.all(jobs);
+      for (const r of results) {
+        if (typeof r === 'object' && r !== null && 'ok' in r && (r as { ok: boolean }).ok === false) {
+          setError((r as { error?: string }).error ?? 'install failed');
+          setDownloadStarted(false); // let the person try again
+        }
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setDownloadStarted(false);
     }
   };
 
   const previewVoice = async (id: string) => {
     setPreviewing(true);
+    let url: string | null = null;
     try {
       const blob = await api.fetchVoicePreview(id);
-      const audio = new Audio(URL.createObjectURL(blob));
+      const made = URL.createObjectURL(blob);
+      url = made;
+      const audio = new Audio(made);
+      audio.onended = () => URL.revokeObjectURL(made);
       await audio.play();
     } catch (err) {
+      if (url) URL.revokeObjectURL(url);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setPreviewing(false);
@@ -130,8 +143,18 @@ export const VoiceSetupStep = () => {
   };
 
   const saveVoice = async (id: string) => {
+    const prev = voice;
     setVoice(id);
-    await api.setSetting('voice.preferred_voice', id);
+    try {
+      const result = await api.setSetting('voice.preferred_voice', id);
+      if (!result.ok) {
+        setVoice(prev);
+        setError(`Could not save the voice: ${result.error}`);
+      }
+    } catch (err) {
+      setVoice(prev);
+      setError(`Could not save the voice: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const kokoroDone = models?.kokoro?.installed === true;
