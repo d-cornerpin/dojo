@@ -336,7 +336,8 @@ export function updateContact(
     sets.push(`${col} = ?`);
     params.push(transform ? transform(val) : val);
   };
-  if (merged.displayName !== undefined) apply('display_name', merged.displayName.trim());
+  // A blank name is ignored: a contact keeps the name it has (createContact refuses a blank one too).
+  if (merged.displayName !== undefined && merged.displayName.trim() !== '') apply('display_name', merged.displayName.trim());
   if (merged.preferredName !== undefined) apply('preferred_name', merged.preferredName);
   if (merged.emails !== undefined) apply('emails', merged.emails, v => JSON.stringify(v));
   if (merged.phones !== undefined) apply('phones', merged.phones, v => JSON.stringify(v));

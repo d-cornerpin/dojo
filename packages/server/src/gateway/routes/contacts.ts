@@ -102,6 +102,8 @@ contactsRouter.patch('/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body !== 'object') return c.json({ ok: false, error: 'Body required.' }, 400);
+  const sentName = (body as Record<string, unknown>).display_name;
+  if (typeof sentName === 'string' && sentName.trim() === '') return c.json({ ok: false, error: 'A contact needs a name.' }, 400);
   // Optimistic locking: dashboard sends the updated_at it saw when it
   // opened the edit drawer (via If-Match header OR a body field).
   // If the contact has changed since (typically an agent appended an
