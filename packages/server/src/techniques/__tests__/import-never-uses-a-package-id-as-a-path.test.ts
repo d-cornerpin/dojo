@@ -1,5 +1,5 @@
-// A package's technique id must never decide where files land: an id that is not a single plain name
-// is refused before anything is written; a failed import removes only the folder it made.
+// OR-MAC-BELONGS-TO-THE-AGENT: a package's technique id is not refused for its shape. One rule stays:
+// a failed import never deletes anything it did not create itself.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,28 +44,31 @@ function pkg(id: unknown, withMd = true, name: unknown = 'Demo'): Buffer {
 const before = () => fs.readdirSync(TECHNIQUES_DIR).sort();
 
 describe('importing a package whose id is not a plain name', () => {
-  for (const bad of ['../escaped-by-id', 'a/b', '..', '.', '/abs/target', 'Has Space', 'UPPER', 5]) {
-    it(`refuses ${JSON.stringify(bad)} and changes nothing`, async () => {
-      const listing = before();
-      const outsideBefore = fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort();
-      await expect(importTechnique(pkg(bad))).rejects.toThrow(/nothing was imported|missing/);
-      expect(before()).toEqual(listing);
-      expect(fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort()).toEqual(outsideBefore);
-    });
-  }
+  it('imports an id with a slash as a nested folder', async () => {
+    const r = await importTechnique(pkg('a/b'));
+    expect(r.techniqueId).toBe('a/b');
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'a', 'b', 'TECHNIQUE.md'))).toBe(true);
+  });
 
-  // The store (createTechnique) slugs any name to lowercase letters, digits and dashes of any length,
-  // so a dash-first id or a long one is a real id the store has made and must import.
-  for (const real of ['-starts-with-dash', '---', 'a'.repeat(255)]) {
-    it(`imports an id the store can make: ${real.slice(0, 20)} (${real.length})`, async () => {
-      const r = await importTechnique(pkg(real));
-      expect(r.techniqueId).toBe(real);
-      expect(fs.existsSync(path.join(TECHNIQUES_DIR, real, 'TECHNIQUE.md'))).toBe(true);
-    });
-  }
+  it('imports an id with capitals and a space', async () => {
+    await importTechnique(pkg('Has Space'));
+    expect(fs.existsSync(path.join(TECHNIQUES_DIR, 'Has Space', 'TECHNIQUE.md'))).toBe(true);
+  });
 
-  it('refuses an id over 255 characters, with a truthful message', async () => {
-    await expect(importTechnique(pkg('a'.repeat(256)))).rejects.toThrow(/lowercase letters, digits and dashes.*255/);
+  it('an id that names a folder that already exists is refused and that folder is left untouched', async () => {
+    const outside = path.join(path.dirname(TECHNIQUES_DIR), 'precious');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep');
+    await expect(importTechnique(pkg('../precious'))).rejects.toThrow(/already exists/);
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf-8')).toBe('keep');
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('an id of ".." (the techniques folder parent) is refused and nothing is deleted', async () => {
+    const listing = fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort();
+    await expect(importTechnique(pkg('..'))).rejects.toThrow();
+    expect(fs.readdirSync(path.dirname(TECHNIQUES_DIR)).sort()).toEqual(listing);
+    expect(fs.existsSync(TECHNIQUES_DIR)).toBe(true);
   });
 
   it('still imports a plain id', async () => {

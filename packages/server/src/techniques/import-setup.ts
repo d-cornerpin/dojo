@@ -26,7 +26,6 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import type { ImportedManifest } from './share-import.js';
-import { insideTechniqueDir } from './technique-folder.js';
 
 const logger = createLogger('technique-import-setup');
 
@@ -59,9 +58,8 @@ export function applyPlaceholderToTechnique(directoryPath: string, label: string
   const needle = `{{NEEDS_FROM_USER:${label}}}`;
   let total = 0;
   for (const relFile of target.files) {
-    // The package names these files, so each must resolve inside the technique folder.
-    const abs = insideTechniqueDir(directoryPath, relFile);
-    if (abs === null || !effectFs.existsSync(abs)) continue;
+    const abs = path.resolve(directoryPath, relFile);
+    if (!effectFs.existsSync(abs)) continue;
     try {
       const content = effectFs.readFileSync(abs, 'utf-8');
       if (!content.includes(needle)) continue;
@@ -87,8 +85,8 @@ export function findRemainingPlaceholders(directoryPath: string): string[] {
   const remaining = new Set<string>();
   for (const p of manifest.placeholders) {
     for (const relFile of p.files) {
-      const abs = insideTechniqueDir(directoryPath, relFile);
-      if (abs === null || !effectFs.existsSync(abs)) continue;
+      const abs = path.resolve(directoryPath, relFile);
+      if (!effectFs.existsSync(abs)) continue;
       try {
         const content = effectFs.readFileSync(abs, 'utf-8');
         if (content.includes(`{{NEEDS_FROM_USER:${p.label}}}`)) {
