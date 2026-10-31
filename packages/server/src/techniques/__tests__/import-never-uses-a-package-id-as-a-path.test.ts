@@ -54,6 +54,20 @@ describe('importing a package whose id is not a plain name', () => {
     });
   }
 
+  // The store (createTechnique) slugs any name to lowercase letters, digits and dashes of any length,
+  // so a dash-first id or a long one is a real id the store has made and must import.
+  for (const real of ['-starts-with-dash', '---', 'a'.repeat(255)]) {
+    it(`imports an id the store can make: ${real.slice(0, 20)} (${real.length})`, async () => {
+      const r = await importTechnique(pkg(real));
+      expect(r.techniqueId).toBe(real);
+      expect(fs.existsSync(path.join(TECHNIQUES_DIR, real, 'TECHNIQUE.md'))).toBe(true);
+    });
+  }
+
+  it('refuses an id over 255 characters, with a truthful message', async () => {
+    await expect(importTechnique(pkg('a'.repeat(256)))).rejects.toThrow(/lowercase letters, digits and dashes.*255/);
+  });
+
   it('still imports a plain id', async () => {
     const r = await importTechnique(pkg('plain-one'));
     expect(r.techniqueId).toBe('plain-one');

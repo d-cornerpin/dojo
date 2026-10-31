@@ -101,7 +101,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   // The package's id becomes a folder name here, so it must be a single plain name (the same shape
   // the store gives every technique id) and must not be anything else, whatever the package says.
   if (typeof manifest.technique.name !== 'string' || !isSafeTechniqueId(manifest.technique.id)) {
-    throw new Error('manifest.json technique id must be a single plain name (letters, digits and dashes); nothing was imported.');
+    throw new Error('manifest.json technique id must be a single plain name (lowercase letters, digits and dashes, at most 255 characters); nothing was imported.');
   }
 
   // ── 2. Pick a free slug & make the target directory ──

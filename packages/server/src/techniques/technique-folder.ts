@@ -17,9 +17,13 @@ import type { DependencyManifest } from './dependencies.js';
 
 const logger = createLogger('technique-folder');
 
-/** The shape the store gives every technique id (`createTechnique` slugs names to this). */
+/**
+ * Every id the store has ever made: `createTechnique` (store.ts) slugs a name with
+ * `toLowerCase().replace(/[^a-z0-9-]/g, '-')`, so lowercase letters, digits and dashes (a dash may
+ * lead). 255 characters is the longest folder name the disk allows.
+ */
 export function isSafeTechniqueId(id: unknown): id is string {
-  return typeof id === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(id) && id.length <= 200;
+  return typeof id === 'string' && /^[a-z0-9-]+$/.test(id) && id.length <= 255;
 }
 
 /**
