@@ -9,16 +9,14 @@
 // deterministic scrubber missed and writes the README that walks the
 // importer through setup.
 
-import fs from 'node:fs';
-import path from 'node:path';
 import archiver from 'archiver';
 import { Readable, PassThrough } from 'node:stream';
 // Readable is part of the return type so callers know they can pipe it.
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getTechnique } from './store.js';
-import { insideTechniqueDir } from './inside-folder.js';
-import { scrubFiles, isBinaryFile, type Redaction } from './scrub.js';
+import { collectTechniqueFiles, withBundledEntries, packageNotes, readFolderText, type FileEntry } from './technique-folder.js';
+import { scrubFiles, type Redaction } from './scrub.js';
 import { callModel } from '../agent/model.js';
 import { getTrainerAgentId } from '../config/platform.js';
 import {
@@ -61,69 +59,6 @@ export interface ExportManifest {
   };
   exported_at: string;
   placeholders: Array<{ label: string; hint: string; files: string[] }>;
-}
-
-interface FileEntry {
-  relPath: string;        // path within technique dir, forward slashes
-  content?: string;        // text content (text files only)
-  absSourcePath: string;   // absolute path on disk (for binary streaming)
-  isBinary: boolean;
-}
-
-/**
- * Walk the technique directory and return every file we want in the
- * zip. Skips metadata.json (DB is the source of truth), and skips the
- * versions/ folder (snapshots are reconstructable from the latest
- * TECHNIQUE.md + version history — including them would bloat the
- * package and leak old un-scrubbed content).
- */
-function collectTechniqueFiles(dirPath: string): { entries: FileEntry[]; skippedLinks: string[] } {
-  const entries: FileEntry[] = [];
-  const skippedLinks: string[] = [];
-
-  function walk(absDir: string, relPrefix: string): void {
-    let dirEntries: fs.Dirent[];
-    try {
-      dirEntries = fs.readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of dirEntries) {
-      const absPath = path.join(absDir, entry.name);
-      const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
-
-      if (entry.name === 'metadata.json') continue;
-      if (entry.name === 'versions') continue;
-      if (entry.name === 'IMPORT_MANIFEST.json') continue; // only present on imported techniques
-
-      // A link is never followed: it could point at a file anywhere on the box. It is skipped and
-      // reported, and a path that does not resolve inside the technique folder is treated the same.
-      if (entry.isSymbolicLink() || insideTechniqueDir(dirPath, relPath) === null) {
-        skippedLinks.push(relPath);
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        walk(absPath, relPath);
-        continue;
-      }
-
-      const binary = isBinaryFile(relPath);
-      if (binary) {
-        entries.push({ relPath, absSourcePath: absPath, isBinary: true });
-      } else {
-        try {
-          const content = fs.readFileSync(absPath, 'utf-8');
-          entries.push({ relPath, absSourcePath: absPath, isBinary: false, content });
-        } catch (err) {
-          logger.warn('Failed to read technique file for export', { absPath, err: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    }
-  }
-
-  walk(dirPath, '');
-  return { entries, skippedLinks };
 }
 
 /**
@@ -358,9 +293,8 @@ export async function exportTechnique(
   let autoResolutions: AutoResolution[] = [];
   const extraBundledFiles: Array<{ relPath: string; absSourcePath: string }> = [];
 
-  const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
-  if (fs.existsSync(mdPath)) {
-    const md = fs.readFileSync(mdPath, 'utf-8');
+  const md = readFolderText(technique.directoryPath, 'TECHNIQUE.md');
+  if (md !== null) {
     const validation = validateTechniqueFileReferences(technique.directoryPath, md, workingManifest);
     if (!validation.ok) {
       const resolved = autoResolveViolations(technique.directoryPath, validation.violations, workingManifest);
@@ -383,27 +317,8 @@ export async function exportTechnique(
   }
 
   // EVERY text byte that enters the package goes through the scrubber below, so the patched
-  // dependency manifest and the auto-bundled files join the walked files BEFORE it runs
-  // (replacing the on-disk dependencies.json, which is untouched).
-  const bundledPaths = new Set<string>(['dependencies.json', ...extraBundledFiles.map(f => f.relPath)]);
-  const entries: FileEntry[] = collected.entries.filter(e => !bundledPaths.has(e.relPath));
-  entries.push({
-    relPath: 'dependencies.json',
-    absSourcePath: path.join(technique.directoryPath, 'dependencies.json'),
-    isBinary: false,
-    content: JSON.stringify(workingManifest, null, 2) + '\n',
-  });
-  for (const f of extraBundledFiles) {
-    if (isBinaryFile(f.relPath)) {
-      entries.push({ relPath: f.relPath, absSourcePath: f.absSourcePath, isBinary: true });
-      continue;
-    }
-    try {
-      entries.push({ relPath: f.relPath, absSourcePath: f.absSourcePath, isBinary: false, content: fs.readFileSync(f.absSourcePath, 'utf-8') });
-    } catch (err) {
-      logger.warn('Failed to read bundled file for export', { relPath: f.relPath, err: err instanceof Error ? err.message : String(err) });
-    }
-  }
+  // dependency manifest and the auto-bundled files join the walked files BEFORE it runs.
+  const entries = withBundledEntries(collected.entries, technique.directoryPath, workingManifest, extraBundledFiles);
   if (entries.length === 0) {
     throw new Error(`Technique "${techniqueId}" has no files to export`);
   }
@@ -417,15 +332,7 @@ export async function exportTechnique(
     initialPlaceholders,
   );
 
-  // Binary files go in as-is (they cannot be scrubbed) and links are never followed: say so in the README.
-  let readme = trainerReadme;
-  const binaryPaths = scrubbedEntries.filter(e => e.isBinary).map(e => e.relPath);
-  if (binaryPaths.length > 0) {
-    readme += `\n\n## Binary files (not scrubbed)\n\nThese files are included exactly as they are and could not be checked for secrets:\n\n${binaryPaths.map(p => `- \`${p}\``).join('\n')}\n`;
-  }
-  if (skippedLinks.length > 0) {
-    readme += `\n\n## Links left out\n\nThese links in the technique folder were not followed and are not in the package:\n\n${skippedLinks.map(p => `- \`${p}\``).join('\n')}\n`;
-  }
+  const readme = trainerReadme + packageNotes(scrubbedEntries, skippedLinks);
 
   // Apply trainer-flagged redactions
   let finalEntries = scrubbedEntries;

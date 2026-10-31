@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import * as effectFs from '../agent/effects/fs.js';
-import { insideTechniqueDir } from './inside-folder.js';
+import { supportingFileTargets } from './technique-folder.js';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -294,20 +294,11 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
   const dependencies = args.dependencies as DependencyManifest | undefined;
   const changeSummary = args.change_summary as string || 'Updated by agent';
 
-  // A supporting-file name that leaves the technique folder refuses the whole call, changing nothing.
-  const fileTargets = new Map<string, string>();
-  for (const file of files ?? []) {
-    const target = insideTechniqueDir(technique.directoryPath, file.path);
-    if (target === null) {
-      return `Error: supporting file path "${file.path}" must stay inside the technique folder.`;
-    }
-    fileTargets.set(file.path, target);
-  }
+  const fileTargets = supportingFileTargets(technique.directoryPath, files);
+  if (typeof fileTargets === 'string') return `Error: ${fileTargets}`;
 
-  // Metadata-only edits (rename, description) don't bump the version
-  // because there's no TECHNIQUE.md change to snapshot. Apply them first
-  // so a combined call (rename + new instructions) leaves the technique
-  // with the new name AND a fresh version snapshot.
+  // Metadata-only edits (rename, description) don't bump the version (no TECHNIQUE.md change to
+  // snapshot). Apply them first so a combined call leaves the new name AND a fresh snapshot.
   if (displayName !== undefined || description !== undefined) {
     try {
       updateTechnique(resolved.id, {
@@ -321,12 +312,10 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
 
   // Write files FIRST so the validator on the instructions-update sees
   // them on disk. Same ordering as createTechnique.
-  if (files) {
-    for (const file of files) {
-      const filePath = fileTargets.get(file.path)!;
-      effectFs.mkdirSync(path.dirname(filePath), { recursive: true });
-      effectFs.writeFileSync(filePath, file.content, 'utf-8');
-    }
+  for (const file of files ?? []) {
+    const filePath = fileTargets.get(file.path)!;
+    effectFs.mkdirSync(path.dirname(filePath), { recursive: true });
+    effectFs.writeFileSync(filePath, file.content, 'utf-8');
   }
 
   // Dependencies update is independent of the .md change. If both are

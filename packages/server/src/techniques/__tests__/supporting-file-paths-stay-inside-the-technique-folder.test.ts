@@ -22,7 +22,7 @@ vi.mock('../../agent/access/read.js', () => ({ mayUseTechnique: vi.fn(() => true
 
 import { runMigrations } from '../../db/migrations.js';
 import { createTechnique, TECHNIQUES_DIR } from '../store.js';
-import { insideTechniqueDir } from '../inside-folder.js';
+import { insideTechniqueDir } from '../technique-folder.js';
 import { executeUpdateTechnique } from '../tools.js';
 
 let tmp: string;

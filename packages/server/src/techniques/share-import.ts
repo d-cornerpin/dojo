@@ -7,7 +7,6 @@
 // `needs_setup` state, and stages the placeholder list for the Trainer to
 // walk the user through during the training-mat session.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,7 +15,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
-import { insideTechniqueDir, isSafeTechniqueId } from './inside-folder.js';
+import { insideTechniqueDir, isSafeTechniqueId, extractPackageEntries, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './technique-folder.js';
 
 const logger = createLogger('technique-share-import');
 
@@ -48,9 +47,7 @@ export interface ImportResult {
 }
 
 function ensureTechniquesDir(): void {
-  if (!fs.existsSync(TECHNIQUES_DIR)) {
-    fs.mkdirSync(TECHNIQUES_DIR, { recursive: true });
-  }
+  ensureFolder(TECHNIQUES_DIR);
 }
 
 function pickAvailableId(desiredId: string): string {
@@ -115,50 +112,21 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   if (dirPath === null || path.dirname(dirPath) !== path.resolve(TECHNIQUES_DIR)) {
     throw new Error('Technique folder would fall outside the techniques folder; nothing was imported.');
   }
-  if (fs.existsSync(dirPath)) {
-    // Shouldn't happen given pickAvailableId, but stay safe.
-    throw new Error(`Target directory ${dirPath} already exists.`);
-  }
-  fs.mkdirSync(dirPath, { recursive: true });
+  makeNewFolder(dirPath); // refuses an existing folder (shouldn't happen given pickAvailableId)
   // From here on, any failure removes the folder THIS import made (and only that one).
   try {
 
     // ── 3. Extract every entry except manifest.json (we store it separately) ──
-    const entries = zip.getEntries();
-    let extractedCount = 0;
-    let hasInstructions = false;
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-      const entryPath = entry.entryName.replace(/^\/+/, '');
-      if (!entryPath || entryPath === 'manifest.json') continue;
-
-      // Reject zip-slip — entries that try to escape the technique dir.
-      if (entryPath.includes('..') || path.isAbsolute(entryPath)) {
-        logger.warn('Rejecting suspicious zip entry', { entryPath });
-        continue;
-      }
-
-      const dest = insideTechniqueDir(dirPath, entryPath);
-      if (dest === null) {
-        logger.warn('Zip entry escapes target dir, skipping', { entryPath });
-        continue;
-      }
-
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, entry.getData());
-      extractedCount++;
-      if (entryPath === 'TECHNIQUE.md') hasInstructions = true;
-    }
+    const { extractedCount, hasInstructions } = extractPackageEntries(zip, dirPath);
 
     if (!hasInstructions) {
       // Clean up and bail — every technique needs TECHNIQUE.md
-      fs.rmSync(dirPath, { recursive: true, force: true });
+      removeFolder(dirPath);
       throw new Error('Package is missing TECHNIQUE.md.');
     }
 
     // ── 4. Persist the import manifest for the Trainer to read during setup ──
-    const importManifestPath = path.join(dirPath, 'IMPORT_MANIFEST.json');
-    fs.writeFileSync(importManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    writeFolderText(dirPath, 'IMPORT_MANIFEST.json', JSON.stringify(manifest, null, 2));
 
     // ── 5. Write metadata.json so the disk layout matches a normal technique ──
     const tags = Array.isArray(manifest.technique.tags) ? manifest.technique.tags : [];
@@ -185,11 +153,11 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
       imported_from_id: originalId,
       imported_at: new Date().toISOString(),
     };
-    fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8');
+    writeFolderText(dirPath, 'metadata.json', JSON.stringify(metadata, null, 2));
 
     // ── 6. Insert into the techniques table ──
     const db = getDb();
-    const instructions = fs.readFileSync(path.join(dirPath, 'TECHNIQUE.md'), 'utf-8');
+    const instructions = readFolderText(dirPath, 'TECHNIQUE.md') ?? '';
     db.prepare(`
       INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
                               directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
@@ -240,7 +208,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
       needsSetup,
     };
   } catch (err) {
-    fs.rmSync(dirPath, { recursive: true, force: true });
+    removeFolder(dirPath);
     throw err;
   }
 }

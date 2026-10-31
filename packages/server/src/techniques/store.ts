@@ -28,8 +28,7 @@ import { getTechnique, resolveTechniqueRef, rowToTechnique, type TechniqueMetada
 import { homeDir } from '../home.js';
 
 export { getTechnique, resolveTechniqueRef, techniqueDirectory } from './technique-dir.js';
-export { insideTechniqueDir, isSafeTechniqueId } from './inside-folder.js';
-import { insideTechniqueDir } from './inside-folder.js';
+import { supportingFileTargets } from './technique-folder.js';
 export type { TechniqueMetadata } from './technique-dir.js';
 
 const logger = createLogger('technique-store');
@@ -122,17 +121,8 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
     throw new Error(`Technique "${id}" already exists`);
   }
 
-  // Refuse a supporting-file name that leaves the technique folder BEFORE anything is written.
-  const fileTargets = new Map<string, string>();
-  for (const file of params.files ?? []) {
-    const target = insideTechniqueDir(dirPath, file.path);
-    if (target === null) {
-      throw new Error(`Supporting file path "${file.path}" must stay inside the technique folder.`);
-    }
-    fileTargets.set(file.path, target);
-  }
-
-  // Create directory structure
+  const fileTargets = supportingFileTargets(dirPath, params.files);
+  if (typeof fileTargets === 'string') throw new Error(fileTargets);
   fs.mkdirSync(dirPath, { recursive: true });
 
   // Write TECHNIQUE.md
@@ -140,12 +130,10 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
 
   // Write supporting files BEFORE validation runs so the validator can
   // resolve relative references against what will actually be on disk.
-  if (params.files) {
-    for (const file of params.files) {
-      const filePath = fileTargets.get(file.path)!;
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, file.content, 'utf-8');
-    }
+  for (const file of params.files ?? []) {
+    const filePath = fileTargets.get(file.path)!;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, file.content, 'utf-8');
   }
 
   // Write dependencies.json (always — even an empty manifest, so the
