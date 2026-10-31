@@ -3,6 +3,7 @@ import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
+import { useGuardedLoad } from '../lib/load-guard';
 
 type Period = '24h' | '7d' | '30d' | 'all';
 
@@ -62,12 +63,24 @@ const BrowList = ({
   );
 };
 
+// The warning threshold is read through the shared load guard: a failed read is "could not load", never
+// the default "5", because Save writes whatever the box shows.
+const useWarningThreshold = (path: string) => {
+  const load = useGuardedLoad<string>(path, async (p) => {
+    const r = await api.request<{ value: string }>(p);
+    return r.ok ? { ok: true as const, data: r.data?.value || '5' } : r;
+  });
+  const [threshold, setThreshold] = useState('');
+  useEffect(() => { if (load.status === 'ready' && load.data !== null) setThreshold(load.data); }, [load.status, load.data]);
+  return { threshold, setThreshold, failed: load.status === 'failed', retry: load.reload };
+};
+
 // ── OpenRouter Balance (.tile + .tech__head + .tech__foot) ──
 
-const OpenRouterBudget = () => {
+export const OpenRouterBudget = () => {
   const [credits, setCredits] = useState<{ total_credits: number; total_usage: number; balance: number } | null>(null);
   const [visible, setVisible] = useState(false);
-  const [threshold, setThreshold] = useState('');
+  const { threshold, setThreshold, failed: thresholdFailed, retry: retryThreshold } = useWarningThreshold('/config/openrouter/threshold');
   const [savingThreshold, setSavingThreshold] = useState(false);
   const [savedThreshold, setSavedThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
@@ -82,13 +95,6 @@ const OpenRouterBudget = () => {
         }
       })
       .catch(() => { /* silently hide if anything fails */ });
-    api.request<{ value: string }>('/config/openrouter/threshold')
-      .then(res => {
-        if (mounted) {
-          setThreshold(res.ok && res.data?.value ? res.data.value : '5');
-        }
-      })
-      .catch(() => { if (mounted) setThreshold('5'); });
     return () => { mounted = false; };
   }, []);
 
@@ -136,6 +142,12 @@ const OpenRouterBudget = () => {
       </div>
       <div className="tech__foot">
         <span>Warning threshold</span>
+        {thresholdFailed ? (
+          <span className="srow">
+            <span className="link" style={{ color: 'var(--dojo3-rust)' }}>Could not load the warning threshold, so it can&apos;t be changed right now.</span>
+            <button type="button" className="btn btn--sm" onClick={retryThreshold}>Retry</button>
+          </span>
+        ) : (
         <span className="srow">
           <input
             className="finput"
@@ -158,15 +170,16 @@ const OpenRouterBudget = () => {
           {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
           {thresholdError && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{thresholdError}</span>}
         </span>
+        )}
       </div>
     </div>
   );
 };
 
-const DeepSeekBudget = () => {
+export const DeepSeekBudget = () => {
   const [credits, setCredits] = useState<{ currency: string; balance: number; granted_balance: number; topped_up_balance: number; is_available: boolean } | null>(null);
   const [visible, setVisible] = useState(false);
-  const [threshold, setThreshold] = useState('');
+  const { threshold, setThreshold, failed: thresholdFailed, retry: retryThreshold } = useWarningThreshold('/config/deepseek/threshold');
   const [savingThreshold, setSavingThreshold] = useState(false);
   const [savedThreshold, setSavedThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
@@ -181,13 +194,6 @@ const DeepSeekBudget = () => {
         }
       })
       .catch(() => { /* silently hide if anything fails */ });
-    api.request<{ value: string }>('/config/deepseek/threshold')
-      .then(res => {
-        if (mounted) {
-          setThreshold(res.ok && res.data?.value ? res.data.value : '5');
-        }
-      })
-      .catch(() => { if (mounted) setThreshold('5'); });
     return () => { mounted = false; };
   }, []);
 
@@ -239,6 +245,12 @@ const DeepSeekBudget = () => {
       </div>
       <div className="tech__foot">
         <span>Warning threshold</span>
+        {thresholdFailed ? (
+          <span className="srow">
+            <span className="link" style={{ color: 'var(--dojo3-rust)' }}>Could not load the warning threshold, so it can&apos;t be changed right now.</span>
+            <button type="button" className="btn btn--sm" onClick={retryThreshold}>Retry</button>
+          </span>
+        ) : (
         <span className="srow">
           <input
             className="finput"
@@ -261,6 +273,7 @@ const DeepSeekBudget = () => {
           {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
           {thresholdError && <span className="link" style={{ color: 'var(--dojo3-rust)' }}>{thresholdError}</span>}
         </span>
+        )}
       </div>
     </div>
   );

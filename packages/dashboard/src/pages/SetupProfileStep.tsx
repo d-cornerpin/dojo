@@ -9,6 +9,8 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
   const [aboutYou, setAboutYou] = useState('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -24,6 +26,9 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
         api.getIdentity('USER.md'),
       ]);
       if (cancelled) return;
+      // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
+      if (!(nameRes.ok && idRes.ok)) { setLoadFailed(true); return; }
+      setLoadFailed(false);
       const name = nameRes.ok ? (nameRes.data.value ?? '') : '';
       const about = idRes.ok ? (idRes.data.content ?? '') : '';
       if (name) setUserName(name);
@@ -31,7 +36,7 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
       if (name && about.trim()) setSaved(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const handleSave = async () => {
     setError(null);
@@ -46,6 +51,17 @@ export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => voi
     }
     setSaved(true);
   };
+
+  if (loadFailed) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-cp-coral">
+          Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.
+        </p>
+        <button onClick={() => setLoadTry((n) => n + 1)} className="px-4 py-2 text-ui text-sm font-medium rounded-lg glass-btn glass-btn-primary">Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

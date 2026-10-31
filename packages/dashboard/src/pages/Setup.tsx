@@ -795,6 +795,17 @@ export const ModelsStep = () => {
   );
 };
 
+// The one "could not load" state for a wizard step (lib/load-guard.ts says why): a step whose saved
+// settings could not be read shows this, and no Save, so it cannot write defaults over the real ones.
+const SetupLoadFailed = ({ onRetry }: { onRetry: () => void }) => (
+  <div className="space-y-4">
+    <p className="text-sm text-cp-coral">
+      Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.
+    </p>
+    <button onClick={onRetry} className="px-4 py-2 text-ui text-sm font-medium rounded-lg glass-btn glass-btn-primary">Retry</button>
+  </div>
+);
+
 // ── Primary Agent ──
 
 export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
@@ -806,6 +817,9 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
   const [saved, setSaved] = useState(false);
   const [restyled, setRestyled] = useState(false);
   const [backup, setBackup] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
+
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -821,6 +835,9 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
         api.getSetting('primary_agent_id'),
       ]);
       if (cancelled) return;
+      // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
+      if (!(nameRes.ok && idRes.ok)) { setLoadFailed(true); return; }
+      setLoadFailed(false);
       const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
@@ -836,7 +853,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const handleSave = async () => {
     if (!agentName.trim()) return;
@@ -873,6 +890,8 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
     setBackup(identityResult.data?.soulBackup ?? null);
     setSaved(true);
   };
+
+  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
 
   return (
     <div className="space-y-4">
@@ -949,6 +968,9 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
+
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
@@ -960,6 +982,9 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
         api.getSetting('pm_agent_model'),
       ]);
       if (cancelled) return;
+      // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
+      if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
+      setLoadFailed(false);
       const enabled = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabled);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
@@ -970,13 +995,15 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       if (existingName) setSaved(true);   // already set up → step through freely
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const handleSave = async () => {
     const refused = await saveRoleAgent('pm', pmName, selectedModel);   // the server's sentence, never "saved"
     setError(refused);
     setSaved(!refused);
   };
+
+  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
 
   return (
     <div className="space-y-4">
@@ -1035,6 +1062,9 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
+
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
@@ -1046,6 +1076,9 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
         api.getSetting('trainer_agent_model'),
       ]);
       if (cancelled) return;
+      // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
+      if (!(nameRes.ok && modelRes.ok)) { setLoadFailed(true); return; }
+      setLoadFailed(false);
       const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabledModels);
       const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
@@ -1055,13 +1088,15 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       if (existingName) setSaved(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const handleSave = async () => {
     const refused = await saveRoleAgent('trainer', trainerName, selectedModel);
     setError(refused);
     setSaved(!refused);
   };
+
+  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
 
   return (
     <div className="space-y-4">
@@ -1121,6 +1156,9 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
+
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
@@ -1131,6 +1169,9 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
         api.getDreamingConfig(),
       ]);
       if (cancelled) return;
+      // A failed read of the saved settings is not "nothing saved": nothing here may be saved from it.
+      if (!(cfgRes.ok)) { setLoadFailed(true); return; }
+      setLoadFailed(false);
       const enabledModels = modelsRes.ok ? modelsRes.data.filter(isPickableAgentModel) : [];
       setModels(enabledModels);
       const cfg = cfgRes.ok ? cfgRes.data : null;
@@ -1143,13 +1184,15 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
       if (cfg?.modelId) setSaved(true);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loadTry]);
 
   const handleSave = async () => {
     const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime, dreamMode });
     setError(r.ok ? null : r.error);   // the server's refusal, never "saved"
     setSaved(r.ok);
   };
+
+  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
 
   return (
     <div className="space-y-4">
@@ -1306,7 +1349,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
       ]);
       if (cancelled) return;
       // A failed or unreadable read is not an empty list: nothing may be saved from it.
-      let readable = sendersRes.ok;
+      let readable = sendersRes.ok && enRes.ok;
       let parsed: unknown = [];
       if (sendersRes.ok && sendersRes.data.value) {
         try { parsed = JSON.parse(sendersRes.data.value); readable = Array.isArray(parsed); } catch { readable = false; }
