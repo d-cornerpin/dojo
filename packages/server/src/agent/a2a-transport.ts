@@ -2083,11 +2083,15 @@ async function relayOnePieceJoin(join: JoinState, senderNameHint?: string): Prom
 /** t163: the delegating turn is over — tell the owner what came back while it ran (once: a join already relayed is only settled). */
 export async function releaseDeferredJoinRelays(agentId: string): Promise<void> {
   for (const { joinId, senderNameHint } of takeDeferredJoinRelays(agentId)) {
-    const join = joinState(joinId);
-    if (!join?.complete || join.total !== 1) continue;
-    const already = priorEngineJoinRelay(join.id);
-    if (already) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId, deliveryId: already.id, reason: 'the engine had already relayed the delegated answer' }), 'a2a: join settled on the relay already sent', join.id);
-    else await relayOnePieceJoin(join, senderNameHint);
+    try {
+      const join = joinState(joinId);
+      if (!join?.complete || join.total !== 1) continue;
+      const already = priorEngineJoinRelay(join.id);
+      if (already) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId, deliveryId: already.id, reason: 'the engine had already relayed the delegated answer' }), 'a2a: join settled on the relay already sent', join.id);
+      else await relayOnePieceJoin(join, senderNameHint);
+    } catch (err) {
+      logger.warn('deferred join relay failed; the join reaper and boot re-drain still find it', { agentId, joinId, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 }
 
