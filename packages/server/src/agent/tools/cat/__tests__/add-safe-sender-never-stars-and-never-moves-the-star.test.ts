@@ -29,16 +29,18 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('add_safe_sender', () => {
-  it('does not star the new entry of an ownerless list', async () => {
+  // Stricter than "never stars": with no human-set owner in the list the tool refuses outright
+  // (the-agent-cannot-become-the-owner), so an ownerless list is left exactly as it was.
+  it('refuses to add to an ownerless list and leaves it unstarred and unchanged', async () => {
     setList('imessage_approved_senders', [rec('+15550001', false)]);
     const out = await add('imessage', '+15550002');
-    expect(out.isError).toBeFalsy();
-    expect(getList('imessage_approved_senders').map((s) => s.is_primary)).toEqual([false, false]);
+    expect(out.isError).toBe(true);
+    expect(getList('imessage_approved_senders').map((s) => [s.address, s.is_primary])).toEqual([['+15550001', false]]);
   });
-  it('does not star an entry added to an EMPTY list either', async () => {
+  it('refuses to add to an EMPTY list: the agent never makes the first entry the owner', async () => {
     const out = await add('imessage', '+15550002');
-    expect(out.isError).toBeFalsy();
-    expect(getList('imessage_approved_senders').map((s) => s.is_primary)).toEqual([false]);
+    expect(out.isError).toBe(true);
+    expect(out.content).toMatch(/no owner is set/);
   });
   it('leaves the star where it was', async () => {
     setList('imessage_approved_senders', [rec('+15550001', false), rec('+15550002', true)]);

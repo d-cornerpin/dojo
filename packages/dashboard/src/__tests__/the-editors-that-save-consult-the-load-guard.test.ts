@@ -20,7 +20,8 @@ const GUARD_MARKERS = /useGuardedLoad|useRequestGuard|LoadGate|SetupLoadFailed|l
 const GUARDED = [
   'components/ChannelSafeSenders.tsx',        // channel safe-sender lists (Gmail / Outlook / Teams)
   'components/settings/IMBridgeSettings.tsx', // iMessage approved senders + switch
-  'pages/Setup.tsx',                          // wizard steps: iMessage, profile, primary, PM, trainer, dreamer
+  'pages/Setup.tsx',                          // wizard steps: iMessage, primary, PM, trainer, dreamer
+  'pages/SetupProfileStep.tsx',               // the wizard's profile step
   'pages/AgentConfigPanel.tsx',               // the system prompt (SOUL.md for the primary)
   'components/BriefingView.tsx',              // the briefing
   'components/TechniqueSessionProvider.tsx',  // the Technique Mat

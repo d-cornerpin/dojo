@@ -10,7 +10,7 @@ vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../lib/api');
   return {
     ...actual,
-    getAccessCatalog: vi.fn(async () => ({ ok: true, data: { categories: [], techniques: [], presets: [], channelGroups: {} } })),
+    getAccessCatalog: vi.fn(async () => ({ ok: true, data: { categories: [{ id: 'files', label: 'Files', description: '', tools: [] }], techniques: [], presets: [], channelGroups: {} } })),
     request: vi.fn(async () => ({ ok: true, data: { accounts: [] } })),
     updateAgentConfig: vi.fn(async () => ({ ok: true, data: {} })),
   };
@@ -42,8 +42,11 @@ describe('the Access panel keeps unsaved edits across a parent refetch', () => {
   it('keeps the draft when the stored access is the same content in new objects', async () => {
     const { rerender } = render(panel(agentWith('*')));
     await waitFor(() => expect(radio('Full tool access').getAttribute('aria-checked')).toBe('true'));
-    fireEvent.click(radio('Individual tool access'));
-    expect(radio('Individual tool access').getAttribute('aria-checked')).toBe('true');
+    // The mode switch needs the tool list (the shared load guard), so click until it has loaded.
+    await waitFor(() => {
+      fireEvent.click(radio('Individual tool access'));
+      expect(radio('Individual tool access').getAttribute('aria-checked')).toBe('true');
+    });
     expect((screen.getByText('Save access') as HTMLButtonElement).disabled).toBe(false);
 
     rerender(panel(agentWith('*')));
@@ -54,7 +57,10 @@ describe('the Access panel keeps unsaved edits across a parent refetch', () => {
   it('follows genuinely different stored access', async () => {
     const { rerender } = render(panel(agentWith('*')));
     await waitFor(() => expect(radio('Full tool access').getAttribute('aria-checked')).toBe('true'));
-    fireEvent.click(radio('Individual tool access'));
+    await waitFor(() => {
+      fireEvent.click(radio('Individual tool access'));
+      expect(radio('Individual tool access').getAttribute('aria-checked')).toBe('true');
+    });
     rerender(panel(agentWith([])));
     await waitFor(() => expect(radio('Individual tool access').getAttribute('aria-checked')).toBe('true'));
     expect((screen.getByText('Save access') as HTMLButtonElement).disabled).toBe(true);
