@@ -43,6 +43,7 @@ vi.mock('../../agent/model.js', () => ({
 }));
 
 import { generateSummary } from '../summarize.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const RAW = [
   '[USER] here is a genuinely important business decision about the Verve deck',
@@ -62,7 +63,7 @@ beforeEach(() => { callModel.mockReset(); });
 describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => {
   it('NO MODEL: refuses, and does NOT hand back the raw input as a summary', async () => {
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 50, agentId: 'zargo',
+      content: RAW, depth: 0, targetTokens: 50, agentId: FXID.n4,
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
@@ -74,7 +75,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
   it('MODEL THREW: refuses, and does NOT hand back the raw input as a summary', async () => {
     callModel.mockRejectedValue(new Error('provider 503'));
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 50, agentId: 'zargo', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 50, agentId: FXID.n4, modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
@@ -85,7 +86,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
   it('LEVEL 1: a normal summary is ok:true and is the model\'s text', async () => {
     callModel.mockResolvedValue({ content: 'a tidy summary' });
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 500, agentId: 'zargo', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 500, agentId: FXID.n4, modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(r.reason);
@@ -99,7 +100,7 @@ describe('generateSummary — the {ok:false, reason} contract (19 §1e)', () => 
   it('an answer far over its input is never truncated and never kept: the span is refused, rows kept', async () => {
     callModel.mockResolvedValue({ content: 'model prose '.repeat(2_000) });
     const r = await generateSummary({
-      content: RAW, depth: 0, targetTokens: 20, agentId: 'zargo', modelId: 'deepseek/x',
+      content: RAW, depth: 0, targetTokens: 20, agentId: FXID.n4, modelId: 'deepseek/x',
     });
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).not.toContain('tokens truncated');

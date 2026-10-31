@@ -53,6 +53,7 @@ import {
   assemblyValidationSinkFailures,
   __resetAssemblyValidationSinkFailures,
 } from '../assembly-validation-sink.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const REAL_HOME = process.env.DOJO_HOME;
 const SCRATCH = fs.mkdtempSync(path.join((process.env.DOJO_TEST_HOME_ROOT || os.tmpdir()), 'dojo-sink-'));
@@ -85,7 +86,7 @@ const oversized = (): ValidatedMessage[] => [user('x'.repeat(400_000)), asst('y'
 
 async function boundary(messages: ValidatedMessage[], contextWindow = 8_000) {
   return validateAtProviderBoundary({
-    agentId: 'zargo',
+    agentId: FXID.n4,
     modelId: 'deepseek/deepseek-chat',
     messages,
     systemPrompt: 'you are a test',
@@ -127,7 +128,7 @@ describe('the durable divergence sink', () => {
     expect(lines.filter((l) => JSON.parse(l).codes.includes('unrepairable'))).toHaveLength(1);
     const rec = JSON.parse(lines[0]);
     expect(rec.codes).toContain('budget-exceeded');
-    expect(rec.agentId).toBe('zargo');
+    expect(rec.agentId).toBe(FXID.n4);
     expect(rec.overBy).toBeGreaterThan(0);
   });
 
@@ -205,7 +206,7 @@ describe('the durable divergence sink', () => {
     const before = assemblyValidationSinkFailures();
     appendDivergenceRecord({
       at: new Date().toISOString(), pid: process.pid, mode: 'detect',
-      agentId: 'zargo', modelId: 'm', codes: ['budget-exceeded'], violations: ['x'],
+      agentId: FXID.n4, modelId: 'm', codes: ['budget-exceeded'], violations: ['x'],
       tokenTotal: 2, budgetTokens: 1, overBy: 1, messageCount: 1, checked: 1, diverged: 1,
     });
     expect(assemblyValidationSinkFailures()).toBe(before + 1);

@@ -12,7 +12,7 @@
 //     branch ended at `while (messages[0].role !== 'user') messages.shift()` and returned:
 //     ROLE normalised, leading `tool_result` NOT. A first message that is a user message
 //     whose blocks are all tool_result satisfies that loop exactly, and Anthropic rejects
-//     it — 3 of the detect window's 17 day-0 divergences, all on `quilba`
+//     it — 3 of the detect window's 17 day-0 divergences, all on `FXID.n5`
 //     (`first-message-leads-with-tool-result`).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -32,6 +32,7 @@ vi.mock('../../db/connection.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { validateAssembly } from '../assembly-validation.js';
 import { runMigrations } from '../../db/migrations.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PM = 'pm';                       // config/platform.ts: `pm_agent_id` defaults to 'pm'
 const ORDINARY = 'agent-shape-plain';

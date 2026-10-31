@@ -77,6 +77,7 @@ import { renderRecallLane, renderRecalledBlock, renderCommitmentsBlock, type Rec
 import { MessageSlot } from '../../prompt/registry/types.js';
 import { POST_BUDGET_ENTRY_LANE } from '../lanes.js';
 import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-t69b';
 const CONV = 'conv-t69b';
@@ -349,7 +350,7 @@ describe('T69b §2 — the same rows in a different RANK render the same bytes',
 
 describe('T69b §3 — the board snapshot is its own block, ahead of everything per-ask', () => {
   beforeEach(() => {
-    seedWork('cmt:t69bx', 'commitment', 'Send Zargo the invoice', DAY_ONE - 2 * HOUR);
+    seedWork('cmt:t69bx', 'commitment', `Send ${FX.n4} the invoice`, DAY_ONE - 2 * HOUR);
   });
 
   it('renders as TWO messages, snapshot FIRST', () => {

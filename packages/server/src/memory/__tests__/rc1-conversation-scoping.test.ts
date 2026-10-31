@@ -17,6 +17,7 @@ import type { Message, MessageOrigin } from '@dojo/shared';
 import { scopeToHumanConversation } from '../assembler.js';
 import { conversationKey, type TurnCounterparty } from '../../agent/v2/counterparty.js';
 import { recipientMatchesAliases } from '../../agent/v2/outbound-ledger.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── builders ──
 
@@ -60,7 +61,7 @@ const mayaUserRow = msg({
   conversationId: null, origin: userOrigin('imessage', 'maya', 'Maya'),
 });
 const davidUserRow = msg({
-  id: 'yorvak-in', role: 'user', content: '5550001234',
+  id: `${FXID.n11}-in`, role: 'user', content: '5550001234',
   conversationId: null, origin: userOrigin('imessage', 'sam', 'Sam'),
 });
 
@@ -86,7 +87,7 @@ describe('RC-1 gate (b): scopeToHumanConversation still excludes other conversat
     // Sam's turn must not see Maya's inbound, and vice versa (the exact conflation
     // the redesign kills; pinned so the echo change does not loosen it).
     const davidScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
-    expect(davidScoped.map((m) => m.id)).toEqual(['yorvak-in']);
+    expect(davidScoped.map((m) => m.id)).toEqual([`${FXID.n11}-in`]);
     const mayaScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'maya', 'Maya'), mayaConv);
     expect(mayaScoped.map((m) => m.id)).toEqual(['maya-in']);
   });

@@ -102,6 +102,7 @@ import { contextWindowPolicy } from '../budget.js';
 import { assembleContext } from '../assembler.js';
 import { insertMessage } from '../message-store.js';
 import { runMigrations } from '../../db/migrations.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-d';
 const MODEL = 'model-d';
@@ -121,7 +122,7 @@ function seedModel(contextWindow: number): void {
     `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities)
      VALUES (?, 'p', 'm', 'M', ?, 2048, '["tools"]')`,
   ).run(MODEL, contextWindow);
-  db().prepare("INSERT INTO agents (id, name, status, model_id) VALUES (?, 'Zargo', 'idle', ?)")
+  db().prepare(`INSERT INTO agents (id, name, status, model_id) VALUES (?, '${FX.n4}', 'idle', ?)`)
     .run(AGENT, MODEL);
 }
 

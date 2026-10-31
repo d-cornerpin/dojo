@@ -14,7 +14,7 @@
 //
 // WHAT IS BEING PROVEN HERE IS AS MUCH WHAT THE MATCHER REFUSES AS WHAT IT CATCHES. The
 // first cut of it was measured on the worn-in body before anything was written, and it
-// joined "Yorvak is still owed the final reply" to a commitment about a codeword on the
+// joined "FX.n11 is still owed the final reply" to a commitment about a codeword on the
 // strength of the name plus the word "final". §2 is the record of what that measurement
 // bought: a phrase requirement, and an id-disagreement refusal.
 // ════════════════════════════════════════════════════════════════════════════════
@@ -42,9 +42,10 @@ import {
   annotateSummaryObligations, sweepStoredSummaryObligations,
   SUMMARY_OBLIGATION_MARK, SUMMARY_NO_MATCH_MARK,
 } from '../summary-obligations.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
-const OTHER = 'zargo';
+const OTHER = FXID.n4;
 
 const db = (): Database.Database => mockDb.current!;
 
@@ -83,9 +84,9 @@ const BOB_FENCE = "Email the fence estimate to Bob (promise-bmshmu5ygd5) once he
 const STORED_BOB_LINES = [
   "- OPEN (per HarnessBot's status): two quotes waiting on Bob's address — for **fence** and "
     + '**roof** — which HarnessBot will send the moment Bob provides the address. [Owner of this '
-    + "pending item: Yorvak's quote requests; dependent on Bob's address.]",
+    + `pending item: ${FX.n11}'s quote requests; dependent on Bob's address.]`,
   "DEFERRED: Fence and roof quotes — pending Bob's address before HarnessBot can send them.",
-  '- First ask: HarnessBot called work_update (status set to on_deck), then told Yorvak: '
+  `- First ask: HarnessBot called work_update (status set to on_deck), then told ${FX.n11}: `
     + '"Everything from last night is done (cheat sheet, desk picks, parking reminder), with one '
     + "honest hiccup: the 6:45 AM 'routine' reminder fired this morning but the message delivery "
     + 'glitched on my end and never reached your screen. The schedule is intact — it\'s set to fire '
@@ -99,12 +100,12 @@ const STORED_BOB_LINES = [
     + 'will send them the moment Bob provides the address.',
   "PENDING: Two quotes (fence, roof) — waiting on Bob's address before HarnessBot sends them.",
   '- HarnessBot replied: nothing outstanding on its side — tracker is clean; the only item is '
-    + 'Tyndo\'s paused technique-distillation batch, "which isn\'t mine." HarnessBot added: "The '
+    + `${FX.n6}\'s paused technique-distillation batch, "which isn\'t mine." HarnessBot added: "The `
     + 'fence and roof quotes are still parked on Bob\'s address, but that\'s on his side, not yours '
     + 'or mine."',
   'DEFERRED / STILL PENDING: Mariners score check — task 92fba53b-1f94-49bf-a51c-77a967355af6 '
     + 'created scheduled Mon Aug 10, 2026 14:06, but the turn closed without HarnessBot messaging '
-    + 'Yorvak the score. HarnessBot stated fence and roof quotes remain parked on Bob\'s address — '
+    + `${FX.n11} the score. HarnessBot stated fence and roof quotes remain parked on Bob\'s address — `
     + "on Bob's side, not HarnessBot's.",
 ];
 
@@ -114,7 +115,7 @@ beforeEach(() => {
   mockDb.current = fresh;
   runMigrations();
   fresh.pragma('foreign_keys = ON');
-  for (const [id, name] of [[AGENT, 'HarnessBot'], [OTHER, 'Zargo']]) {
+  for (const [id, name] of [[AGENT, 'HarnessBot'], [OTHER, FX.n4]]) {
     fresh.prepare(
       `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, ?, 'idle', '1970-01-01')`,
     ).run(id, name);
@@ -204,22 +205,22 @@ describe('resemblance is not a join', () => {
   });
 
   it('the name plus one common noun is NOT enough — the phrase must be shared', () => {
-    // The measured false positive, verbatim in shape: this joined on "Yorvak" + "final".
+    // The measured false positive, verbatim in shape: this joined on "FX.n11" + "final".
     seedCommitment('abandoned',
-      'When BehavWorker delivers their codeword, send Yorvak ONE final message containing the '
+      `When BehavWorker delivers their codeword, send ${FX.n11} ONE final message containing the `
       + 'Part 1 morning-walks benefit sentence AND the exact codeword they delivered.');
-    const line = '- Yorvak is still owed the final reply "done" (his instruction was to reply with '
+    const line = `- ${FX.n11} is still owed the final reply "done" (his instruction was to reply with `
       + 'just "done" after the eight echoes).';
     expect(annotateSummaryObligations(line, AGENT)).toBe(line);
   });
 
   it('when both sides name a run id and the ids DISAGREE, it is not a match', () => {
     seedCommitment('abandoned',
-      'Tell Yorvak about the fail-open probe project (failproj-bmsgoeiyu25-a1) ending with a fallen '
+      `Tell ${FX.n11} about the fail-open probe project (failproj-bmsgoeiyu25-a1) ending with a fallen `
       + 'step, and hold today\'s pending HarnessBot validation checks until his yes/no ruling.');
-    const same = '- PENDING: Tell Yorvak about the fail-open probe project (failproj-bmsgoeiyu25-a1) '
+    const same = `- PENDING: Tell ${FX.n11} about the fail-open probe project (failproj-bmsgoeiyu25-a1) `
       + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
-    const other = '- PENDING: Tell Yorvak about the fail-open probe project (failproj-bmsfkglb1e0-a1) '
+    const other = `- PENDING: Tell ${FX.n11} about the fail-open probe project (failproj-bmsfkglb1e0-a1) `
       + 'ending with a fallen step, and hold today\'s pending HarnessBot validation checks.';
     expect(annotateSummaryObligations(same, AGENT)).toContain(SUMMARY_OBLIGATION_MARK);
     expect(annotateSummaryObligations(other, AGENT)).toBe(other);

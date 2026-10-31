@@ -23,7 +23,7 @@
 // are a claim about reality, so T2 measured reality before choosing:
 //
 //   1,409 real context receipts matched to their own `cost_records` row (agent + instant),
-//   primary agent `Zargo`, tools payload measured live at 70,006 chars:
+//   primary agent `FX.n4`, tools payload measured live at 70,006 chars:
 //       chars per token = 3.88 – 3.93   (per-call p10 3.78 · median 3.92 · p90 3.99)
 //
 //   /4   → 2% under the measured cost   ← the survivor, and already the column's dialect
@@ -47,6 +47,7 @@ import {
   OUTPUT_RESERVE_TOKENS,
   toolAndOutputReserve,
 } from '../budget.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 describe('the ONE estimator', () => {
   it('divides by 4 — the divisor the measurement chose, not the one inherited', () => {

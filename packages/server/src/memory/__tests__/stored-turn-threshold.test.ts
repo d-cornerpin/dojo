@@ -4,7 +4,7 @@
 // so a threshold from an older numbering era is permanently in the future and the lane it
 // gates fires on every turn forever.
 //
-// Measured on the live dev body when this was written: zargo 1598 vs turn 264,
+// Measured on the live dev body when this was written: FXID.n4 1598 vs turn 264,
 // healer 122 vs 9, imaginer 19 vs 0 — three of the five agents holding a threshold.
 // The bound is the WRITER'S OWN horizon (`currentTurn + 3`, `memory/compaction.ts`),
 // never a number this test or that module invented.
@@ -26,6 +26,7 @@ vi.mock('../../db/connection.js', () => ({
 import { assembleContext } from '../assembler.js';
 import { readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../../agent/v2/turn-record.js';
 import { runMigrations } from '../../db/migrations.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-threshold';
 const MODEL = 'threshold-model';
@@ -79,7 +80,7 @@ describe('readStoredTurnThreshold — the bound is the writer\'s own horizon', (
   it('one turn past the horizon is not expressible by any writer on this clock → expired', () => {
     expect(readStoredTurnThreshold(10 + H + 1, 10, H)).toBeNull();
   });
-  it('THE LIVE FOSSIL: zargo, 1598 against turn 264 → expired', () => {
+  it(`THE LIVE FOSSIL: ${FXID.n4}, 1598 against turn 264 → expired`, () => {
     expect(readStoredTurnThreshold(1598, 264, H)).toBeNull();
   });
   it('an ordinary already-expired threshold is returned, not nulled — expiry is the reader\'s job', () => {

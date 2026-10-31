@@ -33,6 +33,7 @@ import {
   type DisplayKind,
   type VisibilityTier,
 } from '@dojo/shared';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── The enum itself ──
 
@@ -101,7 +102,7 @@ const WRITER_LITERALS: Case[] = [
     content: `${OWNER_ALERT_HEADS_UP_PREFIX} a scheduled reminder, "water the plants", failed on its final attempt.`,
     kind: 'owner-alert', tier: 'user-visible' },
   { site: 'agent/destructive-gate.ts approval expiry', role: 'system',
-    content: `${OWNER_ALERT_HEADS_UP_PREFIX} "Zargo" asked me to approve a sensitive action.`,
+    content: `${OWNER_ALERT_HEADS_UP_PREFIX} "${FX.n4}" asked me to approve a sensitive action.`,
     kind: 'owner-alert', tier: 'user-visible' },
   // ⚠ THE PREFIX HAS NO WRITER SINCE PHASE-4 T4, AND THE NOTE BESIDE IT WAS WRONG (#14).
   // What stood here said this notice arrived as an EVENTS-lane `role='user'` row and therefore
@@ -141,7 +142,7 @@ const WRITER_LITERALS: Case[] = [
 
   // Peer traffic.
   { site: 'a2a-transport.ts inbound', role: 'user', lane: 'a2a',
-    content: '[A2A:QUESTION thread:t1 from:zargo] do you have the file?',
+    content: `[A2A:QUESTION thread:t1 from:${FXID.n4}] do you have the file?`,
     kind: 'a2a', tier: 'agent-only' },
   { site: 'loop.ts a2a own output', role: 'assistant', lane: 'a2a',
     content: 'Yes, sending it now.', kind: 'a2a', tier: 'agent-only' },

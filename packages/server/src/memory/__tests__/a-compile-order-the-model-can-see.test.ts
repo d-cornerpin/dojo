@@ -86,6 +86,7 @@ import { assembleContext, compileOrderReachedTheModel, scopeToA2AThread } from '
 import { runMigrations } from '../../db/migrations.js';
 import { ENGINE_RIDER_INTENTS } from '../../agent/v2/engine-riders.js';
 import { COMPILE_ORDER_PIECES_MARKER, compileSteerText, JOIN_REDRIVE_BOUND } from '../../work/join-drive.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const THREAD = '1a952a39-1111-2222-3333-444444444444';
 const OTHER_THREAD = '34430191-9999-8888-7777-666666666666';
@@ -107,14 +108,14 @@ function engineOrigin(intent: string | null): MessageOrigin {
 function agentOrigin(threadId: string): MessageOrigin {
   return {
     kind: 'agent', relation: 'agent', channel: 'a2a',
-    senderName: 'Tyndo', senderId: 'tyndo', threadId, intent: 'ASSIGN', authorized: true,
+    senderName: FX.n6, senderId: FXID.n6, threadId, intent: 'ASSIGN', authorized: true,
   };
 }
 
 function humanOrigin(): MessageOrigin {
   return {
     kind: 'user', relation: 'owner', channel: 'dashboard',
-    senderName: 'Yorvak', senderId: 'yorvak', threadId: null, intent: null, authorized: true,
+    senderName: FX.n11, senderId: FXID.n11, threadId: null, intent: null, authorized: true,
   };
 }
 
@@ -175,7 +176,7 @@ describe('T10 conformance: fanout_join is the ONLY engine intent an A2A tail kee
 //
 // The seed is the round-16 S5 shape as the store recorded it on 2026-08-31 (HarnessBot,
 // seqs 70594 / 70613 / 70633 / 70643): an owner ask that names two sub-jobs, Healer's
-// deliverable and Tyndo's deliverable as A2A inbounds on their OWN conversations, and one
+// deliverable and FX.n6's deliverable as A2A inbounds on their OWN conversations, and one
 // `lane='events'` / `origin_intent='fanout_join'` row whose body quotes both pieces verbatim.
 // The turn is assembled with NO counterparty — the exact shape of turns 5121/5122, whose
 // `turns.kind` is NULL and whose `conv_key` is NULL, so the human scoper runs unscoped.
@@ -244,7 +245,7 @@ function compileOrderContent(): string {
     total: 2,
     pieces: [
       `Piece 1 (from Healer, thread 4483996a): "${PIECE_1}"`,
-      `Piece 2 (from Tyndo, thread 12bde069): "${PIECE_2}"`,
+      `Piece 2 (from ${FX.n6}, thread 12bde069): "${PIECE_2}"`,
     ],
     attempt: 1,
     bound: JOIN_REDRIVE_BOUND,
@@ -274,8 +275,8 @@ function seedTheS5Shape(): void {
     content: `[A2A:ANSWER thread:4483996a from:Healer] ${PIECE_1}`,
   });
   insertRow({
-    role: 'user', lane: 'a2a', conversationId: 'conv-tyndo', sourceAgentId: 'tyndo',
-    content: `[A2A:DELIVERABLE thread:12bde069 from:Tyndo] ${PIECE_2}`,
+    role: 'user', lane: 'a2a', conversationId: `conv-${FXID.n6}`, sourceAgentId: FXID.n6,
+    content: `[A2A:DELIVERABLE thread:12bde069 from:${FX.n6}] ${PIECE_2}`,
   });
 }
 

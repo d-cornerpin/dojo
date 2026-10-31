@@ -70,6 +70,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { trackerListActive } from '../../tracker/tools.js';
 import { COMMITMENT_POSITION_NONE, commitmentPositionLine } from '../../work/obligation-memory.js';
 import { engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -152,7 +153,7 @@ describe('§2 the board-read result states the commitment position', () => {
   });
 
   it('with live commitments it states the COUNT and points at the one place they are listed', () => {
-    seedCommitment({ id: 'cmt:bbbbbbbbbbbb', title: 'Send Yorvak the venue shortlist', state: 'open' });
+    seedCommitment({ id: 'cmt:bbbbbbbbbbbb', title: `Send ${FX.n11} the venue shortlist`, state: 'open' });
     seedCommitment({ id: 'cmt:cccccccccccc', title: 'Email the fence estimate', state: 'open' });
     const out = trackerListActive(AGENT, {});
     expect(out).toMatch(/2 open commitments/);

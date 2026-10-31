@@ -35,6 +35,7 @@ import {
   OWNER_ALERT_HEADS_UP_PREFIX, NEW_SESSION_DIVIDER,
 } from '@dojo/shared';
 import { runMigrations } from '../../db/migrations.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-msgstore';
 const PEER = 'agent-peer';
@@ -420,7 +421,7 @@ describe('T8 — content is stored display-ready', () => {
 
     // routes/agents.ts and agent/tools.ts both write an agent's instructions through this
     // module as a role='system' row. Those instructions legitimately DOCUMENT the marker.
-    const prompt = 'You are Zargo.\n\nLead a reply with `((mood: NAME))` to animate the orb.';
+    const prompt = `You are ${FX.n4}.\n\nLead a reply with \`((mood: NAME))\` to animate the orb.`;
     const s = insertMessage({ agentId: AGENT, role: 'system', content: prompt });
     expect(rowOf(s.id).content).toBe(prompt);
   });

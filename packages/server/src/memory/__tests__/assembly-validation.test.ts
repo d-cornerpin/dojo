@@ -30,6 +30,7 @@ import {
 } from '../assembly-validation.js';
 import { LANE_PRIORITY, isProtectedLaneId } from '../lanes.js';
 import { MessageSlot } from '../../prompt/registry/types.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -145,9 +146,9 @@ describe('validateAssembly — same validator for every agent type (C9, no PM by
     // assembler's budgeting. The validator cannot be told who it is validating for, so
     // there is no signature through which a bypass could be added later.
     const pmShaped = [user('a'), asst('b')]; // ends on assistant: a violation for anybody
-    const v = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'quilba' });
+    const v = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: FXID.n5 });
     expect(v.violations.map((x) => x.code)).toContain('last-message-is-assistant');
-    const other = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: 'zargo' });
+    const other = validateAssembly(pmShaped, { budgetTokens: 10_000, agentId: FXID.n4 });
     expect(other.violations).toEqual(v.violations);
   });
 });
@@ -378,10 +379,10 @@ describe('C11 — unrepairable fails loud', () => {
   it('the error names the agent when it was given one — a loud failure must be locatable', () => {
     const { messages, laneIds } = unrepairable();
     try {
-      repairAssembly(messages, { budgetTokens: 10, laneIds, agentId: 'zargo' });
+      repairAssembly(messages, { budgetTokens: 10, laneIds, agentId: FXID.n4 });
       throw new Error('expected a throw');
     } catch (e) {
-      expect((e as Error).message).toContain('zargo');
+      expect((e as Error).message).toContain(FXID.n4);
     }
   });
 

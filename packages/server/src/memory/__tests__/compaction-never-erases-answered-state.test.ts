@@ -73,6 +73,7 @@ import { generateSummary } from '../summarize.js';
 import { runLeafCompaction, buildLeafSummaryInput, NO_CONVERSATION_PLACEHOLDER } from '../compaction.js';
 import { getCompactedMessageIds } from '../dag.js';
 import type { Message } from '@dojo/shared';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-t24';
 const MODEL = 'model-t24';
@@ -223,8 +224,8 @@ describe('the placeholder path is only taken over spans the ledger calls plumbin
       content: '[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] run #1',
     });
     const a2a = insertMessage({
-      agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: 'zargo',
-      content: '[A2A: from zargo] the deck is done',
+      agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: FXID.n4,
+      content: `[A2A: from ${FXID.n4}] the deck is done`,
     });
     padFreshTail();
 

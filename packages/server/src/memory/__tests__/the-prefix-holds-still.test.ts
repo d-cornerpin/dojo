@@ -102,6 +102,7 @@ import { MessageSlot } from '../../prompt/registry/types.js';
 import { buildRecallLaneMessage } from '../recall-lane.js';
 import { contextWindowPolicy } from '../budget.js';
 import { runMigrations } from '../../db/migrations.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-t67b';
 const MODEL = 'model-t67b';
@@ -152,7 +153,7 @@ function row(role: string, content: string, turn: number): string {
 function seedBriefing(): void {
   mockDb.current!.prepare(
     `INSERT INTO briefings (id, agent_id, content, token_count, generated_at)
-     VALUES ('brief-1', ?, 'Overnight: three deliveries landed and the Zargo thread is open.', 14, '2026-08-30 06:00:00')`,
+     VALUES ('brief-1', ?, 'Overnight: three deliveries landed and the ${FX.n4} thread is open.', 14, '2026-08-30 06:00:00')`,
   ).run(AGENT);
 }
 
@@ -164,7 +165,7 @@ function seedActiveTask(): void {
                        last_answered_turn, last_answered_at, last_delivery_summary)
      VALUES ('task-aaaaaaaa', 'task', ?, 'owner', 'tracker', 'task-aaaaaaaa', 'claimed', 'tracker',
              0, 0, 'Rewire the porch light', 'the description', 'normal', ?, ?, 7, ?,
-             'sent by sms to Yorvak')`,
+             'sent by sms to ${FX.n11}')`,
   ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000,
     new Date(DAY_ONE - 600_000).toISOString().replace('T', ' ').slice(0, 19));
   // The stamp line the lane renders is DERIVED from `work_events` (tracker-view
@@ -173,7 +174,7 @@ function seedActiveTask(): void {
   db.prepare(
     `INSERT INTO work_events (work_id, kind, actor, payload, created_at)
      VALUES ('task-aaaaaaaa', 'activity', ?, ?, ?)`,
-  ).run(AGENT, JSON.stringify({ turn: 7, answered: 1, outcome: 'answered', delivery_summary: 'sent by sms to Yorvak' }),
+  ).run(AGENT, JSON.stringify({ turn: 7, answered: 1, outcome: 'answered', delivery_summary: `sent by sms to ${FX.n11}` }),
     DAY_ONE - 600_000);
 }
 
@@ -199,7 +200,7 @@ function seedSummaries(): void {
   );
   ins.run('sum-zebra', AGENT, 'The ZEBRA enclosure permit was filed on the 14th.', 12,
     '2026-08-01 09:00:00', '2026-08-01 10:00:00', '2026-08-01 10:00:00');
-  ins.run('sum-newest-1', AGENT, 'Zargo asked about the invoice and was answered.', 11,
+  ins.run('sum-newest-1', AGENT, `${FX.n4} asked about the invoice and was answered.`, 11,
     '2026-08-28 09:00:00', '2026-08-28 10:00:00', '2026-08-28 10:00:00');
   ins.run('sum-newest-2', AGENT, 'The porch light job was opened and assigned.', 11,
     '2026-08-29 09:00:00', '2026-08-29 10:00:00', '2026-08-29 10:00:00');
@@ -233,7 +234,7 @@ function seedVault(): void {
   db.prepare(
     `INSERT INTO vault_entries (id, agent_id, type, content, confidence, is_permanent, is_pinned,
                                 is_obsolete, created_at, updated_at)
-     VALUES ('vault-pin', ?, 'fact', 'Yorvak''s wife is named Claire.', 1.0, 1, 1, 0, ?, ?)`,
+     VALUES ('vault-pin', ?, 'fact', '${FX.n11}''s wife is named Claire.', 1.0, 1, 1, 0, ?, ?)`,
   ).run(AGENT, '2026-07-01 10:00:00', '2026-07-01 10:00:00');
 }
 
@@ -368,7 +369,7 @@ describe('T67b §4 — a new question never rewrites history above it', () => {
     seedTurn(1);
     seedSummaries();
     seedVault();
-    row('user', 'tell me about the invoice for Zargo, the one we discussed', 1);
+    row('user', `tell me about the invoice for ${FX.n4}, the one we discussed`, 1);
 
     const first = clone((await assembleContext(AGENT, MODEL)).messages);
 
@@ -430,7 +431,7 @@ describe('T67b §7 / t145 — a second ask rewrites nothing ahead of the first, 
 
     row('assistant', 'on it', 1);
     seedTurn(2);
-    const ask2 = `And separately ${'y'.repeat(220)} chase the invoice with Zargo`;
+    const ask2 = `And separately ${'y'.repeat(220)} chase the invoice with ${FX.n4}`;
     row('user', ask2, 2);
     const a2 = await assembleContext(AGENT, MODEL);
 
@@ -449,7 +450,7 @@ describe('T67b §6 — the tail diverges as LATE as it can', () => {
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                          wakes, closes_thread, title, opened_at, updated_at, closed_at)
        VALUES ('cmt:bbbbbbbb', 'commitment', ?, 'agent', 'tracker', 'cmt:bbbbbbbb', 'open',
-               'tracker', 0, 0, 'Send Zargo the invoice', ?, ?, NULL)`,
+               'tracker', 0, 0, 'Send ${FX.n4} the invoice', ?, ?, NULL)`,
     ).run(AGENT, DAY_ONE - 7_200_000, DAY_ONE - 7_200_000);
 
     const policy = contextWindowPolicy(CONTEXT_WINDOW, { toolPayloadTokens: 1000, maxOutputTokens: 4096 });

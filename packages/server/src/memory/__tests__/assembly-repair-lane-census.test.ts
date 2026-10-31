@@ -55,6 +55,7 @@ import { tagMessageLane, collectMessageLaneIds } from '../message-lane-tag.js';
 import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 import { getMessageEntries } from '../../prompt/registry/registry.js';
 import '../../prompt/registry/entries.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // ── A TIMEOUT WITH ITS MEASURED REASON (T-PROMISE's side-fix precedent, same class) ──
 // The RUNTIME census clause imports the prompt registry, and that module graph costs
@@ -91,7 +92,7 @@ const overBudget = (tailId: string): ValidatedMessage[] => [
 ];
 
 const repair = (messages: ValidatedMessage[], budgetTokens = 500) =>
-  repairAssembly(messages, { budgetTokens, laneIds: collectMessageLaneIds(messages), agentId: 'zargo' });
+  repairAssembly(messages, { budgetTokens, laneIds: collectMessageLaneIds(messages), agentId: FXID.n4 });
 
 describe('the priority repair recognises post-budget lanes instead of refusing', () => {
   it('C10.1 an over-budget assembly carrying a loop-tail entry id REPAIRS (it used to refuse)', () => {

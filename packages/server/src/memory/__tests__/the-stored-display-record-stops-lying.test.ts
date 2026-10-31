@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { classifyMessageForDisplay, classifyTool, toolBadgeTier } from '@dojo/shared';
 import { SUB_AGENT_ALWAYS_LOADED, PRIMARY_AGENT_ALWAYS_LOADED } from '../../tools/tool-docs.js';
 import { toolDefinitions } from '../../agent/tools/definitions.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -58,7 +59,7 @@ const S1 = {
   58425: [tool('load_tool_docs', { tools: ['work_open', 'work_note'] }),
           tool('web_search', { query: 'best note-taking apps 2026 comparison', count: 8 }),
           tool('web_search', { query: 'best note-taking app 2026 fast reliable search', count: 8 })],
-  58427: [tool('work_open', { kind: 'task', title: 'Research note-taking apps for Yorvak' }),
+  58427: [tool('work_open', { kind: 'task', title: `Research note-taking apps for ${FX.n11}` }),
           tool('web_fetch', { url: 'https://www.pcmag.com/picks/the-best-note-taking-apps' }),
           tool('web_fetch', { url: 'https://zapier.com/blog/best-note-taking-apps/' })],
   58429: [tool('web_fetch', { url: 'https://unstar.app/blog/ranked-2026' }),

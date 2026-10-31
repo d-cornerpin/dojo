@@ -46,6 +46,7 @@ import {
 } from '@dojo/shared';
 import { assembleContext } from '../assembler.js';
 import { runMigrations } from '../../db/migrations.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'agent-b';
 const MODEL = 'model-b';
@@ -138,7 +139,7 @@ function seedBox(): void {
     `INSERT INTO models (id, provider_id, api_model_id, name, context_window, max_output_tokens, capabilities)
      VALUES (?, 'p', 'm', 'M', 128000, 4096, '["tools"]')`,
   ).run(MODEL);
-  db.prepare("INSERT INTO agents (id, name, status, model_id) VALUES (?, 'Zargo', 'idle', ?)")
+  db.prepare(`INSERT INTO agents (id, name, status, model_id) VALUES (?, '${FX.n4}', 'idle', ?)`)
     .run(AGENT, MODEL);
   db.prepare("INSERT INTO agents (id, name, status, model_id) VALUES (?, 'Maddy', 'idle', ?)")
     .run(PEER, MODEL);
