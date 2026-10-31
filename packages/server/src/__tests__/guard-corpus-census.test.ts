@@ -266,6 +266,14 @@ const STEPS_BY_PATH: Declaration[] = [
       + 'imports from here rather than growing its own copy.',
   },
   {
+    rel: 'packages/server/src/memory/__tests__/t29-a-technique-inlines-only-where-the-room-holds-it.test.ts',
+    verdict: 'step-aware',
+    why: 'IT IMPORTS ONE STEP MODULE BY PATH AS ITS SUBJECT, NOT AS A CORPUS: the test calls '
+      + '`injectTechniqueAndGapHints` with a fixed room and reads what it returns. It reads no source '
+      + 'text and walks no directory, so a step package that moves makes the import fail to compile '
+      + 'rather than letting a clause go quiet.',
+  },
+  {
     rel: 'packages/server/src/agent/v2/__tests__/route-text-inventory.ts',
     verdict: 'step-aware',
     why: 'DATA, NOT A WALK: the route-text inventory is a list of source lines, each tagged with the '
