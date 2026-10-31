@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import * as api from '../lib/api';
+import { useGuardedLoad } from '../lib/load-guard';
 
 // v2.7.24 — per-channel safe-sender allowlist (Gmail / Outlook / Teams).
 // Mirrors the iMessage safe-sender UX in Settings.tsx but trimmed: no
@@ -79,9 +80,6 @@ export const ChannelSafeSenders = ({
   description,
   addressPlaceholder,
 }: ChannelSafeSendersProps) => {
-  const [senders, setSenders] = useState<SafeSender[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,61 +88,41 @@ export const ChannelSafeSenders = ({
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newSharingLevel, setNewSharingLevel] = useState<SharingLevel>('dont_overshare');
-  // The last list that was successfully read or saved, and the exact stored text it came from.
-  // Every edit is built on these, never on a failed or blank state.
-  const goodList = useRef<SafeSender[]>([]);
-  const goodRaw = useRef<string | null>(null);
   const busy = useRef(false);
 
-  const load = useCallback(async (): Promise<boolean> => {
-    setLoading(true);
-    const res = await api.getSetting(configKey);
-    const raw = res.ok ? (res.data.value ?? null) : null;
-    const parsed = res.ok ? parseSenders(raw ?? undefined) : null;
-    if (!res.ok || parsed === null) {
-      setLoadFailed(true);
-      setLoading(false);
-      return false;
-    }
-    goodList.current = parsed;
-    goodRaw.current = raw;
-    setSenders(parsed);
-    setLoadFailed(false);
-    setLoading(false);
-    return true;
-  }, [configKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    goodList.current = [];
-    goodRaw.current = null;
-    setSenders([]);
-    (async () => { if (!cancelled) await load(); })();
-    return () => { cancelled = true; };
-  }, [load]);
+  // The shared load guard (lib/load-guard.ts): the list and the exact stored text it came from. A failed or
+  // unreadable load is "failed", never an empty list; every edit is built on the last good value.
+  const load = useGuardedLoad<{ list: SafeSender[]; raw: string | null }>(configKey, async (key) => {
+    const res = await api.getSetting(key);
+    if (!res.ok) return res;
+    const raw = res.data.value ?? null;
+    const parsed = parseSenders(raw ?? undefined);
+    return parsed === null ? { ok: false as const, error: 'The saved list could not be read.' } : { ok: true as const, data: { list: parsed, raw } };
+  });
+  const loading = load.status === 'loading';
+  const loadFailed = load.status === 'failed';
+  const senders = load.data?.list ?? [];
 
   // `edit` receives the last good list and returns the new one (or null for "nothing to save").
   const persist = async (edit: (current: SafeSender[]) => SafeSender[] | null) => {
-    if (busy.current || loadFailed) return;
-    const next = edit(goodList.current);
+    if (busy.current || !load.canSave(configKey) || !load.data) return;
+    const next = edit(load.data.list);
     if (!next) return;
     busy.current = true;
     setSaving(true);
     setError(null);
     const text = JSON.stringify(next);
-    const res = await api.setSetting(configKey, text, goodRaw.current);
+    const res = await api.setSetting(configKey, text, load.data.raw);
     setSaving(false);
     busy.current = false;
     if (res.ok) {
-      goodList.current = next;
-      goodRaw.current = text;
-      setSenders(next);
+      load.adopt({ list: next, raw: text });
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } else {
       // The server refuses a save built on an out-of-date list; show its plain message and
       // bring in the list as it is now.
-      await load();
+      load.reload();
       setError(res.error || 'Failed to save');
     }
   };
@@ -155,7 +133,7 @@ export const ChannelSafeSenders = ({
       setError('Address is required');
       return;
     }
-    if (goodList.current.some((s) => s.address.toLowerCase() === address.toLowerCase())) {
+    if (senders.some((s) => s.address.toLowerCase() === address.toLowerCase())) {
       setError(`"${address}" is already on the list`);
       return;
     }
@@ -195,7 +173,7 @@ export const ChannelSafeSenders = ({
         <p className="text-xs text-cp-coral mt-1">
           Could not load your {channelLabel} safe senders, so they can&apos;t be edited right now. Your saved list has not been changed.
         </p>
-        <button onClick={() => { void load(); }} className="text-xs text-cp-amber hover:text-cp-amber/80 mt-1">
+        <button onClick={load.reload} className="text-xs text-cp-amber hover:text-cp-amber/80 mt-1">
           Retry
         </button>
       </div>
