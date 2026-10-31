@@ -55,6 +55,7 @@ const STATE = path.join(HOME, '.dojo', 'watchdog-state.json');
 import { servicesRouter } from '../routes/services.js';
 // The client's own formatter, imported — not re-implemented.
 import { formatTimestamp, parseUtc } from '../../../../dashboard/src/lib/dates.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = (rel: string): string => fs.readFileSync(path.resolve(HERE, rel), 'utf8');
@@ -64,7 +65,7 @@ const PROVIDER_HEALTH_TSX = '../../../../dashboard/src/components/ProviderHealth
 const SERVICES_TS = '../routes/services.ts';
 const BRIDGE_TS = '../../services/imessage-bridge.ts';
 
-const ALERT_TEXT = 'zargo has been working for 47 minutes with no tool call';
+const ALERT_TEXT = `${FXID.n4} has been working for 47 minutes with no tool call`;
 
 function writeState(state: unknown): void {
   fs.mkdirSync(path.dirname(STATE), { recursive: true });
