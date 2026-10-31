@@ -22,7 +22,8 @@ export const useRequestGuard = () => {
   const counter = useRef(0);
   const begin = useCallback((): number => ++counter.current, []);
   const isCurrent = useCallback((ticket: number): boolean => ticket === counter.current, []);
-  return useMemo(() => ({ begin, isCurrent }), [begin, isCurrent]);
+  const current = useCallback((): number => counter.current, []);
+  return useMemo(() => ({ begin, isCurrent, current }), [begin, isCurrent, current]);
 };
 
 export type LoadStatus = 'loading' | 'ready' | 'failed';

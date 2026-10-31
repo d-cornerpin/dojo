@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Message, WsEvent, ChatToolCallEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { useRequestGuard } from '../lib/load-guard';
 
 /*
  * Technique-session fusion.
@@ -164,7 +165,8 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   const lastTrainerActivityAtRef = useRef<string | null>(null);
   // Bumped on every start() so an in-flight resume check for a stale session
   // is ignored once a newer session begins.
-  const startTokenRef = useRef(0);
+  // (the shared stale-answer guard, lib/load-guard.ts: every canvas load and the resume check ask it)
+  const startGuard = useRequestGuard();
 
   const trainerAgentIdRef = useRef(trainerAgentId);
   trainerAgentIdRef.current = trainerAgentId;
@@ -185,7 +187,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     });
   }, []);
 
-  const loadTechniqueFromDisk = useCallback(async (id: string) => {
+  const loadTechniqueFromDisk = useCallback(async (id: string, token: number) => {
     // Through `lib/api`'s one door (BACKLOG line 31); the token read and csrf
     // scrape this file used to repeat four times over live there now.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -205,6 +207,7 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
           return fd.ok ? { path: p, content: fd.data.content } : { path: p };
         }),
       );
+      if (!startGuard.isCurrent(token)) return;   // the session this was started for is gone
       setCanvas({
         name: data.data.id,
         displayName: data.data.name,
@@ -217,14 +220,14 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       if (typeof data.data.state === 'string') techniqueStateRef.current = data.data.state;
       if (typeof data.data.directoryPath === 'string') techniqueDirectoryPathRef.current = data.data.directoryPath;
     }
-  }, []);
+  }, [startGuard]);
 
   // Decide whether to resume the trainer's existing conversation (if it's about
   // THIS technique) or wipe it and start fresh. Sets `ready` when resolved so
   // the chat can load history.
   const resolveSession = useCallback(async (mode: 'new' | 'edit', token: number) => {
     const trainerId = trainerAgentIdRef.current;
-    if (!trainerId) { if (token === startTokenRef.current) setReady(true); return; }
+    if (!trainerId) { if (startGuard.isCurrent(token)) setReady(true); return; }
 
     const result = await api.getChatHistory(trainerId, 200);
     let conversationMatches = false;
@@ -244,27 +247,30 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       }
     }
 
-    if (token !== startTokenRef.current) return; // superseded
+    if (!startGuard.isCurrent(token)) return; // superseded
 
     if (conversationMatches && result.ok) {
       // Resume: the trainer already saw the technique in this thread.
       contextSentRef.current = true;
       const latest = result.data[result.data.length - 1] as Message | undefined;
       lastTrainerActivityAtRef.current = latest?.createdAt ?? null;
-    } else {
-      // Fresh start: wipe the trainer session server-side.
+    } else if (result.ok) {
+      // Fresh start: the history WAS read and is not this build's thread, so wipe the trainer session.
       await api.request('/techniques/clear-session', { method: 'POST' }); // best effort
       contextSentRef.current = false;
+    } else {
+      // The history could not be read: that is not evidence the thread is stale, so nothing is wiped.
+      contextSentRef.current = false;
     }
-    if (token === startTokenRef.current) setReady(true);
-  }, []);
+    if (startGuard.isCurrent(token)) setReady(true);
+  }, [startGuard]);
 
   // Keep a ref of canvas for resolveSession (avoids re-creating it per keystroke).
   const canvasRef = useRef(canvas);
   canvasRef.current = canvas;
 
   const start = useCallback((mode: 'new' | 'edit', editId?: string) => {
-    const token = ++startTokenRef.current;
+    const token = startGuard.begin();
     contextSentRef.current = false;
     techniqueStateRef.current = null;
     techniqueUpdatedAtRef.current = null;
@@ -278,21 +284,21 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
 
     (async () => {
       if (mode === 'edit' && editId) {
-        await loadTechniqueFromDisk(editId);
+        await loadTechniqueFromDisk(editId, token);
       }
-      if (token !== startTokenRef.current) return;
+      if (!startGuard.isCurrent(token)) return;
       await resolveSession(mode, token);
     })();
-  }, [loadTechniqueFromDisk, resolveSession]);
+  }, [loadTechniqueFromDisk, resolveSession, startGuard]);
 
   const end = useCallback(() => {
-    startTokenRef.current++;
+    startGuard.begin();
     setSession(null);
     setReady(false);
     setCanvas(EMPTY_CANVAS);
     setError(null);
     setCreatedTechniqueId(null);
-  }, []);
+  }, [startGuard]);
 
   const handleCanvasChange = useCallback((updates: Partial<CanvasState>) => {
     setCanvas((prev) => ({ ...prev, ...updates }));
@@ -358,12 +364,12 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
         setCreatedTechniqueId(serverId);
         createdTechniqueIdRef.current = serverId;
       }
-      loadTechniqueFromDisk(serverId)
+      loadTechniqueFromDisk(serverId, startGuard.current())
         .then(() => { lastTrainerActivityAtRef.current = new Date().toISOString(); })
         .catch(() => { /* best effort */ });
     });
     return () => { unsubToolCall(); unsubTechUpdated(); };
-  }, [session, subscribe, handleToolCallForCanvas, loadTechniqueFromDisk]);
+  }, [session, subscribe, handleToolCallForCanvas, loadTechniqueFromDisk, startGuard]);
 
   // Build the outgoing message, injecting build/edit/setup/refresh context on
   // the first (or post-edit) turn. Mirrors the old builder's handleSend.
