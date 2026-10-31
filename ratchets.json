@@ -9588,7 +9588,7 @@
     "packages/dashboard/src/lib/voice/voice-client.ts": 878,
     "packages/dashboard/src/lib/working-note-visibility.ts": 283,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 400,
-    "packages/dashboard/src/pages/Agents.tsx": 685,
+    "packages/dashboard/src/pages/Agents.tsx": 694,
     "packages/dashboard/src/pages/Chat.tsx": 2103,
     "packages/dashboard/src/pages/Costs.tsx": 736,
     "packages/dashboard/src/pages/Health.tsx": 694,
