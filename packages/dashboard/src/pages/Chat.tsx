@@ -1484,7 +1484,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         // latch stuck on after background noise. Pure background a2a is turnKind 'a2a'
         // and stays quiet regardless.
         if (kind === 'user' && e.userFacing === true) setAwaitingUserReply(true);
-      } else if (e.status === 'idle' || e.status === 'error') {
+      } else if (e.status === 'idle' || e.status === 'error' || e.status === 'paused') {   // paused = parked after an honest stop; no idle follows
         setIsWorking(false);
         // Clear the "a user request is unanswered" latch ONLY when the turn that
         // just ended was user-facing. A pure background a2a / engine turn's idle
