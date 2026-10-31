@@ -2073,9 +2073,10 @@ export function a1ToGridRange(
   sheets: Array<{ properties: { sheetId: number; title: string } }>,
 ): { sheetId: number; startRowIndex: number; endRowIndex: number; startColumnIndex: number; endColumnIndex: number } | { error: string } {
   // A1 form: 'SheetName!A1:D10' or just 'A1:D10' (defaults to first sheet)
-  const m = a1.match(/^(?:'?([^'!]+)'?!)?([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
+  const m = a1.match(/^(?:(?:'((?:[^']|'')+)'|([^'!]+))!)?([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
   if (!m) return { error: `could not parse "${a1}" - expected A1 notation like "Sheet1!A1:D10".` };
-  const [, sheetName, startCol, startRow, endCol, endRow] = m;
+  const [, quotedName, unquotedName, startCol, startRow, endCol, endRow] = m;
+  const sheetName = quotedName !== undefined ? quotedName.replace(/''/g, "'") : unquotedName;
   const sheet = sheetName
     ? sheets.find(s => s.properties.title === sheetName)
     : sheets[0];
