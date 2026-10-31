@@ -19,17 +19,13 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(path.join(SRC, dir), { withFileTypes: true })) {
-    const rel = path.join(dir, e.name);
+    const rel = dir === '.' ? e.name : path.join(dir, e.name);
     if (e.isDirectory()) { if (e.name !== '__tests__') walk(rel, out); } else if (e.name.endsWith('.ts')) out.push(rel);
   }
   return out;
 }
-const SCOPE_FILES = [
-  ...walk('agent/v2'),
-  'agent/a2a-transport.ts', 'agent/runtime.ts', 'tracker/tools.ts', 'agent/tools/cat/comms.ts',
-  'agent/tools/cat/media.ts', 'tools/name-help.ts', 'agent/tools/surface.ts', 'agent/tools/util.ts',
-  'services/image-generation.ts', 'agent/access/engine-route.ts', 'work/join-drive.ts',
-].sort();
+// EVERY production source file: anything can build a steer, refusal, notice or tool result.
+const SCOPE_FILES = walk('.').sort();
 const ROUTE_WORDS = /\bthe user\b|\bThe user\b|\bTHE USER\b|dashboard chat|reply to the owner|as your chat reply|owner's channel|owner is watching|(?:directly )?in (?:this|the) conversation\b|\bin chat\b/;
 
 /** Source lines of the scoped files that hold a string literal naming the person or a route. */
@@ -46,6 +42,14 @@ function hits(): Array<{ file: string; line: string }> {
   }
   return out;
 }
+
+describe('the census covers every file that builds model-facing text', () => {
+  it('the scope includes the prompt, tracker, work, services, microsoft, google, twilio and tool trees', () => {
+    for (const f of ['prompt/registry/entries.ts', 'prompt/assembler.ts', 'tracker/version-gap-reconcile.ts', 'work/run-deliver-drive.ts', 'services/imessage-bridge.ts', 'microsoft/tools-write.ts', 'google/tools-write.ts', 'agent/tools/cat/canvas.ts', 'scheduler/runner.ts']) {
+      expect(SCOPE_FILES, f).toContain(f);
+    }
+  });
+});
 
 describe('the census: no engine text names a person or a route on its own without being listed', () => {
   it('every site is allowed (with a reason) or on the sweep list', () => {
