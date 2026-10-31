@@ -241,6 +241,9 @@ mkdir -p "$AUTO_BACKUPS"
 SAFETY=""
 if [ -f "$DB" ]; then
     SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP.db"
+    # Two restores inside one second must not share a name: the second would overwrite the
+    # first safety copy, which may be the only copy of the data that restore replaced.
+    n=1; while [ -e "$SAFETY" ]; do n=$((n+1)); SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP-$n.db"; done
     echo ""
     echo "Copying your CURRENT database aside first..."
     if ! sqlite3 "$DB" "VACUUM INTO '$SAFETY'" 2>/dev/null; then

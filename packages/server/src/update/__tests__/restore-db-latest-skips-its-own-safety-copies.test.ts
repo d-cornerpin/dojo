@@ -30,6 +30,11 @@ function scratchHome(): string {
   return home;
 }
 
+// Pins the clock the script stamps its safety copy with, so two runs land in the same second.
+function freezeClock(home: string): void {
+  fs.writeFileSync(path.join(home, 'bin', 'date'), '#!/bin/sh\necho 2030-01-01T00-00-00\n', { mode: 0o755 });
+}
+
 function runRestore(home: string, ...args: string[]): { status: number | null; out: string } {
   const bin = path.join(home, 'bin');
   const r = spawnSync('/bin/bash', [SCRIPT, ...args], {
@@ -103,5 +108,21 @@ describe('restore-db.sh --latest', () => {
     expect(status).toBe(0);
     expect(out).toContain('dojo-pre-a.db');
     expect(out).toContain('dojo-replaced-b.db');
+  });
+
+  it('two restores in the same second keep BOTH safety copies (current data is never overwritten)', () => {
+    const home = boxRightAfterARestore();
+    fs.rmSync(path.join(backupsDir(home), 'dojo-replaced-b.db'));
+    freezeClock(home);
+    expect(runRestore(home, '--latest', '--yes').status).toBe(0);
+    expect(markerOf(home)).toBe('pre');
+    expect(runRestore(home, '--latest', '--yes').status).toBe(0);
+    const copies = fs.readdirSync(backupsDir(home)).filter((n) => n.startsWith('dojo-replaced-') && n.endsWith('.db'));
+    expect(copies.length).toBe(2);
+    const markers = copies.map((n) => {
+      const db = new Database(path.join(backupsDir(home), n), { readonly: true });
+      try { return (db.prepare('select v from which').get() as { v: string }).v; } finally { db.close(); }
+    }).sort();
+    expect(markers).toEqual(['current', 'pre']);
   });
 });
