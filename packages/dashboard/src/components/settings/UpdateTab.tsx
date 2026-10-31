@@ -27,10 +27,16 @@ export const UpdateTab = () => {
   const waitAbort = useRef<AbortController | null>(null);
   useEffect(() => () => waitAbort.current?.abort(), []);
 
+  // Every path that writes the release info or the channel takes a ticket first and drops its own
+  // answer if a newer request started meanwhile, so a slow old answer cannot undo a newer one.
+  const latestCheck = useRef(0);
+
   const checkUpdates = async () => {
+    const mine = ++latestCheck.current;
     setChecking(true);
     setError(null);
     const result = await api.checkForUpdates();
+    if (mine !== latestCheck.current) { setChecking(false); return; }
     if (result.ok) {
       setUpdateInfo(result.data);
       if (result.data.channel) setChannel(result.data.channel);
@@ -43,7 +49,9 @@ export const UpdateTab = () => {
 
   useEffect(() => {
     checkUpdates();
-    api.getUpdateChannel().then(r => { if (r.ok) setChannel(r.data.channel); });
+    // Not a new ticket (that would void the first check above); it just yields to any newer request.
+    const startedAt = latestCheck.current;
+    api.getUpdateChannel().then(r => { if (r.ok && startedAt === latestCheck.current) setChannel(r.data.channel); });
     api.getDbBackupStatus().then(r => { if (r.ok) setDbBackup(r.data.backup); });
   }, []);
 
@@ -51,10 +59,12 @@ export const UpdateTab = () => {
   // never auto-downgrades. The returned check refreshes the panel in one trip.
   const switchChannel = async (next: api.UpdateChannel) => {
     if (next === channel || switchingChannel) return;
+    const mine = ++latestCheck.current;
     setSwitchingChannel(true);
     setError(null);
     setUpdateResult(null);
     const r = await api.setUpdateChannel(next);
+    if (mine !== latestCheck.current) { setSwitchingChannel(false); return; }
     if (r.ok) {
       setChannel(r.data.channel);
       setUpdateInfo(r.data.check);
