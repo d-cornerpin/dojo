@@ -30,7 +30,7 @@ import { executeMicrosoftWriteTool } from '../tools-write.js';
 const ok = (data: unknown) => ({ ok: true, data, error: undefined, apiEndpoint: 'x' });
 const endpoints = (): string[] => vi.mocked(msGraphWrite).mock.calls.map((c) => String(c[1]));
 
-beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(); vi.mocked(msGraphWrite).mockReset(); vi.mocked(msGraphWrite).mockResolvedValue(ok({ id: 'draft-1' }) as never); });
+beforeEach(() => { mockDb.current = new Database(':memory:'); runMigrations(); vi.mocked(msGraphWrite).mockReset(); vi.mocked(msGraphWrite).mockResolvedValue(ok({ id: 'draft-1', internetMessageId: '<AAMk-draft@outlook.test>' }) as never); });
 
 describe('P44 — outlook_reply: the sender or everyone, as the agent chooses', () => {
   it('no flag and reply_all false answer the sender only', async () => {
@@ -42,29 +42,44 @@ describe('P44 — outlook_reply: the sender or everyone, as the agent chooses', 
 
   it('reply_all true answers everyone through Graph\'s replyAll', async () => {
     await executeMicrosoftWriteTool('outlook_reply', { message_id: 'm1', body: 'ok', reply_all: true }, 'a1', 'A Worker');
-    expect(endpoints()).toEqual(['me/messages/m1/createReplyAll', 'me/messages/draft-1', 'me/messages/draft-1/send']);
+    expect(endpoints()).toEqual(['me/messages/m1/createReplyAll', 'me/messages/draft-1/send']);
   });
 
-  it('P44 C2: the draft is marked BEFORE it is sent, so a reply-all that includes the agent\'s own mailbox is recognisable the moment it arrives', async () => {
+  it('P44 C2: the marker rides in the create call itself (Graph allows custom headers only at creation), so a reply-all that includes the agent\'s own mailbox is recognisable the moment it arrives', async () => {
     await executeMicrosoftWriteTool('outlook_reply', { message_id: 'm1', body: 'ok', reply_all: true }, 'a1', 'A Worker');
     const calls = vi.mocked(msGraphWrite).mock.calls;
-    const patchAt = calls.findIndex((c) => c[0] === 'PATCH');
-    const sendAt = calls.findIndex((c) => String(c[1]).endsWith('/send'));
-    expect(patchAt).toBeGreaterThan(-1);
-    expect(patchAt).toBeLessThan(sendAt);
-    const headers = (calls[patchAt][2] as { internetMessageHeaders: Array<{ name: string; value: string }> }).internetMessageHeaders;
+    expect(calls.some((c) => c[0] === 'PATCH')).toBe(false);
+    const create = calls[0][2] as { comment?: string; message: { body?: unknown; internetMessageHeaders: Array<{ name: string; value: string }> } };
+    expect(create.comment).toBe('ok');
+    expect(create.message.body, 'a comment is never combined with message.body').toBeUndefined();
+    expect(create.message.internetMessageHeaders[0].name).toBe('x-platform-send-id');
+    const headers = create.message.internetMessageHeaders;
     expect(isPlatformSent(headers)).toBe(true);
+    // The draft's own Message-ID is the second key, recorded before the send.
+    expect(isPlatformSent([{ name: 'Message-ID', value: '<aamk-draft@outlook.test>' }])).toBe(true);
     // The mail arrives at the agent's own mailbox from the owner's address, DMARC-passing, with no Sent Items record yet: not the owner.
     mockDb.current!.prepare("INSERT INTO microsoft_accounts (id, kind, position, email, connected) VALUES ('m-user', 'user', 0, 'owner@home.test', 1)").run();
-    const arrived = await judgeOwnerEmail({
+    const arrive = (extra: Array<{ name: string; value: string }>) => judgeOwnerEmail({
       provider: 'outlook', kind: 'agent', placement: 'to', from: 'owner@home.test', newBody: async () => 'close it',
-      headers: async () => [{ name: 'From', value: 'owner@home.test' }, { name: 'Message-ID', value: '<m@home.test>' }, ...headers, { name: 'Authentication-Results', value: 'BN1PR01CA0001.namprd01.prod.outlook.com; dmarc=pass header.from=home.test' }],
+      headers: async () => [{ name: 'From', value: 'owner@home.test' }, ...extra, { name: 'Authentication-Results', value: 'BN1PR01CA0001.namprd01.prod.outlook.com; dmarc=pass header.from=home.test' }],
     });
-    expect(arrived).toEqual({ state: 'none' });
+    expect(await arrive([{ name: 'Message-ID', value: '<x@home.test>' }, ...headers])).toEqual({ state: 'none' });
+    // Even if Exchange drops the custom header on the delivered copy, the draft's Message-ID still holds.
+    expect(await arrive([{ name: 'Message-ID', value: '<AAMk-draft@outlook.test>' }])).toEqual({ state: 'none' });
   });
 
-  it('P44 C2: if the draft cannot be marked, nothing is sent', async () => {
-    vi.mocked(msGraphWrite).mockImplementation((async (method: string) => (method === 'PATCH' ? { ok: false, data: null, error: 'no', apiEndpoint: 'x' } : ok({ id: 'draft-1' }))) as never);
+  it('P44 C2: with a payload message (attachments), the marker is added to it and nothing else is lost', async () => {
+    const sent: Array<unknown> = [];
+    vi.mocked(msGraphWrite).mockImplementation((async (_m: string, _e: string, body: unknown) => { sent.push(body); return ok({ id: 'draft-1' }); }) as never);
+    const { sendMarkedDraft } = await import('../send-as-draft.js');
+    await sendMarkedDraft('forward', 'm1', { toRecipients: [{ emailAddress: { address: 'a@b.test' } }], message: { body: { contentType: 'Text', content: 'x' }, attachments: [] } }, 'a1', 'A', 'outlook_forward', {}, 'agent');
+    const m = (sent[0] as { toRecipients: unknown[]; message: Record<string, unknown> });
+    expect(m.toRecipients).toHaveLength(1);
+    expect(Object.keys(m.message).sort()).toEqual(['attachments', 'body', 'internetMessageHeaders']);
+  });
+
+  it('P44 C2: a refused create sends nothing (no key could be recorded)', async () => {
+    vi.mocked(msGraphWrite).mockResolvedValue({ ok: false, data: null, error: 'no', apiEndpoint: 'x' } as never);
     const out = await executeMicrosoftWriteTool('outlook_reply', { message_id: 'm1', body: 'ok', reply_all: true }, 'a1', 'A Worker');
     expect(out).toMatch(/^Error/);
     expect(vi.mocked(msGraphWrite).mock.calls.some((c) => String(c[1]).endsWith('/send'))).toBe(false);
