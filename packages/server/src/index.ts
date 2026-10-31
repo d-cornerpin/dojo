@@ -939,12 +939,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i-3. Prune old platform backups + set-aside failed builds at boot (FA-D5).
+  // 4i-3. Sweep an interrupted update's leftovers (staging work dirs + update-record
+  // temp files) and prune old platform backups + set-aside failed builds at boot (FA-D5).
   // The post-update/rollback prune is fire-and-forget and can be cut short by
   // the scheduled process.exit that restarts us, so a next-boot sweep is the
   // durable guarantee that both pools stay bounded (each capped to the newest
-  // few, keeping at least one real rollback target). Best-effort: a prune
-  // failure must never block boot.
+  // few, keeping at least one real rollback target) and that what a killed
+  // update left behind is gone — retried on every start until it is.
+  // Best-effort: a prune failure must never block boot.
   {
     void (async () => {
       try {
