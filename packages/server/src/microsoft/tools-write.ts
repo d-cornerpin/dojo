@@ -7,6 +7,7 @@ import type { ToolDefinition } from '../agent/tools/types.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
+import { sendMarkedDraft } from './send-as-draft.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import {
   type LocalAttachment,
@@ -969,7 +970,6 @@ export async function executeMicrosoftWriteTool(
     canonicalName = name.slice('user_'.length);
   }
 
-
   const { resolveMicrosoftAccountForTool } = await import('./accounts.js');
   const resolved = resolveMicrosoftAccountForTool(kind, args.account as string | undefined);
   if ('error' in resolved) return `Error: ${resolved.error}`;
@@ -1035,7 +1035,6 @@ export async function executeMicrosoftWriteTool(
     case 'outlook_reply': {
       const messageId = encodeURIComponent(args.message_id as string);
       const replyAll = args.reply_all === true;
-      const endpoint = `me/messages/${messageId}/${replyAll ? 'replyAll' : 'reply'}`;
 
       const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot, agentId);
       if (!prepared.ok) return prepared.error;
@@ -1055,7 +1054,7 @@ export async function executeMicrosoftWriteTool(
           }
         : { comment: bodyText };
 
-      const result = await msGraphWrite('POST', endpoint, requestBody, agentId, agentName, 'outlook_reply', {
+      const result = await sendMarkedDraft(replyAll ? 'replyAll' : 'reply', messageId, requestBody, agentId, agentName, 'outlook_reply', {
         messageId: args.message_id, replyAll, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
@@ -1159,7 +1158,7 @@ export async function executeMicrosoftWriteTool(
         requestBody.comment = additionalText;
       }
 
-      const result = await msGraphWrite('POST', `me/messages/${messageId}/forward`, requestBody, agentId, agentName, 'outlook_forward', {
+      const result = await sendMarkedDraft('forward', messageId, requestBody, agentId, agentName, 'outlook_forward', {
         messageId: args.message_id, to: args.to, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;

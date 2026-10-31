@@ -26,7 +26,7 @@ const ok = (data: unknown) => ({ ok: true, data, error: undefined, apiEndpoint: 
 beforeEach(() => {
   mockDb.current = new Database(':memory:'); runMigrations();
   vi.mocked(msGraphWrite).mockReset(); vi.mocked(msGraphRead).mockReset();
-  vi.mocked(msGraphWrite).mockResolvedValue(ok({}) as never);
+  vi.mocked(msGraphWrite).mockResolvedValue(ok({ id: 'draft-1' }) as never);
   vi.mocked(msGraphRead).mockResolvedValue(ok({ value: [{ id: 'sent-1', subject: 'x', sentDateTime: new Date().toISOString(), internetMessageId: '<AAMk-copy@outlook.test>', toRecipients: [{ emailAddress: { address: 'agent@x.test' } }] }] }) as never);
 });
 
@@ -38,7 +38,14 @@ describe('P44 C2 — every Outlook send is recorded', () => {
     expect(isPlatformSent(sent.message.internetMessageHeaders)).toBe(true);
   });
 
-  it('a forward is recorded from its Sent Items copy', async () => {
+  it('a forward is built as a draft, marked, then sent', async () => {
+    await executeMicrosoftWriteTool('user_outlook_forward', { message_id: 'orig1', to: 'agent@x.test', body: 'close it' }, 'a1', 'A Worker');
+    const calls = vi.mocked(msGraphWrite).mock.calls;
+    expect(calls.map((c) => [c[0], String(c[1])])).toEqual([['POST', 'me/messages/orig1/createForward'], ['PATCH', 'me/messages/draft-1'], ['POST', 'me/messages/draft-1/send']]);
+    expect(isPlatformSent((calls[1][2] as { internetMessageHeaders: Array<{ name: string; value: string }> }).internetMessageHeaders)).toBe(true);
+  });
+
+  it('a forward is also recorded from its Sent Items copy (the second key)', async () => {
     await executeMicrosoftWriteTool('user_outlook_forward', { message_id: 'orig1', to: 'agent@x.test', body: 'close it' }, 'a1', 'A Worker');
     expect(isPlatformSent([{ name: 'Message-ID', value: '<aamk-copy@outlook.test>' }])).toBe(true);
   });

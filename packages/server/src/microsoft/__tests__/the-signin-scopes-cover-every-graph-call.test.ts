@@ -57,7 +57,7 @@ const MS_DIR = path.resolve(HERE, '..');
 // separate textual guard below, so a change to their shapes still fails this
 // file instead of silently invalidating the CAL/DRV assumptions baked into
 // the scanner.
-const SCAN_FILES = ['auth.ts', 'tools-read.ts', 'tools-write.ts', 'tools-office.ts'];
+const SCAN_FILES = ['auth.ts', 'tools-read.ts', 'tools-write.ts', 'tools-office.ts', 'send-as-draft.ts'];
 const CLIENT_TS = path.join(MS_DIR, 'client.ts');
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
@@ -576,7 +576,7 @@ describe('the sign-in scopes cover every Graph call — extraction sanity', () =
       'teams/*/channels',
       'teams/*/channels/*/messages',
       'me/sendMail',
-      'me/messages/*/reply',
+      'me/messages/*/createReply',
       'me/todo/lists',
       'me/onenote/notebooks',
       'me/contacts',
