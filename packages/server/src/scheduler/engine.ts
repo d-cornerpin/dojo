@@ -253,6 +253,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     const maxRuns = parseInt(task.repeat_end_value, 10);
     if (!isNaN(maxRuns) && task.run_count >= maxRuns) return null;
   }
+  let endMs: number | null = null;
   if (task.repeat_end_type === 'on_date' && task.repeat_end_value) {
     // D21 discipline: resolve the end boundary in the BOX timezone, not via a
     // bare `new Date(...)`. A DATE-ONLY value ("2026-07-10", the shape the
@@ -266,7 +267,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     // scheduled_start and anchor_time are normalized, and honor it as given
     // with no end-of-day rounding.
     const rawEnd = task.repeat_end_value.trim();
-    const endMs = /^\d{4}-\d{2}-\d{2}$/.test(rawEnd)
+    const parsedEnd = /^\d{4}-\d{2}-\d{2}$/.test(rawEnd)
       ? wallToInstant({
           year: Number(rawEnd.slice(0, 4)),
           month: Number(rawEnd.slice(5, 7)),
@@ -274,8 +275,11 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
           hour: 23, minute: 59, second: 59,
         }, tz).getTime()
       : new Date(normalizeDbTimestamp(rawEnd)).getTime();
-    if (!isNaN(endMs) && Date.now() >= endMs) return null;
+    if (!isNaN(parsedEnd)) endMs = parsedEnd;
+    if (!isNaN(parsedEnd) && Date.now() >= parsedEnd) return null;
   }
+  // A computed next run that lands after the end date is no run at all.
+  const pastEnd = (iso: string): boolean => endMs !== null && new Date(iso).getTime() > endMs;
 
   // If task has never run, first run IS the scheduled_start (don't add
   // interval). D21 exception: a specific_days schedule whose start falls on
@@ -354,7 +358,8 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     if (t <= notAfterMs) {
       t += (Math.floor((notAfterMs - t) / stepMs) + 1) * stepMs;
     }
-    return new Date(t).toISOString();
+    const nextIso = new Date(t).toISOString();
+    return pastEnd(nextIso) ? null : nextIso;
   }
 
   // Calendar units: walk wall-clock components in the box timezone.
@@ -393,7 +398,8 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     else if (dow === 0) { wall = normalizeWall({ ...wall, day: wall.day + 1 }); candidate = wallToInstant(wall, tz); }
   }
 
-  return candidate.toISOString();
+  const candidateIso = candidate.toISOString();
+  return pastEnd(candidateIso) ? null : candidateIso;
 }
 
 /**
