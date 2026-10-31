@@ -9,7 +9,7 @@
 //        instead. To re-enable iMessage delivery, the user can start it from Settings →
 //        Channels (iMessage card)."
 //     — prescribing the dashboard while `twilio_config` on the same box read
-//       enabled=1, sms_enabled=1 and `twilio_sms_approved_senders` carried Yorvak at
+//       enabled=1, sms_enabled=1 and `twilio_sms_approved_senders` carried FX.n11 at
 //       +15550200. Round-7 S3: the user asked for a text; no text was sent on any channel.
 //
 //  2. gate ladder row 7, for a sub-agent:
@@ -66,6 +66,7 @@ import { commsHandlers } from '../cat/comms.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { originHasNoRelayDoor } from '../../a2a-transport.js';
 import { reloadApprovedSenders } from '../../../services/imessage-bridge.js';
+import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'sub-agent-1';
 const db = (): Database.Database => mockDb.current!;
@@ -102,10 +103,10 @@ describe('SMS reachability is a live read, not a claim', () => {
   });
 
   it('enabled AND approved: live, with the recipients named', () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     const r = getSmsReachability();
     expect(r.live).toBe(true);
-    expect(describeSmsRecipients(r)).toBe('Yorvak (+15550200)');
+    expect(describeSmsRecipients(r)).toBe(`${FX.n11} (+15550200)`);
   });
 
   it('enabled with NOBODY approved is NOT an alternative — the sender would refuse it', () => {
@@ -114,7 +115,7 @@ describe('SMS reachability is a live read, not a claim', () => {
   });
 
   it('sms_enabled off is not live even with an allowlist', () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     db().prepare('UPDATE twilio_config SET sms_enabled = 0 WHERE id = 1').run();
     expect(getSmsReachability().live).toBe(false);
   });
@@ -153,16 +154,16 @@ describe('the imessage-disabled door', () => {
   beforeEach(() => {
     db().prepare(
       "INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?)",
-    ).run(JSON.stringify([{ name: 'Yorvak', address: '+15550200', is_primary: true }]));
+    ).run(JSON.stringify([{ name: FX.n11, address: '+15550200', is_primary: true }]));
     reloadApprovedSenders();
   });
 
   it('names sms_send FIRST when SMS is live, with the dashboard as the last resort', async () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     const out = await send();
     expect(out.isError).toBe(true);
     expect(out.content).toContain('iMessage bridge is currently disabled, so this message was NOT sent.');
-    expect(out.content).toContain('SMS IS live on this server (approved: Yorvak (+15550200))');
+    expect(out.content).toContain(`SMS IS live on this server (approved: ${FX.n11} (+15550200))`);
     expect(out.content).toContain('send it with sms_send instead');
     // the dashboard is still offered — but after, and only as the fallback
     expect(out.content.indexOf('sms_send')).toBeLessThan(out.content.indexOf('dashboard chat'));
@@ -177,7 +178,7 @@ describe('the imessage-disabled door', () => {
   });
 
   it('CONTROL — the door still REFUSES; naming an alternative is not sending one', async () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     const out = await send();
     expect(out.isError).toBe(true);
     expect(out.content).toContain('NOT sent');
@@ -204,10 +205,10 @@ describe('the sub-agent permission wall', () => {
   });
 
   it('names the channel that IS live, so the escalation is about the right door', () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     const g = row7()!;
     expect(g.message).toContain('only the primary agent can call imessage_send.');
-    expect(g.message).toContain('SMS is enabled on this server (approved: Yorvak (+15550200))');
+    expect(g.message).toContain(`SMS is enabled on this server (approved: ${FX.n11} (+15550200))`);
     // and it does NOT offer the sub-agent a tool it also may not call
     expect(g.message).toContain('sms_send is primary-only too');
     expect(g.message).toContain('Escalate to the primary agent');
@@ -220,7 +221,7 @@ describe('the sub-agent permission wall', () => {
   });
 
   it('CONTROL — no OTHER row gained a channel clause', () => {
-    enableTwilioSms([{ name: 'Yorvak', address: '+15550200' }]);
+    enableTwilioSms([{ name: FX.n11, address: '+15550200' }]);
     const g13 = gatesForCall('cost_summary', {}).find((x) => x.row === '13');
     expect(g13!.message).toBe('Permission denied: only the primary agent can call cost_summary.');
   });
