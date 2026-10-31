@@ -86,3 +86,67 @@ describe('migratePaths guards', () => {
     after.close();
   });
 });
+
+describe('names that continue the old home with other characters', () => {
+  it.each(['\u00ef', '@corp', '+x', '~', '%', '#', '=y'])('leaves %s after the old home alone', (tail) => {
+    expect(swapHome(`${OLD}${tail}/a`, OLD, NEW)).toBe(`${OLD}${tail}/a`);
+  });
+  it('still swaps at real path boundaries', () => {
+    for (const after of ['', '/a', ' b', '"', "'", ',', ';', ':', ')', ']', '}', '>', '\\n', '\n'])
+      expect(swapHome(`x ${OLD}${after}`, OLD, NEW)).toBe(`x ${NEW}${after}`);
+  });
+});
+
+describe('migratePaths keeps its hands off what it must not touch', () => {
+  it('a database failure halfway leaves NOTHING rewritten and the import fails', () => {
+    const dojo = tmp();
+    fs.mkdirSync(path.join(dojo, 'data'));
+    const db = new Database(path.join(dojo, 'data', 'dojo.db'));
+    db.exec('CREATE TABLE techniques (id TEXT, directory_path TEXT); CREATE TABLE config (key TEXT, value TEXT);');
+    db.prepare('INSERT INTO techniques VALUES (?, ?)').run('t1', `${OLD}/t`);
+    db.prepare('INSERT INTO config VALUES (?, ?)').run('k1', `${OLD}/a`);
+    db.prepare('INSERT INTO config VALUES (?, ?)').run('k2', `${OLD}/b`);
+    // Stands in for a full disk: the second config row cannot be written.
+    db.exec("CREATE TRIGGER stop_k2 BEFORE UPDATE ON config WHEN NEW.key = 'k2' BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+    db.close();
+    expect(() => migratePaths(OLD, NEW, dojo)).toThrow(/disk full/);
+    const after = new Database(path.join(dojo, 'data', 'dojo.db'));
+    expect(after.prepare('SELECT directory_path FROM techniques').all()).toEqual([{ directory_path: `${OLD}/t` }]);
+    expect(after.prepare('SELECT key, value FROM config ORDER BY key').all()).toEqual([
+      { key: 'k1', value: `${OLD}/a` },
+      { key: 'k2', value: `${OLD}/b` },
+    ]);
+    after.close();
+  });
+  it('a missing table is fine (older database), the others still migrate', () => {
+    const dojo = tmp();
+    fs.mkdirSync(path.join(dojo, 'data'));
+    const db = new Database(path.join(dojo, 'data', 'dojo.db'));
+    db.exec('CREATE TABLE config (key TEXT, value TEXT);');
+    db.prepare('INSERT INTO config VALUES (?, ?)').run('k', `${OLD}/a`);
+    db.close();
+    migratePaths(OLD, NEW, dojo);
+    const after = new Database(path.join(dojo, 'data', 'dojo.db'));
+    expect((after.prepare('SELECT value FROM config').get() as { value: string }).value).toBe(`${NEW}/a`);
+    after.close();
+  });
+  it('never writes through a symlinked config file that points outside the dojo folder', () => {
+    const dojo = tmp();
+    const outside = tmp();
+    const target = path.join(outside, 'elsewhere.yaml');
+    fs.writeFileSync(target, `p: ${OLD}/x\n`);
+    fs.mkdirSync(path.join(dojo, 'config'));
+    fs.symlinkSync(target, path.join(dojo, 'config', 'link.yaml'));
+    fs.symlinkSync(target, path.join(dojo, 'secrets.yaml'));
+    migratePaths(OLD, NEW, dojo);
+    expect(fs.readFileSync(target, 'utf-8')).toBe(`p: ${OLD}/x\n`);
+  });
+  it('rewrites a real config file in place, keeping its permissions', () => {
+    const dojo = tmp();
+    fs.writeFileSync(path.join(dojo, 'secrets.yaml'), `p: ${OLD}/x\n`, { mode: 0o600 });
+    migratePaths(OLD, NEW, dojo);
+    expect(fs.readFileSync(path.join(dojo, 'secrets.yaml'), 'utf-8')).toBe(`p: ${NEW}/x\n`);
+    expect(fs.statSync(path.join(dojo, 'secrets.yaml')).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(dojo).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+});

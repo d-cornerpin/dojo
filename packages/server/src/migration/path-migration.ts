@@ -12,15 +12,17 @@ const logger = createLogger('path-migration');
 
 /**
  * Replace `oldHome` with `newHome` in `text`, but only where `oldHome` is a whole
- * path prefix: the next character must not continue a folder name (letter, digit,
- * `.`, `_`, `-`). So `<oldHome>/x` and a bare `<oldHome>` are swapped while a longer
- * folder name that merely starts with the old home is left alone. `oldHome` is matched literally and `newHome`
- * is inserted literally (a `$` in it is never read as a pattern).
+ * path prefix: it must be followed by the end of the text, a `/`, whitespace, a quote,
+ * or a JSON/YAML delimiter. That is an allow-list of real path boundaries: a folder name
+ * that merely STARTS with the old home (`<oldHome>x`, `<oldHome>-old`, `<oldHome>@corp`,
+ * any non-ASCII letter) is left alone, whatever character it continues with. `oldHome` is
+ * matched literally and `newHome` is inserted literally (a `$` in it is never read as a
+ * pattern).
  */
 export function swapHome(text: string, oldHome: string, newHome: string): string {
   if (!oldHome) return text;
   const escaped = oldHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return text.replace(new RegExp(`${escaped}(?![A-Za-z0-9._-])`, 'g'), () => newHome);
+  return text.replace(new RegExp(`${escaped}(?=$|[/\\s"'\`,;:)\\]}>\\\\])`, 'g'), () => newHome);
 }
 
 export function migratePaths(rawOldHome: string, rawNewHome: string, dojoDir: string): void {
@@ -84,9 +86,19 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
+  // ONE transaction for every rewrite: a failure partway (a full disk, a locked file) rolls
+  // the whole lot back and throws out of migratePaths, so the import fails and puts the
+  // previous data back. Only a table or column that does not exist (an older database) is
+  // skipped; any other error is real and must not be swallowed.
+  const has = (table: string, ...cols: string[]): boolean => {
+    const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
+    return cols.every((c) => have.has(c));
+  };
+
   try {
+    db.transaction(() => {
     // Technique directory paths
-    try {
+    if (has('techniques', 'id', 'directory_path')) {
       const techniques = db.prepare("SELECT id, directory_path FROM techniques WHERE directory_path LIKE ?").all(`${oldHome}%`) as Array<{ id: string; directory_path: string }>;
       const updateTech = db.prepare('UPDATE techniques SET directory_path = ? WHERE id = ?');
       for (const t of techniques) {
@@ -95,10 +107,10 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       if (techniques.length > 0) {
         logger.info('Updated technique paths', { count: techniques.length });
       }
-    } catch { /* table may not exist */ }
+    }
 
     // Platform config paths
-    try {
+    if (has('config', 'key', 'value')) {
       const configs = db.prepare("SELECT key, value FROM config WHERE value LIKE ?").all(`%${oldHome}%`) as Array<{ key: string; value: string }>;
       const updateConfig = db.prepare('UPDATE config SET value = ? WHERE key = ?');
       for (const c of configs) {
@@ -107,10 +119,10 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       if (configs.length > 0) {
         logger.info('Updated config paths', { count: configs.length });
       }
-    } catch { /* table may not exist */ }
+    }
 
     // Agent system_prompt_path and any config JSON that might contain paths
-    try {
+    if (has('agents', 'id', 'system_prompt_path', 'config')) {
       const agents = db.prepare("SELECT id, system_prompt_path, config FROM agents WHERE system_prompt_path LIKE ? OR config LIKE ?").all(`${oldHome}%`, `%${oldHome}%`) as Array<{ id: string; system_prompt_path: string | null; config: string | null }>;
       const updateAgent = db.prepare('UPDATE agents SET system_prompt_path = ?, config = ? WHERE id = ?');
       for (const a of agents) {
@@ -121,7 +133,7 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       if (agents.length > 0) {
         logger.info('Updated agent paths', { count: agents.length });
       }
-    } catch { /* table may not exist */ }
+    }
 
     // Upload file paths in messages (attachments JSON)
     //
@@ -137,7 +149,7 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
     // about to move, and would silently target the wrong file the day `dojoDir` is ever
     // passed anything other than the live one — a correctness risk taken to satisfy a rule
     // about the RUNNING platform's store, which this is not.
-    try {
+    if (has('messages', 'id', 'attachments')) {
       const msgs = db.prepare("SELECT id, attachments FROM messages WHERE attachments LIKE ?").all(`%${oldHome}%`) as Array<{ id: string; attachments: string }>;
       const updateMsg = db.prepare('UPDATE messages SET attachments = ? WHERE id = ?');
       for (const m of msgs) {
@@ -146,20 +158,34 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
       if (msgs.length > 0) {
         logger.info('Updated message attachment paths', { count: msgs.length });
       }
-    } catch { /* table may not exist */ }
-
+    }
+    })();
   } finally {
     db.close();
   }
 }
 
 function migrateTextFile(filePath: string, oldHome: string, newHome: string): void {
-  if (!fs.existsSync(filePath)) return;
+  let st: fs.Stats;
+  try { st = fs.lstatSync(filePath); } catch { return; }
+  // A symlink may point anywhere, outside the dojo folder included; never write through one.
+  if (st.isSymbolicLink() || !st.isFile()) return;
 
   const content = fs.readFileSync(filePath, 'utf-8');
   if (content.includes(oldHome)) {
     const updated = swapHome(content, oldHome, newHome);
-    if (updated !== content) fs.writeFileSync(filePath, updated);
+    if (updated !== content) {
+      // Write beside it and rename over it, so a kill mid-write cannot truncate the file.
+      const tmp = `${filePath}.${process.pid}.migrating.tmp`;
+      try {
+        fs.writeFileSync(tmp, updated, { mode: st.mode & 0o777 });
+        fs.chmodSync(tmp, st.mode & 0o777);
+        fs.renameSync(tmp, filePath);
+      } catch (err) {
+        try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+        throw err;
+      }
+    }
     logger.info('Updated paths in file', { file: path.basename(filePath) });
   }
 }
@@ -168,6 +194,7 @@ function migrateDirectory(dirPath: string, oldHome: string, newHome: string): vo
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dirPath, entry.name);
+    if (entry.isSymbolicLink()) continue; // never follow a link out of the folder
     if (entry.isDirectory()) {
       migrateDirectory(fullPath, oldHome, newHome);
     } else {
