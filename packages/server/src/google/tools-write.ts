@@ -5,6 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
+import { collectAttachmentParts, type GmailMessagePart } from './gmail-attachments.js';
 import { firstTabRange } from './sheets-first-tab.js';
 import { extractGmailBodyText } from './gmail-body.js';
 import { executeGmailLabel } from './gmail-label.js';
@@ -930,23 +931,6 @@ async function uploadAttachmentToDrive(
 // that requires a separate fetch. Walk the tree, fetch each attachment's
 // bytes, and return as LocalAttachment so the forward path can re-encode
 // them into the outgoing multipart body.
-
-type GmailMessagePart = {
-  mimeType?: string;
-  filename?: string;
-  headers?: Array<{ name: string; value: string }>;
-  body?: { attachmentId?: string; size?: number; data?: string };
-  parts?: GmailMessagePart[];
-};
-
-function collectAttachmentParts(part: GmailMessagePart, out: GmailMessagePart[]): void {
-  if (part.filename && part.filename.length > 0 && (part.body?.attachmentId || part.body?.data)) {
-    out.push(part);
-  }
-  if (part.parts) {
-    for (const child of part.parts) collectAttachmentParts(child, out);
-  }
-}
 
 async function fetchOriginalAttachments(
   messageId: string,

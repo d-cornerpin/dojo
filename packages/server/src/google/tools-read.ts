@@ -11,6 +11,7 @@ import { outsideSpan } from '../tools/external-content.js';
 import { googleRead } from './client.js';
 import { firstTabRange } from './sheets-first-tab.js';
 import { extractGmailBodyText } from './gmail-body.js';
+import { downloadableAttachments, type GmailMessagePart } from './gmail-attachments.js';
 import { driveSearchQuery, withoutQuotedValues } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 import { executeGmailSearch, fmtEmailDate, GMAIL_BASE } from './gmail-search.js';
@@ -439,15 +440,7 @@ export async function executeGoogleReadTool(
       const data = result.data as {
         id: string;
         snippet: string;
-        payload?: {
-          headers?: Array<{ name: string; value: string }>;
-          body?: { data?: string };
-          parts?: Array<{
-            mimeType: string;
-            filename?: string;
-            body?: { data?: string; attachmentId?: string; size?: number };
-          }>;
-        };
+        payload?: GmailMessagePart;
       };
 
       const headers = data?.payload?.headers ?? [];
@@ -462,9 +455,7 @@ export async function executeGoogleReadTool(
       // Phase 3.5 fix — surface attachment IDs so the agent can pass them to
       // gmail_read_attachment. Without this, gmail_read's "Attachments: 3 files"
       // text was a dead-end — no path back to actual files.
-      const attachments = (data?.payload?.parts ?? []).filter(p =>
-        p.mimeType !== 'text/plain' && p.mimeType !== 'text/html' && p.body?.attachmentId,
-      );
+      const attachments = downloadableAttachments(data?.payload);
 
       // Headers are always included in full; pagination only affects the body.
       const pagedBody = applyTextPagination(
@@ -493,17 +484,8 @@ export async function executeGoogleReadTool(
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
       const result = await googleRead(url, agentId, agentName, 'gmail_list_attachments', { messageId }, slot);
       if (!result.ok) return `Error fetching message: ${result.error}`;
-      const data = result.data as {
-        payload?: {
-          parts?: Array<{
-            mimeType: string;
-            filename?: string;
-            body?: { attachmentId?: string; size?: number };
-          }>;
-        };
-      };
-      const items = (data?.payload?.parts ?? [])
-        .filter(p => p.body?.attachmentId)
+      const data = result.data as { payload?: GmailMessagePart };
+      const items = downloadableAttachments(data?.payload)
         .map(a => {
           const name = a.filename || '(unnamed)';
           const size = a.body?.size ? `${Math.round(a.body.size / 1024)}KB` : 'unknown size';
