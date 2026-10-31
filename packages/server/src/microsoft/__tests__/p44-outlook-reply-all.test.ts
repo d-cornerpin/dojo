@@ -25,6 +25,7 @@ import { sendMarkedDraft } from '../send-as-draft.js';
 import { judgeOwnerEmail } from '../../services/mail-owner-intake.js';
 import { isPlatformSent } from '../../services/platform-sends.js';
 import Database from 'better-sqlite3';
+vi.mock('../../services/outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));
 import { runMigrations } from '../../db/migrations.js';
 import { executeMicrosoftWriteTool } from '../tools-write.js';
 
@@ -61,7 +62,7 @@ describe('P44 — outlook_reply: the sender or everyone, as the agent chooses', 
     // The mail arrives at the agent's own mailbox from the owner's address, DMARC-passing, with no Sent Items record yet: not the owner.
     mockDb.current!.prepare("INSERT INTO microsoft_accounts (id, kind, position, email, connected) VALUES ('m-user', 'user', 0, 'owner@home.test', 1)").run();
     const arrive = (extra: Array<{ name: string; value: string }>) => judgeOwnerEmail({
-      provider: 'outlook', kind: 'agent', placement: 'to', from: 'owner@home.test', newBody: async () => 'close it',
+      provider: 'outlook', kind: 'agent', placement: 'to', from: 'owner@home.test', newBody: async () => 'close it', isMeeting: async () => false,
       headers: async () => [{ name: 'From', value: 'owner@home.test' }, ...extra, { name: 'Authentication-Results', value: 'BN1PR01CA0001.namprd01.prod.outlook.com; dmarc=pass header.from=home.test' }],
     });
     expect(await arrive([{ name: 'Message-ID', value: '<x@home.test>' }, ...headers])).toEqual({ state: 'none' });

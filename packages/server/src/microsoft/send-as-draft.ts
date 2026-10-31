@@ -18,10 +18,13 @@ export async function sendMarkedDraft(kind: 'reply' | 'replyAll' | 'forward', me
   const draftEndpoint = kind === 'forward' ? `me/messages/${messageId}/createForward` : kind === 'replyAll' ? `me/messages/${messageId}/createReplyAll` : `me/messages/${messageId}/createReply`;
   // Graph accepts custom headers (names starting `x-`) only when a message is CREATED and never after, so the marker rides in the create
   // call's `message` object, beside `comment` or the payload's own `message` properties (a `comment` is never combined with `message.body`).
-  const withMarker = { ...body, message: { ...(body.message as Record<string, unknown> | undefined), internetMessageHeaders: graphSendHeaders() } };
+  let headers: ReturnType<typeof graphSendHeaders>;
+  try { headers = graphSendHeaders(); } catch (err) { return { ok: false, data: null, error: err instanceof Error ? err.message : String(err), apiEndpoint: draftEndpoint } as Result; }   // record not saved: nothing is made, nothing sent
+  const withMarker = { ...body, message: { ...(body.message as Record<string, unknown> | undefined), internetMessageHeaders: headers } };
   const made = await msGraphWrite('POST', draftEndpoint, withMarker, agentId, agentName, action, details, slot);
   const draft = made.data as { id?: string; internetMessageId?: string } | null;
   if (!made.ok || !draft?.id) return made.ok ? { ...made, ok: false, error: 'Graph made the draft but returned no id, so nothing was sent.' } : made;   // no key could be recorded: nothing is sent
   recordPlatformSend(draft.internetMessageId);   // second key, before the send: survives an Exchange that drops the custom header
-  return msGraphWrite('POST', `me/messages/${encodeURIComponent(draft.id)}/send`, undefined, agentId, agentName, action, details, slot);
+  const sent = await msGraphWrite('POST', `me/messages/${encodeURIComponent(draft.id)}/send`, undefined, agentId, agentName, action, details, slot);
+  return sent.ok ? sent : { ...sent, error: `${sent.error} (the draft was created and was NOT sent: it is still in the mailbox's Drafts folder)` };
 }

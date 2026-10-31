@@ -9,7 +9,8 @@
 // of a message and never a time window.
 //
 //   Gmail:   we write our own `Message-ID` and an `X-Platform-Send-Id` header into the raw message.
-//   Outlook: `sendMail` carries an `x-platform-send-id` header; reply and forward cannot take one, so after
+//   Outlook: `sendMail`, and reply / reply-all / forward (created as drafts, `microsoft/send-as-draft.ts`) carry an `x-platform-send-id`
+//            header set at creation; the Sent Items copy's Message-ID is a second key. (Older note, kept for the second key: after
 //            the send the Sent Items copy is found and its `internetMessageId` is recorded (tools-write).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -22,7 +23,18 @@ export const SEND_ID_HEADER = 'X-Platform-Send-Id';
 /** The canonical form an id is recorded and looked up in: no angle brackets, lower-cased, trimmed. */
 const norm = (id: string): string => id.trim().replace(/^<|>$/g, '').toLowerCase();
 
-/** Record ids (an RFC Message-ID, a send id) as sent by the platform. Best effort: a failed write must not fail a send. */
+/** Record ids as sent by the platform and THROW if they cannot be written: a message that went out unrecorded could later be
+ *  read as the owner speaking (it can leave the owner's own account), so a send whose record is not saved is not made. */
+function mustRecord(ids: string[]): void {
+  try {
+    const put = getDb().prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`);
+    for (const id of ids) put.run(KEY + norm(id), new Date().toISOString());
+  } catch (err) {
+    throw new Error(`Nothing was sent: the platform could not save its record of this outgoing email (${err instanceof Error ? err.message : String(err)}). Try again.`);
+  }
+}
+
+/** A second key (a provider-issued Message-ID) recorded when it is known. Best effort: the send id, written first, is the key that must hold. */
 export function recordPlatformSend(...ids: Array<string | null | undefined>): void {
   try {
     const put = getDb().prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`);
@@ -30,11 +42,11 @@ export function recordPlatformSend(...ids: Array<string | null | undefined>): vo
   } catch { /* the send itself is not the place to fail */ }
 }
 
-/** Mint and record a send id before a message goes out; the Message-ID is derived from it. */
+/** Mint and record a send id before a message goes out; the Message-ID is derived from it. Throws when the record cannot be saved. */
 export function newPlatformSend(): { sendId: string; messageId: string } {
   const sendId = randomUUID();
   const messageId = `<${sendId}@send.invalid>`;
-  recordPlatformSend(sendId, messageId);
+  mustRecord([sendId, messageId]);
   return { sendId, messageId };
 }
 

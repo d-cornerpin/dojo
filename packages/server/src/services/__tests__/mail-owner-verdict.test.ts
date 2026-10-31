@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+vi.mock('../outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));   // the parser and its tests stay; the real gate is closed (outlook-owner-never-confirms-today.test.ts)
+
 import { ownerEmailVerdict } from '../mail-owner-verdict.js';
 
 // Small header builder so each case reads as one line of mail.
@@ -162,7 +164,7 @@ describe('ownerEmailVerdict', () => {
     })).toEqual({ verdict: 'unconfirmed', reason: 'dmarc_not_pass' });
   });
 
-  it('gmail: a topmost non-mx.google.com pass is ignored; the real mx.google.com fail wins', () => {
+  it('gmail: a topmost non-mx.google.com header is unconfirmed (nothing below it is read)', () => {
     const evil = 'evil.example; dkim=pass header.i=@example.org; spf=pass smtp.mailfrom=owner@example.org; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=example.org';
     const real = 'mx.google.com; dkim=pass header.i=@example.org; spf=pass smtp.mailfrom=owner@example.org; dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=example.org';
     expect(ownerEmailVerdict({
@@ -170,7 +172,7 @@ describe('ownerEmailVerdict', () => {
       from: 'Owner Name <owner@example.org>',
       headers: [h('Authentication-Results', evil), h('Authentication-Results', real)],
       ownerAddresses: [OWNER],
-    })).toEqual({ verdict: 'unconfirmed', reason: 'dmarc_not_pass' });
+    })).toEqual({ verdict: 'unconfirmed', reason: 'no_auth_header' });
   });
 
   // ── No owner addresses ──
@@ -245,5 +247,15 @@ describe('ownerEmailVerdict — the provider header is read as structure, never 
   it('outlook: Exchange\'s own *.protection.outlook.com host counts; a header with no authserv-id does not', () => {
     expect(judge('outlook', 'BN1PR01CA0001.namprd01.prod.outlook.com; dmarc=pass action=none header.from=example.org')).toEqual({ verdict: 'owner' });
     expect(judge('outlook', 'dmarc=pass action=none header.from=example.org')).toMatchObject(unconfirmed);
+  });
+
+  it('R1: only the TOPMOST header is read — a topmost one from another server is unconfirmed even with a lower genuine-looking Google pass', () => {
+    const lowerPass = h('Authentication-Results', 'mx.google.com; dmarc=pass header.from=example.org');
+    expect(ownerEmailVerdict({ provider: 'gmail', from: 'owner@example.org', headers: [h('Authentication-Results', 'relay.evil.test; dmarc=fail header.from=example.org'), lowerPass], ownerAddresses: [OWNER] })).toMatchObject({ verdict: 'unconfirmed' });
+    expect(ownerEmailVerdict({ provider: 'gmail', from: 'owner@example.org', headers: [h('Authentication-Results', 'spf=pass; dmarc=fail header.from=example.org'), lowerPass], ownerAddresses: [OWNER] })).toMatchObject({ verdict: 'unconfirmed' });
+  });
+  it('R1: an Exchange-shaped topmost fail (no authserv-id) with a lower forged *.outlook.com pass is unconfirmed', () => {
+    const lower = h('Authentication-Results', 'mx.microsoft.com; dmarc=pass header.from=example.org');
+    expect(ownerEmailVerdict({ provider: 'outlook', from: 'owner@example.org', headers: [h('Authentication-Results', 'spf=pass smtp.mailfrom=example.org; dmarc=fail action=none header.from=example.org'), lower], ownerAddresses: [OWNER] })).toMatchObject({ verdict: 'unconfirmed' });
   });
 });

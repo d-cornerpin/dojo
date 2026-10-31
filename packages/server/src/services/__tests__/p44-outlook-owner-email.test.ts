@@ -44,6 +44,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   setLogLevel: vi.fn(), setLogBroadcast: vi.fn(), readLogEntries: () => [],
 }));
+vi.mock('../../services/outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));   // the parser and its tests stay; the real gate is closed (outlook-owner-never-confirms-today.test.ts)
 import { runMigrations } from '../../db/migrations.js';
 import { startOutlookWatcher, stopOutlookWatcher } from '../../services/outlook-watcher.js';
 import { fenceRanges } from '../../tools/external-content.js';

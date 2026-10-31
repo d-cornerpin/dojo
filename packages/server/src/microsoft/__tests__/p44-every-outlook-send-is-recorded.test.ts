@@ -50,3 +50,13 @@ describe('P44 C2 — every Outlook send is recorded', () => {
     expect(isPlatformSent([{ name: 'Message-ID', value: '<aamk-copy@outlook.test>' }])).toBe(true);
   });
 });
+
+describe('P44 fix round 2 (R3) — a send whose record cannot be saved is not made', () => {
+  it('sendMail and a marked-draft reply: the record fails, nothing is sent', async () => {
+    mockDb.current!.close();
+    await expect(executeMicrosoftWriteTool('user_outlook_send', { to: 'agent@x.test', subject: 'x', body: 'close it' }, 'a1', 'A Worker')).rejects.toThrow(/Nothing was sent/);
+    const out = await executeMicrosoftWriteTool('user_outlook_reply', { message_id: 'm1', body: 'ok' }, 'a1', 'A Worker');
+    expect(out).toMatch(/^Error.*Nothing was sent: the platform could not save its record/);
+    expect(msGraphWrite).not.toHaveBeenCalled();
+  });
+});

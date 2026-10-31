@@ -46,3 +46,11 @@ describe('P44 C2 — every Gmail send is recorded before it goes out', () => {
     });
   }
 });
+
+describe('P44 fix round 2 (R3) — a send whose record cannot be saved is not made', () => {
+  it('user_gmail_send: the record fails, nothing is sent, and the error says so', async () => {
+    mockDb.current!.close();
+    await expect(executeGoogleWriteTool('user_gmail_send', { to: 'agent@x.test', subject: 'hi', body: 'close it' }, 'a1', 'A Worker')).rejects.toThrow(/Nothing was sent: the platform could not save its record/);
+    expect(googleWrite).not.toHaveBeenCalled();
+  });
+});

@@ -15,11 +15,13 @@
 // `addressesMatch` — the owner comparison is exact string equality, deliberately not fuzzy.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
+import { outlookOwnerConfirmationOpen } from './outlook-owner-gate.js';
+
 export interface MailHeader { name: string; value: string }
 
 export type OwnerVerdict =
   | { verdict: 'owner' }
-  | { verdict: 'unconfirmed'; reason: 'no_owner_addresses' | 'from_not_single' | 'from_not_owner' | 'no_auth_header' | 'dmarc_not_pass' | 'dmarc_unaligned' };
+  | { verdict: 'unconfirmed'; reason: 'outlook_not_open' | 'no_owner_addresses' | 'from_not_single' | 'from_not_owner' | 'no_auth_header' | 'dmarc_not_pass' | 'dmarc_unaligned' };
 
 /**
  * The ONE address in a raw From header, normalized (trimmed, lower-cased), or null when the
@@ -62,18 +64,16 @@ function authservId(value: string): string {
 }
 
 /**
- * The provider's own authentication result: the TOPMOST `Authentication-Results` whose authserv-id is the
- * provider's own receiving server (Gmail: exactly `mx.google.com`; Outlook: Microsoft's `*.outlook.com`).
- * Headers further down, or stamped by any other server, are ignored (a sender or forwarder could write them).
- * A message the provider stamped no result on has no such header, so it is unconfirmed (fail closed).
+ * The provider's own authentication result is the TOPMOST `Authentication-Results` header, the one the receiving provider
+ * added last, and NOTHING BELOW IT IS EVER READ: every header below was written by someone upstream, sender included.
+ * Gmail: the topmost must carry Google's own authserv-id `mx.google.com`; if it carries any other, or there is none, the
+ * email is unconfirmed (a lower Google-looking header is never looked for). Outlook: see `outlook-owner-gate.ts`.
  */
 function findProviderHeader(provider: 'gmail' | 'outlook', headers: readonly MailHeader[]): MailHeader | null {
-  for (const header of headers) {
-    if (header.name.toLowerCase() !== 'authentication-results') continue;
-    const id = authservId(header.value);
-    if (provider === 'gmail' ? id.toLowerCase() === 'mx.google.com' : isMicrosoftAuthservId(id)) return header;
-  }
-  return null;
+  const top = headers.find((h) => h.name.toLowerCase() === 'authentication-results');
+  if (!top) return null;
+  const id = authservId(top.value);
+  return (provider === 'gmail' ? id.toLowerCase() === 'mx.google.com' : isMicrosoftAuthservId(id)) ? top : null;
 }
 
 /**
@@ -147,6 +147,8 @@ export function ownerEmailVerdict(input: {
   if (fromHeaders.length > 1 || (fromHeaders.length === 1 && singleAddress(fromHeaders[0].value) !== address)) {
     return { verdict: 'unconfirmed', reason: 'from_not_single' };
   }
+
+  if (input.provider === 'outlook' && !outlookOwnerConfirmationOpen()) return { verdict: 'unconfirmed', reason: 'outlook_not_open' };
 
   const auth = findProviderHeader(input.provider, input.headers);
   if (!auth) return { verdict: 'unconfirmed', reason: 'no_auth_header' };

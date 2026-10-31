@@ -44,6 +44,9 @@ export interface OwnerEmailInput {
   headers: () => Promise<MailHeader[] | null>;
   /** The message's plain text with the quoted thread cut away where the provider can do it; null when unavailable. */
   newBody: () => Promise<string | null>;
+  /** Is this a meeting item (an invitation, response or cancellation, or any message carrying a calendar part)? Those are sent by the
+   *  calendar machinery from the owner's own account, with text the platform or a third party chose — never the owner speaking. Unknown = yes. */
+  isMeeting: () => Promise<boolean>;
 }
 
 /** True the first time an owner email's Message-ID is seen, recorded in the same breath; false ever after. */
@@ -61,6 +64,7 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   // Is the From an owner address at all? (No headers needed to answer that, so no extra fetch otherwise.)
   const claim = ownerEmailVerdict({ provider: i.provider, from: i.from, headers: [], ownerAddresses });
   if (claim.verdict === 'unconfirmed' && NOT_ABOUT_OWNER.has(claim.reason)) return { state: 'none' };
+  if (claim.verdict === 'unconfirmed' && claim.reason === 'outlook_not_open') return { state: 'unconfirmed' };   // Outlook confirmation is closed (`outlook-owner-gate.ts`): no fetch
   if (i.placement === 'neither') return { state: 'unconfirmed' };
   const headers = await i.headers().catch(() => null);
   // The provider's list must show the From it judged: none at all is a list it did not really give.
@@ -69,37 +73,46 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   if (isPlatformSent(headers)) return { state: 'none' };
   if (ownerEmailVerdict({ provider: i.provider, from: i.from, headers, ownerAddresses }).verdict !== 'owner') return { state: 'unconfirmed' };
   // A genuine owner email delivered again (a replay) carries the same Message-ID: each id counts once, and a message with none never.
+  if (await i.isMeeting().catch(() => true)) return { state: 'none' };
   const messageId = headers.find((h) => h.name.toLowerCase() === 'message-id')?.value.trim().toLowerCase();
   if (!messageId || !firstSighting(messageId)) return { state: 'unconfirmed' };
   const body = await i.newBody().catch(() => null);
   return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };
 }
 
-/** Gmail: the headers the watcher already fetched are the provider's, in message order; the body is read only for a confirmed owner. */
+/** Does a Gmail payload tree carry a calendar part? */
+function hasCalendarPart(part: GmailBodyPart | undefined): boolean {
+  if (!part) return false;
+  const type = (part.mimeType ?? '').toLowerCase();
+  return type.includes('calendar') || type === 'application/ics' || (part.parts ?? []).some(hasCalendarPart);
+}
+
+/** Gmail: the headers the watcher already fetched are the provider's, in message order; the full message is read once, only for a confirmed owner. */
 export function judgeGmailOwnerEmail(a: { kind: 'agent' | 'user'; placement: OwnerEmailInput['placement']; from: string; headers: MailHeader[]; messageId: string; accountId: string }): Promise<OwnerEmailOutcome> {
+  let read: Promise<GmailBodyPart | null> | null = null;
+  const payload = (): Promise<GmailBodyPart | null> => read ??= googleRead(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(a.messageId)}?format=full`, 'system', 'Gmail Watcher', 'gmail_read', { messageId: a.messageId, account: a.accountId }, a.accountId)
+    .then((r) => (r.ok ? ((r.data as { payload?: GmailBodyPart }).payload ?? null) : null));
   return judgeOwnerEmail({
     provider: 'gmail', kind: a.kind, placement: a.placement, from: a.from,
     headers: async () => a.headers,
-    newBody: async () => {
-      const r = await googleRead(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(a.messageId)}?format=full`, 'system', 'Gmail Watcher', 'gmail_read', { messageId: a.messageId, account: a.accountId }, a.accountId);
-      return r.ok ? extractOwnGmailText((r.data as { payload?: GmailBodyPart }).payload) : null;
-    },
+    newBody: async () => { const p = await payload(); return p ? extractOwnGmailText(p) : null; },
+    isMeeting: async () => { const p = await payload(); return p === null || hasCalendarPart(p) || a.headers.some((h) => h.name.toLowerCase() === 'content-type' && /calendar/i.test(h.value)); },
   });
 }
 
 /** Outlook: the poll never carries the authentication headers, so ONE extra Graph read (made only when the From is an
- *  owner address) fetches the full header list and `uniqueBody` — the part of the email the sender newly wrote. */
+ *  owner address) fetches the full header list, the message class and `uniqueBody` — the part the sender newly wrote. */
 export function judgeOutlookOwnerEmail(a: { kind: 'agent' | 'user'; placement: OwnerEmailInput['placement']; fromAddress: string; messageId: string; accountId: string }): Promise<OwnerEmailOutcome> {
-  let read: Promise<{ headers: MailHeader[] | null; body: string | null }> | null = null;
-  const once = (): Promise<{ headers: MailHeader[] | null; body: string | null }> => read ??= (async () => {
+  type Got = { headers: MailHeader[] | null; body: string | null; meeting: boolean };
+  let read: Promise<Got> | null = null;
+  const once = (): Promise<Got> => read ??= (async () => {
     const r = await msGraphRead(`me/messages/${encodeURIComponent(a.messageId)}?$select=internetMessageHeaders,uniqueBody`, 'system', 'Outlook Watcher', 'outlook_owner_check', { messageId: a.messageId, account: a.accountId }, a.accountId);
-    if (!r.ok) return { headers: null, body: null };
-    const d = r.data as { internetMessageHeaders?: MailHeader[]; uniqueBody?: { contentType?: string; content?: string } };
+    if (!r.ok) return { headers: null, body: null, meeting: true };
+    const d = r.data as { '@odata.type'?: string; internetMessageHeaders?: MailHeader[]; uniqueBody?: { contentType?: string; content?: string } };
     const content = d.uniqueBody?.content;
-    return {
-      headers: Array.isArray(d.internetMessageHeaders) ? d.internetMessageHeaders : null,
-      body: typeof content !== 'string' ? null : d.uniqueBody?.contentType?.toLowerCase() === 'html' ? stripHtmlTags(content) : content,
-    };
+    const headers = Array.isArray(d.internetMessageHeaders) ? d.internetMessageHeaders : null;
+    const meeting = /eventmessage/i.test(d['@odata.type'] ?? '') || (headers ?? []).some((h) => ['content-class', 'content-type'].includes(h.name.toLowerCase()) && /calendar/i.test(h.value));
+    return { headers, meeting, body: typeof content !== 'string' ? null : d.uniqueBody?.contentType?.toLowerCase() === 'html' ? stripHtmlTags(content) : content };
   })();
-  return judgeOwnerEmail({ provider: 'outlook', kind: a.kind, placement: a.placement, from: a.fromAddress, headers: async () => (await once()).headers, newBody: async () => (await once()).body });
+  return judgeOwnerEmail({ provider: 'outlook', kind: a.kind, placement: a.placement, from: a.fromAddress, headers: async () => (await once()).headers, newBody: async () => (await once()).body, isMeeting: async () => (await once()).meeting });
 }

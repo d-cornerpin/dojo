@@ -27,6 +27,7 @@ const arrival = (extra: Array<{ name: string; value: string }>) => judgeOwnerEma
   provider: 'gmail', kind: 'agent', placement: 'to', from: 'owner@home.test',
   headers: async () => [{ name: 'From', value: 'owner@home.test' }, { name: 'Authentication-Results', value: PASS }, ...extra],
   newBody: async () => 'close it',
+  isMeeting: async () => false,
 });
 
 describe('P44 C2 — the platform\'s own sends are never the owner', () => {

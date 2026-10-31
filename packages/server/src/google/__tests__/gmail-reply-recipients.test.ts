@@ -11,6 +11,15 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import Database from 'better-sqlite3';
+
+// Every send now records its send id before it goes out (P44), so the send needs a database to write to.
+const mockDb = { current: null as Database.Database | null };
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
+  closeDb: vi.fn(), getDbPath: () => ':memory:',
+}));
+import { runMigrations } from '../../db/migrations.js';
 
 vi.mock('../client.js', () => ({ googleRead: vi.fn(), googleWrite: vi.fn() }));
 vi.mock('../accounts.js', () => ({
@@ -51,6 +60,7 @@ const rawTo = () => rawHeader('To');
 const rawCc = () => rawHeader('Cc');
 
 beforeEach(() => {
+  mockDb.current = new Database(':memory:'); runMigrations();
   vi.mocked(googleRead).mockReset();
   vi.mocked(googleWrite).mockReset();
   vi.mocked(googleWrite).mockResolvedValue(ok({ id: 'm2', threadId: 'thr9' }) as never);
