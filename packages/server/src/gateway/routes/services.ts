@@ -162,21 +162,26 @@ servicesRouter.post('/imessage/test', async (c) => {
 // POST /imessage/welcome — send welcome message and start the bridge (used during OOBE)
 servicesRouter.post('/imessage/welcome', async (c) => {
   const body = await c.req.json().catch(() => null);
-  const recipient = body?.recipient as string | undefined;
+  const rawRecipient = body?.recipient;
 
-  if (!recipient) {
+  if (typeof rawRecipient !== 'string' || rawRecipient.trim() === '') {
     return c.json({ ok: false, error: 'recipient is required' }, 400);
   }
+  const recipient = rawRecipient.trim();
 
   try {
     // Start the bridge first
     startIMBridge(recipient);
 
     // Send welcome message
-    await withOutboundAsyncIfAbsent(
+    const sent = await withOutboundAsyncIfAbsent(
       { agentId: PLATFORM_SENDER, tool: 'oobe-welcome', channel: 'imessage', recipientId: recipient },
       () => sendIMessage(recipient, '🥋 Welcome to the D.O.J.O! Your agent platform is set up and ready. You can talk to your agents through iMessage when you\'re away from the dashboard.'),
     );
+    if (sent !== true) {
+      // The bridge did start, so say that truthfully next to the send that did not go through.
+      return c.json({ ok: false, error: 'The welcome message did not go through (neither the imsg tool nor AppleScript could send it).', data: { sent: false, bridgeStarted: true } }, 502);
+    }
 
     return c.json({ ok: true, data: { sent: true, bridgeStarted: true } });
   } catch (err) {
