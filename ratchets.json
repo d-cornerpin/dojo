@@ -9558,7 +9558,7 @@
     "packages/dashboard/src/components/AccessControls.tsx": 141,
     "packages/dashboard/src/components/AccessManifest.tsx": 239,
     "packages/dashboard/src/components/AccessPanel.tsx": 445,
-    "packages/dashboard/src/components/AttachmentChips.tsx": 465,
+    "packages/dashboard/src/components/AttachmentChips.tsx": 479,
     "packages/dashboard/src/components/CanvasView.tsx": 399,
     "packages/dashboard/src/components/ContactsPanel.tsx": 478,
     "packages/dashboard/src/components/Dojo3Composer.tsx": 752,
