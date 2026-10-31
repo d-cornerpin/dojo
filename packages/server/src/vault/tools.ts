@@ -341,6 +341,7 @@ export async function executeVaultRemember(
       isPermanent: permanent,
       source: 'agent',
       citation,
+      distinct,
     });
 
     const flags: string[] = [];

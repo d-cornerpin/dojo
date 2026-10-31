@@ -370,6 +370,11 @@ export async function createEntry(params: {
    * shared with squad members (Phase 7).
    */
   namespace?: string | null;
+  /**
+   * The writer says this fact is genuinely DIFFERENT from a near-identical older one
+   * (the agent's "distinct: true"). Both are kept; the older entry is never superseded.
+   */
+  distinct?: boolean;
 }): Promise<VaultEntry> {
   const db = getDb();
   const id = uuidv4();
@@ -401,6 +406,10 @@ export async function createEntry(params: {
         logger.debug('Skipping duplicate vault entry', { existingId: duplicate.id, similarity: 'high' });
         return rowToEntry(db.prepare('SELECT * FROM vault_entries WHERE id = ?').get(duplicate.id) as VaultEntryRow);
       }
+      if (params.distinct) {
+        // "This is different": keep BOTH. The refusal text promised the older entry stays.
+        logger.debug('Distinct fact kept beside its near-copy', { existingId: duplicate.id });
+      } else {
       // 2026-07-03: >= 0.92 similarity with DIFFERENT substance is a
       // correction/update of the same fact, and the NEW statement is the more
       // recent one -- it must win. The old "keep whichever is longer" heuristic
@@ -412,6 +421,7 @@ export async function createEntry(params: {
       db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
         .run(id, duplicate.id);
       logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
+      }
     }
   }
 
