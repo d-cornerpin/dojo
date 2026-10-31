@@ -18,6 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { persistNotifiedIds } from './notified-ids.js';
 import { judgeOutlookOwnerEmail } from './mail-owner-intake.js';
 import { outlookAddressingFacts } from './mail-inbound-facts.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
@@ -399,6 +400,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       });
 
       notifiedIds.add(msg.id);
+      persistNotifiedIds(nKey, notifiedIds);   // after each message, so a poll that throws later does not re-read it
       newCount++;
       s.totalNotifications++;
       if (s.alreadyAlerted) s.notificationsSinceFailureAlert++;
@@ -431,11 +433,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       });
     }
 
-    const recentIds = [...notifiedIds].slice(-200);
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(nKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+    persistNotifiedIds(nKey, notifiedIds);
 
     s.lastCheckedAt = pollStartIso;
     saveLastCheckedAt(accountId, pollStartIso);

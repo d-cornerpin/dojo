@@ -36,6 +36,9 @@ export interface OwnerEmailInput {
   /** Where the agent's own address sits on the email. An owner email counts only when it is on To or Cc: DMARC proves who signed a
    *  message, not that it was written to the agent, so a blind copy or a list delivery of an old owner email never counts. */
   placement: 'to' | 'cc' | 'neither';
+  /** The provider's own identity for THIS delivery (`gmail:<account>:<message id>` / `outlook:<account>:<item id>`): the replay guard
+   *  tells a re-read of the same delivery from a different delivery carrying the same Message-ID. */
+  deliveryRef: string;
   /** The watched mailbox's kind. Only the agent's own mailbox can receive the owner's words. */
   kind: 'agent' | 'user';
   /** The From header value (Gmail) or the bare From address (Outlook). */
@@ -49,10 +52,16 @@ export interface OwnerEmailInput {
   isMeeting: () => Promise<boolean>;
 }
 
-/** True the first time an owner email's Message-ID is seen, recorded in the same breath; false ever after. */
-function firstSighting(messageId: string): boolean {
+/** True when this delivery is the one that first used the Message-ID: the first look records `deliveryRef` (provider + account +
+ *  the provider's own item id) as the row's value, and any later look at the SAME delivery is the same sighting, so a poll that
+ *  threw part-way and re-reads a message gives the same verdict. A DIFFERENT delivery carrying the Message-ID is a replay: false.
+ *  A record that cannot be written or read is false (fail closed). */
+function firstSighting(messageId: string, deliveryRef: string): boolean {
   try {
-    return getDb().prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(`owner_mail_seen:${messageId.replace(/^<|>$/g, '')}`, new Date().toISOString()).changes === 1;
+    const key = `owner_mail_seen:${messageId.replace(/^<|>$/g, '')}`;
+    const db = getDb();
+    if (db.prepare(`INSERT OR IGNORE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, deliveryRef).changes === 1) return true;
+    return (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value === deliveryRef;
   } catch { return false; }
 }
 
@@ -75,7 +84,7 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   // A genuine owner email delivered again (a replay) carries the same Message-ID: each id counts once, and a message with none never.
   if (await i.isMeeting().catch(() => true)) return { state: 'none' };
   const messageId = headers.find((h) => h.name.toLowerCase() === 'message-id')?.value.trim().toLowerCase();
-  if (!messageId || !firstSighting(messageId)) return { state: 'unconfirmed' };
+  if (!messageId || !firstSighting(messageId, i.deliveryRef)) return { state: 'unconfirmed' };
   const body = await i.newBody().catch(() => null);
   return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };
 }
@@ -93,7 +102,7 @@ export function judgeGmailOwnerEmail(a: { kind: 'agent' | 'user'; placement: Own
   const payload = (): Promise<GmailBodyPart | null> => read ??= googleRead(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(a.messageId)}?format=full`, 'system', 'Gmail Watcher', 'gmail_read', { messageId: a.messageId, account: a.accountId }, a.accountId)
     .then((r) => (r.ok ? ((r.data as { payload?: GmailBodyPart }).payload ?? null) : null));
   return judgeOwnerEmail({
-    provider: 'gmail', kind: a.kind, placement: a.placement, from: a.from,
+    provider: 'gmail', kind: a.kind, placement: a.placement, from: a.from, deliveryRef: `gmail:${a.accountId}:${a.messageId}`,
     headers: async () => a.headers,
     newBody: async () => { const p = await payload(); return p ? extractOwnGmailText(p) : null; },
     isMeeting: async () => { const p = await payload(); return p === null || hasCalendarPart(p) || a.headers.some((h) => h.name.toLowerCase() === 'content-type' && /calendar/i.test(h.value)); },
@@ -114,5 +123,5 @@ export function judgeOutlookOwnerEmail(a: { kind: 'agent' | 'user'; placement: O
     const meeting = /eventmessage/i.test(d['@odata.type'] ?? '') || (headers ?? []).some((h) => ['content-class', 'content-type'].includes(h.name.toLowerCase()) && /calendar/i.test(h.value));
     return { headers, meeting, body: typeof content !== 'string' ? null : d.uniqueBody?.contentType?.toLowerCase() === 'html' ? stripHtmlTags(content) : content };
   })();
-  return judgeOwnerEmail({ provider: 'outlook', kind: a.kind, placement: a.placement, from: a.fromAddress, headers: async () => (await once()).headers, newBody: async () => (await once()).body, isMeeting: async () => (await once()).meeting });
+  return judgeOwnerEmail({ provider: 'outlook', kind: a.kind, placement: a.placement, from: a.fromAddress, deliveryRef: `outlook:${a.accountId}:${a.messageId}`, headers: async () => (await once()).headers, newBody: async () => (await once()).body, isMeeting: async () => (await once()).meeting });
 }

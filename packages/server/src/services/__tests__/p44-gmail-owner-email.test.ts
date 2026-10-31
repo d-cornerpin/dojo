@@ -374,6 +374,28 @@ describe('P44 fix round 2 — topmost header only; meeting items never', () => {
   });
 });
 
+describe('P44 t280b — a poll that threw part-way and re-reads the owner email', () => {
+  it('the owner email still counts on the re-read (same delivery), and it is stored once', async () => {
+    ownerAccount('owner@home.test');
+    broadcastSpy.mockImplementationOnce(() => { throw new Error('socket exploded'); });
+    await mailArrives([mail('b1', 'owner@home.test', [AUTH_PASS('home.test')])]);   // poll 1: row inserted, then the broadcast throws
+    await mailArrives([mail('b1', 'owner@home.test', [AUTH_PASS('home.test')])]);   // poll 2: the same Gmail message id is read again
+    const rows = mockDb.current!.prepare(`SELECT inbound_meta FROM messages WHERE external_message_id = 'b1'`).all() as Array<{ inbound_meta: string }>;
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].inbound_meta).relation).toBe('owner');
+  });
+
+  it('progress is saved per message: a poll that throws on the second message does not re-read the first', async () => {
+    ownerAccount('owner@home.test');
+    const a = mail('b2', 'owner@home.test', [AUTH_PASS('home.test')]);
+    const b = mail('b3', 'owner@home.test', [AUTH_PASS('home.test')]);
+    broadcastSpy.mockImplementation((frame: { message?: { id?: string } }) => { if (broadcastSpy.mock.calls.length === 2) throw new Error('boom'); return frame; });
+    await mailArrives([a, b]);
+    const saved = mockDb.current!.prepare(`SELECT value FROM config WHERE key LIKE 'gmail_notified_ids%'`).all() as Array<{ value: string }>;
+    expect(saved.map((r) => r.value).join('')).toContain('b2');
+  });
+});
+
 describe('P44 I2 — more than one From header', () => {
   it('a second From header (any case) makes the email unconfirmed, whichever comes first', async () => {
     ownerAccount('owner@home.test');
