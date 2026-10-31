@@ -1774,7 +1774,7 @@ export async function executeGoogleWriteTool(
       if (!removeParents) {
         const current = await googleRead(
           `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?fields=parents&supportsAllDrives=true`,
-          agentId, agentName, 'drive_move:lookup-parents', { fileId }, undefined,
+          agentId, agentName, 'drive_move:lookup-parents', { fileId }, slot,
         );
         if (!current.ok) return `Error looking up current parents: ${current.error}`;
         const parents = (current.data as { parents?: string[] }).parents ?? [];
