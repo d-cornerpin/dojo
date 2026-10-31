@@ -6,6 +6,7 @@
 
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { applyTextPagination } from '../agent/tools/pagination.js';
+import { stripHtmlTags } from '../agent/html-text.js';
 import { readAllPages } from './graph-pages.js';
 import { msGraphRead, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { conversationLine } from './outlook-conversation.js';
@@ -799,7 +800,7 @@ export async function executeMicrosoftReadTool(
       // Strip HTML tags for readability
       let body = m.body?.content ?? '';
       if (m.body?.contentType === 'html') {
-        body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        body = stripHtmlTags(body);
       }
 
       // Phase 3.5 (2026-05-04) — paginated body. Headers always included; the
@@ -1079,7 +1080,7 @@ export async function executeMicrosoftReadTool(
       const messages = data.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
-        if (m.body?.contentType === 'html') body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (m.body?.contentType === 'html') body = stripHtmlTags(body);
         return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${body.slice(0, 500)}`;
       });
 
@@ -1294,7 +1295,7 @@ export async function executeMicrosoftReadTool(
       const messages = data.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
-        if (m.body?.contentType === 'html') body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (m.body?.contentType === 'html') body = stripHtmlTags(body);
         return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
       });
 
