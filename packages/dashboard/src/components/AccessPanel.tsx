@@ -137,6 +137,7 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
     if (Object.keys(patch).length > 0) body.grants = patch;
     if (legacyMoved) {
       const built = buildLegacyAccess(legacy);
+      body.baseUpdatedAt = agent.updatedAt;   // the server refuses these whole-object writes if the agent moved since
       body.permissions = built.permissions;
       body.toolsPolicy = built.toolsPolicy;
       body.config = { shareUserProfile: built.shareUserProfile };

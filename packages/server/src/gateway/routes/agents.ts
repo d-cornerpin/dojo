@@ -379,6 +379,16 @@ agentsRouter.put('/:id', async (c) => {
   const nameClash = typeof body.name === 'string' && body.name.trim() ? caseVariantClash(body.name.trim(), id) : null;
   if (nameClash) return c.json({ ok: false, error: caseVariantClashMessage(nameClash.name) }, 400);
 
+  // `permissions` and `toolsPolicy` replace a whole stored object. A save that names the agent version it was
+  // built on (`baseUpdatedAt`, the `updatedAt` the page loaded) is refused, writing nothing, if the agent has
+  // changed since. (The grants half is a patch of moved fields and needs no such check.)
+  if ((body.permissions !== undefined || body.toolsPolicy !== undefined) && typeof body.baseUpdatedAt === 'string') {
+    const cur = db.prepare('SELECT updated_at FROM agents WHERE id = ?').get(id) as { updated_at: string } | undefined;
+    if (cur && cur.updated_at !== body.baseUpdatedAt) {
+      return c.json({ ok: false, error: 'This agent changed since you loaded it, so your access change was not saved. Reload and make it again.' }, 409);
+    }
+  }
+
   // The prompt is saved WHOLE (for the primary agent it is SOUL.md). A save must name the prompt it was
   // built on (`systemPromptBase`, the text the page read); if the stored one has moved the save is refused
   // and nothing is written. A caller that names no base may not replace a saved prompt with a blank one.

@@ -134,3 +134,28 @@ describe('PUT /agents/:id — the prompt save', () => {
     expect(nameOf('a1')).toBe('Old Name');
   });
 });
+
+describe('PUT /agents/:id - the legacy access objects (permissions, toolsPolicy)', () => {
+  const updatedAt = (id: string): string => (db().prepare('SELECT updated_at FROM agents WHERE id = ?').get(id) as { updated_at: string }).updated_at;
+  const policy = (id: string): string | null => (db().prepare('SELECT tools_policy FROM agents WHERE id = ?').get(id) as { tools_policy: string | null }).tools_policy;
+
+  it('refuses a toolsPolicy save built on an older version of the agent and writes nothing', async () => {
+    seedAgent('a1', 'm-ok');
+    db().prepare("UPDATE agents SET updated_at = '2026-02-02 00:00:00' WHERE id = 'a1'").run();
+    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseUpdatedAt: '2026-01-01 00:00:00' });
+    expect(res.status).toBe(409);
+    expect(policy('a1')).not.toContain('"x"');
+  });
+
+  it('accepts it when the agent is as the page loaded it', async () => {
+    seedAgent('a1', 'm-ok');
+    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseUpdatedAt: updatedAt('a1') });
+    expect(res.status).toBe(200);
+    expect(policy('a1')).toContain('"x"');
+  });
+
+  it('a caller that names no base is unchanged', async () => {
+    seedAgent('a1', 'm-ok');
+    expect((await put('a1', { toolsPolicy: { allow: ['y'], deny: [] } })).status).toBe(200);
+  });
+});
