@@ -129,5 +129,12 @@ describe('t286: the protected copy is the one rollback.sh itself would pick', ()
     expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.16'))).toBe(true);
     expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.17-preflight.20'))).toBe(true);
   });
+  it('a home with a trailing slash still protects the printed copy (paths are compared resolved)', async () => {
+    installScript();
+    vi.stubEnv('DOJO_HOME', `${home}/`);
+    vi.resetModules();
+    makeBackups('3.1.16', '3.1.17-preflight.20');
+    await clean(1);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.16'))).toBe(true);
+  });
 });
-

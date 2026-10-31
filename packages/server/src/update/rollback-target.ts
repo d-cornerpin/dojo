@@ -28,15 +28,15 @@ export function rollbackTargetPaths(i: RollbackTargetInput): string[] {
   try {
     if (i.readText(script).includes('--print-target')) {
       const out = i.runScript(script, '--print-target', i.home).trim();
-      return out ? [out] : [];
+      return out ? [path.resolve(out)] : [];
     }
   } catch { /* script missing or failed: fall through to the conservative set */ }
   const keepers: string[] = [];
   const r = i.recordedBackupDir;
   if (r && path.dirname(r) === i.dojoDir && path.basename(r).startsWith(i.backupPrefix)
-    && i.exists(path.join(r, 'package.json'))) keepers.push(r);
-  if (i.backupsNewestFirst[0]) keepers.push(i.backupsNewestFirst[0].path);
+    && i.exists(path.join(r, 'package.json'))) keepers.push(path.resolve(r));
+  if (i.backupsNewestFirst[0]) keepers.push(path.resolve(i.backupsNewestFirst[0].path));
   const stable = i.backupsNewestFirst.find(b => !b.version.includes('-'));
-  if (stable) keepers.push(stable.path);
+  if (stable) keepers.push(path.resolve(stable.path));
   return keepers;
 }

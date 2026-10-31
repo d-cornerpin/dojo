@@ -177,7 +177,7 @@ function backupsToPrune(keep: number): BackupInfo[] {
   return [
     ...sortNewestFirst(listPlatformBackups()).slice(keep),
     ...sortNewestFirst(listFailedBuilds()).slice(keep),
-  ].filter(b => !targets.has(b.path));
+  ].filter(b => !targets.has(path.resolve(b.path)));
 }
 
 // Async pruning: shell out to `rm -rf` (much faster than fs.rmSync since
