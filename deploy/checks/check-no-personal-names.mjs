@@ -113,8 +113,8 @@ const PUBLIC = [
 ];
 
 function scannedFiles() {
-  return execSync("git ls-files", { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-    .split('\n').filter(Boolean)
+  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\0').filter(Boolean)
     .filter((rel) => PUBLIC.some((re) => re.test(rel)) || SHIPPED.some((re) => re.test(rel)));
 }
 

@@ -17,19 +17,25 @@
 // Exit 1 on any finding, with file/offset/line/hex context.
 // ════════════════════════════════════════
 import fs from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const BAD_BYTE = (b) =>
   b <= 0x08 || b === 0x0b || b === 0x0c || (b >= 0x0e && b <= 0x1f) || b === 0x7f;
 const BAD_UNI = /[\u202A-\u202E\u2066-\u2069\u200B-\u200D]/;
 
 const staged = process.argv.includes('--staged');
-const cmd = staged
-  ? 'git diff --cached --name-only --diff-filter=ACM'
-  : "git ls-files '*.ts' '*.tsx' '*.mjs' '*.js' '*.sh' '*.sql' '*.md'";
+const gitArgs = staged
+  ? ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACM']
+  : ['ls-files', '-z', '*.ts', '*.tsx', '*.mjs', '*.js', '*.sh', '*.sql', '*.md'];
+const files = execFileSync('git', gitArgs, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+
+if (!staged && files.length === 0) {
+  console.error('✗ byte hygiene: git listed no source files, so nothing was checked.');
+  process.exit(1);
+}
 
 let findings = 0;
-for (const f of execSync(cmd, { encoding: 'utf8' }).split('\n').filter(Boolean)) {
+for (const f of files) {
   if (!fs.existsSync(f)) continue;
   if (staged && !/\.(ts|tsx|mjs|js|sh|sql|md)$/.test(f)) continue;
   const buf = fs.readFileSync(f);
