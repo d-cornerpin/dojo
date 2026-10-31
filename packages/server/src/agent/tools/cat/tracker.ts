@@ -36,7 +36,7 @@
 
 import { getDb } from '../../../db/connection.js';
 import { turnContext } from '../../turn-context.js';
-import { checkRequired, friendlyDbError } from '../../tool-helpers.js';
+import { checkRequired, friendlyDbError, pauseActionMissing } from '../../tool-helpers.js';
 import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
 import { moveAssignee } from '../../../work/row-authority.js';
@@ -888,12 +888,7 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_schedule:pause"({ agentId, args }) {
     let content = '';
     let isError = false;
-    // The dispatcher reaches this op when `action` is missing too (it must pick an op); a missing
-    // action must not quietly pause the owner's task, so ask instead of guessing.
-    if (typeof args.action !== 'string' || args.action.trim().toLowerCase() !== 'pause') {
-      return { content: 'Error: work_schedule needs action: "pause", "resume" or "resolve_missed". Nothing was changed.', isError: true };
-    }
-    const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
+    const tpsErr = pauseActionMissing(args) ?? checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
     if (args.mark_complete === true) await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));
     content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
