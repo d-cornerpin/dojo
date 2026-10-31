@@ -26,5 +26,7 @@ export async function sendMarkedDraft(kind: 'reply' | 'replyAll' | 'forward', me
   if (!made.ok || !draft?.id) return made.ok ? { ...made, ok: false, error: 'Graph made the draft but returned no id, so nothing was sent.' } : made;   // no key could be recorded: nothing is sent
   recordPlatformSend(draft.internetMessageId);   // second key, before the send: survives an Exchange that drops the custom header
   const sent = await msGraphWrite('POST', `me/messages/${encodeURIComponent(draft.id)}/send`, undefined, agentId, agentName, action, details, slot);
-  return sent.ok ? sent : { ...sent, error: `${sent.error} (the draft was created and was NOT sent: it is still in the mailbox's Drafts folder)` };
+  if (sent.ok) return sent;
+  const removed = await msGraphWrite('DELETE', `me/messages/${encodeURIComponent(draft.id)}`, undefined, agentId, agentName, action, details, slot).catch(() => null);
+  return { ...sent, error: `${sent.error} (the reply was NOT sent${removed?.ok ? '; its draft was removed' : "; its draft is still in the mailbox's Drafts folder"})` };
 }
