@@ -379,13 +379,21 @@ agentsRouter.put('/:id', async (c) => {
   const nameClash = typeof body.name === 'string' && body.name.trim() ? caseVariantClash(body.name.trim(), id) : null;
   if (nameClash) return c.json({ ok: false, error: caseVariantClashMessage(nameClash.name) }, 400);
 
-  // `permissions` and `toolsPolicy` replace a whole stored object. A save that names the agent version it was
-  // built on (`baseUpdatedAt`, the `updatedAt` the page loaded) is refused, writing nothing, if the agent has
-  // changed since. (The grants half is a patch of moved fields and needs no such check.)
-  if ((body.permissions !== undefined || body.toolsPolicy !== undefined) && typeof body.baseUpdatedAt === 'string') {
-    const cur = db.prepare('SELECT updated_at FROM agents WHERE id = ?').get(id) as { updated_at: string } | undefined;
-    if (cur && cur.updated_at !== body.baseUpdatedAt) {
-      return c.json({ ok: false, error: 'This agent changed since you loaded it, so your access change was not saved. Reload and make it again.' }, 409);
+  // `permissions` and `toolsPolicy` replace a whole stored object. A save that names the value it was built on
+  // (`basePermissions` / `baseToolsPolicy`, what the page read) is refused, writing nothing, if the stored
+  // value is no longer that one. Compared by value, not by `updated_at`, which moves on every status change
+  // and heartbeat. (The grants half is a patch of moved fields and needs no such check.)
+  {
+    const stable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
+      x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([p], [q]) => (p < q ? -1 : 1))) : x);
+    const cur = db.prepare('SELECT permissions, tools_policy FROM agents WHERE id = ?').get(id) as { permissions: string | null; tools_policy: string | null } | undefined;
+    const stale = (sent: boolean, base: unknown, stored: string | null): boolean => {
+      if (!sent || base === undefined || !cur) return false;
+      try { return stable(JSON.parse(stored || '{}')) !== stable(base ?? {}); } catch { return true; }
+    };
+    if (stale(body.permissions !== undefined, body.basePermissions, cur?.permissions ?? null)
+      || stale(body.toolsPolicy !== undefined, body.baseToolsPolicy, cur?.tools_policy ?? null)) {
+      return c.json({ ok: false, error: 'This agent\u2019s access settings changed since you loaded them, so your change was not saved. Reload and make it again.' }, 409);
     }
   }
 

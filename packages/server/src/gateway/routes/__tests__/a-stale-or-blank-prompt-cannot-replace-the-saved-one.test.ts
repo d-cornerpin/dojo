@@ -136,22 +136,31 @@ describe('PUT /agents/:id — the prompt save', () => {
 });
 
 describe('PUT /agents/:id - the legacy access objects (permissions, toolsPolicy)', () => {
-  const updatedAt = (id: string): string => (db().prepare('SELECT updated_at FROM agents WHERE id = ?').get(id) as { updated_at: string }).updated_at;
   const policy = (id: string): string | null => (db().prepare('SELECT tools_policy FROM agents WHERE id = ?').get(id) as { tools_policy: string | null }).tools_policy;
+  const setPolicy = (id: string, p: unknown) => db().prepare('UPDATE agents SET tools_policy = ? WHERE id = ?').run(JSON.stringify(p), id);
 
-  it('refuses a toolsPolicy save built on an older version of the agent and writes nothing', async () => {
+  it('refuses a toolsPolicy save built on a policy that has since changed, and writes nothing', async () => {
     seedAgent('a1', 'm-ok');
-    db().prepare("UPDATE agents SET updated_at = '2026-02-02 00:00:00' WHERE id = 'a1'").run();
-    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseUpdatedAt: '2026-01-01 00:00:00' });
+    setPolicy('a1', { allow: ['changed-elsewhere'], deny: [] });
+    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseToolsPolicy: { allow: ['what-the-page-read'], deny: [] } });
     expect(res.status).toBe(409);
-    expect(policy('a1')).not.toContain('"x"');
+    expect(policy('a1')).toContain('changed-elsewhere');
   });
 
-  it('accepts it when the agent is as the page loaded it', async () => {
+  it('accepts it when the policy is as the page read it, even though the agent row moved (status, heartbeat)', async () => {
     seedAgent('a1', 'm-ok');
-    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseUpdatedAt: updatedAt('a1') });
+    setPolicy('a1', { allow: ['mine'], deny: [] });
+    db().prepare("UPDATE agents SET status = 'working', updated_at = '2030-01-01 00:00:00' WHERE id = 'a1'").run();
+    const res = await put('a1', { toolsPolicy: { allow: ['x'], deny: [] }, baseToolsPolicy: { deny: [], allow: ['mine'] } });   // key order is irrelevant
     expect(res.status).toBe(200);
     expect(policy('a1')).toContain('"x"');
+  });
+
+  it('refuses a permissions save built on stale permissions', async () => {
+    seedAgent('a1', 'm-ok');
+    db().prepare('UPDATE agents SET permissions = ? WHERE id = ?').run(JSON.stringify({ exec: true }), 'a1');
+    const res = await put('a1', { permissions: { exec: false }, basePermissions: { exec: false } });
+    expect(res.status).toBe(409);
   });
 
   it('a caller that names no base is unchanged', async () => {

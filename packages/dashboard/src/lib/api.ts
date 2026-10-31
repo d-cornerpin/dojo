@@ -1348,7 +1348,7 @@ export const getAccessCatalog = async (): Promise<ApiResponse<AccessCatalog>> =>
 
 export const updateAgentConfig = async (
   id: string,
-  updates: { modelId?: string; systemPrompt?: string; systemPromptBase?: string; baseUpdatedAt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean; silentWindowMinutes?: number | null; config?: Record<string, unknown>; grants?: Record<string, unknown> },
+  updates: { modelId?: string; systemPrompt?: string; systemPromptBase?: string; basePermissions?: Record<string, unknown>; baseToolsPolicy?: { allow: string[]; deny: string[] }; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean; silentWindowMinutes?: number | null; config?: Record<string, unknown>; grants?: Record<string, unknown> },
 ): Promise<ApiResponse<AgentDetailResponse>> => {
   return request<AgentDetailResponse>(`/agents/${id}`, {
     method: 'PUT',
