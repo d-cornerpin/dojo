@@ -9832,7 +9832,7 @@
     "packages/server/src/techniques/tools.ts": 870,
     "packages/server/src/tools/name-help.ts": 355,
     "packages/server/src/tools/tool-docs.ts": 773,
-    "packages/server/src/tools/unified-read.ts": 763,
+    "packages/server/src/tools/unified-read.ts": 773,
     "packages/server/src/tools/work-verbs.ts": 404,
     "packages/server/src/tracker/assignee-patience.ts": 209,
     "packages/server/src/tracker/delivery-evidence.ts": 319,
