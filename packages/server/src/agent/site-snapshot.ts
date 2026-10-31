@@ -89,13 +89,28 @@ export async function isEmbeddable(url: string, agentId?: string): Promise<boole
 // Reuse one headless Chromium across snapshots (relaunch is ~1-2s). A fresh
 // context+page per capture keeps them isolated.
 let shared: Browser | null = null;
+// Single-flight: `launch` takes ~1-2s, so concurrent callers (first use, or after a crash) that
+// all see `shared` null must await THIS launch rather than each starting a Chromium the other
+// would orphan. Cleared when the launch settles, so a rejection lets the next call try again.
+let launching: Promise<Browser> | null = null;
 
 async function getBrowser(): Promise<Browser> {
   if (shared?.isConnected()) return shared;
-  logger.info('Launching snapshot browser');
-  shared = await chromium.launch({ headless: true, args: ['--disable-gpu', '--no-sandbox'] });
-  shared.on('disconnected', () => { shared = null; });
-  return shared;
+  if (launching) return launching;
+  launching = (async () => {
+    try {
+      logger.info('Launching snapshot browser');
+      const b = await chromium.launch({ headless: true, args: ['--disable-gpu', '--no-sandbox'] });
+      // Only THIS browser leaving may blank `shared`; a stale one exiting later must not null out
+      // the newer browser still in use (which would then be orphaned by the next launch).
+      b.on('disconnected', () => { if (shared === b) shared = null; });
+      shared = b;
+      return b;
+    } finally {
+      launching = null;
+    }
+  })();
+  return launching;
 }
 
 /**
