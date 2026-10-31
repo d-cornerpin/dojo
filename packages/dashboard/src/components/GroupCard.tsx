@@ -2,6 +2,7 @@ import { useState, type DragEvent } from 'react';
 import type { AgentDetail, Model } from '@dojo/shared';
 import { AgentCard } from './AgentCard';
 import * as api from '../lib/api';
+import { useToast } from '../hooks/useToast';
 
 interface GroupCardProps {
   group: api.AgentGroup;
@@ -12,6 +13,7 @@ interface GroupCardProps {
 }
 
 export const GroupCard = ({ group, agents, models, providerNameById, onReload }: GroupCardProps) => {
+  const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description ?? '');
@@ -19,13 +21,22 @@ export const GroupCard = ({ group, agents, models, providerNameById, onReload }:
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const handleSave = async () => {
-    await api.updateGroupApi(group.id, { name, description, dreamerIgnore });
+    const res = await api.updateGroupApi(group.id, { name, description, dreamerIgnore });
+    if (!res.ok) {
+      toast.error(res.error || 'The squad could not be saved.');
+      return;
+    }
     setEditing(false);
     onReload();
   };
 
   const handleDelete = async () => {
-    await api.deleteGroupApi(group.id);
+    const res = await api.deleteGroupApi(group.id);
+    if (!res.ok) {
+      toast.error(res.error || 'The squad could not be deleted.');
+      setConfirmDelete(false);
+      return;
+    }
     onReload();
   };
 
@@ -38,7 +49,11 @@ export const GroupCard = ({ group, agents, models, providerNameById, onReload }:
     if (isSystem) return; // Can't drop into system group
     const agentId = e.dataTransfer.getData('agent-id');
     if (agentId) {
-      await api.assignAgentToGroupApi(agentId, group.id);
+      const res = await api.assignAgentToGroupApi(agentId, group.id);
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
       onReload();
     }
   };
