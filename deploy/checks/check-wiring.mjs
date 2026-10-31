@@ -135,16 +135,6 @@ const ALLOWLIST = [
       'residue question is his, not a worker\'s. Phase 0 confirmed it as the research seed expectation.',
   },
   {
-    path: 'packages/dashboard/src/components/ActiveJobsIndicator.tsx',
-    date: '2026-07-28',
-    owner: 'SWEEP-E T5',
-    reason:
-      'SWEEP-E.md:35 lists it by name in the dead-surface deletion, together with "the 8 stale server ' +
-      'comments naming it". Those comments are the reason it must not be deleted piecemeal here: the ' +
-      'server still WRITES data for a component nothing renders, and removing the reader without the ' +
-      'writer leaves the more expensive half standing.',
-  },
-  {
     path: 'packages/server/src/agent/v2/classifiers/index.ts',
     date: '2026-07-28',
     owner: 'PHASE-6',
