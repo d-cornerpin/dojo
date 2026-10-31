@@ -144,7 +144,7 @@ describe('PHASE-6 T-PROMISE: the decision — the LEDGER fires it, never the tex
     const steer = uncommittedPromiseSteer(d);
     expect(steer).toMatch(/^\[System:/);
     expect(steer).toMatch(/work_open\(kind="commitment"\)/);
-    expect(steer).toMatch(/tell the user\s+plainly that it is NOT recorded/i);
+    expect(steer).toMatch(/tell the person you are talking to\s+plainly that it is NOT recorded/i);
   });
 
   it('`ask` is NOT a board kind, and the exclusion is what lets this floor fire at all', () => {

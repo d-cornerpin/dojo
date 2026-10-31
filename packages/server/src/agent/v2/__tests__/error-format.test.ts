@@ -74,12 +74,12 @@ describe('formatTierBNoteForAgent (agent-facing system note bodies)', () => {
       filename: 'IMG_4521.jpg',
     });
     expect(note).toContain('IMG_4521.jpg');
-    expect(note).toContain('Tell the user');
+    expect(note).toContain('Tell the person you are talking to');
   });
 
   it('image_too_large_post_sips without filename is still actionable', () => {
     const note = formatTierBNoteForAgent('image_too_large_post_sips');
-    expect(note).toContain('Tell the user');
+    expect(note).toContain('Tell the person you are talking to');
     expect(note).not.toContain('undefined');
   });
 
