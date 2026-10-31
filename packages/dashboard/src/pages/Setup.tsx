@@ -583,13 +583,14 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
 // ── Setup: Browse Models for aggregator providers ──
 
-const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { providerId: string; providerName: string; onModelsAdded: () => void }) => {
+export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { providerId: string; providerName: string; onModelsAdded: () => void }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<api.BrowseModelResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
   const [addedCount, setAddedCount] = useState(0);
   const [searched, setSearched] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -603,13 +604,18 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
 
   const handleAdd = async (model: api.BrowseModelResult) => {
     setAdding(model.apiModelId);
+    setAddError(null);
     const result = await api.addProviderModel(providerId, model);
-    if (result.ok) {
+    if (!result.ok) setAddError(result.error);
+    else {
       // Also enable the model immediately
       const addedId = (result.data as Record<string, unknown>).id as string;
-      if (addedId) await api.enableModels([addedId]);
-      setResults(prev => prev.filter(r => r.apiModelId !== model.apiModelId));
-      setAddedCount(prev => prev + 1);
+      const enabled = addedId ? await api.enableModels([addedId]) : { ok: true as const };
+      if (!enabled.ok) setAddError(`Added, but could not enable: ${enabled.error}`);
+      else {
+        setResults(prev => prev.filter(r => r.apiModelId !== model.apiModelId));
+        setAddedCount(prev => prev + 1);
+      }
       onModelsAdded();
     }
     setAdding(null);
@@ -674,6 +680,8 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
         <p className="text-xs text-ui/25 text-center py-2">No models found matching &ldquo;{query}&rdquo;</p>
       )}
 
+      {addError && <p className="text-xs text-cp-coral">{addError}</p>}
+
       {addedCount > 0 && (
         <p className="text-xs text-cp-teal">{addedCount} model{addedCount !== 1 ? 's' : ''} added and enabled.</p>
       )}
@@ -681,13 +689,14 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
   );
 };
 
-const ModelsStep = () => {
+export const ModelsStep = () => {
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const loadModels = async () => {
     const modelsResult = await api.getModels();
@@ -727,11 +736,14 @@ const ModelsStep = () => {
   };
 
   const handleSave = async () => {
+    setSaveError(null);
     const ids = Array.from(selected);
-    if (ids.length > 0) await api.enableModels(ids);
     const toDisable = models.filter((m) => !selected.has(m.id)).map((m) => m.id);
-    if (toDisable.length > 0) await api.disableModels(toDisable);
-    setSaved(true);
+    const enabled = ids.length > 0 ? await api.enableModels(ids) : { ok: true as const };
+    const disabled = !enabled.ok || toDisable.length === 0 ? { ok: true as const } : await api.disableModels(toDisable);
+    const failed = !enabled.ok ? enabled : !disabled.ok ? disabled : null;
+    if (failed) setSaveError(failed.error ?? 'The models could not be saved.');
+    else setSaved(true);
   };
 
   if (loading) return <p className="text-ui/55 text-center py-8">Loading models...</p>;
@@ -760,6 +772,7 @@ const ModelsStep = () => {
               );
             })}
           </div>
+          {saveError && <p className="text-sm text-cp-coral">{saveError}</p>}
           <button onClick={handleSave} disabled={selected.size === 0}
             className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
               saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
@@ -1761,7 +1774,7 @@ export const WorkspaceStep = () => {
 
 // ── Web Search ──
 
-const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
+export const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [provider, setProvider] = useState('brave');
   const [apiKey, setApiKey] = useState('');
   const [saved, setSaved] = useState(false);
@@ -1800,10 +1813,9 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
     // Validate the key
     const valResult = await api.validateSearchKey(provider, apiKey.trim());
     if (valResult.ok && valResult.data.valid) {
-      setValidationResult('valid');
-      // Save the config
-      await api.setSearchConfig(provider, apiKey.trim());
-      setSaved(true);
+      const stored = await api.setSearchConfig(provider, apiKey.trim());
+      if (stored.ok) { setValidationResult('valid'); setSaved(true); }
+      else setError('The key is valid but could not be saved: ' + stored.error);
     } else {
       setValidationResult('invalid');
       setError('API key validation failed. Check your key and try again.');
