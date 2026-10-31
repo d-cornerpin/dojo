@@ -38,6 +38,8 @@ import {
  * CHECKED against the server before it is trusted (deleted / ended / archived →
  * back to the primary, silently).
  */
+const RETRY_MS = 3000;
+
 interface SelectedAgent { id: string; name: string; hue?: number }
 
 export interface ActiveAgentApi {
@@ -86,6 +88,9 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
   );
   /** The id currently being checked, so a re-render cannot fire a second fetch. */
   const verifying = useRef<string | null>(null);
+  /** One-shot retry timers (verify, primary read); cleared on unmount. */
+  const retryTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  useEffect(() => () => { retryTimers.current.forEach(clearTimeout); }, []);
   /** The last agent id THIS provider put in the URL. It is what tells an outside
    *  change (deep link, back button) apart from our own echo. */
   const lastWrittenParam = useRef<string | null>(agentParamOf(window.location.search));
@@ -95,11 +100,18 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
    * word: an empty chat that can never answer is worse than the default one.
    * Every write is guarded on the id still being the selected one, so a verify
    * in flight can never clobber a pick the user made while it was running. */
-  const verify = useCallback((id: string) => {
+  const verify = useCallback((id: string, retried = false) => {
     if (verifying.current === id) return;
     verifying.current = id;
     void api.getAgent(id).then((result) => {
       if (verifying.current === id) verifying.current = null;
+      /* A request that FAILED (network, server restarting) says nothing about the agent: keep the
+       * selection and the device's memory, and ask once more shortly. Only a definite "not found"
+       * or a good answer saying the agent is gone drops it. */
+      if (!result.ok && !/not found/i.test(result.error)) {
+        if (!retried) retryTimers.current.push(setTimeout(() => verify(id, true), RETRY_MS));
+        return;
+      }
       const agent = result.ok ? result.data : null;
       if (!isRestorable(agent) || !agent) {
         setSelected((cur) => (cur && cur.id === id ? null : cur));
@@ -115,15 +127,21 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([
+    const load = (retried: boolean) => void Promise.all([
       api.getSetting('primary_agent_id'),
       api.getSetting('primary_agent_name'),
     ]).then(([idResult, nameResult]) => {
       if (cancelled) return;
-      if (idResult.ok && idResult.data.value) setPrimaryId(idResult.data.value);
       if (nameResult.ok && nameResult.data.value) setPrimaryName(nameResult.data.value);
+      /* A failed read is not "there is no primary": stay unknown (nothing is written) and ask once more. */
+      if (!idResult.ok) {
+        if (!retried) retryTimers.current.push(setTimeout(() => load(true), RETRY_MS));
+        return;
+      }
+      if (idResult.data.value) setPrimaryId(idResult.data.value);
       setPrimaryKnown(true);
     });
+    load(false);
     return () => { cancelled = true; };
   }, []);
 
