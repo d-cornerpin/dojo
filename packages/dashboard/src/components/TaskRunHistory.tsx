@@ -21,7 +21,7 @@ const statusColors: Record<string, string> = {
   incomplete: 'glass-badge-gray',
 };
 
-const formatDuration = (start: string | null, end: string | null): string => {
+export const formatDuration = (start: string | null, end: string | null): string => {
   if (!start || !end) return '--';
   // `startedAt`/`completedAt` are ISO-with-Z (`work/occurrence-runs.ts:53`) while the sibling
   // `scheduledFor` is Z-less second-resolution text (`:58`) — one row, two shapes, documented at
@@ -30,10 +30,18 @@ const formatDuration = (start: string | null, end: string | null): string => {
   const e = parseUtc(end);
   if (!s || !e) return '--';
   const ms = e.getTime() - s.getTime();
+  // A run that ends before it starts (a clock step) has no duration to report; the honest
+  // answer is the same `--` a missing timestamp gets, not a sub-second one. (Fresh-eyes 10.)
+  if (ms < 0) return '--';
+  // `floor`, never `round`: rounding let a 59.6 s run print "60s" and a 59.7-minute one "60m"
+  // — a number that belongs to the next unit. Past an hour the minutes are named too, so the
+  // hour figure stops hiding them (90 min read "2h" when `round` took the half up).
   if (ms < 1000) return '<1s';
-  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
-  return `${Math.round(ms / 3600000)}h`;
+  if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m`;
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 };
 
 const formatTime = (iso: string | null): string => {
