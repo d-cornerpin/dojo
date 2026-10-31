@@ -112,14 +112,18 @@ describe('a failed effort verdict is learned from, then handed to the owner', ()
     expect(ownerNotes('t-1')).toEqual([]);
   });
 
-  it('a timed-out answer is recorded with its reason too', async () => {
+  it('a timed-out call is not the PM answering badly: nothing is recorded, and two in a row never reach the owner', async () => {
     pendingTask('t-2');
     reply.throws = true;
     await runEffortReview('t-2');
-    expect(failedRows('t-2')).toBe(1);
+    await runEffortReview('t-2');
+    expect(failedRows('t-2')).toBe(0);
+    expect(ownerNotes('t-2')).toEqual([]);
+    expect(findPendingEffortReviewTaskIds()).toContain('t-2');   // still pending: the next tick asks again
     reply.throws = false; reply.text = GOOD('t-2');
     await runEffortReview('t-2');
-    expect(asked[1]).toContain('did not arrive');
+    expect(asked[2]).not.toContain('last answer');
+    expect(baseline('t-2')).toBeGreaterThan(0);
   });
 
   it('two unusable answers in a row on the same request: the owner is told and the PM is not asked again', async () => {
@@ -134,6 +138,18 @@ describe('a failed effort verdict is learned from, then handed to the owner', ()
     expect(findPendingEffortReviewTaskIds()).not.toContain('t-3');   // closed: no third ask
     await runEffortReview('t-3');
     expect(asked).toHaveLength(2);
+  });
+
+  it('a timeout between two unusable answers does not break or add to the run', async () => {
+    pendingTask('t-5');
+    reply.text = 'no';
+    await runEffortReview('t-5');
+    reply.throws = true;
+    await runEffortReview('t-5');
+    expect(ownerNotes('t-5')).toEqual([]);
+    reply.throws = false;
+    await runEffortReview('t-5');
+    expect(ownerNotes('t-5')).toHaveLength(1);
   });
 
   it('a usable answer between two failures breaks the run: failures count per request, in a row', async () => {

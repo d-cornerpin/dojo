@@ -1450,10 +1450,12 @@ async function runEffortReviewOnce(taskId: string): Promise<void> {
     });
     replyText = r.content;
   } catch (err) {
-    logger.error('Effort review: the PM model did not answer; the failure is recorded and the next ask carries it', {
+    // A transport failure (timeout, provider error) is not the PM giving a bad answer: nothing is recorded or
+    // counted. `callModel` already marked the provider unhealthy (agent/failed-call.ts settleFailedCall ->
+    // recordProviderError) and the request stays pending, so the next sweep tick asks again.
+    logger.error('Effort review: the PM model did not answer; the request stays pending and retries next cycle', {
       taskId, error: err instanceof Error ? err.message : String(err),
     });
-    handFailedVerdict(taskId, row.title, row.assigned_to, 'the answer did not arrive in time');
     return;
   }
 
