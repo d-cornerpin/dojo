@@ -697,7 +697,7 @@
     "packages/server/src/twilio/audio-codec.ts": 196,
     "packages/server/src/twilio/auth.ts": 285,
     "packages/server/src/twilio/call-session.ts": 916,
-    "packages/server/src/twilio/client.ts": 235,
+    "packages/server/src/twilio/client.ts": 296,
     "packages/server/src/twilio/sms-inbound.ts": 409,
     "packages/server/src/twilio/sms-outbound.ts": 89,
     "packages/server/src/twilio/tts-bridge.ts": 177,
