@@ -102,6 +102,7 @@ export function createOrbEngine(opts: {
      Ported verbatim from the makeBackdrop IIFE (2786-2831); the only change is
      that it writes bgImg.src instead of document.getElementById("bg").src. */
   function makeBackdrop(): void {
+    if (destroyed) return;
     /* Paint at the viewport's aspect ratio (capped) rather than a fixed
        1600x1000. Both the visible `.dojo3-orb-bg` img and the shader's bg()
        cover-scale this texture; a fixed landscape image cover-scaled onto a
@@ -2242,6 +2243,7 @@ void main(){
     destroyed = true;
     running = false;
     cancelAnimationFrame(rafId);
+    if (backdropTimer) { clearTimeout(backdropTimer); backdropTimer = null; }
 
     removeEventListener('resize', onResize);
     removeEventListener('pointermove', onPointerMove);
