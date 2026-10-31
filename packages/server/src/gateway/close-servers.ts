@@ -12,6 +12,10 @@ const inFlight = new Set<ServerResponse>();
 // `Connection: close` so it cannot keep its connection alive after the response.
 let closing = false;
 
+// How long an in-flight response may keep the close open before its socket is
+// destroyed. Inside launchd's default 20s ExitTimeOut so closeDb still runs.
+const DEFAULT_GRACE_MS = 10_000;
+
 /**
  * Track the gateway's in-flight responses so `closeServers` can close their
  * connections when it shuts down. Call this once, right after the server is
@@ -42,7 +46,12 @@ export function trackRequests(httpServer: Server): void {
  * keep-alive connections are dropped; only then is `server.close()` allowed to
  * wait for any in-flight request, which is the one thing it SHOULD wait for.
  */
-export async function closeServers(httpServer: Server, wsServer: WebSocketServer): Promise<void> {
+export async function closeServers(
+  httpServer: Server,
+  wsServer: WebSocketServer,
+  opts: { graceMs?: number } = {},
+): Promise<void> {
+  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
   // Mark the server as closing first: from here on, a request that arrives is
   // told `Connection: close` so it cannot keep its connection alive afterward.
   closing = true;
@@ -72,7 +81,24 @@ export async function closeServers(httpServer: Server, wsServer: WebSocketServer
 
   // Stop accepting new connections. In-flight requests are allowed to finish;
   // the callback fires once the last connection ends.
-  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  // A response that already sent its headers (a chat stream, a long agent turn) is
+  // waited for, but not past the grace period: a still-open socket after that is
+  // destroyed so this callback can fire and the cleanup after it runs before the
+  // supervisor's own SIGKILL (launchd's default ExitTimeOut is 20s; the grace is
+  // inside it). The timer is unref'd and cleared once the close completes.
+  let graceTimer: NodeJS.Timeout | null = null;
+  try {
+    await new Promise<void>((resolve) => {
+      graceTimer = setTimeout(() => {
+        for (const res of inFlight) res.socket?.destroy();
+        httpServer.closeAllConnections();
+      }, graceMs);
+      graceTimer.unref();
+      httpServer.close(() => resolve());
+    });
+  } finally {
+    if (graceTimer) clearTimeout(graceTimer);
+  }
 
   // The server is fully shut down — no new request can reach it, so the closing
   // flag's job is done. Clear it so a fresh gateway (or the next test's server)

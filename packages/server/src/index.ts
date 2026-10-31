@@ -1294,7 +1294,11 @@ async function main(): Promise<void> {
     }
   }, 30_000);
 
+  let shuttingDown = false;
   const shutdown = (): void => {
+    // A second SIGTERM/SIGINT must not run the whole sequence again (second close, second closeDb).
+    if (shuttingDown) { logger.info('Shutdown already in progress'); return; }
+    shuttingDown = true;
     logger.info('Shutting down...');
     clearInterval(timeoutInterval);
     // STEP 1 — STOP THE WORK CLOCKS FIRST. `server.close` waits for open connections, so the
@@ -1326,12 +1330,23 @@ async function main(): Promise<void> {
     // and the supervisor SIGKILLs the process before closeDb/process.exit — the
     // cleanup inside it is skipped. See gateway/close-servers.ts.
     // `serve()` is always HTTP/1 here (no http2 options), so the cast is sound.
-    void closeServers(server as unknown as HttpServer, wss).then(async () => {
-      const { closeDb } = await import('./db/connection.js');
-      closeDb();
-      logger.info('Shutdown complete');
-      process.exit(0);
-    });
+    // process.exit(0) is reached on EVERY path: a closeServers rejection or a closeDb throw is logged,
+    // never left as an unhandled rejection with the process hanging.
+    void closeServers(server as unknown as HttpServer, wss)
+      .catch((err) => {
+        logger.error('Closing the gateway failed during shutdown', { error: err instanceof Error ? err.message : String(err) });
+      })
+      .then(async () => {
+        try {
+          const { closeDb } = await import('./db/connection.js');
+          closeDb();
+        } catch (err) {
+          logger.error('Closing the database failed during shutdown', { error: err instanceof Error ? err.message : String(err) });
+        }
+        logger.info('Shutdown complete');
+      })
+      .catch(() => {})
+      .finally(() => process.exit(0));
   };
 
   process.on('SIGINT', shutdown);
