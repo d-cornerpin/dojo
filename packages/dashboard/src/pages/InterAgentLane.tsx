@@ -92,24 +92,39 @@ export function InterAgentLane() {
   const { subscribe, reconnectCount } = useWebSocket();
   const [messages, setMessages] = useState<InterAgentMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const agentIdRef = useRef(agentId);
   agentIdRef.current = agentId;
 
-  // Load history whenever the viewed agent changes.
-  useEffect(() => {
-    let active = true;
+  // Load history. The ticket drops an answer that is no longer the latest ask (agent changed, retry).
+  const loadTicket = useRef(0);
+  const loadHistory = useCallback(async () => {
+    const mine = ++loadTicket.current;
+    const forAgent = agentId;
     setLoading(true);
-    setMessages([]);
-    (async () => {
-      const result = await api.getInterAgentMessages(agentId, 200);
-      if (!active) return;
-      if (result.ok) setMessages(result.data);
-      setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
+    setLoadError(null);
+    const result = await api.getInterAgentMessages(forAgent, 200);
+    if (mine !== loadTicket.current) return;
+    if (result.ok) {
+      // Merge: a live frame that arrived while this was in flight may not be in the answer yet.
+      setMessages((prev) => {
+        const known = new Set(result.data.map((m) => m.id));
+        return [...result.data, ...prev.filter((m) => !known.has(m.id))];
+      });
+    } else {
+      setLoadError(result.error || 'unknown error');
+    }
+    setLoading(false);
   }, [agentId]);
+
+  // Reload whenever the viewed agent changes (the list starts empty for the new agent).
+  useEffect(() => {
+    setMessages([]);
+    void loadHistory();
+    return () => {
+      loadTicket.current++;
+    };
+  }, [loadHistory]);
 
   // A reconnect re-asks for the newest messages and merges them in: the frames sent while the
   // socket was down are gone. What is on screen stays (no blanking); unknown ids are added.
@@ -192,6 +207,11 @@ export function InterAgentLane() {
 
       {loading ? (
         <p className="text-tertiary" style={{ fontSize: 12 }}>Loading…</p>
+      ) : loadError !== null && groups.length === 0 ? (
+        <div className="text-tertiary" style={{ fontSize: 12 }}>
+          <p>Could not load inter-agent messages: {loadError}</p>
+          <button type="button" className="btn btn-secondary mt-2" onClick={() => void loadHistory()}>Retry</button>
+        </div>
       ) : groups.length === 0 ? (
         <p className="text-tertiary" style={{ fontSize: 12 }}>
           No inter-agent messages yet. Agent-to-agent coordination and engine notices for {agentName || 'this agent'} show up here.
