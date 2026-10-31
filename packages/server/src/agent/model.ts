@@ -8,7 +8,7 @@ import { createLogger } from '../logger.js';
 import { extractTextToolCalls } from './text-tool-fallback.js';
 import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
-import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
+import { classifyProviderError, classifyProviderErrorText, isRetryableProviderClass } from './provider-error.js';
 import {
   resolveStreamPatience, resolveTransportTimeouts, resolveDoomCeiling, resolvePrefillThroughput,
   STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, TRANSPORT_DEFAULT_TIMEOUT_MS,
@@ -1452,6 +1452,8 @@ async function callOllamaModel(
     let fullThinking = '';
     let accumulatedToolCalls: ToolCall[] = [];
     let doneReason: string | null = null;
+    let streamError: string | null = null; // 9605: Ollama reports a mid-reply failure as an `error` line
+    let sawDone = false;
     let inputTokens = 0;
     let outputTokens = 0;
 
@@ -1470,6 +1472,7 @@ async function callOllamaModel(
             function?: { name?: string; arguments?: unknown };
           }>;
         };
+        error?: unknown;
         done?: boolean;
         done_reason?: string;
         prompt_eval_count?: number;
@@ -1484,6 +1487,7 @@ async function callOllamaModel(
         return;
       }
 
+      if (typeof chunk.error === 'string' && chunk.error) { streamError = chunk.error; return; }
       const message = chunk.message;
       if (message) {
         // T72b claim 2, this transport's spelling of it: the moment this box proves it can
@@ -1547,6 +1551,7 @@ async function callOllamaModel(
       }
 
       if (chunk.done === true) {
+        sawDone = true;
         doneReason = chunk.done_reason ?? null;
         if (typeof chunk.prompt_eval_count === 'number') inputTokens = chunk.prompt_eval_count;
         if (typeof chunk.eval_count === 'number') outputTokens = chunk.eval_count;
@@ -1572,6 +1577,12 @@ async function callOllamaModel(
     // reader, which swallows its own abort and returns, an aborted `fetch` body errors the
     // stream, so `reader.read()` always rejects into the catch below. There is no silent exit
     // from this loop to guard.
+    // 9605: a reply is finished only when Ollama said so (`done: true`); an error line or a stream
+    // that just stops is a failure, never a short answer.
+    if (streamError !== null || !sawDone) {
+      const msg = `Ollama call failed: ${streamError ?? 'the reply stream ended before Ollama said it was finished'}`;
+      throw new AgentError(msg, agentId, { code: 'MODEL_CALL_FAILED', retryable: true, provider: classifyProviderErrorText(msg) });
+    }
     watchdog.finish();
     const latencyMs = Date.now() - startTime;
 
