@@ -960,6 +960,26 @@ function getModelName(modelId: string): string {
   } catch { return modelId; }
 }
 
+/**
+ * Run one report check inside a guard. If it throws, the report still gets built: the missing
+ * items are replaced by ONE warning that names the check (no stack, no row data; the reason is in
+ * the server log), so a failed check never reads as "all good". The failure item is never capped.
+ * Exported for harness-sections.ts.
+ */
+export function collect(label: string, fn: () => DiagnosticItem[]): DiagnosticItem[] {
+  try {
+    return fn();
+  } catch (err) {
+    logger.warn(`Healer check "${label}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    return [{
+      severity: 'warning',
+      code: 'COLLECTOR_FAILED',
+      title: `The ${label} check could not run`,
+      detail: `The ${label} part of the health report could not be built, so it is missing from this report. The reason is in the server log.`,
+    }];
+  }
+}
+
 // ── Main Compiler ──
 
 export function compileDiagnosticReport(): DiagnosticReport {
@@ -967,20 +987,20 @@ export function compileDiagnosticReport(): DiagnosticReport {
   // drown the report. Critical items are always preserved; warning/info
   // items get dropped first when the cap fires.
   const items: DiagnosticItem[] = [
-    ...capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies'),
-    ...capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest'),
-    ...capItemsByText(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance'),
-    ...capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health'),
-    ...capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health'),
-    ...capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health'),
-    ...getHarnessSections(),
-    ...capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health'),
-    ...capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats'),
-    ...capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage'),
-    ...capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget'),
-    ...capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check'),
-    ...capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback'),
-    ...getDecisionScoreItems(),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
+    ...collect('agent status', () => capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies')),
+    ...collect('error digest', () => capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest')),
+    ...collect('model performance', () => capItemsByText(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance')),
+    ...collect('context health', () => capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health')),
+    ...collect('tracker health', () => capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health')),
+    ...collect('tool health', () => capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health')),
+    ...getHarnessSections(),   // guarded one section at a time inside
+    ...collect('dream health', () => capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health')),
+    ...collect('nudge statistics', () => capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats')),
+    ...collect('provider outage', () => capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage')),
+    ...collect('budget', () => capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget')),
+    ...collect('update check', () => capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check')),
+    ...collect('automatic rollback', () => capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback')),
+    ...collect('decision scores', () => getDecisionScoreItems()),   // v3.5: one line per question the decision model shadows (uncapped: the owner reads every one)
   ];
 
   // Sort: critical first, then warning, then info
