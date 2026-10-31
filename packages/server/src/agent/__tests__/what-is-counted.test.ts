@@ -73,8 +73,9 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../v2/counterparty.js';
 import { humanAsksOpen, selfWakeStandDown } from '../../work/work-reaper.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const SRC = path.join(__dirname, '..', '..');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
@@ -94,7 +95,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

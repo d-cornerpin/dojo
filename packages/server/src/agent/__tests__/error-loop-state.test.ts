@@ -38,8 +38,9 @@ import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, errorLoopPauses,
   ERROR_LOOP_THRESHOLD, ERROR_LOOP_WINDOW_MS,
 } from '../error-loop-state.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const OTHER = 'other';
 const T0 = 1_700_000_000_000;
 
@@ -49,7 +50,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare("INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'idle'), (?, 'Other', 'idle')")
+  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, '${FX.n4}', 'idle'), (?, 'Other', 'idle')`)
     .run(AGENT, OTHER);
 });
 

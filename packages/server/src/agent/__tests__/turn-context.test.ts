@@ -39,6 +39,7 @@ import {
   backgroundDrains, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
   turnContinuationCounts, statusHeartbeats, recoveryRunStreak,
 } from '../shared-state.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '..', '..');
@@ -169,7 +170,7 @@ beforeEach(() => {
 
 describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
   it('CENSUS: the bag holds exactly the classified fields and nothing else', () => {
-    const ctx = openTurnContext('zargo');
+    const ctx = openTurnContext(FXID.n4);
     expect(Object.keys(ctx).sort()).toEqual([...THE_TURN_OWNS, ...THE_DRIVER_CARRIES].sort());
   });
 
@@ -190,32 +191,32 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
   });
 
   it('a fresh bag starts empty — which is why no turn-entry clear survives', () => {
-    const first = openTurnContext('zargo');
+    const first = openTurnContext(FXID.n4);
     first.kind = 'a2a';
     first.turnNumber = 41;
-    noteTurnReceipt('zargo', 'r1');
-    addRecallBudgetUsed('zargo', 900);
+    noteTurnReceipt(FXID.n4, 'r1');
+    addRecallBudgetUsed(FXID.n4, 900);
 
-    const second = openTurnContext('zargo');
+    const second = openTurnContext(FXID.n4);
     expect(second).not.toBe(first);
     expect(second.kind).toBeUndefined();
     expect(second.turnNumber).toBeUndefined();
-    expect(getTurnReceipts('zargo')).toEqual([]);
-    expect(getRecallBudgetUsed('zargo')).toBe(0);
+    expect(getTurnReceipts(FXID.n4)).toEqual([]);
+    expect(getRecallBudgetUsed(FXID.n4)).toBe(0);
   });
 
   it('ONE CLEAR POINT: endTurnContext removes the bag, and reads answer "outside a turn"', () => {
-    const ctx = openTurnContext('zargo');
+    const ctx = openTurnContext(FXID.n4);
     ctx.root = { kind: 'ask', id: 'msg-1', sourceMessageId: 'msg-1', conversationId: 'conv-1' };
     ctx.turnNumber = 7;
     ctx.convKey = 'ck';
-    expect(turnContext('zargo')).toBeDefined();
+    expect(turnContext(FXID.n4)).toBeDefined();
 
-    endTurnContext('zargo');
+    endTurnContext(FXID.n4);
 
-    expect(turnContext('zargo')).toBeUndefined();
-    expect(openTurnContextAgents()).not.toContain('zargo');
-    expect(getWorkOriginForAgent('zargo', 'model'))
+    expect(turnContext(FXID.n4)).toBeUndefined();
+    expect(openTurnContextAgents()).not.toContain(FXID.n4);
+    expect(getWorkOriginForAgent(FXID.n4, 'model'))
       .toEqual({ kind: 'model', sourceMessageId: null, turn: null, convKey: null });
   });
 
@@ -223,25 +224,25 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
     // E-C1's contract, and flattening it is what bled an unrelated human conversation
     // into recall on engine/A2A turns. `undefined` = outside a turn (fall back to the
     // legacy heuristic), `null` = engine/A2A turn, a string = scope to it.
-    expect(turnConversationScope('zargo')).toBeUndefined();
+    expect(turnConversationScope(FXID.n4)).toBeUndefined();
 
-    const ctx = openTurnContext('zargo');
-    expect(turnConversationScope('zargo')).toBeUndefined();   // published nothing yet
+    const ctx = openTurnContext(FXID.n4);
+    expect(turnConversationScope(FXID.n4)).toBeUndefined();   // published nothing yet
 
     ctx.conversationId = null;
-    expect(turnConversationScope('zargo')).toBeNull();
+    expect(turnConversationScope(FXID.n4)).toBeNull();
 
     ctx.conversationId = 'conv-1';
-    expect(turnConversationScope('zargo')).toBe('conv-1');
+    expect(turnConversationScope(FXID.n4)).toBe('conv-1');
   });
 
   it('one agent\'s bag is not another\'s', () => {
-    const zargo = openTurnContext('zargo');
+    const zargo = openTurnContext(FXID.n4);
     zargo.kind = 'user';
-    openTurnContext('quilba');
-    expect(turnContext('quilba')!.kind).toBeUndefined();
-    endTurnContext('quilba');
-    expect(turnContext('zargo')!.kind).toBe('user');
+    openTurnContext(FXID.n5);
+    expect(turnContext(FXID.n5)!.kind).toBeUndefined();
+    endTurnContext(FXID.n5);
+    expect(turnContext(FXID.n4)!.kind).toBe('user');
   });
 
   it('outside a turn, per-turn recorders record nothing rather than a stale entry', () => {
@@ -259,7 +260,7 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
   it('the eighteen CROSS-TURN carriers survive endTurnContext', () => {
-    const A = 'zargo';
+    const A = FXID.n4;
     openTurnContext(A);
 
     // Six that live in `turn-state.ts` on purpose.

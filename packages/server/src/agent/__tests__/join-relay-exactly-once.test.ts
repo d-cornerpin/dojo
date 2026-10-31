@@ -68,8 +68,9 @@ import {
 import { joinDeliveryDetail } from '../../work/ask-settlement.js';
 import { JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND } from '../../work/join-drive.js';
 import { resolveCompilePendingJoins } from '../a2a-transport.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const PEER = 'dupworker';
 const CONV = 'conv-1';
 const DELEGATING_TURN = 4039;
@@ -190,7 +191,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Zargo', 'idle', '1970-01-01'), (?, 'DupWorker', 'idle', '1970-01-01')`,
+       (?, '${FX.n4}', 'idle', '1970-01-01'), (?, 'DupWorker', 'idle', '1970-01-01')`,
   ).run(AGENT, PEER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

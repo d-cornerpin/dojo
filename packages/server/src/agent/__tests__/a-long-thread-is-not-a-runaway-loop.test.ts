@@ -95,6 +95,7 @@ import {
 } from '../../work/store.js';
 import { deliverA2AMessage } from '../a2a-transport.js';
 import { REAPER_KINDS } from '../../work/work-reaper.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const SENDER = 'primary';
 const RECEIVER = 'worker';
@@ -177,7 +178,7 @@ beforeEach(() => {
   const db = new Database(':memory:');
   mockDb.current = db;
   schema(db);
-  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'active')`).run(SENDER);
+  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, '${FX.n4}', 'active')`).run(SENDER);
   db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, 'Maddy', 'active')`).run(RECEIVER);
   for (const k of ['debug', 'info', 'warn', 'error'] as const) log.calls[k].length = 0;
 });

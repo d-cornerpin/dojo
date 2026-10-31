@@ -88,6 +88,7 @@ import {
 import { callWithRetryAndFallback, type ModelCallInputs } from '../v2/steps/call-llm/model-call.js';
 import type { AgentTurnState } from '../v2/state.js';
 import { AgentError } from '../errors.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // Real sockets and cases that deliberately wait out a bound. Comfortably inside the
 // default 5 s, but the margin is stated rather than assumed.
@@ -236,7 +237,7 @@ const seedOpenAI = (firstChunkMs: number | null, idleMs: number | null): void =>
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -256,7 +257,7 @@ const seedAnthropic = (firstChunkMs: number | null, idleMs: number | null): void
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-anth', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-anth', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -270,7 +271,7 @@ const call = (
   abortSignal?: AbortSignal,
   onChunk?: (chunk: string) => void,
 ): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId,
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
@@ -362,7 +363,7 @@ describe('T65b — the OpenAI seam', () => {
 // ════════════════════════════════════════════════════════════════════════════════════
 describe('T65b — the one-retry grant becomes reachable for a mid-stream stall', () => {
   const inputs = (): ModelCallInputs => ({
-    agentId: 'zargo',
+    agentId: FXID.n4,
     turnCtx: { phoneStreamBuffer: '', phoneStreamFlushedAny: false } as unknown as ModelCallInputs['turnCtx'],
     turnNumber: 1,
     messageId: 'msg-1',

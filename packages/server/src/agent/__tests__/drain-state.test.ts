@@ -31,8 +31,9 @@ import {
   bumpDrainLadder, clearDrainLadder, clearAllDrainLadders, drainLadder,
   DRAIN_LADDER_UNREADABLE,
 } from '../drain-state.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const A = 'zargo';
+const A = FXID.n4;
 const B = 'ana';
 
 beforeEach(() => {
@@ -43,7 +44,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01'), (?, 'Ana', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01'), (?, 'Ana', 'idle', '1970-01-01')`,
   ).run(A, B);
 });
 
@@ -98,7 +99,7 @@ describe('THE POINT: the ladder survives the process', () => {
     runMigrations();
     mockDb.current.pragma('foreign_keys = ON');
     mockDb.current.prepare(
-      `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+      `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
     ).run(A);
 
     expect(bumpDrainLadder(A, 'unserved_wake', 'w:1')).toBe(0);

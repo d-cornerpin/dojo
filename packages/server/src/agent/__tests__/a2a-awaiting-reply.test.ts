@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { deliverA2AMessage } from '../a2a-transport.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -159,7 +160,7 @@ beforeEach(() => {
       updated_at INTEGER
     );
   `);
-  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(SENDER, 'Zargo');
+  db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(SENDER, FX.n4);
   db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(RECEIVER, 'Maddy');
   mockDb.current = db;
 });

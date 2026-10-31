@@ -75,6 +75,7 @@ import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -134,12 +135,12 @@ const seedProvider = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-ollama',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are a local model.',

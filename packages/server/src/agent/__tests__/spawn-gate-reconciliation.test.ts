@@ -42,6 +42,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { PermissionManifest } from '@dojo/shared';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -62,7 +63,7 @@ vi.mock('../../config/platform.js', () => ({
   isImaginerAgent: () => false,
   isDreamerAgent: () => false,
   getPrimaryAgentId: () => 'primary',
-  getPrimaryAgentName: () => 'Zargo',
+  getPrimaryAgentName: () => FX.n4,
   getHealerAgentId: () => 'healer',
   getDreamerAgentId: () => 'dreamer',
   getImaginerAgentId: () => 'imaginer',
@@ -121,7 +122,7 @@ function seed(parentPermissions: string): void {
   `);
   db.prepare(
     `INSERT INTO agents (id, name, model_id, spawn_depth, status, created_by, permissions)
-     VALUES ('parent', 'Parent', 'deepseek', 1, 'idle', 'zargo', ?)`,
+     VALUES ('parent', 'Parent', 'deepseek', 1, 'idle', '${FXID.n4}', ?)`,
   ).run(parentPermissions);
   mockDb.current = db;
 }

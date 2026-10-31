@@ -85,8 +85,9 @@ import {
   landPiece, joinPieces, dueJoins, dueJoinsUnderClosedParent,
 } from '../../work/store.js';
 import { sweepExpiredJoins } from '../a2a-transport.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T1 = 'thread-aaaaaaaa-1111';
 const T2 = 'thread-bbbbbbbb-2222';
 
@@ -175,7 +176,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Zargo', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01'),
+       (?, '${FX.n4}', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01'),
        ('bo', 'Bo', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(

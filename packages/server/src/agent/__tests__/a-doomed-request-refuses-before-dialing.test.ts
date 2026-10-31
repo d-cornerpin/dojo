@@ -96,6 +96,7 @@ import { callModel, clearClientCache, type ModelCallResult } from '../model.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_FIRST_CHUNK_TIMEOUT_MS } from '../stream-patience.js';
 import { PRE_DIAL_REFUSAL_PHRASE } from '../model.js';
 import { AgentError } from '../errors.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -170,7 +171,7 @@ const seedOpenAICompatible = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -192,7 +193,7 @@ const seedOpenAICompatibleUndeclaredFirstChunk = (prefillTokensPerSec: number | 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -209,13 +210,13 @@ const seedAnthropicDirect = (prefillTokensPerSec: number | null): void => {
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
   setProviderCredential('anthropic', 'sk-ant-fake-test-key', 'api_key');
 };
 
 const callOpenAICompatible = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-local',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are a local model.',
@@ -223,7 +224,7 @@ const callOpenAICompatible = (message: string): Promise<ModelCallResult> => call
 });
 
 const callAnthropicDirect = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-anthropic',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are Claude.',
@@ -392,7 +393,7 @@ const seedOpenAICompatibleMeasuredOnly = (
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
@@ -552,7 +553,7 @@ const seedAnthropicDirectMeasuredOnly = (measuredTokensPerSec: number | null): v
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-anthropic', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
   setProviderCredential('anthropic', 'sk-ant-fake-test-key', 'api_key');
 };

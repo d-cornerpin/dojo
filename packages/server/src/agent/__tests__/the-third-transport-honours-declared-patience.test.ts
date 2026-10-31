@@ -35,7 +35,7 @@
 //
 // WHY IT WAS DELETED: a flat total-duration ceiling cannot tell a healthy 13 tok/s generation at
 // t=301s from a dead socket, and for three consecutive nights it called the first one the second
-// — killing Zargo's memory-summarize at 300,001ms and reporting "no data from provider for too
+// — killing FX.n4's memory-summarize at 300,001ms and reporting "no data from provider for too
 // long" about a stream that had been emitting continuously (ticket-ollama-flat-ceiling.md).
 //
 // ── WHY §A/§B ARE STILL TIMING-FREE (NO CASE WAITS OUT 300 S) ──
@@ -131,6 +131,7 @@ import {
   type StreamPatience,
 } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -159,7 +160,7 @@ const FAKE_DOJO = path.join((process.env.DOJO_TEST_HOME_ROOT || realOs.tmpdir())
 //
 // `drip`, T83b: the shape the whole ticket is about — a HEALTHY stream that simply takes a long
 // time. `dripCount` content chunks `dripGapMs` apart, then `done`. Every gap is small; the TOTAL
-// is many multiples of it. That is Zargo's 13 tok/s summarize in miniature, and the only shape
+// is many multiples of it. That is FX.n4's 13 tok/s summarize in miniature, and the only shape
 // that can tell a per-chunk watchdog from a total-duration ceiling — they agree on every other
 // case in this file.
 const behaviour: {
@@ -246,12 +247,12 @@ const seedProvider = (firstChunkMs: number | null, idleMs: number | null): void 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-ollama',
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
@@ -285,7 +286,7 @@ const streamingCall = (
   onChunk: (c: string) => void,
   abortSignal?: AbortSignal,
 ): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-ollama',
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
@@ -406,7 +407,7 @@ describe('T79e §B — the real call attaches the derived dispatcher, or none fo
 // ════════════════════════════════════════════════════════════════════════════════════
 // §C (T83b) — THE DEFECT ITSELF: A HEALTHY STREAM OUTLIVES ANY TOTAL-DURATION CEILING.
 //
-// Zargo's nightly memory-summarize failed three consecutive nights at elapsed 300,001–300,030ms
+// FX.n4's nightly memory-summarize failed three consecutive nights at elapsed 300,001–300,030ms
 // on a provider row that declares NOTHING — the flat `TRANSPORT_DEFAULT_TIMEOUT_MS`. The box was
 // healthy: sibling summarize calls the same nights ran 3,319-in/2,801-out in 211s, i.e. ~13
 // tok/s, and the failed job simply needed more than 300s of TOTAL runtime. A wall clock on the
@@ -696,12 +697,12 @@ const seedOllamaThroughput = (
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-ollama', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const callWith = (message: string): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-ollama',
   messages: [{ role: 'user', content: message }],
   systemPrompt: 'You are a local model.',

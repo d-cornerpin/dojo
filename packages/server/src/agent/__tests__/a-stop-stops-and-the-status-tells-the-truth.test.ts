@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // T83 — A STOP STOPS, AND THE STATUS TELLS THE TRUTH.
 //
-// THE DEFECT, re-derived from the dev box's own log (`~/.dojo/logs`, Zorbik
+// THE DEFECT, re-derived from the dev box's own log (`~/.dojo/logs`, FX.n8
 // `a504e5c9`, 2026-09-21) rather than from the triage report's prose:
 //
 //   04:22:16.150  OpenAI call completed          ← the TURN's own call ends,
@@ -59,6 +59,7 @@ import * as s from '../shared-state.js';
 import { stopAgent } from '../runtime.js';
 import { engineSources } from '../v2/__tests__/engine-sources.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from '../stuck-thresholds.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -88,7 +89,7 @@ function seedAgent(status: string): void {
     );
   `);
   mockDb.current!.prepare(
-    "INSERT OR REPLACE INTO agents (id, name, status, config, updated_at) VALUES (?, 'Zorbik', ?, '{}', datetime('now'))",
+    `INSERT OR REPLACE INTO agents (id, name, status, config, updated_at) VALUES (?, '${FX.n8}', ?, '{}', datetime('now'))`,
   ).run(AGENT, status);
 }
 

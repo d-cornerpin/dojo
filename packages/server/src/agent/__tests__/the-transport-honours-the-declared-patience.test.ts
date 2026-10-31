@@ -110,6 +110,7 @@ import {
 } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
 import { configRouter } from '../../gateway/routes/config.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // Real sockets and two cases that deliberately wait out a bound.
 vi.setConfig({ testTimeout: 30_000 });
@@ -194,12 +195,12 @@ const seedProvider = (firstChunkMs: number | null, idleMs: number | null): void 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-local',
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',

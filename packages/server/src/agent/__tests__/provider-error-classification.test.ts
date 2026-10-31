@@ -39,6 +39,7 @@ import { errorRecoveryClassifier } from '../v2/classifiers/errors.js';
 import { AgentError } from '../errors.js';
 import { classifyToolResult, toolErrorCodeForThrow, toolWasBlocked } from '../tool-outcome.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** An `Anthropic.APIError` as the SDK hands it over: status, parsed body, headers. */
 function anthropicApiError(
@@ -215,7 +216,7 @@ describe('provider errors — the facts ride the error', () => {
       anthropicApiError(429, 'rate_limit_error', 'slow down'),
     );
     // The message deliberately says nothing a substring search could use.
-    const err = new AgentError('Model call failed: slow down', 'zargo', {
+    const err = new AgentError('Model call failed: slow down', FXID.n4, {
       code: 'MODEL_CALL_FAILED', retryable: true, provider: facts,
     });
     expect(providerClassOf(err)).toBe('rate_limit');
@@ -250,7 +251,7 @@ describe('T81a — a declared-patience exhaustion is not a network blip', () => 
   const declaredPatienceError = (): AgentError => new AgentError(
     'model first-chunk timeout: no data from provider for too long (elapsed 300ms; ' +
     '~92000 estimated prompt tokens against a declared 300ms first-chunk patience)',
-    'zargo',
+    FXID.n4,
     { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false },
   );
 
@@ -290,7 +291,7 @@ describe('T81a — a declared-patience exhaustion is not a network blip', () => 
     // stall AFTER content started is a genuine transient signal, not a size-driven one.
     const err = new AgentError(
       'model stream idle timeout: no data from provider for too long (elapsed 300ms)',
-      'zargo', { code: 'stream_idle_timeout', retryable: true },
+      FXID.n4, { code: 'stream_idle_timeout', retryable: true },
     );
     expect(classifyProviderError(err).class).toBe('network');
   });
@@ -335,7 +336,7 @@ describe('the tool seam — `ToolErrorCode` gains a structured population, and o
 
   it('facts CARRIED by an AgentError are honoured at the tool seam too', () => {
     const facts = classifyProviderError(anthropicApiError(429, 'rate_limit_error', 'x'));
-    const err = new AgentError('Tool execution failed', 'zargo', {
+    const err = new AgentError('Tool execution failed', FXID.n4, {
       code: 'MODEL_CALL_FAILED', provider: facts,
     });
     expect(toolErrorCodeForThrow(err)).toBe('RATE_LIMITED');

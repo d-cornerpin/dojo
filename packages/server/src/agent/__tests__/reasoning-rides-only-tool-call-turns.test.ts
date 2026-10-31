@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
 import { buildOpenAIMessages } from '../model.js';
 import { contractForModel, type ModelContract } from '../model-contract.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const REPLAYS: ModelContract = contractForModel({ providerBaseUrl: 'https://api.deepseek.com', apiModelId: 'deepseek-v4-flash' });
 const NO_REPLAY: ModelContract = contractForModel({ providerBaseUrl: 'https://openrouter.ai/api', apiModelId: 'minimax/minimax-m2.7' });
@@ -34,7 +35,7 @@ const build = (
   msgs: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   contract: ModelContract,
 ): Promise<Array<Record<string, unknown>>> =>
-  buildOpenAIMessages('SYS', msgs, 'zargo', contract, '') as unknown as Promise<Array<Record<string, unknown>>>;
+  buildOpenAIMessages('SYS', msgs, FXID.n4, contract, '') as unknown as Promise<Array<Record<string, unknown>>>;
 
 describe('HL8 (C) — the drop-on-plain replay rule', () => {
   it('RED 1 — a plain STRING-content assistant message carries no reasoning_content key at all', async () => {

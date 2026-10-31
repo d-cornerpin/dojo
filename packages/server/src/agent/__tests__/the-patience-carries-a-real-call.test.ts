@@ -71,6 +71,7 @@ import { clearSecretsCache } from '../../config/loader.js';
 import { callModel, clearClientCache, STREAM_IDLE_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_ERROR, STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, type ModelCallResult } from '../model.js';
 import { resolveStreamPatience, DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE } from '../stream-patience.js';
 import { AgentError } from '../errors.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 // Real sockets, a real migration chain per case, and two cases that deliberately wait out a
 // bound. Well inside the default 5 s per case, but the margin is stated rather than assumed.
@@ -177,12 +178,12 @@ const seedProvider = (firstChunkMs: number | null, idleMs: number | null): void 
   `).run();
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{}', datetime('now'), datetime('now'))
   `).run();
 };
 
 const call = (): Promise<ModelCallResult> => callModel({
-  agentId: 'zargo',
+  agentId: FXID.n4,
   modelId: 'm-local',
   messages: [{ role: 'user', content: 'Is it done?' }],
   systemPrompt: 'You are a local model.',
