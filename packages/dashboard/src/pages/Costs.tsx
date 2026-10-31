@@ -533,6 +533,7 @@ export const Costs = () => {
   const [budgets, setBudgets] = useState<BudgetData | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const { subscribe } = useWebSocket();
   const latestLoad = useRef(0);
 
@@ -545,7 +546,14 @@ export const Costs = () => {
         api.getAgents(),
       ]);
       if (mine !== latestLoad.current) return;
-      if (summaryRes.ok) setSummary(summaryRes.data as CostSummary);
+      if (summaryRes.ok) {
+        setSummary(summaryRes.data as CostSummary);
+        setLoadError(null);
+      } else {
+        // A failed answer must not leave the old period's figures under the new tab.
+        setSummary(null);
+        setLoadError(summaryRes.error);
+      }
       if (budgetRes.ok) {
         const bd = budgetRes.data as Record<string, unknown>;
         const globalRaw = bd.global as Record<string, unknown> | null;
@@ -659,15 +667,17 @@ export const Costs = () => {
       {/* Pricing-index sync status — boot-time + on-demand LiteLLM refresh */}
       <PricingSyncBadge />
 
+      {loadError && <div className="note--warn">Could not load the costs: {loadError}</div>}
+
       {/* Summary stat cells */}
       <div className="stats">
         <div className="tile anim" style={{ '--ci': '40ms' } as React.CSSProperties}>
           <div className="stat__label">Total Spend</div>
-          <div className="stat__value">{usd(totalSpend)}</div>
+          <div className="stat__value">{loadError ? '--' : usd(totalSpend)}</div>
         </div>
         <div className="tile anim" style={{ '--ci': '70ms' } as React.CSSProperties}>
           <div className="stat__label">Daily Average</div>
-          <div className="stat__value">{usd(dailyAvg)}</div>
+          <div className="stat__value">{loadError ? '--' : usd(dailyAvg)}</div>
         </div>
         <div className="tile anim" style={{ '--ci': '100ms' } as React.CSSProperties}>
           <div className="stat__label">Top Model</div>
