@@ -64,13 +64,23 @@ if [ "$PRINT" != 1 ]; then
   # Every step below leaves a platform folder in place or says plainly why not, and every exit path
   # loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
   # owner if that build will not run; with no folder it runs this script with --heal).
-  # Returns 1 and names the service when a load fails.
+  # ONE RULE for "is this service up": launchd's own list, not the exit status of `launchctl load`
+  # (load's exit status says nothing reliable about whether the job is now running).
+  # start.sh applies the same rule. The list is captured first and read from a here-string, so a
+  # short-read `grep -q` can never turn into a false "missing" under pipefail.
+  service_loaded() {
+      local listing
+      listing="$(launchctl list 2>/dev/null)"
+      grep -Eq "(^|[[:space:]])com\.dojo\.$1\$" <<<"$listing"
+  }
+  # Returns 1 and names the service when launchd does not list it after the load.
   reload_services() {
       local rc=0 svc
       services_down=0
       for svc in platform watchdog; do
-          if ! launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null; then
-              echo "   The $svc service did not start (launchctl load failed for com.dojo.$svc.plist)."
+          launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null
+          if ! service_loaded "$svc"; then
+              echo "   The $svc service did not start (launchd does not list com.dojo.$svc after the load)."
               rc=1
           fi
       done

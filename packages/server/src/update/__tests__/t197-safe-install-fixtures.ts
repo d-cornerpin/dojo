@@ -60,7 +60,7 @@ export function makeBox(prefix: string): Box {
   fs.mkdirSync(path.join(home, 'Library', 'LaunchAgents'), { recursive: true });
   fs.mkdirSync(dojo, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\necho "$@" >> "${home}/launchctl.log"\nexit 0\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/sh\ncase "$1" in list) printf '1\\t0\\tcom.dojo.platform\\n-\\t0\\tcom.dojo.watchdog\\n'; exit 0;; esac\necho "$@" >> "${home}/launchctl.log"\nexit 0\n`, { mode: 0o755 });
   // The fake npm. NPM_MODE: ok | fail | enospc | nonative | kill (SIGKILLs the installer mid-run).
   fs.writeFileSync(path.join(bin, 'npm'), [
     '#!/bin/sh',

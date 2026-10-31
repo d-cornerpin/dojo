@@ -165,7 +165,10 @@ echo ""
 # positive refuses. Being wrong in the cautious direction costs one `stop.sh`; being wrong
 # the other way costs the database.
 LIVE=""
-if launchctl list 2>/dev/null | grep -q 'com\.dojo\.platform'; then
+# Read launchd's list into a variable first: under pipefail a `launchctl list | grep -q` can be cut
+# short by the early exit and report "not loaded" for a loaded service, the unsafe direction here.
+LAUNCHD_LIST="$(launchctl list 2>/dev/null)"
+if grep -Eq '(^|[[:space:]])com\.dojo\.platform$' <<<"$LAUNCHD_LIST"; then
     LIVE="the Dojo platform service is loaded in launchd"
 elif lsof -nP -iTCP:"$PORT" 2>/dev/null | grep -q LISTEN; then
     LIVE="something is already listening on port $PORT"

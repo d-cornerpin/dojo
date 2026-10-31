@@ -60,7 +60,7 @@ beforeEach(() => {
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(
     path.join(binDir, 'launchctl'),
-    `#!/bin/sh\necho "$@" >> "${path.join(home, 'launchctl.log')}"\nexit 0\n`,
+    `#!/bin/sh\ncase "$1" in list) printf '1\\t0\\tcom.dojo.platform\\n-\\t0\\tcom.dojo.watchdog\\n'; exit 0;; esac\necho "$@" >> "${path.join(home, 'launchctl.log')}"\nexit 0\n`,
     { mode: 0o755 },
   );
 });
