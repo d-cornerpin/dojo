@@ -1171,6 +1171,9 @@ export async function processInboundIMessage(
 
 async function pollMessages(): Promise<void> {
   if (approvedSenders.length === 0) return;
+  // The list as it stood when this poll began: a stop (which empties the live list) or a quick
+  // restart mid-batch must not make this poll judge its remaining texts against a different list.
+  const sendersThisPoll = approvedSenders;
   if (pollInFlight) return;
   pollInFlight = true;
 
@@ -1185,8 +1188,8 @@ async function pollMessages(): Promise<void> {
       // each row against findSafeSenderByAddress below so substring false-
       // matches (e.g. group-chat synthetic IDs that happen to contain a
       // safe sender's digits) are dropped before reaching the agent.
-      const placeholders = approvedSenders.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
-      const likeParams = approvedSenders.map(s => `%${s.address}%`);
+      const placeholders = sendersThisPoll.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
+      const likeParams = sendersThisPoll.map(s => `%${s.address}%`);
 
       // associated_message_type / item_type / guid are pulled alongside the
       // existing columns (one query, not a second read) so the contentless-
@@ -1261,6 +1264,10 @@ async function pollMessages(): Promise<void> {
         // capped-in stale rows are detected per-row below and ingested as notes.
       }
       for (const msg of messages) {
+        if (!pollTimer) {
+          logger.info('iMessage poll cut short: the bridge was stopped mid-batch; remaining texts stay for the next start');
+          break;
+        }
         // ── Offline-replay handling (P5c): ingest-as-note or capped skip ──
         // Placed BEFORE the attachment gate so a beyond-cap stale message never
         // triggers attachment copying. When the age can't be determined (null),
@@ -1370,7 +1377,7 @@ async function pollMessages(): Promise<void> {
         // actually matches a saved safe-sender record (addressesMatch is
         // stricter than SQL substring). Drops group-chat synthetic IDs
         // and substring false-matches.
-        if (!findSafeSenderByAddress(approvedSenders, sender)) {
+        if (!findSafeSenderByAddress(sendersThisPoll, sender)) {
           logger.warn('iMessage dropped: chat_identifier matched SQL filter but no safe-sender record', {
             chatIdentifier: sender,
             rowid: msg.ROWID,
