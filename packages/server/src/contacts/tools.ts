@@ -10,6 +10,7 @@ import {
   deleteContact,
   describeContacts,
   findMatchingContact,
+  countContactsNamed,
   getContactByIdOrPrefix,
   listContacts,
   searchContacts,
@@ -109,17 +110,32 @@ export function executeContactRemember(agentId: string, args: Record<string, unk
     tags: asStringArray(args.tags),
   };
   const explicitId = typeof args.contact_id === 'string' ? args.contact_id : undefined;
+  const hasAddress = [input.emails, input.phones, input.imessageHandles].some((l) => (l?.length ?? 0) > 0);
   const match = findMatchingContact({
     id: explicitId,
     emails: input.emails,
     phones: input.phones,
     imessageHandles: input.imessageHandles,
     displayName: input.displayName,
-  });
+  }, { allowNameMatch: !hasAddress });
+  if (!hasAddress && !explicitId && input.displayName && countContactsNamed(input.displayName) > 1) {
+    return `More than one contact is named "${input.displayName.trim()}". Nothing was saved. Pass contact_id, or an email, phone or iMessage handle, to say which one.`;
+  }
   if (match) {
-    const updated = updateContact(match.id, input, agentId, 'append');
+    // Remembering only adds: a name, company or role already on file is kept, not overwritten.
+    const kept: string[] = [];
+    const patch: ContactInput = { ...input };
+    for (const k of ['displayName', 'preferredName', 'company', 'role'] as const) {
+      const have = match[k];
+      if (patch[k] !== undefined && have && have.trim() !== '') {
+        if (String(patch[k]).trim().toLowerCase() !== have.trim().toLowerCase()) kept.push(`${k} "${have}"`);
+        delete patch[k];
+      }
+    }
+    const updated = updateContact(match.id, patch, agentId, 'append');
     if (!updated) return `Error: matched existing contact ${match.id} but update failed.`;
-    return `Contact updated (id=${updated.id.slice(0, 8)}). New observations appended to "${updated.displayName}".`;
+    const note = kept.length > 0 ? ` Kept the existing ${kept.join(', ')}; use contact_update to change it.` : '';
+    return `Contact updated (id=${updated.id.slice(0, 8)}). New observations appended to "${updated.displayName}".${note}`;
   }
   if (!input.displayName) return 'Error: display_name is required when creating a new contact.';
   try {

@@ -197,7 +197,8 @@ export function describeContacts(): { total: number; topTags: Array<{ tag: strin
  * Order of precedence: explicit id > email match > phone match >
  * imessage handle match > exact display name match. Used by the
  * remember verb so the agent can append observations to the right
- * record instead of creating duplicates.
+ * record instead of creating duplicates. `allowNameMatch: false` turns the
+ * name fallback off (a shared name alone does not make two people one).
  */
 export function findMatchingContact(input: {
   id?: string;
@@ -205,7 +206,7 @@ export function findMatchingContact(input: {
   phones?: readonly string[];
   imessageHandles?: readonly string[];
   displayName?: string;
-}): ContactRecord | null {
+}, opts: { allowNameMatch?: boolean } = {}): ContactRecord | null {
   const db = getDb();
   if (input.id) {
     const byId = getContactById(input.id);
@@ -232,13 +233,19 @@ export function findMatchingContact(input: {
   if (byPhone) return byPhone;
   const byIm = tryAddrMatch('imessage_handles', input.imessageHandles);
   if (byIm) return byIm;
-  if (input.displayName) {
+  if (input.displayName && opts.allowNameMatch !== false) {
     const row = db
       .prepare('SELECT * FROM contacts WHERE LOWER(display_name) = LOWER(?) LIMIT 1')
       .get(input.displayName.trim()) as ContactRow | undefined;
     if (row) return rowToRecord(row);
   }
   return null;
+}
+
+/** How many contacts carry exactly this display name (case-insensitive). */
+export function countContactsNamed(displayName: string): number {
+  const row = getDb().prepare('SELECT COUNT(*) AS n FROM contacts WHERE LOWER(display_name) = LOWER(?)').get(displayName.trim()) as { n: number };
+  return row.n;
 }
 
 // ── Writes ──
