@@ -99,7 +99,6 @@ export async function surfaceStrandedAttachments(
       // iMessage, send the FILES (with the caption on the first) to them directly so
       // a file they asked for actually reaches their channel, not just the dashboard.
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-        let fileSendFailed = false;
         try {
           // Design ruling 13: this is the SIXTH outbound arm — the one that does not go
           // through `channel-push.ts`'s single derivation, because it runs after the
@@ -110,20 +109,12 @@ export async function surfaceStrandedAttachments(
           const captionOut = redactHandedCredentials(agentId, captionText);
           // The helper also tells the agent (so its reply does not claim the file arrived).
           const { textFilesToRequester } = await import('../text-files-to-requester.js');
-          const allLanded = await textFilesToRequester(agentId, counterparty.senderId, stranded.attachments as Array<{ path?: string; filename?: string }>, captionOut);
-          if (!allLanded) fileSendFailed = true;
+          await textFilesToRequester(agentId, counterparty.senderId, stranded.attachments as Array<{ path?: string; filename?: string }>, captionOut);
         } catch (err) {
-          fileSendFailed = true;
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
         }
-        // A file that did not reach the requester is reported through the owner-notice door,
-        // not left to a log line. The dashboard copy above still holds the file.
-        if (fileSendFailed) {
-          try {
-            const { sendAlert } = await import('../../../../services/imessage-bridge.js');
-            void sendAlert('A file I prepared did not reach the person who asked for it. The file itself is still saved with your messages.', 'notice');
-          } catch { /* the notice is best effort; the dashboard copy stands */ }
-        }
+        // A file that did not reach the requester: the AGENT is told by textFilesToRequester and
+        // tells the person itself. The platform does not message the owner (C2, R1/R2).
       }
       state = advance(state, { lastAssistantTextForIM: captionText });
       noteTerminalAnswer(synthId, 'stranded files surfaced');

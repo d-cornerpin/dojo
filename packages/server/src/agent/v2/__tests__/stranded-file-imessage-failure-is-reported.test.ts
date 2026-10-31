@@ -1,5 +1,5 @@
 // When the end-of-turn net sends a stranded file to an iMessage requester and the send does not
-// land (it says no, or it throws), the owner is told through the existing owner-notice door.
+// land (it says no, or it throws), the agent is told (no owner alert: the agent tells the person).
 // A send that lands says nothing extra.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -43,8 +43,7 @@ describe('a stranded file that does not reach iMessage', () => {
   it('is reported when the send answers no', async () => {
     sendFileMock.mockResolvedValue(false);
     await run();
-    expect(sendAlertMock).toHaveBeenCalledTimes(1);
-    expect(sendAlertMock.mock.calls[0][1]).toBe('notice');
+    expect(sendAlertMock).not.toHaveBeenCalled();   // C2: the platform does not message the owner; the agent is told and tells the person
     // the agent is told too, naming the file, so its reply does not claim it arrived
     expect(noticeMock).toHaveBeenCalledTimes(1);
     expect(noticeMock.mock.calls[0][0].toAgentId).toBe('agent-1');
@@ -54,7 +53,7 @@ describe('a stranded file that does not reach iMessage', () => {
   it('is reported when the send throws', async () => {
     sendFileMock.mockRejectedValue(new Error('imsg down'));
     await run();
-    expect(sendAlertMock).toHaveBeenCalledTimes(1);
+    expect(sendAlertMock).not.toHaveBeenCalled();
     expect(noticeMock).toHaveBeenCalledTimes(1);
   });
 
