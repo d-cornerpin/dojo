@@ -73,7 +73,8 @@ export function countMemoriesOnOtherModels(): number {
 
 /** The owner card's words while memories still use a model that is no longer the embedding model. */
 export function embeddingSwitchWords(count: number): string {
-  return `The memory search model was changed. ${count} saved ${count === 1 ? 'memory still uses' : 'memories still use'} the old model, `
-    + 'so search may miss them until they are re-processed. New memories use the new model. '
-    + 'They were not re-processed automatically because the new model is a paid one.';
+  return `The memory search model was changed to a paid one. ${count} saved ${count === 1 ? 'memory still uses' : 'memories still use'} the old model, `
+    + 'so search will not find them until they are re-processed. '
+    + 'They were not re-processed automatically because that would spend your money. New memories use the new model. '
+    + 'Switching the memory search model to a local one re-processes them automatically, at no cost.';
 }

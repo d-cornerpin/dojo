@@ -10,9 +10,10 @@
 //     spend the owner's money without his say. He is told once, through the dashboard's existing
 //     persistent owner card (healer/owner-notices.ts, key `embedding-switch`: it is re-derived on every dashboard
 //     load and ends once no memory is left on the old model), how many memories still use the old model and
-//     that search may miss them until they are re-processed.
+//     that search will not find them until they are re-processed, and that switching to a local model re-processes them automatically.
 //
-// The owner's own backfill request (POST /embeddings/backfill) re-processes them on demand.
+// The way to re-process them is to switch the memory search model to a local one (no agent tool or button
+// re-processes them on request; the owner's own POST /embeddings/backfill route also does, with no screen of its own).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';

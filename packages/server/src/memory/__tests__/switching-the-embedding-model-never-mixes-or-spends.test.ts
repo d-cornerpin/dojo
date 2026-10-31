@@ -144,7 +144,8 @@ describe('switching to a PAID model', () => {
     expect(standing()).toHaveLength(1);
     expect(standing()[0].words).toMatch(/4 saved memories still use the old model/);
     expect(String(notices()[0].error)).toMatch(/4 saved memories still use the old model/);
-    expect(String(notices()[0].error)).toMatch(/search may miss them until they are re-processed/);
+    expect(String(notices()[0].error)).toMatch(/Switching the memory search model to a local one re-processes them automatically/);
+    expect(String(notices()[0].error)).toMatch(/search will not find them until they are re-processed/);
     // Saving the same setting again is not a switch: no second notice.
     setEmbeddingConfig({ model: 'big-hosted' });
     await new Promise((r) => setTimeout(r, 200));
