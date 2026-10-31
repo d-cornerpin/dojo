@@ -115,6 +115,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         summary: { type: 'string', description: 'Alias for `title` (matches Google Calendar field name; accepted for cross-provider portability).' },
         start: { type: 'string', description: "Start datetime (ISO 8601, e.g., '2026-03-25T10:00:00')" },
         end: { type: 'string', description: 'End datetime (ISO 8601)' },
+        timezone: { type: 'string', description: "Optional IANA timezone (e.g. 'America/Los_Angeles') applied to `start`/`end`. Defaults to the host timezone." },
         description: { type: 'string', description: 'Event description' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' },
         location: { type: 'string', description: 'Event location' },
@@ -136,6 +137,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         summary: { type: 'string', description: 'Alias for `title`.' },
         start: { type: 'string', description: 'New start datetime' },
         end: { type: 'string', description: 'New end datetime' },
+        timezone: { type: 'string', description: "Optional IANA timezone (e.g. 'America/Los_Angeles') applied to `start`/`end`. Defaults to the host timezone." },
         description: { type: 'string', description: 'New description' },
         calendar_id: { type: 'string', description: 'Calendar to target. Two forms: (1) a calendar UUID from calendar_list_ms; (2) an email address for direct delegate access to a shared calendar (e.g., "owner@example.com"). Defaults to your default calendar.' },
       },
@@ -1183,7 +1185,12 @@ export async function executeMicrosoftWriteTool(
     }
 
     case 'calendar_create_ms': {
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const tz = (typeof args.timezone === 'string' && args.timezone.trim()) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      // Only a caller-named zone needs the check; the host zone is always valid.
+      if (typeof args.timezone === 'string' && args.timezone.trim()) {
+        try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); }
+        catch { return `Error: "${tz}" is not a time zone name I recognise; use an IANA name such as America/Los_Angeles.`; }
+      }
       const calendarId = args.calendar_id as string | undefined;
       // Accept title under any of the three aliases. Pre-fix only `title`
       // was honored, so a model that knew Graph used `subject` and passed
@@ -1218,7 +1225,12 @@ export async function executeMicrosoftWriteTool(
 
     case 'calendar_update_ms': {
       const eventId = encodeURIComponent(args.event_id as string);
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const tz = (typeof args.timezone === 'string' && args.timezone.trim()) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      // Only a caller-named zone needs the check; the host zone is always valid.
+      if (typeof args.timezone === 'string' && args.timezone.trim()) {
+        try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); }
+        catch { return `Error: "${tz}" is not a time zone name I recognise; use an IANA name such as America/Los_Angeles.`; }
+      }
       const calendarId = args.calendar_id as string | undefined;
       const resolvedTitle = (args.title ?? args.subject ?? args.summary) as string | undefined;
       const patch: Record<string, unknown> = {};
