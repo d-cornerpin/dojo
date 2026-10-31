@@ -155,7 +155,11 @@ fi
 
 # Copy watchdog
 if [[ -d "$SCRIPT_DIR/watchdog" ]]; then
-    rsync -a "$SCRIPT_DIR/watchdog/" "$DOJO_DIR/watchdog/"
+    if ! rsync -a "$SCRIPT_DIR/watchdog/" "$DOJO_DIR/watchdog/"; then
+        echo "❌ The watchdog (the part that repairs Dojo if an update goes wrong) could not be copied into $DOJO_DIR/watchdog."
+        echo "   Dojo was not started. Check that the disk is not full, then run the installer again."
+        exit 1
+    fi
 fi
 # Stamp the watchdog version marker (ships inside platform/watchdog-dist) beside the
 # installed watchdog so the platform's boot-time self-refresh sees a fresh install as
@@ -175,7 +179,12 @@ chmod +x "$DOJO_DIR/scripts/"*.sh
 # Watchdog deps
 if [[ -f "$DOJO_DIR/watchdog/package.json" ]]; then
     cd "$DOJO_DIR/watchdog"
-    npm ci --production 2>/dev/null || npm install --production
+    if ! { npm ci --production 2>/dev/null || npm install --production; }; then
+        echo "❌ The watchdog's supporting files could not be installed (the reason is above)."
+        echo "   The watchdog repairs Dojo if an update goes wrong, so the install is stopped and Dojo was not started."
+        echo "   Check your internet connection and the disk space, then run the installer again."
+        exit 1
+    fi
 fi
 
 # ── Generate secrets ──
