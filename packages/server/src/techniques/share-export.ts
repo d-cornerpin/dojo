@@ -17,6 +17,7 @@ import { Readable, PassThrough } from 'node:stream';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getTechnique } from './store.js';
+import { insideTechniqueDir } from './inside-folder.js';
 import { scrubFiles, isBinaryFile, type Redaction } from './scrub.js';
 import { callModel } from '../agent/model.js';
 import { getTrainerAgentId } from '../config/platform.js';
@@ -76,8 +77,9 @@ interface FileEntry {
  * TECHNIQUE.md + version history — including them would bloat the
  * package and leak old un-scrubbed content).
  */
-function collectTechniqueFiles(dirPath: string): FileEntry[] {
+function collectTechniqueFiles(dirPath: string): { entries: FileEntry[]; skippedLinks: string[] } {
   const entries: FileEntry[] = [];
+  const skippedLinks: string[] = [];
 
   function walk(absDir: string, relPrefix: string): void {
     let dirEntries: fs.Dirent[];
@@ -93,6 +95,13 @@ function collectTechniqueFiles(dirPath: string): FileEntry[] {
       if (entry.name === 'metadata.json') continue;
       if (entry.name === 'versions') continue;
       if (entry.name === 'IMPORT_MANIFEST.json') continue; // only present on imported techniques
+
+      // A link is never followed: it could point at a file anywhere on the box. It is skipped and
+      // reported, and a path that does not resolve inside the technique folder is treated the same.
+      if (entry.isSymbolicLink() || insideTechniqueDir(dirPath, relPath) === null) {
+        skippedLinks.push(relPath);
+        continue;
+      }
 
       if (entry.isDirectory()) {
         walk(absPath, relPath);
@@ -114,7 +123,7 @@ function collectTechniqueFiles(dirPath: string): FileEntry[] {
   }
 
   walk(dirPath, '');
-  return entries;
+  return { entries, skippedLinks };
 }
 
 /**
@@ -320,7 +329,7 @@ function buildFallbackReadme(
  */
 export async function exportTechnique(
   techniqueId: string,
-): Promise<{ stream: Readable; filename: string; autoResolutions: AutoResolution[] }> {
+): Promise<{ stream: Readable; filename: string; autoResolutions: AutoResolution[]; skippedLinks: string[] }> {
   const technique = getTechnique(techniqueId);
   if (!technique) {
     throw new Error(`Technique "${techniqueId}" not found`);
@@ -367,7 +376,34 @@ export async function exportTechnique(
     }
   }
 
-  const entries = collectTechniqueFiles(technique.directoryPath);
+  const collected = collectTechniqueFiles(technique.directoryPath);
+  const skippedLinks = collected.skippedLinks;
+  if (skippedLinks.length > 0) {
+    logger.warn('Export skipped links inside the technique folder', { techniqueId, skippedLinks });
+  }
+
+  // EVERY text byte that enters the package goes through the scrubber below, so the patched
+  // dependency manifest and the auto-bundled files join the walked files BEFORE it runs
+  // (replacing the on-disk dependencies.json, which is untouched).
+  const bundledPaths = new Set<string>(['dependencies.json', ...extraBundledFiles.map(f => f.relPath)]);
+  const entries: FileEntry[] = collected.entries.filter(e => !bundledPaths.has(e.relPath));
+  entries.push({
+    relPath: 'dependencies.json',
+    absSourcePath: path.join(technique.directoryPath, 'dependencies.json'),
+    isBinary: false,
+    content: JSON.stringify(workingManifest, null, 2) + '\n',
+  });
+  for (const f of extraBundledFiles) {
+    if (isBinaryFile(f.relPath)) {
+      entries.push({ relPath: f.relPath, absSourcePath: f.absSourcePath, isBinary: true });
+      continue;
+    }
+    try {
+      entries.push({ relPath: f.relPath, absSourcePath: f.absSourcePath, isBinary: false, content: fs.readFileSync(f.absSourcePath, 'utf-8') });
+    } catch (err) {
+      logger.warn('Failed to read bundled file for export', { relPath: f.relPath, err: err instanceof Error ? err.message : String(err) });
+    }
+  }
   if (entries.length === 0) {
     throw new Error(`Technique "${techniqueId}" has no files to export`);
   }
@@ -375,11 +411,21 @@ export async function exportTechnique(
   const { entries: scrubbedEntries, placeholders: initialPlaceholders } = applyScrub(entries);
 
   // Trainer review pass — may add more redactions and writes the README
-  const { readme, additionalRedactions } = await runTrainerReviewPass(
+  const { readme: trainerReadme, additionalRedactions } = await runTrainerReviewPass(
     { id: technique.id, name: technique.name, description: technique.description },
     scrubbedEntries,
     initialPlaceholders,
   );
+
+  // Binary files go in as-is (they cannot be scrubbed) and links are never followed: say so in the README.
+  let readme = trainerReadme;
+  const binaryPaths = scrubbedEntries.filter(e => e.isBinary).map(e => e.relPath);
+  if (binaryPaths.length > 0) {
+    readme += `\n\n## Binary files (not scrubbed)\n\nThese files are included exactly as they are and could not be checked for secrets:\n\n${binaryPaths.map(p => `- \`${p}\``).join('\n')}\n`;
+  }
+  if (skippedLinks.length > 0) {
+    readme += `\n\n## Links left out\n\nThese links in the technique folder were not followed and are not in the package:\n\n${skippedLinks.map(p => `- \`${p}\``).join('\n')}\n`;
+  }
 
   // Apply trainer-flagged redactions
   let finalEntries = scrubbedEntries;
@@ -432,33 +478,16 @@ export async function exportTechnique(
   archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
   archive.append(readme, { name: 'README.md' });
 
-  // Substitute the auto-resolver's patched dependencies.json for
-  // whatever was in the technique directory. The on-disk version is
-  // untouched; the substitution only affects the zip.
-  const bundledFilePaths = new Set([
-    'dependencies.json',
-    ...extraBundledFiles.map(f => f.relPath),
-  ]);
   for (const entry of finalEntries) {
-    if (bundledFilePaths.has(entry.relPath)) continue; // handled below
     if (entry.isBinary) {
       archive.file(entry.absSourcePath, { name: entry.relPath });
     } else if (entry.content !== undefined) {
       archive.append(entry.content, { name: entry.relPath });
     }
   }
-  archive.append(JSON.stringify(workingManifest, null, 2) + '\n', { name: 'dependencies.json' });
-
-  // Auto-bundled assets (files the auto-resolver pulled from elsewhere
-  // on disk). These weren't part of the technique directory walk so
-  // we add them here. Streaming the absolute source path keeps memory
-  // flat regardless of file size.
-  for (const f of extraBundledFiles) {
-    archive.file(f.absSourcePath, { name: f.relPath });
-  }
 
   archive.finalize();
 
   const safeName = technique.id.replace(/[^a-z0-9-]/g, '-');
-  return { stream: passthrough, filename: `${safeName}.dojo.zip`, autoResolutions };
+  return { stream: passthrough, filename: `${safeName}.dojo.zip`, autoResolutions, skippedLinks };
 }
