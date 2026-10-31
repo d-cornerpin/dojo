@@ -170,9 +170,9 @@ describe('a completion the owner already has does not ride the event', () => {
 const EXPECTED_EVENT = (title: string): string =>
   `[Engine event: completion report owed] You just finished work the owner asked for while you were talking to another agent, so they have not seen the result yet:\n`
   + `  - "${title}"\n\n`
-  + `Send the owner ONE short completion note: that the task(s) named ABOVE are done, plus a one-line note of what you did. Hard limits:\n`
+  + `Write the owner ONE short completion note as your reply (the engine delivers it to the owner): that the task(s) named ABOVE are done, plus a one-line note of what you did. Hard limits:\n`
   + `- Mention ONLY the task(s) listed above. Do NOT list, summarize, or mention ANY other tasks, blockers, projects, or your overall status, this is a completion note, not a status report or a "what needs you" rundown.\n`
-  + `- One or two sentences, on the owner's channel. Do NOT redo the work or re-run tools.\n`
+  + `- One or two sentences. Do NOT redo the work or re-run tools.\n`
   + `If there is genuinely nothing worth telling them, reply with [no-reply].`;
 
 describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {

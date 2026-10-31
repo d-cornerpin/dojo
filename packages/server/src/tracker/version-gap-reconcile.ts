@@ -352,7 +352,7 @@ export async function runVersionGapReconcile(): Promise<ReconcileResult> {
         + `and ${result.tasksExamined} task(s) — and ${parts.join(' and ')} `
         + `${nProjects + nTasks === 1 ? 'looks' : 'look'} left over from an older version`
         + `${result.repaired > 0 ? `, and ${result.repaired} finished project(s) that were never closed out have been closed` : ''}. `
-        + `Nothing else was changed. If the owner should know, tell them in your own words on your next turn; `
+        + `Nothing else was changed. If the owner should know, tell them in your own words on your next turn (as your written reply if that turn is talking to them, otherwise in an explicit send that names them); `
         + `the detail is on the tracker's reconcile report.`,
     });
   }

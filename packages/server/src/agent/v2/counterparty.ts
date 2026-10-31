@@ -969,7 +969,9 @@ export function renderCounterpartyHeader(
     cp.relation !== 'owner'
       ? ` Close-the-loop: if your reply promises to follow up with ${getOwnerName()} ` +
         `(e.g. "I'll ask/tell/check with them"), actually do it THIS turn, create a ` +
-        `reminder or send ${getOwnerName()} a note, a promise to a contact isn't kept until you act on it.`
+        `reminder or send ${getOwnerName()} a note. Your written reply goes to ${cp.name}, not ${getOwnerName()}, ` +
+        `so reach ${getOwnerName()} with an explicit send that names ${getOwnerName()} as the recipient. ` +
+        `A promise to a contact isn't kept until you act on it.`
       : '';
   // 3.5: two lines, one per question: who sent this, and who the written reply goes to.
   return (

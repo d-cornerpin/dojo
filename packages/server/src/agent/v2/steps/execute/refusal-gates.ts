@@ -24,6 +24,7 @@ import { closeOutGateDecision } from '../../stale-work-ids.js';
 import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
+import { replyChannelWords } from '../../turn-address.js';
 import { createLogger } from '../../../../logger.js';
 import { A2A_SEND_CAP_PER_RECIPIENT } from './tool-sets.js';
 import type { ToolCall } from '@dojo/shared';
@@ -82,7 +83,7 @@ export function runRefusalGates(
           name: tc.name,
           content:
             `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
-            `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
+            `Reminders are delivered to the owner: write it as your reply (the engine delivers it to the owner by ${replyChannelWords(turnCtx.address)}), ` +
             `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
             `repeat the exact same send and it will go through.`,
           isError: true,
@@ -334,7 +335,7 @@ export function runRefusalGates(
   if (compileOwed.refuse) {
     const askListShort = compileOwed.live.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
     const refusalText = (
-      `Refused: engine compile gate. The owner is owed the compiled reply for the work you delegated ` +
+      `Refused: engine compile gate. The person who asked is owed the compiled reply for the work you delegated ` +
       `(ask ${askListShort}${compileOwed.live.length > 3 ? '...' : ''}) — every piece is back and the ` +
       `platform has already brought you to it. Compose it — the pieces are in the steer, quoted verbatim. ` +
       `Write the combined reply now, as this turn's message; do not look anything up first. ` +

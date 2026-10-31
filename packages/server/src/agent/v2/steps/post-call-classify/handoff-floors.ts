@@ -18,6 +18,7 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 // T53: both floors steer through the RC-19 door, which owns the enqueue, the row, the advance.
 import { steerFireCount } from '../../steer-queue.js';
+import { replyChannelWords } from '../../turn-address.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
@@ -75,19 +76,24 @@ export async function runHandoffFloors(
     const handoffAttempts = steerFireCount(state.steerQueue, 'a2a-handoff-floor');
     if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
       const again = handoffAttempts === 1;
+      // 3.5: name who is waiting and where the written reply lands, from the turn's address.
+      const addr = turnCtx.address;
+      const who = addr?.kind === 'person' ? addr.name : null;
+      const waiter = who ?? 'the user';
+      const routeNote = who
+        ? `as your reply (it goes to ${who} by ${replyChannelWords(addr)}; do NOT call imessage_send or any send tool)`
+        : `directly in this conversation (do NOT call imessage_send or any send tool; the engine routes your reply)`;
       const steer = again
         ? (
-          `[System] Second time: this turn is STILL about to end with nothing said to the user, ` +
+          `[System] Second time: this turn is STILL about to end with nothing said to ${waiter}, ` +
           `and they are waiting. Nothing else on this turn matters until they hear from you. ` +
-          `WRITE one or two sentences to them now, directly in this conversation (do NOT call ` +
-          `imessage_send or any send tool; the engine routes your reply): what you have, and ` +
+          `WRITE one or two sentences to them now, ${routeNote}: what you have, and ` +
           `that another agent is finishing the rest.`
         )
         : (
           `[System] You handed work to another agent and are ending this turn without telling ` +
-          `the user anything. The user is waiting. WRITE the user a short reply NOW, directly in ` +
-          `this conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
-          `reply): report any results you already have, and say you have asked another agent for ` +
+          `${waiter} anything. ${who ? `${who} is` : 'The user is'} waiting. WRITE ${waiter} a short reply NOW, ${routeNote}: ` +
+          `report any results you already have, and say you have asked another agent for ` +
           `the rest and will report back when they answer. Do not message the other agent again.`
         );
       // ── T53 (ruling 5) — ONE MODEL-FACING CHANNEL, AND IT IS THE QUEUE ──
@@ -160,18 +166,21 @@ export async function runHandoffFloors(
         const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
         const remAttempts = steerFireCount(state.steerQueue, 'reminder-silence');
         if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
+          // 3.5: the written reply on a reminder turn reaches the owner by the channel the turn's
+          // address says (their phone when away, else the dashboard), not always "this conversation".
+          const remRoute = turnCtx.address
+            ? `as your reply (it goes to the owner by ${replyChannelWords(turnCtx.address)}; do NOT call imessage_send or any send tool)`
+            : `directly in this conversation (do NOT call imessage_send or any send tool; the engine routes your reply)`;
           const steer = remAttempts === 1
             ? (
               `[System] Second time: this reminder still has not reached the owner. It is the ` +
-              `only reason this turn exists. WRITE it to them now, in your own words, directly ` +
-              `in this conversation (do NOT call imessage_send or any send tool; the engine ` +
-              `routes your reply). The reminder is: ${remText}`
+              `only reason this turn exists. WRITE it to them now, in your own words, ` +
+              `${remRoute}. The reminder is: ${remText}`
             )
             : (
               `[System] This turn is delivering a reminder and is about to end with nothing said ` +
-              `to the owner. WRITE it to them now, in your own words, directly in this ` +
-              `conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
-              `reply). The reminder is: ${remText}`
+              `to the owner. WRITE it to them now, in your own words, ` +
+              `${remRoute}. The reminder is: ${remText}`
             );
           // ── T53 (ruling 5) — the worst of the seven second channels, and why it is gone.
           // This steer ends with the REMINDER'S OWN WORDS and the events lane renders a

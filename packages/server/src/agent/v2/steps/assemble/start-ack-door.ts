@@ -46,6 +46,7 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFiredAtLoop } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
+import { deliveryLabel } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -54,6 +55,16 @@ const logger = createLogger('v2-loop');
 // capture-site delivery surfaces whatever the model says as the visible ack.
 export const START_ACK_STEER_TEXT =
   '[Engine hint: the user has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it, then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]';
+
+/**
+ * 3.5: the same hint, naming who is waiting and where the line lands, from the turn's address.
+ * With no person on the other end (or no address) it is the generic text above, unchanged.
+ */
+export function startAckSteerText(turnCtx: TurnContext): string {
+  const addr = turnCtx.address;
+  if (!addr || addr.kind !== 'person') return START_ACK_STEER_TEXT;
+  return `[Engine hint: ${addr.name} has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it (it reaches them by ${deliveryLabel(addr.deliveryChannel)}), then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]`;
+}
 
 // One bounded reminder, IGNORE-keyed not time-keyed (2026-07-23, chore battery attempt:
 // the model tool-chained straight past the first steer, and a time-gated reminder only
@@ -96,7 +107,7 @@ export function armStartAck(state: AgentTurnState, input: StartAckDoorInput): Ag
   // HL3: through the RC-19 door — the row and the queue entry from one `content`.
   return persistEngineSteer(
     state,
-    { agentId, content: START_ACK_STEER_TEXT, turnNumber, floor: 'start-ack', atLoop: state.loopCount },
+    { agentId, content: startAckSteerText(turnCtx), turnNumber, floor: 'start-ack', atLoop: state.loopCount },
     { broadcast },
   );
 }

@@ -470,17 +470,43 @@ export function joinRedriveIsBlind(workId: string, turnNumber: number | null): b
  */
 export const COMPILE_ORDER_PIECES_MARKER = "Here is each piece's delivered content, verbatim:";
 
+/** Who asked, when the ask did not come from the owner on the dashboard (3.5). */
+export interface CompileAsker { readonly name: string; readonly channel: string | null }
+
+/**
+ * Who asked, read from the ask row's own inbound stamp. Null = the owner on the dashboard or
+ * by voice (or an owner-stamped channel message, or no stamp at all): the steer keeps saying
+ * "the owner". `displayName` turns the channel's raw handle into a name.
+ */
+export function compileAskerFromMeta(
+  inboundMeta: string | null,
+  displayName: (channel: string, handle: string) => string,
+  channelWords: (channel: string) => string,
+): CompileAsker | null {
+  let meta: { channel?: string; sender?: string; senderName?: string; relation?: string } = {};
+  try { meta = inboundMeta ? JSON.parse(inboundMeta) as typeof meta : {}; } catch { return null; }
+  if (!meta.channel || meta.channel === 'dashboard' || meta.channel === 'voice' || meta.relation === 'owner') return null;
+  const name = meta.senderName ?? (meta.sender ? displayName(meta.channel, meta.sender) : 'the person who asked');
+  return { name, channel: channelWords(meta.channel) };
+}
+
 export function compileSteerText(p: {
   total: number; pieces: string[]; attempt: number | null; bound: number;
+  /** The person whose ask this is, when it is not the owner. Absent = the owner. */
+  asker?: CompileAsker | null;
 }): string {
+  // The relay delivers the compiled reply to the ASK's own sender, so the steer names that
+  // person (and channel), not always "the owner".
+  const who = p.asker ? `${p.asker.name}${p.asker.channel ? ` (by ${p.asker.channel})` : ''}` : 'the owner';
+  const Who = p.asker ? who : 'The owner';
   const attemptLine = p.attempt === null
     ? ''
-    : ` (steer ${p.attempt} of ${p.bound}; after that the platform asks you to tell the owner `
+    : ` (steer ${p.attempt} of ${p.bound}; after that the platform asks you to tell ${who} `
       + `the job is stuck, and then reports it as a platform fault.)`;
   return (
-    `All ${p.total} delegated pieces for the owner's request are now back. `
-    + `The owner has NOT been answered yet.\n\n`
-    + `Compose ONE reply to the owner now that carries each piece's content exactly as delivered `
+    `All ${p.total} delegated pieces for ${p.asker ? `${p.asker.name}'s` : "the owner's"} request are now back. `
+    + `${Who} has NOT been answered yet.\n\n`
+    + `Compose ONE reply to ${who} now that carries each piece's content exactly as delivered `
     + `below (quote the key results, e.g. any codes or figures, character for character; do not `
     + `summarize them away, and do not trust a tracker row that says "complete" over the delivered `
     + `text itself). Do NOT search, open files, run commands, or call any tools first — not the `
@@ -491,7 +517,7 @@ export function compileSteerText(p: {
     + `means that deliverable is NOT back. In that case, and only in that case, send ONE `
     + `send_to_agent message to the agent it names asking them for the result directly — the `
     + `single exception to the no-tools rule above — and compile after it arrives. Do not `
-    + `present a hand-off note to the owner as if it were the answer.\n\n`
+    + `present a hand-off note to ${who} as if it were the answer.\n\n`
     + `${COMPILE_ORDER_PIECES_MARKER}\n\n`
     + p.pieces.join('\n')
   );

@@ -475,3 +475,32 @@ describe('§1 reminder-silence', () => {
     expect(rows().filter((r) => r.role === 'system' && r.content === steer).length).toBe(1);
   });
 });
+
+// 3.5: the hand-off and reminder floors name who is waiting and where the written reply lands,
+// from the turn's address.
+describe('3.5 the floors read the turn address', () => {
+  const contactAddress = { kind: 'person', name: 'Pat Example', isOwner: false, deliveryChannel: 'imessage', routed: true };
+  it('the hand-off floor names the waiting person and their channel', async () => {
+    const out = await runHandoffFloors(handoffState(), classifyCtx({
+      turnCtx: { conversationId: 'conv-1', servedWork: null, root: null, address: contactAddress },
+    } as unknown as Partial<PostCallClassifyContext>), emptyReply());
+    const c = nextSteer(out.state.steerQueue)!.content;
+        expect(c).toContain('it goes to Pat Example by iMessage');
+    expect(c).toContain('do NOT call imessage_send or any send tool');
+    expect(c).not.toContain('directly in this conversation');
+  });
+  it('the reminder floor says the reminder reaches the owner by the address\'s channel', async () => {
+    const taskId = openTrackerTask({
+      title: 'Reminder', description: 'Water the seedlings', status: 'in_progress',
+      assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'agent', sourceMessageId: null, turn: TURN, convKey: 'ck-1' },
+    });
+    const out = await runHandoffFloors(baseState({ loopCount: 3 }), classifyCtx({
+      turnCtx: { conversationId: 'conv-1', root: null, servedWork: { taskKind: 'reminder', taskId }, address: { kind: 'engine', deliveryChannel: 'imessage' } },
+    } as unknown as Partial<PostCallClassifyContext>), emptyReply());
+    const c = nextSteer(out.state.steerQueue)!.content;
+    expect(c).toContain('it goes to the owner by iMessage');
+    expect(c).toContain('The reminder is: Water the seedlings');
+    expect(c).not.toContain('directly in this conversation');
+  });
+});

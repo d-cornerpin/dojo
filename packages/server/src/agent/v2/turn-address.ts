@@ -20,6 +20,7 @@ import type { InboundChannel } from './inbound-channel.js';
 import type { ChannelInboundContext } from './state.js';
 import { resolveReplyDestination, type ReplyDestination } from './reply-destination.js';
 import { affinityPromotionRefusedNoBasis } from './owner-affinity.js';
+import { turnContext } from '../turn-context.js';
 
 export interface TurnAddress {
   /** person = a human; agent = another agent over A2A; engine = a scheduler/tracker event;
@@ -206,4 +207,24 @@ export async function computeTurnAddressLive(
     imessageBridgeConfigured = pres.isImessageConfigured();
   } catch { /* best effort */ }
   return computeTurnAddress({ ...input, presence, imessageBridgeConfigured });
+}
+
+// ── Reading the address from an engine text ──
+// Every engine text that names a recipient or a reply route takes the turn's address through
+// these, instead of writing "the dashboard chat" or "the owner" as a literal.
+
+/** The current turn's address (undefined outside a turn, or before preflight has run). */
+export function currentAddress(agentId: string): TurnAddress | undefined {
+  return turnContext(agentId)?.address;
+}
+
+/** Where a written reply on this turn is delivered, in words ("iMessage", "the dashboard
+ *  chat"). Falls back to the dashboard wording when there is no address. */
+export function replyChannelWords(addr: TurnAddress | undefined): string {
+  return deliveryLabel(addr?.deliveryChannel ?? 'dashboard');
+}
+
+/** "Pat Example by iMessage" for a person turn; null when no human is on the other end. */
+export function addresseeByChannel(addr: TurnAddress | undefined): string | null {
+  return addr?.kind === 'person' ? `${addr.name} by ${deliveryLabel(addr.deliveryChannel)}` : null;
 }

@@ -59,7 +59,7 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 // this, and what does it do when the drives are spent".
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
-  joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
+  joinRedriveIsBlind, compileSteerText, compileAskerFromMeta, everyPieceLandedWithContent, engineRelayPreface,
   releaseScaffoldCardsAfterRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
@@ -71,7 +71,10 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
-import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shared';
+import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
+import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
+import { deliveryLabel } from './v2/turn-address.js';
+import type { ReplyDestination } from './v2/reply-destination.js';
 import type { ToolOutcome } from './tool-outcome.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';   // t239
@@ -1867,6 +1870,12 @@ function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: n
   // inside the text is kept exactly as it is: it was right for its own sake, and re-shuffling
   // it now would churn bytes for no reason.
   const steer = compileSteerText({
+    // 3.5: the relay delivers to the ASK's own sender, so the order names that person.
+    asker: compileAskerFromMeta(
+      askRowForJoin(join)?.inbound_meta ?? null,
+      (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle),
+      (ch) => deliveryLabel(ch as ReplyDestination),
+    ),
     total: join.total, pieces: rendered,
     attempt: rung?.attempt ?? null, bound: rung?.bound ?? JOIN_REDRIVE_BOUND,
   });

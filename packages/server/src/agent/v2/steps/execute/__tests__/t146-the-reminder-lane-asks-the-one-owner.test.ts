@@ -86,3 +86,38 @@ describe('the reminder lane asks the same owner question', () => {
     expect(await reminderSend(FIRST)).toMatch(/is not the owner/);
   });
 });
+
+// 3.5: the refusal says where the reminder will land from the turn's ADDRESS, never "the owner is
+// watching the dashboard conversation".
+describe('the reminder lane reads the turn address for where the reminder lands', () => {
+  const refusalWith = (address: unknown): string => {
+    const state = {
+      sendsPerAgentThisTurn: {}, thrashGatedSignatures: [], thrashGateRefusalCount: 0,
+      structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
+      loopCount: 0, closeOutGateSatisfied: true, danglingTaskIds: [], compileGateSatisfied: true, compileOwedAskIds: [],
+    };
+    const ctx = {
+      agentId: 'quillon', turnNumber: 1,
+      turnCtx: { servedWork: { taskKind: 'reminder' }, address },
+      counterparty: { kind: 'user', relation: 'owner', channel: 'dashboard' },
+      reminderLaneRefusedSigs: new Set<string>(), engineBlockEscapeHatch: '',
+    };
+    return runRefusalGates(
+      state as never, { id: 'c1', name: 'imessage_send', arguments: { recipient: FIRST, message: 'water the seedlings' } } as never,
+      ctx as never, false,
+    ).refusal?.content ?? '';
+  };
+  beforeEach(() => {
+    setConfig('imessage_approved_senders', JSON.stringify([
+      { address: FIRST, name: 'First' }, { address: SECOND, name: 'Keeper', is_primary: true },
+    ]));
+  });
+  it('an away owner: the written reply reaches them by iMessage', () => {
+    const t = refusalWith({ kind: 'engine', deliveryChannel: 'imessage' });
+    expect(t).toContain('delivers it to the owner by iMessage');
+    expect(t).not.toContain('watching the dashboard');
+  });
+  it('an owner at the dashboard: by the dashboard chat', () => {
+    expect(refusalWith({ kind: 'engine', deliveryChannel: 'dashboard' })).toContain('delivers it to the owner by the dashboard chat');
+  });
+});

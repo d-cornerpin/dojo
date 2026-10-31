@@ -687,8 +687,10 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
         content:
           `[System] A project you own has ended with failed pieces: ${fallenFacts} `
           + `Nobody has been told but you. If the user should know — and if they asked for this `
-          + `work, they should — WRITE it to them in your own words on your next turn, directly `
-          + `in the conversation (the engine routes your reply; do not call a send tool). If it `
+          + `work, they should — WRITE it to them in your own words on your next turn. Your written `
+          + `reply goes to whoever that turn is talking to (its [Turn context] block says who); if `
+          + `that is not the person who asked, reach them with an explicit send that names them as `
+          + `the recipient. If it `
           + `is worth another attempt, say what you would try.`,
         sourceAgentId: null,
         originIntent: 'project_needs_attention',
@@ -5094,7 +5096,7 @@ export async function trackerRequestUserVerdict(
       const { deliverA2ANotice } = await import('../agent/a2a-notice.js');
       const relayPayload =
         `Please relay to ${getOwnerName()}: a stalemate has been flagged on task "${task.title}" (${taskId.slice(0, 8)}) ` +
-        `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to ${getOwnerName()} in chat and ` +
+        `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to ${getOwnerName()} (as your written reply if that turn is talking to them, otherwise in an explicit send that names them) and ` +
         `then call work_validate(action="apply_user_verdict", task_id="${taskId}", status="<the owner's choice>", user_quote="<their exact reply>") on my behalf.\n\n` +
         userMessage;
       await deliverA2ANotice({

@@ -10,7 +10,7 @@ import { isPresenceCheck, PRESENCE_HINT } from '../presence-check.js';
 import { register } from './registry.js';
 import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection, type AssemblyContext, type EngineMessage } from './types.js';
 import { renderCounterpartyHeader } from '../../agent/v2/counterparty.js';
-import { renderTailRestatement } from '../../agent/v2/turn-address.js';
+import { deliveryLabel, renderTailRestatement } from '../../agent/v2/turn-address.js';
 import { isIMBridgeRunning } from '../../services/imessage-bridge.js';
 import {
   renderTimeHeader,
@@ -329,7 +329,7 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
   // othersWaiting head-of-line hint (moved verbatim from memory/assembler.ts).
   if (tc?.counterparty?.kind === 'user' && (tc.othersWaiting ?? 0) > 0) {
     const n = tc.othersWaiting!;
-    parts.push(`[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait, send a brief acknowledgment, capture it with work_open(kind="project") / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual. Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself, don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`);
+    parts.push(`[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait, send a brief acknowledgment, capture it with work_open(kind="project") / a tracker task, and end the turn so you can serve the others; then work the project across later turns. ${tc.address?.kind === 'person' ? `Your written reply goes to ${tc.address.name} by ${deliveryLabel(tc.address.deliveryChannel)}, as usual.` : 'Reply as usual.'} Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself, don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`);
   }
   // conversational-turn hint (moved verbatim; suppressed when othersWaiting covers it).
   if (tc?.conversationalTurn && !(tc?.othersWaiting && tc.othersWaiting > 0)) {
