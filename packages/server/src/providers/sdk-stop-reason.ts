@@ -12,20 +12,22 @@
 // parsed tool-call count already says (this transport parses its tool calls out of text, so the
 // provider says `end_turn` even when one parsed); anything else, above all a cut, passes through.
 import { resolveProviderStopReason } from '../agent/provider-stop-reason.js';
+import { SdkRefusalWatch } from './sdk-refusal.js';
 import { isOutputCut } from '../agent/v2/classifiers/output.js';
 
 export function createSdkStopReasonTracker() {
   let seen: string | null = null;
   let cut: string | null = null;
   let outputLimitError = false;
+  const refusals = new SdkRefusalWatch(); // 9603
   const note = (reason: unknown): void => {
     if (typeof reason !== 'string' || reason === '') return;
     if (isOutputCut(reason)) cut = reason;
     seen = reason;
   };
   return {
-    /** Read whatever stop information one SDK message carries. */
-    observe(message: { type?: string; [k: string]: unknown }): void {
+    /** Read whatever stop information one SDK message carries. True = the message is the provider's refusal (not reply text). */
+    observe(message: { type?: string; [k: string]: unknown }): boolean {
       const m = message as { message?: { stop_reason?: unknown }; event?: { type?: string; delta?: { stop_reason?: unknown } }; error?: unknown; stop_reason?: unknown };
       if (message.type === 'assistant') {
         note(m.message?.stop_reason);
@@ -35,7 +37,10 @@ export function createSdkStopReasonTracker() {
       } else if (message.type === 'result') {
         note(m.stop_reason);
       }
+      return refusals.observe(message);
     },
+    /** After the stream: raise a held-back refusal (or a bare error result) when no reply text arrived. */
+    throwIfNoReply(reply: string): void { refusals.throwIfNoReply(reply); },
     /** The stop reason to report, given how many tool calls parsed out of the text. */
     resolve(toolCallCount: number): string {
       const ordinary = seen === 'end_turn' || seen === 'tool_use' || seen === 'stop_sequence';

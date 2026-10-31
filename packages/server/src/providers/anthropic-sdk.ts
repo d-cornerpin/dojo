@@ -497,7 +497,7 @@ export async function callAnthropicViaSdk(params: {
     })) {
       // t114: ANY message is evidence of life — re-arm before inspecting what it was.
       bumpGap();
-      stopReason.observe(message as { type?: string });
+      if (stopReason.observe(message as { type?: string })) continue; // 9603: a provider refusal is raised, never the reply
       if (message.type === 'assistant') {
         // Full assistant message with content blocks
         const betaMsg = (message as any).message;
@@ -563,7 +563,7 @@ export async function callAnthropicViaSdk(params: {
     if (timer) clearTimeout(timer);
     detachExternal?.();
   }
-
+  stopReason.throwIfNoReply(fullResponse);
   // Estimate tokens if not provided by the SDK
   if (inputTokens === 0) {
     inputTokens = Math.ceil((fullSystemPrompt.length + lastUserMessage.length) / 4);
