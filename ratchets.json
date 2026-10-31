@@ -9846,6 +9846,7 @@
     "packages/server/src/twilio/sms-inbound.ts": 416,
     "packages/server/src/update-state.ts": 414,
     "packages/server/src/update/disk-preflight.ts": 245,
+    "packages/server/src/update/install-tree.ts": 266,
     "packages/server/src/vault/archive.ts": 310,
     "packages/server/src/vault/bounded-reads.ts": 606,
     "packages/server/src/vault/maintenance.ts": 2177,
