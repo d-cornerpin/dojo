@@ -88,13 +88,13 @@ beforeEach(() => {
 });
 
 describe('the owner the bridge texts is the owner the told record recognises', () => {
-  it('RED at 4cb9ed61: a list with nobody starred — the bridge texts the first record, the record refuses it', () => {
+  it('a list with nobody starred and no older key has no owner: the bridge picks nobody and no notice is sent', () => {
     setConfig('imessage_approved_senders', JSON.stringify([
       { address: FIRST, name: 'First' }, { address: SECOND, name: 'Second' },
     ]));
     const { sentTo, told } = noticeToTheBridgesOwner('t-1');
-    expect(sentTo, 'the bridge picks the first record as the owner').toBe(FIRST);
-    expect(told?.kind, JSON.stringify(told)).toBe('applied');
+    expect(sentTo, 'no owner by position').toBeNull();
+    expect(told, 'no notice goes out, so nothing is recorded as told').toBeNull();
   });
 
   it('control (agreed at 4cb9ed61 too): nobody starred and the legacy key names the SECOND record — that record is the owner', () => {

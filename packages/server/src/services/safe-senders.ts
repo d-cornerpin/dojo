@@ -245,9 +245,9 @@ export function ownerIMessageRecord(records: readonly SafeSender[] = storedSafeS
 /**
  * Every address that IS the owner on iMessage — a different question from "which address do I
  * send to" (`ownerIMessageRecord`, one answer). Every record flagged `is_primary` counts (an
- * owner may flag his phone and his Apple ID, as before t146), plus the record `parseSafeSenders`
- * promotes when nobody is flagged; the legacy `imessage_default_sender` key counts only when no
- * record is flagged. Nothing is ever promoted to owner by position.
+ * owner may flag his phone and his Apple ID), plus the first address of a pre-2.7.12 bare-address
+ * list. When nobody is flagged, the older `imessage_default_sender` key is the owner. No object
+ * record is ever promoted to owner by position.
  */
 export function ownerIMessageRecords(): Array<{ address: string; name: string }> {
   const out: Array<{ address: string; name: string }> = [];

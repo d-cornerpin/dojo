@@ -335,17 +335,23 @@ describe('round 2 N2: the legacy owner key counts only when no primary is starre
       'the starred address still is').toBe('applied');
   });
 
-  // t146 (one owner rule): this clause read "no primary starred → the legacy key IS the owner".
-  // But a non-empty list always HAS an owner — `parseSafeSenders` stars the record matching the
-  // legacy key, else the first — and that is the address the bridge texts his notices to. The
-  // legacy key alone is the owner only when there are no records (t146-one-owner-on-imessage).
-  it('CONTROL (t146): no primary starred — the record the bridge promotes is the owner, a legacy key outside the list is not', () => {
+  // Owner rule: nobody is the owner by position. When no record is starred, the older single-recipient
+  // key (written only by Settings) is the owner, even if its address is not in the list; an unstarred
+  // record that is not that address is not the owner.
+  it('CONTROL: no primary starred — the older key is the owner, an unstarred record is not', () => {
     setConfig('imessage_approved_senders', JSON.stringify([{ address: '+15550199', name: 'Garden supplier', is_primary: false }]));
     setConfig('imessage_default_sender', OLD_ADDRESS);
     seedBlocked('t-legacy-only');
-    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }))
+    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo('+15550199'), via: 'send_tool' }))
       .toMatchObject({ kind: 'refused', reason: 'not-the-owner-or-requester' });
-    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo('+15550199'), via: 'send_tool' }).kind).toBe('applied');
+    expect(recordPersonTold('t-legacy-only', { deliveryId: sendTo(OLD_ADDRESS), via: 'send_tool' }).kind).toBe('applied');
+  });
+
+  it('CONTROL: nobody starred and no older key — there is no owner', () => {
+    setConfig('imessage_approved_senders', JSON.stringify([{ address: '+15550199', name: 'Garden supplier', is_primary: false }]));
+    seedBlocked('t-no-owner');
+    expect(recordPersonTold('t-no-owner', { deliveryId: sendTo('+15550199'), via: 'send_tool' }))
+      .toMatchObject({ kind: 'refused', reason: 'not-the-owner-or-requester' });
   });
 
   it('CONTROL: no records at all — the legacy key IS the owner (an install that never re-saved Settings)', () => {
