@@ -6,6 +6,7 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import type { Provider, EditProviderRequest } from '@dojo/shared';
 import * as api from '../../lib/api';
+import { useToast } from '../../hooks/useToast';
 import {
   numberEditsFor, numInput,
   THROUGHPUT_MIN_TOK_PER_SEC, THROUGHPUT_MAX_TOK_PER_SEC,
@@ -16,6 +17,7 @@ import { AgentSdkSetup } from './PlatformTab';
 // ── Providers Tab ──
 
 export const ProvidersTab = () => {
+  const toast = useToast();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -56,13 +58,20 @@ export const ProvidersTab = () => {
     const result = await api.deleteProvider(id);
     if (result.ok) {
       setProviders((prev) => prev.filter((p) => p.id !== id));
+    } else {
+      toast.error(result.error ?? 'The provider could not be deleted.');
     }
   };
 
   const handleSyncModels = async (id: string) => {
     setSyncing(id);
-    await api.validateProvider(id);
-    setSyncing(null);
+    try {
+      const result = await api.validateProvider(id);
+      if (!result.ok) toast.error(result.error ?? 'The sync did not work.');
+      else await loadProviders();
+    } finally {
+      setSyncing(null);
+    }
   };
 
   if (loading) return <div className="loading-state">Loading...</div>;

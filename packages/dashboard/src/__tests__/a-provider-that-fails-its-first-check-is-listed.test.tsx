@@ -31,7 +31,15 @@ vi.mock('../lib/api', async () => {
 vi.mock('../components/settings/PlatformTab', () => ({ AgentSdkSetup: () => null }));
 
 import * as api from '../lib/api';
+import { ToastProvider } from '../hooks/useToast';
 import { ProvidersTab } from '../components/settings/ProvidersTab';
+
+// The tab names refusals through the toast, so it needs the provider the app gives it.
+const renderTab = () => render(
+  <ToastProvider>
+    <ProvidersTab />
+  </ToastProvider>,
+);
 
 // Fill the add form the way the owner does: the openai preset, a key the fake
 // server will refuse, and submit.
@@ -51,14 +59,14 @@ beforeEach(() => {
 
 describe('a provider that fails its first check', () => {
   it('the form says the add worked but the check did not', async () => {
-    const { container } = render(<ProvidersTab />);
+    const { container } = renderTab();
     await screen.findByText('No providers configured.');
     addOpenaiThatFailsItsCheck(container);
     await screen.findByText(/Provider added but validation failed/);
   });
 
   it('the provider is listed behind the form even though the check failed', async () => {
-    const { container } = render(<ProvidersTab />);
+    const { container } = renderTab();
     await screen.findByText('No providers configured.');
     addOpenaiThatFailsItsCheck(container);
     await waitFor(() => expect(api.getProviders).toHaveBeenCalledTimes(2));
