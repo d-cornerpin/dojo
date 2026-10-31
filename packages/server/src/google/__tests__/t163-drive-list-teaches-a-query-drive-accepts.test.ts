@@ -46,7 +46,7 @@ describe('t163 B — a bare term becomes a full-text search', () => {
   it('a quote and a backslash in the term are escaped (a term can never close the string)', async () => {
     expect(await sentQ({ query: "O'Brien" })).toBe("fullText contains 'O\\'Brien' and trashed = false");
     expect(await sentQ({ query: 'C:\\temp' })).toBe("fullText contains 'C:\\\\temp' and trashed = false");
-    expect(await sentQ({ query: "x' or name contains 'y" })).toBe("fullText contains 'x\\' or name contains \\'y' and trashed = false");
+    expect(await sentQ({ query: "x' or name contains 'y" })).toBe("(fullText contains 'x\\' or name contains \\'y') and trashed = false");
   });
 
   it('a bare term still composes with a folder', async () => {
@@ -63,7 +63,7 @@ describe('t163 B — an operator query passes through exactly as written', () =>
     ["fullText contains 'budget' and trashed = false", "fullText contains 'budget' and trashed = false"],
     ["modifiedTime > '2026-01-01T00:00:00'", "modifiedTime > '2026-01-01T00:00:00' and trashed = false"],
     ["'folder-id' in parents", "'folder-id' in parents and trashed = false"],
-    ["name = 'a b' or name = 'c'", "name = 'a b' or name = 'c' and trashed = false"],
+    ["name = 'a b' or name = 'c'", "(name = 'a b' or name = 'c') and trashed = false"],
     ["not name contains 'draft'", "not name contains 'draft' and trashed = false"],
     ["starred = true", "starred = true and trashed = false"],
     ["properties has { key='k' and value='v' }", "properties has { key='k' and value='v' } and trashed = false"],

@@ -651,7 +651,7 @@ export async function executeGoogleReadTool(
       // Drive lists trashed files unless the query says otherwise. A query that already
       // mentions trashed is the model's own and passes through; every other one excludes the Trash.
       if (!q) q = 'trashed = false';
-      else if (!/\btrashed\b/i.test(q)) q = `${q} and trashed = false`;
+      else if (!/\btrashed\b/i.test(q)) q = /\bor\b/i.test(q) ? `(${q}) and trashed = false` : `${q} and trashed = false`;
 
       const params = new URLSearchParams({
         q,

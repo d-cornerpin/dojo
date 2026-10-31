@@ -12,7 +12,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { os } from 'node:os';
+import os from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('../../../logger.js', () => ({

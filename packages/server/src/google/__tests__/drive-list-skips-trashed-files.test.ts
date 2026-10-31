@@ -37,6 +37,10 @@ describe('drive_list keeps trashed files out of the results', () => {
     expect(await sentQ({ folder_id: 'F1' })).toBe("'F1' in parents and trashed = false");
   });
 
+  it('an either-or query is wrapped so the Trash exclusion covers both sides', async () => {
+    expect(await sentQ({ query: "name = 'a' or name = 'b'" })).toBe("(name = 'a' or name = 'b') and trashed = false");
+  });
+
   it('a query that deliberately asks for the Trash still gets the Trash', async () => {
     expect(await sentQ({ query: 'trashed = true' })).toBe('trashed = true');
   });
