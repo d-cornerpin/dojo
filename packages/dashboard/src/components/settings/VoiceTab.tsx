@@ -20,6 +20,8 @@ export const VoiceTab = () => {
   const [defaultVoice, setDefaultVoice] = useState('am_michael');
   const [models, setModels] = useState<api.VoiceModelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadTry, setLoadTry] = useState(0);
 
   // Settings (loaded from config table)
   const [voice, setVoice] = useState('am_michael');
@@ -218,6 +220,12 @@ export const VoiceTab = () => {
         api.getHumeStatus(),
       ]);
       if (!mounted) return;
+      // A failed read of any saved voice setting is not "the default": the toggles and phrase boxes save
+      // what they show, so the tab is not offered until every setting was read.
+      const settingReads = [vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName, bargeIn, sfx,
+        ttsEngineSetting, cloudVoiceSetting, cloudVoiceProviderSetting, cloudDescriptionSetting, cloudSpeedSetting];
+      if (settingReads.some((r) => !r.ok)) { setLoadFailed(true); setLoading(false); return; }
+      setLoadFailed(false);
       if (presets.ok) {
         setVoices(presets.data.voices);
         setDefaultVoice(presets.data.defaultVoice);
@@ -276,7 +284,7 @@ export const VoiceTab = () => {
     };
     void load();
     return () => { mounted = false; };
-  }, []);
+  }, [loadTry]);
 
   // Subscribe to download progress broadcasts. Multiple downloads can be
   // in flight (e.g. user picks a new STT model AND clicks Download on a
@@ -441,6 +449,16 @@ export const VoiceTab = () => {
   };
 
   if (loading) return <div className="loading-state">Loading voice settings...</div>;
+  if (loadFailed) {
+    return (
+      <div className="tile">
+        <div className="fhelp">Could not load your voice settings, so they can&apos;t be changed right now. Nothing has been changed.</div>
+        <div className="srow" style={{ marginTop: 10 }}>
+          <button type="button" className="btn btn--sm" onClick={() => { setLoading(true); setLoadTry((n) => n + 1); }}>Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-4xl">
