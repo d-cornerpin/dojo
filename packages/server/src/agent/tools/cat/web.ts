@@ -16,6 +16,7 @@
 
 import { webSearch, webFetch } from '../../web-tools.js';
 import { executeWebBrowse } from '../../browser.js';
+import { STOPPED_BY_USER } from '../../abortable-call.js';
 import type { ToolHandlerMap } from '../handler.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -55,6 +56,12 @@ export const WEB_RESULT_SOURCE_BOUND =
 
 const withSourceBound = (content: string): string => `${content}\n\n${WEB_RESULT_SOURCE_BOUND}`;
 
+/** Answers that hold no results: nothing was read, so the "only sources" line has nothing to be about. */
+const holdsNoSources = (content: string): boolean =>
+  content === STOPPED_BY_USER
+  || content.startsWith('Web search not configured')
+  || content.startsWith('That URL returned HTTP ');
+
 export const webHandlers: ToolHandlerMap = {
   async "web_search"({ agentId, args }) {
     let content = '';
@@ -64,7 +71,7 @@ export const webHandlers: ToolHandlerMap = {
       count: args.count as number | undefined,
     });
     isError = content.startsWith('Permission denied') || content.startsWith('Web search failed');
-    if (!isError) content = withSourceBound(content);
+    if (!isError && !holdsNoSources(content)) content = withSourceBound(content);
     return { content, isError };
   },
 
@@ -84,7 +91,7 @@ export const webHandlers: ToolHandlerMap = {
       prompt: args.prompt as string,
     });
     isError = content.startsWith('Permission denied') || content.startsWith('Fetch failed');
-    if (!isError) content = withSourceBound(content);
+    if (!isError && !holdsNoSources(content)) content = withSourceBound(content);
     return { content, isError };
   },
 

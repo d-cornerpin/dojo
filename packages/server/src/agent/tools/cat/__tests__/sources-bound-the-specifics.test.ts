@@ -173,8 +173,9 @@ describe('§3 zero cached prefix bytes', () => {
     const src = read('agent/tools/cat/web.ts');
     // The whole mechanism: one exported literal, appended to a handler's own `content`.
     expect(src).toContain('export const WEB_RESULT_SOURCE_BOUND');
-    // The append is gated on ONE thing, the handler's own pre-existing `isError` — no new
-    // inspection of what the result SAYS. The engine still only counts structure.
-    expect(src.match(/if \(!isError\) content = withSourceBound\(content\);/g)).toHaveLength(2);
+    // The append is gated on the handler's own pre-existing `isError` plus `holdsNoSources`
+    // — one byte-check of its own result against the known answers that hold nothing.
+    // Still a return value; the engine still only counts structure.
+    expect(src.match(/if \(!isError && !holdsNoSources\(content\)\) content = withSourceBound\(content\);/g)).toHaveLength(2);
   });
 });
