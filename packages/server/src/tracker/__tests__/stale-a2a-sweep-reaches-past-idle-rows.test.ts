@@ -150,10 +150,11 @@ describe('stale-A2A sweep reaches past the rows it will never close', () => {
       a2a_thread_id: 'thread-talk-99',
       opened_at: busyAt, updated_at: busyAt,
     } as never);
+    // C9: the signal is the receiver's RECORDED reply on this ticket's own thread, not a clock.
     db().prepare(`
-      INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-      VALUES ('reply-99', 'talker', 'assistant', 'handled in my reply', 1, ?)
-    `).run(now - 20 * MIN);
+      INSERT INTO a2a_replies (assign_message_id, agent_id, thread_id, reply_intent)
+      VALUES ('reply-99', 'talker', 'thread-talk-99', 'COMPLETE')
+    `).run();
     // `sleeper` sent nothing, ever — no assistant message after any silent row opened.
 
     await runPokeCheck();
