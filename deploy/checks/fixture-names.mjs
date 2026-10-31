@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REGISTRY_FILE = path.join(HERE, 'fixture-names.json');
+/** The registry's path as the tracked tree spells it; the scan for roster names skips it (it holds the stand-ins by design). */
+export const REGISTRY_REL = 'deploy/checks/fixture-names.json';
 export const CODED_WORD = /^[A-Z][a-z]{3,14}$/;
 
 export function loadRegistry(file = REGISTRY_FILE) {
@@ -39,9 +41,16 @@ export const wordRe = (word, flags = 'gi') => new RegExp(`(?<![A-Za-z0-9_])${wor
 export function readLiveRoster() {
   const db = path.join(process.env.DOJO_HOME ?? os.homedir(), '.dojo/data/dojo.db');
   if (!fs.existsSync(db)) return null;
+  // A stopped server leaves a WAL-mode database with no -wal file beside it, and a plain read-only open then cannot start.
+  // Open it as an immutable read-only URI in that case; with a -wal file present (server running) keep the normal read-only open.
+  const target = fs.existsSync(`${db}-wal`) ? db : `file:${path.resolve(db)}?mode=ro&immutable=1`;
+  const args = target === db ? ['-readonly', db] : [target];
   try {
-    return execFileSync('sqlite3', ['-readonly', db, 'SELECT name FROM agents'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean);
-  } catch { return null; }
+    return execFileSync('sqlite3', [...args, 'SELECT name FROM agents'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch (err) {
+    const why = (err && err.stderr ? String(err.stderr).trim() : '') || (err instanceof Error ? err.message : String(err));
+    throw new Error(`fixture-names gate: cannot read the Dojo database at ${db}: ${why}`);
+  }
 }
 
 /** Tracked text files under `root` (git ls-files), skipping anything binary or huge. */
@@ -49,6 +58,7 @@ export function trackedTextFiles(root) {
   const out = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
   const files = [];
   for (const rel of out) {
+    if (rel === REGISTRY_REL) continue;
     const abs = path.join(root, rel);
     let st; try { st = fs.statSync(abs); } catch { continue; }
     if (!st.isFile() || st.size > 5 * 1024 * 1024) continue;
