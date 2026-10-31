@@ -219,6 +219,21 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
   return lines;
 }
 
+// A repeat number that cannot step the calendar — zero, negative, fractional,
+// NaN — gives `calculateNextRun` nothing to advance by: it returns no next run,
+// the scheduler completes the schedule, and the "recurring" task or reminder
+// fires once and stops, with no error anywhere. The dashboard route refuses the
+// number the same way (`gateway/routes/tracker.ts` `scheduleInputError`); every
+// agent door that saves one refuses it here, BEFORE its pairing checks.
+// `undefined`/`null` mean "no repeat number set" (or, on an edit, "clear it")
+// and are nobody's error here. Coercion matches the dashboard's: "2" reads as 2.
+export function repeatNumberError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const num = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(num) && Number.isInteger(num) && num >= 1) return null;
+  return `Error: repeat_interval="${value}" must be a whole number of 1 or more (for example 1 for "every day"). Zero, negative or fractional numbers cannot repeat; the task would run once and stop.`;
+}
+
 // P2 drive boundary (owner status-truth invariant, 2026-07-21):
 // markDeliverableShown was DELETED. It was the hidden-second-status writer: a
 // flag on an in_progress row that contradicted the visible status and stood
@@ -2438,6 +2453,14 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     };
     if (WORK_EDITABLE_TASK_FIELDS.every(f => editableValues[f] === undefined)) {
       return `Error: at least one editable field must be provided. Editable: ${WORK_EDITABLE_TASK_FIELDS.join(', ')}. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)`;
+    }
+
+    // The repeat number must be able to step the calendar (same refusal as
+    // the two work_open doors) — but only when one is being SET: `null` is
+    // the supported way to clear a repeat, and stays allowed through here.
+    if (repeatInterval !== undefined && repeatInterval !== null) {
+      const repeatNumErr = repeatNumberError(repeatInterval);
+      if (repeatNumErr) return repeatNumErr;
     }
 
     // Recurring-schedule integrity gate. Same shape as the gate in

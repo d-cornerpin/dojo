@@ -44,7 +44,7 @@ import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
 import {
-  trackerCreateProject, trackerCreateTask, reminderCreate, trackerUpdateStatus,
+  trackerCreateProject, trackerCreateTask, reminderCreate, repeatNumberError, trackerUpdateStatus,
   trackerAddNotes, trackerEditTask, trackerEditProject, trackerGetStatus,
   trackerListActive, trackerActivity, activityWindowStart, trackerCompleteStep, trackerCloseProject,
   trackerPauseSchedule, trackerResumeSchedule,
@@ -161,6 +161,18 @@ const tableOfHandlers: ToolHandlerMap = {
     const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
     if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
       content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+      isError = true;
+      return { content, isError };
+    }
+
+    // The repeat number itself must be able to step the calendar: zero, a
+    // negative, a fraction or NaN gives the engine no next run, the task
+    // fires once and its schedule quietly completes — the "recurring" lie
+    // the pairing checks below were built to catch, from the other side.
+    // Refuse the number before they run.
+    const intervalNumErr = repeatNumberError(args.repeat_interval);
+    if (intervalNumErr) {
+      content = intervalNumErr;
       isError = true;
       return { content, isError };
     }
@@ -306,6 +318,16 @@ const tableOfHandlers: ToolHandlerMap = {
     const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
     if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
       content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+      isError = true;
+      return { content, isError };
+    }
+
+    // Same refusal of an unusable repeat number as kind="task", before the
+    // pairing checks below: a reminder on 0, a negative or a fraction fires
+    // once and its schedule quietly completes.
+    const remIntervalNumErr = repeatNumberError(args.repeat_interval);
+    if (remIntervalNumErr) {
+      content = remIntervalNumErr;
       isError = true;
       return { content, isError };
     }
