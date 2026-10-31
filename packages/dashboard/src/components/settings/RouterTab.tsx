@@ -74,7 +74,8 @@ export const RouterTab = () => {
     dimensionId: string,
     updates: { weight?: number; isEnabled?: boolean },
   ) => {
-    await api.updateDimension(dimensionId, updates);
+    const res = await api.updateDimension(dimensionId, updates);
+    if (!res.ok) toast.error(res.error ?? 'The routing change could not be saved.');   // e.g. the weights-must-sum refusal
     await loadConfig();
   };
 
