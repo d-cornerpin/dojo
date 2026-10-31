@@ -33,7 +33,7 @@
 // vocabulary, so it stays a separate file rather than one force-shared
 // abstraction — see that file's header for the argument).
 //
-// Mutation-proof (2026-09-20, Yorvak Cliff / t83): a fake
+// Mutation-proof (2026-09-20, FX.n11 Cliff / t83): a fake
 // `msGraphRead('groups/${groupId}/members', ...)` call was added to
 // tools-read.ts and this test failed with "no mapping row matches
 // 'groups/*/members'" as expected, then the line was removed. Confirms
@@ -44,6 +44,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MS_DIR = path.resolve(HERE, '..');
