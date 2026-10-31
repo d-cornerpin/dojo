@@ -7,6 +7,8 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
+import { useGuardedLoad } from '../../lib/load-guard';
+import { LoadGate } from '../LoadGate';
 import { useState, useEffect, type ReactNode } from 'react';
 import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
@@ -145,22 +147,20 @@ export const CapabilityModelCard = ({
   notice?: ReactNode;   // v3.5: a standing note under the description (the Summarization card's)
 }) => {
   const [selectedId, setSelectedId] = useState('');
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const toast = useToast();
+  // A failed read is "could not load", not "no model chosen": Save and Clear write over the stored pick.
+  const load = useGuardedLoad<string | null>(settingKey, async (key) => {
+    const r = await api.getSetting(key);
+    return r.ok ? { ok: true as const, data: r.data.value } : r;
+  });
+  const storedPick = load.data;
 
   const matchingModels = models.filter(m => m.isEnabled && (matchFn ? matchFn(m) : !!capability && m.capabilities.includes(capability)));
   const hasAnyOption = matchingModels.length > 0 || extraOptions.length > 0;
 
-  useEffect(() => {
-    const load = async () => {
-      const settingResult = await api.getSetting(settingKey);
-      if (settingResult.ok && settingResult.data.value) setSelectedId(settingResult.data.value);
-      setLoading(false);
-    };
-    load();
-  }, [settingKey]);
+  useEffect(() => { if (load.status === 'ready') setSelectedId(storedPick ?? ''); }, [load.status, storedPick]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -180,7 +180,7 @@ export const CapabilityModelCard = ({
     setTimeout(() => setSaved(false), 2000);
   };
 
-  if (loading) return null;
+  if (load.status !== 'ready') return <LoadGate load={load} what="this model setting"><></></LoadGate>;
 
   const isExtra = extraOptions.some(o => o.id === selectedId);
   const selectedModel = matchingModels.find(m => m.id === selectedId) ?? null;
@@ -375,46 +375,39 @@ export const CompactionModelCard = ({ models }: { models: Model[] }) => (
 );
 
 
+type HealerCfg = Awaited<ReturnType<typeof api.getHealerConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
+
 export const HealerCard = ({ models }: { models: Model[] }) => {
-  const [healerModelId, setHealerModelId] = useState('');
-  const [healerTime, setHealerTime] = useState('04:00');
-  const [healerMode, setHealerMode] = useState<'active' | 'monitor' | 'off'>('active');
-  const [loading, setLoading] = useState(true);
+  // The Healer's settings are read before the card is shown: a failed read must not appear as the
+  // built-in defaults (auto model, 04:00, active), because Save writes what is on screen, and would turn
+  // a Healer set to monitor or off back on.
+  const load = useGuardedLoad<HealerCfg>('healer', () => api.getHealerConfig());
+  return (
+    <LoadGate load={load} what="the Healer settings">
+      <HealerEditor models={models} config={load.data!} refresh={load.refresh} />
+    </LoadGate>
+  );
+};
+
+const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: HealerCfg; refresh: () => Promise<void> }) => {
+  const [healerModelId, setHealerModelId] = useState(config.modelId ?? '');
+  const [healerTime, setHealerTime] = useState(config.healerTime);
+  const [healerMode, setHealerMode] = useState<'active' | 'monitor' | 'off'>(config.healerMode);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [running, setRunning] = useState(false);
   const [lastDiagnostic, setLastDiagnostic] = useState<api.HealerDiagnostic | null>(null);
   const [sendingReport, setSendingReport] = useState(false);
-  // v2.3.19 — provider-isolation surface from the API
-  const [providerSharedWithPrimary, setProviderSharedWithPrimary] = useState(false);
-  const [primaryProviderName, setPrimaryProviderName] = useState<string | null>(null);
-  const [healerProviderName, setHealerProviderName] = useState<string | null>(null);
+  // v2.3.19 — provider-isolation surface from the API (re-read after a save so the banner follows the new pick)
+  const providerSharedWithPrimary = config.providerSharedWithPrimary ?? false;
+  const primaryProviderName = config.primaryProviderName ?? null;
+  const healerProviderName = config.healerProviderName ?? null;
   const toast = useToast();
 
-  const reloadConfig = async () => {
-    const configResult = await api.getHealerConfig();
-    if (configResult.ok) {
-      setHealerModelId(configResult.data.modelId ?? '');
-      setHealerTime(configResult.data.healerTime);
-      setHealerMode(configResult.data.healerMode);
-      setProviderSharedWithPrimary(configResult.data.providerSharedWithPrimary ?? false);
-      setPrimaryProviderName(configResult.data.primaryProviderName ?? null);
-      setHealerProviderName(configResult.data.healerProviderName ?? null);
-    }
-  };
-
   useEffect(() => {
-    const load = async () => {
-      const [, diagResult] = await Promise.all([
-        reloadConfig(),
-        api.getHealerDiagnostic(),
-      ]);
-      if (diagResult.ok && diagResult.data) {
-        setLastDiagnostic(diagResult.data);
-      }
-      setLoading(false);
-    };
-    load();
+    api.getHealerDiagnostic().then((diagResult) => {
+      if (diagResult.ok && diagResult.data) setLastDiagnostic(diagResult.data);
+    });
   }, []);
 
   const handleSave = async () => {
@@ -429,7 +422,7 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
       setTimeout(() => setSaved(false), 2000);
       // v2.3.19 — reload so the provider-isolation banner reflects the new
       // model selection without requiring a page refresh.
-      await reloadConfig();
+      await refresh();
     } else toast.error(result.error ?? 'The Healer settings could not be saved.');   // e.g. the 32K floor or the memory fit
     setSaving(false);
   };
@@ -478,7 +471,6 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
     setSendingReport(false);
   };
 
-  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
     <div className="tile space-y-4">

@@ -10,18 +10,26 @@ import * as api from '../../lib/api';
 import { formatDate } from '../../lib/dates';
 import { HealerCard } from './CapabilityModelCards';
 import { isPickableAgentModel } from '../../lib/role-models';
+import { useGuardedLoad } from '../../lib/load-guard';
+import { LoadGate } from '../LoadGate';
 
 
 // ── Dreaming Tab ──
 
+type DreamingConfig = Awaited<ReturnType<typeof api.getDreamingConfig>> extends infer R ? (R extends { ok: true; data: infer D } ? D : never) : never;
+
 export const DreamingTab = () => {
+  // The schedule is read before it is shown: a failed read must not appear as 03:00 / full, because Save
+  // writes whatever is on screen over the real schedule.
+  const load = useGuardedLoad<DreamingConfig>('dreaming', () => api.getDreamingConfig());
+  return <LoadGate load={load} what="the dreaming settings"><DreamingEditor initial={load.data!} /></LoadGate>;
+};
+
+const DreamingEditor = ({ initial }: { initial: DreamingConfig }) => {
   const [models, setModels] = useState<Model[]>([]);
-  const [dreamModelId, setDreamModelId] = useState('');
-  const [dreamTime, setDreamTime] = useState('03:00');
-  const [dreamMode, setDreamMode] = useState<'full' | 'light' | 'off'>('full');
-  const [loading, setLoading] = useState(true);
-  // Save stays off until the stored settings were read: guessing 'full' could turn an off dreamer on.
-  const [configLoaded, setConfigLoaded] = useState(false);
+  const [dreamModelId, setDreamModelId] = useState(initial.modelId ?? '');
+  const [dreamTime, setDreamTime] = useState(initial.dreamTime);
+  const [dreamMode, setDreamMode] = useState<'full' | 'light' | 'off'>(initial.dreamMode);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
@@ -31,24 +39,9 @@ export const DreamingTab = () => {
 
   useEffect(() => {
     const load = async () => {
-      const [configResult, modelsResult, latestResult] = await Promise.all([
-        api.getDreamingConfig(),
-        api.getModels(),
-        api.getLatestDream(),
-      ]);
-      if (configResult.ok) {
-        setDreamModelId(configResult.data.modelId ?? '');
-        setDreamTime(configResult.data.dreamTime);
-        setDreamMode(configResult.data.dreamMode);
-        setConfigLoaded(true);
-      }
-      if (modelsResult.ok) {
-        setModels(modelsResult.data.filter(isPickableAgentModel));
-      }
-      if (latestResult.ok) {
-        setLastDream(latestResult.data);
-      }
-      setLoading(false);
+      const [modelsResult, latestResult] = await Promise.all([api.getModels(), api.getLatestDream()]);
+      if (modelsResult.ok) setModels(modelsResult.data.filter(isPickableAgentModel));
+      if (latestResult.ok) setLastDream(latestResult.data);
     };
     load();
   }, []);
@@ -82,8 +75,6 @@ export const DreamingTab = () => {
     setRunning(false);
     setTimeout(() => setRunStatus({ kind: 'idle', message: '' }), 6000);
   };
-
-  if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
     <div className="max-w-4xl">
@@ -157,15 +148,12 @@ export const DreamingTab = () => {
         {dreamMode === 'off' && (
           <p className="text-[10px] text-ui/25">Dreaming is off; these apply when you turn it back on.</p>
         )}
-        {!configLoaded && (
-          <div className="alert-banner alert-error">Could not read the saved dreaming settings, so Save is disabled.</div>
-        )}
 
         <div className="srow pt-2 flex-wrap">
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || !configLoaded}
+            disabled={saving}
             className="btn btn--primary btn--sm"
           >
             {saving ? 'Saving...' : 'Save'}

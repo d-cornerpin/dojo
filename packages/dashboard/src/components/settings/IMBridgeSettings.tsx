@@ -124,7 +124,7 @@ export const IMBridgeSettings = () => {
       ]);
 
       // A failed or unreadable read must not look like an empty list: nothing is offered to edit.
-      if (!sendersResult.ok || !isReadableList(sendersResult.data.value)) {
+      if (!enabledResult.ok || !sendersResult.ok || !isReadableList(sendersResult.data.value)) {
         setLoadFailed(true);
         setLoading(false);
         return;

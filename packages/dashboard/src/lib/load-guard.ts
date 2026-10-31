@@ -36,6 +36,8 @@ export interface GuardedLoad<T> {
   loadedKey: string | null;
   error: string | null;
   reload: () => void;
+  /** Re-read quietly: the editor stays up on the data it has; a good answer replaces it, a failed one changes nothing. */
+  refresh: () => Promise<void>;
   /** True only when the data on hand was successfully loaded for exactly `forKey`, which is the current key. */
   canSave: (forKey: string | null | undefined) => boolean;
   /** After a successful save or generate: the saved value is now the loaded one. */
@@ -66,6 +68,13 @@ export function useGuardedLoad<T>(key: string | null, loader: (key: string) => P
   }, [key, tick, guard]);
 
   const reload = useCallback(() => setTick((n) => n + 1), []);
+  const refresh = useCallback(async () => {
+    if (key === null) return;
+    const ticket = guard.begin();
+    let res: ApiResponse<T>;
+    try { res = await loaderRef.current(key); } catch { return; }
+    if (guard.isCurrent(ticket) && res.ok) setSlot({ key, status: 'ready', data: res.data, error: null });
+  }, [key, guard]);
   const adopt = useCallback((value: T) => setSlot((s) => (s.status === 'ready' ? { ...s, data: value } : s)), []);
   const onScreen = slot.key === key;
   const ready = onScreen && slot.status === 'ready';
@@ -79,6 +88,7 @@ export function useGuardedLoad<T>(key: string | null, loader: (key: string) => P
     loadedKey: ready ? slot.key : null,
     error: onScreen ? slot.error : null,
     reload,
+    refresh,
     canSave,
     adopt,
   };

@@ -57,3 +57,12 @@ describe('the iMessage approved-senders card', () => {
     expect(setSetting).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('the iMessage on/off switch read', () => {
+  it('a failed read of whether the bridge is on is also a failed load', async () => {
+    getSetting.mockImplementation(async (k: string) => k === 'imessage_enabled' ? { ok: false, error: 'x' } : ok(STORED));
+    render(<IMBridgeSettings />);
+    await screen.findByText('Retry');
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+});

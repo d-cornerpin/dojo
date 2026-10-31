@@ -50,9 +50,9 @@ describe('saving the dreaming settings', () => {
   it('does not save defaults when the stored settings could not be read', async () => {
     mocked().getDreamingConfig.mockResolvedValue({ ok: false, error: 'down' } as never);
     render(<DreamingTab />);
-    const save = await screen.findByRole('button', { name: 'Save' });
-    expect((save as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(save);
+    // The shared load guard shows a Retry card and no Save at all, so there is nothing to press.
+    await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     expect(mocked().updateDreamingConfig).not.toHaveBeenCalled();
   });
 });

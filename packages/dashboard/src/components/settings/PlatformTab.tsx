@@ -4,6 +4,8 @@
 // Lifted OUT of `pages/Settings.tsx` by t111-E1. The moved lines are VERBATIM; the only new
 // bytes are this header, the imports below and the `export` keyword(s).
 
+import { useGuardedLoad } from '../../lib/load-guard';
+import { LoadGate } from '../LoadGate';
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
@@ -336,22 +338,18 @@ const MigrationSettings = () => {
 // ── Ollama Settings ──
 
 export const OllamaSettings = () => {
-  const [maxConcurrent, setMaxConcurrent] = useState('1');
-  const [loading, setLoading] = useState(true);
+  const load = useGuardedLoad<string | null>('ollama_max_concurrent_models', async (key) => {
+    const r = await api.getSetting(key);
+    return r.ok ? { ok: true as const, data: r.data.value } : r;
+  });
+  return <LoadGate load={load} what="the Ollama setting"><OllamaSettingsEditor initial={load.data} /></LoadGate>;
+};
+
+const OllamaSettingsEditor = ({ initial }: { initial: string | null }) => {
+  const [maxConcurrent, setMaxConcurrent] = useState(initial || '1');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const load = async () => {
-      const result = await api.getSetting('ollama_max_concurrent_models');
-      if (result.ok && result.data.value) {
-        setMaxConcurrent(result.data.value);
-      }
-      setLoading(false);
-    };
-    load();
-  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -366,8 +364,6 @@ export const OllamaSettings = () => {
     }
     setSaving(false);
   };
-
-  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
     <div className="tile">
@@ -416,24 +412,25 @@ const AGENT_LIMIT_KEYS = [
 ];
 
 export const AgentLimitsSettings = () => {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
+  // All four limits are read before any is shown: a limit that failed to read must not appear as its
+  // built-in default, because Save writes all four.
+  const load = useGuardedLoad<Record<string, string>>('agent-limits', async () => {
+    const initial: Record<string, string> = {};
+    for (const item of AGENT_LIMIT_KEYS) {
+      const result = await api.getSetting(item.key);
+      if (!result.ok) return result;
+      initial[item.key] = result.data.value ? result.data.value : String(item.default);
+    }
+    return { ok: true as const, data: initial };
+  });
+  return <LoadGate load={load} what="the capacity limits"><AgentLimitsEditor initial={load.data ?? {}} /></LoadGate>;
+};
+
+const AgentLimitsEditor = ({ initial }: { initial: Record<string, string> }) => {
+  const [values, setValues] = useState<Record<string, string>>(initial);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const load = async () => {
-      const initial: Record<string, string> = {};
-      for (const item of AGENT_LIMIT_KEYS) {
-        const result = await api.getSetting(item.key);
-        initial[item.key] = result.ok && result.data.value ? result.data.value : String(item.default);
-      }
-      setValues(initial);
-      setLoading(false);
-    };
-    load();
-  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -455,8 +452,6 @@ export const AgentLimitsSettings = () => {
     if (failure === null) setTimeout(() => setSaved(false), 2000);
     setSaving(false);
   };
-
-  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
     <div className="tile">
@@ -498,28 +493,20 @@ export const AgentLimitsSettings = () => {
 
 // ── Search Settings ──
 
-const SearchSettings = () => {
-  const [provider, setProvider] = useState('brave');
+export const SearchSettings = () => {
+  const load = useGuardedLoad<{ provider?: string | null; hasKey: boolean }>('search-config', () => api.getSearchConfig());
+  return <LoadGate load={load} what="the search settings"><SearchSettingsEditor initial={load.data!} /></LoadGate>;
+};
+
+const SearchSettingsEditor = ({ initial }: { initial: { provider?: string | null; hasKey: boolean } }) => {
+  const [provider, setProvider] = useState(initial.provider ?? 'brave');
   const [apiKey, setApiKey] = useState('');
-  const [hasKey, setHasKey] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [hasKey, setHasKey] = useState(initial.hasKey);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<'valid' | 'invalid' | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const load = async () => {
-      const result = await api.getSearchConfig();
-      if (result.ok) {
-        setProvider(result.data.provider ?? 'brave');
-        setHasKey(result.data.hasKey);
-      }
-      setLoading(false);
-    };
-    load();
-  }, []);
 
   const handleSave = async () => {
     if (!apiKey.trim()) return;
@@ -566,7 +553,6 @@ const SearchSettings = () => {
     setValidating(false);
   };
 
-  if (loading) return null;
 
   return (
     <div className="tile">

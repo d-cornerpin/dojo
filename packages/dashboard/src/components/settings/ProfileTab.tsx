@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
+import { useGuardedLoad } from '../../lib/load-guard';
 
 type OwnerMailboxRow = { address: string; provider: 'google' | 'microsoft'; accountId: string };
 const PROVIDER_LABEL: Record<OwnerMailboxRow['provider'], string> = { google: 'Google', microsoft: 'Microsoft' };
@@ -15,31 +16,28 @@ const PROVIDER_LABEL: Record<OwnerMailboxRow['provider'], string> = { google: 'G
 export const ProfileTab = () => {
   const [userName, setUserName] = useState('');
   const [userProfile, setUserProfile] = useState('');
-  const [loadingName, setLoadingName] = useState(true);
-  const [loadingProfile, setLoadingProfile] = useState(true);
   const [savingName, setSavingName] = useState(false);
   const [savedName, setSavedName] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savedProfile, setSavedProfile] = useState(false);
-  const [mailboxes, setMailboxes] = useState<OwnerMailboxRow[]>([]);
-
-  useEffect(() => {
-    const load = async () => {
-      const nameResult = await api.getSetting('user_name');
-      if (nameResult.ok && nameResult.data.value) setUserName(nameResult.data.value);
-      setLoadingName(false);
-
-      const profileResult = await api.getIdentity('USER.md');
-      if (profileResult.ok) {
-        setUserProfile(profileResult.data.content);
-        setMailboxes(profileResult.data.mailboxes ?? []);
-      }
-      setLoadingProfile(false);
-    };
-    load();
-  }, []);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Both reads go through the shared load guard (lib/load-guard.ts): a failed read is never an empty
+  // name or an empty profile, and nothing is offered to save on top of one.
+  const nameLoad = useGuardedLoad<string | null>('user_name', async (key) => {
+    const r = await api.getSetting(key);
+    return r.ok ? { ok: true as const, data: r.data.value } : r;
+  });
+  const profileLoad = useGuardedLoad<{ content: string; mailboxes?: OwnerMailboxRow[] }>('USER.md', (file) => api.getIdentity(file));
+  const loadingName = nameLoad.status === 'loading';
+  const loadingProfile = profileLoad.status === 'loading';
+  const mailboxes = profileLoad.data?.mailboxes ?? [];
+  const loadedName = nameLoad.data;
+  const loadedProfile = profileLoad.data?.content ?? null;
+  useEffect(() => { if (nameLoad.status === 'ready') setUserName(loadedName ?? ''); }, [nameLoad.status, loadedName]);
+  useEffect(() => { if (loadedProfile !== null) setUserProfile(loadedProfile); }, [loadedProfile]);
 
   const handleSaveName = async () => {
+    if (!nameLoad.canSave('user_name')) return;
     setSavingName(true);
     setSavedName(false);
     const result = await api.setSetting('user_name', userName.trim());
@@ -48,12 +46,27 @@ export const ProfileTab = () => {
   };
 
   const handleSaveProfile = async () => {
+    if (!profileLoad.canSave('USER.md') || loadedProfile === null) return;
     setSavingProfile(true);
     setSavedProfile(false);
-    const result = await api.updateIdentity('USER.md', userProfile);
-    if (result.ok) { setSavedProfile(true); setTimeout(() => setSavedProfile(false), 2000); }
+    setSaveError(null);
+    const result = await api.updateIdentity('USER.md', userProfile, loadedProfile);
+    if (result.ok) {
+      setSavedProfile(true); setTimeout(() => setSavedProfile(false), 2000);
+      profileLoad.adopt({ ...(profileLoad.data ?? {}), content: userProfile });
+    } else {
+      setSaveError(result.error || 'Could not save.');
+      profileLoad.reload();   // the stored text moved: bring in the current one
+    }
     setSavingProfile(false);
   };
+
+  const failedBox = (what: string, retry: () => void) => (
+    <>
+      <div className="fhelp">Could not load {what}, so it can&apos;t be changed right now. Nothing has been changed.</div>
+      <div className="srow"><button type="button" className="btn btn--sm" onClick={retry}>Retry</button></div>
+    </>
+  );
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -63,6 +76,8 @@ export const ProfileTab = () => {
         <div className="scard__desc">Used in memory summaries and agent conversations to identify you.</div>
         {loadingName ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />
+        ) : nameLoad.status === 'failed' ? (
+          failedBox('your name', nameLoad.reload)
         ) : (
           <>
             <input
@@ -92,6 +107,8 @@ export const ProfileTab = () => {
         </div>
         {loadingProfile ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />
+        ) : profileLoad.status === 'failed' ? (
+          <div className="scard__desc" style={{ marginBottom: 0 }}>Your mailboxes could not be loaded.</div>
         ) : mailboxes.length === 0 ? (
           <div className="scard__desc" style={{ marginBottom: 0 }}>None yet. Connect your own Google or Microsoft account and it appears here.</div>
         ) : (
@@ -118,14 +135,19 @@ export const ProfileTab = () => {
           </div>
           <div className="srow shrink-0">
             {savedProfile && <span className="text-xs text-cp-teal">Saved!</span>}
-            <button type="button" onClick={handleSaveProfile} disabled={savingProfile || loadingProfile}
-              className="btn btn--primary btn--sm">
-              {savingProfile ? 'Saving...' : 'Save'}
-            </button>
+            {profileLoad.status === 'ready' && (
+              <button type="button" onClick={handleSaveProfile} disabled={savingProfile}
+                className="btn btn--primary btn--sm">
+                {savingProfile ? 'Saving...' : 'Save'}
+              </button>
+            )}
           </div>
         </div>
+        {saveError && <div className="text-xs text-cp-coral">{saveError}</div>}
         {loadingProfile ? (
           <div className="h-40 glass-nested rounded-xl animate-pulse" />
+        ) : profileLoad.status === 'failed' ? (
+          failedBox('your profile', profileLoad.reload)
         ) : (
           <textarea
             value={userProfile}

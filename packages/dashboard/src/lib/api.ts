@@ -358,10 +358,11 @@ export const getIdentity = async (
 export const updateIdentity = async (
   file: string,
   content: string,
+  base?: string,   // the text this edit was built on; the server refuses the save if the stored text moved
 ): Promise<ApiResponse<void>> => {
   return request<void>(`/config/identity/${file}`, {
     method: 'PUT',
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(base === undefined ? { content } : { content, base }),
   });
 };
 
