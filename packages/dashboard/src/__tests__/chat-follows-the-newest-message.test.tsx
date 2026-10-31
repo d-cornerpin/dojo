@@ -205,3 +205,50 @@ describe('the chat follows the newest message', () => {
     expect(jumpButton()).not.toBeNull();
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// GITHUB #23, THE PAGE-LOAD HALF (v3.5 t29): about 3 loads in 20 left the chat 1200+ px above the
+// newest message. The load re-asserted the bottom for half a second, then stopped; content that
+// finished laying out later (images, markdown, code blocks) grew the list and nothing followed.
+// The fix watches the list's size and follows while the chat is pinned. happy-dom has no layout and
+// its ResizeObserver never fires, so the observer is a stand-in the test fires itself, exactly where
+// a browser would report the list growing.
+// ════════════════════════════════════════════════════════════════════════════
+describe('the chat stays at the newest message while the page is still laying out', () => {
+  const watchers: Array<() => void> = [];
+  const realRO = globalThis.ResizeObserver;
+  beforeEach(() => {
+    watchers.length = 0;
+    globalThis.ResizeObserver = class {
+      constructor(private cb: () => void) {}
+      observe() { watchers.push(this.cb); }
+      unobserve() {}
+      disconnect() { const i = watchers.indexOf(this.cb); if (i >= 0) watchers.splice(i, 1); }
+    } as unknown as typeof ResizeObserver;
+  });
+  afterEach(() => { globalThis.ResizeObserver = realRO; });
+  const layoutGrew = async () => { await act(async () => { watchers.slice().forEach((cb) => cb()); }); };
+
+  it('content that grows after the load settled is followed to the bottom', async () => {
+    const { el, lay } = await openBusyChat();
+    await act(async () => { await new Promise((r) => setTimeout(r, 700)); }); // well past any old re-assert window
+    lay.grow(1300);                       // a late image / code block lands
+    expect(el.scrollTop).toBeLessThan(lay.max());
+    await layoutGrew();
+    expect(el.scrollTop, 'late growth left the chat above the newest message').toBe(lay.max());
+    lay.grow(900);
+    await layoutGrew();
+    expect(el.scrollTop).toBe(lay.max());
+  });
+
+  it('an owner who scrolls up releases the pin: later growth does not pull them down', async () => {
+    const { el, lay } = await openBusyChat();
+    lay.set(lay.max() - 300);
+    lay.fire();
+    await waitFor(() => expect(jumpButton()).not.toBeNull());
+    const where = el.scrollTop;
+    lay.grow(1000);
+    await layoutGrew();
+    expect(el.scrollTop, 'growth yanked a reader to the bottom').toBe(where);
+  });
+});

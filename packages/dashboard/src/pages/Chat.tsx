@@ -1,3 +1,4 @@
+import { useFollowGrowth } from '../hooks/useFollowGrowth';
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
@@ -929,6 +930,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
     }
   }, [messages, scrollToBottom]);
 
+  const messagesContentRef = useRef<HTMLDivElement>(null);
+  useFollowGrowth(messagesContentRef, !loading, () => pinnedToBottomRef.current, scrollToBottom, AGENT_ID);
+
   // Load chat history
   useEffect(() => {
     // During a technique session, wait until the resume-vs-clear decision has
@@ -1003,17 +1007,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
         // Fresh conversation load starts pinned to the bottom.
         pinnedToBottomRef.current = true;
         setPinnedToBottom(true);
-        // Scroll to bottom on initial load — use instant (not smooth).
-        // Multiple fallbacks because DOM layout isn't always complete
-        // after a single rAF (long message lists, images, attachments).
+        // Land at the bottom once laid out; later growth is followed by useFollowGrowth while pinned.
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             scrollToBottom();
           });
         });
-        // Fallback: catch any remaining layout shifts (lazy images, etc.)
-        setTimeout(() => scrollToBottom(), 150);
-        setTimeout(() => scrollToBottom(), 500);
       }
       setLoading(false);
     };
@@ -1893,7 +1892,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         {/* Keyed on the agent id so switching agents replays the motion-blur
             scroll-in (dojo3-agentSwitchIn) instead of a hard cut. */}
         {!loading && (
-        <div key={AGENT_ID} className="dojo3-agent-enter space-y-2 sm:space-y-4">
+        <div key={AGENT_ID} ref={messagesContentRef} className="dojo3-agent-enter space-y-2 sm:space-y-4">
         {messages.map((msg, msgIndex) => {
           // Group-render: subsequent members of a tool-pill group are
           // skipped here; the group renders at the first member below.
