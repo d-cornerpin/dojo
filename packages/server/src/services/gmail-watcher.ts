@@ -27,6 +27,7 @@ import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
 import { gmailAddressingFacts } from './mail-inbound-facts.js';
+import { judgeGmailOwnerEmail } from './mail-owner-intake.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
@@ -347,11 +348,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       };
 
       const headers = msgData?.payload?.headers ?? [];
-      // P44/t280: who the mail went to (To/Cc) and where the watched mailbox sits,
-      // plus the provider's own Authentication-Results, all folded into one fact
-      // that rides the inbound_meta. For an agent mailbox the agent's own identities
-      // count as "own"; a user mailbox is the owner's inbox, so only its own address
-      // counts there.
+      // P44: who the mail went to, where this mailbox sits, and the provider's own Authentication-Results (an agent mailbox counts all
+      // the agent's own identities as "own"; a user mailbox only its own address).
       const mailAddressing = gmailAddressingFacts(headers, (kind === 'agent' ? [accountEmail, ...selfIdentities] : [accountEmail]).filter((a): a is string => !!a));
       const from = headers.find(h => h.name === 'From')?.value ?? 'Unknown sender';
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
@@ -388,14 +386,14 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
 
       const { getOwnerName } = await import('../config/platform.js');
       const ownerName = getOwnerName();
-      // Is this a direct message TO the agent? Only the AGENT's own mailbox
-      // counts, and only from a known safe sender on this channel. A user
-      // mailbox is the human's mail; the agent surfaces it but never replies
-      // on their behalf, even from a safe sender. fromAddr is parsed above.
-      const isDirectToAgent = kind === 'agent' && !!fromAddr
-        && getGmailSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr));
+      // Direct to the agent: only its own mailbox, from a safe sender (a user mailbox is the human's mail, never answered for them) or
+      // the owner's own email the provider confirmed (`mail-owner-intake.ts` P44: the owner speaking).
+      const ownerMail = await judgeGmailOwnerEmail({ kind, from, headers, messageId: msg.id, accountId });
+      const ownerEmail = ownerMail.state === 'none' ? undefined : ownerMail;
+      const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
+        && getGmailSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr)));
       const content = mailNoticeContent({ provider: 'GMAIL', accountSuffix, account: notifyAccount, ownerName, kind, fromAddr, from, subject, date, snippet,
-        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing });
+        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail });
 
       const msgId = uuidv4();
       // P5: email conversation identity = provider + sender + THREAD, so two
@@ -420,6 +418,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         emailAccount: notifyAccount,
         emailSubject: subject,
         mailAddressing,
+        ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words } : {}),
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this watcher just computed — never re-derived. recordInboundMeta

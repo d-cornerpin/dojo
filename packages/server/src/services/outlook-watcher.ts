@@ -18,6 +18,7 @@ import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microso
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
+import { judgeOutlookOwnerEmail } from './mail-owner-intake.js';
 import { outlookAddressingFacts } from './mail-inbound-facts.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
@@ -312,21 +313,13 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       // sender. User mailboxes are the human's mail — surface, never reply for them.
       const fromAddr = fromAddress.includes('@') ? fromAddress.toLowerCase() : '';
 
-      // 197: the email's To/Cc addressing facts — which list the watched mailbox sits
-      // on (To, Cc, or neither) — are collected here and stored on the structured meta.
-      // The notice text does not change; nothing consumes the field yet.
+      // P44: the email's To/Cc facts (which list this mailbox sits on); the Graph poll carries no Authentication-Results, see below.
       const mailAddressing = outlookAddressingFacts(msg, (kind === 'agent' ? [view.email, ...selfIdentities] : [view.email]).filter((a): a is string => !!a));
 
-      // Requirement: the agent's own outbound must never wake it (cost plus
-      // reply-loop risk). Outlook polls me/mailFolders/inbox, so unlike Gmail
-      // there is no SENT label to lean on; the SENDER address is the decisive
-      // signal: it must not be one of the agent's own mailboxes. That means this
-      // watched account AND every other connected agent-mailbox identity across
-      // both providers, so mail the agent sent from a different one of its own
-      // mailboxes into this one is suppressed too. User-kind mailboxes are
-      // excluded from that set: the owner mailing the agent must still wake it.
-      // The mail stays in the inbox and searchable; only the wake is suppressed
-      // (notifiedIds.add keeps it marked as handled).
+      // Requirement: the agent's own outbound must never wake it (cost plus reply-loop risk). Outlook polls the inbox, so
+      // there is no SENT label: the SENDER address is the signal, matched against this account AND every other connected
+      // agent-mailbox identity on both providers. User-kind mailboxes are excluded (the owner mailing the agent must still
+      // wake it). The mail stays in the inbox; only the wake is suppressed (notifiedIds.add marks it handled).
       const selfIdentity = !fromAddr
         ? null
         : matchSelfIdentity(fromAddr, selfIdentities)
@@ -336,10 +329,13 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         notifiedIds.add(msg.id);
         continue;
       }
-      const isDirectToAgent = kind === 'agent' && !!fromAddr
-        && getOutlookSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr));
+      // P44: the owner's own email, confirmed by the provider (`mail-owner-intake.ts`), is the owner speaking and may be answered.
+      const ownerMail = await judgeOutlookOwnerEmail({ kind, fromAddress, messageId: msg.id, accountId });
+      const ownerEmail = ownerMail.state === 'none' ? undefined : ownerMail;
+      const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
+        && getOutlookSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr)));
       const content = mailNoticeContent({ provider: 'OUTLOOK', accountSuffix, account: notifyAccount, ownerName, kind, fromAddr, from, subject, date, snippet,
-        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing });
+        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail });
 
       const msgId = uuidv4();
       // P5: email conversation identity = provider + sender + THREAD, so two
@@ -360,6 +356,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         emailAccount: notifyAccount,
         emailSubject: subject,
         mailAddressing,
+        ...(ownerMail.state === 'confirmed' ? { relation: 'owner' as const, ownerWords: ownerMail.words } : {}),
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this watcher just computed — never re-derived. recordInboundMeta

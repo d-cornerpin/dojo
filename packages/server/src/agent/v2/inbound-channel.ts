@@ -28,6 +28,7 @@ import type { InboundMeta } from '@dojo/shared';
 import type { ChannelInboundContext } from './state.js';
 import { isSenderAuthorized } from './channel-auth.js';
 import { stampInboundMeta } from '../../memory/message-store.js';
+import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 
 /**
  * Stamp structured routing metadata onto an inbound message row. Channel
@@ -132,7 +133,11 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   if (meta.channel === 'sms' || meta.channel === 'teams' || meta.channel === 'email') {
     const slot = meta.accountKind === 'user' ? 'user' : 'agent';
     const senderKey = meta.smsFromNumber ?? meta.sender ?? meta.recipientAddress ?? '';
-    if (!isSenderAuthorized(meta.channel, senderKey, slot, meta.emailService ? { emailService: meta.emailService } : undefined)) {
+    // P44: the owner's provider-confirmed email (the watcher's `relation: 'owner'` stamp, agent mailbox only) is answered while
+    // its sender is still one of the owner's connected mailboxes; the owner is not on a safe-sender list.
+    const ownerEmailStillTheirs = meta.channel === 'email' && slot === 'agent' && meta.relation === 'owner'
+      && ownerMailboxes().some((mb) => mb.address === senderKey.trim().toLowerCase());
+    if (!ownerEmailStillTheirs && !isSenderAuthorized(meta.channel, senderKey, slot, meta.emailService ? { emailService: meta.emailService } : undefined)) {
       return { inboundChannel: 'dashboard', inboundContext: null };
     }
   }

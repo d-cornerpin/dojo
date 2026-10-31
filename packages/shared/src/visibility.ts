@@ -397,12 +397,9 @@ export interface InboundMeta {
   phoneCallSid?: string;
   phoneFromNumber?: string;
   /** P44: who an email went to, read from the provider's headers (never from the body). `authenticationResults` are the provider's own `Authentication-Results` header values, topmost first, unparsed. */
-  mailAddressing?: {
-    to: Array<{ address: string; display: string | null }>;
-    cc: Array<{ address: string; display: string | null }>;
-    placement: 'to' | 'cc' | 'neither';
-    authenticationResults: string[];
-  };
+  mailAddressing?: { to: Array<{ address: string; display: string | null }>; cc: Array<{ address: string; display: string | null }>; placement: 'to' | 'cc' | 'neither'; authenticationResults: string[] };
+  /** P44: the owner's NEW words in an email the provider confirmed as the owner's (quoted text left out). Stamped only by the mail watchers, beside `relation: 'owner'`; the one place an email's words count as the owner's. */
+  ownerWords?: string;
 }
 
 export interface OutboundRoutingMatch {

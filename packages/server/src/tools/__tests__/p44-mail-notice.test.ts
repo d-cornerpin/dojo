@@ -99,7 +99,7 @@ describe('P44 — the owner\'s address on an email the provider could not confir
     for (const directToAgent of [true, false]) {
       const out = mailNoticeContent({ ...BASE, provider: 'GMAIL', directToAgent, fromAddr: 'owner@example.test', from: 'owner@example.test',
         addressing: ADDRESSING('to'), ownerEmail: { state: 'unconfirmed' } });
-      expect(out).toMatch(/could not be confirmed/i);
+      expect(out).toMatch(/could not confirm/i);
       expect(fenceRanges(out).length).toBe(1);
     }
   });

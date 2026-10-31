@@ -93,7 +93,7 @@ export function mailNoticeContent(m: { provider: 'GMAIL' | 'OUTLOOK'; accountSuf
       `Subject: ${m.subject}\nDate: ${m.date}\n${m.ownerEmail.words || m.snippet}\nMessage ID: ${m.messageId}\n`;
   }
   // t141: no "surface it" steer — the EVENTS lane marks each notice NEW or HANDLED (OR-V333-SET 7).
-  const unconfirmed = m.kind === 'agent' && m.ownerEmail?.state === 'unconfirmed' ? `This email names ${owner}'s own address as the sender, but the mail provider's check could not be confirmed, so it is NOT treated as ${owner} speaking. ` : '';
+  const unconfirmed = m.kind === 'agent' && m.ownerEmail?.state === 'unconfirmed' ? `This email names ${owner}'s own address as the sender, but the mail provider's own check could not confirm that it really came from them, so it is NOT treated as ${owner} speaking. ` : '';
   const where = !a ? '' : a.placement === 'to' ? 'Your address is on the To line. ' : a.placement === 'cc' ? 'Your address is on the Cc line, so you were copied. ' : 'Your address is on neither the To nor the Cc line (a blind copy or a list). ';
   const sentence = m.directToAgent
     ? `[EMAIL FROM A KNOWN CONTACT] ${m.fromAddr} is a known contact on this channel, and this email reached your mailbox ${m.account}. ${where}${unconfirmed}` +

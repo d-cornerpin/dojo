@@ -9,9 +9,12 @@
 //
 // Whose message: one that came in through an ingest door (it has a channel) on any channel the owner
 // uses — the dashboard, voice and the owner's iMessage, by the stamped origin (`deriveOrigin`, the
-// one "who is this from" answer). EMAIL NEVER VERIFIES (orchestrator ruling, fix round 6): a sender is
-// only a From header nobody authenticated, and a reply carries the agent's own quoted question back.
-import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker } from '@dojo/shared';
+// one "who is this from" answer). EMAIL VERIFIES ONLY ONE WAY (t250 fix round 6, reopened by the owner's P44
+// ruling 2026-10-27): a From header alone is nobody authenticated, and a reply carries the agent's own quoted
+// question back. So an email row counts only when the mail watcher stamped `relation: 'owner'` after the PROVIDER's
+// own DMARC result confirmed an owner address (`services/mail-owner-intake.ts`), and then ONLY the owner's new words
+// the watcher stored beside it (`ownerWords`, the quoted thread cut) — never the row's content, never a preview.
+import { deriveOrigin, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { WORK_EVENT } from '../work/tracker-view.js';
 import { normalizeQuote } from '../work/row-authority.js';
@@ -22,9 +25,18 @@ interface Row {
   inbound_meta: string | null; origin_intent: string | null;
 }
 
+/** The owner's new words in an email row the watcher stamped as the owner's, or null. Every stamp must agree: the
+ *  watcher's own owner relation, the agent's mailbox (never the owner's inbox), and a non-empty `ownerWords`. */
+function confirmedOwnerEmailWords(raw: string | null): string | null {
+  let meta: Partial<InboundMeta> | null = null;
+  try { meta = raw ? JSON.parse(raw) as Partial<InboundMeta> : null; } catch { return null; }
+  if (!meta || meta.channel !== 'email' || meta.relation !== 'owner' || meta.accountKind !== 'agent') return null;
+  return typeof meta.ownerWords === 'string' && meta.ownerWords.trim() !== '' ? meta.ownerWords : null;
+}
+
 /** The owner's own words in this row, or null when the row is not the owner writing. */
 function ownerWords(m: Row): string | null {
-  if (m.channel === 'email') return null;
+  if (m.channel === 'email') return confirmedOwnerEmailWords(m.inbound_meta);
   const o = deriveOrigin({
     role: 'user', content: m.content, ...legacyOriginInputs(m.lane, m.channel),
     sourceAgentId: m.source_agent_id, a2aThreadId: m.a2a_thread_id, a2aIntent: m.a2a_intent,

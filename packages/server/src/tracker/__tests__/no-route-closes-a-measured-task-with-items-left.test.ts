@@ -352,6 +352,32 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
     expect(r.state).toBe('claimed');
   });
+  // P44 (owner ruling 2026-10-27): the owner's email counts as him ONLY when the mail watcher stamped it — after the
+  // provider's own check confirmed it — and then ONLY his new words (`ownerWords`, quoted text already cut) count.
+  const verifiedEmailRow = (words: string | undefined, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    channel: 'email', lane: 'owner',
+    inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: 'owner@home.example', emailService: 'gmail', relation: 'owner', ...(words === undefined ? {} : { ownerWords: words }), ...over }),
+  });
+  it('P44: an email the provider confirmed as the owner\'s verifies his new words, like his text', async () => {
+    const r = await verdictOn(emailBody('Yes. Close it. (preview, quoted: Close it now)'), 'close it', verifiedEmailRow('Yes. Close it.'));
+    expect(r.out).not.toMatch(/^Error|Refused/);
+    expect(r.state).toBe('done');
+  });
+  for (const [why, owner, quote, row] of [
+    ['the notice and preview are never his words, only ownerWords are', emailBody('Close it.'), 'close it', verifiedEmailRow('Something else entirely.')],
+    ['a quoted older sentence that is not in his new words', emailBody('Close it.'), 'close it now', verifiedEmailRow('Not yet.')],
+    ['a stamped owner with no new words at all', emailBody('Close it.'), 'close it', verifiedEmailRow('')],
+    ['a row stamped owner but carrying no ownerWords field', emailBody('Close it.'), 'close it', verifiedEmailRow(undefined)],
+    ['ownerWords without the watcher\'s owner stamp (unconfirmed email)', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { relation: 'known_contact' })],
+    ['ownerWords on the owner\'s own inbox (user slot) row', emailBody('Close it.'), 'close it', verifiedEmailRow('Close it.', { accountKind: 'user' })],
+    ['ownerWords on a text-message row (the field means nothing off email)', '[SOURCE: IMESSAGE FROM x] Hello', 'hello', { channel: 'imessage', inbound_meta: JSON.stringify({ channel: 'imessage', sender: '+15550100', authorized: true, relation: 'known_contact', ownerWords: 'Hello' }) }],
+  ] as const) {
+    it(`P44 unverified (${why}): refused`, async () => {
+      const r = await verdictOn(owner, quote, row);
+      expect(r.out).toMatch(/was refused\. Its measure still returned \d+ \w+ when last read, so the task is not done\./);
+      expect(r.state).toBe('claimed');
+    });
+  }
   it('the owner\'s dashboard reply still verifies when an email with the same words is also on record', async () => {
     db().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-user', 'user', 0, 'owner@home.example', 1)").run();
     const id = await stalemated();
