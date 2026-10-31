@@ -13,8 +13,8 @@ const logger = createLogger('path-migration');
 /**
  * Replace `oldHome` with `newHome` in `text`, but only where `oldHome` is a whole
  * path prefix: the next character must not continue a folder name (letter, digit,
- * `.`, `_`, `-`). So `/Users/dan/x` and a bare `/Users/dan` are swapped while
- * `/Users/daniel/x` is left alone. `oldHome` is matched literally and `newHome`
+ * `.`, `_`, `-`). So `<oldHome>/x` and a bare `<oldHome>` are swapped while a longer
+ * folder name that merely starts with the old home is left alone. `oldHome` is matched literally and `newHome`
  * is inserted literally (a `$` in it is never read as a pattern).
  */
 export function swapHome(text: string, oldHome: string, newHome: string): string {
