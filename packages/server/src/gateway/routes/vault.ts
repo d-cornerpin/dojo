@@ -191,7 +191,7 @@ vaultRouter.post('/conversations/:id/process', async (c) => {
       return `[${role}${ts}] ${m.content}`;
     }).join('\n\n---\n\n');
 
-    const result = await extractFromConversation(formatted, modelId, config.dreamMode === 'off' ? 'light' : config.dreamMode);
+    const result = await extractFromConversation(formatted, modelId, config.dreamMode);
     const stored = await storeExtractedMemories(result.memories, conv.agentId, conv.agentName, conv.id);
 
     markConversationProcessed(conv.id);
@@ -257,6 +257,9 @@ vaultRouter.put('/dream/config', async (c) => {
 
   // The nightly dream reads the mode back by exact word, so refuse any other value (a stray
   // word or a non-text one) here, before any write, instead of storing one it reads as neither.
+  if (body.dreamMode === 'off') {
+    return c.json({ ok: false, error: 'Dreaming cannot be switched off. Choose full or light.' }, 400);
+  }
   if (body.dreamMode !== undefined && !DREAM_MODES.includes(body.dreamMode)) {
     return c.json({ ok: false, error: `Dreaming mode must be one of: ${DREAM_MODES.join(', ')}.` }, 400);
   }

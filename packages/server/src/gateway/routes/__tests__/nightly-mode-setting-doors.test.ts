@@ -106,11 +106,27 @@ describe('the dreamer mode door', () => {
   });
 
   it('stores each allowed mode word', async () => {
-    for (const mode of ['full', 'light', 'off']) {
+    for (const mode of ['full', 'light']) {
       const res = await vaultRouter.request('/dream/config', json('PUT', { dreamMode: mode }));
       expect(res.status).toBe(200);
       expect(getConfig('dreaming_mode')).toBe(mode);
     }
+  });
+
+  it('refuses off: dreaming can never be switched off', async () => {
+    setConfig('dreaming_mode', 'light');
+    const res = await vaultRouter.request('/dream/config', json('PUT', { dreamMode: 'off' }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/cannot be switched off/i);
+    expect(getConfig('dreaming_mode')).toBe('light');
+  });
+
+  it('reads a legacy stored off as full', async () => {
+    const { getDreamingConfig } = await import('../../../vault/maintenance.js');
+    setConfig('dreaming_mode', 'off');
+    expect(getDreamingConfig().dreamMode).toBe('full');
+    setConfig('dreaming_mode', 'light');
+    expect(getDreamingConfig().dreamMode).toBe('light');
   });
 
   it('is not mode-checked when the mode is not being changed', async () => {

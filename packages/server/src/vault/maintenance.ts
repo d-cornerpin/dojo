@@ -49,7 +49,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logger = createLogger('vault-dreaming');
 
-export const DREAM_MODES = ['full', 'light', 'off'] as const;
+// Dreaming can never be switched off, so there is no 'off' mode. A legacy stored 'off' is read as 'full'.
+export const DREAM_MODES = ['full', 'light'] as const;
 export type DreamMode = typeof DREAM_MODES[number];
 
 // ── Dreamer liveness (RC-15 unstick) ──
@@ -79,7 +80,7 @@ export function getDreamingConfig(): { modelId: string | null; dreamTime: string
   return {
     modelId: modelRow?.value ?? null,
     dreamTime: timeRow?.value ?? '03:00',
-    dreamMode: (modeRow?.value as DreamMode) ?? 'full',
+    dreamMode: modeRow?.value === 'light' ? 'light' : 'full',
   };
 }
 
@@ -1017,11 +1018,6 @@ function wakeupDreamer(cycleMessage: string): void {
 
 export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> {
   const config = getDreamingConfig();
-
-  if (config.dreamMode === 'off') {
-    logger.info('Dreaming is disabled, skipping cycle');
-    return { dreamerId: null };
-  }
 
   // Remediation Phase 5: the technique-distillation engine pass rides the
   // same nightly cadence (batched by design, the v1.15.96 constraints live
@@ -1986,7 +1982,6 @@ function resetStuckDreamerIfDead(dreamerId: string, isStale: boolean): boolean {
  */
 export async function sweepDreamerHealth(): Promise<void> {
   try {
-    if (getDreamingConfig().dreamMode === 'off') return;
     const dreamerId = getDreamerAgentId();
     const db = getDb();
     const row = db.prepare(`
@@ -2024,7 +2019,6 @@ export async function sweepDreamerHealth(): Promise<void> {
  */
 export async function runDreamerContinuationSweep(): Promise<void> {
   try {
-    if (getDreamingConfig().dreamMode === 'off') return;
     if (!isSetupCompleted()) return;
 
     const primaryId = getPrimaryAgentId();
@@ -2094,13 +2088,6 @@ export function scheduleDreamingCycle(): void {
   }
 
   const config = getDreamingConfig();
-  if (config.dreamMode === 'off') {
-    // The nightly ENGINE maintenance (disk reclaim + summary rebuild) still
-    // needs its window even when dreaming is off, so the timer is scheduled
-    // regardless; runDreamingCycle itself no-ops in 'off' mode.
-    logger.info('Dreaming is disabled; scheduling nightly window for engine maintenance only');
-  }
-
   const now = new Date();
   const { delayMs, usedFallback } = nextDailyRunDelayMs(config.dreamTime, '03:00', now);
   if (usedFallback) {

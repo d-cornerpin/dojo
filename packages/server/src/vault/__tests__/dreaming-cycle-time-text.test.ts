@@ -7,7 +7,7 @@
 // / a non-string all slip through. The resulting delay is NaN and setTimeout
 // fires after a few ms, so engine maintenance (disk reclaim + summary rebuild)
 // and the dreaming cycle run back-to-back, forever — and unlike the healer the
-// schedule runs even when dreaming is 'off', so every box is exposed.
+// schedule runs every night, so every box is exposed.
 //
 // These tests pin the exact rules (from brief 79): accept only
 // ^(\d{1,2}):(\d{2})$ with hours 0-23 and minutes 0-59; otherwise fall back to
