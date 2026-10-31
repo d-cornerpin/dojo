@@ -197,7 +197,7 @@ function isMessageAttachmentReady(
   return { ready: true };
 }
 
-function fetchImessageAttachments(
+export function fetchImessageAttachments(
   chatDb: Database.Database,
   messageRowid: number,
   agentId: string,
@@ -245,7 +245,7 @@ function fetchImessageAttachments(
     try {
       // ── Tier 1: deliverable bytes (image + PDF) ──────────────────────
       if (IMAGE_MIMES.has(mimeType)) {
-        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const storedName = `imessage_${timestamp}_${row.ROWID}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
@@ -260,7 +260,7 @@ function fetchImessageAttachments(
         // Vision models don't accept HEIC, convert to JPEG via macOS's
         // built-in `sips` tool. 30s timeout is generous for any iPhone photo.
         const jpegBase = safeFilenamePart(displayName).replace(/\.(heic|heif)$/i, '.jpg');
-        const jpegName = `imessage_${timestamp}_${jpegBase}`;
+        const jpegName = `imessage_${timestamp}_${row.ROWID}_${jpegBase}`;
         const destPath = path.join(dir, jpegName);
         convertHeicToJpeg(srcPath, destPath);
         if (!fs.existsSync(destPath)) {
@@ -289,7 +289,7 @@ function fetchImessageAttachments(
       }
 
       if (PDF_MIMES.has(mimeType)) {
-        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const storedName = `imessage_${timestamp}_${row.ROWID}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
@@ -309,7 +309,7 @@ function fetchImessageAttachments(
       const isVideoByExt = VIDEO_EXTENSIONS.has(ext);
       if (isAudioByMime || isAudioByExt || isVideoByMime || isVideoByExt) {
         const category: UploadedFile['category'] = (isAudioByMime || isAudioByExt) ? 'audio' : 'video';
-        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const storedName = `imessage_${timestamp}_${row.ROWID}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
