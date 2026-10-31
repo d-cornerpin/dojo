@@ -1545,7 +1545,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const outgoing = plan ? plan.outgoing : content;
 
     const userMsg: ChatMessage = {
-      id: `temp-${Date.now()}`,
+      id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role: 'user',
       content,
       createdAt: new Date().toISOString(),
@@ -1557,11 +1557,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
     if (!result.ok) {
       plan?.rollback();
       setIsWorking(false);
-      if (result.error.includes('busy')) {
-        toast.info(`${agentName || 'Agent'} is mid-mission — your message will be delivered when they finish.`);
-      } else {
-        toast.error(result.error);
-      }
+      // The server refused it: take the bubble back out and hand the owner's text back in the toast
+      // (the composer already cleared its box), so a refused message never reads as sent.
+      setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
+      toast.error(`${result.error} Your message was not sent: "${content}"`);
     } else {
       plan?.commit();
     }
