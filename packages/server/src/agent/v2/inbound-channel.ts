@@ -143,7 +143,9 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
   }
 
   const context: ChannelInboundContext = {
-    recipientAddress: meta.recipientAddress,
+    // An email's watcher stamps WHO WROTE as `sender` and no separate reply address, so the reply's
+    // recipient (the ledger row, the dashboard badge) is that sender; without it the row named nobody.
+    recipientAddress: meta.recipientAddress ?? (meta.channel === 'email' ? (meta.sender ?? undefined) : undefined),
     emailMessageId: meta.emailMessageId,
     emailService: meta.emailService,
     emailSubject: meta.emailSubject,
