@@ -9425,6 +9425,90 @@
       "to": 1684,
       "by": "t267 fix round 2 (2026-10-24): dojo_inspect deny-lift door (re-review Important 1)",
       "why": "+1: a one-line reader of the three tool-grant shapes an update_agent call can carry, so the same statement asks both the grant refusal and the new deny-lift refusal (lifting a deny that withholds dojo_inspect is a grant only the owner makes). The predicates live in inspect/grant.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts",
+      "from": 298,
+      "to": 310,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+12: preflight computes the turn's address once (the call and its inputs); the logic lives in agent/v2/turn-address.ts. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 2860,
+      "to": 2870,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+10: the compile steer is handed the asker read from the ask row (a call plus three imports). The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts",
+      "from": 209,
+      "to": 218,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+9: the hand-off and reminder floors name who is waiting and where the written reply lands, from the turn's address (with the old wording kept as the no-address fallback). The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 668,
+      "to": 676,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+8: the one tool door refuses a channel send with no recipient and appends the recipient note to a send that ran; both live in agent/v2/send-recipient.ts. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/entries.ts",
+      "from": 611,
+      "to": 619,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+8: the clock message carries the one-line reply-address restatement on a routed channel; the others-waiting hint names the person. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/work/join-drive.ts",
+      "from": 498,
+      "to": 506,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+8: the compile steer names the person who asked (and their channel) instead of always 'the owner'; the asker lookup lives in the new work/compile-asker.ts. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 649,
+      "to": 654,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+5: one field on the turn's bag: the turn's address (classified in the bag census test). The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 981,
+      "to": 985,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+4: the header becomes two lines (who sent this / who the written reply goes to) and the close-the-loop line says how to reach the owner. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/turn-state.ts",
+      "from": 239,
+      "to": 242,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+3: the continuation stash carries the turn's address. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/route-reply.ts",
+      "from": 199,
+      "to": 202,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+3: delivery binds to the address's inbound, which a continuation restores. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 5208,
+      "to": 5210,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+2: two tracker texts stop claiming a route ('in the conversation', 'in chat'). The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/refusal-gates.ts",
+      "from": 361,
+      "to": 362,
+      "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
+      "why": "+1: the reminder-lane refusal and the compile gate stop claiming a route / name the person who asked. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9471,7 +9555,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1889,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
     "packages/dashboard/src/pages/Tracker.tsx": 1409,
-    "packages/server/src/agent/a2a-transport.ts": 2860,
+    "packages/server/src/agent/a2a-transport.ts": 2870,
     "packages/server/src/agent/access/authorize.ts": 454,
     "packages/server/src/agent/access/read.ts": 264,
     "packages/server/src/agent/agent-status.ts": 251,
@@ -9511,17 +9595,17 @@
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 377,
     "packages/server/src/agent/tools/gates.ts": 289,
-    "packages/server/src/agent/tools/index.ts": 668,
+    "packages/server/src/agent/tools/index.ts": 676,
     "packages/server/src/agent/tools/surface.ts": 737,
     "packages/server/src/agent/tools/types.ts": 340,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 649,
-    "packages/server/src/agent/turn-state.ts": 239,
+    "packages/server/src/agent/turn-context.ts": 654,
+    "packages/server/src/agent/turn-state.ts": 242,
     "packages/server/src/agent/utility-dial.ts": 242,
     "packages/server/src/agent/v2/ack-copy.ts": 303,
     "packages/server/src/agent/v2/answered-edge.ts": 865,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 505,
-    "packages/server/src/agent/v2/counterparty.ts": 981,
+    "packages/server/src/agent/v2/counterparty.ts": 985,
     "packages/server/src/agent/v2/loop.ts": 696,
     "packages/server/src/agent/v2/outbound-ledger.ts": 473,
     "packages/server/src/agent/v2/outbound.ts": 457,
@@ -9544,7 +9628,7 @@
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 264,
     "packages/server/src/agent/v2/steps/execute/index.ts": 309,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
-    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 361,
+    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 362,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 147,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 288,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 98,
@@ -9558,13 +9642,13 @@
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 109,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
-    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 199,
+    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 202,
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 129,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 203,
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 300,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 303,
-    "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 209,
+    "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 218,
     "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 247,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 176,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 406,
@@ -9583,7 +9667,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 214,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 243,
-    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 298,
+    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 310,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
@@ -9666,7 +9750,7 @@
     "packages/server/src/migration/import.ts": 409,
     "packages/server/src/prompt/agent-rename.ts": 248,
     "packages/server/src/prompt/assembler.ts": 1955,
-    "packages/server/src/prompt/registry/entries.ts": 611,
+    "packages/server/src/prompt/registry/entries.ts": 619,
     "packages/server/src/prompt/registry/types.ts": 473,
     "packages/server/src/providers/anthropic-sdk.ts": 595,
     "packages/server/src/providers/billing-breaker.ts": 316,
@@ -9733,7 +9817,7 @@
     "packages/server/src/work/ask-settlement.ts": 1525,
     "packages/server/src/work/ask-title.ts": 527,
     "packages/server/src/work/deliverable-declaration.ts": 320,
-    "packages/server/src/work/join-drive.ts": 498,
+    "packages/server/src/work/join-drive.ts": 506,
     "packages/server/src/work/obligation-memory.ts": 630,
     "packages/server/src/work/occurrences.ts": 843,
     "packages/server/src/work/override-requests.ts": 247,
