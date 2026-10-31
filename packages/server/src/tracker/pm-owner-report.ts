@@ -1,13 +1,13 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// SPINNING (t143, v3.3.3): THE PROJECT MANAGER TELLS THE OWNER, IN ITS OWN VOICE, WHAT REPEATS.
+// SPINNING (t143, v3.3.3): THE OWNER IS TOLD WHAT REPEATS (OR-ENGINE-LABELLED: plainly the Dojo, and the PM is told the text).
 //
 // The effort governor (`tracker/effort-governor.ts`) meters tool calls a task burns without
 // advancing; past its threshold the PM rules ADVANCING or CIRCLING (`runEffortReview` in
 // `pm-agent.ts`). A circling verdict already reaches the AGENT — the guarded poke sweep and the
 // checkpoint rider deliver it, and the PM keeps re-driving. What never happened is the owner
-// hearing about it. OR-V333-SET (3) keeps the platform's own direct line to the owner for budget
-// and broken/silent only, so this is the PM speaking, not the platform: one message on the PM's
-// own chat, naming the task, the agent, the step it keeps repeating (the same call with the same
+// hearing about it. The PM cannot act on its own chat line here, so this note STAYS, but (owner,
+// 2026-10-31) it is labelled "Dojo:" (a system row, never an assistant bubble in the PM's voice) and
+// the PM is told the exact text it was sent: one message on the PM's chat line, naming the task, the agent, the step it keeps repeating (the same call with the same
 // arguments, counted from the agent's own calls since the task last moved, never its busiest tool) and the PM's reason. Nothing is asked of the owner (OR-PM-1).
 //
 // ONCE PER CIRCLING EPISODE: a second circling verdict on a task that has not moved since the
@@ -22,6 +22,7 @@ import { broadcast } from '../gateway/ws.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
+import { dojoVoice, tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 
 const logger = createLogger('pm-owner-report');
 
@@ -75,8 +76,8 @@ export function reportCirclingToOwner(taskId: string, title: string, agentId: st
     const step = agentId ? repeatedStep(agentId, taskId) : null;
     const content = `${name} seems to be going in circles on "${title}".`
       + (step ? ` The step it keeps repeating: the same ${step.tool} call (${step.times} times since this task last moved).` : '')
-      + ` My read: ${reason.trim()}`
-      + ` I'm sending ${name} word to change approach and I'll keep it moving; nothing for you to do unless you want to step in.`;
+      + ` The project manager's read: ${reason.trim()}`
+      + ` ${name} is being told to change approach and the project manager will keep it moving; nothing for you to do unless you want to step in.`;
 
     postToOwner(taskId, content);
     logger.info('PM told the owner a task is circling (once per episode)', { taskId, agentId });
@@ -90,12 +91,14 @@ export function reportCirclingToOwner(taskId: string, title: string, agentId: st
 function postToOwner(taskId: string, content: string): void {
   const pmId = getPMAgentId();
   const id = uuidv4();
-  const row = insertMessageIfAbsent({ id, agentId: pmId, role: 'assistant', content, subjectKind: 'background', taskId });
+  const labelled = dojoVoice(content);
+  const row = insertMessageIfAbsent({ id, agentId: pmId, role: 'system', content: labelled, subjectKind: 'background', taskId });
   if (!row) return;
+  tellAgentWhatDojoSent({ agentId: pmId, recipient: 'the owner (on your chat line)', text: labelled, why: 'about a task you manage, because you could not say it yourself' });
   broadcast({
     type: 'chat:message', agentId: pmId,
     message: {
-      id, agentId: pmId, role: 'assistant' as const, content,
+      id, agentId: pmId, role: 'system' as const, content: labelled,
       tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
     },
   });
@@ -103,15 +106,15 @@ function postToOwner(taskId: string, content: string): void {
 }
 
 /** The PM could not get a usable answer from its own model, twice in a row, on whether a task is circling.
- *  Told once, in the PM's own voice on its chat line; the question is closed, not asked a third time. */
+ *  Told once, labelled as the Dojo on the PM's chat line (and the PM is told the text); the question is closed, not asked a third time. */
 export function reportEffortReviewStuckToOwner(taskId: string, title: string, agentId: string | null, lastProblem: string): void {
   try {
     const name = agentId
       ? (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId
       : 'its agent';
-    postToOwner(taskId, `I could not tell whether ${name} is making progress or going in circles on "${title}": `
-      + `my own review failed twice in a row (last problem: ${lastProblem.trim()}). `
-      + `I have stopped asking about it for now; it is yours to look at if it matters.`);
+    postToOwner(taskId, `the project manager could not tell whether ${name} is making progress or going in circles on "${title}": `
+      + `its review failed twice in a row (last problem: ${lastProblem.trim()}). `
+      + `It has stopped asking about it for now; it is yours to look at if it matters.`);
     logger.info('PM told the owner an effort review could not be judged', { taskId, agentId });
   } catch (err) {
     logger.warn('PM effort-review report could not be written', { taskId, error: err instanceof Error ? err.message : String(err) });
