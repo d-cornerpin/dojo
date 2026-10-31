@@ -37,7 +37,9 @@ npm run build -w packages/dashboard
 # Build watchdog
 echo "📦 Building watchdog..."
 cd "$PROJECT_ROOT/watchdog"
-npx tsc 2>/dev/null || true
+rm -rf dist
+npx tsc || fail "the watchdog did not compile (the reason is above). A package without a working watchdog cannot roll an update back. Nothing was shipped."
+[[ -f dist/index.js ]] || fail "the watchdog build produced no dist/index.js, which is the file the installed service runs. Nothing was shipped."
 cd "$PROJECT_ROOT"
 
 # Assemble package
@@ -146,7 +148,7 @@ cp "$PROJECT_ROOT/templates/"*.md "$DEST/platform/templates/"
 
 # Watchdog (SIBLING copy, install.sh uses this on a fresh install)
 mkdir -p "$DEST/watchdog"
-cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/watchdog/" 2>/dev/null || true
+cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/watchdog/"
 cp "$PROJECT_ROOT/watchdog/package.json" "$DEST/watchdog/"
 
 # Watchdog (BUNDLED INSIDE platform/, closes the in-app-update delivery gap).
@@ -158,7 +160,7 @@ cp "$PROJECT_ROOT/watchdog/package.json" "$DEST/watchdog/"
 # (mirrors the sibling copy above + install.sh, which runs `npm ci` in
 # ~/.dojo/watchdog); the refresh preserves the already-compiled node_modules there.
 mkdir -p "$DEST/platform/watchdog-dist"
-cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/platform/watchdog-dist/" 2>/dev/null || true
+cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/platform/watchdog-dist/"
 cp "$PROJECT_ROOT/watchdog/package.json" "$DEST/platform/watchdog-dist/"
 # Version marker read by the boot-time refresh: "<platformVersion> <distHash>".
 # The platform version drives the "is the bundle newer" decision; the content hash
