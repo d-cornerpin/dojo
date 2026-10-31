@@ -59,16 +59,20 @@ export function configKeyToChannel(key: string): SafeSenderChannel | null {
 
 type SyncOutcome = 'created' | 'updated' | 'noop';
 
-// Mirror one safe sender. Match by the channel's address first, then by exact
-// display name, so adding an iMessage handle to an existing "Alex" record
-// augments it instead of forking a duplicate.
+// Mirror one safe sender. Match by address only (never by name alone), so adding
+// a handle that is already on file to that person's record augments it.
 function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string | null): SyncOutcome {
   const address = sender.address?.trim();
   if (!address) return 'noop';
   const field = FIELD_BY_CHANNEL[channel];
   const name = (sender.name ?? '').trim();
 
-  const match = findMatchingContact({ [field]: [address], displayName: name || undefined });
+  // By ADDRESS only (any address field, so a handle that is already someone's email still
+  // finds them). A shared label alone is not the same person: it makes a separate contact.
+  const match = findMatchingContact(
+    { emails: [address], phones: [address], imessageHandles: [address] },
+    { allowNameMatch: false },
+  );
   if (match) {
     const patch: ContactInput = {};
     // Add the channel address if the matched contact doesn't carry it yet.
@@ -87,7 +91,7 @@ function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string
       (match.preferredName ?? '').toLowerCase() === lname;
     if (!nameAlreadyKnown) {
       if (match.tags.includes('safe-sender')) patch.displayName = name;
-      else patch.preferredName = name;
+      else if (!(match.preferredName ?? '').trim()) patch.preferredName = name; // never replace one the owner set
     }
     if (Object.keys(patch).length === 0) return 'noop';
     updateContact(match.id, patch, agentId, 'append');

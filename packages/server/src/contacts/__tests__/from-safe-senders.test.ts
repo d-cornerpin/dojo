@@ -85,9 +85,9 @@ describe('syncSafeSendersToContacts — a new contact', () => {
     const out = syncSafeSendersToContacts('gmail', [sender(' A@x.com ', ' Ann ')], null);
 
     expect(vi.mocked(findMatchingContact).mock.calls[0][0]).toEqual({
-      emails: ['A@x.com'],
-      displayName: 'Ann',
+      emails: ['A@x.com'], phones: ['A@x.com'], imessageHandles: ['A@x.com'],
     });
+    expect(vi.mocked(findMatchingContact).mock.calls[0][1]).toEqual({ allowNameMatch: false });
     expect(vi.mocked(createContact).mock.calls[0][0]).toEqual({
       displayName: 'Ann',
       tags: ['safe-sender'],
@@ -116,8 +116,7 @@ describe('syncSafeSendersToContacts — a new contact', () => {
     syncSafeSendersToContacts('gmail', [sender('a@x.com', '')], null);
 
     expect(vi.mocked(findMatchingContact).mock.calls[0][0]).toEqual({
-      emails: ['a@x.com'],
-      displayName: undefined,
+      emails: ['a@x.com'], phones: ['a@x.com'], imessageHandles: ['a@x.com'],
     });
     expect(vi.mocked(createContact).mock.calls[0][0]).toMatchObject({ displayName: 'a@x.com' });
   });
@@ -157,6 +156,13 @@ describe('syncSafeSendersToContacts — an existing contact', () => {
 
     expect(updateContact).toHaveBeenCalledWith('c1', { preferredName: 'Bea' }, null, 'append');
     expect(vi.mocked(updateContact).mock.calls[0][1]).not.toHaveProperty('displayName');
+  });
+
+  it('never replaces a preferred name the owner already set', () => {
+    vi.mocked(findMatchingContact).mockReturnValue(known({ emails: ['a@x.com'], preferredName: 'Bee' }));
+    const out = syncSafeSendersToContacts('gmail', [sender('a@x.com', 'Bea')], null);
+    expect(updateContact).not.toHaveBeenCalled();
+    expect(out).toEqual({ created: 0, updated: 0 });
   });
 
   it('records a new name as displayName on a safe-sender-tagged contact', () => {
