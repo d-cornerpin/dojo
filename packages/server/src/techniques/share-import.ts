@@ -115,10 +115,15 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   }
   makeNewFolder(dirPath); // refuses an existing folder (shouldn't happen given pickAvailableId)
   // From here on, any failure removes the folder THIS import made (and only that one).
+  let extractedCount = 0;
+  let needsSetup = false;
+  let initialState = 'draft';
   try {
 
     // ── 3. Extract every entry except manifest.json (we store it separately) ──
-    const { extractedCount, hasInstructions } = extractPackageEntries(zip, dirPath);
+    const extracted = extractPackageEntries(zip, dirPath);
+    extractedCount = extracted.extractedCount;
+    const hasInstructions = extracted.hasInstructions;
 
     if (!hasInstructions) {
       // Clean up and bail — every technique needs TECHNIQUE.md
@@ -131,8 +136,8 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
 
     // ── 5. Write metadata.json so the disk layout matches a normal technique ──
     const tags = Array.isArray(manifest.technique.tags) ? manifest.technique.tags : [];
-    const needsSetup = Array.isArray(manifest.placeholders) && manifest.placeholders.length > 0;
-    const initialState = needsSetup ? 'needs_setup' : 'draft';
+    needsSetup = Array.isArray(manifest.placeholders) && manifest.placeholders.length > 0;
+    initialState = needsSetup ? 'needs_setup' : 'draft';
 
     const metadata = {
       id: newId,
@@ -156,62 +161,72 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
     };
     writeFolderText(dirPath, 'metadata.json', JSON.stringify(metadata, null, 2));
 
-    // ── 6. Insert into the techniques table ──
+    // ── 6. Register: both rows go in together or neither does ──
     const db = getDb();
     const instructions = readFolderText(dirPath, 'TECHNIQUE.md') ?? '';
-    db.prepare(`
-      INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
-                              directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
-                              created_at, updated_at, published_at)
-      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 1, 0, NULL, NULL,
-              datetime('now'), datetime('now'), NULL)
-    `).run(
-      newId,
-      manifest.technique.name,
-      manifest.technique.description ?? null,
-      initialState,
-      manifest.technique.author_agent_name ?? null,
-      JSON.stringify(tags),
-      dirPath,
-    );
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
+                                directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
+                                created_at, updated_at, published_at)
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 1, 1, 0, NULL, NULL,
+                datetime('now'), datetime('now'), NULL)
+      `).run(
+        newId,
+        manifest.technique.name,
+        manifest.technique.description ?? null,
+        initialState,
+        manifest.technique.author_agent_name ?? null,
+        JSON.stringify(tags),
+        dirPath,
+      );
 
-    // Snapshot v1
-    db.prepare(`
-      INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
-      VALUES (?, ?, 1, ?, 'import', ?, '[]', datetime('now'))
-    `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
-
-    embedTechniqueIntent(newId); // so recall can find it by what it is for, like one made by hand
-
-    logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
-    broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
-
-    // ── 7. Hand off to the trainer agent ──
-    // The trainer is the owner of techniques on this dojo, so importing
-    // = dropping a message in the trainer's chat with the staged path,
-    // any dependency manifest, and any placeholders that need filling.
-    // The trainer's prompt teaches them how to install deps and
-    // finalize. Fire-and-forget — a failed handoff doesn't fail the
-    // import (the user can still see the technique sitting in needs_setup
-    // and message the trainer manually).
-    void notifyTrainerOfImport(newId, manifest.technique.name, dirPath, manifest.placeholders ?? []).catch((err) => {
-      logger.warn('Trainer notification after import failed (non-fatal)', {
-        newId, error: err instanceof Error ? err.message : String(err),
-      });
-    });
-
-    return {
-      techniqueId: newId,
-      originalId,
-      name: manifest.technique.name,
-      state: initialState,
-      placeholders: manifest.placeholders ?? [],
-      needsSetup,
-    };
+      // Snapshot v1
+      db.prepare(`
+        INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
+        VALUES (?, ?, 1, ?, 'import', ?, '[]', datetime('now'))
+      `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
+    })();
   } catch (err) {
     removeFolder(dirPath);
     throw err;
   }
+
+  // ── Registered. Nothing below can undo the import: a failure here is logged, never thrown. ──
+  logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
+  try {
+    embedTechniqueIntent(newId); // so recall can find it by what it is for, like one made by hand
+  } catch (err) {
+    logger.warn('Embedding the imported technique failed (non-fatal)', { newId, error: err instanceof Error ? err.message : String(err) });
+  }
+  try {
+    broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
+  } catch (err) {
+    logger.warn('Broadcast after import failed (non-fatal)', { newId, error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // ── 7. Hand off to the trainer agent ──
+  // The trainer is the owner of techniques on this dojo, so importing
+  // = dropping a message in the trainer's chat with the staged path,
+  // any dependency manifest, and any placeholders that need filling.
+  // The trainer's prompt teaches them how to install deps and
+  // finalize. Fire-and-forget — a failed handoff doesn't fail the
+  // import (the user can still see the technique sitting in needs_setup
+  // and message the trainer manually).
+  void notifyTrainerOfImport(newId, manifest.technique.name, dirPath, manifest.placeholders ?? []).catch((err) => {
+    logger.warn('Trainer notification after import failed (non-fatal)', {
+      newId, error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  return {
+    techniqueId: newId,
+    originalId,
+    name: manifest.technique.name,
+    state: initialState,
+    placeholders: manifest.placeholders ?? [],
+    needsSetup,
+  };
 }
 
 /**
