@@ -44,6 +44,7 @@
 
 import { setImmediate as setImmediateUnfaked } from 'node:timers';
 import { getDb } from '../db/connection.js';
+import { embeddingModelKey } from '../memory/embedding-model.js';
 import { createLogger } from '../logger.js';
 import { readerPoolAvailable, readerQuery } from '../memory/reader-pool.js';
 import {
@@ -140,9 +141,7 @@ export interface VaultCandidateScan {
 
 // ── Cosine similarity ──
 //
-// One copy, and it used to be three: `vault/store.ts` carried its own and `memory/vector-search.ts`
-// still does (a different table, a different lane, out of this change's fence). `store.ts`'s copy is
-// deleted in favour of this one, because all three of its callers now score here.
+// One copy for the vault: `store.ts`'s is deleted, all three of its callers score here (the one-model-only guard is in `scanVaultCandidates`).
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let dot = 0, normA = 0, normB = 0;
@@ -338,6 +337,7 @@ export async function scanVaultCandidates(opts: {
    */
   readonly scopeAgentIds?: readonly string[];
 }): Promise<VaultCandidateScan> {
+  opts = { ...opts, conditions: [...opts.conditions, 'embedding_model = ?'], params: [...opts.params, embeddingModelKey()] };
   const db = getDb();
   const cap = opts.candidateRows ?? VAULT_CANDIDATE_ROWS;
   // ⚠ THE SPAN IS THE CALLER'S SCOPE'S, NOT THE TABLE'S (fix round 1, I2). All three semantic scans

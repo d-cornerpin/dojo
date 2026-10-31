@@ -163,6 +163,7 @@ beforeAll(() => {
   db.pragma('journal_mode = WAL');          // the property that makes a second reader safe
   // The platform's own shape, trimmed to the columns these reads touch.
   db.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
     id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT,
     type TEXT NOT NULL DEFAULT 'fact', content TEXT NOT NULL, context TEXT,
     confidence REAL DEFAULT 1.0, is_permanent INTEGER DEFAULT 0, tags TEXT DEFAULT '[]',
@@ -213,6 +214,7 @@ function fixtureAt(
   const d = new Database(p);
   d.pragma('journal_mode = WAL');
   d.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
     id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
     content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
@@ -719,6 +721,7 @@ describe('⚠ THE ANSWERS ARE THE PRE-FIX ANSWERS — a bound that moves results
     const db = new Database(p);
     db.pragma('journal_mode = WAL');
     db.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT,
       type TEXT NOT NULL DEFAULT 'fact', content TEXT NOT NULL, context TEXT,
       confidence REAL DEFAULT 1.0, is_permanent INTEGER DEFAULT 0, tags TEXT DEFAULT '[]',
@@ -858,6 +861,7 @@ describe('⚠ THE EXACT SEARCH — where a `LIMIT` bounded the answer and not th
     const db = new Database(p);
     db.pragma('journal_mode = WAL');
     db.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
       content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
       created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))

@@ -9,43 +9,14 @@ import { createLogger } from '../logger.js';
 import { openAgentCall } from '../agent/abortable-call.js';
 import { localWorkBegins } from '../services/ollama-quiet.js';
 import { openAiCompatibleUrl } from '../services/openai-compatible-url.js';
+import { readEmbeddingConfig, embeddingModelKey, type EmbeddingConfig } from './embedding-model.js';
 
 const logger = createLogger('embeddings');
 
 // ── Configuration ──
 
-interface EmbeddingConfig {
-  provider: 'ollama' | 'openai';
-  model: string;
-  dimensions: number;
-  baseUrl: string;
-  batchSize: number;
-}
-
 function getEmbeddingConfig(): EmbeddingConfig {
-  const db = getDb();
-  const row = db.prepare("SELECT value FROM config WHERE key = 'embedding_config'").get() as { value: string } | undefined;
-
-  if (row) {
-    try {
-      const parsed = JSON.parse(row.value);
-      return {
-        provider: parsed.provider ?? 'ollama',
-        model: parsed.model ?? 'nomic-embed-text',
-        dimensions: parsed.dimensions ?? 768,
-        baseUrl: parsed.baseUrl ?? 'http://localhost:11434',
-        batchSize: parsed.batchSize ?? 50,
-      };
-    } catch { /* fall through */ }
-  }
-
-  return {
-    provider: 'ollama',
-    model: 'nomic-embed-text',
-    dimensions: 768,
-    baseUrl: 'http://localhost:11434',
-    batchSize: 50,
-  };
+  return readEmbeddingConfig();
 }
 
 export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
@@ -56,6 +27,13 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
     INSERT INTO config (key, value, updated_at) VALUES ('embedding_config', ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
   `).run(JSON.stringify(updated), JSON.stringify(updated));
+  // Switching the embedding model leaves vectors made by the old one; see embedding-switch.ts.
+  const before = embeddingModelKey(current);
+  if (before !== embeddingModelKey(updated)) {
+    void import('./embedding-switch.js').then((m) => m.handleEmbeddingModelSwitch(before)).catch((err) => {
+      logger.warn('Embedding model switch follow-up failed', { error: err instanceof Error ? err.message : String(err) });
+    });
+  }
 }
 
 // ── Backend absence, reported as a fact instead of guessed from prose ──
@@ -235,24 +213,36 @@ export async function storeEmbedding(
   sourceId: string,
   agentId: string | null,
   content: string,
+  // Set only by the re-embed after a model switch: a row made by another model is replaced.
+  opts?: { replaceStale?: boolean },
 ): Promise<void> {
   try {
     // Skip very short content
     if (content.trim().length < 20) return;
 
+    // The label is read BEFORE the model call, so a vector is stamped with the model that made it
+    // even if the settings change while the call is in flight.
+    const model = embeddingModelKey();
+
     // Check if already embedded
     const db = getDb();
     const existing = db.prepare(
-      'SELECT id FROM embeddings WHERE source_type = ? AND source_id = ?'
-    ).get(sourceType, sourceId);
-    if (existing) return;
+      'SELECT id, embedding_model AS model FROM embeddings WHERE source_type = ? AND source_id = ?'
+    ).get(sourceType, sourceId) as { id: string; model: string | null } | undefined;
+    if (existing && !(opts?.replaceStale && existing.model !== model)) return;
 
     const embedding = await generateEmbedding(content);
+
+    // The replaced row goes in the same synchronous step as the new one lands (no await between),
+    // and only when the new one is written: a failed embed leaves the old row in place.
+    if (existing) {
+      db.prepare('DELETE FROM embeddings WHERE id = ? AND embedding_model IS NOT ?').run(existing.id, model);
+    }
 
     // GUARDED WRITE — the `await` above is the orphan class's whole mechanism; see the leaf.
     const written = insertEmbeddingIfSourceAlive(db, {
       id: uuidv4(), sourceType, sourceId, agentId, preview: content.slice(0, 200),
-      vector: Buffer.from(embedding.buffer), dimensions: embedding.length,
+      vector: Buffer.from(embedding.buffer), dimensions: embedding.length, model,
     }, (kind) => logger.warn(UNDECLARED_EMBEDDING_KIND_WARNING, { sourceType: kind, sourceId }, agentId ?? undefined));
     if (!written) {
       logger.debug('Embedding discarded: its source was deleted while it was being computed',

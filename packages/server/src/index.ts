@@ -1202,7 +1202,7 @@ async function main(): Promise<void> {
   setTimeout(() => {
     void (async () => {
       try {
-        const { reembedNullVaultEntries } = await import('./vault/store.js');
+        const { reembedNullVaultEntries } = await import('./vault/embedding-refresh.js');
         await reembedNullVaultEntries();
       } catch (err) {
         logger.debug('reembedNullVaultEntries failed (non-fatal)', {

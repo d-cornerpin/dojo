@@ -95,6 +95,7 @@ beforeAll(() => {
   const d = new Database(dbPath);
   d.pragma('journal_mode = WAL');
   d.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
     id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT,
     type TEXT NOT NULL DEFAULT 'fact', content TEXT NOT NULL, context TEXT,
     confidence REAL DEFAULT 1.0, is_permanent INTEGER DEFAULT 0, tags TEXT DEFAULT '[]',
@@ -229,6 +230,7 @@ describe('⚠ FIX ROUND 1, I2 — A TRUNCATED WINDOW IS TOLD TO THE AGENT, NOT O
     const d = new Database(p);
     d.pragma('journal_mode = WAL');
     d.exec(`CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'fact',
       content TEXT NOT NULL, is_obsolete INTEGER DEFAULT 0, embedding BLOB, namespace TEXT,
       created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))

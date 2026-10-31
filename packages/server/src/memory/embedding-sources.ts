@@ -140,6 +140,8 @@ export interface EmbeddingRow {
   preview: string;
   vector: Buffer;
   dimensions: number;
+  /** The embedding model's label (`embedding-model.ts`); a search only scores vectors of the current one. */
+  model?: string | null;
 }
 
 /**
@@ -178,12 +180,12 @@ export function insertEmbeddingIfSourceAlive(
     return false;
   }
   const result = db.prepare(`
-    INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
-    SELECT ?, ?, ?, ?, ?, ?, ?, datetime('now')
+    INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, embedding_model, created_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')
      WHERE EXISTS (SELECT 1 FROM ${table} src WHERE src.id = ?${embeddable(row.sourceType)})
   `).run(
     row.id, row.sourceType, row.sourceId, row.agentId, row.preview,
-    row.vector, row.dimensions, row.sourceId,
+    row.vector, row.dimensions, row.model ?? null, row.sourceId,
   );
   return result.changes > 0;
 }

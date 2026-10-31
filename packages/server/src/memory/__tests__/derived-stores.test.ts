@@ -381,8 +381,8 @@ describe('compressed history is reachable by meaning', () => {
     // What `storeEmbedding` writes, written directly so the assertion is about the SEARCH
     // and not about a network backend.
     const vec = Buffer.from(new Float32Array([1, 0, 0, 0]).buffer);
-    db().prepare(`INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
-                  VALUES ('emb-sum', 'summary', ?, ?, ?, ?, 4, datetime('now'))`)
+    db().prepare(`INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, embedding_model, created_at)
+                  VALUES ('emb-sum', 'summary', ?, ?, ?, ?, 4, 'ollama:nomic-embed-text', datetime('now'))`)
       .run(summary.id, AGENT, 'the agent reconciled the harbour ledger', vec);
 
     const hits = await vectorSearch('harbour ledger', AGENT, {

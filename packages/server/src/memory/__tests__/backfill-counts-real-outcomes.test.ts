@@ -29,8 +29,8 @@ vi.mock('../embeddings.js', () => {
     storeEmbedding: async (sourceType: string, sourceId: string, agentId: string | null, content: string) => {
       if (!okIds.has(sourceId)) return;
       mockDb.current!.prepare(
-        `INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 4, datetime('now'))`,
+        `INSERT INTO embeddings (id, source_type, source_id, agent_id, content_preview, embedding, dimensions, embedding_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 4, 'ollama:nomic-embed-text', datetime('now'))`,
       ).run(`emb-${++n}`, sourceType, sourceId, agentId, content.slice(0, 200), Buffer.from(new Float32Array([1, 0, 0, 0]).buffer));
     },
   };

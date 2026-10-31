@@ -54,6 +54,7 @@ beforeEach(() => {
     CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT, classification TEXT, group_id TEXT);
     CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT,
       type TEXT NOT NULL DEFAULT 'fact', content TEXT NOT NULL, context TEXT,
       confidence REAL DEFAULT 1.0, is_permanent INTEGER DEFAULT 0,

@@ -36,6 +36,7 @@ beforeEach(() => {
       group_id TEXT
     );
     CREATE TABLE vault_entries (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
       agent_name TEXT,

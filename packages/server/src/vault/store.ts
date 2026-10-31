@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { dominantMessageLineage } from '../memory/conversations.js';
 import { createLogger } from '../logger.js';
+import { embeddingModelKey } from '../memory/embedding-model.js';
 import { generateEmbedding, isEmbeddingBackendUnavailable, warnEmbeddingBackendAbsentOnce } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/budget.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
@@ -356,6 +357,7 @@ export async function createEntry(params: {
 
   // Generate embedding
   let embeddingBuf: Buffer | null = null;
+  const embeddingModel = embeddingModelKey();   // read before the call: the label of the model that makes this vector
   try {
     const embedding = await generateEmbedding(content);
     embeddingBuf = Buffer.from(embedding.buffer);
@@ -392,8 +394,8 @@ export async function createEntry(params: {
   }
 
   db.prepare(`
-    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, citation, embedding, namespace, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, citation, embedding, embedding_model, namespace, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -409,6 +411,7 @@ export async function createEntry(params: {
     params.source ?? 'agent',
     params.citation ?? null,
     embeddingBuf,
+    embeddingBuf ? embeddingModel : null,
     params.namespace ?? null,
   );
 
@@ -459,8 +462,9 @@ export function updateEntry(id: string, updates: {
 
   // Re-generate embedding if content changed
   if (updates.content !== undefined) {
+    const model = embeddingModelKey();
     generateEmbedding(updates.content).then(emb => {
-      db.prepare('UPDATE vault_entries SET embedding = ? WHERE id = ?').run(Buffer.from(emb.buffer), id);
+      db.prepare('UPDATE vault_entries SET embedding = ?, embedding_model = ? WHERE id = ?').run(Buffer.from(emb.buffer), model, id);
     }).catch(() => { /* best effort */ });
   }
 
@@ -734,29 +738,6 @@ export async function semanticSearch(query: string, options?: {
     scored.push({ ...rowToEntry(row), similarity: w.similarity });
   }
   return scored;
-}
-
-// D17: some vault entries carry a NULL embedding (a pre-C12 Ollama 500-and-drop
-// at create time, or an embed outage). semanticSearch requires embedding IS NOT
-// NULL, so those entries can NEVER match a semantic vault_search, only an exact
-// LIKE lookup can find them. Re-embed them once so they become findable. Best
-// effort and throttled (LIMIT); anything still failing is retried on the next
-// boot pass. Returns how many entries were successfully re-embedded.
-export async function reembedNullVaultEntries(limit = 200): Promise<number> {
-  const db = getDb();
-  const rows = db.prepare(
-    'SELECT id, content FROM vault_entries WHERE embedding IS NULL AND is_obsolete = 0 LIMIT ?',
-  ).all(limit) as Array<{ id: string; content: string }>;
-  let fixed = 0;
-  for (const row of rows) {
-    try {
-      const emb = await generateEmbedding(row.content);
-      db.prepare('UPDATE vault_entries SET embedding = ? WHERE id = ?').run(Buffer.from(emb.buffer), row.id);
-      fixed++;
-    } catch { /* best effort, retry next boot */ }
-  }
-  if (fixed > 0) logger.info('Re-embedded NULL-embedding vault entries', { fixed });
-  return fixed;
 }
 
 // ── Deduplication Helper ──

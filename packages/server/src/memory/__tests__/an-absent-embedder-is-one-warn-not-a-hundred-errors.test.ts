@@ -91,6 +91,7 @@ beforeEach(() => {
   db.exec(`
     CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
     CREATE TABLE embeddings (
+      embedding_model TEXT DEFAULT 'ollama:nomic-embed-text',
       id TEXT PRIMARY KEY, source_type TEXT NOT NULL, source_id TEXT NOT NULL,
       agent_id TEXT, content_preview TEXT, embedding BLOB NOT NULL,
       dimensions INTEGER NOT NULL, created_at TEXT

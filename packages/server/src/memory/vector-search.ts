@@ -9,10 +9,9 @@ import { generateEmbedding } from './embeddings.js';
 import { embeddingSourceAliveSql } from './embedding-sources.js';
 import { ftsSafeQuery } from './fts-query.js';
 import { ftsCandidateRowidFloor } from './search-bounds.js';
+import { embeddingModelKey } from './embedding-model.js';
 
 const logger = createLogger('vector-search');
-
-// ── Cosine Similarity ──
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
@@ -31,8 +30,6 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (denom === 0) return 0;
   return dotProduct / denom;
 }
-
-// ── Search Result ──
 
 export interface VectorSearchResult {
   sourceType: string;
@@ -94,6 +91,8 @@ export async function vectorSearch(
   // The predicate is built from `EMBEDDING_SOURCE_TABLES`, the one declared map, so a new source
   // kind cannot be silently half-wired.
   conditions.push(embeddingSourceAliveSql('e'));
+
+  conditions.push('e.embedding_model = ?'); params.push(embeddingModelKey());   // one model's vectors only: embedding-model.ts
 
   const where = conditions.join(' AND ');
 

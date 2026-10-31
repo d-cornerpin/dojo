@@ -385,7 +385,7 @@ memoryRouter.post('/embeddings/backfill', async (c) => {
     }
 
     // Run backfill in background
-    runBackfill().catch(err => {
+    runBackfill({ includeStale: true }).catch(err => {
       logger.error('Backfill failed', {
         error: err instanceof Error ? err.message : String(err),
       });

@@ -6,6 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { storeEmbedding } from './embeddings.js';
+import { embeddingModelKey, embeddingIsLocal } from './embedding-model.js';
 import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('backfill');
@@ -29,7 +30,12 @@ export function getBackfillProgress(): typeof backfillProgress {
   return { ...backfillProgress };
 }
 
-export async function runBackfill(): Promise<{ completed: number; failed: number; total: number }> {
+/**
+ * `includeStale` also takes the rows whose vector was made by a DIFFERENT embedding model than the
+ * current one, and replaces them. Unset, it is on only when the current model is free to use; the
+ * owner's own backfill request passes true.
+ */
+export async function runBackfill(opts?: { includeStale?: boolean }): Promise<{ completed: number; failed: number; total: number }> {
   if (backfillRunning) {
     throw new Error('Backfill is already running');
   }
@@ -38,6 +44,11 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
   backfillProgress = { total: 0, completed: 0, failed: 0 };
 
   const db = getDb();
+  const includeStale = opts?.includeStale ?? embeddingIsLocal();   // a paid model is never spent on without the owner's say
+  const model = embeddingModelKey();
+  // A row to do: no vector yet, or (when asked) a vector made by another model.
+  const todo = includeStale ? '(e.id IS NULL OR e.embedding_model IS NOT ?)' : 'e.id IS NULL';
+  const todoParams: unknown[] = includeStale ? [model] : [];
 
   try {
     // Collect un-embedded messages (with sufficient content), oldest first, capped
@@ -47,20 +58,20 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
       SELECT m.id, m.agent_id, m.content
       FROM messages m
       LEFT JOIN embeddings e ON e.source_type = 'message' AND e.source_id = m.id
-      WHERE e.id IS NULL AND length(m.content) >= 20
+      WHERE ${todo} AND length(m.content) >= 20
       ORDER BY m.created_at ASC
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Collect un-embedded summaries (also capped, oldest first).
     const summaries = db.prepare(`
       SELECT s.id, s.agent_id, s.content
       FROM summaries s
       LEFT JOIN embeddings e ON e.source_type = 'summary' AND e.source_id = s.id
-      WHERE e.id IS NULL AND s.kind != 'uncondensed'   -- t140: a not-yet-condensed note is not knowledge
+      WHERE ${todo} AND s.kind != 'uncondensed'   -- t140: a not-yet-condensed note is not knowledge
       ORDER BY s.created_at ASC
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
+    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; agent_id: string; content: string }>;
 
     // Collect un-embedded techniques (intent surface only: name + description
     // + tags — recall matches the ask against what a technique is FOR).
@@ -68,10 +79,10 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
       SELECT t.id, t.name, t.description, t.tags
       FROM techniques t
       LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id
-      WHERE e.id IS NULL
+      WHERE ${todo}
       ORDER BY t.created_at ASC
       LIMIT ?
-    `).all(BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
+    `).all(...todoParams, BACKFILL_PER_RUN_CAP) as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
 
     // One combined per-run budget across all three sources (messages first, so a
     // deep message backlog drains before the small summary/technique tails).
@@ -89,11 +100,11 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
     // drain's progress is visible boot-to-boot as it resumes.
     const remaining = (() => {
       try {
-        const c = (q: string): number => (db.prepare(q).get() as { c: number }).c;
+        const c = (q: string): number => (db.prepare(q).get(...todoParams) as { c: number }).c;
         const total =
-          c(`SELECT COUNT(*) AS c FROM messages m LEFT JOIN embeddings e ON e.source_type='message' AND e.source_id=m.id WHERE e.id IS NULL AND length(m.content) >= 20`) +
-          c(`SELECT COUNT(*) AS c FROM summaries s LEFT JOIN embeddings e ON e.source_type='summary' AND e.source_id=s.id WHERE e.id IS NULL AND s.kind != 'uncondensed'`) +
-          c(`SELECT COUNT(*) AS c FROM techniques t LEFT JOIN embeddings e ON e.source_type='technique' AND e.source_id=t.id WHERE e.id IS NULL`);
+          c(`SELECT COUNT(*) AS c FROM messages m LEFT JOIN embeddings e ON e.source_type='message' AND e.source_id=m.id WHERE ${todo} AND length(m.content) >= 20`) +
+          c(`SELECT COUNT(*) AS c FROM summaries s LEFT JOIN embeddings e ON e.source_type='summary' AND e.source_id=s.id WHERE ${todo} AND s.kind != 'uncondensed'`) +
+          c(`SELECT COUNT(*) AS c FROM techniques t LEFT JOIN embeddings e ON e.source_type='technique' AND e.source_id=t.id WHERE ${todo}`);
         return Math.max(0, total - items.length);
       } catch { return null; }
     })();
@@ -114,15 +125,15 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
     // storeEmbedding is best-effort: it swallows every failure and returns void,
     // so a call that returned may have written NO row. Count the row that landed,
     // not the call that returned.
-    const stored = db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ?');
+    const stored = db.prepare('SELECT 1 FROM embeddings WHERE source_type = ? AND source_id = ? AND embedding_model IS ?');
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
 
       // Process batch sequentially to avoid overwhelming the embedding API
       for (const item of batch) {
         try {
-          await storeEmbedding(item.type, item.id, item.agentId, item.content);
-          if (stored.get(item.type, item.id)) {
+          await storeEmbedding(item.type, item.id, item.agentId, item.content, { replaceStale: includeStale });
+          if (stored.get(item.type, item.id, model)) {
             backfillProgress.completed++;
           } else {
             backfillProgress.failed++;
