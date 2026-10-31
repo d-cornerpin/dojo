@@ -227,7 +227,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.ReplyDestination,
     reason:
       'Primary only: the engine-resolved per-turn route + the voice to write in. ' +
-      'Sole routing authority (C5). C28 Part 1: MOVED to the msg.turn-context tail ' +
+      'The reply tag, built from the turn address. C28 Part 1: MOVED to the msg.turn-context tail ' +
       'message so the volatile route no longer breaks the cached system prefix; the ' +
       'render fn is called from renderTurnContext. This SYSTEM entry now emits nothing.',
     render: () => null,
@@ -280,7 +280,7 @@ const TOOL_NOTE_TEXT =
 // C28 Part 1: the per-turn volatile routing/presence context, rendered as ONE
 // near-tail engine message instead of scattered across the cached system prefix.
 // Combines (in fixed order): counterparty header, the [Reply destination] routing
-// tag (sole routing authority, C5, its FIRST salient line), channel landscape,
+// tag (built from the turn's address, `agent/v2/turn-address.ts`), channel landscape,
 // phone conduct (phone turns), the live iMessage bridge state (P-5), and the
 // othersWaiting / conversational-turn just-in-time hints (moved from the system
 // string, memory/assembler.ts). Everything here changes turn-to-turn, so keeping
@@ -294,7 +294,7 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
     parts.push(renderCounterpartyHeader(tc.counterparty, {
       isEngineTurn: tc.isEngineTurn,
       isNotificationTurn: tc.isNotificationTurn,
-      resolvedDestination: tc.resolvedReplyChannel,
+      address: tc.address,
     }));
   }
   if (tc?.counterparty && tc.counterparty.kind !== 'agent' && !tc.isEngineTurn && !tc.isNotificationTurn && isPresenceCheck(ctx.lastUserMessageContent)) parts.push(PRESENCE_HINT);   // t182
@@ -442,7 +442,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     slot: MessageSlot.TurnContext,
     reason:
       'C28 Part 1: the per-turn volatile routing/presence block (reply destination, ' +
-      'the sole routing authority C5, channel landscape, phone conduct, counterparty ' +
+      'who the reply goes to (from the turn address), channel landscape, phone conduct, counterparty ' +
       'header, live iMessage bridge state, othersWaiting / conversational-turn hints) ' +
       'as ONE near-tail engine message. Moved out of the cached system prefix so a ' +
       'channel/presence/waiting-count change no longer invalidates it (all-provider ' +

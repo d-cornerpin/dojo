@@ -10,6 +10,7 @@
 // Phase 3 computes + surfaces the counterparty and the header. Phase 4 uses the
 // same counterparty to SCOPE the live conversation (fresh tail) down to it.
 // ════════════════════════════════════════
+import type { TurnAddress } from './turn-address.js';
 import { deriveOrigin, legacyOriginInputs, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
@@ -911,13 +912,12 @@ function relationLabel(relation: Relation): string {
  */
 export function renderCounterpartyHeader(
   cp: TurnCounterparty,
-  opts?: { isEngineTurn?: boolean; isNotificationTurn?: boolean; resolvedDestination?: Channel },
+  opts?: { isEngineTurn?: boolean; isNotificationTurn?: boolean; address?: TurnAddress },
 ): string {
-  // RC-10: the model must never be told "dashboard" on a turn the engine will actually
-  // text. When the reply-destination resolver promoted an owner dashboard-default turn
-  // to a routed channel (owner-channel affinity, presence-away), render the RESOLVED
-  // destination as the reply channel instead of the raw inbound channel.
-  const replyChannelKey = opts?.resolvedDestination ?? cp.channel;
+  // 3.5: the reply channel is the turn ADDRESS's delivery channel, so the model is never
+  // told "dashboard" on a turn the engine will text (owner affinity, presence-away, a
+  // continuation), and the same value is what delivery uses.
+  const replyChannelKey: string = opts?.address?.kind === 'person' ? opts.address.deliveryChannel : cp.channel;
   const channel = CHANNEL_LABEL[cp.channel] ?? cp.channel;
   const replyChannel = CHANNEL_LABEL[replyChannelKey] ?? replyChannelKey;
   // RC-5.2: a notification-only wake (no trigger row; the newest inbound is an
@@ -971,10 +971,12 @@ export function renderCounterpartyHeader(
         `(e.g. "I'll ask/tell/check with them"), actually do it THIS turn, create a ` +
         `reminder or send ${getOwnerName()} a note, a promise to a contact isn't kept until you act on it.`
       : '';
+  // 3.5: two lines, one per question: who sent this, and who the written reply goes to.
   return (
     `## Who you are talking to this turn\n` +
-    `You are responding to **${cp.name}** (${relationLabel(cp.relation)}) over ${channel}. ` +
-    `Your reply goes back to them on ${replyChannel}. Anything in your context marked as memory, an event, ` +
+    `Who sent this: **${cp.name}** (${relationLabel(cp.relation)}), over ${channel}.\n` +
+    `Your written reply goes to **${cp.name}** (${relationLabel(cp.relation)}) by ${replyChannel}. ` +
+    `Anything in your context marked as memory, an event, ` +
     `or another agent's message is background, it is NOT ${cp.name} talking.` +
     closeTheLoop
   );

@@ -85,13 +85,14 @@ describe('RC-5.2 renderCounterpartyHeader notification variant', () => {
 
 describe('RC-10 renderCounterpartyHeader renders the resolved reply destination', () => {
   it('an owner dashboard turn promoted to iMessage tells the model iMessage, not dashboard', () => {
-    const header = renderCounterpartyHeader(ownerCp, { resolvedDestination: 'imessage' });
-    expect(header).toMatch(/Your reply goes back to them on iMessage/);
-    expect(header).not.toMatch(/Your reply goes back to them on the dashboard chat/);
+    const address = { kind: 'person', deliveryChannel: 'imessage' } as never;
+    const header = renderCounterpartyHeader(ownerCp, { address });
+    expect(header).toMatch(/Your written reply goes to \*\*.*\*\* \(.*\) by iMessage/);
+    expect(header).not.toMatch(/by the dashboard chat/);
   });
 
   it('with no resolved override the reply channel is the counterparty channel', () => {
     const header = renderCounterpartyHeader(ownerCp);
-    expect(header).toMatch(/Your reply goes back to them on the dashboard chat/);
+    expect(header).toMatch(/Your written reply goes to .* by the dashboard chat/);
   });
 });

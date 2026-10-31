@@ -11,7 +11,7 @@ import { getDb } from '../../db/connection.js';
 import { isPrimaryAgent, isPMAgent, getOwnerName } from '../../config/platform.js';
 import { getModelCapabilities } from '../../services/capabilities.js';
 import { agentTurnWindow } from '../../router/router-window.js';
-import { resolveInboundContext, resolveTtsEngine, type PromptTurnContext } from '../assembler.js';
+import { resolveInboundContext, resolveTtsEngine, type InboundContext, type PromptTurnContext } from '../assembler.js';
 import { getSystemEntries, getMessageEntries } from './registry.js';
 import { pushEngineMessage } from '../../agent/v2/engine-message.js';
 import {
@@ -51,9 +51,21 @@ export function buildAssemblyContext(
   const isPrimary = isPrimaryAgent(agentId);
   // Inbound-channel resolution runs once, primary only (matches the legacy front
   // block's `if (isPrimaryAgent)` gate). Non-primary agents have no front-three.
-  const inbound = isPrimary
+  const inbound: InboundContext = isPrimary
     ? resolveInboundContext(agentId)
     : { inboundChannel: null, smsFromNumber: null, phoneFromNumber: null, replyDestination: null, lastContent: '' };
+  // 3.5: the route this turn's reply takes comes from the turn's ADDRESS (computed once in
+  // preflight from the trigger's counterparty), never from the newest row of whichever
+  // conversation wrote last. No address (a non-turn caller) or a non-person address
+  // (A2A, engine, notification) means there is no human reply tag.
+  const address = turnContext?.address;
+  if (isPrimary && address) {
+    const person = address.kind === 'person';
+    inbound.inboundChannel = person ? address.boundChannel : null;
+    inbound.smsFromNumber = person ? (address.inboundContext?.smsFromNumber ?? null) : null;
+    inbound.phoneFromNumber = person ? (address.inboundContext?.phoneFromNumber ?? null) : null;
+    inbound.replyDestination = person ? address.deliveryChannel : null;
+  }
   return {
     agentId,
     modelId,

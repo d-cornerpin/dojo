@@ -228,7 +228,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // (system) AND the message-injection mctx, so the msg.turn-context entry can
   // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
   // are not recomputed).
-  const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, resolvedReplyChannel: turnCtx.ownerAffinityDestination ?? undefined };
+  const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, address: turnCtx.address };
   // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
   // visibility keys on the six-way interAgentTurn union (computed post-model,
   // below), but the dashboard's live suppression needs the turn kind BEFORE the
