@@ -65,9 +65,11 @@ const COLLECTOR_CAPS = {
 } as const;
 
 /**
- * Cap a list of items so the rendered text stays under `maxChars`. Drops
- * lowest-severity items first (info → warning → critical). If even the
- * critical items overflow, truncates titles and details.
+ * Cap a list of items so the rendered text stays under `maxChars`. Critical
+ * items are NEVER dropped (their length still counts toward the budget); the
+ * lower severities of that check are what get dropped. If the criticals alone
+ * already exceed `maxChars`, every warning and info item of that check is
+ * dropped and only the criticals are returned.
  */
 // Exported for tests. Pure function — no DB access. See
 // healer/__tests__/healer-hardening.test.ts.
@@ -94,7 +96,9 @@ export function capItemsByText(
   let dropped = 0;
   for (const item of sorted) {
     const itemLen = item.title.length + item.detail.length + 12;
-    if (len + itemLen <= maxChars) {
+    if (item.severity === 'critical' || len + itemLen <= maxChars) {
+      // Critical items are always kept; their length still counts toward len,
+      // so once they pass the cap the remaining warnings/info cannot fit.
       kept.push(item);
       len += itemLen;
     } else {
