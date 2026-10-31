@@ -156,7 +156,8 @@ export function statusIsAnchored(text: string, status: number): boolean {
  *  `RESOURCE_EXHAUSTED`): free tiers say "check your plan and billing details" about a per-minute limit. */
 export function namesMoney(lower: string): boolean {
   if (lower.includes('insufficient_quota') || lower.includes('insufficient balance') || lower.includes('insufficient_balance')
-    || lower.includes('insufficient funds') || lower.includes('insufficient credit')) return true;
+    || lower.includes('insufficient funds') || lower.includes('insufficient credit')
+    || lower.includes('credit balance is too low')) return true;
   return (lower.includes('billing') || lower.includes('exceeded your current quota'))
     && !/per (second|minute|hour|day)|resource_exhausted/.test(lower);
 }
@@ -328,8 +329,12 @@ export function classifyProviderError(err: unknown): ProviderErrorFacts {
   const message = typeof e.message === 'string' ? e.message : '';
 
   if (status !== null) {
+    let cls = statusToClass(status, providerType);
+    // A 400 that names the money is not our request's fault: Anthropic reports an empty
+    // account as a 400 whose message says the credit balance is too low.
+    if (cls === 'bad_request' && status === 400 && namesMoney(message.toLowerCase())) cls = 'quota';
     return {
-      class: statusToClass(status, providerType),
+      class: cls,
       status,
       providerType,
       transportCode: null,
