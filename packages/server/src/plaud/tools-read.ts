@@ -134,6 +134,14 @@ for (const def of plaudReadToolDefinitions) {
 
 // ── Tool Execution ──
 
+/** A model-supplied word that goes to the Plaud command line: it must be real text and must not read as an option. */
+function plaudWord(value: unknown, what: string): { ok: true; word: string } | { ok: false; error: string } {
+  if (typeof value !== 'string' || value.trim() === '') return { ok: false, error: `Error: ${what} is required (text).` };
+  const word = value.trim();
+  if (word.startsWith('-')) return { ok: false, error: `Error: ${what} cannot start with a dash.` };
+  return { ok: true, word };
+}
+
 export async function executePlaudTool(
   name: string,
   args: Record<string, unknown>,
@@ -160,43 +168,56 @@ export async function executePlaudTool(
     }
 
     case 'plaud_search_recordings': {
-      const query = args.query as string;
-      const cliArgs = ['search', query];
-      if (args.from) cliArgs.push('--from', args.from as string);
-      if (args.to) cliArgs.push('--to', args.to as string);
+      const query = plaudWord(args.query, 'query');
+      if (!query.ok) return query.error;
+      const cliArgs = ['search', query.word];
+      if (args.from) {
+        const from = plaudWord(args.from, 'from');
+        if (!from.ok) return from.error;
+        cliArgs.push('--from', from.word);
+      }
+      if (args.to) {
+        const to = plaudWord(args.to, 'to');
+        if (!to.ok) return to.error;
+        cliArgs.push('--to', to.word);
+      }
       if (args.max_results !== undefined) cliArgs.push('--max', String(args.max_results));
       const result = await runPlaudCommand(cliArgs, { agentId });
       if (!result.ok) return result.error ?? 'Plaud search command failed.';
       const parsed = parsePlaudListOutput(result.stdout);
-      return formatRecordingList(parsed, result.stdout, `Search results for "${query}":`);
+      return formatRecordingList(parsed, result.stdout, `Search results for "${query.word}":`);
     }
 
     case 'plaud_get_recording': {
-      const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['file', recordingId], { agentId });
+      const id = plaudWord(args.recording_id, 'recording_id');
+      if (!id.ok) return id.error;
+      const result = await runPlaudCommand(['file', id.word], { agentId });
       if (!result.ok) return result.error ?? 'Plaud file command failed.';
       // The `file` command outputs human-readable key:value pairs. Pass
       // through with a header so the agent sees it cleanly.
-      return `Recording ${recordingId}:\n\n${outsideSpan(result.stdout.trim())}`;   // v3.5 K33: only the CLI's output is outside text
+      return `Recording ${id.word}:\n\n${outsideSpan(result.stdout.trim())}`;   // v3.5 K33: only the CLI's output is outside text
     }
 
     case 'plaud_get_transcript': {
-      const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['transcript', recordingId], { agentId, timeoutMs: 60_000 });
+      const id = plaudWord(args.recording_id, 'recording_id');
+      if (!id.ok) return id.error;
+      const result = await runPlaudCommand(['transcript', id.word], { agentId, timeoutMs: 60_000 });
       if (!result.ok) return result.error ?? 'Plaud transcript fetch failed.';
-      return `Transcript for ${recordingId}:\n\n${outsideSpan(result.stdout.trim())}`;
+      return `Transcript for ${id.word}:\n\n${outsideSpan(result.stdout.trim())}`;
     }
 
     case 'plaud_get_summary': {
-      const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['summary', recordingId], { agentId, timeoutMs: 30_000 });
+      const id = plaudWord(args.recording_id, 'recording_id');
+      if (!id.ok) return id.error;
+      const result = await runPlaudCommand(['summary', id.word], { agentId, timeoutMs: 30_000 });
       if (!result.ok) return result.error ?? 'Plaud summary fetch failed.';
-      return `Summary for ${recordingId}:\n\n${outsideSpan(result.stdout.trim())}`;
+      return `Summary for ${id.word}:\n\n${outsideSpan(result.stdout.trim())}`;
     }
 
     case 'plaud_get_audio_url': {
-      const recordingId = args.recording_id as string;
-      const result = await runPlaudCommand(['audio', recordingId], { agentId });
+      const id = plaudWord(args.recording_id, 'recording_id');
+      if (!id.ok) return id.error;
+      const result = await runPlaudCommand(['audio', id.word], { agentId });
       if (!result.ok) return result.error ?? 'Plaud audio URL fetch failed.';
       // CLI prints the signed URL as part of its plain-text output.
       // Some recordings have no audio file uploaded; the CLI emits
@@ -205,8 +226,8 @@ export async function executePlaudTool(
       if (!url) {
         const msg = result.stdout.trim();
         return msg.length > 0
-          ? `Plaud returned no URL for recording ${recordingId}: ${msg.slice(0, 300)}`
-          : `Plaud returned no URL for recording ${recordingId}.`;
+          ? `Plaud returned no URL for recording ${id.word}: ${msg.slice(0, 300)}`
+          : `Plaud returned no URL for recording ${id.word}.`;
       }
       return `Audio download URL (valid for 24h): ${url}`;
     }
