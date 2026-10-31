@@ -50,30 +50,39 @@ lock_holder_alive() {
 # Taking the lock, and taking over a dead holder's, are both atomic: the only deleter of a stale
 # lock is the one run that wins `mkdir "$LOCK_DIR.takeover"`, and it re-reads the holder inside that
 # exclusive section. (Check-the-holder, delete, re-make let two or three runs through together.)
+# A takeover marker a crashed run left behind goes after a minute, and the run that clears it goes on
+# to try the takeover itself (it is not told "another run is working" when none is).
 take_lock() {
     mkdir -p "$DOJO_DIR" 2>/dev/null
-    if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
-    local holder age tk="$LOCK_DIR.takeover" got=1
-    holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-    if [ -n "$holder" ] && lock_holder_alive "$holder"; then return 1; fi
-    age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
-    if [ -z "$holder" ] && [ "$age" -lt 60 ]; then return 1; fi
-    if ! mkdir "$tk" 2>/dev/null; then
-        # Someone else is taking over. A takeover marker a crashed run left behind goes after a minute.
+    local holder age tk="$LOCK_DIR.takeover" got=1 try
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        echo $$ > "$LOCK_DIR/pid"
         age=$(( $(date +%s) - $(stat -f %m "$tk" 2>/dev/null || date +%s) ))
-        if [ "$age" -ge 60 ] && mv "$tk" "$tk.dead.$$" 2>/dev/null; then rm -rf "$tk.dead.$$"; fi
-        return 1
+        if [ -d "$tk" ] && [ "$age" -ge 60 ] && mv "$tk" "$tk.dead.$$" 2>/dev/null; then rm -rf "$tk.dead.$$"; fi
+        return 0
     fi
-    holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-    age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
-    if [ -d "$LOCK_DIR" ] && { { [ -n "$holder" ] && lock_holder_alive "$holder"; } || { [ -z "$holder" ] && [ "$age" -lt 60 ]; }; }; then
-        rmdir "$tk" 2>/dev/null; return 1
-    fi
-    echo "   (Clearing a lock left by a process that is no longer running.)"
-    rm -rf "$LOCK_DIR"
-    if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; got=0; fi
-    rmdir "$tk" 2>/dev/null
-    return $got
+    for try in 1 2; do
+        holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+        if [ -n "$holder" ] && lock_holder_alive "$holder"; then return 1; fi
+        age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
+        if [ -z "$holder" ] && [ "$age" -lt 60 ]; then return 1; fi
+        if ! mkdir "$tk" 2>/dev/null; then
+            age=$(( $(date +%s) - $(stat -f %m "$tk" 2>/dev/null || date +%s) ))
+            if [ "$age" -ge 60 ] && mv "$tk" "$tk.dead.$$" 2>/dev/null; then rm -rf "$tk.dead.$$"; continue; fi
+            return 1
+        fi
+        holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+        age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
+        if [ -d "$LOCK_DIR" ] && { { [ -n "$holder" ] && lock_holder_alive "$holder"; } || { [ -z "$holder" ] && [ "$age" -lt 60 ]; }; }; then
+            rmdir "$tk" 2>/dev/null; return 1
+        fi
+        echo "   (Clearing a lock left by a process that is no longer running.)"
+        rm -rf "$LOCK_DIR"
+        if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; got=0; fi
+        rmdir "$tk" 2>/dev/null
+        return $got
+    done
+    return 1
 }
 if [ "$PRINT" != 1 ]; then
   if ! take_lock; then

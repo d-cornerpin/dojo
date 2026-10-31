@@ -37,11 +37,18 @@ describe('acquireSwapLock', () => {
     const d = dojo(); stale(d, '2147483646'); fs.mkdirSync(path.join(d, 'rollback.lock.takeover'));
     expect(acquireSwapLock(d)).toEqual({ busy: expect.stringContaining('taking over') });
   });
-  it('a takeover marker a crashed run left behind (over a minute old) is cleared, and the next try works', () => {
+  it('a takeover marker a crashed run left behind (over a minute old) is cleared and the same call goes on', () => {
     const d = dojo(); stale(d, '2147483646');
     const marker = path.join(d, 'rollback.lock.takeover'); fs.mkdirSync(marker);
     const old = new Date(Date.now() - 120_000); fs.utimesSync(marker, old, old);
-    expect(typeof acquireSwapLock(d)).toBe('object');
     expect(typeof acquireSwapLock(d)).toBe('function');
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+  it('an old marker beside a FREE lock is cleaned up when the lock is taken', () => {
+    const d = dojo();
+    const marker = path.join(d, 'rollback.lock.takeover'); fs.mkdirSync(marker);
+    const old = new Date(Date.now() - 120_000); fs.utimesSync(marker, old, old);
+    expect(typeof acquireSwapLock(d)).toBe('function');
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });

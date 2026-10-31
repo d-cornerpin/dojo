@@ -100,36 +100,45 @@ export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string 
     try { if (holder === null && Date.now() - fs.statSync(lock).mtimeMs < 60_000) return 'another install or restore is just starting'; } catch { /* gone */ }
     return null;
   };
+  // A takeover marker a crashed run left behind goes after a minute.
+  const clearOldMarker = (): boolean => {
+    try {
+      if (Date.now() - fs.statSync(takeover).mtimeMs < 60_000) return false;
+      const dead = `${takeover}.dead.${process.pid}`;
+      fs.renameSync(takeover, dead);
+      fs.rmSync(dead, { recursive: true, force: true });
+      return true;
+    } catch { return false; }
+  };
   try {
     fs.mkdirSync(lock);
-    return take();
+    const r = take();
+    clearOldMarker();
+    return r;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return { busy: `the install lock could not be taken (${(err as Error).message})` };
   }
-  const reason = busyReason();
-  if (reason !== null) return { busy: reason };
-  try {
-    fs.mkdirSync(takeover);
-  } catch {
-    // Someone else is taking over; a marker a crashed run left behind goes after a minute.
+  // Two tries: the run that clears an old marker goes on to take over itself.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const reason = busyReason();
+    if (reason !== null) return { busy: reason };
     try {
-      if (Date.now() - fs.statSync(takeover).mtimeMs >= 60_000) {
-        const dead = `${takeover}.dead.${process.pid}`;
-        fs.renameSync(takeover, dead);
-        fs.rmSync(dead, { recursive: true, force: true });
-      }
-    } catch { /* another run got there first */ }
-    return { busy: 'another install or restore is taking over the lock' };
+      fs.mkdirSync(takeover);
+    } catch {
+      if (clearOldMarker()) continue;
+      return { busy: 'another install or restore is taking over the lock' };
+    }
+    try {
+      const again = fs.existsSync(lock) ? busyReason() : null;
+      if (again !== null) return { busy: again };
+      fs.rmSync(lock, { recursive: true, force: true });
+      try { fs.mkdirSync(lock); } catch { return { busy: 'the install lock could not be taken' }; }
+      return take();
+    } finally {
+      try { fs.rmdirSync(takeover); } catch { /* already gone */ }
+    }
   }
-  try {
-    const again = fs.existsSync(lock) ? busyReason() : null;
-    if (again !== null) return { busy: again };
-    fs.rmSync(lock, { recursive: true, force: true });
-    try { fs.mkdirSync(lock); } catch { return { busy: 'the install lock could not be taken' }; }
-    return take();
-  } finally {
-    try { fs.rmdirSync(takeover); } catch { /* already gone */ }
-  }
+  return { busy: 'the install lock could not be taken' };
 }
 
 export function treeVersion(dir: string): string | null {

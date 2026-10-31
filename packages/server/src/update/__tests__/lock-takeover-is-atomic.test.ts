@@ -66,10 +66,49 @@ for (const script of ['restore-db.sh', 'rollback.sh']) {
       expect(r).toEqual({ proceeded: 0, refused: PARALLEL });
     }, 30_000);
 
+    it('the run that clears an old takeover marker goes on (no false refusal), and no marker is left', async () => {
+      const dir = scratchDir();
+      try {
+        const lock = path.join(dir, 'rollback.lock'); const marker = `${lock}.takeover`;
+        fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, 'pid'), DEAD_PID);
+        fs.mkdirSync(marker);
+        const old = new Date(Date.now() - 120_000); fs.utimesSync(marker, old, old);
+        fs.writeFileSync(path.join(dir, 'h.sh'), harness(lockText(script)));
+        const r = spawnSync('/bin/bash', [path.join(dir, 'h.sh'), lock, dir], { encoding: 'utf-8' });
+        expect(r.status).toBe(0);
+        expect(fs.existsSync(path.join(dir, 'proceeded'))).toBe(true);
+        expect(fs.existsSync(path.join(dir, 'refused'))).toBe(false);
+        expect(fs.existsSync(marker)).toBe(false);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('an old takeover marker beside a FREE lock is cleaned up when the lock is taken', () => {
+      const dir = scratchDir();
+      try {
+        const lock = path.join(dir, 'rollback.lock'); const marker = `${lock}.takeover`;
+        fs.mkdirSync(marker);
+        const old = new Date(Date.now() - 120_000); fs.utimesSync(marker, old, old);
+        fs.writeFileSync(path.join(dir, 'h.sh'), harness(lockText(script)));
+        spawnSync('/bin/bash', [path.join(dir, 'h.sh'), lock, dir], { encoding: 'utf-8' });
+        expect(fs.existsSync(path.join(dir, 'proceeded'))).toBe(true);
+        expect(fs.existsSync(marker)).toBe(false);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('a YOUNG takeover marker beside a free lock is left alone', () => {
+      const dir = scratchDir();
+      try {
+        const lock = path.join(dir, 'rollback.lock'); const marker = `${lock}.takeover`;
+        fs.mkdirSync(marker);
+        fs.writeFileSync(path.join(dir, 'h.sh'), harness(lockText(script)));
+        spawnSync('/bin/bash', [path.join(dir, 'h.sh'), lock, dir], { encoding: 'utf-8' });
+        expect(fs.existsSync(marker)).toBe(true);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
     it('the two scripts carry the same lock text', () => {
       expect(lockText('restore-db.sh').replace(/^\s+/gm, '')).toBe(lockText('rollback.sh').replace(/^\s+/gm, ''));
     });
   });
 }
 
-void spawnSync;

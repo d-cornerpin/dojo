@@ -32,6 +32,7 @@ beforeEach(() => {
   put('platform/package.json', '{}');
   put('platform.backup-3.1.17/package.json', '{}');
   put('platform.partial-3.1.18-123/package.json', '{}');
+  fs.mkdirSync(path.join(dojo, 'rollback.lock.takeover'));
   put('watchdog/index.js', '//');
   put('logs/x.log', 'log');
 });
@@ -70,6 +71,7 @@ describe('the uninstaller keeps the person\'s uploads and other data', () => {
     expect(has('platform')).toBe(false);
     expect(has('platform.backup-3.1.17')).toBe(false);
     expect(has('platform.partial-3.1.18-123')).toBe(false);
+    expect(has('rollback.lock.takeover')).toBe(false);
     expect(has('watchdog')).toBe(false);
     expect(has('logs')).toBe(false);
     expect(has('voice/models')).toBe(false);
