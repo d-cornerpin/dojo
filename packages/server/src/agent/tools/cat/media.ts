@@ -93,7 +93,7 @@ import { getEffectiveVideoGenModel } from '../../../services/video-gen-model.js'
 import { getModelGenerationParams, defaultVideoSpecFor, validateCanonicalParams, VIDEO_CANONICAL_PARAMS } from '../../../services/generation-params.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } from '../../../services/voice-catalog.js';
 import { getPresence } from '../../../services/presence.js';
-import { getTurnScopedImRecipient, sendIMessageWithAttachment, getDefaultSender } from '../../../services/imessage-bridge.js';
+import { getTurnScopedImRecipient, sendIMessageWithAttachment, sendResponseViaIMessage, getDefaultSender } from '../../../services/imessage-bridge.js';
 import { mayUseChannel } from '../../access/read.js';
 import { postAgentNotice } from '../../agent-notice.js';
 import { resolvePath } from '../../path-guards.js';
@@ -105,6 +105,17 @@ import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
 import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
+
+/** Text a short plain-words failure note to whoever the success path would have texted the image to. Never throws. */
+async function textImageFailureNote(agentId: string, requesterIMessage: string | null, triggeredByIMessage: boolean, note: string): Promise<void> {
+  try {
+    if (!mayUseChannel(agentId, 'imessage')) return;
+    let send = triggeredByIMessage;
+    if (!send) { try { send = getPresence() === 'away'; } catch { /* presence unavailable */ } }
+    if (!send) return;
+    await sendResponseViaIMessage(note, agentId, requesterIMessage, requesterIMessage === null);
+  } catch { /* best effort; the dashboard note already stands */ }
+}
 
 const handlers = {
   async "image_create"({ agentId, args }) {
@@ -293,6 +304,7 @@ const handlers = {
             type: 'chat:chunk', agentId,
             messageId: errMsgId, content: '', done: true, modelId: null,
           });
+          await textImageFailureNote(agentId, requesterIMessage, triggeredByIMessage, `I wasn't able to generate that image. ${result.error}`);
           settleAskOnAsyncResult({ agentId, askMessageId: resultSubject.rootId, resultMessageId: errMsgId });   // t152: the owner was told; no job out, the ask settles
           return;
         }
