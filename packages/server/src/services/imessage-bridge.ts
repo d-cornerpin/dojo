@@ -661,7 +661,11 @@ export async function sendResponseViaIMessage(
     if (!owner) return null;
     const cleanedOwner = stripSystemTags(text);
     if (!cleanedOwner) return null;
-    await sendIMessage(owner, cleanedOwner);
+    const ok = await sendIMessage(owner, cleanedOwner);
+    if (!ok) {
+      logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: owner });
+      return null;
+    }
     return { address: owner, name: findSafeSenderByAddress(getSafeSenders(), owner)?.name ?? owner };
   }
   // Two safety rails on the fallback path:
@@ -688,7 +692,11 @@ export async function sendResponseViaIMessage(
     }
     const cleanedOverride = stripSystemTags(text);
     if (!cleanedOverride) return null;
-    await sendIMessage(sender, cleanedOverride);
+    const ok = await sendIMessage(sender, cleanedOverride);
+    if (!ok) {
+      logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: sender });
+      return null;
+    }
     return { address: sender, name: recipientName ?? sender };
   }
   // P5c: no recipient override and not owner-bound -> the starred default
@@ -701,7 +709,11 @@ export async function sendResponseViaIMessage(
   if (!sender) return null;
   const cleaned = stripSystemTags(text);
   if (!cleaned) return null;
-  await sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
+  const ok = await sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
+  if (!ok) {
+    logger.warn('Auto-reply not delivered: the iMessage send failed', { agentId, recipient: sender });
+    return null;
+  }
   return { address: sender, name: recipientName ?? sender };
 }
 const CHAT_DB_PATH = path.join(homeDir(), 'Library', 'Messages', 'chat.db');
