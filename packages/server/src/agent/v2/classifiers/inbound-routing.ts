@@ -15,6 +15,8 @@
 // only when it sits outside the question's measured weak band; inside the band, today's behaviour stands and
 // the heuristic (and, for multistep, the chat call) is still the fallback. A15 wakes the primary, so it takes
 // the strictest reading of the band.
+// TRUTH: none of the five has a trustworthy production signal (each answer causes what follows it), so each stays
+// with its rule in production and is scored only offline. The ruling, per question: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { Question } from '../../decide.js';
@@ -37,6 +39,8 @@ const QUESTIONS: Record<string, Question> = {
   pleasantry: { type: 'noul', instructions: 'Is `message` nothing but a pleasantry, thanks or sign-off that carries no request, question or information?' },
   deliverable: { type: 'noul', instructions: 'Does `message` announce that a finished piece of work (a document, post, link, file or result) is ready for someone to receive?' },
 };
+/** The questions this purpose asks (the truth-ruling census reads them). */
+export const INBOUND_ROUTING_QUESTION_NAMES: readonly string[] = Object.keys(QUESTIONS);
 const only = (...names: string[]): Record<string, Question> => Object.fromEntries(names.map((n) => [n, QUESTIONS[n]]));
 
 /**

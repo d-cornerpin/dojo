@@ -22,8 +22,9 @@
 // NO TRUTH IS RECORDED HERE, stated rather than invented. Each question asks what the reply CLAIMS; the
 // ledger says what HAPPENED. Scoring a claim against what happened marks a detector WRONG exactly when
 // it catches a false claim ("saved" when nothing saved), which is the case these floors exist for, and
-// B3 would promote a model on that signal by itself. Until a source that knows what a reply claimed
-// joins `decision_shadow` on `replyClaimsTurnId` (`recordTruth`), every question stays in shadow.
+// B3 would promote a model on that signal by itself. RULED (2026-10-31): no production event knows what a
+// reply claimed, so all nine stay with their rules in production and are scored only offline, by the kit's D1
+// replay against its authored truth. The ruling, per question: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { isBareNoReplySentinel } from '@dojo/shared';

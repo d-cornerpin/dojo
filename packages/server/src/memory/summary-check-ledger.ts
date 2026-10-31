@@ -30,8 +30,9 @@ export const askedQuestions = (): SummaryCheckQuestion[] => SUMMARY_CHECK_QUESTI
  * child for a condensed one — the `spanIds` every caller passes), plus the version below. Unique per span and text
  * checked, and it survives every rewrite of the stored text (obligation notes, the hygiene pass); read off the row by
  * `summaryCheckIdOfRow`.
- * NO TRUTH SOURCE EXISTS YET (`recordTruth` has no caller): until one joins on this key (`recordSummaryTruth`),
- * no summary-check question can be promoted to `model`, and the check stays in shadow.
+ * NO PRODUCTION TRUTH SOURCE, BY RULING (2026-10-31): whether a summary invents, drops or states-current is a reading
+ * of two texts that no later engine event records, so nothing in production calls `recordSummaryTruth`, no question
+ * here is promoted to `model`, and the check stays in shadow. The ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
  */
 export const summaryCheckId = (agentId: string, spanIds: readonly string[]): string =>
   `summary-check:${createHash('sha256').update(`${agentId}|${[...spanIds].sort().join('|')}`).digest('hex').slice(0, 32)}`;

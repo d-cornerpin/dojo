@@ -70,9 +70,9 @@ export function recordShadow(row: {
 }
 
 /** What really happened for `question` on `turnId`, from the ledger record named by `src`.
- *  NO CALLERS YET (fix round 2, stated rather than invented): nothing in this release supplies truth, so no
- *  question is ever promoted to `model` and the summary check's pass mark stays 0.5 until a truth source
- *  (Part C's clusters, B5's measurement) calls this. */
+ *  NO PRODUCTION CALLER, BY RULING (2026-10-31): no question behind the seam has a trustworthy production truth
+ *  signal, so none is ever promoted to `model` in production and the summary check's pass mark stays 0.5. Who may
+ *  call this, per question, is ruled and censused in agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts. */
 export function recordTruth(turnId: string, question: string, truth: unknown, src: string): void {
   const judged = JSON.stringify(truth ?? null);
   const t = loadedTallies();

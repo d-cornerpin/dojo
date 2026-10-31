@@ -12,6 +12,8 @@
 // returns its rule's answer, unchanged; the model's answer is logged beside it. In `model` mode the verdict
 // stands in only outside the question's measured weak band. The Dreamer soul's own rules are the criteria text.
 // The credential gate (`vault/credential-gate.ts`) is a safety gate and is not here and never will be.
+// TRUTH: none of the five has a trustworthy production signal, so each stays with its rule in production and is
+// scored only offline. The ruling, per question: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
@@ -30,6 +32,8 @@ const QUESTIONS: Record<string, Question> = {
   worth_summary: { type: 'noul', instructions: 'Does `span` contain conversation, such as requests, answers or decisions, worth a summary, rather than only tool traffic and plumbing?' },
 };
 const FILLER_QUESTION = 'filler';
+/** The questions this purpose asks (the truth-ruling census reads them). */
+export const MEMORY_SHAPE_QUESTION_NAMES: readonly string[] = [...Object.keys(QUESTIONS), FILLER_QUESTION];
 const MAX_QUESTIONS_PER_CALL = 64;   // `decide()`'s documented limit for one request
 
 /** One vault_remember call: the entry's three shape questions, one request, joined by whichever site reports first. */

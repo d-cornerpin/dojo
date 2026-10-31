@@ -22,9 +22,9 @@
 // an assemble loop, a retry or a continuation that looks at the same subject again adds no row and, in shadow,
 // no request. Safety gates (the spec's Group C) never import this module nor reach it.
 //
-// WHAT IS NOT HERE: a truth source. `recordTruth` has no caller for these questions yet, so no question is
-// ever promoted to `model` by this release on its own; the rows are the evidence the policy will read. When one
-// is, the switch is recorded and told by `decision-switch.ts` (both ways).
+// WHAT IS NOT HERE: a truth source. None of these questions has a trustworthy production truth signal (ruled per
+// question in agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts), so none is promoted to `model` in production; the rows are the
+// evidence an offline scorer reads. Were one ever promoted, the switch is recorded and told by `decision-switch.ts`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';

@@ -11,6 +11,8 @@
 // `rule` and `shadow`: the class is the rule's, unchanged; both are logged. `model`: the model's choice stands in,
 // outside its measured weak band and (a class can lock an agent and banner the owner) only when clearly beyond it.
 // The choice is mapped onto the classes the engine already acts on; nothing new is acted on.
+// TRUTH: no trustworthy production signal (the class picks the recovery that follows it), so the question stays with
+// its rule in production and is scored only offline. The ruling: agent/__tests__/every-decision-question-has-a-truth-ruling.test.ts.
 // ════════════════════════════════════════════════════════════════════════════
 
 import type { Question } from './decide.js';
@@ -41,12 +43,16 @@ const CLASS_OF: Record<string, ProviderErrorClass> = {
   retryable_transient: 'server', auth: 'auth', context_too_long: 'bad_request', rate_limited: 'rate_limit', permanent: 'bad_request',
 };
 
+/** The questions this purpose asks (the truth-ruling census reads them). */
+const QUESTIONS = { error_class: ERROR_CLASS };
+export const PROVIDER_ERROR_QUESTION_NAMES: readonly string[] = Object.keys(QUESTIONS);
+
 export interface JudgedProviderError { facts: ProviderErrorFacts; choice: string }
 
 export async function judgeProviderError(facts: ProviderErrorFacts, text: string, agentId: string): Promise<JudgedProviderError> {
   const rule = { facts, choice: CHOICE_OF[facts.class] };
   if ((facts.basis !== 'text' && facts.basis !== 'none') || !text) return rule;   // the provider's own answer settled it
-  const said = await judgment({ purpose: PROVIDER_ERROR_PURPOSE, agentId, subject: subjectKey(agentId, text), state: { error: text }, questions: { error_class: ERROR_CLASS } })
+  const said = await judgment({ purpose: PROVIDER_ERROR_PURPOSE, agentId, subject: subjectKey(agentId, text), state: { error: text }, questions: QUESTIONS })
     .alongside('error_class', rule.choice, { strict: true });
   if (said === rule.choice) return rule;
   const cls = typeof said === 'string' ? CLASS_OF[said] : undefined;
