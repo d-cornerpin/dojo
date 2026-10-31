@@ -74,6 +74,41 @@ function hiddenAgentIdSet(): Set<string> {
   return getDashboardHiddenAgentIds();
 }
 
+// The repeat units a schedule may name — the engine's accepted set; the
+// dashboard's dropdown is a subset of it.
+const REPEAT_UNITS = new Set([
+  'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
+]);
+
+// A plain-words reason the schedule the dashboard sent cannot run, or null when it can.
+// The check is about the INPUT, not the run: a start the engine cannot parse, an interval
+// that is not a whole number of at least 1, a unit the form never offers, or an interval
+// and a unit given without the other. Each of these would otherwise land as a "waiting"
+// schedule that never fires, so it is refused before the first write.
+function scheduleInputError(body: Record<string, unknown>): string | null {
+  const start = body.scheduled_start;
+  const interval = body.repeat_interval;
+  const unit = body.repeat_unit;
+  const startPresent = start !== undefined && start !== null;
+  const intervalPresent = interval !== undefined && interval !== null;
+  const unitPresent = unit !== undefined && unit !== null;
+
+  if (startPresent && tsToMs(start as string | null | undefined) === null) {
+    return 'The start time can\'t be read as a date. Pick a date and time the schedule can begin on.';
+  }
+  const intervalNum = typeof interval === 'number' ? interval : Number(interval);
+  if (intervalPresent && !(Number.isFinite(intervalNum) && Number.isInteger(intervalNum) && intervalNum >= 1)) {
+    return 'The repeat interval must be a whole number of at least 1.';
+  }
+  if (unitPresent && !REPEAT_UNITS.has(unit as string)) {
+    return 'The repeat unit is not one of the options on the form.';
+  }
+  if (intervalPresent !== unitPresent) {
+    return 'A repeat interval and a repeat unit must be set together.';
+  }
+  return null;
+}
+
 // ── Projects ──
 
 // GET /projects — list all projects (filtered to user-facing only)
@@ -558,6 +593,13 @@ trackerRouter.post('/tasks', async (c) => {
     }
   }
 
+  // A schedule that cannot run is refused before the row is created, so the owner
+  // is never told 201 for a "waiting" schedule that will never fire.
+  const scheduleErr = scheduleInputError(body);
+  if (scheduleErr) {
+    return c.json({ ok: false, error: scheduleErr }, 400);
+  }
+
   try {
     const taskId = createTask({
       origin: { kind: 'user_direct', sourceMessageId: null, turn: null, convKey: null },
@@ -671,6 +713,14 @@ trackerRouter.put('/tasks/:id', async (c) => {
         error: 'A "specific days" repeat needs at least one weekday selected (e.g. Mon and Wed). With no days selected the task would run once and then stop. Pick the days you want, or use a plain weekly repeat instead.',
       }, 400);
     }
+  }
+
+  // A bad schedule in the same Save must refuse the whole Save — the priority,
+  // status and assignee writes below must not land when the schedule cannot run.
+  // Gated on a schedule edit: null is the remove-schedule branch and is valid on its own.
+  if (body.scheduled_start != null) {
+    const scheduleErr = scheduleInputError(body);
+    if (scheduleErr) return c.json({ ok: false, error: scheduleErr }, 400);
   }
 
   try {
