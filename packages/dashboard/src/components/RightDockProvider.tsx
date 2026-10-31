@@ -1,13 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { getCanvas, setCanvasStatus, type CanvasPersisted } from '../lib/api';
+import { getCanvas, setCanvasStatus } from '../lib/api';
+import { persistedToDockSpec, loadFailedDock } from './right-dock-canvas';
 import { useActiveAgent } from './ActiveAgentProvider';
+import { useToast } from '../hooks/useToast';
 
-// A persisted canvas only ever stores media kinds; map it back to a DockSpec.
-function persistedToDockSpec(s: CanvasPersisted['state']): DockSpec {
-  if (s.kind === 'iframe' && s.url) return { kind: 'iframe', title: s.title, url: s.url };
-  if (s.kind === 'screenshot' && s.url && s.sourceUrl) return { kind: 'screenshot', title: s.title, url: s.url, sourceUrl: s.sourceUrl };
-  return { kind: 'canvas', title: s.title, html: s.html, url: s.url, path: s.path };
-}
 // Which docks collapse-to-handle + persist (the canvas surface). Transient docks
 // (live screen-share, ad-hoc panels) just close.
 function isCollapsibleDock(d: DockSpec | null): boolean {
@@ -97,6 +93,12 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
   // The canvas is per-agent: the dock shows the slot of the agent being viewed,
   // and a collapse/re-open records against THAT agent's slot server-side.
   const activeAgent = useActiveAgent();
+  // The toast is the existing way to tell the owner something did not happen. Tolerate a tree
+  // without one (a bare test mount) rather than throw.
+  let toastError: ((m: string) => void) | null = null;
+  try { toastError = useToast().error; } catch { /* no ToastProvider above */ }
+  const toastErrorRef = useRef(toastError);
+  toastErrorRef.current = toastError;
   const agentIdRef = useRef(activeAgent.agentId);
   agentIdRef.current = activeAgent.agentId;
 
@@ -125,6 +127,7 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
         if (res.ok || agentIdRef.current !== forAgent) return;
         setDock(cur);
         setCollapsed(null);
+        toastErrorRef.current?.('Could not close the canvas. Please try again.');
       });
     }
     setDock(null);
@@ -143,6 +146,7 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
         if (res.ok || agentIdRef.current !== forAgent) return;
         setDock(null);
         setCollapsed(c);
+        toastErrorRef.current?.('Could not re-open the canvas. Please try again.');
       });
     }
   }, []);
@@ -162,21 +166,36 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
   // we never leave the previous agent's canvas on screen. A transient dock (live
   // screen-share / arbitrary panel) is left alone: it isn't part of the per-agent
   // canvas model, so an agent switch must not stomp it.
-  useEffect(() => {
-    let cancelled = false;
-    getCanvas(activeAgent.agentId)
+  // The "could not load" panel is a transient dock of ours: a later load (retry, agent switch) may replace it.
+  const loadErrorDockRef = useRef<DockSpec | null>(null);
+  const loadRef = useRef<(agentId: string, isCancelled: () => boolean) => void>(() => {});
+  loadRef.current = (agentId, isCancelled) => {
+    getCanvas(agentId)
       .then((res) => {
-        if (cancelled) return;
-        if (dockRef.current && !isCollapsibleDock(dockRef.current)) return;
-        // A failed read says nothing about this agent's canvas: leave the screen as it is.
-        if (!res.ok) return;
+        if (isCancelled()) return;
+        const failedPanel = loadErrorDockRef.current;
+        if (dockRef.current && dockRef.current !== failedPanel && !isCollapsibleDock(dockRef.current)) return;
+        loadErrorDockRef.current = null;
+        // A failed read says nothing about THIS agent's canvas, and what is on screen belongs to
+        // the agent before: never leave it there. Say plainly that the load failed, with a retry.
+        if (!res.ok) { showLoadFailed(agentId); return; }
         const data = res.data;
         if (!data) { setDock(null); setCollapsed(null); return; }
         const spec = persistedToDockSpec(data.state);
         if (data.status === 'open') { setDock(spec); setCollapsed(null); }
         else { setCollapsed(spec); setDock(null); }
       })
-      .catch(() => {});
+      .catch(() => { if (!isCancelled()) showLoadFailed(agentId); });
+  };
+  const showLoadFailed = (agentId: string) => {
+    const panel = loadFailedDock(() => { loadRef.current(agentId, () => agentIdRef.current !== agentId); });
+    loadErrorDockRef.current = panel;
+    setDock(panel);
+    setCollapsed(null);
+  };
+  useEffect(() => {
+    let cancelled = false;
+    loadRef.current(activeAgent.agentId, () => cancelled);
     return () => { cancelled = true; };
   }, [activeAgent.agentId]);
 
