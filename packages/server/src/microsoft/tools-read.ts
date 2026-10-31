@@ -714,6 +714,11 @@ export async function searchMailForAccountMs(
 // unifiedCoverageNote encoded — a narrow result must never read as the whole
 // picture — is preserved, strictly better, by carrying the data itself.
 
+/** A Teams message body for the read result: cut at 500 characters, and a cut says so (P7: the agent must be able to tell it was shortened). */
+function teamsBodyShown(body: string): string {
+  return body.length > 500 ? `${body.slice(0, 500)}… [truncated; ${body.length} chars]` : body;
+}
+
 export async function executeMicrosoftReadTool(
   name: string,
   args: Record<string, unknown>,
@@ -1085,7 +1090,7 @@ export async function executeMicrosoftReadTool(
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
-        return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${body.slice(0, 500)}`;
+        return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${teamsBodyShown(body)}`;
       });
 
       return `Teams messages:\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;
@@ -1304,7 +1309,7 @@ export async function executeMicrosoftReadTool(
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = stripHtmlTags(body);
-        return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
+        return `[${m.createdDateTime}] ${sender}: ${teamsBodyShown(body)}`;
       });
 
       return `Channel messages (newest first):\n\n${messages.map((item) => outsideSpan(item)).join('\n\n')}`;

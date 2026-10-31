@@ -84,3 +84,21 @@ describe('Teams message reads — a bigger ask is paged, not cut', () => {
     });
   }
 });
+
+// P7 (R6): a body cut at 500 characters says so.
+describe('Teams message reads — a cut body is marked', () => {
+  const one = (content: string) => vi.mocked(msGraphRead).mockImplementation((async () => ({ ok: true, data: { value: [{ id: 'm', from: { user: { displayName: 'Sam' } }, body: { content, contentType: 'text' }, createdDateTime: '2026-01-01T00:00:00Z' }] }, error: null })) as never);
+  for (const [tool, required] of TOOLS) {
+    it(`${tool}: a 700-character body is cut at 500 with a marker giving the full length`, async () => {
+      one('x'.repeat(700));
+      const out = await executeMicrosoftReadTool(tool, { ...required }, 'agent-1', 'Agent One');
+      expect(out).toContain('[truncated; 700 chars]');
+      expect(out).not.toContain('x'.repeat(501));
+    });
+    it(`${tool}: a 500-character body is whole and unmarked`, async () => {
+      one('y'.repeat(500));
+      const out = await executeMicrosoftReadTool(tool, { ...required }, 'agent-1', 'Agent One');
+      expect(out).not.toContain('truncated');
+    });
+  }
+});
