@@ -9640,7 +9640,7 @@
     "packages/server/src/agent/pdf-tools.ts": 1072,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
-    "packages/server/src/agent/provider-error.ts": 407,
+    "packages/server/src/agent/provider-error.ts": 412,
     "packages/server/src/agent/runtime.ts": 1786,
     "packages/server/src/agent/shared-state.ts": 453,
     "packages/server/src/agent/spawner.ts": 1487,
