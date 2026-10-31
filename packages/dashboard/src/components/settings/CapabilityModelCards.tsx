@@ -180,15 +180,7 @@ export const CapabilityModelCard = ({
     setTimeout(() => setSaved(false), 2000);
   };
 
-  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
-  if (load.status === 'failed') {
-    return (
-      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
-        Could not load this model setting, so it can&apos;t be changed right now. Nothing has been changed.{' '}
-        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
-      </div>
-    );
-  }
+  if (load.status !== 'ready') return load.status === 'loading' ? <div className="tile loading-state">Loading...</div> : <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">Could not load this model setting, so it can&apos;t be changed right now. Nothing has been changed.{' '}<button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button></div>;
 
   const isExtra = extraOptions.some(o => o.id === selectedId);
   const selectedModel = matchingModels.find(m => m.id === selectedId) ?? null;
@@ -391,14 +383,7 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
   // a Healer set to monitor or off back on.
   const load = useGuardedLoad<HealerCfg>('healer', () => api.getHealerConfig());
   if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
-  if (load.status === 'failed') {
-    return (
-      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
-        Could not load the Healer settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}
-        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
-      </div>
-    );
-  }
+  if (load.status === 'failed') return <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">Could not load the Healer settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}<button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button></div>;
   return <HealerEditor models={models} config={load.data!} refresh={load.refresh} />;
 };
 

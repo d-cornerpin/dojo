@@ -317,12 +317,7 @@ export const Memory = () => {
       {mainTab === 'vault' && (
         <>
           <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />
-          {vaultError && (
-            <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
-              Could not load vault entries: {vaultError}{' '}
-              <button type="button" className="btn btn--ghost" onClick={loadVault}>Retry</button>
-            </div>
-          )}
+          {vaultError && <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">Could not load vault entries: {vaultError}{' '}<button type="button" className="btn btn--ghost" onClick={loadVault}>Retry</button></div>}
           {vaultLoading ? (
             <div className="stub"><p className="stub__line">Loading vault entries...</p></div>
           ) : vaultError ? null : vaultEntries.length === 0 ? (
