@@ -63,6 +63,11 @@ const idList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is 
 const unique = (xs: string[]): string[] => [...new Set(xs)];
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
+/** The two sentences of a partial-apply failure. The writer (`executeBatch`) and the reader
+ *  (`appliedKeysOf`) share these constants so they cannot drift. */
+export const APPLIED_PHRASE = 'The change WAS applied to ';
+export const NOT_CHANGED_PHRASE = '\nIt was NOT changed on ';
+
 async function executeBatch(
   toolName: string,
   args: Record<string, unknown>,
@@ -110,7 +115,37 @@ async function executeBatch(
   if (failedThreads.length) notDone.push(`${plural(failedThreads.length, 'conversation', 'conversations')} (thread ids ${failedThreads.join(', ')})`);
   return (
     labelFailureText(unique(errors).join('; '), toolName) +
-    (done.length ? `\nThe change WAS applied to ${done.join(' and ')}.` : '') +
-    `\nIt was NOT changed on ${notDone.join(' and ')}; retry those.`
+    (done.length ? `\n${APPLIED_PHRASE}${done.join(' and ')}.` : '') +
+    `${NOT_CHANGED_PHRASE}${notDone.join(' and ')}; retry those.`
   );
+}
+
+/** The ids a partial-apply failure says WERE applied, as ledger keys (`gmail:msg:<id>`,
+ *  `gmail:thread:<id>`), in text order. Null when the text claims nothing was applied.
+ *  The engine sets `isError` from the first word (agent/tools/index.ts), so a call that
+ *  changed 1,000 of 1,250 ids is an Error result; this is how what it DID changed is
+ *  recovered for the task ledger (work/ledger-store.ts). */
+export function appliedKeysOf(content: string): string[] | null {
+  const at = content.indexOf(APPLIED_PHRASE);
+  if (at === -1) return null;
+  const from = at + APPLIED_PHRASE.length;
+  const end = content.indexOf(NOT_CHANGED_PHRASE, from);
+  const applied = content.slice(from, end === -1 ? undefined : end);
+  const keys: string[] = [];
+  for (let pos = 0; pos < applied.length; ) {
+    const t = applied.indexOf('(thread ids ', pos);
+    const m = applied.indexOf('(ids ', pos);
+    const g = t === -1 ? m : m === -1 ? t : Math.min(t, m); // "(thread ids " before "(ids "
+    if (g === -1) break;
+    const thread = g === t;
+    const open = (thread ? '(thread ids ' : '(ids ').length;
+    const body = applied.slice(g + open);
+    const close = body.indexOf(')');
+    if (close === -1) break;
+    for (const id of body.slice(0, close).split(', ').map((x) => x.trim())) {
+      if (id) keys.push(`${thread ? 'gmail:thread' : 'gmail:msg'}:${id}`);
+    }
+    pos = g + open + close + 1;
+  }
+  return keys;
 }

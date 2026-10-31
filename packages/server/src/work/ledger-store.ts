@@ -7,6 +7,7 @@
 // One row per (task, item): a re-touch moves `last_at`, so COUNT(*) is "distinct items touched".
 import { getDb } from '../db/connection.js';
 import { itemKeysOf } from '../tools/item-keys.js';
+import { appliedKeysOf } from '../google/gmail-label.js';
 import { appendWorkEvent } from './store.js';
 import type { WorkEventKind } from './event-kinds.js';
 import type { Measure, MeasureCount } from './measure.js';
@@ -35,7 +36,7 @@ export function ledgerTotals(workId: string): { touched: number; lastAt: number 
 }
 
 /** One of THIS round's tool results, as the executor hands them to the count (`turnToolResults`). */
-export interface RoundResult { toolCallId: string; isError: boolean; errorCode?: string }
+export interface RoundResult { toolCallId: string; isError: boolean; errorCode?: string; content?: string; keptWhole?: string }
 
 /** Did this round's result for the call succeed? Its own flags, never its words (see below). */
 export const succeededIn = (roundResults: ReadonlyArray<RoundResult>) => (call: { id?: string }): boolean => {
@@ -43,10 +44,15 @@ export const succeededIn = (roundResults: ReadonlyArray<RoundResult>) => (call: 
   return !!r && !r.isError && !r.errorCode;
 };
 
+const base = (name: string): string => name.startsWith('user_') ? name.slice(5) : name;
+
 /** The ledger charge for one round's calls (agent/v2/steps/execute/tracker-counting.ts, beside the
  *  effort charge, to the same task): the items each call touched, ONLY when this round holds that
  *  call's result and it succeeded. Success is the result's own flags (`isError`, a structural
- *  `errorCode`), never its words: a refusal reads "Refused: …" as often as "Error: …". */
+ *  `errorCode`), never its words: a refusal reads "Refused: …" as often as "Error: …".
+ *  One failure IS a partial success: a `gmail_label` whose batch partly applied is an Error result
+ *  (the engine's `isError` reads the first word), yet the ids the text says WERE applied are real
+ *  touches — record those, and only those (`appliedKeysOf`, google/gmail-label.ts). */
 export function recordCallsTouched(
   workId: string,
   calls: ReadonlyArray<{ id: string; name: string; arguments?: Record<string, unknown> }>,
@@ -54,9 +60,15 @@ export function recordCallsTouched(
 ): void {
   const ok = succeededIn(roundResults);
   for (const tc of calls) {
-    if (!ok(tc)) continue;
-    const keys = itemKeysOf(tc.name, tc.arguments ?? {});
-    if (keys.length > 0) recordTouched(workId, tc.name, keys);
+    if (ok(tc)) {
+      const keys = itemKeysOf(tc.name, tc.arguments ?? {});
+      if (keys.length > 0) recordTouched(workId, tc.name, keys);
+      continue;
+    }
+    const r = roundResults.find((x) => x.toolCallId === tc.id);
+    if (!r?.isError || base(tc.name) !== 'gmail_label') continue;
+    const applied = appliedKeysOf(r.keptWhole ?? r.content ?? '');
+    if (applied && applied.length > 0) recordTouched(workId, tc.name, applied);
   }
 }
 
