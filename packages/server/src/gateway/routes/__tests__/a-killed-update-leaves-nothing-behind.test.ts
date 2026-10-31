@@ -66,7 +66,7 @@ function fakeCopyChild(): EventEmitter {
 }
 
 // The real imports sit below the mocks: the factories above close over these consts.
-import { cleanUpdateLeftovers } from '../update.js';
+import { cleanUpdateLeftovers } from '../../../update/leftovers.js';
 import { installPlatformTree } from '../../../update/install-tree.js';
 
 let box: string | null = null;
