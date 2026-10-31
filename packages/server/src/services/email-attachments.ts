@@ -148,17 +148,36 @@ export function partitionForGmail(
 /**
  * Microsoft: per-file 3MB threshold (Graph's `attachments` array is fine up
  * to ~4MB per file but the project policy is 3MB; above that we upload to
- * OneDrive and send a link).
+ * OneDrive and send a link). Every inline file is base64-encoded into ONE
+ * Graph request body, so the inline set is also capped at 3MB in total
+ * (~4MB once encoded). Pack smallest-first; anything that doesn't fit
+ * spills to OneDrive overflow.
  */
 export function partitionForOutlook(
   attachments: readonly LocalAttachment[],
 ): { inline: LocalAttachment[]; overflow: LocalAttachment[] } {
   const MAX_PER_FILE = 3 * 1024 * 1024;
+  const MAX_TOTAL = 3 * 1024 * 1024;
   const inline: LocalAttachment[] = [];
   const overflow: LocalAttachment[] = [];
+
+  // Files larger than the per-file cap can never go inline — spill immediately.
+  const eligible: LocalAttachment[] = [];
   for (const att of attachments) {
     if (att.size > MAX_PER_FILE) overflow.push(att);
-    else inline.push(att);
+    else eligible.push(att);
+  }
+
+  // Pack smallest-first so the request body holds as many files as it can.
+  const sorted = [...eligible].sort((a, b) => a.size - b.size);
+  let used = 0;
+  for (const att of sorted) {
+    if (used + att.size <= MAX_TOTAL) {
+      inline.push(att);
+      used += att.size;
+    } else {
+      overflow.push(att);
+    }
   }
   return { inline, overflow };
 }

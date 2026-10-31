@@ -10,7 +10,8 @@ import {
 // The partition helpers decide which outgoing attachments ride inline and which
 // spill to Drive/OneDrive. v35 shipped these with no coverage, so these lock in
 // the documented policies: Gmail's 25MB combined cap packed smallest-first,
-// Outlook's 3MB per-file cap, and the extension→MIME lookup.
+// Outlook's 3MB per-file cap with a 3MB inline total, and the extension→MIME
+// lookup.
 const MB = 1024 * 1024;
 
 // Partition reads only `size`, mime-guess reads only `name`, so a zero-length
@@ -94,14 +95,14 @@ describe('partitionForGmail — 25MB combined cap, packed smallest-first', () =>
   });
 });
 
-describe('partitionForOutlook — 3MB per-file cap, input order kept', () => {
-  it('spills only the per-file overage and keeps input order', () => {
+describe('partitionForOutlook — 3MB per-file cap and 3MB total, packed smallest-first', () => {
+  it('spills the per-file overage and packs the rest inline smallest-first', () => {
     const { inline, overflow } = partitionForOutlook([
       att('a', 2 * MB),
       att('b', 4 * MB),
       att('c', 1),
     ]);
-    expect(names(inline)).toEqual(['a', 'c']);
+    expect(names(inline)).toEqual(['c', 'a']);
     expect(names(overflow)).toEqual(['b']);
   });
 });
