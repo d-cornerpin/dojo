@@ -92,7 +92,7 @@ const read = (r: string) => fs.readFileSync(path.join(SRC, r), 'utf8');
 //
 // ZERO. Every write against `messages`, `inter_agent_messages` and `agent_messages` in the
 // running platform now goes through memory/message-store.ts. The one file that still
-// contains such a statement is `migration/path-migration.ts`, and it is EXEMPT rather than
+// contains such a statement is `migration/path-migration-db.ts`, and it is EXEMPT rather than
 // allowlisted — see OFFLINE_DB_TOOLS below and the test that keeps that exemption honest.
 //
 // Emptying this list is what licensed T4's finishing move: migration 128 drops the compat
@@ -162,9 +162,9 @@ describe('the matcher itself (a weakened regex must not pass silently)', () => {
 
 // ── The one standing exemption, and it is NOT an allowlist entry ──
 //
-// PHASE-1 T4. `migration/path-migration.ts` rewrites `$HOME` references inside a database
+// PHASE-1 T4. `migration/path-migration-db.ts` rewrites `$HOME` references inside a database
 // file that has just been IMPORTED from another machine. It opens that file itself
-// (`new Database(dbPath)` at :57, closed at the end) because the app's connection does not
+// (`new Database(dbPath)`, closed at the end) because the app's connection does not
 // point at it and must not — the whole job is to fix the foreign file up BEFORE it becomes
 // this box's database. Routing it through the writer module would send the UPDATE to the
 // wrong database, which is a worse outcome than the rule it would satisfy.
@@ -173,7 +173,7 @@ describe('the matcher itself (a weakened regex must not pass silently)', () => {
 // than a quiet allowlist entry that a later reader would mistake for unfinished work. The
 // test below is what stops the exemption being abused: a file may only sit here if it
 // really does open its own connection.
-const OFFLINE_DB_TOOLS: string[] = ['migration/path-migration.ts'];
+const OFFLINE_DB_TOOLS: string[] = ['migration/path-migration-db.ts'];
 
 describe('single writer for `messages`', () => {
   it('no file outside the writer module writes the table unless it is on the burn-down list', () => {

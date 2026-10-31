@@ -4,7 +4,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { migrateDatabase } from './path-migration-db.js';
 import { createLogger } from '../logger.js';
 
