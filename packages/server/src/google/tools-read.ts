@@ -663,6 +663,9 @@ export async function executeGoogleReadTool(
         q,
         pageSize: String(maxResults),
         fields: 'files(id, name, mimeType, modifiedTime, size)',
+        supportsAllDrives: 'true',
+        includeItemsFromAllDrives: 'true',
+        corpora: 'allDrives',
       });
       const url = `${DRIVE_BASE}/files?${params.toString()}`;
       const result = await googleRead(url, agentId, agentName, 'drive_list', { query: driveQuery, folderId, maxResults }, slot);
@@ -697,7 +700,7 @@ export async function executeGoogleReadTool(
       const fileId = args.file_id as string;
 
       // Get file metadata to determine type
-      const metaUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType`;
+      const metaUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType&supportsAllDrives=true`;
       const meta = await googleRead(metaUrl, agentId, agentName, 'drive_read', { fileId }, slot);
       if (!meta.ok) return `Error reading file metadata: ${meta.error}`;
 
@@ -716,10 +719,10 @@ export async function executeGoogleReadTool(
 
       // Other files: export as text and paginate.
       let body = '';
-      const exportUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export?mimeType=text/plain`;
+      const exportUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export?mimeType=text/plain&supportsAllDrives=true`;
       const result = await googleRead(exportUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name }, slot);
       if (!result.ok) {
-        const downloadUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?alt=media`;
+        const downloadUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
         const dlResult = await googleRead(downloadUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name }, slot);
         if (!dlResult.ok) return `Error reading file content: ${dlResult.error}`;
         body = typeof dlResult.data === 'string' ? dlResult.data : JSON.stringify(dlResult.data, null, 2);
@@ -785,7 +788,7 @@ export async function executeGoogleReadTool(
     case 'drive_versions_list': {
       const fileId = encodeURIComponent(args.file_id as string);
       const result = await googleRead(
-        `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?fields=revisions(id,modifiedTime,size,keepForever,lastModifyingUser/displayName)`,
+        `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?fields=revisions(id,modifiedTime,size,keepForever,lastModifyingUser/displayName)&supportsAllDrives=true`,
         agentId, agentName, 'drive_versions_list', { fileId: args.file_id }, slot,
       );
       if (!result.ok) return `Error listing versions: ${result.error}`;

@@ -1744,7 +1744,7 @@ export async function executeGoogleWriteTool(
       if (permanent) {
         const result = await googleWrite(
           'DELETE',
-          `https://www.googleapis.com/drive/v3/files/${fileId}`,
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
           undefined,
           agentId, agentName, 'drive_delete',
           { fileId, permanent: true },
@@ -1754,7 +1754,7 @@ export async function executeGoogleWriteTool(
       } else {
         const result = await googleWrite(
           'PATCH',
-          `https://www.googleapis.com/drive/v3/files/${fileId}`,
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
           { trashed: true },
           agentId, agentName, 'drive_delete',
           { fileId, permanent: false },
