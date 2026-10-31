@@ -230,8 +230,8 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
 // prune the post-update fire-and-forget didn't finish (it races the scheduled
 // process.exit) still completes on the next launch. Awaitable + best-effort.
 export async function pruneOldBackupsAsyncAtBoot(): Promise<void> {
-  await cleanUpdateLeftovers(DOJO_DIR);
-  await pruneOldBackupsAsync();
+  // Side by side: a sweep that is slow or stuck never holds the backup prune back.
+  await Promise.allSettled([cleanUpdateLeftovers(DOJO_DIR), pruneOldBackupsAsync()]);
 }
 
 // Module-level cleanup state. Single in-flight cleanup at a time; status
