@@ -13,6 +13,7 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markBootingNew, readMarker } from '../../update-state.js';
+import { rollbackTargetPaths } from '../../update/rollback-target.js';
 import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkDirs, acquireSwapLock } from '../../update/install-tree.js';
 // t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
@@ -163,39 +164,16 @@ function sortNewestFirst(list: BackupInfo[]): BackupInfo[] {
   });
 }
 
-/**
- * THE COPY(IES) A ROLLBACK WOULD RESTORE. There is ONE selection rule and it lives in
- * `~/.dojo/scripts/rollback.sh`: this asks the script itself (`--print-target`, read-only: no lock,
- * no services, no moves), so stable releases outrank pre-releases here exactly as they do there. A
- * cleanup never deletes it, whatever `keep` says (t286). An installed script that predates that
- * mode is NEVER run (it would roll back); then both plausible picks are kept, which errs toward
- * keeping a copy.
- */
-function rollbackTargetPaths(): string[] {
-  const script = path.join(DOJO_DIR, 'scripts', 'rollback.sh');
-  try {
-    if (fs.readFileSync(script, 'utf-8').includes('--print-target')) {
-      const out = execFileSync('/bin/bash', [script, '--print-target'], {
-        env: { ...process.env, HOME: homeDir() }, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      return out ? [out] : [];
-    }
-  } catch { /* script missing or failed: fall through to the conservative pair */ }
-  const keepers: string[] = [];
-  try {
-    const recorded = readMarker()?.backupDir;
-    if (recorded && path.dirname(recorded) === DOJO_DIR && path.basename(recorded).startsWith(BACKUP_PREFIX)
-      && fs.existsSync(path.join(recorded, 'package.json'))) keepers.push(recorded);
-  } catch { /* an unreadable marker is ignored */ }
-  const sorted = sortNewestFirst(listPlatformBackups());
-  if (sorted[0]) keepers.push(sorted[0].path);
-  const stable = sorted.find(b => !b.version.includes('-'));
-  if (stable) keepers.push(stable.path);
-  return keepers;
-}
-
 function backupsToPrune(keep: number): BackupInfo[] {
-  const targets = new Set(rollbackTargetPaths());
+  const targets = new Set(rollbackTargetPaths({
+    dojoDir: DOJO_DIR, home: homeDir(), backupPrefix: BACKUP_PREFIX, recordedBackupDir: readMarker()?.backupDir,
+    backupsNewestFirst: sortNewestFirst(listPlatformBackups()),
+    readText: f => fs.readFileSync(f, 'utf-8'),
+    exists: f => fs.existsSync(f),
+    runScript: (script, flag, home) => execFileSync('/bin/bash', [script, flag], {
+      env: { ...process.env, HOME: home }, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }),
+  }));
   return [
     ...sortNewestFirst(listPlatformBackups()).slice(keep),
     ...sortNewestFirst(listFailedBuilds()).slice(keep),
