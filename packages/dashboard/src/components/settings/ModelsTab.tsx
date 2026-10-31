@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react';
 import type { Provider, Model } from '@dojo/shared';
 import * as api from '../../lib/api';
+import { useToast } from '../../hooks/useToast';
 import { parseUtc } from '../../lib/dates';
 import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
@@ -552,6 +553,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
 };
 
 export const ModelsTab = () => {
+  const toast = useToast();
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [primaryModelId, setPrimaryModelId] = useState<string | null>(null);
@@ -584,7 +586,9 @@ export const ModelsTab = () => {
     if (model.isEnabled) {
       // Check if any agents are using this model before disabling
       const usage = await api.checkModelUsage([model.id]);
-      if (usage.ok && usage.data.usages.length > 0) {
+      if (!usage.ok) {
+        if (!window.confirm(`Could not check which agents use this model (${usage.error}). Turn it off anyway?`)) return;
+      } else if (usage.data.usages.length > 0) {
         const affected = usage.data.usages[0].usedBy.map(u => u.name).join(', ');
         if (!window.confirm(`This model is currently used by: ${affected}.\n\nDisabling it will reassign them to the next available model. Continue?`)) {
           return;
@@ -595,6 +599,8 @@ export const ModelsTab = () => {
         setModels((prev) =>
           prev.map((m) => (m.id === model.id ? { ...m, isEnabled: false } : m)),
         );
+      } else {
+        toast.error(result.error ?? 'The change could not be saved.');
       }
     } else {
       const result = await api.enableModels([model.id]);
@@ -602,6 +608,8 @@ export const ModelsTab = () => {
         setModels((prev) =>
           prev.map((m) => (m.id === model.id ? { ...m, isEnabled: true } : m)),
         );
+      } else {
+        toast.error(result.error ?? 'The change could not be saved.');
       }
     }
   };
