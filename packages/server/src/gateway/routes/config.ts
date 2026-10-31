@@ -2377,6 +2377,19 @@ configRouter.put('/settings/:key', async (c) => {
     if ((body.base || null) !== (stored || null)) {
       return c.json({ ok: false, error: 'This list changed since you loaded it, so it was not saved. Reload it and make your change again.' }, 409);
     }
+    // Who the OWNER is changes only on purpose: a save that adds, moves or removes the starred entry must
+    // say so (`ownerChange: true`). Deleting a row, or any other edit, never moves the star as a side effect.
+    const owners = (raw: string | null): string => {
+      try {
+        const list = JSON.parse(raw || '[]');
+        return (Array.isArray(list) ? list : [])
+          .filter((e) => e && typeof e === 'object' && (e as { is_primary?: unknown }).is_primary === true)
+          .map((e) => String((e as { address?: unknown }).address ?? '').trim().toLowerCase()).sort().join('|');
+      } catch { return ''; }
+    };
+    if (owners(body.value) !== owners(stored) && body.ownerChange !== true) {
+      return c.json({ ok: false, error: 'This change would add, move or remove the owner entry. Change the owner on purpose (star the entry, or confirm removing it) and save again.' }, 409);
+    }
   }
 
   // The 32K main-model floor (owner decision 13) for a service agent's MAIN model, and (v3.5) the memory

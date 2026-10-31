@@ -162,8 +162,10 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
     }
   }
 
-  // Guarantee exactly one primary. If none, promote the legacy default key's
-  // match or the first record. If multiple, keep only the first marked.
+  // At most one primary. The star is never handed to another entry on its own (owner ruling): a list with no
+  // starred entry has an owner only if the owner's own legacy key (`imessage_default_sender`, which the
+  // dashboard clears when the owner entry is removed on purpose) names one of its entries. It is never
+  // "the first entry". If several are marked, keep the first.
   const primaries = normalized.filter(s => s.is_primary);
   if (primaries.length === 0 && normalized.length > 0) {
     const legacyDefault = readLegacyDefaultSender();

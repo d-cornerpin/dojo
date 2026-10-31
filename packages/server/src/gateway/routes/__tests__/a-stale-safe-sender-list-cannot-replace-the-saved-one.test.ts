@@ -113,3 +113,35 @@ describe('a safe-sender list save', () => {
     expect((await put('some_other_key', { value: 'x' })).status).toBe(200);
   });
 });
+
+// Owner ruling: the owner flag never moves, and is never removed, as a side effect of another edit.
+const withOwner = (owner: string | null, ...others: string[]) =>
+  JSON.stringify([...(owner ? [{ address: owner, name: owner, is_primary: true, sharing_level: 'open_book' }] : []),
+    ...others.map((address) => ({ address, name: address, is_primary: false, sharing_level: 'dont_overshare' }))]);
+
+describe('a safe-sender save that changes who the owner is', () => {
+  const k = 'imessage_approved_senders';
+  it('is refused unless it says it is an owner change, and writes nothing', async () => {
+    const v1 = withOwner('me@x.test', 'b@x.test');
+    await put(k, { value: v1, base: null, ownerChange: true });
+    const res = await put(k, { value: withOwner(null, 'b@x.test'), base: v1 });   // the starred row deleted
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/owner/i);
+    expect(stored(k)).toBe(v1);
+  });
+  it('is refused when the star would move to another entry', async () => {
+    const v1 = withOwner('me@x.test', 'b@x.test');
+    await put(k, { value: v1, base: null, ownerChange: true });
+    expect((await put(k, { value: withOwner('b@x.test', 'me@x.test'), base: v1 })).status).toBe(409);
+  });
+  it('is accepted when it says so (removing the starred owner leaves no owner)', async () => {
+    const v1 = withOwner('me@x.test', 'b@x.test');
+    await put(k, { value: v1, base: null, ownerChange: true });
+    expect((await put(k, { value: withOwner(null, 'b@x.test'), base: v1, ownerChange: true })).status).toBe(200);
+  });
+  it('an edit that leaves the owner alone needs no flag', async () => {
+    const v1 = withOwner('me@x.test', 'b@x.test');
+    await put(k, { value: v1, base: null, ownerChange: true });
+    expect((await put(k, { value: withOwner('me@x.test'), base: v1 })).status).toBe(200);
+  });
+});
