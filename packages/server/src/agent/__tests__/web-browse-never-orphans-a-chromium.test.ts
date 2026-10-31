@@ -26,7 +26,7 @@ vi.mock('../model.js', () => ({}));
 vi.mock('../../services/vision-model.js', () => ({}));
 vi.mock('../../db/connection.js', () => ({}));
 
-let BrowserSession: typeof import('../browser.js').BrowserSession;
+import { BrowserSession } from '../browser.js';
 
 // Fake data only: a browser whose context and page come up cleanly.
 function workingBrowser() {
@@ -45,13 +45,9 @@ function workingBrowser() {
 }
 
 beforeEach(async () => {
-  // A fresh module registry per clause so the launch stub is genuinely dialled again, as in
-  // site-snapshot-releases-its-slot.test.ts.
-  vi.resetModules();
   launch.mockReset();
   assertPublicHttpTarget.mockReset();
   assertPublicHttpTarget.mockResolvedValue({ href: 'https://example.com/', address: '93.184.216.34' });
-  ({ BrowserSession } = await import('../browser.js'));
 });
 
 describe('web_browse never orphans a Chromium', () => {
