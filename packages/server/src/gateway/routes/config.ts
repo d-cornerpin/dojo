@@ -2364,6 +2364,20 @@ configRouter.put('/settings/:key', async (c) => {
     if (badTime) return c.json({ ok: false, error: badTime }, 400);
   }
 
+  // A channel safe-sender list is saved WHOLE, and it decides who the agent may auto-reply to. A save
+  // must name the exact value it was built on (`base`: the stored string, or null when nothing was
+  // saved). If the stored value has moved since (another tab, the agent adding a sender) or the
+  // client never read it (a failed load looks blank), the save is refused and nothing is written.
+  if ((await import('../../contacts/from-safe-senders.js')).configKeyToChannel(key)) {
+    const stored = (db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
+    if (!('base' in body) || (body.base !== null && typeof body.base !== 'string')) {
+      return c.json({ ok: false, error: 'This list could not be saved because the page did not say which saved list it was built on. Reload the page and try again.' }, 400);
+    }
+    if ((body.base || null) !== (stored || null)) {
+      return c.json({ ok: false, error: 'This list changed since you loaded it, so it was not saved. Reload it and make your change again.' }, 409);
+    }
+  }
+
   // The 32K main-model floor (owner decision 13) for a service agent's MAIN model, and (v3.5) the memory
   // fit for every local-model key. Refused before any write; re-saving the stored value never is.
   if (LOCAL_MODEL_SETTING_KEYS.includes(key)) {
