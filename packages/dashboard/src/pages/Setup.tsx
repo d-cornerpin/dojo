@@ -784,10 +784,11 @@ const ModelsStep = () => {
 
 // ── Your Profile ──
 
-const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
+export const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [userName, setUserName] = useState('');
   const [aboutYou, setAboutYou] = useState('');
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -813,12 +814,15 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
   }, []);
 
   const handleSave = async () => {
+    setError(null);
+    const calls: Array<() => Promise<{ ok: boolean; error?: string }>> = [];
     if (userName.trim()) {
-      await api.setSetting('user_name', userName.trim());
-      await api.setSetting('owner_name', userName.trim());
+      calls.push(() => api.setSetting('user_name', userName.trim()), () => api.setSetting('owner_name', userName.trim()));
     }
-    if (aboutYou.trim()) {
-      await api.updateIdentity('USER.md', aboutYou.trim());
+    if (aboutYou.trim()) calls.push(() => api.updateIdentity('USER.md', aboutYou.trim()));
+    for (const call of calls) {
+      const r = await call();
+      if (!r.ok) { setError(r.error ?? 'Could not save your profile.'); return; }
     }
     setSaved(true);
   };
@@ -849,6 +853,7 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
       {saved && (
         <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">Profile saved!</div>
       )}
+      {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
       <button onClick={handleSave} disabled={!userName.trim() || !aboutYou.trim() || saved}
         className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
