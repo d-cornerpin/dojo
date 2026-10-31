@@ -130,8 +130,9 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
       { kind, isOwner, boundChannel, autoRoutes: input.autoRoutes },
       { presence: input.presence, imessageBridgeConfigured: input.imessageBridgeConfigured, ownerAffinityChannel: input.ownerAffinityChannel },
     );
-    // Held wake: the text stays in the dashboard, so do not promise a channel hop.
-    if (input.settledContextWakeTurn && boundChannel === null) deliveryChannel = 'dashboard';
+    // Held wake (a person-turn idea): the text stays in the dashboard, so do not promise a channel hop.
+    // Engine turns are never held (outbound-root.ts `engine_occurrence`): the text is delivered.
+    if (kind === 'person' && input.settledContextWakeTurn && boundChannel === null) deliveryChannel = 'dashboard';
   }
 
   return {
@@ -148,7 +149,7 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
     routed: kind === 'person' && ROUTED.has(deliveryChannel),
     autoRoutes: input.autoRoutes,
     ownerAffinity: input.ownerAffinityChannel,
-    heldWake: !!input.settledContextWakeTurn && boundChannel === null,
+    heldWake: kind === 'person' && !!input.settledContextWakeTurn && boundChannel === null,
   };
 }
 
