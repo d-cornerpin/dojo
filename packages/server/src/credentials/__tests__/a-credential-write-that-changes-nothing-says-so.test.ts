@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { executeCredentialTool } from '../tools.js';
 import { getCredentialByService } from '../store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CRED_ROOT = path.resolve(HERE, '..');
@@ -68,7 +69,7 @@ vi.mock('../../config/loader.js', () => ({
   getProviderCredential: () => null,
 }));
 
-const OWNER_AGENT = 'zargo';
+const OWNER_AGENT = FXID.n4;
 const BATTERY_AGENT = 'harnessbot';
 const SLOT = 'batterytest-forecast';
 /** The payload shape the failed draws sent, with fictional key material. */
@@ -82,7 +83,7 @@ beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT);
-    INSERT INTO agents (id, name) VALUES ('${OWNER_AGENT}', 'Zargo'), ('${BATTERY_AGENT}', 'HarnessBot');
+    INSERT INTO agents (id, name) VALUES ('${OWNER_AGENT}', '${FX.n4}'), ('${BATTERY_AGENT}', 'HarnessBot');
     CREATE TABLE agent_credentials (
       id TEXT PRIMARY KEY,
       service_name TEXT NOT NULL UNIQUE,
