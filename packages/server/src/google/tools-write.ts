@@ -1815,7 +1815,7 @@ export async function executeGoogleWriteTool(
         }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length }, undefined, slot);
 
         if (!writeResult.ok) {
-          return `Google Doc "${title}" created (ID: ${docId}) but failed to write content: ${writeResult.error}`;
+          return `Error: Google Doc "${title}" was created (ID: ${docId}) but its text could not be written: ${writeResult.error}. The empty document exists; add the text with docs_edit on this ID instead of creating another.`;
         }
       }
 
@@ -1917,7 +1917,10 @@ export async function executeGoogleWriteTool(
         ? await shareCreatedFileWithOwner(sheetId, kind, slot, resolved.account.email, agentId, agentName)
         : '';
       const sheetTrailer = sheetLink ? '\n\nGive the person you are talking to this link so they can open the sheet.' : '';
-      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetHeaderNote}${sheetOwnerNote}${sheetTrailer}`;
+      // A failed header write is a real failure: lead with "Error:" so the engine
+      // fails the turn, but keep the id/link so the agent fills the existing sheet.
+      const sheetBody = `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetHeaderNote}${sheetOwnerNote}${sheetTrailer}`;
+      return sheetHeaderNote ? `Error: ${sheetBody}` : sheetBody;
     }
 
     case 'sheets_append': {
