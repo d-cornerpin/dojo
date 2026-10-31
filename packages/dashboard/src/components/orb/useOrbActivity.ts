@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket';
-import { listActiveGenerationJobs, type GenJobDto } from '../../lib/api';
+import { getAgents, listActiveGenerationJobs, type GenJobDto } from '../../lib/api';
 import { useDojoOrb } from './OrbProvider';
 import type { OrbTaskName } from './dojoOrbEngine';
 
@@ -28,7 +28,7 @@ function jobToTask(kind: GenJobDto['kind']): OrbTaskName {
 
 export function useOrbActivity(): void {
   const dojoOrb = useDojoOrb();
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
   const jobsRef = useRef<GenJobDto[]>([]);
   const engineRef = useRef<EngineItem[]>([]);
   const currentRef = useRef<OrbTaskName | null>(null);
@@ -48,11 +48,41 @@ export function useOrbActivity(): void {
     currentRef.current = next;
   }, [dojoOrb]);
 
+  // A new orb engine (or a remount) has no task running: forget what the old one was told.
+  useEffect(() => () => { currentRef.current = null; }, [dojoOrb]);
+
+  // Latest-issued wins: an older list landing late must not overwrite a newer one.
+  const latestRefetch = useRef(0);
   const refetch = useCallback(async () => {
+    const mine = ++latestRefetch.current;
     const r = await listActiveGenerationJobs();
+    if (mine !== latestRefetch.current) return;
     if (r.ok) jobsRef.current = r.data;
     sync();
   }, [sync]);
+
+  // Frames sent while the socket was down are gone: after a reconnect, forget the engine items
+  // we were holding and rebuild them from what the agents are doing now.
+  const seenReconnect = useRef(reconnectCount);
+  const latestEngineRead = useRef(0);
+  useEffect(() => {
+    if (seenReconnect.current === reconnectCount) return;
+    seenReconnect.current = reconnectCount;
+    const mine = ++latestEngineRead.current;
+    engineRef.current = [];
+    sync();
+    void refetch();
+    void (async () => {
+      const r = await getAgents();
+      if (mine !== latestEngineRead.current || !r.ok) return;
+      const working: EngineItem[] = [];
+      for (const a of r.data) {
+        if ((a.id === 'dreamer' || a.id === 'healer') && a.status === 'working') working.push({ id: a.id, kind: a.id });
+      }
+      engineRef.current = [...working, ...engineRef.current.filter((it) => !working.some((w) => w.id === it.id))];
+      sync();
+    })();
+  }, [reconnectCount, refetch, sync]);
 
   useEffect(() => {
     void refetch();
