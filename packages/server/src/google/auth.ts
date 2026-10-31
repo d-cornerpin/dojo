@@ -434,6 +434,7 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!resp.ok) {
