@@ -23,6 +23,10 @@ import { homeDir } from '../home.js';
 import { CALENDAR_NOTHING_TO_CHANGE } from '../agent/tools/nothing-to-change.js';
 import { TOLD_ABOUT_TASK_PROPERTY } from '../agent/tools/told-about-task.js';
 
+// Graph upload sessions: every fragment except the last must be a multiple of 320 KiB
+// (327,680 bytes), per "Upload large files with an upload session" in the Graph docs.
+const ONEDRIVE_CHUNK_BYTES = 320 * 1024 * 12; // 3,932,160
+
 // ── Tool Definitions ──
 
 export const microsoftWriteToolDefinitions: ToolDefinition[] = [
@@ -810,10 +814,9 @@ async function uploadAttachmentToOneDrive(
       const session = await sessionResp.json() as { uploadUrl?: string };
       if (!session.uploadUrl) return { ok: false, error: 'OneDrive returned no upload URL' };
 
-      const CHUNK_SIZE = 4 * 1024 * 1024;
       let offset = 0;
       while (offset < att.size) {
-        const chunkSize = Math.min(CHUNK_SIZE, att.size - offset);
+        const chunkSize = Math.min(ONEDRIVE_CHUNK_BYTES, att.size - offset);
         const chunk = att.content.subarray(offset, offset + chunkSize);
         const chunkResp = await graphFetch(agentId, session.uploadUrl, {
           method: 'PUT',
@@ -1319,15 +1322,14 @@ export async function executeMicrosoftWriteTool(
         const session = await sessionResp.json() as { uploadUrl?: string };
         if (!session.uploadUrl) return 'Error: no upload URL returned from OneDrive';
 
-        // Upload in 4MB chunks
-        const CHUNK_SIZE = 4 * 1024 * 1024;
+        // Upload in 320 KiB-multiple chunks
         const fd = fs.openSync(filePath, 'r');
         let offset = 0;
         let finalData: { id?: string; name?: string; webUrl?: string } | null = null;
 
         try {
           while (offset < fileSize) {
-            const chunkSize = Math.min(CHUNK_SIZE, fileSize - offset);
+            const chunkSize = Math.min(ONEDRIVE_CHUNK_BYTES, fileSize - offset);
             const chunk = Buffer.alloc(chunkSize);
             fs.readSync(fd, chunk, 0, chunkSize, offset);
 
@@ -1356,6 +1358,7 @@ export async function executeMicrosoftWriteTool(
           fs.closeSync(fd);
         }
 
+        if (!finalData) return 'Error: upload ended without OneDrive confirming the file';
         const sizeMB = Math.round(fileSize / 1024 / 1024 * 10) / 10;
         return `File uploaded to OneDrive: ${finalData?.name ?? fileName} (${sizeMB}MB)${finalData?.id ? ` (ID: ${finalData.id})` : ''}${finalData?.webUrl ? `\nLink: ${finalData.webUrl}` : ''}`;
       } catch (err) {
@@ -1848,12 +1851,12 @@ export async function executeMicrosoftWriteTool(
           const session = await sessionResp.json() as { uploadUrl?: string };
           if (!session.uploadUrl) return { path: filePath, ok: false, message: 'No upload URL returned' };
 
-          const CHUNK_SIZE = 4 * 1024 * 1024;
           const fd = fs.openSync(filePath, 'r');
           let offset = 0;
+          let confirmed = false;
           try {
             while (offset < fileSize) {
-              const chunkSize = Math.min(CHUNK_SIZE, fileSize - offset);
+              const chunkSize = Math.min(ONEDRIVE_CHUNK_BYTES, fileSize - offset);
               const chunk = Buffer.alloc(chunkSize);
               fs.readSync(fd, chunk, 0, chunkSize, offset);
               const chunkResp = await graphFetch(agentId, session.uploadUrl, {
@@ -1868,11 +1871,13 @@ export async function executeMicrosoftWriteTool(
               if (!chunkResp.ok && chunkResp.status !== 202) {
                 return { path: filePath, ok: false, message: `Chunk error at ${offset}: ${(await chunkResp.text()).slice(0, 100)}` };
               }
+              if (chunkResp.status === 201 || chunkResp.status === 200) confirmed = true;
               offset += chunkSize;
             }
           } finally {
             fs.closeSync(fd);
           }
+          if (!confirmed) return { path: filePath, ok: false, message: 'upload ended without OneDrive confirming the file' };
           return { path: filePath, ok: true, message: `${fileName} (${Math.round(fileSize / 1024 / 1024 * 10) / 10}MB)` };
 
         } catch (err) {
