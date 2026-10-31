@@ -15,7 +15,7 @@ import { Readable, PassThrough } from 'node:stream';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getTechnique } from './store.js';
-import { collectTechniqueFiles, withBundledEntries, packageNotes, readFolderText, type FileEntry } from './technique-folder.js';
+import { collectTechniqueFiles, withBundledEntries, packageNotes, readFolderText, type FileEntry } from './share-disk.js';
 import { scrubFiles, type Redaction } from './scrub.js';
 import { callModel } from '../agent/model.js';
 import { getTrainerAgentId } from '../config/platform.js';

@@ -15,7 +15,8 @@ import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
-import { insideTechniqueDir, isSafeTechniqueId, extractPackageEntries, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './technique-folder.js';
+import { insideTechniqueDir, isSafeTechniqueId } from './technique-folder.js';
+import { extractPackageEntries, ensureFolder, makeNewFolder, removeFolder, writeFolderText, readFolderText } from './share-disk.js';
 
 const logger = createLogger('technique-share-import');
 
