@@ -10,7 +10,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { isPastFirstRun } from '../../config/setup-state.js';
+import { resolveProvision } from './setup-primary-id.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
 import { noteRouteFailure, routeFailure } from './route-failure.js';
 import { homeDir } from '../../home.js';
@@ -475,27 +475,11 @@ setupDepsRouter.post('/provision-agent', async (c) => {
     return c.json({ ok: false, error: 'id and name are required' }, 400);
   }
 
-  const { id: requestedId, name, modelId, classification, primary } = body as {
-    id: string;
-    name: string;
-    modelId?: string;
-    classification?: string;
-    primary?: boolean;
-  };
+  const { id: requestedId, name, modelId, classification, primary } = body as { id: string; name: string; modelId?: string; classification?: string; primary?: boolean };
 
   const db = getDb();
 
-  // The primary agent is identified by the stored primary_agent_id, never by the name typed in
-  // the wizard. After first run, a primary request that names a different id renames the stored
-  // primary instead of creating a second agent and repointing at it. The caller reads the id
-  // back from the response.
-  let id = requestedId;
-  const pastFirstRun = isPastFirstRun();
-  if (primary === true && pastFirstRun) {
-    const stored = db.prepare("SELECT value FROM config WHERE key = 'primary_agent_id'").get() as { value: string } | undefined;
-    if (stored?.value && db.prepare('SELECT id FROM agents WHERE id = ?').get(stored.value)) id = stored.value;
-  }
-
+  const { id, placeholders } = resolveProvision(db, requestedId, primary);
   // Check if agent already exists with this ID
   const existing = db.prepare('SELECT id, model_id FROM agents WHERE id = ?').get(id) as { id: string; model_id: string | null } | undefined;
 
@@ -522,9 +506,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
     return c.json({ ok: true, data: { id, name, action: 'updated' } });
   }
 
-  // Remove any old default agents that the migration created. Only during first run: after it,
-  // an agent with one of these ids is a real agent with history, not a placeholder.
-  for (const oldId of pastFirstRun ? [] : ['primary', 'pm']) {
+  for (const oldId of placeholders) {
     const old = db.prepare('SELECT id FROM agents WHERE id = ?').get(oldId);
     if (old && oldId !== id) {
       deleteAllForAgent(oldId);

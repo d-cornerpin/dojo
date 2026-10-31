@@ -841,13 +841,10 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
     if (!agentName.trim()) return;
     setError(null);
 
-    // Generate agent ID from name
     const primaryId = agentName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
 
-    // Provision first: nothing is written to settings until the server has accepted the agent.
-    // Through the shared api client so it carries token + CSRF: /api/setup/ is OOBE-only now
-    // (PHASE-0 T9). `primary: true` lets the server find the stored primary by its id (a renamed
-    // primary is renamed, never duplicated) and answer with the id that is really in use.
+    // Provision first; settings are written only once the server accepted the agent. `primary`
+    // lets the server find the stored primary by id (a renamed primary is renamed, never duplicated).
     const provisionResult = await api.request<{ id?: string }>('/setup/provision-agent', {
       method: 'POST',
       body: JSON.stringify({
@@ -863,13 +860,10 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       setError(provisionResult.error ?? 'Failed to create agent');
       return;
     }
-    const realId = provisionResult.data?.id || primaryId;
-
-    const nameRes = await api.setSetting('primary_agent_name', agentName.trim());
-    if (!nameRes.ok) { setError(nameRes.error ?? 'Failed to save the agent name'); return; }
-    const idRes = await api.setSetting('primary_agent_id', realId);
-    if (!idRes.ok) { setError(idRes.error ?? 'Failed to save the primary agent'); return; }
-
+    for (const [key, value] of [['primary_agent_name', agentName.trim()], ['primary_agent_id', provisionResult.data?.id || primaryId]]) {
+      const res = await api.setSetting(key, value);
+      if (!res.ok) { setError(res.error ?? `Failed to save ${key}`); return; }
+    }
     // Generate identity files (SOUL.md etc.)
     const userNameResult = await api.getSetting('user_name');
     const userName = userNameResult.ok ? userNameResult.data.value ?? '' : '';
@@ -881,10 +875,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       userRole: '',
       userPreferences: '',
     });
-    if (!identityResult.ok) {
-      setError(`Agent created, but its identity files could not be written: ${identityResult.error ?? 'unknown error'}`);
-      return;
-    }
+    if (!identityResult.ok) { setError(`Agent created, but its identity files could not be written: ${identityResult.error ?? 'unknown error'}`); return; }
 
     setSaved(true);
   };
