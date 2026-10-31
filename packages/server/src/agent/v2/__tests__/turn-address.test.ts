@@ -72,12 +72,15 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(renderReplyGoesTo(a)).toBeNull();
   });
 
-  it('A6: engine and notification turns are not routed to a person', () => {
+  it('A6: engine and notification turns have no reply line and are never routed to a person as a reply', () => {
     const e = addr({ counterparty: owner, isEngineTurn: true, presence: 'away' });
-    const n = addr({ counterparty: owner, isNotificationTurn: true });
-    for (const a of [e, n]) { expect(a.deliveryChannel).toBe('dashboard'); expect(a.routed).toBe(false); expect(renderReplyGoesTo(a)).toBeNull(); }
+    const n = addr({ counterparty: owner, isNotificationTurn: true, presence: 'away' });
+    for (const a of [e, n]) { expect(a.routed).toBe(false); expect(renderReplyGoesTo(a)).toBeNull(); }
     expect(e.kind).toBe('engine');
     expect(n.kind).toBe('notification');
+    expect(n.deliveryChannel).toBe('dashboard');
+    // An away owner's reminder is delivered to their phone; the address says so truthfully.
+    expect(e.deliveryChannel).toBe('imessage');
   });
 
   it('delivery reads the address: live presence still applies, the bound inbound does not move', () => {

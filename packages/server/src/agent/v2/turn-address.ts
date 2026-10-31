@@ -40,7 +40,8 @@ export interface TurnAddress {
    *  continuation for the same reason. */
   readonly inboundContext: ChannelInboundContext | null;
   /** Where the written reply is projected to land. `dashboard` for agent, engine and
-   *  notification turns (nothing is auto-routed to a person on those). */
+   *  notification turns (nothing is auto-routed to a person on those); an engine turn's
+   *  text is delivered like the owner's, so its channel is the real one. */
   readonly deliveryChannel: ReplyDestination;
   /** True when the written reply goes out on a routed channel (iMessage, SMS, email, Teams,
    *  phone) rather than staying in the dashboard. */
@@ -80,8 +81,8 @@ export function resolveDeliveryChannel(
   addr: Pick<TurnAddress, 'kind' | 'isOwner' | 'boundChannel'>,
   live: LiveDeliveryInputs,
 ): ReplyDestination {
-  // Agent, engine and notification turns never auto-route to a person.
-  if (addr.kind !== 'person') return 'dashboard';
+  // Agent and notification turns never auto-route to a person.
+  if (addr.kind === 'agent' || addr.kind === 'notification') return 'dashboard';
   const affinityRefused = affinityPromotionRefusedNoBasis({
     ownerAffinityChannel: live.ownerAffinityChannel,
     inboundChannel: addr.boundChannel,
@@ -112,7 +113,9 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
   const inboundContext = input.inboundContext ?? restored?.inboundContext ?? null;
 
   let deliveryChannel: ReplyDestination = 'dashboard';
-  if (kind === 'person') {
+  // An engine turn's text is delivered like the owner's (a reminder reaches an away owner's phone),
+  // so its delivery channel is the real one; the agent is simply not told to "reply" on it.
+  if (kind === 'person' || kind === 'engine') {
     deliveryChannel = resolveDeliveryChannel(
       { kind, isOwner, boundChannel },
       { presence: input.presence, imessageBridgeConfigured: input.imessageBridgeConfigured, ownerAffinityChannel: input.ownerAffinityChannel },
@@ -129,8 +132,8 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
     senderId: cp.senderId,
     threadId: cp.threadId,
     inboundChannel: cp.channel,
-    boundChannel: kind === 'person' ? boundChannel : null,
-    inboundContext: kind === 'person' ? inboundContext : null,
+    boundChannel,
+    inboundContext,
     deliveryChannel,
     routed: kind === 'person' && ROUTED.has(deliveryChannel),
   };
