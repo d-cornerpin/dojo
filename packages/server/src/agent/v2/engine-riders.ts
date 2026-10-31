@@ -83,7 +83,7 @@ export const ENGINE_RIDER_INTENTS = [
   'project_needs_attention',
   // postAgentNotice: its own default plus every intent its callers pass
   'agent_notice', 'agent_health', 'block_validated', 'engine_event_expired',
-  'image_delivery_outcome', 'file_delivery_outcome', 'learning_loop', 'pm_review_failed', 'schedule_run_failed',
+  'image_delivery_outcome', 'file_delivery_outcome', 'dojo_message_sent', 'learning_loop', 'pm_review_failed', 'schedule_run_failed',
   'schedule_run_failed_owner', 'scheduler_missed_runs', 'spawn_timeout_decision',
   'spawn_timeout_undecided', 'validation_check',
   // SWEEP CORE-2 item 3 (SWEEP-F T2) — the skipped-reminder heads-up, converted off the dead
