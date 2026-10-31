@@ -102,8 +102,13 @@ export function withUnit<T>(fn: () => SyncOnly<T>): T {
 
   if (depth > 0) {
     depth++;
+    const mark = pending.length;
     try {
       return db.transaction(body)();
+    } catch (err) {
+      // The savepoint rolled back: drop what this unit queued, keep what its parents did.
+      pending.length = mark;
+      throw err;
     } finally {
       depth--;
     }
