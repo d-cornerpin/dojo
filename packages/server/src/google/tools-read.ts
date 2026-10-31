@@ -801,13 +801,27 @@ export async function executeGoogleReadTool(
 
     case 'drive_versions_list': {
       const fileId = encodeURIComponent(args.file_id as string);
-      const result = await googleRead(
-        `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?fields=revisions(id,modifiedTime,size,keepForever,lastModifyingUser/displayName)&supportsAllDrives=true`,
-        agentId, agentName, 'drive_versions_list', { fileId: args.file_id }, slot,
-      );
-      if (!result.ok) return `Error listing versions: ${result.error}`;
-      const data = result.data as { revisions?: Array<{ id: string; modifiedTime: string; size?: string; keepForever?: boolean; lastModifyingUser?: { displayName?: string } }> };
-      const revs = data?.revisions ?? [];
+      // Revisions come OLDEST first, one page per call. Follow the nextPageToken until
+      // there is none; a server that keeps answering with a token it already gave stops
+      // the loop and the result says the list may be incomplete (no page cap).
+      const revisionsUrl = `${DRIVE_BASE}/files/${fileId}/revisions?fields=nextPageToken,revisions(id,modifiedTime,size,keepForever,lastModifyingUser/displayName)&pageSize=1000&supportsAllDrives=true`;
+      const revs: Array<{ id: string; modifiedTime: string; size?: string; keepForever?: boolean; lastModifyingUser?: { displayName?: string } }> = [];
+      const seenTokens = new Set<string>();
+      let incomplete = false;
+      let pageToken: string | undefined;
+      for (;;) {
+        const result = await googleRead(
+          pageToken ? `${revisionsUrl}&pageToken=${encodeURIComponent(pageToken)}` : revisionsUrl,
+          agentId, agentName, 'drive_versions_list', { fileId: args.file_id }, slot,
+        );
+        if (!result.ok) return `Error listing versions: ${result.error}`;
+        const data = result.data as { nextPageToken?: string; revisions?: typeof revs };
+        revs.push(...(data?.revisions ?? []));
+        pageToken = data?.nextPageToken;
+        if (!pageToken) break;
+        if (seenTokens.has(pageToken)) { incomplete = true; break; }
+        seenTokens.add(pageToken);
+      }
       if (revs.length === 0) return 'No version history available (file may be too new or version tracking disabled for this file type).';
       const lines = revs.map(r => {
         const pin = r.keepForever ? ' [PINNED]' : '';
@@ -815,7 +829,7 @@ export async function executeGoogleReadTool(
         const size = r.size ? ` | ${Math.round(parseInt(r.size, 10) / 1024)}KB` : '';
         return `- ${formatTimeForAgent(r.modifiedTime)}${who}${size}${pin}\n    ID: ${r.id}`;
       });
-      return `${revs.length} version(s) (newest first):\n\n${lines.reverse().map((item) => outsideSpan(item)).join('\n')}`;
+      return `${revs.length} version(s) (newest first):\n\n${lines.reverse().map((item) => outsideSpan(item)).join('\n')}${incomplete ? '\n\nThis list may be incomplete: not every page could be read.' : ''}`;
     }
 
     case 'calendar_freebusy': {
