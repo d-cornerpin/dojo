@@ -131,7 +131,8 @@ function plainBottomPost(plain: string): string | null {
   const first = lines.findIndex(isQuote);
   if (first < 0) return null;
   const last = lines.length - 1 - [...lines].reverse().findIndex(isQuote);
-  if (lines.slice(0, first).filter((l) => l.trim() !== '').length > 1) return null;
+  const above = lines.slice(0, first).filter((l) => l.trim() !== '');
+  if (above.length > 1 || (above.length === 1 && !above[0].trimEnd().endsWith(':'))) return null;
   if (lines.slice(first, last + 1).some((l) => l.trim() !== '' && !isQuote(l))) return null;
   const tail = lines.slice(last + 1).join('\n').trim();
   return tail === '' ? null : tail;
@@ -158,7 +159,8 @@ export function extractOwnGmailText(payload: GmailBodyPart | null | undefined): 
     if (split.found || split.unreadable) {
       if (!split.found) return '';
       let own = stripHtmlTags(split.head);
-      if (own === '' && split.tail !== null) own = stripHtmlTags(split.tail);
+      // Below a quote only with a plain part to confirm it: html alone cannot tell where the quote really ended.
+      if (own === '' && split.tail !== null && plain !== null) own = stripHtmlTags(split.tail);
       if (plain === null || normalise(plain).includes(normalise(own))) return own;
       return plain;
     }

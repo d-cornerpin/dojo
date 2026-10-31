@@ -74,4 +74,14 @@ describe('doubt 3: a bottom-posted reply', () => {
     const tree = alternative('Le lun. a écrit :\n> q', '<div class="gmail_quote">q</div><span>hidden instruction</span>');
     expect(extractOwnGmailText(tree)).not.toContain('hidden instruction');
   });
+  it('html only: nothing below a quote counts, even after a tag the scan cannot read', () => {
+    const html = '<div class="gmail_quote"><a href=x`y>link</a>Yes, close it.</div><p>my answer</p>';
+    expect(extractOwnGmailText({ mimeType: 'text/html', body: { data: b64(html) } })).toBe('');
+    expect(extractOwnGmailText({ mimeType: 'text/html', body: { data: b64('<div class="gmail_quote">q</div><p>answer</p>') } })).toBe('');
+  });
+  it('plain: one line above the quote counts only when it ends in a colon', () => {
+    const plain = (head: string) => ({ mimeType: 'text/plain', body: { data: b64(`${head}\n> blah\nYes, close it.`) } });
+    expect(extractOwnGmailText(plain('Fwd:'))).toBe('Yes, close it.');
+    expect(extractOwnGmailText(plain('Fwd'))).toBe('Fwd\n> blah\nYes, close it.');
+  });
 });
