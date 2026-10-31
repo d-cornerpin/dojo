@@ -9537,6 +9537,20 @@
       "to": 2138,
       "by": "3.5 who-am-i-sending-to (lane t281), minors, 2026-10-31",
       "why": "+2: the turn-scoped iMessage recipient is now read from the turn's address (one record of who the turn talks to) instead of a second bag field, which is deleted from turn-context.ts. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts",
+      "from": 218,
+      "to": 220,
+      "by": "t281b follow-ups (R1), 2026-10-31",
+      "why": "+2: the hand-off and reminder floors read the LIVE address (liveAddress) so the channel words match the channel used after a presence flip. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/execute/refusal-gates.ts",
+      "from": 362,
+      "to": 363,
+      "by": "t281b follow-ups (R1), 2026-10-31",
+      "why": "+1: the reminder-lane refusal reads the live address (one import line). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9656,7 +9670,7 @@
     "packages/server/src/agent/v2/steps/execute/dispatch-bookkeeping.ts": 264,
     "packages/server/src/agent/v2/steps/execute/index.ts": 309,
     "packages/server/src/agent/v2/steps/execute/post-result.ts": 351,
-    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 362,
+    "packages/server/src/agent/v2/steps/execute/refusal-gates.ts": 363,
     "packages/server/src/agent/v2/steps/execute/result-notes.ts": 147,
     "packages/server/src/agent/v2/steps/execute/run-one.ts": 288,
     "packages/server/src/agent/v2/steps/execute/tool-sets.ts": 98,
@@ -9676,7 +9690,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 203,
     "packages/server/src/agent/v2/steps/post-call-classify/empty-response.ts": 301,
     "packages/server/src/agent/v2/steps/post-call-classify/going-idle.ts": 304,
-    "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 218,
+    "packages/server/src/agent/v2/steps/post-call-classify/handoff-floors.ts": 220,
     "packages/server/src/agent/v2/steps/post-call-classify/index.ts": 247,
     "packages/server/src/agent/v2/steps/post-call-classify/missed-reply.ts": 176,
     "packages/server/src/agent/v2/steps/post-call-classify/no-reply.ts": 407,
