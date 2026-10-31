@@ -109,10 +109,14 @@ export interface GenerateIdentityRequest {
   userName: string;
   userRole: string;
   userPreferences: string;
+  /** True when the owner changed style or rules in this run (an edited soul is otherwise kept). */
+  restyle?: boolean;
 }
 
 export interface GenerateIdentityResponse {
   soul: string;
+  /** File the previous soul was copied to before a re-style, or null. */
+  soulBackup?: string | null;
   user: string;
   tools: string;
 }

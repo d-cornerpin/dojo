@@ -13,7 +13,9 @@ export function resolveProvision(db: Database.Database, requestedId: string, pri
   let id = requestedId;
   if (primary === true) {
     const stored = db.prepare("SELECT value FROM config WHERE key = 'primary_agent_id'").get() as { value: string } | undefined;
-    if (stored?.value && db.prepare('SELECT id FROM agents WHERE id = ?').get(stored.value)) id = stored.value;
+    const exists = (x: string) => !!db.prepare('SELECT id FROM agents WHERE id = ?').get(x);
+    if (stored?.value && exists(stored.value)) id = stored.value;
+    else for (let n = 2; exists(id); n++) id = `${requestedId}-${n}`; // stale pointer: create fresh, never adopt another agent
   }
   return { id, placeholders: [] };
 }

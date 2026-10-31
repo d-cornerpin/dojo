@@ -55,3 +55,17 @@ describe('PrimaryAgentStep', () => {
     expect(screen.queryByText(/is configured!/)).toBeNull();
   });
 });
+
+describe('PrimaryAgentStep re-run soul', () => {
+  it('says where the previous SOUL.md went, and sends restyle only after the owner changed the style', async () => {
+    state.provision = { ok: true, data: { id: 'zed', name: 'Zed', action: 'updated' } };
+    state.identity = { ok: true, data: { soulBackup: 'SOUL.md.2026.bak' } } as never;
+    const api = await import('../lib/api');
+    await run();
+    await screen.findByText(/SOUL\.md\.2026\.bak/);
+    expect((api.generateIdentity as unknown as { mock: { calls: Array<[{ restyle?: boolean }]> } }).mock.calls.at(-1)![0].restyle).toBe(false);
+    fireEvent.click(screen.getByLabelText(/formal/i));
+    fireEvent.click(screen.getByRole('button', { name: /Configure Zed/ }));
+    await waitFor(() => expect((api.generateIdentity as unknown as { mock: { calls: Array<[{ restyle?: boolean }]> } }).mock.calls.at(-1)![0].restyle).toBe(true));
+  });
+});

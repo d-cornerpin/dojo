@@ -64,3 +64,15 @@ describe('provision-agent with primary:true after first run', () => {
     expect(names()).toContain('pm');
   });
 });
+
+describe('a stale stored primary id', () => {
+  it('never adopts another agent just because the typed name derives its id', async () => {
+    seedAgent('beta', 'Someone Else');
+    db().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', 'gone')").run();
+    const res = await provision({ id: 'beta', name: 'Brand New', primary: true });
+    const j = await res.json() as { ok: boolean; data: { id: string; action: string } };
+    expect(j.data.action).toBe('created');
+    expect(j.data.id).not.toBe('beta');
+    expect((db().prepare("SELECT name FROM agents WHERE id='beta'").get() as { name: string }).name).toBe('Someone Else');
+  });
+});

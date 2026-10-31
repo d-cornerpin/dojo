@@ -804,7 +804,8 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
   const [style, setStyle] = useState('balanced');
   const [personality, setPersonality] = useState('');
   const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [restyled, setRestyled] = useState(false);
+  const [backup, setBackup] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -847,19 +848,10 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
     // lets the server find the stored primary by id (a renamed primary is renamed, never duplicated).
     const provisionResult = await api.request<{ id?: string }>('/setup/provision-agent', {
       method: 'POST',
-      body: JSON.stringify({
-        id: primaryId,
-        name: agentName.trim(),
-        modelId: selectedModel || undefined,
-        classification: 'sensei',
-        primary: true,
-      }),
+      body: JSON.stringify({ id: primaryId, name: agentName.trim(), modelId: selectedModel || undefined, classification: 'sensei', primary: true }),
     });
 
-    if (!provisionResult.ok) {
-      setError(provisionResult.error ?? 'Failed to create agent');
-      return;
-    }
+    if (!provisionResult.ok) { setError(provisionResult.error ?? 'Failed to create agent'); return; }
     for (const [key, value] of [['primary_agent_name', agentName.trim()], ['primary_agent_id', provisionResult.data?.id || primaryId]]) {
       const res = await api.setSetting(key, value);
       if (!res.ok) { setError(res.error ?? 'Failed to save the agent settings'); return; }
@@ -874,9 +866,11 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       userName,
       userRole: '',
       userPreferences: '',
+      restyle: restyled,
     });
     if (!identityResult.ok) { setError(`Agent created, but its identity files could not be written: ${identityResult.error ?? 'unknown error'}`); return; }
 
+    setBackup(identityResult.data?.soulBackup ?? null);
     setSaved(true);
   };
 
@@ -908,7 +902,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
         <div className="flex gap-4">
           {['casual', 'balanced', 'formal'].map((s) => (
             <label key={s} className="flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="style" value={s} checked={style === s} onChange={() => { setStyle(s); setSaved(false); }}
+              <input type="radio" name="style" value={s} checked={style === s} onChange={() => { setStyle(s); setRestyled(true); setSaved(false); }}
                 className="w-4 h-4 text-cp-amber bg-ui/[0.08] text-ui/25 focus:ring-cp-amber" />
               <span className="text-sm text-ui/70 capitalize">{s}</span>
             </label>
@@ -924,7 +918,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
           Describe how this agent should behave — its tone, areas of expertise, things to avoid, or any special instructions.
           You can edit this later from the agent's Config tab.
         </p>
-        <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setSaved(false); }} rows={4}
+        <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setRestyled(true); setSaved(false); }} rows={4}
           placeholder="e.g., Always explain your reasoning. Be proactive about suggesting improvements. Avoid making changes without asking first."
           className="glass-textarea resize-none" />
       </div>
@@ -932,7 +926,7 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
       {saved && (
         <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-          {agentName} is configured!
+          {agentName} is configured!{backup && ` Your previous SOUL.md was saved as ${backup} in your prompts folder.`}
         </div>
       )}
 

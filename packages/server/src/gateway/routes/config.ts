@@ -26,7 +26,9 @@ import { accountOwnerCards } from '../../services/account-owner-cards.js';
 import { watcherOwnerCards } from '../../services/watcher-owner-cards.js';
 import { scrubTechnicalDetail } from '../../agent/v2/error-format.js';
 import { ownerCardEnded, registerStandingOwnerCards } from '../../services/owner-card-frames.js';
-import { soulFileForAgent, writeSoulFile } from '../../prompt/assembler.js';
+import { soulFileForAgent } from '../../prompt/assembler.js';
+import { writeOobeSoul } from '../../prompt/soul-rerun.js';
+import { isPastFirstRun } from '../../config/setup-state.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
@@ -2580,14 +2582,8 @@ configRouter.post('/identity/generate', async (c) => {
   // `prompt/user-profile.ts` for the full argument.
   const { communicationStyle = 'balanced', rules = '', userName = '', userRole = '', userPreferences = '' } = body;
 
-  const primarySoul = soulFileForAgent(getPrimaryAgentId());
-  const soul = composePrimarySoul({ communicationStyle, rules }, primarySoul?.fallback || DEFAULT_SOUL);
-  if (primarySoul) {
-    writeSoulFile(primarySoul, soul);
-  } else {
-    fs.mkdirSync(PROMPTS_DIR, { recursive: true });
-    fs.writeFileSync(path.join(PROMPTS_DIR, 'SOUL.md'), soul, 'utf-8');
-  }
+  // Past first run an edited soul is kept unless the owner changed style/rules (then backed up).
+  const { soul, backup: soulBackup } = writeOobeSoul({ communicationStyle, rules }, isPastFirstRun(), body.restyle === true);
 
   // Only while no human has written in it. The old guard ("absent, or under 20 characters")
   // could not tell the engine's own ~600-byte seed from an owner's profile, so a box whose
@@ -2602,7 +2598,7 @@ configRouter.post('/identity/generate', async (c) => {
   const user = readUserProfile();
 
   logger.info('Identity files generated', { style: communicationStyle, namedOwner: !!String(userName).trim() });
-  return c.json({ ok: true, data: { soul, user } });
+  return c.json({ ok: true, data: { soul, user, soulBackup } });
 });
 
 // ── Search Config ──
