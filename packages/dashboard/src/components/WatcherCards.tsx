@@ -103,6 +103,7 @@ const WatcherCard = ({ status, label, ci }: { status: api.WatcherStatusDto; labe
 export const WatcherCards = () => {
   const [data, setData] = useState<api.WatchersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastGoodAtMs, setLastGoodAt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +113,7 @@ export const WatcherCards = () => {
       if (r.ok) {
         setData(r.data);
         setError(null);
+        setLastGoodAt(Date.now());
       } else {
         setError(r.error);
       }
@@ -146,6 +148,14 @@ export const WatcherCards = () => {
       <div className="group__head">
         <div><div className="group__title">Email &amp; Teams Watchers</div></div>
       </div>
+      {/* Failed refresh: keep the cards, but say they are stale — silence
+          here read as "still Healthy" while the box was unreachable. */}
+      {error && (
+        <p className="stub__line" style={{ color: 'var(--dojo3-rust)', marginTop: 14, marginBottom: 0 }}>
+          Could not refresh watcher status (showing the last answer from{' '}
+          {relativeTime(new Date(lastGoodAtMs).toISOString())}): {error}
+        </p>
+      )}
       <div className="cards" style={{ marginTop: 14 }}>
         {data.gmail.enabled && <WatcherCard status={data.gmail} label="Gmail" ci={120} />}
         {data.outlook.enabled && <WatcherCard status={data.outlook} label="Outlook" ci={150} />}
