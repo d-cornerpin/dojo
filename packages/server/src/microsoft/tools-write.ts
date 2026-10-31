@@ -1912,11 +1912,11 @@ export async function executeMicrosoftWriteTool(
       const succeeded = results.filter(r => r.ok);
       const failed = results.filter(r => !r.ok);
 
-      let summary = `Batch upload: ${succeeded.length}/${filePaths.length} files uploaded successfully.`;
-      if (failed.length > 0) {
-        summary += `\n\nFailed (${failed.length}):\n` + failed.map(f => `- ${f.path}: ${f.message}`).join('\n');
-      }
-      return summary;
+      const summary = `Batch upload: ${succeeded.length}/${filePaths.length} files uploaded successfully.`;
+      if (failed.length === 0) return summary;
+      // The engine reads failure from the first word (agent/tools/index.ts), so a partly-failed
+      // batch leads with `Error: ` — same rule as Gmail's batch label. Every word stays.
+      return `Error: ${summary}\n\nFailed (${failed.length}):\n` + failed.map(f => `- ${f.path}: ${f.message}`).join('\n');
     }
 
     case 'teams_send_channel_message': {

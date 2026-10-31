@@ -124,7 +124,9 @@ async function moveConversation(conversationId: string, folderId: string, ctx: O
   const total = ids.length;
   const stayed = left > 0 ? ` ${left} other message${left === 1 ? '' : 's'} of it in other folders (sent copies, drafts) ${left === 1 ? 'was' : 'were'} left where ${left === 1 ? 'it is' : 'they are'}.` : '';
   if (failures.length === 0) return `Moved the WHOLE conversation (${total} message${total === 1 ? '' : 's'}) to folder ${folderId}. Their old message IDs are no longer valid.${stayed}`;
-  return `Moved ${moved} of ${total} messages of the conversation to folder ${folderId}; ${failures.length} could not be moved (${[...new Set(failures)].join('; ')}). Call again with conversation_id=${conversationId} to move the rest.${stayed}`;
+  // The engine reads failure from the first word (agent/tools/index.ts), so a partly-moved
+  // conversation leads with `Error: ` — same rule as Gmail's batch label. Every word stays.
+  return `Error: Moved ${moved} of ${total} messages of the conversation to folder ${folderId}; ${failures.length} could not be moved (${[...new Set(failures)].join('; ')}). Call again with conversation_id=${conversationId} to move the rest.${stayed}`;
 }
 
 /** `outlook_move_to_folder`: one message, or a whole conversation (see the header). */
