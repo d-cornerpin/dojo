@@ -4,6 +4,7 @@ import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
 import { useGuardedLoad } from '../lib/load-guard';
+import { formatUsd } from '../lib/money';
 
 type Period = '24h' | '7d' | '30d' | 'all';
 
@@ -126,7 +127,7 @@ export const OpenRouterBudget = () => {
     <div className="tile anim" style={{ marginTop: 14 }}>
       <div className="tech__head">
         <div className="scard__title" style={{ margin: 0 }}>OpenRouter Balance</div>
-        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>${balance.toFixed(2)}</span>
+        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>{formatUsd(balance)}</span>
         <a
           href="https://openrouter.ai/settings/credits"
           target="_blank"
@@ -138,7 +139,7 @@ export const OpenRouterBudget = () => {
         </a>
       </div>
       <div className="rows">
-        <div><span className="k">Lifetime spend</span><span className="v">${totalUsage.toFixed(2)}</span></div>
+        <div><span className="k">Lifetime spend</span><span className="v">{formatUsd(totalUsage)}</span></div>
       </div>
       <div className="tech__foot">
         <span>Warning threshold</span>
@@ -226,7 +227,7 @@ export const DeepSeekBudget = () => {
     <div className="tile anim" style={{ marginTop: 14 }}>
       <div className="tech__head">
         <div className="scard__title" style={{ margin: 0 }}>DeepSeek Balance</div>
-        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>${balance.toFixed(2)}</span>
+        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>{formatUsd(balance)}</span>
         <a
           href="https://platform.deepseek.com/top_up"
           target="_blank"
@@ -240,7 +241,7 @@ export const DeepSeekBudget = () => {
       <div className="rows">
         <div>
           <span className="k">Topped up</span>
-          <span className="v">${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted $${granted.toFixed(2)}` : ''}</span>
+          <span className="v">{formatUsd(toppedUp)}{granted > 0 ? ` · Granted ${formatUsd(granted)}` : ''}</span>
         </div>
       </div>
       <div className="tech__foot">
@@ -385,8 +386,8 @@ const BudgetConfigTile = ({
       <div className="scard__title">Budget Configuration</div>
       <div className="rows" style={{ marginTop: 6 }}>
         <div>
-          <span className="k">Global daily budget &middot; spent today ${spent.toFixed(2)}</span>
-          <span className="v">Limit: ${limit.toFixed(2)} &middot; {pct.toFixed(0)}%</span>
+          <span className="k">Global daily budget &middot; spent today {formatUsd(spent)}</span>
+          <span className="v">Limit: {formatUsd(limit)} &middot; {pct.toFixed(0)}%</span>
         </div>
       </div>
       <div className="bar" style={{ margin: '10px 0 14px' }}>
@@ -504,7 +505,7 @@ const AgentBudgetRow = ({
     <div style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <span className="k" style={{ minWidth: 120 }} title={agentName}>
         {agentName}
-        {limitUsd > 0 ? <span className="text-tertiary"> &middot; ${spentUsd.toFixed(2)} used</span> : null}
+        {limitUsd > 0 ? <span className="text-tertiary"> &middot; {formatUsd(spentUsd)} used</span> : null}
       </span>
       <span className="srow">
         <input
@@ -656,7 +657,7 @@ export const Costs = () => {
     value: spendOf(t),
   }));
 
-  const usd = (v: number) => `$${v.toFixed(2)}`;
+  const usd = (v: number) => formatUsd(v);
 
   return (
     <>

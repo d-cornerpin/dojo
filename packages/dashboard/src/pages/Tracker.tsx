@@ -5,6 +5,7 @@ import type { WsEvent, TrackerTaskUpdatedEvent, TrackerProjectUpdatedEvent } fro
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { isEnterNotComposing } from '../lib/enter-key';
+import { formatUsd } from '../lib/money';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
@@ -624,7 +625,7 @@ const HygienePanel = ({
           {totalSmells > 0 && <span><b className="warn">{totalSmells}</b> smell</span>}
           {pendingOverrides > 0 && <span><b className="warn">{pendingOverrides}</b> overrides</span>}
           {elevatedCount > 0 && <span><b className="warn">{elevatedCount}</b> elevated</span>}
-          {totalPmCost > 0 && <span>${totalPmCost.toFixed(2)}/24h</span>}
+          {totalPmCost > 0 && <span>{formatUsd(totalPmCost)}/24h</span>}
         </div>
       </button>
 
@@ -691,7 +692,7 @@ const HygienePanel = ({
                 <div key={p.modelId ?? 'unknown'} className="text-xs">
                   <span className="text-ui font-medium">{p.modelId ?? 'unknown'}:</span>{' '}
                   <span className="text-ui/80">{p.calls} calls</span>{' / '}
-                  <span className="text-cp-amber">${(p.cost_24h ?? 0).toFixed(4)}</span>
+                  <span className="text-cp-amber">{formatUsd(p.cost_24h ?? 0)}</span>
                 </div>
               ))}
             </div>
