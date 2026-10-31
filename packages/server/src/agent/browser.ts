@@ -57,6 +57,7 @@ export class BrowserSession {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private launching: Promise<Page> | null = null;
   private agentId: string;
 
   constructor(agentId: string) {
@@ -67,28 +68,56 @@ export class BrowserSession {
     if (this.page && this.browser?.isConnected()) {
       return this.page;
     }
+    if (this.launching) {
+      // Single-flight: a launch already in progress is this caller's launch too, so two
+      // overlapping web_browse calls never each start a Chromium.
+      return this.launching;
+    }
 
+    this.launching = this.launchPage();
+    try {
+      return await this.launching;
+    } finally {
+      this.launching = null;
+    }
+  }
+
+  private async launchPage(): Promise<Page> {
     // Launch new browser
     logger.info('Launching headless browser', {}, this.agentId);
-    this.browser = await chromium.launch({
+    const browser = await chromium.launch({
       headless: true,
       args: ['--disable-gpu', '--no-sandbox'],
     });
-    this.context = await this.browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      userAgent: 'DOJO/1.0 (Headless Browser)',
-    });
-    this.page = await this.context.newPage();
 
     // Log memory usage of the Chromium process
-    this.browser.on('disconnected', () => {
+    browser.on('disconnected', () => {
       logger.info('Browser disconnected', {}, this.agentId);
+      if (this.browser === browser) {
+        this.browser = null;
+        this.context = null;
+        this.page = null;
+      }
+    });
+
+    try {
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        userAgent: 'DOJO/1.0 (Headless Browser)',
+      });
+      const page = await context.newPage();
+      this.browser = browser;
+      this.context = context;
+      this.page = page;
+      return page;
+    } catch (err) {
+      // A context/page failure must not leave a Chromium that close() can never reach.
+      await browser.close().catch(() => {});
       this.browser = null;
       this.context = null;
       this.page = null;
-    });
-
-    return this.page;
+      throw err;
+    }
   }
 
   async navigate(url: string): Promise<string> {
