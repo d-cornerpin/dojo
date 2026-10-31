@@ -148,7 +148,7 @@ function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
 }
 
 export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
   const [jobs, setJobs] = useState<GenJobDto[]>([]);
   const [engineItems, setEngineItems] = useState<EngineItem[]>([]);
   const [open, setOpen] = useState(false);
@@ -165,7 +165,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
 
   useEffect(() => {
     void refetch();
-  }, [refetch]);
+  }, [refetch, reconnectCount]); // a reconnect re-asks: job frames sent in the gap are gone
 
   useEffect(() => {
     const unsubVideo = subscribe('video_job:update', (event) => {

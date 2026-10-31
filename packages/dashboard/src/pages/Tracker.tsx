@@ -804,7 +804,7 @@ export const Tracker = () => {
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
   const [closeProjectModalOpen, setCloseProjectModalOpen] = useState(false);
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
 
   // Phase B.1 / Q5 (corrected): override queue and hygiene panel are
   // tracker-page concerns and always visible here. Wordy Mode is a chat-page
@@ -859,7 +859,7 @@ export const Tracker = () => {
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData, reconnectCount]); // a reconnect re-asks (frames sent in the gap are gone); silent
 
   // WebSocket subscriptions
   // The subscriptions must not re-fire when the filter changes, so the task

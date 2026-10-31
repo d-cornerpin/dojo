@@ -63,7 +63,7 @@ const toggleTechnique = (id: string, enabled: boolean): Promise<ApiResponse<unkn
 
 export const Techniques = () => {
   const navigate = useNavigate();
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
   const [techniques, setTechniques] = useState<Technique[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -112,7 +112,8 @@ export const Techniques = () => {
   const loadRef = useRef(load);
   loadRef.current = load;
 
-  useEffect(() => { load(); }, [stateFilter, tagFilter]);
+  // reconnectCount: frames sent while the socket was down are gone, so a reconnect re-asks.
+  useEffect(() => { load(); }, [stateFilter, tagFilter, reconnectCount]);
 
   // Refresh on technique events (used, created, published, updated)
   useEffect(() => {

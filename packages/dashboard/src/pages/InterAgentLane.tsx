@@ -89,7 +89,7 @@ const MessageRow = ({ msg, recipientFallback }: { msg: InterAgentMessage; recipi
 
 export function InterAgentLane() {
   const { agentId, agentName } = useActiveAgent();
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
   const [messages, setMessages] = useState<InterAgentMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const agentIdRef = useRef(agentId);
@@ -110,6 +110,26 @@ export function InterAgentLane() {
       active = false;
     };
   }, [agentId]);
+
+  // A reconnect re-asks for the newest messages and merges them in: the frames sent while the
+  // socket was down are gone. What is on screen stays (no blanking); unknown ids are added.
+  const seenReconnectRef = useRef(reconnectCount);
+  const latestCatchUp = useRef(0);
+  useEffect(() => {
+    if (seenReconnectRef.current === reconnectCount) return;
+    seenReconnectRef.current = reconnectCount;
+    const mine = ++latestCatchUp.current;
+    const forAgent = agentId;
+    void (async () => {
+      const result = await api.getInterAgentMessages(forAgent, 200);
+      if (mine !== latestCatchUp.current || forAgent !== agentIdRef.current || !result.ok) return;
+      setMessages((prev) => {
+        const known = new Set(prev.map((m) => m.id));
+        const fresh = result.data.filter((m) => !known.has(m.id));
+        return fresh.length === 0 ? prev : [...prev, ...fresh];
+      });
+    })();
+  }, [reconnectCount, agentId]);
 
   // Live path: append inbound inter-agent messages for the viewed agent.
   useEffect(() => {

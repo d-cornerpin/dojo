@@ -16,6 +16,13 @@ interface WebSocketContextValue {
   subscribe: (eventType: string, callback: EventCallback) => () => void;
   isConnected: () => boolean;
   connectionStatus: ConnectionStatus;
+  /**
+   * The one shared reconnect signal. Starts at 0 and goes up by one each time the socket is
+   * open again after having been open before in this page life (the first connect is not a
+   * reconnect). Frames sent during the gap are gone, so a page that keeps state from live
+   * frames re-asks for its current view when this changes.
+   */
+  reconnectCount: number;
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
@@ -36,6 +43,8 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_MS);
   const consecutiveFailsRef = useRef(0);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  const [reconnectCount, setReconnectCount] = useState(0);
+  const hasConnectedRef = useRef(false);
 
   // ── Heartbeat ──
 
@@ -106,6 +115,8 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
       ws.onopen = () => {
         if (dismountedRef.current) { ws.close(); return; }
         setStatus('connected');
+        if (hasConnectedRef.current) setReconnectCount((n) => n + 1);
+        hasConnectedRef.current = true;
         reconnectDelayRef.current = INITIAL_RECONNECT_MS;
         consecutiveFailsRef.current = 0;
         resetHeartbeatTimer();
@@ -250,7 +261,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
 
   return React.createElement(
     WebSocketContext.Provider,
-    { value: { subscribe, isConnected, connectionStatus: status } },
+    { value: { subscribe, isConnected, connectionStatus: status, reconnectCount } },
     children,
   );
 };

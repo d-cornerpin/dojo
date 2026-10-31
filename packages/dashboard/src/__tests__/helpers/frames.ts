@@ -16,6 +16,9 @@
 type Handler = (event: unknown) => void;
 
 const handlers = new Map<string, Set<Handler>>();
+/** The shared reconnect signal the real provider counts; tests bump it with `setReconnectCount`. */
+let reconnectCount = 0;
+export const setReconnectCount = (n: number): void => { reconnectCount = n; };
 
 /** Stand-in for `useWebSocket()`. Same shape, no network. */
 export const fakeUseWebSocket = () => ({
@@ -27,6 +30,7 @@ export const fakeUseWebSocket = () => ({
   },
   isConnected: () => true,
   connectionStatus: 'connected' as const,
+  reconnectCount,
 });
 
 /** Deliver one frame to every live subscriber of that type. */
@@ -41,6 +45,7 @@ export function handlerCount(eventType: string): number {
 
 export function resetFrames(): void {
   handlers.clear();
+  reconnectCount = 0;
 }
 
 /** Stand-in for `useToast()`: every method recorded, nothing rendered. */
