@@ -49,6 +49,7 @@ export const Memory = () => {
   const [injectOpen, setInjectOpen] = useState(false);
   const [injectContent, setInjectContent] = useState('');
   const [injecting, setInjecting] = useState(false);
+  const [injectError, setInjectError] = useState<string | null>(null);
 
   const { subscribe } = useWebSocket();
 
@@ -187,11 +188,14 @@ export const Memory = () => {
   const handleInject = async () => {
     if (!injectContent.trim()) return;
     setInjecting(true);
+    setInjectError(null);
     const result = await api.injectMemory(agentId, injectContent);
     if (result.ok) {
       setInjectContent('');
       setInjectOpen(false);
       loadDag();
+    } else {
+      setInjectError(result.error);
     }
     setInjecting(false);
   };
@@ -368,7 +372,14 @@ export const Memory = () => {
           Briefing live here so the DAG view keeps its full operator set. */}
       {mainTab === 'dag' && (
         <div className="toolbar" style={{ marginTop: 14 }}>
-          <button type="button" className="btn btn--sm" onClick={() => setInjectOpen(!injectOpen)}>
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => {
+              setInjectOpen(!injectOpen);
+              setInjectError(null);
+            }}
+          >
             Inject Memory
           </button>
           <button type="button" className="btn btn--sm" onClick={handleCompact} disabled={compacting}>
@@ -466,10 +477,22 @@ export const Memory = () => {
             <div className="p-5">
               <textarea
                 value={injectContent}
-                onChange={(e) => setInjectContent(e.target.value)}
+                onChange={(e) => {
+                  setInjectContent(e.target.value);
+                  setInjectError(null);
+                }}
                 placeholder="Enter memory content to inject..."
                 className="glass-textarea w-full h-40 font-mono resize-y"
               />
+              {injectError && (
+                <p
+                  role="alert"
+                  className="text-xs mt-2"
+                  style={{ color: 'var(--dojo3-rust)' }}
+                >
+                  Error: {injectError}
+                </p>
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ui/[0.06]">
               <button
@@ -478,6 +501,7 @@ export const Memory = () => {
                 onClick={() => {
                   setInjectOpen(false);
                   setInjectContent('');
+                  setInjectError(null);
                 }}
               >
                 Cancel
