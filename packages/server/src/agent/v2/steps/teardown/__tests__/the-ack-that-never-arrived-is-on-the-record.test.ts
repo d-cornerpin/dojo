@@ -44,8 +44,9 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { finalizeTurnRecord } from '../finalize-record.js';
 import { initState, type AgentTurnState } from '../../../state.js';
 import type { TeardownContext } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const ASK = 'ask-t41';
 const TURN = 4805;
@@ -68,7 +69,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     chosenConvKey: 'imessage:+1555', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: ASK,
     toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-    counterparty: { kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
+    counterparty: { kind: 'user', name: FX.n11, relation: 'owner', channel: 'imessage', senderId: '+1555', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 180_000).toISOString().slice(0, 19).replace('T', ' '),
     inboundChannel: 'imessage', inboundContext: null,
@@ -94,7 +95,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'imessage', '+1555')`).run(CONV, AGENT);
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,

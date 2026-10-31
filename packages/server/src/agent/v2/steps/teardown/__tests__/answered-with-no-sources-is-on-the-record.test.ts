@@ -76,6 +76,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { finalizeTurnRecord } from '../finalize-record.js';
 import { initState, advance, type AgentTurnState } from '../../../state.js';
 import type { TeardownContext } from '../index.js';
+import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
 const CONV = 'conv-s1';
@@ -100,7 +101,7 @@ function ctxFor(turnCtx: Bag, over: Partial<TeardownContext> = {}): TeardownCont
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: 'answer-1', triggerWorkId: ASK,
     toolPhaseEndedBySpinBrake: false, turnInjectedTechniqueId: null,
-    counterparty: { kind: 'user', name: 'Yorvak', relation: 'owner', channel: 'dashboard', senderId: 'owner', senderIsAgent: false } as never,
+    counterparty: { kind: 'user', name: FX.n11, relation: 'owner', channel: 'dashboard', senderId: 'owner', senderIsAgent: false } as never,
     isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 6_000).toISOString().slice(0, 19).replace('T', ' '),
     inboundChannel: 'dashboard', inboundContext: null,
@@ -312,7 +313,7 @@ describe('CONTROLS — the marker fires on the shape and on nothing else', () =>
   it('an agent counterparty writes no marker', async () => {
     seedAsk();
     await finalizeTurnRecord(s1State(), ctxFor(turnCtxFor(), {
-      counterparty: { kind: 'agent', name: 'Tyndo', senderIsAgent: true } as never,
+      counterparty: { kind: 'agent', name: FX.n6, senderIsAgent: true } as never,
     }));
     expect(markers()).toHaveLength(0);
   });
