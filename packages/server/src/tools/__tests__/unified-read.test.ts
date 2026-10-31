@@ -163,7 +163,7 @@ describe('renderEmailSearch', () => {
 
   it('handles the empty + partial-failure case plainly', () => {
     const out = renderEmailSearch([], new Set(), [{ label: 'agent Outlook (x@ms.test)', error: 'HTTP 503' }], { query: 'foo', accountCount: 1 });
-    expect(out).toContain('No matching email in any connected mailbox.');
+    expect(out).toContain('No readable matches.');
     expect(out).toContain('could not read agent Outlook (x@ms.test): HTTP 503');
   });
 });

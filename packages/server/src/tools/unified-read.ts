@@ -235,7 +235,7 @@ export function renderEmailSearch(
     }).join('\n'));
   } else {
     lines.push('');
-    lines.push('No matching email in any connected mailbox.');
+    lines.push(failures.length > 0 ? 'No readable matches.' : 'No matching email in any connected mailbox.');
   }
   const empty = opts.emptySurfaces ?? [];
   if (empty.length > 0) {
@@ -546,7 +546,7 @@ export async function unifiedEmailSearch(
           // Gmail understands `newer_than:Nd` as a recency bound in the query.
           const gq = days > 0 ? `${query} newer_than:${days}d` : query;
           const res = await searchMailForAccount(acc.accountId, gq, limit, agentId, agentName);
-          return { acc, res: res.ok ? { ok: true as const, items: res.items } : res };
+          return { acc, res: res.ok ? { ok: true as const, items: res.items, unfetched: res.unfetched } : res };
         }
         const res = await searchMailForAccountMs(acc.accountId, query, limit, agentId, agentName);
         // Outlook search takes no date bound: apply `days` here (0 = unparseable date, kept).
@@ -562,7 +562,9 @@ export async function unifiedEmailSearch(
       failures.push({ label: acc.label, error: res.error });
       continue;
     }
-    if (res.items.length === 0) {
+    const unread = 'unfetched' in res ? (res.unfetched?.length ?? 0) : 0;
+    if (unread > 0) failures.push({ label: acc.label, error: `${unread} of ${unread + res.items.length} matching messages could not be read (Gmail refused the detail fetch); results from this mailbox are incomplete` });
+    else if (res.items.length === 0) {
       emptySurfaces.push(acc.source); // searched, matched nothing
       continue;
     }
@@ -580,9 +582,7 @@ export async function unifiedEmailSearch(
     }
   }
 
-  const merged = mergeMailByRecency(collected);
-  const ambiguous = computeAmbiguousLabels(accounts.map(a => a.source));
-  return renderEmailSearch(merged, ambiguous, failures, { query, accountCount: accounts.length, emptySurfaces });
+  return renderEmailSearch(mergeMailByRecency(collected), computeAmbiguousLabels(accounts.map(a => a.source)), failures, { query, accountCount: accounts.length, emptySurfaces });
 }
 
 // ── Narrow-tool DATA-floor orchestrators (impure; fan out over OTHER surfaces) ──
