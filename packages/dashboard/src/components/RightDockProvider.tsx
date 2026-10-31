@@ -119,7 +119,13 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
     const cur = dockRef.current;
     if (isCollapsibleDock(cur)) {
       setCollapsed(cur);
-      void setCanvasStatus(agentIdRef.current, 'collapsed');
+      const forAgent = agentIdRef.current;
+      void setCanvasStatus(forAgent, 'collapsed').then((res) => {
+        // The server still has it open: put the screen back so it tells the truth.
+        if (res.ok || agentIdRef.current !== forAgent) return;
+        setDock(cur);
+        setCollapsed(null);
+      });
     }
     setDock(null);
   }, []);
@@ -131,7 +137,13 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
     if (c) {
       setDock(c);
       setCollapsed(null);
-      void setCanvasStatus(agentIdRef.current, 'open');
+      const forAgent = agentIdRef.current;
+      void setCanvasStatus(forAgent, 'open').then((res) => {
+        // The server still has it collapsed: back to the edge handle.
+        if (res.ok || agentIdRef.current !== forAgent) return;
+        setDock(null);
+        setCollapsed(c);
+      });
     }
   }, []);
 
@@ -156,7 +168,9 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
       .then((res) => {
         if (cancelled) return;
         if (dockRef.current && !isCollapsibleDock(dockRef.current)) return;
-        const data = res.ok ? res.data : null;
+        // A failed read says nothing about this agent's canvas: leave the screen as it is.
+        if (!res.ok) return;
+        const data = res.data;
         if (!data) { setDock(null); setCollapsed(null); return; }
         const spec = persistedToDockSpec(data.state);
         if (data.status === 'open') { setDock(spec); setCollapsed(null); }
