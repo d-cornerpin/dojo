@@ -174,14 +174,16 @@ export function runEngineMaintenance(): { pruned: number; decayed: number; unpin
   ).run(sevenDaysAgo);
   pruned += lowConfidence.changes;
 
-  // Decay confidence: not retrieved in 30 days, not pinned, not permanent
+  // Decay confidence: not retrieved in 30 days, not pinned, not permanent; at most one step per 30 days (last_decayed_at)
   const thirtyDaysAgo = sqlUtcStamp(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const decayResult = db.prepare(`
-    UPDATE vault_entries SET confidence = MAX(0, confidence - 0.1), updated_at = datetime('now')
+    UPDATE vault_entries SET confidence = MAX(0, confidence - 0.1), updated_at = datetime('now'),
+      last_decayed_at = ?
     WHERE is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0
       AND (last_retrieved_at IS NULL OR last_retrieved_at < ?)
       AND created_at < ?
-  `).run(thirtyDaysAgo, thirtyDaysAgo);
+      AND (last_decayed_at IS NULL OR last_decayed_at < ?)
+  `).run(sqlUtcStamp(new Date()), thirtyDaysAgo, thirtyDaysAgo, thirtyDaysAgo);
 
   // ── Pinning audit ──
   // Auto-unpin entries that have been pinned for 60+ days but haven't been

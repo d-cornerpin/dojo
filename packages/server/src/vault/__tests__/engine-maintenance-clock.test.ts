@@ -60,6 +60,7 @@ beforeEach(() => {
       created_at TEXT,
       last_retrieved_at TEXT,
       updated_at TEXT,
+      last_decayed_at TEXT,
       is_obsolete INTEGER DEFAULT 0,
       is_pinned INTEGER DEFAULT 0,
       is_permanent INTEGER DEFAULT 0
