@@ -57,6 +57,7 @@ vi.mock('../../effects/fs.js', () => ({
   statSync: (target: fs.PathLike) => fs.statSync(target),
 }));
 
+import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 import { runMigrations } from '../../../db/migrations.js';
 import { commsHandlers } from '../cat/comms.js';
 import { reloadApprovedSenders } from '../../../services/imessage-bridge.js';
@@ -78,7 +79,7 @@ beforeEach(() => {
   ).run(AGENT);
   fresh.prepare(
     "INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?)",
-  ).run(JSON.stringify([{ name: 'Yorvak', address: RECIPIENT, is_primary: true }]));
+  ).run(JSON.stringify([{ name: FX.n11, address: RECIPIENT, is_primary: true }]));
   reloadApprovedSenders();
 
   // A real file — the attachment pre-flight refuses what it cannot find on disk.
@@ -115,7 +116,7 @@ describe('imessage_send says when the words did not arrive', () => {
     bridgeSend.fn.mockResolvedValue({ ok: true, sentFiles: [fileA], failedFiles: [], textSent: true });
     const out = await send('hello');
     expect(out.isError).toBe(false);
-    expect(out.content).toBe('iMessage sent to Yorvak (+15550100198) with 1/1 attachment(s).');
+    expect(out.content).toBe(`iMessage sent to ${FX.n11} (+15550100198) with 1/1 attachment(s).`);
     expect(out.content).not.toContain('NOT');
   });
 
