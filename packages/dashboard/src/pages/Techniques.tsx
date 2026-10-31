@@ -4,6 +4,7 @@ import type { ApiResponse } from '@dojo/shared';
 import { TechniqueCard } from '../components/TechniqueCard';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { request, requestForm } from '../lib/api';
+import { useToast } from '../hooks/useToast';
 
 interface Technique {
   id: string;
@@ -63,6 +64,7 @@ const toggleTechnique = (id: string, enabled: boolean): Promise<ApiResponse<unkn
 
 export const Techniques = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const { subscribe, reconnectCount } = useWebSocket();
   const [techniques, setTechniques] = useState<Technique[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,7 +76,11 @@ export const Techniques = () => {
   const [importError, setImportError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const allTags = [...new Set(techniques.flatMap(t => t.tags))].sort();
+  // The server filters the list, so tags are remembered from every successful load; otherwise
+  // picking one tag would leave only that tag in the dropdown.
+  const [knownTags, setKnownTags] = useState<Set<string>>(new Set());
+  const allTags = [...new Set([...knownTags, ...(tagFilter ? [tagFilter] : [])])].sort();
+  const filtersActive = search !== '' || stateFilter !== 'All' || tagFilter !== '';
 
   // Answers can arrive in any order; only the newest request may draw the list.
   const latestLoad = useRef(0);
@@ -103,6 +109,7 @@ export const Techniques = () => {
     // techniques at the top.
     const sorted = [...result.data].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
     setTechniques(sorted);
+    setKnownTags(prev => new Set([...prev, ...result.data.flatMap(t => t.tags)]));
   };
 
   // The event handlers below subscribe once (the real `subscribe` never
@@ -134,7 +141,11 @@ export const Techniques = () => {
   }, [search]);
 
   const handleToggle = async (id: string, enabled: boolean) => {
-    await toggleTechnique(id, enabled);
+    const result = await toggleTechnique(id, enabled);
+    if (!result.ok) {
+      toast.error(result.error || 'Could not change this technique');
+      return;
+    }
     setTechniques(prev => prev.map(t => t.id === id ? { ...t, enabled } : t));
   };
 
@@ -251,6 +262,17 @@ export const Techniques = () => {
       {loading ? (
         <div className="stub">
           <p className="stub__line">Loading techniques...</p>
+        </div>
+      ) : techniques.length === 0 && !loadError && filtersActive ? (
+        <div className="stub">
+          <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)', marginBottom: 8 }}>No techniques match these filters.</p>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => { setSearch(''); setStateFilter('All'); setTagFilter(''); }}
+          >
+            Clear filters
+          </button>
         </div>
       ) : techniques.length === 0 && !loadError ? (
         // ⚠ `&& !loadError` IS THE REST OF THE FIX, and my own new clause caught
