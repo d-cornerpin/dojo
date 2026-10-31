@@ -122,3 +122,14 @@ export function formatRelative(dateStr: string | null | undefined): string {
   if (diffDay < 30) return `${diffDay}d ago`;
   return d.toLocaleDateString();
 }
+
+/**
+ * Local calendar day as "YYYY-MM-DD" (zero-padded), unlike the UTC date
+ * `toISOString()` gives a late evening in a zone behind UTC.
+ */
+export function localDateStamp(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}

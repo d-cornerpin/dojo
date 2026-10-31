@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { requestRaw } from '../lib/api';
+import { localDateStamp } from '../lib/dates';
 
 export const MigrationExport = () => {
   const [showModal, setShowModal] = useState(false);
@@ -48,7 +49,7 @@ export const MigrationExport = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const date = new Date().toISOString().split('T')[0];
+      const date = localDateStamp();
       a.download = `dojo-export-${date}.zip`;
       document.body.appendChild(a);
       a.click();
