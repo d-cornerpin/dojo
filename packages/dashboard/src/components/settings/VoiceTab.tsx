@@ -378,11 +378,14 @@ export const VoiceTab = () => {
     const res = await api.installVoiceModel(kind, id);
     if (!res.ok) setInstallError(res.error);
     await refreshModels();
+    // A refused request sends no websocket event, so the placeholder bar would never be cleared.
+    if (!res.ok) setDownloads((prev) => { const next = { ...prev }; delete next[`${kind}/${id}`]; return next; });
     setInstalling(null);
   };
 
   const handleDelete = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string) => {
     if (!confirm(`Delete ${kind}/${id}? You can re-download it from this page.`)) return;
+    setInstallError(null);
     const res = await api.deleteVoiceModel(kind, id);
     if (!res.ok) setInstallError(res.error);
     await refreshModels();
