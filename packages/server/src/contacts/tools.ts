@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import {
+  countContacts,
   createContact,
   deleteContact,
   describeContacts,
@@ -56,9 +57,18 @@ function formatFull(r: ContactRecord): string {
 export function executeContactSearch(args: Record<string, unknown>): string {
   const query = typeof args.query === 'string' ? args.query : '';
   const limit = typeof args.limit === 'number' ? args.limit : 20;
-  const results = searchContacts(query, limit);
+  const offset = typeof args.offset === 'number' ? args.offset : 0;
+  const results = searchContacts(query, limit, offset);
   if (results.length === 0) return query ? `No contacts found matching "${query}".` : 'No contacts in the DOJO store.';
-  return `${results.length} contact(s)${query ? ` matching "${query}"` : ''}:\n\n${results.map(formatLine).join('\n')}\n\nUse contact_get(id) for the full record.`;
+  const total = countContacts(query);
+  const matching = query ? ` matching "${query}"` : '';
+  const more = total > offset + results.length;
+  // The tool schema has no `offset` (kept out of the cached tool block), so point at `limit` instead.
+  const head = more || offset > 0
+    ? `Showing ${results.length} of ${total} contact(s)${matching}`
+    : `${results.length} contact(s)${matching}`;
+  const tail = more ? `\n\nMore matched than are shown. Raise limit or narrow the query to see the rest.` : '';
+  return `${head}:\n\n${results.map(formatLine).join('\n')}${tail}\n\nUse contact_get(id) for the full record.`;
 }
 
 export function executeContactList(args: Record<string, unknown>): string {
@@ -69,7 +79,13 @@ export function executeContactList(args: Record<string, unknown>): string {
   const offset = typeof args.offset === 'number' ? args.offset : 0;
   const results = listContacts({ limit, offset, sortBy });
   if (results.length === 0) return 'No contacts in the DOJO store.';
-  return `${results.length} contact(s) (sorted by ${sortBy}):\n\n${results.map(formatLine).join('\n')}`;
+  const total = countContacts();
+  const more = total > offset + results.length;
+  const head = more || offset > 0
+    ? `Showing ${results.length} of ${total} contact(s) (sorted by ${sortBy})`
+    : `${results.length} contact(s) (sorted by ${sortBy})`;
+  const tail = more ? `\n\nPass offset=${offset + results.length} to see more.` : '';
+  return `${head}:\n\n${results.map(formatLine).join('\n')}${tail}`;
 }
 
 export function executeContactGet(args: Record<string, unknown>): string {
