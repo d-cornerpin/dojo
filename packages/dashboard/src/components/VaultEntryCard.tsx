@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { VaultEntry } from '../lib/api';
 import * as api from '../lib/api';
+import { useToast } from '../hooks/useToast';
 import { formatRelative } from '../lib/dates';
 
 // Map the seven real vault entry types onto the three tbadge variants the
@@ -50,27 +51,45 @@ interface VaultEntryCardProps {
 export const VaultEntryCard = ({ entry, index = 0, onUpdated, onDeleted }: VaultEntryCardProps) => {
   const [expanded, setExpanded] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const toast = useToast();
 
   const handleTogglePin = async () => {
-    await api.updateVaultEntry(entry.id, { pin: !entry.isPinned });
+    const res = await api.updateVaultEntry(entry.id, { pin: !entry.isPinned });
+    if (!res.ok) {
+      toast.error(res.error || 'That change could not be saved.');
+      return;
+    }
     onUpdated();
   };
 
   const handleTogglePermanent = async () => {
-    await api.updateVaultEntry(entry.id, { permanent: !entry.isPermanent });
+    const res = await api.updateVaultEntry(entry.id, { permanent: !entry.isPermanent });
+    if (!res.ok) {
+      toast.error(res.error || 'That change could not be saved.');
+      return;
+    }
     onUpdated();
   };
 
   const handleMarkObsolete = async () => {
     if (!confirm('Mark this entry as obsolete?')) return;
-    await api.markVaultEntryObsolete(entry.id, 'Marked obsolete from dashboard');
+    const res = await api.markVaultEntryObsolete(entry.id, 'Marked obsolete from dashboard');
+    if (!res.ok) {
+      toast.error(res.error || 'That change could not be saved.');
+      return;
+    }
     onUpdated();
   };
 
   const handleDelete = async () => {
     if (!confirm('Permanently delete this entry?')) return;
     setDeleting(true);
-    await api.deleteVaultEntry(entry.id);
+    const res = await api.deleteVaultEntry(entry.id);
+    if (!res.ok) {
+      setDeleting(false);
+      toast.error(res.error || 'That change could not be saved.');
+      return;
+    }
     onDeleted();
   };
 
