@@ -236,7 +236,11 @@ export async function executeVaultRemember(
   // instruction exactly: no bloat-strip, no date prefix, no compression.
   // The point of the entry is to capture the user's words faithfully.
   let charsRemoved = 0;
-  if (!verbatim) {
+  // The standing-instruction rule reads the entry AS WRITTEN. "Going forward," is both a trigger phrase and a
+  // narrative-scaffolding phrase the strip removes; classifying after the strip lost the trigger, and the strip
+  // would also have cut the "standing" out of the saved words. A standing instruction is saved as given.
+  const standingAsWritten = isStandingInstruction(content);
+  if (!verbatim && !standingAsWritten) {
     // Strip common narrative cruft silently (the SOUL notes the engine strips
     // bloat before measuring length, so this runs before the cap gate below).
     const selfRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name?: string } | undefined;
@@ -257,7 +261,7 @@ export async function executeVaultRemember(
   // Measured on CONTENT only (the engine date prefix is added AFTER this gate,
   // and future citation metadata rides free - FU-2).
   const exemptFromCompression =
-    verbatim || agentId === OWNER_VAULT_AGENT_ID || await shape.standing(isStandingInstruction(content));
+    verbatim || agentId === OWNER_VAULT_AGENT_ID || await shape.standing(standingAsWritten);
   if (!exemptFromCompression) {
     const cap = VAULT_ENTRY_CHAR_CAPS[type] ?? DEFAULT_ENTRY_CHAR_CAP;
     if (content.length > cap) {

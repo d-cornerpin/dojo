@@ -183,7 +183,7 @@ describe('the sites ask through the seam and the credential gate stands alone', 
   it('A19/A20: the writer guard asks `entryShape` at all three rules', () => {
     const src = read('vault/tools.ts');
     expect(src).toMatch(/await shape\.obligation\(obligationShape\(content\)\)/);
-    expect(src).toMatch(/await shape\.standing\(isStandingInstruction\(content\)\)/);
+    expect(src).toMatch(/await shape\.standing\(standingAsWritten\)/);
     expect(src).toMatch(/await shape\.prose\(isProseShaped\(content, cap, terminators\)\)/);
   });
   it('A21: the Dreamer\'s triage opens a filler pass and settles it at both sites; the rule lives in filler.ts', () => {
