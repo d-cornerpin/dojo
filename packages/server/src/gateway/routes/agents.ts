@@ -149,6 +149,10 @@ agentsRouter.post('/', async (c) => {
     return c.json({ ok: false, error: 'name (string) and systemPrompt (string) are required' }, 400);
   }
 
+  if (body.name.trim() === '') {
+    return c.json({ ok: false, error: 'name must not be blank' }, 400);
+  }
+
   const refused = typeof body.modelId === 'string' ? await refuseUnfitLocalModel(body.modelId, null, 'agent', () => refuseSmallMainModel(body.modelId)) : null;   // before any write
   if (refused) return c.json({ ok: false, error: refused }, 400);
   try {
@@ -216,8 +220,18 @@ agentsRouter.post('/', async (c) => {
     const config = JSON.stringify({
       shareUserProfile: body.shareUserProfile || undefined,
     });
+    // A timeout that is present must be a positive finite number: a negative one
+    // expired the agent the moment the reaper ran, and a non-numeric one stored nothing.
+    if (body.timeout !== undefined && body.timeout !== null && body.timeout !== '') {
+      const seconds = Number(body.timeout);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        return c.json({ ok: false, error: 'timeout must be a positive number of seconds' }, 400);
+      }
+    }
     const timeoutSeconds = body.timeout ? Number(body.timeout) : null;
-    const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString() : null;
+    // The space form the spawner writes and the reaper's `datetime('now')` compares
+    // against — a bare `toISOString()`'s 'T' sorts after the space and delays the reap.
+    const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
     const classification = body.classification === 'ronin' ? 'ronin' : 'apprentice';
 
