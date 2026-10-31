@@ -54,10 +54,12 @@ export function useChatCatchUp<T extends { id: string; createdAt: string; isStre
     const stale = () => mine !== latestRef.current || forAgent !== o.agentIdRef.current;
     void (async () => {
       const seq = o.statusFrameSeqRef.current;
+      let turnEnded = false; // the caught-up state says no live turn exists for this agent
       const agentResult = await api.getAgent(forAgent);
       if (stale()) return;
       if (agentResult.ok && o.statusFrameSeqRef.current === seq) {
-        o.setIsWorking(agentResult.data.status === 'working');
+        turnEnded = agentResult.data.status !== 'working';
+        o.setIsWorking(!turnEnded);
         const f = agentResult.data.inFlight;
         o.setBackgroundStoppable(!!f && f.background > 0);
       }
@@ -72,7 +74,11 @@ export function useChatCatchUp<T extends { id: string; createdAt: string; isStre
           if (at < 0) { out.push(m); changed = true; }
           else if (out[at].isStreaming) { out[at] = m; changed = true; } // the final message arrived
         }
-        return changed ? out.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : prev;
+        // A streaming bubble whose turn is over (and whose final message was not in the page)
+        // can never finish: it goes. The caught-up answer is the signal, not a timer.
+        const kept = turnEnded ? out.filter((x) => !x.isStreaming || fetched.some((f) => f.id === x.id)) : out;
+        if (kept.length !== out.length) changed = true;
+        return changed ? kept.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : prev;
       });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

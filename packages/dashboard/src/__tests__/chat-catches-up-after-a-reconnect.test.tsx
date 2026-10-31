@@ -96,6 +96,26 @@ describe('chat catches up after a reconnect', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull());
   });
 
+  it('(d) a streaming bubble whose turn ended is replaced by its stored final message, or removed', async () => {
+    history([M1]); agent('idle');
+    const { rerender } = render(shell(<Chat />));
+    await waitFor(() => expect(vi.mocked(api).getAgent).toHaveBeenCalled());
+    await settle();
+    act(() => {
+      emitFrame('agent:status', { agentId: AGENT, status: 'working', userFacing: true });
+      emitFrame('chat:chunk', { agentId: AGENT, messageId: 'm2', content: 'half a repl', done: false });
+      emitFrame('chat:chunk', { agentId: AGENT, messageId: 'm3', content: 'a lost sentence', done: false });
+    });
+    await waitFor(() => expect(screen.queryByText(/half a repl/)).not.toBeNull());
+    expect(screen.queryByText(/a lost sentence/)).not.toBeNull();
+    history([M1, M2]); agent('idle'); // m2 finished while we were away; m3 has no stored message
+    setReconnectCount(1);
+    rerender(shell(<Chat />));
+    await waitFor(() => expect(screen.queryByText('reply sent during the gap')).not.toBeNull());
+    expect(screen.queryByText(/half a repl/)).toBeNull();
+    expect(screen.queryByText(/a lost sentence/)).toBeNull();
+  });
+
   it('(c) first mount asks for history once', async () => {
     history([M1]); agent('idle');
     render(shell(<Chat />));
