@@ -73,6 +73,7 @@ class WhisperEngine implements SttEngine {
   readonly key: string;
   private modelSize: WhisperSize;
   private server: WhisperServerHandle | null = null;
+  private loading: Promise<void> | null = null;
   private restartAttempts = 0;
   private lastRestartAt = 0;
   private disposed = false;
@@ -85,6 +86,14 @@ class WhisperEngine implements SttEngine {
   async load(): Promise<void> {
     if (this.disposed) throw new Error('WhisperEngine: load called after dispose');
     if (this.server) return;
+    // One reload at a time: after a crash `this.server` is null for everyone,
+    // so without this each waiting transcription ran its own `spawnServer()`
+    // and the last assignment orphaned the earlier child.
+    if (!this.loading) this.loading = this.doLoad().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+
+  private async doLoad(): Promise<void> {
     if (!isWhisperBinaryAvailable()) {
       throw new Error(
         `whisper-server not found at ${WHISPER_SERVER_BINARY}. Install via: brew install whisper-cpp`,
@@ -176,9 +185,16 @@ class WhisperEngine implements SttEngine {
     logger.info('Scheduling whisper-server restart', { attempt: this.restartAttempts, delayMs: delay });
     setTimeout(() => {
       if (this.disposed) return;
+      if (this.server || this.loading) {
+        // A transcription reload (or an earlier restart) already brought a
+        // server back during the back-off; spawning here would orphan it.
+        logger.info('whisper-server restart skipped; a reload already covered it');
+        return;
+      }
       this.spawnServer().then((h) => {
-        if (this.disposed) {
-          // A dispose landed while this boot was in flight; nobody will stop it.
+        if (this.disposed || this.server) {
+          // A dispose landed, or a reload installed its own server while this
+          // boot was in flight; overwriting here would orphan that one.
           h.process.kill('SIGKILL');
           return;
         }
