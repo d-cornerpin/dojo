@@ -449,7 +449,8 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
           throw new Error(metaRes.error || 'Failed to update technique metadata');
         }
         if (publish) {
-          await api.request(`/techniques/${existingId}/publish`, { method: 'POST' });
+          const pr = await api.request(`/techniques/${existingId}/publish`, { method: 'POST' });
+          if (!pr.ok) throw new Error(`Saved, but could not publish: ${pr.error}`);
         }
         navigate(`/techniques/${existingId}`);
       } else {
