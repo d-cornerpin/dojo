@@ -1949,7 +1949,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
                repeat_end_type, repeat_end_value, repeat_days_of_week,
                anchor_local AS anchor_time, attempts AS run_count,
                is_paused, ${msToText('last_run_at')} AS last_run_at,
-               ${msToText('next_run_at')} AS next_run_at, schedule_status
+               ${msToText('next_run_at')} AS next_run_at, schedule_status, tz
         FROM work WHERE id = ?
       `).get(taskId) as {
         scheduled_start: string | null; repeat_interval: number | null;
@@ -1957,6 +1957,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         repeat_end_value: string | null; repeat_days_of_week: string | null;
         anchor_time: string | null; run_count: number; is_paused: number;
         last_run_at: string | null; next_run_at: string | null; schedule_status: string;
+        tz: string | null;
       } | undefined;
 
       const wouldBeTerminal = (() => {
@@ -1975,6 +1976,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           last_run_at: new Date().toISOString(),
           next_run_at: detail.next_run_at,
           schedule_status: detail.schedule_status,
+          tz: detail.tz,
         };
         return calculateNextRun(probe) === null;
       })();

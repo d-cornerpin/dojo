@@ -816,6 +816,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
           ?? existingTask?.anchorTime
           ?? body.scheduled_start
         ) as string;
+        // The row's own zone (`getTask` does not project it) — the walk runs on the clock the
+        // owner set, not the box's.
+        const taskZone = (getDb().prepare('SELECT tz FROM work WHERE id = ?').get(id) as { tz: string | null } | undefined)?.tz ?? null;
         const taskForCalc = {
           id,
           scheduled_start: body.scheduled_start,
@@ -830,6 +833,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           schedule_status: 'waiting',
           repeat_days_of_week: repeatDaysOfWeek,
           anchor_time: anchorTime,
+          tz: taskZone,
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
