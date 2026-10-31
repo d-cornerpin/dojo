@@ -124,6 +124,16 @@ async function untilDialled(n = 1): Promise<void> {
   for (let i = 0; i < 100 && dials.length < n; i += 1) await tick(5);
 }
 
+/** Wait until the job has left the in-flight statuses (or give up), so a stop is read once written. */
+async function untilJobLeaves(jobId: string, inFlight: string[]): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    const st = (mockDb.current!.prepare('SELECT status FROM generation_jobs WHERE id = ?')
+      .get(jobId) as { status: string }).status;
+    if (!inFlight.includes(st)) return;
+    await tick(5);
+  }
+}
+
 /** The USER'S STOP, spelled exactly as `runtime.ts`'s `stopAgent` spells it. */
 async function stopNow(): Promise<number> {
   const { abortInFlight } = await import('../../agent/shared-state.js');
@@ -306,7 +316,7 @@ describe('§2 a stop cuts a TTS / music generation and the job lands in the stop
     jobs.enqueueAudioOrMusicJob(jobId);
     await untilDialled();
     await stopNow();
-    await tick(30);
+    await untilJobLeaves(jobId, ['queued', 'running']);
 
     const row = mockDb.current!.prepare('SELECT status, error FROM generation_jobs WHERE id = ?')
       .get(jobId) as { status: string; error: string | null };
