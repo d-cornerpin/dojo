@@ -1795,7 +1795,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
       canStop={canStop}
       placeholder={activeAgentName ? `Message ${activeAgentName}` : undefined}
       onStop={async () => {
-        await api.stopAgent(AGENT_ID);
+        const res = await api.stopAgent(AGENT_ID);
+        if (!res.ok) {
+          // A refused stop is not a finished one: the agent is still running, so the
+          // working state stays and the refusal is named, not swallowed.
+          toast.error(res.error ?? 'The stop did not go through. The agent is still working.');
+          return;
+        }
         setIsWorking(false);
         // The press settles BOTH halves: the control never outlives its own click waiting for
         // the route's zero frame. The stop is idempotent, so a later frame costs nothing.
