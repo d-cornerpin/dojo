@@ -9588,7 +9588,7 @@
     "packages/dashboard/src/components/Markdown.tsx": 436,
     "packages/dashboard/src/components/PermissionsEditor.tsx": 448,
     "packages/dashboard/src/components/PlaudSettings.tsx": 254,
-    "packages/dashboard/src/components/RouterConfig.tsx": 434,
+    "packages/dashboard/src/components/RouterConfig.tsx": 438,
     "packages/dashboard/src/components/SetupDeps.tsx": 678,
     "packages/dashboard/src/components/TechniqueSessionProvider.tsx": 509,
     "packages/dashboard/src/components/TwilioSettings.tsx": 578,
