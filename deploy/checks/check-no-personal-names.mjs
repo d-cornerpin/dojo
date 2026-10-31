@@ -216,6 +216,48 @@ function rosterNeedleFor(n) {
   };
 }
 
+/**
+ * THE SPEED INDEX (t29-names-gate-speed). The roster has ~900 needles and each needle is two regexes tried
+ * against every line of ~2,700 files: that was ~90% of the gate's wall time. A needle can only match a line
+ * that contains the needle's text (the quoted pass is case-insensitive, so compare lowercased), and then the
+ * needle's first three characters are a three-character window of the line. So: index each needle by its
+ * lowercased first three characters, take the line's distinct three-character windows, and run the ORIGINAL
+ * regexes only on needles whose window is present. A pure prefilter: it can only skip a needle that cannot
+ * match, never change a verdict, and candidates come back in needle order so the findings read the same.
+ * A needle shorter than three characters is always a candidate.
+ */
+function buildNeedleIndex(items, textOf) {
+  const byGram = new Map();
+  const always = [];
+  items.forEach((item, idx) => {
+    const t = String(textOf(item)).toLowerCase();
+    if (t.length < 3) { always.push(idx); return; }
+    const g = t.slice(0, 3);
+    const l = byGram.get(g);
+    if (l) l.push(idx); else byGram.set(g, [idx]);
+  });
+  return { items, byGram, always };
+}
+function candidatesFor(index, line) {
+  const low = line.toLowerCase();
+  const seen = new Set();
+  const picked = new Set(index.always);
+  for (let i = 0; i + 3 <= low.length; i++) {
+    const g = low.slice(i, i + 3);
+    if (seen.has(g)) continue;
+    seen.add(g);
+    const l = index.byGram.get(g);
+    if (l) for (const idx of l) picked.add(idx);
+  }
+  return [...picked].sort((a, b) => a - b).map((idx) => index.items[idx]);
+}
+const NEEDLE_INDEXES = new WeakMap();
+function indexOfNeedles(needles) {
+  let ix = NEEDLE_INDEXES.get(needles);
+  if (!ix) { ix = buildNeedleIndex(needles, (n) => n.name); NEEDLE_INDEXES.set(needles, ix); }
+  return ix;
+}
+
 /** The filters a roster name passes before it becomes a needle. Shared for the same reason. */
 function rosterNeedlesFrom(names, roles) {
   return names
@@ -860,7 +902,12 @@ const REAL_NAME_HASHES = (() => {
   try { return new Set(JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'known-real-name-hashes.json'), 'utf8')).sha256 ?? []); }
   catch { return new Set(); }
 })();
-const sha = (w) => crypto.createHash('sha256').update(w.toLowerCase()).digest('hex');
+const SHA_MEMO = new Map(); // a token's digest never changes; the same words recur on most lines of most files
+const sha = (w) => {
+  let h = SHA_MEMO.get(w);
+  if (h === undefined) { h = crypto.createHash('sha256').update(w.toLowerCase()).digest('hex'); SHA_MEMO.set(w, h); }
+  return h;
+};
 const VENDOR_VOICE_LINE = /(?:^|[^A-Za-z0-9_])[a-z]{2}_[a-z]+['"]?\s*:/;
 function hashedNameHits(line, hashes = REAL_NAME_HASHES) {
   if (hashes.size === 0 || VENDOR_VOICE_LINE.test(line)) return [];
@@ -1107,7 +1154,7 @@ const rosterNeedles = rosterNeedlesFrom(roster.names, roles);
 function rosterHitsFor(rel, line, rawLine, lineNo, needles) {
   if (ROSTER_EXEMPT_FILES.has(rel)) return [];
   const hits = [];
-  for (const { name, re, lower } of needles) {
+  for (const { name, re, lower } of candidatesFor(indexOfNeedles(needles), line)) {
     if (re.test(line)) hits.push({ rel, line: lineNo, kind: 'agent-name', detail: name, text: rawLine.trim() });
     // ⚠ THE LOWERCASE PASS, and review M1 is why it exists: the roster match is case-SENSITIVE, so a
     // lowercase vendor voice id is not the agent named after it — and that let the audit's own worst
@@ -1135,6 +1182,7 @@ const ownerNeedles = owner.names.map((n) => {
   };
 });
 
+const agentIdIndex = buildNeedleIndex(agentIds, (id) => id);
 const findings = [];
 for (const rel of files) {
   const abs = path.join(ROOT, rel);
@@ -1173,7 +1221,7 @@ for (const rel of files) {
     // address, a path or a handle) and the line number is untouched because this is per line.
     const line = unescapeForMatching(rawLine);
     findings.push(...rosterHitsFor(rel, line, rawLine, i + 1, rosterNeedles));
-    for (const id of agentIds) {
+    for (const id of candidatesFor(agentIdIndex, line)) {
       if (line.includes(id)) findings.push({ rel, line: i + 1, kind: 'live-agent-id', detail: id, text: rawLine.trim() });
     }
     for (const h of handles) {
