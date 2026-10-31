@@ -2,7 +2,7 @@
 // AN OPEN DELEGATION IS NOT A REASON TO REFUSE THE BOOT.  (UPDATE-INTEGRITY U0, change 1)
 //
 // ── THE INCIDENT THIS FILE EXISTS FOR ───────────────────────────────────────────────────
-// A user ("Michael") took the 3.1.16 → 3.1.17 update while one agent was waiting on another.
+// A user took the 3.1.16 → 3.1.17 update while one agent was waiting on another.
 // `135b_stable_work_spine.sql` asserted `park_namespace_empty` — zero `messages.conv_key`
 // rows matching `park:%` — through `_bridge_assert`'s `CHECK (ok = 1)`, so ONE open
 // delegation aborted the migration, the chain, and the boot. launchd's KeepAlive then

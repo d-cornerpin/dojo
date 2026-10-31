@@ -118,7 +118,7 @@ beforeEach(() => {
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                        wakes, closes_thread, title, opened_at, updated_at)
      VALUES (?, 'ask', ?, 'owner', 'message', 'm-1', 'claimed', 'answer', 1, 0,
-             'Did you text Michael?', ?, ?)`,
+             'Did you text ${FX.n9}?', ?, ?)`,
   ).run(ASK, AGENT, Date.now() - 180_000, Date.now());
   db.prepare(
     `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, subject_id, root_kind, root_id,

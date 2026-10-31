@@ -3,12 +3,12 @@
 //
 // Caught live on his own `.24` server, 2026-08-01, and recorded verbatim in the phase ledger:
 // he asked about a WEDDING TRANSCRIPT, the reply quoted it, the transcript contained the words
-// "told Michael" (Michael was the groom), and the floor fired — three times, once when he
+// "told <name>" (a third party in the transcript), and the floor fired — three times, once when he
 // pasted the steer's own words back at the agent — each fire ordering "do it NOW", producing
 // double answers and a re-done delivery.
 //
 // The planted-fault PAIR below is his example, and it is the acceptance test for the rekey:
-//   (a) a reply quoting "told Michael" with NOTHING owed to Michael  -> must NOT fire
+//   (a) a reply quoting "told <name>" with NOTHING owed to that name  -> must NOT fire
 //   (b) a genuine unbacked send-claim with an OPEN OBLIGATION and no receipt -> MUST fire
 //
 // Both are written against the OLD mechanism first (§ "THE DEFECT"), because a fixture that
@@ -44,12 +44,17 @@ import {
 import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
+/** The third party a transcript names; a coined stand-in, never a real name. */
+const THIRD = FX.n9;
+const THIRD_ID = FXID.n9;
+/** The transcript speaker who does the telling. */
+const SPEAKER = FX.n10;
 const TURN = 4210;
 
 /** The owner's own text, near enough: a transcript quote naming somebody nobody owes. */
 const WEDDING_TRANSCRIPT_REPLY =
-  'Here is what that recording covers: the planner confirmed the 4pm slot, and Sarah said she ' +
-  'told Michael about the seating change before the rehearsal so he could tell the ushers.';
+  `Here is what that recording covers: the planner confirmed the 4pm slot, and ${SPEAKER} said they ` +
+  `told ${THIRD} about the seating change before the rehearsal so they could tell the ushers.`;
 
 /** The shape the floor exists for: a completed-delivery claim to a third party. */
 const UNBACKED_SEND_CLAIM = 'All set — I texted Sam the address a minute ago, so she has it.';
@@ -108,14 +113,14 @@ beforeEach(() => {
 describe('THE DEFECT the owner caught — the old trigger was the model’s prose', () => {
   it('the OLD predicate fires on a transcript quote that owes nobody anything', () => {
     // No obligation, no receipt, no send tool — nothing in the platform says a delivery is
-    // owed to Michael. The old trigger fires anyway, because "told Michael" is English.
+    // owed to the third party. The old trigger fires anyway, because "told <name>" is English.
     const old = detectUngroundedDeliveryClaim({
       responseText: WEDDING_TRANSCRIPT_REPLY,
       toolCallsThisTurn: [],
       counterpartyName: FX.n11,
     });
     expect(old.ungrounded).toBe(true);
-    expect(old.ungrounded && old.recipient).toBe('Michael');
+    expect(old.ungrounded && old.recipient).toBe(THIRD);
   });
 
   it('and it cannot tell that case apart from a real one — same verdict, opposite truth', () => {
@@ -128,13 +133,13 @@ describe('THE DEFECT the owner caught — the old trigger was the model’s pros
   });
 });
 
-describe('PROOF (a) — the owner’s reply: quoting "told Michael" does NOT fire', () => {
-  it('stands down because nothing is owed to Michael', () => {
+describe('PROOF (a) — the owner’s reply: quoting "told <third party>" does NOT fire', () => {
+  it('stands down because nothing is owed to the third party', () => {
     const d = decide(WEDDING_TRANSCRIPT_REPLY);
     expect(d.fires).toBe(false);
     expect(!d.fires && d.reason).toBe('nothing-owed-to-them');
     // The narrowing still names him — the stand-down is a decision, not a miss.
-    expect(!d.fires && d.recipient).toBe('Michael');
+    expect(!d.fires && d.recipient).toBe(THIRD);
   });
 
   it('stays stood down with FIFTY other obligations open — this is not "the box was quiet"', () => {
@@ -148,12 +153,12 @@ describe('PROOF (a) — the owner’s reply: quoting "told Michael" does NOT fir
     expect(!d.fires && d.reason).toBe('nothing-owed-to-them');
   });
 
-  it('and it fires the moment Michael actually IS owed something — the arm is not dead', () => {
-    conversation('conv-michael', 'Michael', 'michael@example.com');
-    openAskFrom('ask:michael-1', 'conv-michael', 'can you send me the seating chart?');
+  it('and it fires the moment the third party actually IS owed something — the arm is not dead', () => {
+    conversation(`conv-${THIRD_ID}`, THIRD, `${THIRD_ID}@example.com`);
+    openAskFrom(`ask:${THIRD_ID}-1`, `conv-${THIRD_ID}`, 'can you send me the seating chart?');
     const d = decide(WEDDING_TRANSCRIPT_REPLY);
     expect(d.fires).toBe(true);
-    expect(d.fires && d.obligation?.id).toBe('ask:michael-1');
+    expect(d.fires && d.obligation?.id).toBe(`ask:${THIRD_ID}-1`);
   });
 });
 

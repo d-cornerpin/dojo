@@ -124,7 +124,7 @@ describe('the harness is hermetic', () => {
   });
 });
 
-describe("MICHAEL'S SET — a stable box must not be rolled onto a pre-release", () => {
+describe("THE REPORTING USER'S SET — a stable box must not be rolled onto a pre-release", () => {
   beforeEach(() => {
     // His exact on-disk set at the moment the watchdog rolled him back: he was running
     // preflight.20 when he took stable 3.1.17, so `update.ts:686` had stamped

@@ -51,7 +51,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { enqueueSteer } from '../../../steer-queue.js';
 import { runEmptyResponse } from '../empty-response.js';
 import type { PostCallClassifyContext } from '../index.js';
-import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PLAIN: ModelContract = {
   id: 'test-model',
@@ -94,7 +94,7 @@ const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
 
 /** The truth guard's own words, so a survivor is identifiable by content and not by luck. */
 const GUARD_STEER =
-  '[Engine correction: your reply says you texted Michael. The ledger holds no such send. '
+  `[Engine correction: your reply says you texted ${FX.n9}. The ledger holds no such send. `
   + 'Either send it now or tell them plainly that it has not gone out.]';
 
 /**
@@ -107,7 +107,7 @@ function stateWithPendingGuard(over: Partial<AgentTurnState> = {}): AgentTurnSta
   const base = initState({
     agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false,
     configuredModelId: 'test-model', turnNumber: 11, triggeredByIMessage: false,
-    triggeredByA2AReplyIntent: null, lastUserMessageContent: 'did you text Michael?',
+    triggeredByA2AReplyIntent: null, lastUserMessageContent: `did you text ${FX.n9}?`,
   } as Parameters<typeof initState>[0]);
   const withGuard = advance(base, {
     phase: 'postCallClassify', loopCount: 3, modelId: 'test-model',

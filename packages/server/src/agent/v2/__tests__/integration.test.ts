@@ -3703,12 +3703,12 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
   });
 
   it('RC-12 item 6: a claimed delivery the ledger contradicts warns LOUDLY and still delivers', async () => {
-    // "I texted Michael" with no delivery receipt anywhere. The floor fires as a
+    // "I texted <name>" with no delivery receipt anywhere. The floor fires as a
     // tripwire, naming the row — and the recovery still happens, because the loop has
     // exited and silence is the worse failure.
     callModelSpy
       .mockResolvedValueOnce({
-        content: 'I texted Michael the details.',
+        content: `I texted ${FX.n9} the details.`,
         toolCalls: [{ id: 'tc1', name: 'file_write', arguments: { path: '/tmp/r.md', content: 'x' } }] as ToolCall[],
         inputTokens: 100, outputTokens: 10, stopReason: 'tool_use',
       })
@@ -3722,7 +3722,7 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
         .get() as { turn_number: number } | undefined;
       mockDb.current!.prepare(
         `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display, outcome)
-         VALUES ('d-failed-1', 'primary', ?, 'imessage_send', 'imessage', 'Michael', 'Michael', 'failed')`,
+         VALUES ('d-failed-1', 'primary', ?, 'imessage_send', 'imessage', '${FX.n9}', '${FX.n9}', 'failed')`,
       ).run(t?.turn_number ?? null);
       return { toolCallId: 'tc1', name: 'file_write', content: 'written', isError: false };
     });
@@ -3733,7 +3733,7 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
     // exited, there is no re-entry to correct the model, and silence is the worse
     // failure. A version of this guard that VETOED would pass a "did not double-send"
     // assertion and re-open the defect G-SUP-2 exists to close.
-    expect(assistantRows().map((r) => r.content)).toEqual(['I texted Michael the details.']);
+    expect(assistantRows().map((r) => r.content)).toEqual([`I texted ${FX.n9} the details.`]);
     const fired = loggerWarnSpy.mock.calls.some((c) => String(c[0]).includes('G-SUP-2 recovery: delivered text claims a delivery'));
     expect(fired).toBe(true);
   });
@@ -3880,7 +3880,7 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
       n += 1;
       if (n === 1) {
         return {
-          content: '', toolCalls: [{ id: 'tc1', name: 'imessage_send', arguments: { to: 'Michael', text: 'on it' } }] as ToolCall[],
+          content: '', toolCalls: [{ id: 'tc1', name: 'imessage_send', arguments: { to: FX.n9, text: 'on it' } }] as ToolCall[],
           inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
         };
       }
