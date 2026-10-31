@@ -25,7 +25,8 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { soulFileForAgent, readSoulFile, writeSoulFile, readStoredCharter } from './assembler.js';
+import fs from 'node:fs';
+import { soulFileForAgent, soulFilePath, readSoulFile, writeSoulFile, readStoredCharter } from './assembler.js';
 
 const logger = createLogger('agent-prompt-surface');
 
@@ -36,14 +37,12 @@ const logger = createLogger('agent-prompt-surface');
 export function readAgentPromptSurface(agentId: string): string {
   const soul = soulFileForAgent(agentId);
   if (soul) {
-    try {
-      return readSoulFile(soul);
-    } catch (err) {
-      logger.warn('soul file unreadable; serving empty', {
-        agentId, file: soul.file, error: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+    // A file that exists but cannot be read is a FAILED read, not a blank: this throws, the card shows
+    // its Retry, and nothing is saved over it. (`readSoulFile` would otherwise fall back to the shipped
+    // default and write it over the file.)
+    const onDisk = soulFilePath(soul);
+    if (fs.existsSync(onDisk)) fs.accessSync(onDisk, fs.constants.R_OK);
+    return readSoulFile(soul);
   }
   return readStoredCharter(agentId);
 }

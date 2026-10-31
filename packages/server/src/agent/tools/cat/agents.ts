@@ -1250,7 +1250,9 @@ export const agentsHandlers: ToolHandlerMap = {
       // UX-REPAIR T40: the agent's STORED identity, through the one surface the Settings
       // card and the runtime both use. This used to be its own copy of the first-system-row
       // SELECT, which on a worn body returns an engine marker.
-      const systemPrompt = readAgentPromptSurface(target.id);
+      let systemPrompt: string;
+      try { systemPrompt = readAgentPromptSurface(target.id); }
+      catch { systemPrompt = '(the saved prompt could not be read just now)'; }
 
       // Resolve model name if a model is configured
       let modelLabel = '(none / auto-routed)';

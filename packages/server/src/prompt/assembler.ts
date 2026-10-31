@@ -422,6 +422,11 @@ export function soulFileForAgent(agentId: string): AgentSoulFile | null {
   return null;
 }
 
+/** Where a soul file lives on disk. */
+export function soulFilePath(soul: AgentSoulFile): string {
+  return path.join(PROMPTS_DIR, soul.file);
+}
+
 /** Read a soul file's STORED bytes — what an editor edits, before any truth pass. */
 export function readSoulFile(soul: AgentSoulFile): string {
   if (!soul.fallback) return fs.readFileSync(path.join(PROMPTS_DIR, soul.file), 'utf-8');

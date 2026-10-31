@@ -383,7 +383,10 @@ agentsRouter.put('/:id', async (c) => {
   // built on (`systemPromptBase`, the text the page read); if the stored one has moved the save is refused
   // and nothing is written. A caller that names no base may not replace a saved prompt with a blank one.
   if (typeof body.systemPrompt === 'string') {
-    const refusal = refuseStaleWholeDocument('prompt', body.systemPrompt, body.systemPromptBase, readAgentPromptSurface(id));
+    let storedPrompt: string;
+    try { storedPrompt = readAgentPromptSurface(id); }
+    catch { return c.json({ ok: false, error: 'The saved prompt could not be read, so nothing was changed. Try again.' }, 500); }
+    const refusal = refuseStaleWholeDocument('prompt', body.systemPrompt, body.systemPromptBase, storedPrompt);
     if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }
 
