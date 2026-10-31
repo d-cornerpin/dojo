@@ -6,6 +6,7 @@ import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import { computeTurnAddress } from '../turn-address.js';
 import { refuseSendWithNoRecipient, recipientNoteFor, routedReplyWords } from '../send-recipient.js';
 import type { TurnCounterparty } from '../counterparty.js';
+import { executeTool, toolResultOf } from '../../tools/index.js';
 
 const AGENT = 'primary';
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
@@ -92,7 +93,6 @@ describe('failure results say where the written reply goes, from the address', (
 
 describe('the executor enforces it at the one door', () => {
   it('executeTool(imessage_send) with no recipient returns the refusal and sends nothing', async () => {
-    const { executeTool, toolResultOf } = await import('../../tools/index.js');
     turnWith(contact, 'imessage');
     const out = await executeTool(AGENT, { id: 'call-1', name: 'imessage_send', arguments: { message: 'hello' } });
     const r = toolResultOf(out);
