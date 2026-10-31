@@ -351,7 +351,7 @@ agentsRouter.get('/:id/system-prompt', (c) => {
     return c.json({ ok: true, data: { content: readAgentPromptSurface(id) } });
   } catch (err) {
     noteRouteFailure(c, logger, err);
-    return c.json({ ok: true, data: { content: '' } });
+    return c.json({ ok: false, error: 'Could not read this agent’s prompt.' }, 500);   // never a blank a page could save over
   }
 });
 
@@ -377,6 +377,20 @@ agentsRouter.put('/:id', async (c) => {
   // letters is refused here, with the other 400 doors, so a refused Save writes nothing (246).
   const nameClash = typeof body.name === 'string' && body.name.trim() ? caseVariantClash(body.name.trim(), id) : null;
   if (nameClash) return c.json({ ok: false, error: caseVariantClashMessage(nameClash.name) }, 400);
+
+  // The prompt is saved WHOLE (for the primary agent it is SOUL.md). A save must name the prompt it was
+  // built on (`systemPromptBase`, the text the page read); if the stored one has moved the save is refused
+  // and nothing is written. A caller that names no base may not replace a saved prompt with a blank one.
+  if (typeof body.systemPrompt === 'string') {
+    const storedPrompt = readAgentPromptSurface(id);
+    if (typeof body.systemPromptBase === 'string') {
+      if (body.systemPromptBase !== storedPrompt) {
+        return c.json({ ok: false, error: 'This prompt changed since you loaded it, so it was not saved. Reload it and make your change again.' }, 409);
+      }
+    } else if (!body.systemPrompt.trim() && storedPrompt.trim()) {
+      return c.json({ ok: false, error: 'A blank prompt was not saved over the existing one. Reload the page and try again.' }, 400);
+    }
+  }
 
   const updates: string[] = [];
   const params: unknown[] = [];
