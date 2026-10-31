@@ -3,6 +3,7 @@
 // An entry the agent writes is never read as the owner, and the owner exemption in sms_send and
 // voice_call reaches only the human-set owner.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { commsHandlers } from '../../agent/tools/cat/comms.js';
 
 const store = vi.hoisted(() => new Map<string, string>());
 vi.mock('../../db/connection.js', () => ({
@@ -73,7 +74,6 @@ describe('nothing is made the owner by position', () => {
 
 describe('add_safe_sender (iMessage)', () => {
   const call = async (): Promise<{ content: string; isError: boolean }> => {
-    const { commsHandlers } = await import('../../agent/tools/cat/comms.js');
     return commsHandlers['add_safe_sender']({
       agentId: 'agent-1',
       args: { channel: 'imessage', address: AGENT, name: 'Stranger', user_request_quote: 'please text my friend at that number' },
