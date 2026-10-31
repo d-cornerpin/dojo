@@ -58,8 +58,9 @@ if [ "$PRINT" != 1 ]; then
   fi
   # The EXIT trap also runs on TERM, INT and HUP (a person, a shutdown or a hang-up): if the services
   # were stopped and not yet started again, it starts them, so a signal never leaves Dojo and the
-  # watchdog both unloaded. SIGKILL cannot be trapped; that gap is covered by `--heal`, which the
-  # watchdog runs at the next login (it clears the dead lock and restores), not by this script.
+  # watchdog both unloaded. SIGKILL cannot be trapped. Nothing in this script recovers from it: with
+  # `platform/` in place `--heal` does nothing, and what brings the services back is launchd loading
+  # the two agents at the next login.
   services_down=0
   # Every step below leaves a platform folder in place or says plainly why not, and every exit path
   # loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
@@ -76,7 +77,7 @@ if [ "$PRINT" != 1 ]; then
   # Returns 1 and names the service when launchd does not list it after the load.
   reload_services() {
       local rc=0 svc
-      services_down=0
+      # Cleared only AFTER the loop: a signal that lands inside a load must still reload both.
       for svc in platform watchdog; do
           launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null
           if ! service_loaded "$svc"; then
@@ -84,6 +85,7 @@ if [ "$PRINT" != 1 ]; then
               rc=1
           fi
       done
+      services_down=0
       return $rc
   }
   # A name that does not exist yet, so nothing is ever moved INTO an old folder.
@@ -122,12 +124,16 @@ if [ "$HEAL" = 1 ] && [ "$PRINT" != 1 ]; then
     if [ "$(marker_field phase)" = "pending-update" ] && [ -n "$staging" ] && [ -n "$target" ] \
        && [ "$(tree_version "$staging")" = "$target" ]; then
         echo "🥋 An update to $target was cut off at its last step. Finishing it."
+        services_down=1
         launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
         [ -d "$PLATFORM_DIR" ] && mv "$PLATFORM_DIR" "$DOJO_DIR/platform.failed-unknown-$(date +%Y%m%d-%H%M%S)"
         if mv "$staging" "$PLATFORM_DIR"; then
-            launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
-            echo "✅ Finished installing $target. The server is restarting."
-            exit 0
+            if reload_services; then
+                echo "✅ Finished installing $target. The server is restarting."
+                exit 0
+            fi
+            echo "❌ $target is in place, but a service above did not start. Run this again or restart Dojo from the menu bar."
+            exit 1
         fi
         echo "   Could not move the prepared $target into place; restoring the previous version instead."
     fi
