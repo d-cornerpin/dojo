@@ -1064,7 +1064,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
           destPath = srcPath;
         } else {
           const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
-          const storedName = `a2a_${Date.now()}_${safeName}`;
+          const storedName = `a2a_${Date.now()}_${uuidv4().slice(0, 8)}_${safeName}`;
           destPath = path.join(recipientDir, storedName);
           fs.copyFileSync(srcPath, destPath);
         }
