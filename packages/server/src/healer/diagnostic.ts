@@ -22,6 +22,9 @@ import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getHarnessSections } from './harness-sections.js';
 import { collect } from './collect-guard.js';
+import { capItemsByText, capItemsShowingOmissions, type DiagnosticItem } from './item-cap.js';
+export { capItemsByText, capItemsShowingOmissions };
+export type { DiagnosticItem };
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
@@ -63,85 +66,6 @@ const COLLECTOR_CAPS = {
   update_check: 800,
   auto_rollback: 900,
 } as const;
-
-/**
- * Cap the rendered text at `maxChars`; critical items are never dropped (their length still counts),
- * so the lower severities of that check go first.
- */
-// Exported for tests. Pure function — no DB access. See
-// healer/__tests__/healer-hardening.test.ts.
-export function capItemsByText(
-  items: DiagnosticItem[],
-  maxChars: number,
-  collectorLabel: string,
-): DiagnosticItem[] {
-  const renderLength = (xs: DiagnosticItem[]): number =>
-    xs.reduce((sum, i) => sum + i.title.length + i.detail.length + 12, 0);
-
-  if (renderLength(items) <= maxChars) return items;
-
-  // Sort: keep critical, then warning, then info. Truncate from the tail.
-  const sevOrder: Record<DiagnosticItem['severity'], number> = {
-    critical: 0, warning: 1, info: 2,
-  };
-  const sorted = [...items].sort(
-    (a, b) => sevOrder[a.severity] - sevOrder[b.severity],
-  );
-
-  const kept: DiagnosticItem[] = [];
-  let len = 0;
-  let dropped = 0;
-  for (const item of sorted) {
-    const itemLen = item.title.length + item.detail.length + 12;
-    if (item.severity === 'critical' || len + itemLen <= maxChars) {
-      kept.push(item);
-      len += itemLen;
-    } else {
-      dropped++;
-    }
-  }
-
-  if (dropped > 0) {
-    logger.warn('Diagnostic collector cap fired — dropping low-severity items', {
-      collector: collectorLabel,
-      total: items.length,
-      kept: kept.length,
-      dropped,
-      maxChars,
-    });
-  }
-
-  return kept;
-}
-
-/**
- * `capItemsByText` plus one visible line when it left items out, so the report never drops items
- * silently (R25): the person reading it sees "N more were left out" for that check.
- */
-export function capItemsShowingOmissions(
-  items: DiagnosticItem[],
-  maxChars: number,
-  collectorLabel: string,
-): DiagnosticItem[] {
-  const kept = capItemsByText(items, maxChars, collectorLabel);
-  const omitted = items.length - kept.length;
-  if (omitted <= 0) return kept;
-  return [...kept, {
-    severity: 'info',
-    code: 'items_left_out',
-    title: `${omitted} more ${omitted === 1 ? 'item was' : 'items were'} left out of the ${collectorLabel.replace(/_/g, ' ')} check`,
-    detail: `The ${collectorLabel.replace(/_/g, ' ')} check found ${items.length} items; the report had room for ${kept.length}. The ${omitted} left out are the lower-priority ones.`,
-  }];
-}
-
-export interface DiagnosticItem {
-  severity: 'critical' | 'warning' | 'info';
-  code: string;
-  title: string;
-  detail: string;
-  agentId?: string;
-  agentName?: string;
-}
 
 export interface DiagnosticReport {
   id: string;
