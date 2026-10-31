@@ -243,14 +243,15 @@ memoryRouter.get('/:agentId/briefing', (c) => {
   try {
     const db = getDb();
     const row = db.prepare(`
-      SELECT id, agent_id, content, token_count, generated_at FROM briefings
+      SELECT id, agent_id, content, token_count, generated_at, manual_edits FROM briefings
       WHERE agent_id = ?
       ORDER BY generated_at DESC
       LIMIT 1
-    `).get(agentId) as { id: string; agent_id: string; content: string; token_count: number; generated_at: string } | undefined;
+    `).get(agentId) as { id: string; agent_id: string; content: string; token_count: number; generated_at: string; manual_edits: string | null } | undefined;
 
+    // "None yet" is a successful empty answer, so a page can tell it apart from a failed read.
     if (!row) {
-      return c.json({ ok: false, error: 'No briefing found' }, 404);
+      return c.json({ ok: true, data: null });
     }
 
     const briefing = {
@@ -259,6 +260,7 @@ memoryRouter.get('/:agentId/briefing', (c) => {
       content: row.content,
       tokenCount: row.token_count,
       generatedAt: row.generated_at,
+      editedByOwner: row.manual_edits != null,
     };
 
     return c.json({ ok: true, data: briefing });
@@ -274,7 +276,7 @@ memoryRouter.put('/:agentId/briefing', async (c) => {
   const agentId = c.req.param('agentId');
 
   try {
-    const body = await c.req.json<{ content: string }>();
+    const body = await c.req.json<{ content: string; baseId?: string }>();
     if (!body.content || typeof body.content !== 'string') {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
@@ -282,6 +284,14 @@ memoryRouter.put('/:agentId/briefing', async (c) => {
     const agent = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId);
     if (!agent) {
       return c.json({ ok: false, error: 'Agent not found' }, 404);
+    }
+
+    // An edit names the briefing it was built on; if a newer one exists, it is refused.
+    if (typeof body.baseId === 'string') {
+      const latest = getDb().prepare('SELECT id FROM briefings WHERE agent_id = ? ORDER BY generated_at DESC LIMIT 1').get(agentId) as { id: string } | undefined;
+      if (latest && latest.id !== body.baseId) {
+        return c.json({ ok: false, error: 'This briefing changed since you loaded it, so your edit was not saved. Reload it and edit again.' }, 409);
+      }
     }
 
     updateBriefing(agentId, body.content);

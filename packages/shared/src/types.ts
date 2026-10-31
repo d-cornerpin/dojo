@@ -492,6 +492,8 @@ export interface Briefing {
   content: string;
   tokenCount: number;
   generatedAt: string;
+  /** True when the owner has edited the text by hand (a regenerate would discard that). */
+  editedByOwner?: boolean;
 }
 
 export interface DagResponse {
