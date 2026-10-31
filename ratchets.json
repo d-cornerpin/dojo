@@ -9509,6 +9509,27 @@
       "to": 362,
       "by": "3.5 who-am-i-sending-to (lane t281), 2026-10-31",
       "why": "+1: the reminder-lane refusal and the compile gate stop claiming a route / name the person who asked. The new logic lives in its own small files (agent/v2/turn-address.ts, agent/v2/send-recipient.ts, work/compile-asker.ts). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/route-reply.ts",
+      "from": 202,
+      "to": 205,
+      "by": "3.5 who-am-i-sending-to fix round 1 (lane t281), 2026-10-31",
+      "why": "+3: delivery calls the one shared resolver (resolveDeliveryChannel) instead of its own copy of the routing rule; a fallback address stands in when none exists. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/assemble/index.ts",
+      "from": 379,
+      "to": 380,
+      "by": "3.5 who-am-i-sending-to fix round 1 (lane t281), 2026-10-31",
+      "why": "+1: the address handed to the registry is read live (liveAddress) so the channel told equals the channel used. From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts",
+      "from": 310,
+      "to": 311,
+      "by": "3.5 who-am-i-sending-to fix round 1 (lane t281), 2026-10-31",
+      "why": "+1: one argument: whether this agent's written reply is auto-routed at all (isPrimaryAgent). From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9616,7 +9637,7 @@
     "packages/server/src/agent/v2/state.ts": 758,
     "packages/server/src/agent/v2/steer-queue.ts": 342,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 209,
-    "packages/server/src/agent/v2/steps/assemble/index.ts": 379,
+    "packages/server/src/agent/v2/steps/assemble/index.ts": 380,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 214,
     "packages/server/src/agent/v2/steps/assemble/steer-checkpoint.ts": 81,
     "packages/server/src/agent/v2/steps/assemble/technique-hints.ts": 233,
@@ -9642,7 +9663,7 @@
     "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 109,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 175,
     "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
-    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 202,
+    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 205,
     "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 129,
     "packages/server/src/agent/v2/steps/post-call-classify/args-for-result.ts": 27,
     "packages/server/src/agent/v2/steps/post-call-classify/closeout-floors.ts": 203,
@@ -9667,7 +9688,7 @@
     "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 401,
     "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 214,
     "packages/server/src/agent/v2/steps/preflight/closeout-gate.ts": 243,
-    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 310,
+    "packages/server/src/agent/v2/steps/preflight/counterparty-and-record.ts": 311,
     "packages/server/src/agent/v2/steps/preflight/inbound-and-abort.ts": 202,
     "packages/server/src/agent/v2/steps/preflight/index.ts": 296,
     "packages/server/src/agent/v2/steps/preflight/recall-flag.ts": 102,
