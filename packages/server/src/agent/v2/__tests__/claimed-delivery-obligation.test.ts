@@ -41,8 +41,9 @@ import { detectUngroundedDeliveryClaim } from '../classifiers/grounding.js';
 import {
   decideClaimedDelivery, claimedDeliverySteer, obligationOwedTo,
 } from '../claimed-delivery.js';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const TURN = 4210;
 
 /** The owner's own text, near enough: a transcript quote naming somebody nobody owes. */
@@ -93,7 +94,7 @@ function decide(responseText: string, over: Partial<{
     turnNumber: over.turnNumber === undefined ? TURN : over.turnNumber,
     responseText,
     toolCallsThisTurn: over.toolCallsThisTurn ?? [],
-    counterpartyName: over.counterpartyName ?? 'Yorvak',
+    counterpartyName: over.counterpartyName ?? FX.n11,
     hasDeliveryReceipt: over.hasDeliveryReceipt ?? (() => false),
   });
 }
@@ -111,7 +112,7 @@ describe('THE DEFECT the owner caught — the old trigger was the model’s pros
     const old = detectUngroundedDeliveryClaim({
       responseText: WEDDING_TRANSCRIPT_REPLY,
       toolCallsThisTurn: [],
-      counterpartyName: 'Yorvak',
+      counterpartyName: FX.n11,
     });
     expect(old.ungrounded).toBe(true);
     expect(old.ungrounded && old.recipient).toBe('Michael');
@@ -119,7 +120,7 @@ describe('THE DEFECT the owner caught — the old trigger was the model’s pros
 
   it('and it cannot tell that case apart from a real one — same verdict, opposite truth', () => {
     const real = detectUngroundedDeliveryClaim({
-      responseText: UNBACKED_SEND_CLAIM, toolCallsThisTurn: [], counterpartyName: 'Yorvak',
+      responseText: UNBACKED_SEND_CLAIM, toolCallsThisTurn: [], counterpartyName: FX.n11,
     });
     expect(real.ungrounded).toBe(true);
     // Two replies, one true and one false, and the old trigger returns the identical shape.
@@ -210,7 +211,7 @@ describe('ARM B — the hole the old guard could not see: a send the door record
     const oldVerdict = detectUngroundedDeliveryClaim({
       responseText: UNBACKED_SEND_CLAIM,
       toolCallsThisTurn: [{ name: 'imessage_send' }],
-      counterpartyName: 'Yorvak',
+      counterpartyName: FX.n11,
     });
     expect(oldVerdict.ungrounded).toBe(false); // ← the hole, measured
 

@@ -46,9 +46,10 @@ import { CLOSE_OUT_WORK_OPS, SATISFYING_WORK_OPS, toolOpKey } from '../../../too
 import {
   COMPILE_OWED_ALLOWED_OPS, compileOwedAfterRedrive, stillCompileOwed, compileOwedGateDecision,
 } from '../compile-owed-gate.js';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'primary';
-const OTHER = 'quilba';
+const OTHER = FXID.n5;
 const PEER = 'kayla';
 const CONV = 'conv-1';
 
@@ -98,7 +99,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at) VALUES
-       (?, 'Primary', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
+       (?, 'Primary', 'idle', '1970-01-01'), (?, '${FX.n5}', 'idle', '1970-01-01'), (?, 'Kayla', 'idle', '1970-01-01')`,
   ).run(AGENT, OTHER, PEER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

@@ -43,8 +43,9 @@ vi.mock('../../../db/connection.js', async () => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import { splitDanglers, survivingDanglers, closeOutGateDecision, resolveServedWork } from '../stale-work-ids.js';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {

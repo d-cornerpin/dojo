@@ -3,6 +3,7 @@ import {
   isForwardPromiseReply, isStandingPromiseReply,
   isStandingStateClaimReply, standingStateClaimSentence,
 } from '../ack-copy.js';
+import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 describe('isForwardPromiseReply', () => {
   // A bare promise to START work, judged by the reply's ending. These must fire
@@ -190,7 +191,7 @@ describe('isStandingStateClaimReply', () => {
 
   it('returns the asserting SENTENCE, so the steer can quote the claim and not the greeting', () => {
     const claim = standingStateClaimSentence(
-      "Here's the week, Yorvak. We finished the Denver checklist and tidied three folders. "
+      `Here's the week, ${FX.n11}. We finished the Denver checklist and tidied three folders. `
       + 'Two fence quotes are still parked, waiting on Bob\'s address.');
     expect(claim).toBe("Two fence quotes are still parked, waiting on Bob's address.");
   });

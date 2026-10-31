@@ -1,11 +1,11 @@
 // UX-REPAIR ROUND 11 · T46 — A WRONG-FORM A2A CORRECTION MUST NOT DOUBLE-DELIVER
 //
 // ── THE RECORDED INCIDENT (round-11 catalog §8.2, re-queried by W30 on the dev body) ──
-//   seq 65475  zargo  turn 638  01:25:01  tool_use send_to_agent ANSWER -> HarnessBot
+//   seq 65475  FXID.n4  turn 638  01:25:01  tool_use send_to_agent ANSWER -> HarnessBot
 //   seq 65476  HarnessBot a2a lane      01:25:01  the ANSWER LANDS
-//   seq 65478  zargo  turn 638  01:25:01  tool_result "Message delivered to HarnessBot …"
-//   seq 65480  zargo  turn 639  01:25:06  THE NOTE: "…you wrote your reply as text… got nothing."
-//   seq 65481  zargo  turn 639  01:25:23  the re-send
+//   seq 65478  FXID.n4  turn 638  01:25:01  tool_result "Message delivered to HarnessBot …"
+//   seq 65480  FXID.n4  turn 639  01:25:06  THE NOTE: "…you wrote your reply as text… got nothing."
+//   seq 65481  FXID.n4  turn 639  01:25:23  the re-send
 //   seq 65482  HarnessBot a2a lane      01:25:23  THE SAME ANSWER LANDS A SECOND TIME
 //
 // ── THE CAUSE, NOT THE SYMPTOM ──
@@ -13,7 +13,7 @@
 // `priorReplyOnSameThread === false`. That input's evidence is `a2a_replies`, and
 // `recordA2AReply` only writes a row when the reply BINDS to an inbound assign message
 // (`findInboundAssignByThread`) — a binding that needs a `thread_id` the sender may omit.
-// zargo's delivered send omitted it, so no row existed and the branch called a delivered
+// FXID.n4's delivered send omitted it, so no row existed and the branch called a delivered
 // reply "nothing".
 //
 // The platform DID hold the fact, in the ledger it already trusts and already uses on the
@@ -48,8 +48,9 @@ vi.mock('../../../contacts/store.js', () => ({ findMatchingContact: () => null }
 
 import { a2aReplyEnforcer } from '../classifiers/a2a.js';
 import { hasVerifiedA2ASendOnThread } from '../outbound-ledger.js';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const PEER = 'HarnessBot';
 /** The incident's thread, full form — what the receipt carries. */
 const THREAD_FULL = 'bc9cf088-4376-4d9a-9a1e-dfe6b7ff5cfa';
@@ -240,7 +241,7 @@ describe('the wrong-form note consults the receipt ledger', () => {
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('the round-11 incident replay', () => {
-  it('zargo\'s delivered-but-unbound ANSWER no longer draws a re-send instruction', () => {
+  it(`${FXID.n4}\'s delivered-but-unbound ANSWER no longer draws a re-send instruction`, () => {
     // The exact shape of the incident: a VERIFIED send_to_agent receipt on the thread,
     // and NOTHING in a2a_replies (the send omitted thread_id, so it never bound).
     seedReceipt();

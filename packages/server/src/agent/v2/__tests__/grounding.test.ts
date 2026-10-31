@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from '../classifiers/grounding.js';
+import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 describe('detectUngroundedDeliveryClaim (positive direction)', () => {
   it('fires on a past-tense delivery claim to a named third party with no send tool', () => {
@@ -52,9 +53,9 @@ describe('detectDeliveryDenial (denial direction)', () => {
   });
 
   it('fires on a negated past delivery and captures the named recipient', () => {
-    const r = detectDeliveryDenial({ responseText: "Haven't sent it to Zubel yet." });
+    const r = detectDeliveryDenial({ responseText: `Haven't sent it to ${FX.n9} yet.` });
     expect(r.denied).toBe(true);
-    expect(r.recipient).toBe('Zubel');
+    expect(r.recipient).toBe(FX.n9);
   });
 
   it('fires on "still need to send it" with no named recipient', () => {

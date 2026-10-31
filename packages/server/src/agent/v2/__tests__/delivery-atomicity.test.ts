@@ -46,8 +46,9 @@ import { recordDelivery } from '../deliveries.js';
 import { openTurnContext, endTurnContext, turnContext } from '../../turn-context.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const TURN = 7;
 
 const deliveryCount = (): number =>
@@ -87,7 +88,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

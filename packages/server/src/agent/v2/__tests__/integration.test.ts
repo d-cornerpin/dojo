@@ -409,6 +409,7 @@ import {
 // T47's gate arms on a rung the ladder has already spent, so the fixture spends one
 // through the ladder's own writer rather than hand-rolling the audit row.
 import { JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, compileSteerText, recordJoinDrive } from '../../../work/join-drive.js';
+import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 // HL4 step 2 (2d): the carrier the retired `compaction-recap` steer's model-facing
 // requirement re-homes onto. Imported (not mocked) so the re-home clause DRIVES the
 // real renderer against the real DB rather than reading its source.
@@ -4497,7 +4498,7 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     ).run(openedAt);
     db.prepare(
       `INSERT INTO agents (id, name, model_id, status, config, classification)
-       VALUES ('quilba', 'Quilba', 'test-model', 'idle', '{}', 'worker')`,
+       VALUES ('${FXID.n5}', '${FX.n5}', 'test-model', 'idle', '{}', 'worker')`,
     ).run();
     const askId = openAsk({
       agentId: 'primary', messageId: 'msg-join', conversationId: 'conv-join',
@@ -4509,8 +4510,8 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
       parentWorkId: askId, agentId: 'primary', replyConversationId: 'conv-join',
       ttlAt: Date.now() + 60 * 60_000,
       threads: [
-        { threadId: 'join-thread-a', assigneeAgent: 'quilba', intent: 'ASSIGN' as const, hopCount: 0 },
-        { threadId: 'join-thread-b', assigneeAgent: 'quilba', intent: 'ASSIGN' as const, hopCount: 0 },
+        { threadId: 'join-thread-a', assigneeAgent: FXID.n5, intent: 'ASSIGN' as const, hopCount: 0 },
+        { threadId: 'join-thread-b', assigneeAgent: FXID.n5, intent: 'ASSIGN' as const, hopCount: 0 },
       ],
     });
     for (const [i, childId] of kids.entries()) {
@@ -4519,7 +4520,7 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
          VALUES (?, 'primary', NULL, 'send_to_agent', 'a2a', 'delivered', datetime('now'))`,
       ).run(`join-piece-${i}`);
       landPiece(childId, {
-        deliveryId: `join-piece-${i}`, content: `stream ${i} result`, messageId: null, actorId: 'quilba',
+        deliveryId: `join-piece-${i}`, content: `stream ${i} result`, messageId: null, actorId: FXID.n5,
       });
     }
     recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, {
@@ -4544,8 +4545,8 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
     const order = `[Engine] ${compileSteerText({
       total: 2,
       pieces: [
-        'Piece 1 (from Quilba, thread join-thr): "stream 0 result"',
-        'Piece 2 (from Quilba, thread join-thr): "stream 1 result"',
+        `Piece 1 (from ${FX.n5}, thread join-thr): "stream 0 result"`,
+        `Piece 2 (from ${FX.n5}, thread join-thr): "stream 1 result"`,
       ],
       attempt: 1,
       bound: JOIN_REDRIVE_BOUND,
@@ -4628,10 +4629,10 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
   it('THE ALLOWED SET, HALF ONE: send_to_agent passes — the steer\'s own hand-off exception', async () => {
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     seedOwedCompile();
-    const call: ToolCall = { id: 'tc-a2a', name: 'send_to_agent', arguments: { to_agent: 'quilba', message: 'do you have the result?' } };
+    const call: ToolCall = { id: 'tc-a2a', name: 'send_to_agent', arguments: { to_agent: FXID.n5, message: 'do you have the result?' } };
     callModelSpy
       .mockResolvedValueOnce({ content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' })
-      .mockResolvedValue({ content: 'asked quilba', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+      .mockResolvedValue({ content: `asked ${FXID.n5}`, toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
     executeToolSpy.mockResolvedValue({ toolCallId: 'tc-a2a', name: 'send_to_agent', content: 'sent', isError: false });
 
     await runV2Turn('primary');

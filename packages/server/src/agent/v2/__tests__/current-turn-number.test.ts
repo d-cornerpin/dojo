@@ -17,7 +17,7 @@
 // ── WHY MAX(turn_number) AND NOT "THE OPEN TURN" ────────────────────────────────────────
 // "The turn with ended_at IS NULL" reads like the obvious answer and it is WRONG, measured:
 // on the live body 139 of 3,090 turn rows are open, because a turn that dies never reaches
-// `finalizeTurn` — and the golden's own agent `zargo` had an open row at turn 246 while
+// `finalizeTurn` — and the golden's own agent `FXID.n4` had an open row at turn 246 while
 // turn 264 had already been allocated. That reader would have returned a number EIGHTEEN
 // TURNS STALE on the one agent every prompt gate is bound to. The highest allocated number
 // is the honest answer; a stale open row cannot poison it.
@@ -38,6 +38,7 @@ vi.mock('../../../db/connection.js', () => ({
 }));
 
 import { currentTurnNumber } from '../turn-record.js';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -62,17 +63,17 @@ const allocate = (agent: string, n: number, ended: string | null = "2026-01-01")
 
 describe('currentTurnNumber — one reader, the turns record', () => {
   it('is the highest turn ALLOCATED to this agent', () => {
-    allocate('zargo', 1); allocate('zargo', 2); allocate('zargo', 3);
-    expect(currentTurnNumber('zargo')).toBe(3);
+    allocate(FXID.n4, 1); allocate(FXID.n4, 2); allocate(FXID.n4, 3);
+    expect(currentTurnNumber(FXID.n4)).toBe(3);
   });
 
-  it('a STALE OPEN turn does not drag it backwards — the measured zargo case', () => {
-    // zargo, on the live body: open row at 246, allocated up to 264. A reader keyed on
+  it(`a STALE OPEN turn does not drag it backwards — the measured ${FXID.n4} case`, () => {
+    // FXID.n4, on the live body: open row at 246, allocated up to 264. A reader keyed on
     // `ended_at IS NULL` would have answered 246 — eighteen turns stale, on the agent both
     // prompt goldens are bound to.
-    allocate('zargo', 246, null);
-    for (let n = 247; n <= 264; n++) allocate('zargo', n);
-    expect(currentTurnNumber('zargo')).toBe(264);
+    allocate(FXID.n4, 246, null);
+    for (let n = 247; n <= 264; n++) allocate(FXID.n4, n);
+    expect(currentTurnNumber(FXID.n4)).toBe(264);
   });
 
   it('ADVANCES on a turn that persisted no message — research 06 §7\'s named defect', () => {
@@ -80,16 +81,16 @@ describe('currentTurnNumber — one reader, the turns record', () => {
     // only moved when a row landed, so a turn that wrote nothing left the continuity-brief
     // and scaffolding windows frozen. Measured on the live body: 19 of 48 agents with
     // stamped messages had `turns` AHEAD of `messages`.
-    allocate('zargo', 1); allocate('zargo', 2);
-    expect(currentTurnNumber('zargo')).toBe(2);
-    allocate('zargo', 3);   // a turn that writes no message at all
-    expect(currentTurnNumber('zargo')).toBe(3);
+    allocate(FXID.n4, 1); allocate(FXID.n4, 2);
+    expect(currentTurnNumber(FXID.n4)).toBe(2);
+    allocate(FXID.n4, 3);   // a turn that writes no message at all
+    expect(currentTurnNumber(FXID.n4)).toBe(3);
   });
 
   it('is per AGENT, not global', () => {
-    allocate('zargo', 9); allocate('quilba', 2);
-    expect(currentTurnNumber('zargo')).toBe(9);
-    expect(currentTurnNumber('quilba')).toBe(2);
+    allocate(FXID.n4, 9); allocate(FXID.n5, 2);
+    expect(currentTurnNumber(FXID.n4)).toBe(9);
+    expect(currentTurnNumber(FXID.n5)).toBe(2);
   });
 
   it('an agent with no turns yet is 0, and never throws', () => {
@@ -98,8 +99,8 @@ describe('currentTurnNumber — one reader, the turns record', () => {
 
   it('a missing turns table returns 0 rather than killing the assembly', () => {
     mockDb.current!.exec('DROP TABLE turns');
-    expect(() => currentTurnNumber('zargo')).not.toThrow();
-    expect(currentTurnNumber('zargo')).toBe(0);
+    expect(() => currentTurnNumber(FXID.n4)).not.toThrow();
+    expect(currentTurnNumber(FXID.n4)).toBe(0);
   });
 });
 
