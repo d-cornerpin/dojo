@@ -882,6 +882,12 @@ export function formatResolveError(
     case 'too_short':
       return `Error: ${kind} id '${input}' is too short. Provide at least 4 characters of the id (8-char prefixes from work_open/work_update listings work fine).`;
     case 'not_found': {
+      // An `ask:` / `piece:ask:` id from the OPEN WORK block is a request, or a piece of one,
+      // not a task: no task verb takes it, and none closes it. Say what it is, not "not found".
+      if (kind === 'task' && /^(piece:)?ask:/.test(input.trim())) {
+        const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
+        return `Error: '${input}' is ${what} from the owner, not a task, so no task call takes it. It ends when you answer the owner; reply with your normal message.`;
+      }
       // 2026-07-17 (the PM 189-call spin): a title-shaped input deserves an
       // explicit title-vs-id correction, or the floor model retries the same
       // title forever. Title resolution is also scoped to the CALLER's own
