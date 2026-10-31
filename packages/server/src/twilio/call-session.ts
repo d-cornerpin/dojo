@@ -508,7 +508,7 @@ export class CallSession {
     try {
       // P5: conversation identity = the caller's number; call sid = external id.
       const conversationId = resolveOrCreateConversation(primaryId, {
-        channel: 'phone', provider: 'twilio', counterpartyId: this.fromNumber ?? null, threadRoot: null,
+        channel: 'phone', provider: 'twilio', counterpartyId: otherPartyNumber ?? null, threadRoot: null,
       });
       // v3.0.9 — structured routing metadata. Stamped synchronously before
       // handleMessage runs below so the turn reads it. A live call is already
@@ -518,10 +518,10 @@ export class CallSession {
         channel: 'phone' as const,
         accountKind: 'agent' as const,
         authorized: true,
-        sender: this.fromNumber,
+        sender: otherPartyNumber,
         phoneCallSid: this.callSid,
-        phoneFromNumber: this.fromNumber,
-        recipientAddress: this.fromNumber,
+        phoneFromNumber: otherPartyNumber,
+        recipientAddress: otherPartyNumber,
       };
       // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
       // the meta this leg already holds — never re-derived. recordInboundMeta below
