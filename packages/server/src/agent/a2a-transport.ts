@@ -20,7 +20,7 @@ import { liveAgentsNamed, liveAgentNamesNear } from './agent-name-lookup.js';
 import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
 import { patienceFloorFor } from '../tracker/assignee-patience.js';
-import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, OWNER_ALERT_HEADS_UP_PREFIX, OWNER_ALERT_DOJO_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1503,8 +1503,20 @@ function relayDoorDetail(r: ToolOutcome): string {
  * Teams / email / SMS, with the C18 group-chat and re-validation guards and the B-2
  * multi-account reply-from, because each of those is an incident with a name.)
  */
+/** What a join relay actually did, so the agent can be told the truth about it (C22). */
+interface JoinRelayOutcome {
+  /** The exact text sent (with its Dojo label when the platform spoke). */
+  text: string;
+  /** Where it really landed: a routed channel, or the dashboard chat. */
+  landedOn: string;
+  /** The channel the asker used, when that is not where it landed (the send did not go). */
+  fellBackFrom: string | null;
+  /** Why the asker's channel was not used, when known. */
+  why: string | null;
+}
+
 async function deliverJoinResultToOwner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' },
+  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform'; onOutcome?: (o: JoinRelayOutcome) => void },
 ): Promise<string | null> {
   // PHASE-2 T5 — THE T4 COLLISION, RESOLVED BY ROUTING RATHER THAN DUPLICATING.
   // T4 recorded this relay with its own `recordDelivery` call. T5 puts a recorder on the
@@ -1526,7 +1538,7 @@ async function deliverJoinResultToOwner(
 }
 
 async function deliverJoinResultToOwnerInner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' },
+  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform'; onOutcome?: (o: JoinRelayOutcome) => void },
 ): Promise<string | null> {
   // PHASE-4 T4 (OR2). Two different things travel through this one door and they are not the
   // same kind of statement, so they no longer wear the same face:
@@ -1540,7 +1552,7 @@ async function deliverJoinResultToOwnerInner(
   //     a `role='system'` row instead of an assistant bubble.
   const platformVoice = opts?.voice === 'platform';
   const deliveryBody = platformVoice
-    ? `${OWNER_ALERT_HEADS_UP_PREFIX} ${deliveryText}`
+    ? `${OWNER_ALERT_DOJO_PREFIX} ${deliveryText}`   // OR-ENGINE-LABELLED: plainly the Dojo speaking, never the agent
     : deliveryText;
   const ask = askRowForJoin(join);
   let meta: {
@@ -1645,6 +1657,13 @@ async function deliverJoinResultToOwnerInner(
     });
     channel = 'dashboard'; recipientId = 'owner';
   }
+  try {
+    opts?.onOutcome?.({
+      text: deliveryBody, landedOn: channel,
+      fellBackFrom: !delivered && meta.channel ? meta.channel : null,
+      why: relayRefusal ? relayRefusal.why : null,
+    });
+  } catch { /* the agent's copy is best-effort */ }
   // ── SWEEP CORE-2 item 5 — THE REFUSAL SURFACES LOUDLY, TO BOTH AUDIENCES ──
   //
   // The answer has already gone to the dashboard above — the owner never loses it, which is
@@ -1770,23 +1789,32 @@ const JOIN_STEER_LABEL = '[Engine]';
  * seen" shape T3 deleted. What CAN reach the model is the events lane, on its next turn, and it
  * carries the 2026-07-30 ruling's nudge verbatim: if the user should know more, tell them.
  */
-function tellAgentTheJoinFailed(join: JoinState, what: string): void {
+function tellAgentTheJoinFailed(join: JoinState, what: string, sent: JoinRelayOutcome | null): void {
   const askerWords = compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner';
+  // C22: say what REALLY happened. Never claim the asker was told when the text only reached the dashboard.
+  const outcome = sent === null
+    ? `The Dojo tried to tell ${askerWords}, but nothing is recorded as sent, so ${askerWords} may not know.`
+    : sent.fellBackFrom
+      ? `The Dojo (not you) tried to tell ${askerWords} on ${sent.fellBackFrom}, but that did not go${sent.why ? ` (${sent.why})` : ''}; `
+        + `the text is in the dashboard chat only, so ${askerWords} may not have seen it. It read: "${sent.text}"`
+      : sent.landedOn === 'dashboard'
+        ? `The Dojo (not you) posted this in the dashboard chat for ${askerWords}: "${sent.text}"`
+        : `The Dojo (not you) sent ${askerWords} this text on ${sent.landedOn}: "${sent.text}"`;
   try {
     insertEngineEventIfAbsent({
       work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
       id: uuidv4(),
       agentId: join.agentId,
       content:
-        `${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told `
-        + `${askerWords} that plainly, in its own voice, so they are not left waiting. If ${askerWords} should `
+        `${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} ${outcome} `
+        + `If ${askerWords} should `
         + `know more — what you were after, whether it is worth another try — WRITE it to them in `
         + `your own words on your next turn, as your written reply if that turn is talking to them, otherwise in an explicit send that names them.`,
       sourceAgentId: null,
       originIntent: 'fanout_join',
       turnNumber: null,
     });
-  } catch { /* the person has been told; the agent's copy is best-effort */ }
+  } catch { /* the agent's copy is best-effort */ }
 }
 
 /**
@@ -2055,8 +2083,9 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;
-    await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
-    tellAgentTheJoinFailed(join, `${failReason}.`);
+    let sent: JoinRelayOutcome | null = null;
+    await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed', voice: 'platform', onOutcome: (o) => { sent = o; } });
+    tellAgentTheJoinFailed(join, `${failReason}.`, sent);
     return;
   }
   if (join.total === 1) {
@@ -2583,8 +2612,9 @@ async function resolveOpenJoin(
     expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
-  await deliverJoinResultToOwner(state, landedContentNotice(state, snapshot, false, opts.askedNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
-  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.');
+  let sent: JoinRelayOutcome | null = null;
+  await deliverJoinResultToOwner(state, landedContentNotice(state, snapshot, false, opts.askedNameHint), { tool: 'a2a-join-failed', voice: 'platform', onOutcome: (o) => { sent = o; } });
+  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.', sent);
   return 'failed-closed';
 }
 
@@ -2678,11 +2708,12 @@ async function resolveJoinUnderClosedParent(
   // changed no test, and that was measured rather than assumed. Its transition-level twin IS
   // bite-proven (`fanout-join.test.ts`, the double-settle clause).
   if (claimed === 0) return 'already-settled';
+  let sent: JoinRelayOutcome | null = null;
   await deliverJoinResultToOwner(
     state, landedContentNotice(state, snapshot, true, opts.askedNameHint),
-    { tool: 'a2a-join-failed', voice: 'platform' },
+    { tool: 'a2a-join-failed', voice: 'platform', onOutcome: (o) => { sent = o; } },
   );
-  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.');
+  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', sent);
   return 'noticed';
 }
 

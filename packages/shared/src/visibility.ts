@@ -284,8 +284,12 @@ export function parseWorkingNote(content: string): WorkingNoteMatch | null {
 // engine-owned pauses. It stays wordy-mode-only until that is fixed and the copy is split.
 export const OWNER_ALERT_HEADS_UP_PREFIX = 'Heads up:';
 export const OWNER_ALERT_PROJECT_ATTENTION_PREFIX = '[tracker:project_needs_attention]';
+/** OR-ENGINE-LABELLED (owner, 2026-10-31): an engine message that stays because the agent cannot act starts with this,
+ *  so it is plainly the Dojo speaking and never the agent's voice. */
+export const OWNER_ALERT_DOJO_PREFIX = 'Dojo:';
 export const OWNER_ALERT_SYSTEM_PREFIXES: readonly string[] = [
   OWNER_ALERT_HEADS_UP_PREFIX,
+  OWNER_ALERT_DOJO_PREFIX,
   OWNER_ALERT_PROJECT_ATTENTION_PREFIX,
 ];
 
