@@ -5,6 +5,7 @@ import { primaryReady } from '../agent/primary-ready.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, resolveTaskAnswerPointer } from './delivery-evidence.js';
 import { measuredItemsLeft } from '../work/measure-close-gate.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
+import { getBoxTimeZone } from '../scheduler/engine.js';
 import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
@@ -1142,6 +1143,15 @@ function recentWorkEventLines(taskId: string, limit = 20): string {
   }).join('\n');
 }
 
+/** Epoch milliseconds as `YYYY-MM-DD HH:MM:SS` in the box (owner's) timezone. */
+function boxWallTime(ms: number): string {
+  const p = new Intl.DateTimeFormat('en-CA', {
+    timeZone: getBoxTimeZone(), hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(ms)).reduce<Record<string, string>>((a, x) => { a[x.type] = x.value; return a; }, {});
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+
 /**
  * A sample of the assignee's OWN recent activity. CHOICE, DOCUMENTED (T79d's brief asks for
  * this explicitly): the cheapest honest source is the assignee's own recent `messages` rows,
@@ -1157,17 +1167,17 @@ function recentWorkEventLines(taskId: string, limit = 20): string {
  * pause-validation report's "agent's last user-facing message" — widened from 1 row to a
  * small sample, never invented fresh.
  */
-function recentAssigneeActivityLines(assignedTo: string | null, limit = 10): string {
+export function recentAssigneeActivityLines(assignedTo: string | null, limit = 10): string {
   if (!assignedTo) return '  (task is unassigned)';
   const rows = getDb().prepare(
     `SELECT role, content, created_at FROM messages
       WHERE agent_id = ? AND role IN ('assistant', 'tool')
       ORDER BY created_at DESC, rowid DESC LIMIT ?`,
-  ).all(assignedTo, limit) as Array<{ role: string; content: string; created_at: string }>;
+  ).all(assignedTo, limit) as Array<{ role: string; content: string; created_at: number }>;
   if (rows.length === 0) return '  (no recent activity recorded for the assignee)';
   return rows.map((r) => {
     const snippet = (r.content.length > 200 ? r.content.slice(0, 200) + '…' : r.content).replace(/\s+/g, ' ');
-    return `  [${r.created_at}] [${r.role}] ${snippet}`;
+    return `  [${boxWallTime(r.created_at)}] [${r.role}] ${snippet}`;
   }).join('\n');
 }
 
