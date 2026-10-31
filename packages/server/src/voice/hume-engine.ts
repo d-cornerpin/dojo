@@ -461,7 +461,9 @@ export class HumeStreamSession {
     //
     // Hard cap at 10s so a stuck server can't hang the burst forever.
     await new Promise<void>((resolve) => {
-      const hardCap = setTimeout(resolve, 10_000);
+      // The cap clears the tick too — a stuck socket must not leave the 50ms
+      // interval running for the rest of the process life. Each timer is only used
+      // inside a callback that runs later, so the mutual reference is safe.
       const tick = setInterval(() => {
         if (this.sawSocketClose) {
           clearInterval(tick);
@@ -469,6 +471,10 @@ export class HumeStreamSession {
           resolve();
         }
       }, 50);
+      const hardCap = setTimeout(() => {
+        clearInterval(tick);
+        resolve();
+      }, 10_000);
     });
 
     try { this.socket.close(); } catch { /* ignore */ }
