@@ -755,6 +755,7 @@ export const Tracker = () => {
   // fetch answer last and redraw the board for a project that was left. Each
   // run stamps itself and bails once a newer run has started.
   const latestLoad = useRef(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     const mine = ++latestLoad.current;
@@ -771,7 +772,8 @@ export const Tracker = () => {
     const filter = selectedProjectId !== 'all' ? { projectId: selectedProjectId } : undefined;
     const tasksResult = await api.getTasks(filter);
     if (mine !== latestLoad.current) return;
-    if (tasksResult.ok) setTasks(tasksResult.data);
+    if (tasksResult.ok) { setTasks(tasksResult.data); setLoadError(null); }
+    else { setTasks([]); setLoadError(tasksResult.error); }
 
     setLoading(false);
   }, [selectedProjectId]);
@@ -880,6 +882,7 @@ export const Tracker = () => {
           <button type="button" className="btn btn--primary" onClick={() => setShowCreateProject(true)}>+ Create Project</button>
         </div>
       </header>
+      {loadError && <div className="note--warn">Could not load the tasks: {loadError}</div>}
 
       {/* Phase B.1: override request queue. Visible whenever there are
           pending requests; this is actionable work the user should see. */}
