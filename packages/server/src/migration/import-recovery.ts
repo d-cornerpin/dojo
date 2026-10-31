@@ -23,3 +23,8 @@ export async function restartAfterFailedImport(opts: {
     logger.error('Failed to restart services after failed import', { error: restartErr instanceof Error ? restartErr.message : String(restartErr) });
   }
 }
+
+/** The owner-facing sentence when the old data could not be put back. The path is exact. */
+export function backupStuckWords(backupPath: string): string {
+  return `The import did not finish and your previous data could not be put back automatically, so Dojo was not restarted. Your data is safe at ${backupPath}. Move it back to .dojo, then restart Dojo from the menu bar.`;
+}

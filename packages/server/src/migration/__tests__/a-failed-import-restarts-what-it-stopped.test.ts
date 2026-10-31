@@ -145,4 +145,23 @@ describe('a failed import restarts what it stopped', () => {
     expect(restart).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(path.join(LIVE_DIR, 'live.txt'))).toBe(false); // the imported tree stays
   });
+
+  it('the put-back fails: nothing is restarted, the backup stays put, the error names its exact path', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    const real = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    const restart = vi.fn(async () => {});
+    let caught: Error | null = null;
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, restart); } catch (e) { caught = e as Error; } finally { spy.mockRestore(); }
+    expect(caught?.message).toContain('migrate boom');
+    const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
+    expect(backup).toBeTruthy();
+    expect(caught?.message).toContain(path.join(PARENT, backup));
+    expect(fs.readFileSync(path.join(PARENT, backup, 'live.txt'), 'utf-8')).toBe('live');
+    expect(restart).not.toHaveBeenCalled();
+  });
 });

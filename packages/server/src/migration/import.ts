@@ -14,7 +14,8 @@ import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
-import { restartAfterFailedImport } from './import-recovery.js';
+import { restartAfterFailedImport, backupStuckWords } from './import-recovery.js';
+import { putBackOwnBackup } from './import-safety.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -376,16 +377,16 @@ export async function performImport(
   } catch (err) {
     // Close the handle BEFORE the tree under it is swapped; the restart below re-opens it.
     if (servicesStopped) { try { closeDb(); } catch { /* already closed */ } }
+    let stuck: string | null = null; // set when the owner's data could not be put back: do NOT restart
     if (ownBackup && fs.existsSync(ownBackup)) {
-      try {
-        if (fs.existsSync(DOJO_DIR)) fs.rmSync(DOJO_DIR, { recursive: true, force: true });
-        fs.renameSync(ownBackup, DOJO_DIR);
-        logger.info('Restored backup after failed import');
-      } catch (restoreErr) { logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }); }
+      const back = putBackOwnBackup(DOJO_DIR, ownBackup);
+      if (back.ok) logger.info('Restored backup after failed import');
+      else { logger.error('Failed to restore backup', { error: back.reason }); stuck = back.backup; }
     }
-    await restartAfterFailedImport({ servicesStopped, restartServices });
+    if (stuck === null) await restartAfterFailedImport({ servicesStopped, restartServices });
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (stuck !== null) throw new Error(`${err instanceof Error ? err.message : String(err)} ${backupStuckWords(stuck)}`, { cause: err });
     throw err;
   }
 }
