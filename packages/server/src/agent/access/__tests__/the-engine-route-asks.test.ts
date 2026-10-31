@@ -15,7 +15,7 @@
 //     57b52025-… (HarnessBot, ronin)  auto-route imessage 152
 //     57b52025-…                       auto-route email      7
 //     57b52025-…                       engine-ack imessage    3
-//     zargo      (the primary)         auto-route  —          0
+//     FXID.n4      (the primary)         auto-route  —          0
 //
 // Every engine-routed human delivery this box has ever made was sent by an agent
 // holding NO channel grant, and the primary has made none. So this is a REAL
@@ -77,6 +77,7 @@ import { forgetAccessGrants, mayUseChannel, mayReachOthersOn } from '../read.js'
 import { deriveLegacyGrants } from '../derive.js';
 import { ACCESS_CHANNELS } from '@dojo/shared';
 import type { AccessGrants, Channel } from '@dojo/shared';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const db = (): Database.Database => mockDb.current!;
 
