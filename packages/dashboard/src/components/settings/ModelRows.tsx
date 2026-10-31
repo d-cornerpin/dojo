@@ -940,9 +940,13 @@ export const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSav
   const [draft, setDraft] = useState<Record<string, ParamFieldDraft>>(
     spec ? specToDraft(spec) : {},
   );
+  // Keyed on the content: a reload brings the same saved spec back as a new object,
+  // and that must not throw away what is half-typed.
+  const specKey = JSON.stringify(spec ?? null);
   useEffect(() => {
     setDraft(spec ? specToDraft(spec) : {});
-  }, [spec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [specKey]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -1130,9 +1134,11 @@ export const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: 
   const [draft, setDraft] = useState<VoiceDraft[]>(
     catalog ? catalog.map((v) => ({ id: v.id, description: v.description, gender: v.gender })) : [],
   );
+  const catalogKey = JSON.stringify(catalog ?? null);
   useEffect(() => {
     setDraft(catalog ? catalog.map((v) => ({ id: v.id, description: v.description, gender: v.gender })) : []);
-  }, [catalog]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogKey]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
