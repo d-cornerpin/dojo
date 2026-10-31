@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let home = '';
 const makeBackups = (...versions: string[]): void => {
@@ -91,3 +92,42 @@ describe('t286: a clean-up never deletes the copy a rollback would restore', () 
     expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.3.1'))).toBe(false);
   });
 });
+
+// Review FIX 5: ONE rule picks the copy a rollback restores. The clean-up asks rollback.sh itself
+// (its --print-target mode), so stable releases outrank pre-releases here exactly as they do there.
+describe('t286: the protected copy is the one rollback.sh itself would pick', () => {
+  const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../deploy/scripts/rollback.sh');
+  const installScript = (): void => {
+    fs.mkdirSync(path.join(home, '.dojo', 'scripts'), { recursive: true });
+    fs.copyFileSync(SCRIPT, path.join(home, '.dojo', 'scripts', 'rollback.sh'));
+  };
+  const clean = async (keep: number): Promise<void> => {
+    const { updateRouter } = await import('../../gateway/routes/update.js');
+    await updateRouter.request('/backups/cleanup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keep }) });
+    await settle();
+  };
+  it('a stable copy outranks a newer pre-release: with keep=1 the stable one survives', async () => {
+    installScript();
+    makeBackups('3.1.16', '3.1.17-preflight.20');
+    await clean(1);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.16'))).toBe(true);
+  });
+  it('the script is run in its read-only mode: no lock, no services, no moves', async () => {
+    installScript();
+    makeBackups('3.1.16', '3.1.17-preflight.20');
+    await clean(1);
+    expect(fs.existsSync(path.join(home, '.dojo', 'rollback.lock'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform'))).toBe(false);
+  });
+  it('an installed rollback.sh that predates --print-target is never run (it would roll back): both candidates are kept', async () => {
+    fs.mkdirSync(path.join(home, '.dojo', 'scripts'), { recursive: true });
+    const marker = path.join(home, 'old-script-ran');
+    fs.writeFileSync(path.join(home, '.dojo', 'scripts', 'rollback.sh'), `#!/bin/bash\ntouch "${marker}"\n`, { mode: 0o755 });
+    makeBackups('3.1.16', '3.1.17-preflight.20', '3.1.15');
+    await clean(1);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.16'))).toBe(true);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.1.17-preflight.20'))).toBe(true);
+  });
+});
+

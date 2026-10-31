@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -164,26 +164,42 @@ function sortNewestFirst(list: BackupInfo[]): BackupInfo[] {
 }
 
 /**
- * THE COPY A ROLLBACK WOULD RESTORE, chosen the way `deploy/scripts/rollback.sh` chooses it: the
- * backup the update episode recorded (`backupDir` in the update marker) while it is still a whole
- * build, otherwise the newest `platform.backup-*` by parsed version. A cleanup never deletes it,
- * whatever `keep` says (t286).
+ * THE COPY(IES) A ROLLBACK WOULD RESTORE. There is ONE selection rule and it lives in
+ * `~/.dojo/scripts/rollback.sh`: this asks the script itself (`--print-target`, read-only: no lock,
+ * no services, no moves), so stable releases outrank pre-releases here exactly as they do there. A
+ * cleanup never deletes it, whatever `keep` says (t286). An installed script that predates that
+ * mode is NEVER run (it would roll back); then both plausible picks are kept, which errs toward
+ * keeping a copy.
  */
-function rollbackTargetPath(): string | null {
+function rollbackTargetPaths(): string[] {
+  const script = path.join(DOJO_DIR, 'scripts', 'rollback.sh');
+  try {
+    if (fs.readFileSync(script, 'utf-8').includes('--print-target')) {
+      const out = execFileSync('/bin/bash', [script, '--print-target'], {
+        env: { ...process.env, HOME: homeDir() }, encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return out ? [out] : [];
+    }
+  } catch { /* script missing or failed: fall through to the conservative pair */ }
+  const keepers: string[] = [];
   try {
     const recorded = readMarker()?.backupDir;
     if (recorded && path.dirname(recorded) === DOJO_DIR && path.basename(recorded).startsWith(BACKUP_PREFIX)
-      && fs.existsSync(path.join(recorded, 'package.json'))) return recorded;
-  } catch { /* an unreadable marker falls through to the name scan, as rollback.sh does */ }
-  return sortNewestFirst(listPlatformBackups())[0]?.path ?? null;
+      && fs.existsSync(path.join(recorded, 'package.json'))) keepers.push(recorded);
+  } catch { /* an unreadable marker is ignored */ }
+  const sorted = sortNewestFirst(listPlatformBackups());
+  if (sorted[0]) keepers.push(sorted[0].path);
+  const stable = sorted.find(b => !b.version.includes('-'));
+  if (stable) keepers.push(stable.path);
+  return keepers;
 }
 
 function backupsToPrune(keep: number): BackupInfo[] {
-  const target = rollbackTargetPath();
+  const targets = new Set(rollbackTargetPaths());
   return [
     ...sortNewestFirst(listPlatformBackups()).slice(keep),
     ...sortNewestFirst(listFailedBuilds()).slice(keep),
-  ].filter(b => b.path !== target);
+  ].filter(b => !targets.has(b.path));
 }
 
 // Async pruning: shell out to `rm -rf` (much faster than fs.rmSync since

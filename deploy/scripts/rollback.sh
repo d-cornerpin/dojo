@@ -17,6 +17,11 @@
 set -uo pipefail
 HEAL=0
 [ "${1:-}" = "--heal" ] && HEAL=1
+# --print-target: change nothing, take no lock, print the path of the backup a rollback would
+# restore right now, and exit. This is THE one selection rule: the server's backup clean-up asks
+# this mode so it never deletes the copy this script would restore.
+PRINT=0
+[ "${1:-}" = "--print-target" ] && PRINT=1
 
 DOJO_DIR="$HOME/.dojo"
 PLATFORM_DIR="$DOJO_DIR/platform"
@@ -33,7 +38,7 @@ BACKUP_PREFIX="platform.backup-"
 # installer takes it too), and it holds its holder's pid: a lock whose holder
 # is dead (a SIGKILL skips the trap) is broken, not obeyed for ever. A lock
 # with no pid is one being taken right now, or a pre-v3.4 leftover once old.
-mkdir -p "$DOJO_DIR" 2>/dev/null || true
+[ "$PRINT" = 1 ] || mkdir -p "$DOJO_DIR" 2>/dev/null || true
 LOCK_DIR="$DOJO_DIR/rollback.lock"
 take_lock() {
     if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
@@ -46,23 +51,25 @@ take_lock() {
     rm -rf "$LOCK_DIR"
     mkdir "$LOCK_DIR" 2>/dev/null && echo $$ > "$LOCK_DIR/pid"
 }
-if ! take_lock; then
-    echo "ERROR: another install or rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
-    exit 1
+if [ "$PRINT" != 1 ]; then
+  if ! take_lock; then
+      echo "ERROR: another install or rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
+      exit 1
+  fi
+  # The EXIT trap also runs on TERM, INT and HUP (a person, a shutdown or a hang-up): if the services
+  # were stopped and not yet started again, it starts them, so a signal never leaves Dojo and the
+  # watchdog both unloaded. SIGKILL cannot be trapped; that gap is covered by `--heal`, which the
+  # watchdog runs at the next login (it clears the dead lock and restores), not by this script.
+  services_down=0
+  on_exit() {
+      if [ "${services_down:-0}" = 1 ]; then reload_services; fi
+      [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
+  }
+  trap on_exit EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
 fi
-# The EXIT trap also runs on TERM, INT and HUP (a person, a shutdown or a hang-up): if the services
-# were stopped and not yet started again, it starts them, so a signal never leaves Dojo and the
-# watchdog both unloaded. SIGKILL cannot be trapped; that gap is covered by `--heal`, which the
-# watchdog runs at the next login (it clears the dead lock and restores), not by this script.
-services_down=0
-on_exit() {
-    if [ "${services_down:-0}" = 1 ]; then reload_services; fi
-    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
-}
-trap on_exit EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
-trap 'exit 129' HUP
 
 # A field of the update-state marker, read with sed (node may be what is broken).
 marker_field() {
@@ -74,7 +81,7 @@ tree_version() {
     sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/package.json" | head -1
 }
 
-if [ "$HEAL" = 1 ]; then
+if [ "$HEAL" = 1 ] && [ "$PRINT" != 1 ]; then
     if [ -f "$PLATFORM_DIR/package.json" ]; then
         echo "Nothing to repair: the platform folder is in place."
         exit 0
@@ -180,6 +187,12 @@ if [ -z "$newest_backup" ]; then
         fi
     done
     selection_reason="highest-ranked backup on disk (stable before pre-release)"
+fi
+
+# --print-target: the answer is the path, or nothing at all when there is no backup.
+if [ "$PRINT" = 1 ]; then
+    printf '%s\n' "$newest_backup"
+    exit 0
 fi
 
 if [ -z "$newest_backup" ]; then
