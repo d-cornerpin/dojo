@@ -33,7 +33,7 @@ import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
-import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
+import { readUserProfile, readUserProfileForEditor, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
 import { settleAskOnJobEnded } from '../../work/ask-settlement.js';
@@ -2546,7 +2546,12 @@ configRouter.get('/identity/:file', (c) => {
   // USER.md goes through its one source of truth (ruling #11); the route neither computes the
   // path nor composes the default any more.
   if (entry.filename === 'USER.md') {
-    return c.json({ ok: true, data: { content: readUserProfile(), mailboxes: ownerMailboxes() } });
+    try {
+      return c.json({ ok: true, data: { content: readUserProfileForEditor(), mailboxes: ownerMailboxes() } });
+    } catch (err) {
+      noteRouteFailure(c, logger, err);
+      return c.json({ ok: false, error: 'Your profile could not be read. Try again.' }, 500);   // never the shipped default
+    }
   }
 
   const filePath = path.join(PROMPTS_DIR, entry.filename);
@@ -2575,9 +2580,15 @@ configRouter.put('/identity/:file', async (c) => {
 
   // Saved whole: it must be built on the text the page read (`base`), and a blank is never silently saved over a real one.
   {
-    const current = entry.filename === 'USER.md'
-      ? readUserProfile()
-      : (() => { try { return fs.readFileSync(path.join(PROMPTS_DIR, entry.filename), 'utf-8'); } catch { return entry.defaultContent; } })();
+    let current: string;
+    try {
+      current = entry.filename === 'USER.md'
+        ? readUserProfileForEditor()
+        : (() => { const f = path.join(PROMPTS_DIR, entry.filename); return fs.existsSync(f) ? fs.readFileSync(f, 'utf-8') : entry.defaultContent; })();
+    } catch (err) {
+      noteRouteFailure(c, logger, err);
+      return c.json({ ok: false, error: 'The saved document could not be read, so nothing was changed. Try again.' }, 500);
+    }
     const refusal = refuseStaleWholeDocument('document', body.content, body.base, current);
     if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }

@@ -7,6 +7,7 @@ vi.mock('../../../prompt/user-profile.js', async () => {
   return {
     ...actual,
     readUserProfile: () => store.text,
+    readUserProfileForEditor: () => store.text,
     writeUserProfile: (t: string) => { store.text = t; store.writes++; },
   };
 });

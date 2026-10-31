@@ -94,6 +94,17 @@ export function defaultUserProfile(): string {
  * The seeding write is best-effort — a read-only home degrades to the in-memory default
  * rather than failing an assembly.
  */
+/**
+ * The profile as the DASHBOARD editor must see it: a file that exists but cannot be read THROWS, so the card
+ * shows its error and Retry instead of the shipped default - which a Save would then write over the real file.
+ * (Prompt assembly keeps `readUserProfile`'s fallback: a turn must still run.)
+ */
+export function readUserProfileForEditor(): string {
+  const p = userProfilePath();
+  if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+  return readUserProfile();
+}
+
 export function readUserProfile(): string {
   const p = userProfilePath();
 
