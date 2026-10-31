@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -534,14 +534,17 @@ export const Costs = () => {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(true);
   const { subscribe } = useWebSocket();
+  const latestLoad = useRef(0);
 
   const loadData = useCallback(async () => {
+    const mine = ++latestLoad.current;
     try {
       const [summaryRes, budgetRes, agentsRes] = await Promise.all([
         api.getCostSummary(period),
         api.getBudgets(),
         api.getAgents(),
       ]);
+      if (mine !== latestLoad.current) return;
       if (summaryRes.ok) setSummary(summaryRes.data as CostSummary);
       if (budgetRes.ok) {
         const bd = budgetRes.data as Record<string, unknown>;
@@ -567,7 +570,7 @@ export const Costs = () => {
     } catch (err) {
       console.error('Costs page load failed:', err);
     }
-    setLoading(false);
+    if (mine === latestLoad.current) setLoading(false);
   }, [period]);
 
   useEffect(() => {
