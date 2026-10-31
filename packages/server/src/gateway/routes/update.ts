@@ -806,7 +806,10 @@ async function downloadAndInstall(o: {
     const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
     if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
 
-    await execAsync(`unzip -o "${zipPath}" -d "${work}"`, { timeout: 60000 });
+    // `-q`: `unzip -o` prints one line per file, and `execAsync` keeps everything a command
+    // prints in a buffer of about 1 MiB — a release tree long enough overflows it and fails an
+    // unpack that went fine. Quiet, there is nothing per file to hold.
+    await execAsync(`unzip -q -o "${zipPath}" -d "${work}"`, { timeout: 60000 });
     // The zip is dojo-platform/{platform,scripts,...}; only platform/ is the installed tree.
     const staged = path.join(work, 'dojo-platform', 'platform');
     if (!fs.existsSync(path.join(staged, 'package.json'))) {
