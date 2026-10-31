@@ -5,16 +5,19 @@
 // A2A intent must answer the same way for the same input, whatever the input says. This is a census, not a sentence:
 // it reads the files.
 //
-//   1. TRANSITIVE: walk the import graph (value imports, static and dynamic; `import type` is erased and not an edge)
-//      from every gate file. No path may reach `agent/decide.ts` or `agent/decision-ask.ts`. The engine files the
-//      gates import for other reasons (spawner, runtime, the iMessage bridge, the A2A transport) ask the decision
-//      model only through the leaf `agent/decision-hooks.ts`, which imports nothing, so no path runs through them.
+//   1. IMPORTS: walk the import graph (value imports, static and dynamic; `import type` is erased and not an edge)
+//      from every gate file. No import path reaches `agent/decide.ts` or `agent/decision-ask.ts`. That is a claim about
+//      IMPORTS only: the engine files ask the decision model at run time through the registry `agent/decision-hooks.ts`
+//      (which imports nothing), and an import walk cannot see a registry call. Section 5 closes that gap.
 //      Six edges are declared, not hidden (EXEMPT_EDGES, each argued): `decision-window.ts` imports the measured
 //      request-size CONSTANT from `decide.ts` (a number, never a call); the two doors into the B4 summary check and the
 //      three into the reply-claim floors' module (each consults the model about a summary or a reply, neither of which
 //      is a gate's input). A new edge must be argued there.
 //   2. DIRECT: no gate file imports any module that asks (the judgment modules, the shadow log, the policy, the hooks).
 //   3. THE LEAF: `decision-hooks.ts` imports nothing of the engine; `decision-ask.ts` is imported only by the server's boot.
+//   5. THE REGISTRY: the files that import `decision-hooks.ts` (the only run-time door to the model) are pinned by exact
+//      list, so a new importer is a visible edit here; no gate file is one, and the modules a gate reaches that import
+//      one are pinned too (DOORS, argued): a new door fails until it is argued.
 //   4. BEHAVIOUR: with a decision model installed and every judged question proven, the pure gates answer exactly as
 //      they always did and no `/v1/systemone` request is made.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -151,6 +154,65 @@ describe('3. the leaf stays a leaf and the real seam is installed only by the bo
   });
   it('`decision-ask.ts` is imported by the server\'s boot', () => {
     expect(importsOf(path.join(SRC, 'index.ts')).map(rel)).toContain('agent/decision-ask.ts');
+  });
+});
+
+/** Every module that imports the registry `decision-hooks.ts` (the run-time door to the decision model), pinned. */
+const HOOK_IMPORTERS = [
+  'agent/decision-ask.ts', 'agent/provider-error-judgment.ts', 'agent/v2/classifiers/inbound-routing.ts', 'memory/shape-judgment.ts',
+];
+/**
+ * Modules a gate reaches by import that themselves import a hook importer. Each is imported by the gate's neighbours for
+ * delivery, writing or recovery, not for judging a gate's input: the A2A transport and the iMessage bridge deliver
+ * messages (their routing questions only choose a route), the assemble steps build the next prompt, recovery names an
+ * error's class for the retry cascade, and the memory writers shape notes and summaries. None decides a gate.
+ */
+const DOORS = [
+  'agent/a2a-transport.ts > agent/v2/classifiers/inbound-routing.ts',
+  'agent/v2/recovery.ts > agent/provider-error-judgment.ts',
+  'agent/v2/steps/assemble/delegation-and-attachments.ts > agent/v2/classifiers/inbound-routing.ts',
+  'agent/v2/steps/assemble/index.ts > agent/v2/classifiers/inbound-routing.ts',
+  'agent/v2/steps/assemble/multistep-detection.ts > agent/v2/classifiers/inbound-routing.ts',
+  'memory/summary-rebuild.ts > memory/shape-judgment.ts',
+  'services/imessage-bridge.ts > agent/v2/classifiers/inbound-routing.ts',
+  'vault/maintenance.ts > memory/shape-judgment.ts',
+  'vault/tools.ts > memory/shape-judgment.ts',
+];
+const productionFiles = (dir = SRC): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? (e.name === '__tests__' || e.name === 'node_modules' ? [] : productionFiles(path.join(dir, e.name)))
+    : e.name.endsWith('.ts') && !e.name.endsWith('.d.ts') ? [path.join(dir, e.name)] : []);
+/** Importers of `decision-hooks.ts` and the doors (edges into one) reachable from the gate files, walked from `roots`. */
+function registryReach(roots: string[], importers: string[]): { doors: string[] } {
+  const seen = new Set<string>();
+  const doors = new Set<string>();
+  const queue = roots.map((r) => path.join(SRC, r));
+  while (queue.length) {
+    const cur = queue.shift()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const r of importsOf(cur)) importers.includes(rel(r)) ? doors.add(`${rel(cur)} > ${rel(r)}`) : queue.push(r);
+  }
+  return { doors: [...doors].sort() };
+}
+const importersOfHooks = (): string[] => productionFiles()
+  .filter((f) => importsOf(f).map(rel).includes('agent/decision-hooks.ts')).map(rel).sort();
+
+describe('5. the registry: the one run-time door to the decision model', () => {
+  it('the files that import `decision-hooks.ts` are exactly the pinned list (a new asker is a visible edit here)', () => {
+    expect(importersOfHooks()).toEqual([...HOOK_IMPORTERS].sort());
+  });
+  it('no gate file imports the registry or a pinned importer, directly', () => {
+    for (const files of Object.values(GATES)) for (const f of files) {
+      expect(importsOf(path.join(SRC, f)).map(rel).filter((r) => r === 'agent/decision-hooks.ts' || HOOK_IMPORTERS.includes(r)), f).toEqual([]);
+    }
+  });
+  it('the modules a gate reaches that import a pinned importer are exactly the argued DOORS', () => {
+    expect(registryReach(Object.values(GATES).flat(), HOOK_IMPORTERS).doors).toEqual([...DOORS].sort());
+  });
+  it('CONTROL: the registry walk finds real doors (it is not blind)', () => {
+    // The real doors are found from a real root, and the registry import is found when an importer is the root.
+    expect(registryReach(['agent/a2a-transport.ts'], HOOK_IMPORTERS).doors).toContain('agent/a2a-transport.ts > agent/v2/classifiers/inbound-routing.ts');
+    expect(registryReach(['agent/v2/classifiers/inbound-routing.ts'], ['agent/decision-hooks.ts']).doors).toContain('agent/v2/classifiers/inbound-routing.ts > agent/decision-hooks.ts');
   });
 });
 

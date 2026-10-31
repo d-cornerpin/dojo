@@ -161,12 +161,15 @@ export async function decide(
       cuts.patience ??= AbortSignal.timeout(opts.patienceMs);
       return sent(provider, request, stateChars, names, questions, opts, cuts);
     }, { background: opts.background === true, stale: opts.background ? opts.staleWhen : undefined });
-    if (turn.left) return fail(cutBy(null, cuts) ?? (opts.background && opts.staleWhen?.() ? 'superseded' : 'patience'), opts, 'left the queue unsent');
+    if (turn.left) return fail(cutBy(null, cuts) ?? (opts.background && staleNow(opts.staleWhen) ? 'superseded' : 'patience'), opts, 'left the queue unsent');
     return turn.value;
   } finally {
     slot?.release();
   }
 }
+
+/** A caller's signal; one that throws is not a reason to drop. */
+function staleNow(f?: () => boolean): boolean { try { return f?.() === true; } catch { return false; } }
 
 async function sent(
   provider: NonNullable<ReturnType<typeof getDecisionProvider>>, request: string, stateChars: number, names: string[],

@@ -42,22 +42,34 @@ afterEach(() => { letRunningGo(); vi.unstubAllGlobals(); mockDb.current?.close()
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 25));
 
-describe('decide() queue: a waiting caller first, a superseded shadow ask dropped', () => {
-  it('the waiter is sent before background asks that queued earlier; a shadow ask whose reply was replaced is never sent', async () => {
-    let replaced = false;
-    const failures: FailureClass[] = [];
-    const running = decide({ x: 'running' }, Q, { purpose: 'p', patienceMs: 60_000 });
-    await tick();   // the first call is on the wire and holds the one turn
-    const old = decide({ x: 'shadow-old' }, Q, { purpose: 'p', patienceMs: 60_000, background: true, staleWhen: () => replaced, onFailure: (f) => failures.push(f) });
-    const fresh = decide({ x: 'shadow-new' }, Q, { purpose: 'p', patienceMs: 60_000, background: true });
-    await tick();
-    const waiter = decide({ x: 'waiter' }, Q, { purpose: 'p', patienceMs: 60_000 });
-    await tick();
-    replaced = true;   // the agent has a newer reply
-    letRunningGo();
-    await Promise.all([running, fresh, waiter]);
-    expect(await old).toBeNull();
+/** A call holds the one turn; a stale-able shadow ask, a plain shadow ask and a waiter queue behind it, in that order. */
+async function queueBehindARunningCall(staleNow: () => boolean) {
+  const failures: FailureClass[] = [];
+  const running = decide({ x: 'running' }, Q, { purpose: 'p', patienceMs: 60_000 });
+  await tick();
+  const old = decide({ x: 'shadow-old' }, Q, { purpose: 'p', patienceMs: 60_000, background: true, staleWhen: staleNow, onFailure: (f) => failures.push(f) });
+  const fresh = decide({ x: 'shadow-new' }, Q, { purpose: 'p', patienceMs: 60_000, background: true });
+  await tick();
+  const waiter = decide({ x: 'waiter' }, Q, { purpose: 'p', patienceMs: 60_000 });
+  await tick();
+  letRunningGo();
+  await Promise.all([running, fresh, waiter]);
+  return { old: await old, failures };
+}
+
+describe('decide() queue', () => {
+  it('a waiting caller is sent before background asks that queued earlier (nothing is stale)', async () => {
+    const { old, failures } = await queueBehindARunningCall(() => false);
+    expect(sent).toEqual(['running', 'waiter', 'shadow-old', 'shadow-new']);
+    expect(old).not.toBeNull();
+    expect(failures).toEqual([]);
+  });
+
+  it('a queued shadow ask whose signal says a newer reply replaced it is never sent, and says why', async () => {
+    const { old, failures } = await queueBehindARunningCall(() => true);
+    expect(old).toBeNull();
     expect(failures).toEqual(['superseded']);
-    expect(sent).toEqual(['running', 'waiter', 'shadow-new']);
+    expect(sent).not.toContain('shadow-old');
+    expect(sent).toContain('shadow-new');
   });
 });
