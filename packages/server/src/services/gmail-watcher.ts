@@ -332,7 +332,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         continue;
       }
 
-      const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Authentication-Results`;
+      const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Authentication-Results&metadataHeaders=Message-ID&metadataHeaders=X-Platform-Send-Id`;
       const detail = await googleRead(detailUrl, 'system', 'Gmail Watcher', 'gmail_read', { messageId: msg.id, account: accountId }, accountId);
 
       if (!detail.ok) {

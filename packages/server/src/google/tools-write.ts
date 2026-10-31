@@ -9,6 +9,7 @@ import { extractGmailBodyText } from './gmail-body.js';
 import { executeGmailLabel } from './gmail-label.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 import { writeToolReceipt } from '../receipts/store.js';
+import { platformSendHeaderLines } from '../services/platform-sends.js';
 import {
   type LocalAttachment,
   readLocalAttachments,
@@ -598,7 +599,7 @@ function buildRfc2822Email(
   },
 ): string {
   const headers: string[] = [];
-  headers.push(`To: ${encodeHeaderValue(to)}`);
+  headers.push(`To: ${encodeHeaderValue(to)}`, ...platformSendHeaderLines());   // P44: every send carries a recorded id
   headers.push(`Subject: ${encodeHeaderValue(subject)}`);
   if (options?.cc) headers.push(`Cc: ${encodeHeaderValue(options.cc)}`);
   if (options?.bcc) headers.push(`Bcc: ${encodeHeaderValue(options.bcc)}`);
@@ -1155,7 +1156,6 @@ async function shareCreatedFileWithOwner(
   if (share.ok) return " Shared with the owner's account.";
   return ` (Could not auto-share with the owner's account: ${share.error ?? 'unknown error'}. Send them the link above.)`;
 }
-
 
 export async function executeGoogleWriteTool(
   name: string,

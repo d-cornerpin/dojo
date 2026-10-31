@@ -24,6 +24,7 @@ import { stripHtmlTags } from '../agent/html-text.js';
 import { extractGmailBodyText, type GmailBodyPart } from '../google/gmail-body.js';
 import { googleRead } from '../google/client.js';
 import { msGraphRead } from '../microsoft/client.js';
+import { isPlatformSent } from './platform-sends.js';
 import type { OwnerEmailNotice } from '../tools/inbound-fences.js';
 
 /** `none`: the From is not an owner address (or the mail is in the owner's own inbox) — nothing to say. */
@@ -52,6 +53,8 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   const headers = await i.headers().catch(() => null);
   // The provider's list must show the From it judged: none at all is a list it did not really give.
   if (!headers || !headers.some((h) => h.name.toLowerCase() === 'from')) return { state: 'unconfirmed' };
+  // Mail the platform itself sent (from the owner's own mailbox, send-as) is never the owner speaking, whatever its DMARC says.
+  if (isPlatformSent(headers)) return { state: 'none' };
   if (ownerEmailVerdict({ provider: i.provider, from: i.from, headers, ownerAddresses }).verdict !== 'owner') return { state: 'unconfirmed' };
   const body = await i.newBody().catch(() => null);
   return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };

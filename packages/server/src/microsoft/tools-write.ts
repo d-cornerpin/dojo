@@ -6,6 +6,7 @@
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
+import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import {
   type LocalAttachment,
@@ -913,7 +914,6 @@ for (const def of microsoftWriteToolDefinitions) {
   }
 }
 
-
 // C26 tier 2: read-only Sent-Items re-fetch to verify an Outlook send.
 // Graph's sendMail returns 202 with no body, so no message id exists at send
 // time. This does a PLAIN GET (it NEVER re-POSTs / re-sends under any branch)
@@ -933,11 +933,11 @@ async function refetchOutlookSentId(params: {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
     const res = await msGraphRead(
-      `me/mailFolders/sentitems/messages?$top=20&$orderby=sentDateTime desc&$select=id,subject,toRecipients,sentDateTime`,
+      `me/mailFolders/sentitems/messages?$top=20&$orderby=sentDateTime desc&$select=id,subject,toRecipients,sentDateTime,internetMessageId`,
       agentId, agentName, 'outlook_send_verify', { recipients: recipientAddresses.length }, slot,
     );
     if (!res.ok) continue;
-    const value = (res.data as { value?: Array<{ id?: string; subject?: string; sentDateTime?: string; toRecipients?: Array<{ emailAddress?: { address?: string } }> }> } | null)?.value ?? [];
+    const value = (res.data as { value?: Array<{ id?: string; subject?: string; sentDateTime?: string; internetMessageId?: string; toRecipients?: Array<{ emailAddress?: { address?: string } }> }> } | null)?.value ?? [];
     for (const m of value) {
       if (!m.id) continue;
       const sentMs = m.sentDateTime ? new Date(m.sentDateTime).getTime() : NaN;
@@ -946,7 +946,7 @@ async function refetchOutlookSentId(params: {
       const addrs = (m.toRecipients ?? []).map(r => (r.emailAddress?.address ?? '').toLowerCase());
       const recipientMatch = wantRecipients.length === 0 || wantRecipients.some(w => addrs.includes(w));
       if (!recipientMatch) continue;
-      return m.id;
+      recordPlatformSend(m.internetMessageId); return m.id;   // P44: reply and forward cannot carry a header, so the sent copy's Message-ID is the record
     }
   }
   return null;
@@ -994,7 +994,7 @@ export async function executeMicrosoftWriteTool(
       const message: Record<string, unknown> = {
         subject: args.subject,
         body: { contentType: 'Text', content: bodyText },
-        toRecipients,
+        toRecipients, internetMessageHeaders: graphSendHeaders(),   // P44: recorded before it goes out
       };
       if (args.cc) message.ccRecipients = parseRecipients(args.cc as string);
       if (prepared.inline.length > 0) message.attachments = prepared.inline;
