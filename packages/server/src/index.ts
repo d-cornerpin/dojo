@@ -434,15 +434,8 @@ async function main(): Promise<void> {
   // 3a-b. Owner decision 33: Dojo-supplied souls are replaced once per version (primary's never).
   await (await import('./prompt/shipped-souls.js')).refreshShippedSoulsAtBoot();
 
-  // 3a-c. One time: write down the owner the 3.4.1 reader implied for any safe-sender list with no star
-  //       (an upgraded box keeps exactly the owner it had; services/owner-star-upgrade.ts).
-  try {
-    (await import('./services/owner-star-upgrade.js')).starTheOwnersTheOldReaderImplied();
-  } catch (err) {
-    logger.warn('Owner-star conversion failed (non-fatal; it will retry next boot)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // 3a-c. One time: an upgraded box keeps the owner the 3.4.1 reader implied (services/owner-star-upgrade.ts).
+  await (await import('./services/owner-star-upgrade.js')).starTheOwnersAtBoot();
 
   // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
   //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into

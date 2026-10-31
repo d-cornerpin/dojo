@@ -71,3 +71,9 @@ export function starTheOwnersTheOldReaderImplied(): { converted: string[]; skipp
   if (converted.length > 0) logger.info('Starred the owner the previous reader implied (one time)', { lists: converted });
   return { converted, skipped: false };
 }
+
+/** Boot entry: never throws (a failed conversion retries next boot, because the marker is written last). */
+export async function starTheOwnersAtBoot(): Promise<void> {
+  try { starTheOwnersTheOldReaderImplied(); }
+  catch (err) { logger.warn('Owner-star conversion failed (non-fatal; retries next boot)', { error: err instanceof Error ? err.message : String(err) }); }
+}
