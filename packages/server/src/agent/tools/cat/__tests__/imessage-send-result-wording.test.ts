@@ -54,6 +54,7 @@ vi.mock('../../../effects/fs.js', () => ({
   statSync: (target: fs.PathLike) => fs.statSync(target),
 }));
 
+import { FX } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 import { runMigrations } from '../../../../db/migrations.js';
 import { commsHandlers } from '../comms.js';
 import { reloadApprovedSenders } from '../../../../services/imessage-bridge.js';
@@ -75,7 +76,7 @@ beforeEach(() => {
   ).run(AGENT);
   fresh.prepare(
     "INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?)",
-  ).run(JSON.stringify([{ name: 'Yorvak', address: '+15550200', is_primary: true }]));
+  ).run(JSON.stringify([{ name: FX.n11, address: '+15550200', is_primary: true }]));
   reloadApprovedSenders();
 
   // Real files for the attachment pre-flight — it refuses before the send what
