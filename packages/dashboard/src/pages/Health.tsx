@@ -203,6 +203,9 @@ export const Health = () => {
   const [levelFilter, setLevelFilter] = useState<string>('');
   const [componentFilter, setComponentFilter] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  // `lastOk`: when getHealth last answered; `pollFailed`: the latest check did not.
+  const [lastOk, setLastOk] = useState<number | null>(null);
+  const [pollFailed, setPollFailed] = useState(false);
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>([]);
   const [watchdog, setWatchdog] = useState<WatchdogStatus | null>(null);
   const [imBridge, setImBridge] = useState<IMBridgeStatus | null>(null);
@@ -232,7 +235,8 @@ export const Health = () => {
           api.getResources(),
         ]);
 
-      if (healthResult?.ok) setHealth(healthResult.data);
+      if (healthResult?.ok) { setHealth(healthResult.data); setLastOk(Date.now()); }
+      setPollFailed(!healthResult?.ok);
       if (logsResult?.ok) setLogs(logsResult.data);
       // Provider health: API returns array directly or { providers: [] }
       if (providerResult?.ok) {
@@ -266,6 +270,7 @@ export const Health = () => {
       } catch {
         // Initial load failed; the page renders with whatever data arrived
         // plus live websocket updates. Individual sections degrade gracefully.
+        setPollFailed(true);
       }
       setLoading(false);
     };
@@ -359,7 +364,10 @@ export const Health = () => {
   // one the boot log reads — so this card and that log cannot say different things about it.
   const toolDocsWarning = toolDocsShortfall(health?.toolDocs);
   const overallDown = dbDown || anyProviderDown || toolDocsWarning !== null;
-  const overallLabel = overallDown
+  const unreachable = health === null || pollFailed;
+  const overallLabel = unreachable && !overallDown
+    ? "Can't reach the server"
+    : overallDown
     ? (dbDown ? 'Database error' : anyProviderDown ? 'Provider issue' : 'Tool manuals incomplete')
     : 'All systems nominal';
 
@@ -370,11 +378,15 @@ export const Health = () => {
         <h2 className="phead__title">Vitals</h2>
         <span className="phead__meta">System health</span>
         <div className="phead__actions">
-          <span className={`pill ${overallDown ? 'pill--down' : 'pill--ok'}`}>
+          <span className={`pill ${overallDown || unreachable ? 'pill--down' : 'pill--ok'}`}>
             <i className="dot" />{overallLabel}
           </span>
         </div>
       </header>
+
+      {pollFailed && health !== null && lastOk !== null && (
+        <div className="note--warn">Showing the last good reading from {formatTimeOnly(new Date(lastOk).toISOString())}; the latest check failed.</div>
+      )}
 
       {/* Stat tiles */}
       <div className="stats">
