@@ -104,14 +104,13 @@ describe('K33 — every inbound producer hands the model fenced bytes', () => {
     fencedOnce(out, 'voicemail', CONTACT_PHONE, false);
   });
 
-  it('the mail watchers: the email block is an email; addressed to the agent only when it was sent to it', () => {
-    const block = (direct: boolean) => fencedMailBlock({ account: 'inbox@example.test', from: 'A sender <s@example.test>', subject: 'Hi', date: 'today', snippet: ESCAPE, messageId: 'm1', directToAgent: direct });
-    fencedOnce(block(false), 'email', 'a new email in inbox@example.test', false);
-    fencedOnce(block(true), 'email', 'a new email in inbox@example.test', true);
+  it('the mail watchers: the email block is an email, never the addressed-to-you form (P44: the agent decides whether it is meant for it)', () => {
+    const block = () => fencedMailBlock({ account: 'inbox@example.test', from: 'A sender <s@example.test>', subject: 'Hi', date: 'today', snippet: ESCAPE, messageId: 'm1' });
+    fencedOnce(block(), 'email', 'a new email in inbox@example.test', false);
     // Fix round 3 (N9): the sender's display name sits inside the fence, on its From line, never in the head.
-    expect(block(false).split('\n')[0]).not.toContain('A sender');
-    expect(block(false).split('\n')[1]).toBe('From: A sender <s@example.test>');
-    expect(block(false).endsWith('\nMessage ID: m1\n')).toBe(true);
+    expect(block().split('\n')[0]).not.toContain('A sender');
+    expect(block().split('\n')[1]).toBe('From: A sender <s@example.test>');
+    expect(block().endsWith('\nMessage ID: m1\n')).toBe(true);
   });
 
   it('fix round 4 (ruling 4): the mail notice names the sender by address only; the display name is inside the fence', () => {
@@ -120,8 +119,8 @@ describe('K33 — every inbound producer hands the model fenced bytes', () => {
       fromAddr: 's@example.test', from: `${NAME} <s@example.test>`, subject: 'Hi', date: 'today', snippet: ESCAPE, messageId: 'm1', directToAgent: direct, toolHint: 'gmail_read' });
     for (const provider of ['GMAIL', 'OUTLOOK'] as const) {
       const direct = notice(true, provider);
-      expect(direct.startsWith(`[SOURCE: ${provider} NOTIFICATION — inbox@example.test (agent)]\n\n[DIRECT MESSAGE] s@example.test emailed you (the agent) at inbox@example.test.`), direct).toBe(true);
-      fencedOnce(direct, 'email', 'a new email in inbox@example.test', true);
+      expect(direct.startsWith(`[SOURCE: ${provider} NOTIFICATION — inbox@example.test (agent)]\n\n[EMAIL FROM A KNOWN CONTACT] s@example.test is a known contact on this channel`), direct).toBe(true);
+      fencedOnce(direct, 'email', 'a new email in inbox@example.test', false);
       for (const o of [direct, notice(false, provider)]) {
         expect(outsideFences(o), 'the sender\'s display name outside the fence').not.toContain(NAME);
         expect(unfenceBody(o)).toContain(`From: ${NAME} <s@example.test>`);

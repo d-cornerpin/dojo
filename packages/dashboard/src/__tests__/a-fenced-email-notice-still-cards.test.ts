@@ -22,6 +22,15 @@ describe('K33 — the dashboard shows other people\'s text without the agent\'s 
     });
   });
 
+  it('P44: a known contact\'s email, with its To and Cc lines in the fence, still becomes the email card', () => {
+    const body = 'From: A Sender <a@example.test>\nTo: inbox@example.test\nCc: B <b@example.test>\nSubject: The crate count\nDate: Fri, 23 Oct 2026\nPreview: Forty-two crates.';
+    const notice = '[SOURCE: GMAIL NOTIFICATION — inbox@example.test (agent)]\n\n[EMAIL FROM A KNOWN CONTACT] a@example.test is a known contact on this channel.\n\n'
+      + fenceExternal('email', 'a new email in inbox@example.test', body) + '\nMessage ID: m-2\nUse `gmail_read` to read the full body if you need it.';
+    expect(parseMailboxEvent(withoutFence(notice))).toEqual({
+      account: 'inbox@example.test', from: 'A Sender <a@example.test>', subject: 'The crate count', body: 'Forty-two crates.',
+    });
+  });
+
   it('a contact\'s iMessage and a worker\'s report read exactly as they arrived', () => {
     const text = 'Dinner at 7?\nBring the receipts.';
     expect(withoutFence(`[SOURCE: IMESSAGE FROM A contact] ${fenceExternal('text message', 'A contact', text, { addressedToAgent: true })}`))

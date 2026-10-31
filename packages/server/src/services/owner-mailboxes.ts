@@ -36,6 +36,7 @@ export function ownerMailboxesFrom(
   return out;
 }
 
+/** A disconnected account is not the owner's mailbox any more: P44 trusts these addresses to recognise the owner's email. */
 export function ownerMailboxes(): OwnerMailbox[] {
-  return ownerMailboxesFrom(listGoogleAccounts('user'), listMicrosoftAccounts('user'));
+  return ownerMailboxesFrom(listGoogleAccounts('user').filter((a) => a.connected), listMicrosoftAccounts('user').filter((a) => a.connected));
 }

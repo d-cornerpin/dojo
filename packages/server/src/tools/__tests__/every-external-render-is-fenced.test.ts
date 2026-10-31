@@ -130,10 +130,10 @@ describe('K33 — inbound producers', () => {
   });
 
   // Fix round 4 (ruling 4): no producer names a sender by its raw From header outside the fence.
-  it('no source file writes the raw From header into a [DIRECT MESSAGE] sentence', () => {
-    const writers = walk(SRC).filter((f) => /\[DIRECT MESSAGE\] \$\{/.test(code(f))).map((f) => path.relative(SRC, f));
+  it('no source file writes the raw From header into a known-contact sentence', () => {
+    const writers = walk(SRC).filter((f) => /\[EMAIL FROM A KNOWN CONTACT\] \$\{/.test(code(f))).map((f) => path.relative(SRC, f));
     expect(writers, 'the one mail-notice builder writes the sentence').toEqual(['tools/inbound-fences.ts']);
-    expect(code(path.join(SRC, 'tools/inbound-fences.ts')).match(/\[DIRECT MESSAGE\] \$\{[^}]*\}/g)).toEqual(['[DIRECT MESSAGE] ${m.fromAddr}']);
+    expect(code(path.join(SRC, 'tools/inbound-fences.ts')).match(/\[EMAIL FROM A KNOWN CONTACT\] \$\{[^}]*\}/g)).toEqual(['[EMAIL FROM A KNOWN CONTACT] ${m.fromAddr}']);
   });
 
   it('a new producer of inbound channel text cannot reach the model unfenced', () => {
