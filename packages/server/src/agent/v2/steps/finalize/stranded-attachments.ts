@@ -99,6 +99,7 @@ export async function surfaceStrandedAttachments(
       // iMessage, send the FILES (with the caption on the first) to them directly so
       // a file they asked for actually reaches their channel, not just the dashboard.
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+        let fileSendFailed = false;
         try {
           const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
           // Design ruling 13: this is the SIXTH outbound arm — the one that does not go
@@ -110,10 +111,23 @@ export async function surfaceStrandedAttachments(
           const captionOut = redactHandedCredentials(agentId, captionText);
           let first = true;
           for (const att of stranded.attachments as Array<{ path?: string }>) {
-            if (att.path) { await sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionOut : ''); first = false; }
+            if (att.path) {
+              const landed = await sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionOut : '');
+              if (!landed) fileSendFailed = true;
+              first = false;
+            }
           }
         } catch (err) {
+          fileSendFailed = true;
           logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+        }
+        // A file that did not reach the requester is reported through the owner-notice door,
+        // not left to a log line. The dashboard copy above still holds the file.
+        if (fileSendFailed) {
+          try {
+            const { sendAlert } = await import('../../../../services/imessage-bridge.js');
+            void sendAlert('A file I prepared did not reach the person who asked for it. The file itself is still saved with your messages.', 'notice');
+          } catch { /* the notice is best effort; the dashboard copy stands */ }
         }
       }
       state = advance(state, { lastAssistantTextForIM: captionText });
