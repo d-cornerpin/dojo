@@ -72,6 +72,38 @@ export interface TwilioSmsResponse {
   date_created: string;
 }
 
+/**
+ * Twilio refuses a single Body longer than 1600 characters (error 21617), so a long
+ * answer to a person who texted in has to go out as several texts. Cut at the last
+ * blank line before the cap, else the last newline, else the last sentence end, else
+ * the last space — a hard cut only when the text offers nothing. A hard cut backs off
+ * one unit rather than splitting a surrogate pair (a lone half renders as garbage).
+ * Parts are trimmed; every non-space character of the input survives, in order.
+ */
+export function splitForSms(text: string, maxLen = 1500): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  while (rest.length > maxLen) {
+    const head = rest.slice(0, maxLen);
+    let cut = -1;
+    for (const sep of ['\n\n', '\n', '. ', '! ', '? ', ' ']) {
+      const idx = head.lastIndexOf(sep);
+      if (idx !== -1) { cut = idx + sep.length; break; }
+    }
+    if (cut <= 0) cut = maxLen;
+    // Back off one unit if the hard cut would fall between the halves of an emoji.
+    const prev = rest.charCodeAt(cut - 1);
+    const next = rest.charCodeAt(cut);
+    if (prev >= 0xD800 && prev <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) cut -= 1;
+    const part = rest.slice(0, cut).trim();
+    if (part) parts.push(part);
+    rest = rest.slice(cut);
+  }
+  const tail = rest.trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
 export async function sendSms(
   to: string,
   body: string,
@@ -83,27 +115,53 @@ export async function sendSms(
   }
   // D15: SMS can't render markdown, strip it here at the single SMS chokepoint
   // so all three send paths (auto-reply, sms_send tool, A2A relay) go out clean.
-  const res = await twilioPost<TwilioSmsResponse>('/Messages.json', {
-    To: to,
-    From: from,
-    Body: formatForPlainTextChannel(body),
-  }, signal);
+  const cleaned = formatForPlainTextChannel(body);
+  // 1600 characters or fewer: one POST exactly as before. Only a longer body is split.
+  const parts = cleaned.length > 1600 ? splitForSms(cleaned) : [cleaned];
+  // Several parts go one at a time, awaiting each, so the person reads them in order.
+  // Stop at the first refusal and say how far the message got.
+  let first: TwilioSmsResponse | undefined;
+  let failed: string | null = null;
+  let failedStatus = 0;
+  let failedIndex = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const res = await twilioPost<TwilioSmsResponse>('/Messages.json', {
+      To: to,
+      From: from,
+      Body: parts[i],
+    }, signal);
+    if (!res.ok) {
+      failed = res.error;
+      failedStatus = res.status;
+      failedIndex = i;
+      break;
+    }
+    if (!first) first = res.data;
+  }
+  // A single-part send keeps its error verbatim (nothing partial happened); a
+  // multi-part one names the part, so the "split into multiple sends" split never
+  // silently loses an answer to a mid-list failure.
+  const error = failed === null
+    ? null
+    : (parts.length > 1 ? `part ${failedIndex + 1} of ${parts.length} failed: ${failed}` : failed);
   // PHASE-2 T5: THE DOOR RECORDS. All three SMS paths (auto-reply, the sms_send tool, the
   // A2A relay) pass through here, and a FAILED send now produces `outcome='failed'` — the
-  // caller-written record was gated on success and could not express one.
+  // caller-written record was gated on success and could not express one. One door row per
+  // sendSms call even when the message went out as parts: it is one answer to one person.
   recordedId(recordAtDoor({
-    outcome: res.ok ? 'delivered' : 'failed',
+    outcome: error === null ? 'delivered' : 'failed',
     channel: 'sms',
     tool: 'sms-door',
     recipientId: to,
-    detail: res.ok ? null : res.error,
+    detail: error !== null ? error : (parts.length > 1 ? `${parts.length} parts` : null),
   }), 'twilio: SMS door crossing', { to });
-  if (!res.ok) {
-    logger.warn('Twilio SMS send failed', { to, from, error: res.error, status: res.status });
-    return { ok: false, error: res.error };
+  if (error !== null) {
+    logger.warn('Twilio SMS send failed', { to, from, error, status: failedStatus });
+    return { ok: false, error };
   }
-  logger.info('Twilio SMS sent', { sid: res.data.sid, to, from });
-  return { ok: true, data: res.data };
+  // Every part went, so the first part has data.
+  logger.info('Twilio SMS sent', { sid: first?.sid, to, from, parts: parts.length });
+  return { ok: true, data: first ?? ({} as TwilioSmsResponse) };
 }
 
 // ── Voice ──
