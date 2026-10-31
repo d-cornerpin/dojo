@@ -7,7 +7,7 @@ import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { closeServers, trackRequests } from '../close-servers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -27,7 +27,7 @@ async function start(handler: http.RequestListener): Promise<{ server: http.Serv
 }
 
 describe('closeServers always finishes', () => {
-  it('resolves after the grace period even when a response never ends', async () => {
+  it('an open event stream and an open websocket do not hold shutdown', async () => {
     let headersSent: () => void = () => {};
     const sent = new Promise<void>((r) => { headersSent = r; });
     const { server, wss, port } = await start((_req, res) => {
@@ -35,13 +35,33 @@ describe('closeServers always finishes', () => {
       res.write('data: hi\n\n');
       headersSent();
     });
+    server.on('upgrade', (req, socket, head) => wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req)));
     const req = http.get({ host: '127.0.0.1', port, path: '/' }, (res) => { res.on('data', () => {}); res.on('error', () => {}); });
     req.on('error', () => {});
-    await sent;
-    const result = await raceDeadline(closeServers(server, wss, { graceMs: 200 }), 2000);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
+    ws.on('error', () => {});
+    await Promise.all([sent, new Promise<void>((r) => ws.on('open', () => r()))]);
+    const result = await raceDeadline(closeServers(server, wss), 2000);
     req.destroy();
     if (result === 'timeout') server.closeAllConnections();
     expect(result).not.toBe('timeout');
+  });
+
+  it('an ordinary in-flight request is allowed to finish', async () => {
+    let arrived: () => void = () => {};
+    const got = new Promise<void>((r) => { arrived = r; });
+    const { server, wss, port } = await start((_req, res) => {
+      arrived();
+      setTimeout(() => res.end('done'), 150);
+    });
+    const body = new Promise<string>((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+        let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => resolve(d));
+      }).on('error', reject);
+    });
+    await got;
+    await closeServers(server, wss);
+    expect(await body).toBe('done');
   });
 
   it('resolves quickly with nothing open (default grace does not delay a clean close)', async () => {

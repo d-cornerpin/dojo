@@ -12,9 +12,24 @@ const inFlight = new Set<ServerResponse>();
 // `Connection: close` so it cannot keep its connection alive after the response.
 let closing = false;
 
-// How long an in-flight response may keep the close open before its socket is
-// destroyed. Inside launchd's default 20s ExitTimeOut so closeDb still runs.
-const DEFAULT_GRACE_MS = 10_000;
+// Responses that declared themselves an event stream. `writeHead(status, {headers})` does not
+// populate `getHeader`, so the content type is captured as it is written.
+const eventStreams = new WeakSet<ServerResponse>();
+
+function noteEventStream(res: ServerResponse): void {
+  const orig = res.writeHead.bind(res) as (...a: unknown[]) => ServerResponse;
+  (res as unknown as { writeHead: (...a: unknown[]) => ServerResponse }).writeHead = (...args: unknown[]) => {
+    const hdrs = args.find((a) => a && typeof a === 'object' && !Array.isArray(a)) as Record<string, unknown> | undefined;
+    const fromObj = hdrs && Object.entries(hdrs).find(([k]) => k.toLowerCase() === 'content-type')?.[1];
+    const type = String(fromObj ?? res.getHeader('content-type') ?? '').toLowerCase();
+    if (type.includes('text/event-stream')) eventStreams.add(res);
+    return orig(...args);
+  };
+}
+
+function isEventStream(res: ServerResponse): boolean {
+  return eventStreams.has(res) || String(res.getHeader('content-type') ?? '').toLowerCase().includes('text/event-stream');
+}
 
 /**
  * Track the gateway's in-flight responses so `closeServers` can close their
@@ -28,6 +43,7 @@ export function trackRequests(httpServer: Server): void {
   // once the handler has written them.
   httpServer.prependListener('request', (req, res) => {
     inFlight.add(res);
+    noteEventStream(res);
     res.once('close', () => inFlight.delete(res));
     if (closing) res.setHeader('Connection', 'close');
   });
@@ -46,12 +62,7 @@ export function trackRequests(httpServer: Server): void {
  * keep-alive connections are dropped; only then is `server.close()` allowed to
  * wait for any in-flight request, which is the one thing it SHOULD wait for.
  */
-export async function closeServers(
-  httpServer: Server,
-  wsServer: WebSocketServer,
-  opts: { graceMs?: number } = {},
-): Promise<void> {
-  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+export async function closeServers(httpServer: Server, wsServer: WebSocketServer): Promise<void> {
   // Mark the server as closing first: from here on, a request that arrives is
   // told `Connection: close` so it cannot keep its connection alive afterward.
   closing = true;
@@ -68,7 +79,13 @@ export async function closeServers(
   // are already sent, end the socket once the response finishes. Either way the
   // connection cannot return to idle keep-alive and hold `server.close()` open.
   for (const res of inFlight) {
-    if (res.headersSent) {
+    // A long-lived event stream is open BY DESIGN and carries no unfinished work (the client
+    // reconnects), so it is closed at once, like the websockets above. No timer: the signal is
+    // the kind of response, not the clock. An ordinary request is still allowed to finish; if one
+    // truly hangs, the supervisor's SIGKILL (launchd ExitTimeOut) is the outer backstop.
+    if (res.headersSent && isEventStream(res)) {
+      res.socket?.destroy();
+    } else if (res.headersSent) {
       res.once('finish', () => res.socket?.end());
     } else {
       res.setHeader('Connection', 'close');
@@ -81,24 +98,7 @@ export async function closeServers(
 
   // Stop accepting new connections. In-flight requests are allowed to finish;
   // the callback fires once the last connection ends.
-  // A response that already sent its headers (a chat stream, a long agent turn) is
-  // waited for, but not past the grace period: a still-open socket after that is
-  // destroyed so this callback can fire and the cleanup after it runs before the
-  // supervisor's own SIGKILL (launchd's default ExitTimeOut is 20s; the grace is
-  // inside it). The timer is unref'd and cleared once the close completes.
-  let graceTimer: NodeJS.Timeout | null = null;
-  try {
-    await new Promise<void>((resolve) => {
-      graceTimer = setTimeout(() => {
-        for (const res of inFlight) res.socket?.destroy();
-        httpServer.closeAllConnections();
-      }, graceMs);
-      graceTimer.unref();
-      httpServer.close(() => resolve());
-    });
-  } finally {
-    if (graceTimer) clearTimeout(graceTimer);
-  }
+  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
 
   // The server is fully shut down — no new request can reach it, so the closing
   // flag's job is done. Clear it so a fresh gateway (or the next test's server)
