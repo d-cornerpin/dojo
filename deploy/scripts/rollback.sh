@@ -61,6 +61,27 @@ if [ "$PRINT" != 1 ]; then
   # watchdog both unloaded. SIGKILL cannot be trapped; that gap is covered by `--heal`, which the
   # watchdog runs at the next login (it clears the dead lock and restores), not by this script.
   services_down=0
+  # Every step below leaves a platform folder in place or says plainly why not, and every exit path
+  # loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
+  # owner if that build will not run; with no folder it runs this script with --heal).
+  # Returns 1 and names the service when a load fails.
+  reload_services() {
+      local rc=0 svc
+      services_down=0
+      for svc in platform watchdog; do
+          if ! launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null; then
+              echo "   The $svc service did not start (launchctl load failed for com.dojo.$svc.plist)."
+              rc=1
+          fi
+      done
+      return $rc
+  }
+  # A name that does not exist yet, so nothing is ever moved INTO an old folder.
+  unique_path() {
+      local p="$1" n=1
+      while [ -e "$p" ]; do p="$1-$$-$n"; n=$((n + 1)); done
+      printf '%s' "$p"
+  }
   on_exit() {
       if [ "${services_down:-0}" = 1 ]; then reload_services; fi
       [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
@@ -204,7 +225,10 @@ fi
 # directory name is a label the updater wrote, the package.json is the build's own
 # word for what it is, and an episode-recorded path need not carry the prefix.
 target_ver="$(basename "$newest_backup" | sed "s/^${BACKUP_PREFIX}//")"
+parsed_target=""
+had_pkg=0
 if [ -f "$newest_backup/package.json" ]; then
+    had_pkg=1
     parsed_target="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$newest_backup/package.json" | head -1)"
     [ -n "$parsed_target" ] && target_ver="$parsed_target"
 fi
@@ -222,36 +246,15 @@ echo "   Restoring $(basename "$newest_backup") — $selection_reason."
 
 # 2. Stop services.
 echo "   Stopping services..."
+services_down=1   # BEFORE the first unload: a signal during the unloads must still reload both
 launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
 launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
-services_down=1
 
 # 3. Set the current (failed) build aside for diagnosis, then move the backup
 #    into place. Moves (not copies) so the swap is fast and uses no extra disk;
 #    older backups remain for a deeper rollback if needed.
 ts="$(date +%Y%m%d-%H%M%S)"
 failed_dir=""
-# Every step below leaves a platform folder in place or says plainly why not, and every exit path
-# loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
-# owner if that build will not run; with no folder it runs this script with --heal).
-# Returns 1 and names the service when a load fails.
-reload_services() {
-    local rc=0 svc
-    services_down=0
-    for svc in platform watchdog; do
-        if ! launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null; then
-            echo "   The $svc service did not start (launchctl load failed for com.dojo.$svc.plist)."
-            rc=1
-        fi
-    done
-    return $rc
-}
-# A name that does not exist yet, so nothing is ever moved INTO an old folder.
-unique_path() {
-    local p="$1" n=1
-    while [ -e "$p" ]; do p="$1-$$-$n"; n=$((n + 1)); done
-    printf '%s' "$p"
-}
 if [ -d "$PLATFORM_DIR" ]; then
     failed_dir="$(unique_path "$DOJO_DIR/platform.failed-${cur_ver}-${ts}")"
     echo "   Preserving current build -> $(basename "$failed_dir")"
@@ -264,9 +267,23 @@ if [ -d "$PLATFORM_DIR" ]; then
 fi
 
 echo "   Restoring $target_ver..."
-# The restore counts only when the move worked AND the folder in place is the build we meant.
-if mv "$newest_backup" "$PLATFORM_DIR" && [ -f "$PLATFORM_DIR/package.json" ] \
-   && [ "$(tree_version "$PLATFORM_DIR")" = "$target_ver" ]; then
+# The restore counts only when the move worked AND the folder in place is the build we meant: by the
+# build's own markers (its package.json, and its version when that file states one). A backup whose
+# package.json carries no version line is accepted on the package.json alone, as it always was.
+restore_ok=0
+if mv "$newest_backup" "$PLATFORM_DIR"; then
+    restore_ok=1
+    if [ "$had_pkg" = 1 ]; then
+        [ -f "$PLATFORM_DIR/package.json" ] || restore_ok=0
+        if [ -n "$parsed_target" ] && [ "$(tree_version "$PLATFORM_DIR")" != "$target_ver" ]; then restore_ok=0; fi
+    fi
+    if [ "$restore_ok" = 0 ] && [ ! -e "$newest_backup" ]; then
+        # The move worked but the build is not the one meant: send it back to the name later
+        # rollbacks (and --print-target) look for, rather than hiding it under another name.
+        mv "$PLATFORM_DIR" "$newest_backup" 2>/dev/null || true
+    fi
+fi
+if [ "$restore_ok" = 1 ]; then
     :
 else
     echo "ERROR: could not move the backup into place."
@@ -282,11 +299,16 @@ else
     fi
     if [ -n "${failed_dir:-}" ] && [ -d "${failed_dir:-}" ]; then
         if [ "$put_back_ok" = 1 ] && mv "$failed_dir" "$PLATFORM_DIR" && [ -f "$PLATFORM_DIR/package.json" ]; then
-            echo "   The previous build was put back, so Dojo is as it was. The backup is still at $(basename "$newest_backup")."
+            echo "   The previous build was put back, so Dojo is as it was."
+            if [ -d "$newest_backup" ]; then echo "   The backup is still at $(basename "$newest_backup")."; fi
         else
             echo "   The previous build could not be put back either. It is at:"
             echo "       $failed_dir"
-            echo "   Restore it manually with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+            if [ -e "$PLATFORM_DIR" ]; then
+                echo "   $PLATFORM_DIR is in the way: remove or rename it first, then restore with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+            else
+                echo "   Restore it manually with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+            fi
         fi
     else
         echo "   There was no previous build to put back."

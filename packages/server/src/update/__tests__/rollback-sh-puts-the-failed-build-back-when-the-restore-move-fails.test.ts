@@ -193,3 +193,61 @@ describe('rollback.sh edge cases found in review', () => {
     });
   }
 });
+
+// Re-check fixes 1, 2 and 5.
+describe('rollback.sh re-check fixes', () => {
+  it('SIGTERM during the first unload still reloads both services', async () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    fs.writeFileSync(path.join(binDir, 'launchctl'),
+      `#!/bin/sh\necho "$@" >> "${path.join(home, 'launchctl.log')}"\nif [ "$1" = unload ] && [ ! -e "${path.join(home, 'u.started')}" ]; then touch "${path.join(home, 'u.started')}"; sleep 2; fi\nexit 0\n`, { mode: 0o755 });
+    const child = spawn('bash', [SCRIPT], {
+      env: { ...process.env, HOME: home, DOJO_HOME: home, PATH: `${binDir}:${process.env.PATH ?? ''}` }, stdio: 'ignore', detached: true,
+    });
+    const closed = new Promise<void>((resolve) => child.on('close', () => resolve()));
+    for (let i = 0; i < 250 && !fs.existsSync(path.join(home, 'u.started')); i++) await new Promise((r) => setTimeout(r, 20));
+    process.kill(child.pid!, 'SIGTERM');
+    await closed;
+    const loads = launchLog().filter((l) => l.startsWith('load '));
+    expect(loads.some((l) => l.includes('com.dojo.platform.plist'))).toBe(true);
+    expect(loads.some((l) => l.includes('com.dojo.watchdog.plist'))).toBe(true);
+  });
+
+  it('a whole backup whose package.json has no version line is restored, as before', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    fs.mkdirSync(path.join(dojo, 'platform.backup-3.1.17'), { recursive: true });
+    fs.writeFileSync(path.join(dojo, 'platform.backup-3.1.17', 'package.json'), '{"name":"x"}');
+    const { code, out } = run();
+    expect(code).toBe(0);
+    expect(out).toContain('Rolled back');
+    expect(fs.readFileSync(path.join(dojo, 'platform', 'package.json'), 'utf-8')).toContain('"x"');
+    expect(fs.readdirSync(dojo).some((f) => f.startsWith('platform.partial-'))).toBe(false);
+  });
+
+  it('a backup that moved but does not verify goes back to its own name, and the message about it is true', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    // The move works, then the stub damages the result (package.json gone).
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nfor last; do :; done\n/bin/mv "$@" || exit $?\ncase "$(basename "$1")" in platform.backup-*) case "$last" in */platform) rm -f "$last/package.json";; esac;; esac\nexit 0\n', { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(fs.existsSync(path.join(dojo, 'platform.backup-3.1.17'))).toBe(true);
+    expect(fs.readdirSync(dojo).some((f) => f.startsWith('platform.partial-'))).toBe(false);
+    expect(out).not.toContain('Rolled back');
+  });
+
+  it('when the previous build cannot be put back and platform/ is in the way, the manual command says to clear it first', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    // Restore leaves a partial platform/, and every later move fails.
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nn=$(cat "' + path.join(home, 'mvn') + '" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "' + path.join(home, 'mvn') + '"\n' +
+      'for last; do :; done\nif [ "$n" = 1 ]; then exec /bin/mv "$@"; fi\n' +
+      'if [ "$n" = 2 ]; then mkdir -p "$last"; echo half > "$last/p"; exit 1; fi\nexit 1\n', { mode: 0o755 });
+    const { out } = run();
+    expect(out).toContain('in the way');
+    expect(out).toContain('remove or rename');
+  });
+});
+
