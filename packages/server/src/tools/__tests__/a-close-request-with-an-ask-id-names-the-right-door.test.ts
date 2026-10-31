@@ -48,7 +48,7 @@ describe('work_close_request with an ask id', () => {
   for (const id of ['ask:11112222-3333-4444-5555-666677778888', 'piece:ask:11112222-3333-4444-5555-666677778888:99990000-aaaa-bbbb-cccc-ddddeeeeffff']) {
     it(`says what ${id.slice(0, 9)}... is and how it ends`, async () => {
       const r = await close(id);
-      expect(r.content).toMatch(/request from the owner|piece of one/i);
+      expect(r.content).toMatch(/a (request|piece of a request) from the person who asked/i);
       expect(r.content).toMatch(/reply|answer/i);
       expect(r.content).not.toMatch(/not found/i);
     });

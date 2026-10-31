@@ -886,7 +886,7 @@ export function formatResolveError(
       // not a task: no task verb takes it, and none closes it. Say what it is, not "not found".
       if (kind === 'task' && /^(piece:)?ask:/.test(input.trim())) {
         const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
-        return `Error: '${input}' is ${what} from the owner, not a task, so no task call takes it. It ends when you answer the owner; reply with your normal message.`;
+        return `Error: '${input}' is ${what} from the person who asked, not a task, so no task call takes it. It ends when you answer them; reply with your normal message.`;
       }
       // 2026-07-17 (the PM 189-call spin): a title-shaped input deserves an
       // explicit title-vs-id correction, or the floor model retries the same
