@@ -32,6 +32,12 @@ vi.mock('../hooks/useWebSocket', async () => {
   return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: ReactElement }) => children };
 });
 
+vi.mock('../hooks/useToast', async () => {
+  const { fakeToast } = await import('./helpers/frames');
+  const t = fakeToast();
+  return { useToast: () => t.value };
+});
+
 import { VoiceTab } from '../components/settings/VoiceTab';
 
 beforeEach(() => { resetFrames(); });

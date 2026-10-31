@@ -42,6 +42,11 @@ vi.mock('../lib/api', async () => {
   } as unknown as typeof import('../lib/api');
 });
 
+vi.mock('../hooks/useWebSocket', async () => {
+  const { fakeUseWebSocket } = await import('./helpers/frames');
+  return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: unknown }) => children };
+});
+
 import * as api from '../lib/api';
 import { TaskCard } from '../components/TaskCard';
 import { AgentCard } from '../components/AgentCard';
