@@ -24,7 +24,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { runBoundToTheStop, wasNeverStarted } from '../stop-bound-run.js';
-import { stopWaiterCount } from '../stop-waiters.js';
+import { notifyUserStop, stopWaiterCount } from '../stop-waiters.js';
 import { stoppedAgents } from '../shared-state.js';
 import { hidHandlers } from '../tools/cat/hid.js';
 import type { ToolCall } from '@dojo/shared';
@@ -36,10 +36,13 @@ const AGENT = 'agent-one-runner';
 const BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'one-runner-bin-'));
 const PIDS = path.join(BIN, 'pids');
 const ORIGINAL_PATH = process.env.PATH;
+const realSetTimeout = globalThis.setTimeout;   // captured before any test fakes timers
 
 beforeAll(() => {
   fs.writeFileSync(path.join(BIN, 'cliclick'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(BIN, 'deaf'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\ntrap "" TERM\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(BIN, 'deaf-ready'), '#!/bin/sh\ntrap "" TERM\necho $$ >> "$ONE_RUNNER_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(BIN, 'quits-on-term'), '#!/bin/sh\necho $$ >> "$ONE_RUNNER_PIDS"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
   process.env.PATH = `${BIN}:${ORIGINAL_PATH}`;
   process.env.ONE_RUNNER_PIDS = PIDS;
 });
@@ -52,6 +55,10 @@ afterAll(() => { process.env.PATH = ORIGINAL_PATH; fs.rmSync(BIN, { recursive: t
 
 function pids(): number[] {
   try { return fs.readFileSync(PIDS, 'utf8').trim().split('\n').filter(Boolean).map(Number); } catch { return []; }
+}
+async function untilChildIsListening(): Promise<void> {
+  for (let i = 0; i < 500 && pids().length === 0; i++) await new Promise<void>((r) => realSetTimeout(r, 10));
+  expect(pids().length, 'the stand-in announced itself').toBe(1);
 }
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const source = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -98,6 +105,38 @@ describe('one runner for every platform program the Stop can cut', () => {
     expect(pids().length).toBe(1);
     expect(alive(pids()[0]), 'the deaf program is gone').toBe(false);
     expect(stopWaiterCount(AGENT)).toBe(0);
+  });
+
+  it('the runner: a Stop and the time bound on one run arm one SIGKILL follow-up', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });   // only these two: the helper above needs the real clock
+    try {
+      const p = runBoundToTheStop(path.join(BIN, 'deaf-ready'), [], { timeout: 200, agentId: AGENT });
+      const rejection = p.then(() => null, (e: unknown) => e);   // handled before anything rejects
+      await untilChildIsListening();                              // the program now ignores SIGTERM
+      notifyUserStop(AGENT);
+      await vi.advanceTimersByTimeAsync(200);                     // the run's own bound fires as well
+      expect(vi.getTimerCount(), 'Stop plus the time bound arm one SIGKILL follow-up, not one per path').toBe(1);
+      await vi.advanceTimersByTimeAsync(3_000);                   // the grace passes: SIGKILL
+      expect(await rejection, 'the deaf program is gone').toBeInstanceOf(Error);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('the runner: no SIGKILL follow-up is left pending once the child has exited', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const p = runBoundToTheStop(path.join(BIN, 'quits-on-term'), [], { timeout: 200, agentId: AGENT });
+      const rejection = p.then(() => null, (e: unknown) => e);
+      await untilChildIsListening();
+      await vi.advanceTimersByTimeAsync(200);                     // the bound fires: SIGTERM, one follow-up armed; the program quits on SIGTERM
+      expect(await rejection, 'ended by its bound').toBeInstanceOf(Error);
+      expect(vi.getTimerCount(), 'the follow-up was cleared when the child exited').toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('the runner: a throwing spawn releases the waiter; a standing Stop rejects as never started', async () => {

@@ -65,28 +65,33 @@ export function signalProcessTree(child: Pick<ProcessTreeRoot, 'pid' | 'kill'>, 
 /** Each agent's commands that have not ended yet, as the cut that ends one. */
 const running = new Map<string, Set<() => void>>();
 
-export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): void {
+export function endsWithTheStop(agentId: string, child: ProcessTreeRoot): () => void {
   if (child.pid !== undefined) rememberGroup(child.pid);
   let over = false;
+  let kill: ReturnType<typeof setTimeout> | null = null;
   const cut = (): void => {
     if (over) return;
     signalProcessTree(child, 'SIGTERM');
-    setTimeout(() => signalProcessTree(child, 'SIGKILL'), KILL_GRACE_MS).unref();
+    // One escalation per child: the Stop, a thrown turn's teardown and the runner's own bound
+    // all call this same cut, and a second call must not arm a second SIGKILL timer.
+    kill ??= setTimeout(() => signalProcessTree(child, 'SIGKILL'), KILL_GRACE_MS).unref();
   };
   const wait = untilUserStop(agentId);
-  if (wait.already) { cut(); return; }
+  if (wait.already) { cut(); return cut; }
   let cuts = running.get(agentId);
   if (!cuts) { cuts = new Set(); running.set(agentId, cuts); }
   cuts.add(cut);
   void wait.stopped.then(cut);
   const settle = (): void => {
     over = true;
+    if (kill) clearTimeout(kill);   // the child is gone: no kill timer may outlive it
     wait.dispose();
     cuts.delete(cut);
     if (cuts.size === 0 && running.get(agentId) === cuts) running.delete(agentId);
   };
   child.once('close', settle);
   child.once('error', settle);
+  return cut;
 }
 
 /** A turn that threw is over: end whatever it left running for this agent. Returns how many. */

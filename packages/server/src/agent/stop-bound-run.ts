@@ -55,20 +55,25 @@ export function runBoundToTheStop(program: string, argv: readonly string[], opts
     try {
       child = spawn(program, [...argv], { detached: true, stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     } catch (err) { stop?.dispose(); reject(err); return; }   // the waiter is not left behind
-    if (opts.agentId !== undefined) endsWithTheStop(opts.agentId, child);
+    const cutByStop = opts.agentId === undefined ? null : endsWithTheStop(opts.agentId, child);
     let cut = false;
     void stop?.stopped.then(() => { cut = true; });
     let stdout = '';
     let stderr = '';
     let fault: string | null = null;
     let closed = false;
+    let kill: ReturnType<typeof setTimeout> | null = null;
+    const armKill = (): void => {
+      kill ??= setTimeout(() => { if (!closed) signalProcessTree(child, 'SIGKILL'); }, KILL_GRACE_MS).unref();
+    };
     const end = (why: string): void => {
       fault ??= why;
+      if (cutByStop) { cutByStop(); return; }   // the stop's own cut signals and arms the one timer
       signalProcessTree(child, 'SIGTERM');
-      setTimeout(() => { if (!closed) signalProcessTree(child, 'SIGKILL'); }, KILL_GRACE_MS).unref();
+      armKill();
     };
     const bound = setTimeout(() => end(`timed out after ${opts.timeout} ms`), opts.timeout);
-    const done = (): void => { closed = true; clearTimeout(bound); stop?.dispose(); };
+    const done = (): void => { closed = true; clearTimeout(bound); if (kill) clearTimeout(kill); stop?.dispose(); };
     child.stdout?.setEncoding('utf-8').on('data', (d: string) => { stdout += d; if (stdout.length > maxBuffer) end('stdout maxBuffer exceeded'); });
     child.stderr?.setEncoding('utf-8').on('data', (d: string) => { stderr += d; if (stderr.length > maxBuffer) end('stderr maxBuffer exceeded'); });
     child.once('error', (err) => { done(); reject(Object.assign(err, { stderr })); });
