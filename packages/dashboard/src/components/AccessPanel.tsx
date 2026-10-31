@@ -4,7 +4,6 @@ import { ACCESS_CHANNELS } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { AccessCatalog } from '../lib/api';
 import { useToast } from '../hooks/useToast';
-import { useContentChange } from '../lib/use-content-change';
 import { TechniqueSelector } from './TechniqueSelector';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
 import { Check, Choice, Item, Row, Toggle, splitLabel } from './AccessControls';
@@ -15,6 +14,7 @@ import {
   setMaster, setPlaud, setTechnique, setTechniqueAccess, setToolMode, techniqueAccessOn,
   techniqueChecked, toolMode, type AccountRow, type Provider, type ToolMode,
 } from '../lib/access-edits';
+import { useContentChange } from '../lib/use-content-change';
 import { CHANNEL_LABEL, accessDigest, knowsSummary, reachSummary, talkSummary, toolsSummary } from '../lib/access-summary';
 import {
   buildLegacyAccess, legacyDirty, legacyReachSummary, manageSummary, readLegacyAccess, type LegacyAccess,
@@ -102,7 +102,6 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   // per-agent — "I keep this shut" is a fact about the owner.
   const { isCollapsed, toggle } = usePanelCollapse('agent.access.collapse', true);
   const collapsed = isCollapsed('access');
-
   useContentChange(agent.effectiveGrants ?? null, (next) => setDraft(next ? clone(next) : null));
 
   useEffect(() => {
