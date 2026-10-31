@@ -96,7 +96,7 @@ export interface CreateTechniqueParams {
 // Embed the technique's intent surface (name + description + tags), not its
 // body: recall matches the user's ASK against what the technique is FOR; the
 // body is loaded after selection. Techniques are global, so agentId is null.
-function embedTechniqueIntent(id: string): void {
+export function embedTechniqueIntent(id: string): void {
   try {
     const row = getDb().prepare('SELECT name, description, tags FROM techniques WHERE id = ?')
       .get(id) as { name: string; description: string | null; tags: string | null } | undefined;

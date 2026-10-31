@@ -15,7 +15,7 @@ import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
-import { TECHNIQUES_DIR } from './store.js';
+import { TECHNIQUES_DIR, embedTechniqueIntent } from './store.js';
 
 const logger = createLogger('technique-share-import');
 
@@ -178,7 +178,6 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
 
   // ── 6. Insert into the techniques table ──
   const db = getDb();
-  const instructions = fs.readFileSync(path.join(dirPath, 'TECHNIQUE.md'), 'utf-8');
   db.prepare(`
     INSERT INTO techniques (id, name, description, state, author_agent_id, author_agent_name, tags,
                             directory_path, enabled, version, usage_count, build_project_id, build_squad_id,
@@ -199,7 +198,8 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   db.prepare(`
     INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
     VALUES (?, ?, 1, ?, 'import', ?, '[]', datetime('now'))
-  `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
+  `).run(uuidv4(), newId, fs.readFileSync(path.join(dirPath, 'TECHNIQUE.md'), 'utf-8'), `Imported from ${originalId} (export ${manifest.exported_at})`);
+  embedTechniqueIntent(newId); // so recall can find it by what it is for, like one made by hand
 
   logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
   broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
