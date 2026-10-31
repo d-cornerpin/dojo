@@ -83,8 +83,8 @@ export function parseToolCallsFromText(text: string, offeredNames?: string[]): {
       args = JSON.parse(match[2].trim());
     } catch {
       logger.warn('Failed to parse tool call arguments', { name, raw: match[2].trim() });
+      args = { __malformed_args: match[2].trim().slice(0, 500) }; // the tool door answers this with a tool error; the tool never runs
     }
-
     toolCalls.push({
       id: `sdk_tool_${++toolCallIdCounter}`,
       name,
