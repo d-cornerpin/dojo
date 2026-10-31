@@ -711,13 +711,13 @@ function splitAddressList(value: string): string[] {
  *  minus the own address and everything already on To; a plain reply stays
  *  just From. Both lists keep the original display form, deduped
  *  case-insensitively by bare address. */
-function replyAllRecipients(from: string, to: string, cc: string, ownEmail: string | null): { to: string; cc: string } {
+function replyAllRecipients(from: string, to: string, cc: string, ownEmail: string | null, primary: string = from): { to: string; cc: string } {
   const own = ownEmail?.trim().toLowerCase() ?? '';
   const ownFrom = own !== '' && bareAddress(from).toLowerCase() === own;
   const seen = new Set<string>();
   const keptTo: string[] = [];
   const keptCc: string[] = [];
-  for (const addr of ownFrom ? splitAddressList(to) : splitAddressList(from)) {
+  for (const addr of ownFrom ? splitAddressList(to) : splitAddressList(primary)) {
     const bare = bareAddress(addr);
     if (!bare) continue;
     const key = bare.toLowerCase();
@@ -747,7 +747,7 @@ async function gmailReplyContext(
   action: string,
   ownEmail: string | null,
 ): Promise<{ ok: true; ctx: GmailReplyContext } | { ok: false; error: string }> {
-  const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Message-ID`;
+  const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To`;
   const orig = await googleRead(origUrl, agentId, agentName, action, { messageId, slot }, slot);
   if (!orig.ok) return { ok: false, error: `Error fetching original message: ${orig.error}` };
 
@@ -757,9 +757,10 @@ async function gmailReplyContext(
   const to = headers.find(h => h.name === 'To')?.value ?? '';
   const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
   const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
+  const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to')?.value ?? '';
   const recipients = replyAll
-    ? replyAllRecipients(from, to, cc, ownEmail)
-    : { to: from, cc: '' };
+    ? replyAllRecipients(from, to, cc, ownEmail, replyToHeader || from)
+    : { to: replyToHeader || from, cc: '' };
   return {
     ok: true,
     ctx: {
