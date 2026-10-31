@@ -55,7 +55,7 @@ const DEFAULT_BASE = '1b3f5f7';
 const BASE = sinceArg ?? process.env.DOJO_ARC_BASE ?? DEFAULT_BASE;
 const BUDGET = Number.isFinite(budgetArg) ? budgetArg : 5;
 
-const TRAILER = /^Gate-Waiver:[ \t]*(.*)$/;
+const TRAILER = /^Gate-Waiver:[ \t]*(.*)$/i;
 const MANIFEST_REL = 'deploy/checks/spine-manifest.json';
 
 function git(args) {
@@ -129,7 +129,7 @@ console.log(`     ────────────────────�
 console.log(`     arc total         ${String(total).padStart(4)}  /  ${BUDGET}`);
 console.log('');
 console.log('  Reproduce the trailer count:');
-console.log(`     git log --format='%H %s%n%b' ${BASE}..HEAD | command grep -c '^Gate-Waiver:'`);
+console.log(`     git log --format='%H %s%n%b' ${BASE}..HEAD | command grep -ci '^Gate-Waiver:'`);
 console.log('');
 
 if (wellFormed.length) {
