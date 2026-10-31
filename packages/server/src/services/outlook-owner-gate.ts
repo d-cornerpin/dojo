@@ -1,14 +1,14 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 // services/outlook-owner-gate.ts — is an Outlook email ever confirmed as the owner's? (P44, review R1)
 //
-// NOT YET. What Exchange Online's own `Authentication-Results` header looks like on a delivered message (whether it
-// carries an authserv-id at all, and which) has not been checked against a real message on the dev box. Until it has,
-// "the header the provider wrote" cannot be told from one the sender wrote, so Outlook owner confirmation fails
-// CLOSED: every Outlook email is unconfirmed. The parser and its tests stay; opening this gate is one line, made only
-// after a real delivered header (external, same-domain, same-tenant) has been read and the verdict's Microsoft shape set.
+// YES, since live check C3 (2026-10-31, overhaul-plans/v35-live-checks-status.md). Exchange Online's real topmost
+// `Authentication-Results` header on a delivered message reads `mx.microsoft.com 1; spf=...; dkim=...; dmarc=pass action=none
+// header.from=<domain>;compauth=pass reason=100`, the same shape from an external Gmail sender, an external Microsoft 365 sender and
+// a self-send. The verdict (`mail-owner-verdict.ts`) accepts that authserv-id, with or without the version token. Same-tenant
+// internal mail was not covered by the check: if it carries no Microsoft-stamped topmost header it stays unconfirmed (fail closed).
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/** False until a real Exchange header has been checked on the dev box (release gate I5). */
+/** True: a real Exchange header has been checked (live check C3, 2026-10-31). */
 export function outlookOwnerConfirmationOpen(): boolean {
-  return false;
+  return true;
 }

@@ -48,6 +48,11 @@ describe('P44 C2 — the platform\'s own sends are never the owner', () => {
     expect(await arrival([{ name: 'message-id', value: messageId.toUpperCase() }])).toEqual({ state: 'none' });
   });
 
+  it('Gmail rewrites Message-ID on delivery: the rewritten Message-ID plus the recorded X-Platform-Send-Id is still not the owner', async () => {
+    const { sendId } = newPlatformSend();
+    expect(await arrival([{ name: 'Message-ID', value: '<CAF-rewritten-by-gmail@mail.example.test>' }, { name: 'X-Platform-Send-Id', value: sendId }])).toEqual({ state: 'none' });
+  });
+
   it('an Outlook sendMail carries the recorded x- header; a reply or forward is recorded from its Sent Items copy', async () => {
     const [h] = graphSendHeaders();
     expect(isPlatformSent([{ name: h.name, value: h.value }])).toBe(true);

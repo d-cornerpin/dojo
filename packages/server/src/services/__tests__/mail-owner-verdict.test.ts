@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-vi.mock('../outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));   // the parser and its tests stay; the real gate is closed (outlook-owner-never-confirms-today.test.ts)
+vi.mock('../outlook-owner-gate.js', () => ({ outlookOwnerConfirmationOpen: () => true }));   // the parser and its tests stay; the real gate is open (outlook-owner-gate-open.test.ts)
 
 import { ownerEmailVerdict } from '../mail-owner-verdict.js';
 
