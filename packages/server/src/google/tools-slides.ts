@@ -2754,7 +2754,7 @@ export async function executeGoogleSlidesTool(
             if (caps.length > 0 && !caps.includes('vision')) {
               return err(
                 `Your model does not support vision input — exporting slide PNGs would be wasteful because file_read on the resulting paths would have its image blocks stripped before the model sees them. ` +
-                `Skip slides_export_pngs for this turn. Options: (a) ask the user to switch your model to a vision-capable one (look for the "Vision" badge in Settings → Models), or (b) delegate the visual review to a vision-capable peer agent via send_to_agent + spawn_agent.`,
+                `Skip slides_export_pngs for this turn. Options: (a) ask the owner to switch your model to a vision-capable one (look for the "Vision" badge in Settings → Models), or (b) delegate the visual review to a vision-capable peer agent via send_to_agent + spawn_agent.`,
               );
             }
           }

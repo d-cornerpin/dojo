@@ -265,7 +265,7 @@ export async function executeVaultRemember(
         `Too long for a [${type}] vault entry: ${content.length} chars, cap is ${cap}. ` +
         `Vault entries are compressed shorthand, not prose. Rewrite it shorter: lead with the noun, ` +
         `cut filler words, keep only the durable fact (example shape: "Tunnel: Cloudflare named. Reason: self-hosted integration."), ` +
-        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
+        `then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
         `Do not report this as saved or stored; nothing was written.`
       );
     }
@@ -275,7 +275,7 @@ export async function executeVaultRemember(
         `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
         `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +
         `drop the "the user/we/I did X" framing, keep only the durable fact under ${cap} chars, ` +
-        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
+        `then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
         `Do not report this as saved or stored; nothing was written.`
       );
     }

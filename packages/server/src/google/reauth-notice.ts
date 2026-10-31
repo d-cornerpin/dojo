@@ -89,7 +89,7 @@ export function notifyGoogleReauthOnce(): void {
         '[Engine hint: A security update changed how DOJO connects to Google ' +
         '(the OAuth client now sits behind a broker). The user\'s previously-connected ' +
         'Google accounts need a ONE-TIME reconnect because their old credentials no longer ' +
-        'apply. If the user asks why Google disconnected or how to fix it, explain it is a ' +
+        'apply. If the person you are talking to asks why Google disconnected or how to fix it, explain it is a ' +
         'one-time security update and walk them to Settings > Channels > Google, where each ' +
         'account shows a Reconnect button. IMPORTANT: the reconnect must be done in a browser ' +
         'ON the computer running DOJO (open the dashboard via localhost there), NOT from a phone ' +

@@ -23,70 +23,6 @@ export interface AllowEntry { readonly file: string; readonly line: string; read
 
 export const SWEEP: readonly SweepEntry[] = [
  {
-  "id": "S001",
-  "file": "agent/a2a-transport.ts",
-  "line": 863,
-  "old": "threadInfo = `\\n\\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the user, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;",
-  "new": "threadInfo = `\\n\\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the owner, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;",
-  "how": "static: these A2A ambient-thread notes reach an agent with no human on the other end; the person who matters is the owner"
- },
- {
-  "id": "S002",
-  "file": "agent/a2a-transport.ts",
-  "line": 870,
-  "old": "threadInfo = `\\n\\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the user should know about, take action next time you wake (e.g. iMessage them).]`;",
-  "new": "threadInfo = `\\n\\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the owner should know about, take action next time you wake (e.g. iMessage them).]`;",
-  "how": "static: these A2A ambient-thread notes reach an agent with no human on the other end; the person who matters is the owner"
- },
- {
-  "id": "S003",
-  "file": "agent/a2a-transport.ts",
-  "line": 1780,
-  "old": "`${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told the `",
-  "new": "`${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told `",
-  "how": "drop the trailing word `the ` so the next line's ${askerWords} reads `told the owner` / `told Pat Example` (askerWords already carries its own `the`)"
- },
- {
-  "id": "S004",
-  "file": "agent/a2a-transport.ts",
-  "line": 1781,
-  "old": "+ `user that plainly, in its own voice, so they are not left waiting. If the user should `",
-  "new": "+ `${askerWords} that plainly, in its own voice, so they are not left waiting. If ${askerWords} should `",
-  "how": "in tellAgentTheJoinFailed(join, what): define const askerWords = compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner' as its first statement. S003 (the line above) drops the word `the `; this line supplies it through askerWords"
- },
- {
-  "id": "S005",
-  "file": "agent/a2a-transport.ts",
-  "line": 1783,
-  "old": "+ `your own words on your next turn, directly in the conversation.`,",
-  "new": "+ `your own words on your next turn, as your written reply if that turn is talking to them, otherwise in an explicit send that names them.`,",
-  "how": "same function; no address needed (the next turn's own block names who it is talking to)"
- },
- {
-  "id": "S006",
-  "file": "agent/a2a-transport.ts",
-  "line": 2452,
-  "old": "+ `came back. TELL THE OWNER NOW, in your own words, directly in this conversation: what you asked for, `",
-  "new": "+ `came back. TELL ${askerWords.toUpperCase()} NOW, in your own words, as your written reply if this turn is talking to them, otherwise in an explicit send that names them: what you asked for, `",
-  "how": "in steerAgentToTellOwnerStuck(join, rung): add as first statement const askerWords = (same expression as S004); also change the line above this one (`The owner is still waiting on the request you delegated, ...`) so `The owner` becomes `${askerWords === 'the owner' ? 'The owner' : askerWords}`. The turn this rides may belong to someone else, so the route is conditional, never 'this conversation'"
- },
- {
-  "id": "S007",
-  "file": "agent/a2a-transport.ts",
-  "line": 2454,
-  "old": "+ `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call any send `",
-  "new": "+ `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call a send `",
-  "how": "same function as S006: the no-send rule only holds when this turn is talking to the asker; the next line finishes the sentence"
- },
- {
-  "id": "S008",
-  "file": "agent/a2a-transport.ts",
-  "line": 2455,
-  "old": "+ `tool; the engine routes your reply.`;",
-  "new": "+ `tool when this turn is talking to them; the engine routes your written reply.`;",
-  "how": "same function as S006"
- },
- {
   "id": "S011",
   "file": "agent/brokers/proc.ts",
   "line": 130,
@@ -204,30 +140,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 51,
   "old": "`If you can't tell what the user wants done with it from context (an active task, a matching technique, or the recent conversation), ask them one specific question instead of guessing.]`",
   "new": "`If you can't tell what the person you are talking to wants done with it from context (an active task, a matching technique, or the recent conversation), ask them one specific question instead of guessing.]`",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S043",
-  "file": "agent/v2/classifiers/loop.ts",
-  "line": 212,
-  "old": "`The user does not need more verification. The previous result is the answer; trust it. ` +",
-  "new": "`The person you are talking to does not need more verification. The previous result is the answer; trust it. ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S044",
-  "file": "agent/v2/classifiers/loop.ts",
-  "line": 213,
-  "old": "`Respond to the user with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +",
-  "new": "`Respond to the person you are talking to with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S045",
-  "file": "agent/v2/classifiers/loop.ts",
-  "line": 214,
-  "old": "`If you genuinely need different information, ask the user a direct question instead.`,",
-  "new": "`If you genuinely need different information, ask the person you are talking to a direct question instead.`,",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
@@ -487,22 +399,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S118",
-  "file": "google/reauth-notice.ts",
-  "line": 92,
-  "old": "'apply. If the user asks why Google disconnected or how to fix it, explain it is a ' +",
-  "new": "'apply. If the person you are talking to asks why Google disconnected or how to fix it, explain it is a ' +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S119",
-  "file": "google/tools-slides.ts",
-  "line": 2757,
-  "old": "`Skip slides_export_pngs for this turn. Options: (a) ask the user to switch your model to a vision-capable one (look for the \"Vision\" badge in Settings → Models), or (b) delegate the visual review to a vision-capable peer agent via send_to_agent + spawn_agent.`,",
-  "new": "`Skip slides_export_pngs for this turn. Options: (a) ask the owner to switch your model to a vision-capable one (look for the \"Vision\" badge in Settings → Models), or (b) delegate the visual review to a vision-capable peer agent via send_to_agent + spawn_agent.`,",
-  "how": "static wording: switching the model is the OWNER's act"
- },
- {
   "id": "S120",
   "file": "google/tools-write.ts",
   "line": 1641,
@@ -540,38 +436,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 298,
   "old": "lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\\'t have the full string, call the source tool again.');",
   "new": "lines.push('- **When sharing a URL or file path with the person you are talking to**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\\'t have the full string, call the source tool again.');",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S138",
-  "file": "tracker/tools.ts",
-  "line": 689,
-  "old": "+ `Nobody has been told but you. If the user should know — and if they asked for this `",
-  "new": "+ `Nobody has been told but you. If the person who asked should know — and if they asked for this `",
-  "how": "static wording: this text is written outside any turn (a later turn reads it), so it must not say 'the person you are talking to'; it names the person who asked"
- },
- {
-  "id": "S139",
-  "file": "tracker/tools.ts",
-  "line": 1463,
-  "old": "'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +",
-  "new": "'ASK_USER: This reminder needs a time. Ask the person you are talking to when they would like to be ' +",
-  "how": "static wording, no plumbing"
- },
- {
-  "id": "S140",
-  "file": "tracker/tools.ts",
-  "line": 1851,
-  "old": "`If you actually have a user-facing question, ask the user first then re-pause with a concrete \"waiting for X\" reason.`",
-  "new": "`If you actually have a user-facing question, ask the person you are talking to first then re-pause with a concrete \"waiting for X\" reason.`",
-  "how": "static wording, no plumbing"
- },
- {
-  "id": "S141",
-  "file": "vault/tools.ts",
-  "line": 268,
-  "old": "`then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +",
-  "new": "`then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {

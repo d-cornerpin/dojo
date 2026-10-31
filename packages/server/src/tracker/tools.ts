@@ -686,7 +686,7 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
         agentId: getPrimaryAgentId(),
         content:
           `[System] A project you own has ended with failed pieces: ${fallenFacts} `
-          + `Nobody has been told but you. If the user should know — and if they asked for this `
+          + `Nobody has been told but you. If the person who asked should know — and if they asked for this `
           + `work, they should — WRITE it to them in your own words on your next turn. Your written `
           + `reply goes to whoever that turn is talking to (its [Turn context] block says who); if `
           + `that is not the person who asked, reach them with an explicit send that names them as `
@@ -1460,7 +1460,7 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
   const localTime = (args.local_time as string | undefined)?.trim();
   if (!when && !localTime) {
     return (
-      'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
+      'ASK_USER: This reminder needs a time. Ask the person you are talking to when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
       // PHASE-6 T0C-W: the wall-clock alternative is offered again — declared on
       // work_open and forwarded by this door since this task. See scheduleEchoLines.
@@ -1848,7 +1848,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         return (
           `Error: this pause reason ("${pauseNotes.slice(0, 100)}") reads as an attempt to silence the PM, not a real wait condition. ` +
           `If you're stuck, use \`status="blocked"\` with the real reason. ` +
-          `If you actually have a user-facing question, ask the user first then re-pause with a concrete "waiting for X" reason.`
+          `If you actually have a user-facing question, ask the person you are talking to first then re-pause with a concrete "waiting for X" reason.`
         );
       }
     }

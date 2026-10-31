@@ -209,9 +209,9 @@ export function loopDetector(
       repeatCount: repeatCount + 1,
       refusalMessage:
         `STOP, you have called \`${call.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. ` +
-        `The user does not need more verification. The previous result is the answer; trust it. ` +
-        `Respond to the user with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
-        `If you genuinely need different information, ask the user a direct question instead.`,
+        `The person you are talking to does not need more verification. The previous result is the answer; trust it. ` +
+        `Respond to the person you are talking to with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
+        `If you genuinely need different information, ask the person you are talking to a direct question instead.`,
     };
   }
 

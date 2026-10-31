@@ -860,14 +860,14 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     // when a sub-agent finished work, the assigner never woke to handle
     // the completion.
     const verb = effectiveIntent === 'COMPLETE' ? 'completion' : 'failure';
-    threadInfo = `\n\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the user, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
+    threadInfo = `\n\n[Thread ${threadShort} | Closed, this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the owner, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
   } else {
     // True no-wake intents (FYI/STATUS), ambient context only. If the
     // content is genuinely something the user/owner cares about, the
     // receiver can still act on it next time they wake (e.g. iMessage
     // the owner during their next turn). Sender should have used a wake
     // intent if action is actually required.
-    threadInfo = `\n\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the user should know about, take action next time you wake (e.g. iMessage them).]`;
+    threadInfo = `\n\n[Thread ${threadShort} | No reply expected on this thread. Ambient context, the sender used a no-wake intent (${effectiveIntent}). If the content is something the owner should know about, take action next time you wake (e.g. iMessage them).]`;
   }
 
   // Engine-injected hint for the primary agent when a sub-agent ships a
@@ -1771,16 +1771,17 @@ const JOIN_STEER_LABEL = '[Engine]';
  * carries the 2026-07-30 ruling's nudge verbatim: if the user should know more, tell them.
  */
 function tellAgentTheJoinFailed(join: JoinState, what: string): void {
+  const askerWords = compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner';
   try {
     insertEngineEventIfAbsent({
       work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
       id: uuidv4(),
       agentId: join.agentId,
       content:
-        `${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told the `
-        + `user that plainly, in its own voice, so they are not left waiting. If the user should `
+        `${JOIN_STEER_LABEL} A piece of work you delegated never came back: ${what} The platform has told `
+        + `${askerWords} that plainly, in its own voice, so they are not left waiting. If ${askerWords} should `
         + `know more — what you were after, whether it is worth another try — WRITE it to them in `
-        + `your own words on your next turn, directly in the conversation.`,
+        + `your own words on your next turn, as your written reply if that turn is talking to them, otherwise in an explicit send that names them.`,
       sourceAgentId: null,
       originIntent: 'fanout_join',
       turnNumber: null,
@@ -2443,16 +2444,17 @@ function joinDriveCountOnce(workId: string): boolean {
  * user things, the agent does (owner correction, 2026-08-05).
  */
 function steerAgentToTellOwnerStuck(join: JoinState, rung: JoinDriveDecision): void {
+  const askerWords = compileAskerFromMeta(askRowForJoin(join)?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination))?.name ?? 'the owner';
   const pieces = joinPieces(join.id);
   const back = pieces.filter((p) => (p.content ?? '').trim().length > 0).length;
   const steer =
     `${JOIN_STEER_LABEL} `
-    + `The owner is still waiting on the request you delegated, and the platform has brought you back to it `
+    + `${askerWords === 'the owner' ? 'The owner' : askerWords} is still waiting on the request you delegated, and the platform has brought you back to it `
     + `${rung.redrives} time(s) without a reply reaching them. ${back} of ${join.total} delegated piece(s) `
-    + `came back. TELL THE OWNER NOW, in your own words, directly in this conversation: what you asked for, `
+    + `came back. TELL ${askerWords.toUpperCase()} NOW, in your own words, as your written reply if this turn is talking to them, otherwise in an explicit send that names them: what you asked for, `
     + `what came back, and — plainly — that you have not finished it. If you can give them the combined `
-    + `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call any send `
-    + `tool; the engine routes your reply.`;
+    + `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call a send `
+    + `tool when this turn is talking to them; the engine routes your written reply.`;
   insertEngineEventIfAbsent({
     work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
     id: uuidv4(), agentId: join.agentId, content: steer,
