@@ -152,7 +152,7 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
 // model's job. Accepts a tz-less "YYYY-MM-DDTHH:MM[:SS]" (or space separator)
 // plus an optional IANA timezone (defaults to the box timezone).
 const WALL_CLOCK_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
-function resolveLocalWallClock(
+export function resolveLocalWallClock(
   localTime: string,
   tz?: string,
 ): { ok: true; iso: string; zone: string } | { ok: false; error: string } {
@@ -175,6 +175,18 @@ function resolveLocalWallClock(
   try {
     const instant = wallToInstant(wall, zone);
     if (isNaN(instant.getTime())) {
+      return { ok: false, error: `Error: local_time="${localTime}" in timezone "${zone}" did not resolve to a valid instant.` };
+    }
+    // The regex checks SHAPE, not sense: Feb 31 / month 13 / hour 25 pass it,
+    // and wallToInstant normalises the overflow into a day (or hour) nobody
+    // asked for. Refuse what the calendar does not have. A time inside a
+    // spring-forward gap round-trips to the SAME day (moved forward within
+    // it), so it stays accepted — the day, not the hour, is what must return.
+    const back = instantToWall(instant.getTime(), zone);
+    if (
+      wall.hour > 23 || wall.minute > 59 || wall.second > 59 ||
+      back.year !== wall.year || back.month !== wall.month || back.day !== wall.day
+    ) {
       return { ok: false, error: `Error: local_time="${localTime}" in timezone "${zone}" did not resolve to a valid instant.` };
     }
     return { ok: true, iso: instant.toISOString(), zone };
