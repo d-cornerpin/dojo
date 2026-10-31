@@ -51,6 +51,7 @@ import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
 import { injectTechniqueAndGapHints } from './technique-hints.js';
+import { techniqueRoomTokens } from '../../../../memory/technique-room.js';
 import { detectMultistepAndScaffold } from './multistep-detection.js';
 import { injectDelegationHintAndAttachments } from './delegation-and-attachments.js';
 import { runSteerCheckpoint } from './steer-checkpoint.js';
@@ -343,8 +344,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingSteer: null },
   );
 
-
-  await injectTechniqueAndGapHints(state, { agentId, turnCtx, lastUserMessageContent, mctx, messages });
+  await injectTechniqueAndGapHints(state, { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens: techniqueRoomTokens(ctx) });
 
   state = await detectMultistepAndScaffold(state, {
     agentId, turnNumber, turnCtx, db, counterparty, counterpartyIsAgentSender, lastUserMessageContent,

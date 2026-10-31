@@ -19,22 +19,23 @@ import type { AssemblyContext } from '../../../../prompt/registry/types.js';
 import type { AssembledContext } from '../../../../memory/assembler.js';
 import type { AgentTurnState } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
+import { techniqueFitsRoom } from '../../../../memory/technique-room.js';
 import { createLogger } from '../../../../logger.js';
 
 const logger = createLogger('v2-loop');
-
 export interface TechniqueHintsInput {
   readonly agentId: string;
   readonly turnCtx: TurnContext;
   readonly lastUserMessageContent: string | null;
   readonly mctx: AssemblyContext;
   readonly messages: AssembledContext['messages'];
+  readonly roomTokens?: number;   // what the array has left for this injection (`memory/technique-room.ts`)
 }
 
 /** Appends nothing to `state`: neither block writes it. Both mutate `mctx` and the
  *  message array in place, exactly as they did inside the loop body. */
 export async function injectTechniqueAndGapHints(state: AgentTurnState, input: TechniqueHintsInput): Promise<void> {
-  const { agentId, turnCtx, lastUserMessageContent, mctx, messages } = input;
+  const { agentId, turnCtx, lastUserMessageContent, mctx, messages, roomTokens } = input;
 
   // ── Technique matcher (Part VI #5, Phase 5) ──
   // Replaces v1's "MANDATORY: Check Techniques Before Starting Work"
@@ -113,7 +114,7 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
             const detail = getTechniqueDetail(strongMatch.technique.id);
             if (detail?.instructions && detail.instructions.length > 0) {
               const md = detail.instructions;
-              const tooLarge = md.length > MAX_INLINE_CHARS;
+              const tooLarge = md.length > MAX_INLINE_CHARS || !techniqueFitsRoom(md.length, roomTokens);   // t29: or more than the room left
               // Audit C12: the old implementation PREPENDED this text into
               // the user's own message, so an engine directive borrowed
               // tier-1 authority and structurally outranked the user's
@@ -209,7 +210,6 @@ export async function injectTechniqueAndGapHints(state: AgentTurnState, input: T
       }
     }
   }
-
 
   // ── Context-gap detection (2026-06-15, "ask when stuck") ──
   // The engine nudges the agent to ASK the user when it can SEE the agent
