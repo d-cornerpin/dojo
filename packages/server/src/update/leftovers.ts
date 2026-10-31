@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createLogger } from '../logger.js';
 import { deadInstallWorkDirs, pidAlive } from './install-tree.js';
 
@@ -8,6 +9,41 @@ const logger = createLogger('update-leftovers');
 /** Temp files the marker writer leaves when a kill lands between its temp write and its
  *  rename (`update-state.ts`'s `tempPath`). The record itself and its `.lock` cannot match. */
 const UPDATE_STATE_TMP = /^update-state\.json\.(\d+)\.(?:.+\.)?tmp$/;
+
+/**
+ * Pids of the processes that are still working inside any of `dirs` (dead installers' work dirs):
+ * a process whose command line names one of them (the `cp -Rc` of the dependency clone, `unzip`),
+ * or whose current folder is inside one (`npm install` in the staged tree). A server killed with
+ * SIGKILL leaves exactly these behind; removing the folder under them loses the race and leaves it
+ * in place for good, so they are stopped first. Anything unreadable counts as none found.
+ */
+export function writersInto(dirs: string[]): number[] {
+  if (dirs.length === 0) return [];
+  const into = (p: string): boolean => dirs.some((d) => p === d || p.startsWith(d + path.sep));
+  const found = new Set<number>();
+  try {
+    const ps = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    for (const line of ps.split('\n')) {
+      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (m && dirs.some((d) => m[2].includes(d + path.sep) || m[2].endsWith(d))) found.add(Number(m[1]));
+    }
+  } catch { /* no ps: nothing found */ }
+  try {
+    let pid = 0;
+    for (const line of execFileSync('lsof', ['-nP', '-d', 'cwd', '-Fpn'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\n')) {
+      if (line.startsWith('p')) pid = Number(line.slice(1));
+      else if (line.startsWith('n') && pid > 0 && into(line.slice(1))) found.add(pid);
+    }
+  } catch { /* no lsof, or a partial listing: what was found stands */ }
+  found.delete(process.pid);
+  return [...found];
+}
+
+function stopWriters(dirs: string[]): void {
+  for (const pid of writersInto(dirs)) {
+    try { process.kill(pid, 'SIGKILL'); logger.info('Stopped a process still writing into a dead installer\'s work dir', { pid }); } catch { /* already gone */ }
+  }
+}
 
 /**
  * EVERY start, before anything else: remove the leftovers of an update that was killed
@@ -37,7 +73,19 @@ export async function cleanUpdateLeftovers(dojoDir: string): Promise<{ deleted: 
     // log a clean-up that never happened. The callback is the contract it keeps.
     fs.rm(p, { recursive: true, force: true }, (err) => (err ? reject(err) : resolve()));
   });
-  const results = await Promise.allSettled(leftovers.map((p) => removeOne(p)));
+  // The writers go first. A SIGKILLed server leaves its `cp` running, and removing a folder under a
+  // live writer is what left it behind for good. Once they are stopped (a kill takes effect at once),
+  // a removal that still finds an entry in the folder is the dying writer's last one: ask again.
+  stopWriters(leftovers);
+  const removeStopped = async (p: string): Promise<void> => {
+    try { await removeOne(p); } catch (err) {
+      if (!fs.existsSync(p)) return;
+      stopWriters(leftovers);
+      await removeOne(p);
+      void err;
+    }
+  };
+  const results = await Promise.allSettled(leftovers.map((p) => removeStopped(p)));
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (r.status === 'fulfilled') {

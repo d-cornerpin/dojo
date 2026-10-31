@@ -128,13 +128,12 @@ describe('a killed update leaves nothing behind', () => {
     fs.mkdirSync(doomed, { recursive: true });
     fs.writeFileSync(path.join(doomed, 'busy.txt'), 'still being written by an orphan');
 
-    // One refusal, for that one folder only — the delete that failed once and, before the fix,
+    // The delete of that one folder is refused for as long as the sweep runs — a failed removal that, before the fix,
     // was never tried again.
     const realRm = fs.rm.bind(fs);
-    let refusedOnce = false;
+    let refusing = true;
     vi.spyOn(fs, 'rm').mockImplementation(((target: unknown, opts?: unknown, cb?: unknown) => {
-      if (!refusedOnce && String(target) === doomed) {
-        refusedOnce = true;
+      if (refusing && String(target) === doomed) {
         const busy = Object.assign(new Error(`ENOTEMPTY: directory not empty, rm '${String(target)}'`), { code: 'ENOTEMPTY' });
         if (typeof cb === 'function') { (cb as (e: unknown) => void)(busy); return undefined; }
         return Promise.reject(busy);
@@ -149,7 +148,8 @@ describe('a killed update leaves nothing behind', () => {
     const complaints = logLines.filter((l) => l.level === 'warn' && JSON.stringify(l.meta).includes('platform.staging-abc-2'));
     expect(complaints).toHaveLength(1);
 
-    // The next start: same sweep, nothing mocked this time. The folder goes.
+    // The next start: same sweep, nothing refused this time. The folder goes.
+    refusing = false;
     const second = await cleanUpdateLeftovers(dojo);
     expect(fs.existsSync(doomed)).toBe(false);
     expect(second.failed).toEqual([]);
