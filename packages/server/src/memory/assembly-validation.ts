@@ -559,12 +559,10 @@ export interface BoundaryCheckInput {
   systemPrompt: string;
   contextWindow: number;
   maxOutputTokens?: number;
-  /**
-   * t140: does THIS dial carry the agent's tools? Absent means yes (every turn dial). A
-   * `tools: false` dial — the summariser, the classifiers — sends no tool schemas, so charging
-   * it the agent's whole tool payload measured a budget for a request nobody was making, and on
-   * a small window that charge alone clamped the budget to zero.
-   */
+  /** t283: a declared utility dial's own output cap; absent = charge `maxOutputTokens`. */
+  dialOutputTokens?: number | null;
+  /** t140: does THIS dial carry the agent's tools? Absent = yes. A `tools: false` dial (summariser, classifiers) sends none, so charging it
+   *  the tool payload measured a budget for a request nobody was making (on a small window, zero). */
   toolsSent?: boolean;
   /** Lane id per message when the caller can supply one. See `repairAssembly`. */
   laneIds?: ReadonlyArray<string | null>;
@@ -588,7 +586,7 @@ export async function validateAtProviderBoundary(
   const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
   const policy = contextWindowPolicy(input.contextWindow, {
     toolPayloadTokens: input.toolsSent === false ? 0 : await measureAgentToolPayloadTokens(input.agentId),
-    maxOutputTokens: input.maxOutputTokens,
+    maxOutputTokens: input.dialOutputTokens ?? input.maxOutputTokens,
   });
   // The comparable budget is the assembler's OWN remaining budget: what it was allowed to
   // spend, minus the system prompt it had to spend it against. A divergence therefore means

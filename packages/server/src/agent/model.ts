@@ -35,6 +35,7 @@ import { broadcast } from '../gateway/ws.js';
 // this is a leaf edge — no cycle back through the runtime.
 import { registerAbortable, releaseAbortable } from './shared-state.js';
 import { redirectToAFreeModel } from './budget-redirect.js';
+import { utilityBoundaryOutputTokens } from './utility-boundary.js';
 import { utilityDial, utilityNumCtx, utilityOutputCap, utilityNumCtxExceedsConfigured, imageTokenAllowance, NUM_CTX_BLOCK, NUM_CTX_MARGIN_TOKENS } from './utility-dial.js';
 
 /**
@@ -3319,9 +3320,8 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
       systemPrompt,
       contextWindow: modelInfo.contextWindow,
       maxOutputTokens: modelInfo.maxOutputTokens,
-      // t140: the budget this dial is checked against is charged the tool payload only when
-      // this dial SENDS tools. A `tools: false` dial (the summariser, the classifiers) was
-      // charged the agent's whole tool surface, which on a small window is the entire budget.
+      // t140/t283: a dial is charged only what it SENDS: no tool payload when toolless, and its own output cap (64 for a title), not the everyday 4,096.
+      dialOutputTokens: utilityBoundaryOutputTokens(purpose, modelInfo.maxOutputTokens, params.utilityTargetTokens, params.outputRoomAsk),
       toolsSent: tools !== false,
       laneIds: collectMessageLaneIds(messages),
     });
