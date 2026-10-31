@@ -696,11 +696,16 @@ export const commsHandlers: ToolHandlerMap = {
       : recipient;
     // A "0/N" inside "sent … with 0/N attachment(s)" reads as a send that
     // happened. When every file failed and only the words were re-sent alone,
-    // say the files did not go and what to do about it.
+    // say the files did not go and what to do about it. And the mirror case: a
+    // file that went out while its caption failed comes back ok=true with
+    // textSent=false (the bridge already retried the words once), so
+    // "with 1/1 attachment(s)" alone would tell the agent the whole message
+    // landed while the person got a picture with none of its words.
+    const wordsLost = message.trim() !== '' && result.textSent === false && result.sentFiles.length > 0;
     const attachSummary = attachmentPaths.length > 0
       ? result.sentFiles.length === 0
         ? ` as text only - NONE of the ${attachmentPaths.length} attachment(s) went out${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}. Tell the recipient the files did not arrive, or try again`
-        : ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}`
+        : ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}${wordsLost ? ' - the file(s) went out but your message text did NOT arrive. Tell the recipient or send the words again' : ''}`
       : '';
     // Audit detail captures the full sharing context so a later review
     // can answer "did the primary agent over-share with sender X?" without
@@ -712,6 +717,9 @@ export const commsHandlers: ToolHandlerMap = {
     ];
     if (attachmentPaths.length > 0) {
       auditDetailParts.push(`+ ${result.sentFiles.length}/${attachmentPaths.length} attachments`);
+    }
+    if (wordsLost) {
+      auditDetailParts.push('words not delivered');
     }
     if (recipientRecord) {
       auditDetailParts.push(`recipientLevel=${recipientRecord.sharing_level}`);
