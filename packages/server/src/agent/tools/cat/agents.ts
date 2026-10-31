@@ -947,6 +947,7 @@ export const agentsHandlers: ToolHandlerMap = {
 
     const bcThreadId = args.thread_id as string | undefined;
     const sent: string[] = [];
+    const sentIds = new Set<string>();
 
     // Filter out injured/paused agents, don't try to wake broken agents
     const healthyMembers = groupMembers.filter(m => m.status !== 'error' && m.status !== 'paused');
@@ -968,6 +969,7 @@ export const agentsHandlers: ToolHandlerMap = {
       });
       if (bcResult.delivered) {
         sent.push(member.name);
+        sentIds.add(member.id);
         // RC-12: one receipt per delivered recipient (recipient = that agent's
         // name) so the grounding ledger recognizes the broadcast as a real
         // cross-turn delivery. skipAudit: the fan-out audit is handled by the
@@ -996,7 +998,14 @@ export const agentsHandlers: ToolHandlerMap = {
       }
     }
 
-    content = `Broadcast sent to ${sent.length} agent(s): ${sent.join(', ')}`;
+    const notReached = groupMembers.filter((m) => !sentIds.has(m.id)).map((m) => m.name);
+    if (sent.length === 0) {
+      content = `Error: the broadcast reached nobody. Not reached: ${notReached.join(', ')}. Agents in error or paused status are skipped, and the engine can also drop a delivery.`;
+      isError = true;
+      return { content, isError };
+    }
+    content = `Broadcast sent to ${sent.length} agent(s): ${sent.join(', ')}` +
+      (notReached.length > 0 ? `. Not reached: ${notReached.join(', ')}.` : '');
     return { content, isError };
   },
 
