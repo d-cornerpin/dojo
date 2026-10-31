@@ -44,15 +44,44 @@ function collectOwnLeaves(part: GmailBodyPart, out: GmailBodyPart[]): void {
   if (!part.filename && !part.body?.attachmentId && part.body?.data) out.push(part);
 }
 
+// The quote container's opening tag, as the mail program itself writes it: the same marker whatever language
+// the reply is in, so the cut needs no word lists (unlike the one in mail-quoted-text.ts).
+const QUOTE_MARKERS: RegExp[] = [
+  /class="gmail_quote/i,                      // Gmail (also matches gmail_quote_container)
+  /^<blockquote\b[^>]*\btype="cite"/i,        // Apple Mail, Thunderbird
+  /\bid="(?:divRplyFwdMsg|appendonsend)"/i,   // Outlook
+  /class="moz-cite-prefix"/i,                 // Thunderbird
+  /class="yahoo_quoted"/i,                    // Yahoo
+  /^<blockquote\b/i,                          // last resort: a quote block is a blockquote in every program
+];
+
+// The start of the first opening tag carrying one of the markers; -1 when the html carries none.
+function quoteContainerStart(html: string): number {
+  for (const m of html.matchAll(/<[a-z][^>]*>/gi)) {
+    if (QUOTE_MARKERS.some((re) => re.test(m[0]))) return m.index;
+  }
+  return -1;
+}
+
 /** P44: the text the sender wrote in the message's own body part — the first text/plain, else the first text/html with its
- *  tags stripped — and never the text of an attached or forwarded-as-attachment message. '' when there is none. */
+ *  tags stripped — and never the text of an attached or forwarded-as-attachment message. '' when there is none.
+ *  A reply from a mail program in another language quotes under a header line the word-list cut does not know, so when the
+ *  html part carries a quote container the mail program itself wrote, the owner's text is cut there. The direction of
+ *  error is one-way: this only ever makes the owner's words shorter, never adds — with no marker in the html the result
+ *  is exactly as before, and a marker that leaves nothing above the quote gives '' rather than a fallback to the plain
+ *  part, which carries the quote. */
 export function extractOwnGmailText(payload: GmailBodyPart | null | undefined): string {
   if (!payload) return '';
   const leaves: GmailBodyPart[] = [];
   collectOwnLeaves(payload, leaves);
   const type = (p: GmailBodyPart) => (p.mimeType ?? '').toLowerCase();
+  const htmlPart = leaves.find((p) => type(p) === 'text/html');
+  const html = htmlPart ? decode(htmlPart.body!.data!) : '';
+  if (htmlPart) {
+    const cut = quoteContainerStart(html);
+    if (cut >= 0) return stripHtmlTags(html.slice(0, cut)); // '' = the owner wrote nothing new above the quote.
+  }
   const plain = leaves.find((p) => type(p) === 'text/plain');
   if (plain) return decode(plain.body!.data!);
-  const html = leaves.find((p) => type(p) === 'text/html');
-  return html ? stripHtmlTags(decode(html.body!.data!)) : '';
+  return htmlPart ? stripHtmlTags(html) : '';
 }
