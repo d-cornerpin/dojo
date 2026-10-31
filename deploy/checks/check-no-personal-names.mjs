@@ -78,10 +78,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { checkStandIns, describeCollision } from './fixture-names.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const VERBOSE = process.argv.includes('--verbose');
+// `--hash <name>` prints the SHA-256 line to add to known-real-name-hashes.json, so the name never has to be written into a file.
+if (process.argv.includes('--hash')) {
+  const w = process.argv[process.argv.indexOf('--hash') + 1] ?? '';
+  console.log(crypto.createHash('sha256').update(w.toLowerCase()).digest('hex'));
+  process.exit(0);
+}
 
 // ── CORPUS ONE: WHAT REACHES A USER'S DISK ──────────────────────────────────
 const SHIPPED = [
@@ -534,6 +542,16 @@ const PATTERNS = [
     why: 'a personal account handle is identifying; the product\'s own public slug is exempted',
   },
   {
+    id: 'person-introduced-by-name',
+    // THE SHAPE THE SCRUB MISSED (lane t29): a real USER of the product (neither an agent on the roster,
+    // nor the owner, nor this checkout's git identity) was introduced in a comment as `a user ("<Name>")`
+    // and again as an upper-cased possessive in a test title. None of the runtime reads can know that
+    // person, so the cover is structural: a role noun followed by a quoted capitalised word, and a
+    // describe/it/test title whose first word is an upper-cased possessive.
+    re: /\b(?:user|customer|reporter|tester|client|friend|person|owner)\s*\(?\s*["“]([A-Z][a-z]{2,14})["”]\s*\)?|\b(?:describe|it|test)\(\s*["'`]([A-Z]{3,15})['’]S\b/g,
+    why: 'a person introduced by first name is personal information; say "a user" and keep what they did',
+  },
+  {
     id: 'logic-keyed-on-a-name',
     /**
      * ── D3: NOTHING MAY RELY ON A SPECIFIC NAME ──────────────────────────────────────────
@@ -585,6 +603,10 @@ const FIXTURES = [
   // address as its positive rows, which would have shipped both into a PUBLIC repository inside the
   // very gate written to keep them out. It was caught by reading the gate's own output. A fixture
   // proves a SHAPE; it never needs a real instance of one.
+  ['// A user ("Zorbikson") took the update while an agent waited', 'person-introduced-by-name'],
+  ['describe("ZORBIKSON\'S SET - a stable box stays stable", () => {', 'person-introduced-by-name'],
+  ['// A user took the update while an agent waited', null],
+  ['describe("THE REPORTING USER\'S SET - a stable box stays stable", () => {', null],
   ['const p = "/Users/qwertyuser/Documents/x";', 'home-path-username'],
   ['// measured at /Users/zzuser/.dojo/data/dojo.db', 'home-path-username'],
   ['// the owner\'s box: /Users/me/.dojo/logs', null],
@@ -692,8 +714,8 @@ const FIXTURES = [
 const FIX_WORD_ONLY = [
   ['// the harness bot ran it', 'Behavior', false],
   ['// Zergblatt ran it', 'Zergblatt', true],
-  ['    am_michael: { language: \'en-us\' },', 'Michael', false],
-  ['// asked Michael about it', 'Michael', true],
+  ['    am_zergblatt: { language: \'en-us\' },', 'Zergblatt', false],
+  ['// asked Zergblatt about it', 'Zergblatt', true],
   ['const marbles = true;', 'Arble', false],
 ];
 /** Review M1's second shape: an agent name written LOWERCASE as DATA — quoted only, which is what
@@ -705,8 +727,8 @@ const FIX_QUOTED_LOWER = [
   ["// prose about zergo outside any quotes", 'Zergo', false],
   ["const zergoCount = 1;   // an identifier, not data", 'Zergo', false],
   ["// a quote that spans no name: 'the primary agent'", 'Zergo', false],
-  ["  am_michael: { language: 'en-us' },", 'Michael', false],
-  ["  { voice: 'am_michael' },", 'Michael', false],
+  ["  am_zergblatt: { language: 'en-us' },", 'Zergblatt', false],
+  ["  { voice: 'am_zergblatt' },", 'Zergblatt', false],
 ];
 /** Lane t101: a name written straight after a literal `\n` escape, counted BOTH ways — found through
  *  the escape, and never conjured where the needle is genuinely part of a longer word. */
@@ -828,6 +850,25 @@ function stripComments(text) {
  * stripping them one at a time would leave every line of this file's own doctrine looking like code.
  * The caller strips the whole file once (newlines preserved, so line numbers still line up).
  */
+/**
+ * ── HALF 1d: REAL FIRST NAMES KNOWN ONLY BY HASH (lane t29) ──────────────────────────────────
+ * The roster, owner and git reads cannot know a real person who merely reported a bug. Their first names are therefore held as
+ * SHA-256 hashes of the lowercased word in `known-real-name-hashes.json` (never as words: this file may not contain a name), and every
+ * word-token of a scanned line is hashed and looked up. A voice-catalog key (`am_<name>:`) is a vendor identifier and is exempt by shape.
+ */
+const REAL_NAME_HASHES = (() => {
+  try { return new Set(JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'known-real-name-hashes.json'), 'utf8')).sha256 ?? []); }
+  catch { return new Set(); }
+})();
+const sha = (w) => crypto.createHash('sha256').update(w.toLowerCase()).digest('hex');
+const VENDOR_VOICE_LINE = /(?:^|[^A-Za-z0-9_])[a-z]{2}_[a-z]+['"]?\s*:/;
+function hashedNameHits(line, hashes = REAL_NAME_HASHES) {
+  if (hashes.size === 0 || VENDOR_VOICE_LINE.test(line)) return [];
+  const out = [];
+  for (const m of line.matchAll(/(?<![A-Za-z0-9_])[A-Za-z]{3,15}(?![A-Za-z0-9_])/g)) if (hashes.has(sha(m[0]))) out.push(m[0]);
+  return out;
+}
+
 function runPatterns(text, codeText) {
   const hits = [];
   for (const p of PATTERNS) {
@@ -887,6 +928,16 @@ function selfTest() {
     const ok = got === want;
     if (!ok) bad++;
     console.log(`  ${ok ? '✓' : '✗'} ${String(got ?? 'ignored').padEnd(24)} want ${String(want ?? 'ignored').padEnd(24)} ${text.slice(0, 62)}`);
+  }
+  console.log('── a real first name known only by hash (coined word hashed for the proof) ──');
+  {
+    const probe = new Set([sha('Zergblatt')]);
+    for (const [line, want] of [['// told Zergblatt about it', true], ['// ZERGBLATT came back', true], ['    am_zergblatt: { name: \'Zergblatt\' },', false], ['const zergblattCount = 1;', false], ['// told someone about it', false]]) {
+      const got = hashedNameHits(line, probe).length > 0;
+      const ok = got === want;
+      if (!ok) bad++;
+      console.log(`  ${ok ? '✓' : '✗'} ${String(got).padEnd(5)} want ${String(want).padEnd(5)} ${line.trim().slice(0, 52)}`);
+    }
   }
   console.log('── an agent name written lowercase as DATA (quoted only) ──');
   for (const [line, name, want] of FIX_QUOTED_LOWER) {
@@ -1134,6 +1185,7 @@ for (const rel of files) {
       if (re.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name', detail: name, text: rawLine.trim() });
       else if (lower.test(line)) findings.push({ rel, line: i + 1, kind: 'owner-name-in-string', detail: name, text: rawLine.trim() });
     }
+    for (const w of hashedNameHits(line)) findings.push({ rel, line: i + 1, kind: 'known-real-name', detail: w, text: rawLine.trim() });
     for (const h of runPatterns(line, codeLines[i] ?? '')) {
       findings.push({ rel, line: i + 1, kind: h.id, detail: h.captured ?? h.match, text: rawLine.trim() });
     }

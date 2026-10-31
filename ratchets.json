@@ -1728,7 +1728,7 @@
       "from": 1684,
       "to": 1736,
       "by": "PHASE-4 T4, the claimed-delivery rekey (2026-08-02)",
-      "why": "+52 for `owedSendObligations` and its type - the OBLIGATION half of the owner's live fixture. The floor it feeds used to trigger on a regex over the model's prose and fired three times on \"told Michael\" in a transcript; it triggers on a row now, and the row has to be readable from the module that owns obligations. The reader is 12 statements; the rest is the argument for why `claimed` is excluded and why `result_delivery_id IS NULL` is asked directly."
+      "why": "+52 for `owedSendObligations` and its type - the OBLIGATION half of the owner's live fixture. The floor it feeds used to trigger on a regex over the model's prose and fired three times on \"told <name>\" in a transcript; it triggers on a row now, and the row has to be readable from the module that owns obligations. The reader is 12 statements; the rest is the argument for why `claimed` is excluded and why `result_delivery_id IS NULL` is asked directly."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
