@@ -6,6 +6,7 @@ import { useToast } from '../hooks/useToast';
 import { AccessPanel } from '../components/AccessPanel';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
 import { QuietTimeCard } from '../components/QuietTimeCard';
+import { useGuardedLoad } from '../lib/load-guard';
 
 // Agent config overlay. This is the element for the /agents/:id route and
 // renders as a self-headered dojo3 panel (an overlay over the chat in the
@@ -121,7 +122,20 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   const [models, setModels] = useState<Model[]>([]);
   const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [promptTouched, setPromptTouched] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [listsFailed, setListsFailed] = useState(false);
+  const [listsTry, setListsTry] = useState(0);
+  // The prompt is saved whole (for the primary agent it is SOUL.md): it may only be saved on top of a
+  // prompt that was successfully read for THIS agent (lib/load-guard.ts).
+  const promptLoad = useGuardedLoad<string>(agent.id, async (id) => {
+    const r = await api.getAgentSystemPrompt(id);
+    return r.ok ? { ok: true as const, data: r.data.content } : r;
+  });
+  const loadedPrompt = promptLoad.loadedKey === agent.id ? promptLoad.data : null;
+  useEffect(() => {
+    if (loadedPrompt !== null) { setSystemPrompt(loadedPrompt); setPromptTouched(false); }
+  }, [loadedPrompt]);
 
   const [editedName, setEditedName] = useState(agent.name);
   const [selectedModelId, setSelectedModelId] = useState(
@@ -130,22 +144,21 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
 
   useEffect(() => {
     const load = async () => {
-      const [promptResult, modelsResult, providersResult] = await Promise.all([
-        api.getAgentSystemPrompt(agent.id),
+      const [modelsResult, providersResult] = await Promise.all([
         api.getModels(),
         api.getProviders(),
       ]);
-      if (promptResult.ok) setSystemPrompt(promptResult.data.content);
       if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled && !m.capabilities.includes('decision')));   // v3.5: never the Dojo's decision model
       if (providersResult.ok) {
         const map: Record<string, string> = {};
         for (const p of providersResult.data) map[p.id] = p.name;
         setProviderNameById(map);
       }
+      setListsFailed(!modelsResult.ok || !providersResult.ok);
       setLoading(false);
     };
     load();
-  }, [agent.id]);
+  }, [agent.id, listsTry]);
 
   const saveName = async () => {
     const trimmed = editedName.trim();
@@ -188,9 +201,15 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   };
 
   const saveSystemPrompt = async () => {
-    const result = await api.updateAgentConfig(agent.id, { systemPrompt });
-    if (result.ok) { toast.success('System prompt saved'); onUpdated(); }
-    else { toast.error(result.error || 'Could not save system prompt.'); }
+    // Never send a prompt that was not read for this agent, and never a blank the owner did not type.
+    if (!promptLoad.canSave(agent.id) || loadedPrompt === null) return;
+    if (!promptTouched && !systemPrompt.trim()) return;
+    const result = await api.updateAgentConfig(agent.id, { systemPrompt, systemPromptBase: loadedPrompt });
+    if (result.ok) { promptLoad.adopt(systemPrompt); toast.success('System prompt saved'); onUpdated(); }
+    else {
+      toast.error(result.error || 'Could not save system prompt.');
+      promptLoad.reload();   // the stored prompt moved: bring in the current one
+    }
   };
 
   if (loading) {
@@ -249,6 +268,12 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
           Current:{' '}
           {agent.modelId === 'auto' ? 'Auto (Smart Router)' : (agent.model?.name || 'None')}
         </div>
+        {listsFailed && (
+          <div className="fhelp">
+            Could not load the model list.{' '}
+            <button type="button" className="btn btn--sm" onClick={() => setListsTry((n) => n + 1)}>Retry</button>
+          </div>
+        )}
         <label className="flabel">Model</label>
         <div className="srow">
           <select
@@ -322,19 +347,32 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
               ? "This Sensei's stored soul. Edits here rewrite the file the model actually reads."
               : 'Instructions that shape how this agent behaves.'}
         </div>
-        <textarea
-          className="finput"
-          style={TEXTAREA_STYLE}
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          rows={12}
-          spellCheck={false}
-        />
-        <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
-          <button type="button" onClick={saveSystemPrompt} className="btn btn--sm">
-            Save Prompt
-          </button>
-        </div>
+        {promptLoad.status === 'failed' ? (
+          <>
+            <div className="fhelp">Could not load this agent’s prompt, so it can’t be edited right now. The saved prompt has not been changed.</div>
+            <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
+              <button type="button" onClick={promptLoad.reload} className="btn btn--sm">Retry</button>
+            </div>
+          </>
+        ) : promptLoad.status === 'loading' ? (
+          <div className="fhelp">Loading the prompt...</div>
+        ) : (
+          <>
+            <textarea
+              className="finput"
+              style={TEXTAREA_STYLE}
+              value={systemPrompt}
+              onChange={(e) => { setSystemPrompt(e.target.value); setPromptTouched(true); }}
+              rows={12}
+              spellCheck={false}
+            />
+            <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
+              <button type="button" onClick={saveSystemPrompt} className="btn btn--sm">
+                Save Prompt
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Memory */}
