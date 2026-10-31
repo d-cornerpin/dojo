@@ -123,6 +123,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
   const [systemPrompt, setSystemPrompt] = useState('');
   const [promptTouched, setPromptTouched] = useState(false);
+  const [promptSaveFailed, setPromptSaveFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [listsFailed, setListsFailed] = useState(false);
   const [listsTry, setListsTry] = useState(0);
@@ -135,7 +136,8 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
   const loadedPrompt = promptLoad.loadedKey === agent.id ? promptLoad.data : null;
   useEffect(() => {
     if (loadedPrompt !== null) { setSystemPrompt(loadedPrompt); setPromptTouched(false); }
-  }, [loadedPrompt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptLoad.settled]);   // each settled read replaces the draft (a save that fails never triggers one)
 
   const [editedName, setEditedName] = useState(agent.name);
   const [selectedModelId, setSelectedModelId] = useState(
@@ -205,10 +207,11 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
     if (!promptLoad.canSave(agent.id) || loadedPrompt === null) return;
     if (!promptTouched && !systemPrompt.trim()) return;
     const result = await api.updateAgentConfig(agent.id, { systemPrompt, systemPromptBase: loadedPrompt });
-    if (result.ok) { promptLoad.adopt(systemPrompt); toast.success('System prompt saved'); onUpdated(); }
+    if (result.ok) { promptLoad.adopt(systemPrompt); setPromptSaveFailed(false); toast.success('System prompt saved'); onUpdated(); }
     else {
+      // What the owner typed stays in the editor. The saved version loads only if he asks for it.
       toast.error(result.error || 'Could not save system prompt.');
-      promptLoad.reload();   // the stored prompt moved: bring in the current one
+      setPromptSaveFailed(true);
     }
   };
 
@@ -367,6 +370,11 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
               spellCheck={false}
             />
             <div className="srow" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
+              {promptSaveFailed && (
+                <button type="button" onClick={() => { setPromptSaveFailed(false); promptLoad.reload(); }} className="btn btn--sm">
+                  Load the saved version
+                </button>
+              )}
               <button type="button" onClick={saveSystemPrompt} className="btn btn--sm">
                 Save Prompt
               </button>

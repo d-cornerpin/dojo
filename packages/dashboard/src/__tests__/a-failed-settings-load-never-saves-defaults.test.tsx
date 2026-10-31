@@ -112,3 +112,20 @@ describe('a good read saves on top of what was read', () => {
     await waitFor(() => expect(fns.setSetting).toHaveBeenCalledWith('ollama_max_concurrent_models', '3'));
   });
 });
+
+describe('a failed profile save keeps what the owner typed', () => {
+  it('the typed profile stays, and the saved text loads only on request', async () => {
+    fns.getSetting.mockResolvedValue(ok({ key: 'user_name', value: 'Sam' }));
+    fns.getIdentity.mockResolvedValue(ok({ content: 'SAVED PROFILE', mailboxes: [] }));
+    fns.updateIdentity.mockResolvedValue({ ok: false, error: 'This document changed since you loaded it, so it was not saved.' });
+    render(<ProfileTab />);
+    const box = await screen.findByDisplayValue('SAVED PROFILE');
+    fireEvent.change(box, { target: { value: 'MY LONG PROFILE EDIT' } });
+    fireEvent.click(screen.getAllByText('Save')[1]);
+    await screen.findByText('Load the saved version');
+    expect(screen.getByDisplayValue('MY LONG PROFILE EDIT')).toBeTruthy();
+    fns.getIdentity.mockResolvedValue(ok({ content: 'NEWER PROFILE', mailboxes: [] }));
+    fireEvent.click(screen.getByText('Load the saved version'));
+    await screen.findByDisplayValue('NEWER PROFILE');
+  });
+});

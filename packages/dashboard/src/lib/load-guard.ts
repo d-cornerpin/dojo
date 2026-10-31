@@ -35,6 +35,8 @@ export interface GuardedLoad<T> {
   /** The key the data was loaded for (null until a load succeeds). */
   loadedKey: string | null;
   error: string | null;
+  /** Counts every settled read (even one that returns the same value), so an editor can tell "loaded again" from "unchanged". */
+  settled: number;
   reload: () => void;
   /** Re-read quietly: the editor stays up on the data it has; a good answer replaces it, a failed one changes nothing. */
   refresh: () => Promise<void>;
@@ -44,7 +46,7 @@ export interface GuardedLoad<T> {
   adopt: (value: T) => void;
 }
 
-interface Slot<T> { key: string | null; status: LoadStatus; data: T | null; error: string | null }
+interface Slot<T> { key: string | null; status: LoadStatus; data: T | null; error: string | null; n?: number }
 
 export function useGuardedLoad<T>(key: string | null, loader: (key: string) => Promise<ApiResponse<T>>): GuardedLoad<T> {
   const guard = useRequestGuard();
@@ -55,15 +57,15 @@ export function useGuardedLoad<T>(key: string | null, loader: (key: string) => P
 
   useEffect(() => {
     const ticket = guard.begin();
-    if (key === null) { setSlot({ key: null, status: 'loading', data: null, error: null }); return; }
-    setSlot({ key, status: 'loading', data: null, error: null });
+    if (key === null) { setSlot((p) => ({ key: null, status: 'loading', data: null, error: null, n: p.n })); return; }
+    setSlot((p) => ({ key, status: 'loading', data: null, error: null, n: p.n }));
     (async () => {
       let res: ApiResponse<T>;
       try { res = await loaderRef.current(key); } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : 'Could not load.' }; }
       if (!guard.isCurrent(ticket)) return;   // a late answer for something no longer on screen
-      setSlot(res.ok
-        ? { key, status: 'ready', data: res.data, error: null }
-        : { key, status: 'failed', data: null, error: res.error || 'Could not load.' });
+      setSlot((prev) => res.ok
+        ? { key, status: 'ready', data: res.data, error: null, n: (prev.n ?? 0) + 1 }
+        : { key, status: 'failed', data: null, error: res.error || 'Could not load.', n: (prev.n ?? 0) + 1 });
     })();
   }, [key, tick, guard]);
 
@@ -73,7 +75,7 @@ export function useGuardedLoad<T>(key: string | null, loader: (key: string) => P
     const ticket = guard.begin();
     let res: ApiResponse<T>;
     try { res = await loaderRef.current(key); } catch { return; }
-    if (guard.isCurrent(ticket) && res.ok) setSlot({ key, status: 'ready', data: res.data, error: null });
+    if (guard.isCurrent(ticket) && res.ok) setSlot((p) => ({ key, status: 'ready', data: res.data, error: null, n: p.n }));
   }, [key, guard]);
   const adopt = useCallback((value: T) => setSlot((s) => (s.status === 'ready' ? { ...s, data: value } : s)), []);
   const onScreen = slot.key === key;
@@ -87,6 +89,7 @@ export function useGuardedLoad<T>(key: string | null, loader: (key: string) => P
     data: ready ? slot.data : null,
     loadedKey: ready ? slot.key : null,
     error: onScreen ? slot.error : null,
+    settled: slot.n ?? 0,
     reload,
     refresh,
     canSave,

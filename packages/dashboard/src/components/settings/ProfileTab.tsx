@@ -34,7 +34,8 @@ export const ProfileTab = () => {
   const loadedName = nameLoad.data;
   const loadedProfile = profileLoad.data?.content ?? null;
   useEffect(() => { if (nameLoad.status === 'ready') setUserName(loadedName ?? ''); }, [nameLoad.status, loadedName]);
-  useEffect(() => { if (loadedProfile !== null) setUserProfile(loadedProfile); }, [loadedProfile]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (loadedProfile !== null) setUserProfile(loadedProfile); }, [profileLoad.settled]);
 
   const handleSaveName = async () => {
     if (!nameLoad.canSave('user_name')) return;
@@ -55,8 +56,7 @@ export const ProfileTab = () => {
       setSavedProfile(true); setTimeout(() => setSavedProfile(false), 2000);
       profileLoad.adopt({ ...(profileLoad.data ?? {}), content: userProfile });
     } else {
-      setSaveError(result.error || 'Could not save.');
-      profileLoad.reload();   // the stored text moved: bring in the current one
+      setSaveError(result.error || 'Could not save.');   // what the owner typed stays; the saved text loads only on request
     }
     setSavingProfile(false);
   };
@@ -143,7 +143,12 @@ export const ProfileTab = () => {
             )}
           </div>
         </div>
-        {saveError && <div className="text-xs text-cp-coral">{saveError}</div>}
+        {saveError && (
+          <div className="text-xs text-cp-coral">
+            {saveError}{' '}
+            <button type="button" className="btn btn--sm" onClick={() => { setSaveError(null); profileLoad.reload(); }}>Load the saved version</button>
+          </div>
+        )}
         {loadingProfile ? (
           <div className="h-40 glass-nested rounded-xl animate-pulse" />
         ) : profileLoad.status === 'failed' ? (

@@ -66,3 +66,30 @@ describe('the system prompt card', () => {
     await screen.findByText(/Could not load the model list/);
   });
 });
+
+describe('a failed save keeps what the owner typed', () => {
+  it('the typed prompt stays in the editor with the error, and the saved version loads only on request', async () => {
+    setup({ ok: true, data: { content: 'SAVED' } }, { ok: false, error: 'This prompt changed since you loaded it, so it was not saved.' });
+    render(tree());
+    const box = await screen.findByDisplayValue('SAVED');
+    fireEvent.change(box, { target: { value: 'MY LONG EDIT' } });
+    fireEvent.click(screen.getByText('Save Prompt'));
+    await waitFor(() => expect(vi.mocked(api).updateAgentConfig).toHaveBeenCalled());
+    await screen.findByText('Load the saved version');
+    expect(screen.getByDisplayValue('MY LONG EDIT')).toBeTruthy();
+    vi.mocked(api).getAgentSystemPrompt.mockResolvedValue({ ok: true, data: { content: 'NEWER' } } as never);
+    fireEvent.click(screen.getByText('Load the saved version'));
+    await screen.findByDisplayValue('NEWER');
+  });
+});
+
+describe('loading the saved version on request', () => {
+  it('puts the saved text back even when it is unchanged since the first load', async () => {
+    setup({ ok: true, data: { content: 'SAVED' } }, { ok: false, error: 'down' });
+    render(tree());
+    fireEvent.change(await screen.findByDisplayValue('SAVED'), { target: { value: 'TYPED' } });
+    fireEvent.click(screen.getByText('Save Prompt'));
+    fireEvent.click(await screen.findByText('Load the saved version'));
+    await screen.findByDisplayValue('SAVED');
+  });
+});
