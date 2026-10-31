@@ -48,7 +48,7 @@ export function detectContextGap(rawUserContent: string | null | undefined): str
     if (words.length < 2) {
       return (
         `[Engine hint: an attachment arrived with little or no instruction. ` +
-        `If you can't tell what the user wants done with it from context (an active task, a matching technique, or the recent conversation), ask them one specific question instead of guessing.]`
+        `If you can't tell what the person you are talking to wants done with it from context (an active task, a matching technique, or the recent conversation), ask them one specific question instead of guessing.]`
       );
     }
   }

@@ -66,14 +66,14 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
   switch (kind) {
     case 'image_too_large_post_sips':
       return ctx.filename
-        ? `An attached image (${ctx.filename}) was too large for the model even after compression and was dropped. Tell the user the image exceeded the model's size limit.`
-        : `One attached image was too large for the model even after compression and was dropped. Tell the user the image exceeded the model's size limit.`;
+        ? `An attached image (${ctx.filename}) was too large for the model even after compression and was dropped. Tell the person you are talking to the image exceeded the model's size limit.`
+        : `One attached image was too large for the model even after compression and was dropped. Tell the person you are talking to the image exceeded the model's size limit.`;
 
     case 'image_too_many':
-      return `Only the first ${ctx.imageCount ?? 'N'} of ${ctx.imageTotal ?? 'M'} images were sent — the model has a per-request limit. Mention this to the user.`;
+      return `Only the first ${ctx.imageCount ?? 'N'} of ${ctx.imageTotal ?? 'M'} images were sent — the model has a per-request limit. Mention this to the person you are talking to.`;
 
     case 'vision_mismatch':
-      return `This model can't see images. Describe what you can from the filename and surrounding context, or suggest the user switch to a vision-capable model in Settings.`;
+      return `This model can't see images. Describe what you can from the filename and surrounding context, or suggest the owner switch to a vision-capable model in Settings.`;
 
     case 'tool_name_unknown':
       return ctx.toolName
@@ -93,18 +93,18 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
       return `The provider rejected your last tool call format. Re-issue with the correct argument types and required fields. Call load_tool_docs for the tool if you need to recheck its schema.`;
 
     case 'output_truncated':
-      return `Your last response was rejected because it exceeded the output token limit. Be more concise — produce a shorter response, or break the task into smaller pieces. If a tool result is too large to summarize in one turn, update the user with what you've done so far and continue next turn.`;
+      return `Your last response was rejected because it exceeded the output token limit. Be more concise — produce a shorter response, or break the task into smaller pieces. If a tool result is too large to summarize in one turn, update the person you are talking to with what you've done so far and continue next turn.`;
 
     case 'empty_response_repeat':
-      return `Two empty responses in a row. Apologize to the user and end your turn.`;
+      return `Two empty responses in a row. Apologize to the person you are talking to and end your turn.`;
 
     case 'refusal':
-      return `The model refused your last request. Rephrase or tell the user you can't help with this.`;
+      return `The model refused your last request. Rephrase or tell the person you are talking to you can't help with this.`;
 
     case 'rate_limit_persistent':
       return ctx.providerName
-        ? `${ctx.providerName} is rate-limited right now and retries haven't cleared. Tell the user you'll try again in a few minutes, or end this thread cleanly.`
-        : `The provider is rate-limited right now and retries haven't cleared. Tell the user you'll try again in a few minutes, or end this thread cleanly.`;
+        ? `${ctx.providerName} is rate-limited right now and retries haven't cleared. Tell the person you are talking to you'll try again in a few minutes, or end this thread cleanly.`
+        : `The provider is rate-limited right now and retries haven't cleared. Tell the person you are talking to you'll try again in a few minutes, or end this thread cleanly.`;
 
     case 'malformed_request':
       return `The provider rejected your last request as malformed. Try a different approach — simpler input, different tool, or skip the step that triggered this.`;
@@ -116,7 +116,7 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
       return `The model does not support what was sent. Try the same request without the unsupported attachment or tool, or take a different approach.`;
 
     case 'provider_garbage':
-      return `The provider sent a malformed response. Apologize to the user and ask them to try again.`;
+      return `The provider sent a malformed response. Apologize to the person you are talking to and ask them to try again.`;
 
     // Tier D kinds shouldn't reach this function — caller routes Tier D to
     // formatErrorForHuman instead. Defensive default for completeness.
@@ -129,7 +129,7 @@ export function formatTierBNoteForAgent(kind: ErrorKind, ctx: ErrorContext = {})
     case 'db_write_fail':
     case 'disk_full':
     case 'oom_restart':
-      return `A platform-level error occurred. The user is being notified directly. End this turn.`;
+      return `A platform-level error occurred. The owner is being notified directly. End this turn.`;
   }
 }
 

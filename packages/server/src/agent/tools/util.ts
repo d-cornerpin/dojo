@@ -36,6 +36,7 @@ import { isDreamerAgent, isHealerAgent } from '../../config/platform.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 import { getCurrentToolCallId } from '../turn-state.js';
 import { turnContext } from '../turn-context.js';
+import { userWords, currentAddress } from '../v2/turn-address.js';
 // A LEAF by construction (`credentials/secret-values.ts` imports nothing), which
 // is why the toolbox's shared util can reach the declared-value set without
 // re-opening the `secret-fields -> registry -> tools -> credentials/tools` cycle
@@ -224,7 +225,7 @@ export function permissionDeniedMessage(reason: string | undefined, agentId: str
   }
   steps.push('Use send_to_agent to ask another agent that has the required permissions');
   if (!canSelfComplete) {
-    steps.push('Or tell the user you are blocked so they can act');
+    steps.push(`Or tell ${userWords(currentAddress(agentId))} you are blocked so they can act`);
   }
   const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
   return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n${numbered}`;

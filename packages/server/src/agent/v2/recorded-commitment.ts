@@ -205,10 +205,10 @@ export function uncommittedPromiseSteer(d: UncommittedPromiseFires): string {
     ? 'You saved it to MEMORY instead, and memory carries no obligation: it does not age, it never enters your OPEN WORK block, and nothing will ever surface it as still owed. '
     : '';
   return (
-    `[System: your reply tells the user the commitment is recorded ("${d.claim}"), and the work ledger ` +
+    `[System: your reply tells the person you are talking to the commitment is recorded ("${d.claim}"), and the work ledger ` +
     `has nothing from this turn. ${where}` +
     `Call work_open(kind="commitment") now with what you promised, in your own words, in \`description\` — ` +
-    `that is the only call that puts it on the ledger. If you would rather not track it, tell the user ` +
+    `that is the only call that puts it on the ledger. If you would rather not track it, tell the person you are talking to ` +
     `plainly that it is NOT recorded. Do not leave a claim standing that the ledger does not back.]`
   );
 }

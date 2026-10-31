@@ -109,8 +109,8 @@ const logger = createLogger('v2-loop');
  *  it only adds a chance the user hears about a block that shouldn't have
  *  happened. (Model-dependent, so not a guarantee, a safety net, not a gate.) */
 const ENGINE_BLOCK_ESCAPE_HATCH =
-  'If you believe this block is a mistake and it is stopping something the user genuinely needs, ' +
-  'do NOT silently give up, tell the user what you were trying to do and that the engine blocked it, ' +
+  'If you believe this block is a mistake and it is stopping something the person you are talking to genuinely needs, ' +
+  'do NOT silently give up, tell the person you are talking to what you were trying to do and that the engine blocked it, ' +
   'so they can decide.';
 
 // PHASE-6 T6 (CUT 8): `REDUNDANT_CLOSEOUT_MAX_CHARS` and `argsForResult` MOVED with the
