@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Task } from '@dojo/shared';
 import * as api from '../lib/api';
+import { useToast } from '../hooks/useToast';
 import { formatShortDateTime, formatTimeSince } from '../lib/dates';
 import { terminalOutcomeLabel } from '../lib/task-status';
 
@@ -47,13 +48,19 @@ const formatRepeat = (interval: number, unit: string, daysCSV: string | null = n
 
 export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardProps) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const toast = useToast();
   const priorityLabel = priorityLabels[task.priority] || priorityLabels.normal;
   const isScheduled = task.scheduleStatus && task.scheduleStatus !== 'unscheduled';
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const result = await api.deleteTask(task.id);
-    if (result.ok && onDeleted) onDeleted();
+    if (result.ok) {
+      if (onDeleted) onDeleted();
+    } else {
+      // The delete was refused: say why, so the card does not vanish as if it worked.
+      toast.error(result.error ?? 'The task could not be deleted.');
+    }
     setConfirmDelete(false);
   };
 

@@ -93,8 +93,8 @@ const formatUptime = (seconds: number): string => {
 
 export const AgentCard = ({ agent, models, providerNameById, onModelChanged, index = 0 }: AgentCardProps) => {
   const navigate = useNavigate();
-  const { selectAgent, agentId: activeAgentId, primaryId } = useActiveAgent();
   const toast = useToast();
+  const { selectAgent, agentId: activeAgentId, primaryId } = useActiveAgent();
   const [changingModel, setChangingModel] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -151,6 +151,19 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
     if (result.ok) onModelChanged();
     setSaving(false);
     setChangingModel(false);
+  };
+
+  // A purge that the server refuses must say why, so the card does not vanish as
+  // if it had worked.
+  const handlePurge = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const r = await api.purgeAgent(agent.id);
+    if (r.ok) {
+      onModelChanged();
+    } else {
+      toast.error(r.error ?? 'The agent could not be deleted.');
+    }
+    setConfirmDelete(false);
   };
 
   const cardStyle = {
@@ -352,7 +365,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
           <button
             type="button"
             className="btn btn--primary btn--sm"
-            onClick={async (e) => { e.stopPropagation(); const r = await api.purgeAgent(agent.id); if (r.ok) onModelChanged(); setConfirmDelete(false); }}
+            onClick={handlePurge}
           >
             Yes
           </button>

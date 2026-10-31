@@ -347,6 +347,7 @@ export const Agents = () => {
   const [ollamaWarningExpanded, setOllamaWarningExpanded] = useState(false);
   const { subscribe, connectionStatus } = useWebSocket();
   const prevConnectionRef = useRef<typeof connectionStatus>('disconnected');
+  const toast = useToast();
 
   const loadAgents = async () => {
     const [agentResult, groupResult] = await Promise.all([
@@ -442,6 +443,9 @@ export const Agents = () => {
     const result = await api.archiveOldAgents();
     if (result.ok) {
       loadAgents();
+    } else {
+      // A clear the server refuses must say why, so the history is not shown as cleared.
+      toast.error(result.error ?? 'The history could not be cleared.');
     }
   };
 

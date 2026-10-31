@@ -11,16 +11,19 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { Task } from '@dojo/shared';
 import { KanbanBoard } from '../components/KanbanBoard';
+import { ToastProvider } from '../hooks/useToast';
 
 const task = (id: string, status: string) => ({ id, title: `Task ${id}`, status, priority: 'normal', assignedTo: null, assignedToName: null, assignedToGroup: null, scheduleStatus: 'unscheduled', repeatInterval: null, repeatUnit: null, repeatDaysOfWeek: null, runCount: 0, nextRunAt: null, pausedUntil: null, scheduledStart: null, createdAt: '2026-01-01 00:00:00', updatedAt: '2026-01-01 00:00:00', completedAt: null, completeValidated: 1, pauseValidated: 1, blockedValidated: 1, validationEscalatedAt: null }) as unknown as Task;
 
 const renderBoard = (onStatusChange: ReturnType<typeof vi.fn>) =>
   render(
-    <KanbanBoard
-      tasks={[task('t1', 'cancelled'), task('t2', 'fallen'), task('t3', 'on_deck')]}
-      onTaskClick={() => {}}
-      onStatusChange={onStatusChange}
-    />,
+    <ToastProvider>
+      <KanbanBoard
+        tasks={[task('t1', 'cancelled'), task('t2', 'fallen'), task('t3', 'on_deck')]}
+        onTaskClick={() => {}}
+        onStatusChange={onStatusChange}
+      />
+    </ToastProvider>,
   );
 
 const dropOnto = (label: string, id: string) => {

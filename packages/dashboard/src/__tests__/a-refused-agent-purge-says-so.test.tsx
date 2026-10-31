@@ -35,6 +35,7 @@ import { Agents } from '../pages/Agents';
 import { AuthProvider } from '../hooks/useAuth';
 import { ThemeProvider } from '../themes/ThemeProvider';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';
+import { ToastProvider } from '../hooks/useToast';
 
 // One terminated, non-sensei agent: it sits in "Recent History" and its row shows
 // a delete control.
@@ -62,7 +63,9 @@ const renderAgents = () => render(
     <AuthProvider>
       <ThemeProvider>
         <ActiveAgentProvider>
-          <Agents />
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
         </ActiveAgentProvider>
       </ThemeProvider>
     </AuthProvider>
