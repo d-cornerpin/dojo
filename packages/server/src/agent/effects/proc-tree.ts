@@ -8,6 +8,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { untilUserStop } from '../stop-waiters.js';
+import path from 'node:path';
+import { homeDir } from '../../home.js';
+import { recordToolboxGroups } from './toolbox-ledger.js';
 
 // ════════════════════════════════════════
 // t203 (B6) — THE OWNER'S STOP REACHES EVERY PROCESS THE TOOLBOX STARTED.
@@ -108,6 +111,8 @@ function rememberGroup(pgid: number): void {
   }
   if (!exitHooked) { exitHooked = true; process.once('exit', endToolboxGroups); }
   toolboxGroups.add(pgid);
+  // v3.5 P6c: a hard kill runs no exit hook, so the next boot ends what this file still names.
+  recordToolboxGroups(path.join(homeDir(), 'data'), [...toolboxGroups]);
 }
 
 function endToolboxGroups(): void {
@@ -115,4 +120,5 @@ function endToolboxGroups(): void {
     try { process.kill(-g, 'SIGTERM'); } catch { /* already gone */ }
   }
   toolboxGroups.clear();
+  recordToolboxGroups(path.join(homeDir(), 'data'), []);
 }

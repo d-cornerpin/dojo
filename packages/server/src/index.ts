@@ -12,6 +12,7 @@ import { runMigrations } from './db/migrations.js';
 // which now lives in `work/work-reaper.ts` beside the other obligation sweeps.
 import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/ask-settlement.js';
+import { reapToolboxGroupsAtBoot } from './agent/effects/toolbox-ledger.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { closeServers, trackRequests } from './gateway/close-servers.js';
@@ -533,6 +534,7 @@ async function main(): Promise<void> {
   // and the close leaves an ask that WAS answered at `claimed`, and it is closed pointing at
   // the delivery that answered it instead of being re-answered or stranded.
   {
+    reapToolboxGroupsAtBoot();   // v3.5 P6c: a hard kill left no exit hook to end what agents backgrounded
     try {
       const { reArmed, held, closed } = reconcileOrphanedClaims();
       if (reArmed > 0 || held > 0 || closed > 0) {
