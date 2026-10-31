@@ -1827,6 +1827,7 @@ export function cleanupStaleRuns(): void {
       AND t.is_paused = 0
       AND t.state NOT IN ('done', 'failed', 'abandoned', 'paused')
       AND t.schedule_status != 'completed'
+      AND t.schedule_status != 'running'
   `).all() as Array<{ id: string; title: string }>;
 
   const allStale = [
@@ -1911,6 +1912,8 @@ function recoverMissingNextRun(taskId: string): void {
   if (!task) return;
   if (task.next_run_at) return; // raced with another recovery path
   if (task.is_paused) return;
+  // The final run of a bounded schedule has no next run while it is in flight; that is not a lost schedule.
+  if (task.schedule_status === 'running') return;
 
   const scheduledTask = scheduledTaskFromRow(task, {
     is_paused: 0,
