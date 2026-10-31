@@ -51,6 +51,7 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../migrations.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const MIGRATION_167 = '167_provider_measured_prefill.sql';
 const NEW_COLUMNS = ['measured_prefill_tokens_per_sec', 'measured_prefill_at'];
@@ -100,7 +101,7 @@ const fillLivedIn = (): void => {
 
   d.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
-    VALUES ('zargo', 'Zargo', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
+    VALUES ('${FXID.n4}', '${FX.n4}', 'm-local', 'idle', '{"tone":"dry"}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
   `).run();
 
   // `messages.created_at` is epoch-ms INTEGER and CHECK-constrained to be one (migration 131),
@@ -108,7 +109,7 @@ const fillLivedIn = (): void => {
   // name. A lived-in body is only lived-in if it is written the way the engine writes it.
   const msg = d.prepare(`
     INSERT INTO messages (id, agent_id, role, content, token_count, model_id, created_at)
-    VALUES (?, 'zargo', ?, ?, ?, 'm-local', ?)
+    VALUES (?, '${FXID.n4}', ?, ?, ?, 'm-local', ?)
   `);
   const DAY_MS = 86_400_000;
   for (let i = 0; i < 40; i++) {
@@ -118,7 +119,7 @@ const fillLivedIn = (): void => {
   const cost = d.prepare(`
     INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                               cost_usd, latency_ms, cache_read_tokens, created_at)
-    VALUES (?, 'zargo', 'm-local', 'local', ?, ?, ?, ?, ?, datetime('now', ?))
+    VALUES (?, '${FXID.n4}', 'm-local', 'local', ?, ?, ?, ?, ?, datetime('now', ?))
   `);
   for (let i = 0; i < 60; i++) {
     cost.run(`cost-${i}`, 3_000 + i * 700, 200 + i, 0.0, 40_000 + i * 1_000, i % 3 === 0 ? 20_000 : null, `-${i} days`);

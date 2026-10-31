@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WORK_EVENT_KINDS } from '../../work/event-kinds.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(HERE, '..', 'migrations');
@@ -119,7 +120,7 @@ function seedWork(): void {
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id,
                        state, intent, wakes, closes_thread, title, opened_at, updated_at, provenance)
-     VALUES (?, 'ask', 'zargo', 'owner', 'owner', 'ask', ?, 'open', 'ask', 0, 0, 'q',
+     VALUES (?, 'ask', '${FXID.n4}', 'owner', 'owner', 'ask', ?, 'open', 'ask', 0, 0, 'q',
              1700000000000, 1700000000000, 'live')`,
   ).run(WORK_ID, WORK_ID);
 }

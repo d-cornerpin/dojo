@@ -55,6 +55,7 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../migrations.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const MIGRATION_171 = '171_report_read_indexes.sql';
 const AUDIT_INDEX = 'idx_audit_log_agent_created';
@@ -118,8 +119,8 @@ const fillLivedIn = (): void => {
     INSERT INTO agents (id, name, model_id, status, config, created_at, updated_at)
     VALUES (?, ?, 'm-local', 'idle', '{}', '2026-07-02 09:00:00', '2026-09-01 09:00:00')
   `);
-  agent.run('zargo', 'Zargo');
-  agent.run('quilba', 'Quilba');
+  agent.run(FXID.n4, FX.n4);
+  agent.run(FXID.n5, FX.n5);
 
   // An audit history with BOTH agents interleaved in time — the shape that makes a
   // single-column index insufficient, and the shape a real box has.
@@ -129,7 +130,7 @@ const fillLivedIn = (): void => {
   `);
   for (let i = 0; i < 400; i++) {
     const day = String(1 + (i % 28)).padStart(2, '0');
-    audit.run(`a-${i}`, i % 2 === 0 ? 'zargo' : 'quilba', `/tmp/f-${i}`, `2026-08-${day} 10:00:00`);
+    audit.run(`a-${i}`, i % 2 === 0 ? FXID.n4 : FXID.n5, `/tmp/f-${i}`, `2026-08-${day} 10:00:00`);
   }
 
   // Reports filed under 169, across the standing and non-standing statuses.
@@ -137,9 +138,9 @@ const fillLivedIn = (): void => {
     INSERT INTO dojo_reports (id, agent_id, status, lane, signature, brief_json)
     VALUES (?, ?, ?, 'tool-error', ?, '{"title":"kept"}')
   `);
-  rep.run('r-1', 'zargo', 'posted', 'ds1-aaaaaaaaaaaa');
-  rep.run('r-2', 'zargo', 'awaiting_approval', 'ds1-bbbbbbbbbbbb');
-  rep.run('r-3', 'quilba', 'cancelled', 'ds1-cccccccccccc');
+  rep.run('r-1', FXID.n4, 'posted', 'ds1-aaaaaaaaaaaa');
+  rep.run('r-2', FXID.n4, 'awaiting_approval', 'ds1-bbbbbbbbbbbb');
+  rep.run('r-3', FXID.n5, 'cancelled', 'ds1-cccccccccccc');
 };
 
 const counts = (): Record<string, number> => {
@@ -219,15 +220,15 @@ describe('BODY B — a lived-in body keeps every row', () => {
     fillLivedIn();
     rewindTo170();
 
-    const auditBefore = db().prepare(READ_AUDIT).all('quilba', '2026-08-01 00:00:00', 500);
+    const auditBefore = db().prepare(READ_AUDIT).all(FXID.n5, '2026-08-01 00:00:00', 500);
     const gateBefore = db().prepare(WITHDRAWN_GATE)
-      .get('quilba', 'drafting', 'awaiting_approval', 'approved', 'posted');
+      .get(FXID.n5, 'drafting', 'awaiting_approval', 'approved', 'posted');
 
     await runMigrations();
 
-    expect(db().prepare(READ_AUDIT).all('quilba', '2026-08-01 00:00:00', 500)).toEqual(auditBefore);
+    expect(db().prepare(READ_AUDIT).all(FXID.n5, '2026-08-01 00:00:00', 500)).toEqual(auditBefore);
     expect(db().prepare(WITHDRAWN_GATE)
-      .get('quilba', 'drafting', 'awaiting_approval', 'approved', 'posted')).toEqual(gateBefore);
+      .get(FXID.n5, 'drafting', 'awaiting_approval', 'approved', 'posted')).toEqual(gateBefore);
     // …and that gate really does have something to find, or the clause proves nothing.
     expect(gateBefore).toBeDefined();
   });
@@ -279,7 +280,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
     fillLivedIn();
     rewindTo170();
 
-    const before = plan(READ_AUDIT, 'quilba', '2026-08-01 00:00:00', 500);
+    const before = plan(READ_AUDIT, FXID.n5, '2026-08-01 00:00:00', 500);
     // The defect, in the planner's own words: only the agent half is seeked, and the whole
     // ORDER BY becomes a temp B-tree over every row that agent ever wrote.
     expect(before).toMatch(/idx_audit_log_agent_id/);
@@ -287,7 +288,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
 
     await runMigrations();
 
-    const after = plan(READ_AUDIT, 'quilba', '2026-08-01 00:00:00', 500);
+    const after = plan(READ_AUDIT, FXID.n5, '2026-08-01 00:00:00', 500);
     expect(after).toMatch(new RegExp(AUDIT_INDEX));
     expect(after).toMatch(/created_at>/);              // the range is SEEKED, not filtered
     expect(after).not.toMatch(/USE TEMP B-TREE FOR ORDER BY\b/);  // only the `id` tiebreak is left
@@ -298,7 +299,7 @@ describe('BODY D — each index is CHOSEN by the reader it was written for', () 
     fillLivedIn();
     rewindTo170();
 
-    const args = ['quilba', 'drafting', 'awaiting_approval', 'approved', 'posted'] as const;
+    const args = [FXID.n5, 'drafting', 'awaiting_approval', 'approved', 'posted'] as const;
     expect(plan(WITHDRAWN_GATE, ...args)).toMatch(/SCAN dojo_reports/);
 
     await runMigrations();

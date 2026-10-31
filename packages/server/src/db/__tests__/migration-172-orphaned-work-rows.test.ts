@@ -54,6 +54,7 @@ vi.mock('../../db/connection.js', async () => {
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 
 import { runMigrations } from '../migrations.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const MIGRATION_172 = '172_orphaned_work_rows.sql';
 
@@ -130,12 +131,12 @@ const seedWork = (p: {
  */
 const fillLivedIn = (): void => {
   seedProvider();
-  seedAgent('zargo');
-  seedWork({ id: 'live-open', agentId: 'zargo' });
-  seedWork({ id: 'live-deck', agentId: 'zargo', state: 'on_deck', sched: true });
-  seedWork({ id: 'live-paused', agentId: 'zargo', state: 'paused' });
-  seedWork({ id: 'live-proj', agentId: 'zargo', kind: 'project' });
-  seedWork({ id: 'live-child', agentId: 'zargo', parentId: 'live-proj' });
+  seedAgent(FXID.n4);
+  seedWork({ id: 'live-open', agentId: FXID.n4 });
+  seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'on_deck', sched: true });
+  seedWork({ id: 'live-paused', agentId: FXID.n4, state: 'paused' });
+  seedWork({ id: 'live-proj', agentId: FXID.n4, kind: 'project' });
+  seedWork({ id: 'live-child', agentId: FXID.n4, parentId: 'live-proj' });
 
   // `ghost-a` and `ghost-b` are NOT inserted into `agents` — that is the whole fixture.
   seedWork({ id: 'orphan-proj', agentId: 'ghost-a', kind: 'project' });
@@ -188,14 +189,14 @@ describe('BODY B — a lived-in body: the orphans go, the live rows stay', () =>
     expect(allWorkIds()).toHaveLength(9);
 
     const liveBefore = db().prepare(
-      "SELECT * FROM work WHERE agent_id = 'zargo' ORDER BY id",
+      `SELECT * FROM work WHERE agent_id = '${FXID.n4}' ORDER BY id`,
     ).all();
 
     apply();
 
     expect(allWorkIds()).toEqual(LIVE_IDS);
     // Not just the ids — an orphan sweep must not rewrite a surviving row's values.
-    expect(db().prepare("SELECT * FROM work WHERE agent_id = 'zargo' ORDER BY id").all())
+    expect(db().prepare(`SELECT * FROM work WHERE agent_id = '${FXID.n4}' ORDER BY id`).all())
       .toEqual(liveBefore);
   });
 
@@ -304,7 +305,7 @@ describe('BODY D — no dangling reference survives', () => {
     // The cross-agent case the schema permits even though the owner's body has none: a live
     // agent's row whose parent belonged to a purged agent. It must SURVIVE.
     fillLivedIn();
-    seedWork({ id: 'live-crossling', agentId: 'zargo', parentId: 'orphan-proj' });
+    seedWork({ id: 'live-crossling', agentId: FXID.n4, parentId: 'orphan-proj' });
     rewindTo171();
 
     apply();
@@ -312,7 +313,7 @@ describe('BODY D — no dangling reference survives', () => {
     const row = db().prepare('SELECT id, agent_id, parent_id FROM work WHERE id = ?')
       .get('live-crossling') as { id: string; agent_id: string; parent_id: string | null } | undefined;
     expect(row).toBeDefined();
-    expect(row?.agent_id).toBe('zargo');
+    expect(row?.agent_id).toBe(FXID.n4);
     expect(row?.parent_id).toBeNull();
     expect(fkViolations()).toEqual([]);
   });
@@ -323,9 +324,9 @@ describe('BODY D — no dangling reference survives', () => {
 describe('NEGATIVE CONTROL — a body with no orphans is untouched', () => {
   it('changes not one row', () => {
     seedProvider();
-    seedAgent('zargo');
-    seedWork({ id: 'live-open', agentId: 'zargo' });
-    seedWork({ id: 'live-deck', agentId: 'zargo', state: 'on_deck', sched: true });
+    seedAgent(FXID.n4);
+    seedWork({ id: 'live-open', agentId: FXID.n4 });
+    seedWork({ id: 'live-deck', agentId: FXID.n4, state: 'on_deck', sched: true });
     rewindTo171();
 
     const work = db().prepare('SELECT * FROM work ORDER BY id').all();

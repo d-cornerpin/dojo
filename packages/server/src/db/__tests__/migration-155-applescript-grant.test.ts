@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATION_155 = fs.readFileSync(
@@ -132,7 +133,7 @@ describe('BODY C — THE ADVERSARIAL BODY (the one that decides the guard)', () 
     ['null-permissions', null],
     ['empty-string', ''],
     ['empty-object', '{}'],
-    ['not-json-at-all', 'permissions: none, ask zargo'],
+    ['not-json-at-all', `permissions: none, ask ${FXID.n4}`],
     ['truncated-json', '{"file_read":"*","system_control":["*"'],
     ['legacy-no-system-control', '{"file_read":"*","file_write":"none","exec_allow":[]}'],
     ['system-control-object', '{"system_control":{"applescript":true}}'],
@@ -184,7 +185,7 @@ describe('BODY D — the COUNTERFACTUAL, which is what makes the guard a measure
     expect(naive).not.toBe(MIGRATION_155);
 
     const db = body([
-      ['not-json-at-all', 'permissions: none, ask zargo'],
+      ['not-json-at-all', `permissions: none, ask ${FXID.n4}`],
       ['real-star-holder', manifest(['*'])],
     ]);
     expect(() => apply(db, naive)).toThrow(/malformed|JSON/i);
@@ -192,7 +193,7 @@ describe('BODY D — the COUNTERFACTUAL, which is what makes the guard a measure
 
   it('and with the guard, that identical body applies clean', () => {
     const db = body([
-      ['not-json-at-all', 'permissions: none, ask zargo'],
+      ['not-json-at-all', `permissions: none, ask ${FXID.n4}`],
       ['real-star-holder', manifest(['*'])],
     ]);
     expect(() => apply(db)).not.toThrow();

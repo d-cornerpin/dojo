@@ -51,8 +51,9 @@ vi.mock('../connection.js', async () => {
 });
 
 import { runMigrations } from '../migrations.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 /** A delivery row, minimally. */
 function seedDelivery(id: string): string {
@@ -84,7 +85,7 @@ beforeEach(() => {
   runMigrations();
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   // OFF on purpose, and it is the whole point: this is the state a raw `sqlite3`
   // client and the entire migration chain run in. The guard must hold here.
@@ -158,7 +159,7 @@ describe('the delivery-evidence guard: a done row cannot silently lose its recei
     db.pragma('foreign_keys = OFF');
     db.prepare(
       `INSERT INTO agents (id, name, status, session_started_at)
-       VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+       VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
     ).run(AGENT);
     // An orphan: `done`, naming a delivery that does not exist.
     expect(() => seedWork('w-orphan', 'done', 'gone-delivery')).not.toThrow();
