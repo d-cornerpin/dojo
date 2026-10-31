@@ -9647,7 +9647,7 @@
     "packages/server/src/agent/stream-patience.ts": 473,
     "packages/server/src/agent/stuck-thresholds.ts": 112,
     "packages/server/src/agent/tools/assignment-capability.ts": 139,
-    "packages/server/src/agent/tools/cat/agents.ts": 1727,
+    "packages/server/src/agent/tools/cat/agents.ts": 1736,
     "packages/server/src/agent/tools/cat/comms.ts": 916,
     "packages/server/src/agent/tools/cat/fs.ts": 838,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
