@@ -64,6 +64,14 @@ export const DEFAULT_SCHEDULE: ScheduleConfig = {
   anchorTime: null,
 };
 
+/** The calendar date `days` from now on THIS computer's clock, as YYYY-MM-DD (not UTC). */
+export function localDateDaysFromNow(days: number, now: Date = new Date()): string {
+  const d = new Date(Number(now));
+  d.setDate(d.getDate() + days);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 // Helpers for the "Runs at" time picker. The anchor is stored as a full
 // ISO timestamp (only the time-of-day is load-bearing) but the UI shows
 // just an HH:MM picker. On every edit we keep the anchor's date portion
@@ -282,7 +290,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                     <span className="text-xs text-ui/40">runs</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" checked={value.repeatEndType === 'on_date'} onChange={() => update({ repeatEndType: 'on_date', repeatEndValue: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) })}
+                    <input type="radio" checked={value.repeatEndType === 'on_date'} onChange={() => update({ repeatEndType: 'on_date', repeatEndValue: localDateDaysFromNow(30) })}
                       className="text-cp-teal bg-ui/[0.05] border-ui/[0.15]" />
                     <span className="text-xs text-ui/55">On</span>
                     {value.repeatEndType === 'on_date' && (
