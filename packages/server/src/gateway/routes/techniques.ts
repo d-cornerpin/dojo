@@ -251,7 +251,7 @@ techniquesRouter.post('/import', async (c) => {
 techniquesRouter.post('/:id/export', async (c) => {
   const id = c.req.param('id');
   try {
-    const { stream, filename, autoResolutions } = await exportTechnique(id);
+    const { stream, filename, autoResolutions, skippedLinks } = await exportTechnique(id);
     const { Readable } = await import('node:stream');
     const webStream = Readable.toWeb(stream) as ReadableStream;
 
@@ -273,6 +273,13 @@ techniquesRouter.post('/:id/export', async (c) => {
       // Expose for browser fetch (matters when this ever gets fetched
       // cross-origin; harmless in same-origin).
       headers['Access-Control-Expose-Headers'] = 'X-Dojo-Export-Resolutions, Content-Disposition';
+    }
+    if (skippedLinks.length > 0) {
+      // Links inside the folder are never followed into the package; the dashboard names them in its
+      // existing toast. Base64 of JSON keeps the header ASCII-safe.
+      headers['X-Dojo-Export-Skipped-Links'] = Buffer.from(JSON.stringify(skippedLinks), 'utf-8').toString('base64');
+      const exposed = headers['Access-Control-Expose-Headers'];
+      headers['Access-Control-Expose-Headers'] = `${exposed ? `${exposed}, ` : ''}X-Dojo-Export-Skipped-Links, Content-Disposition`;
     }
     return new Response(webStream, { headers });
   } catch (err) {
