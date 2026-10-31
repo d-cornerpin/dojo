@@ -8,7 +8,6 @@
 // bytes are this header, the imports below and the `export` keyword(s).
 
 import { useGuardedLoad } from '../../lib/load-guard';
-import { LoadGate } from '../LoadGate';
 import { useState, useEffect, type ReactNode } from 'react';
 import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
@@ -181,7 +180,15 @@ export const CapabilityModelCard = ({
     setTimeout(() => setSaved(false), 2000);
   };
 
-  if (load.status !== 'ready') return <LoadGate load={load} what="this model setting"><></></LoadGate>;
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load this model setting, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
 
   const isExtra = extraOptions.some(o => o.id === selectedId);
   const selectedModel = matchingModels.find(m => m.id === selectedId) ?? null;
@@ -383,11 +390,16 @@ export const HealerCard = ({ models }: { models: Model[] }) => {
   // built-in defaults (auto model, 04:00, active), because Save writes what is on screen, and would turn
   // a Healer set to monitor or off back on.
   const load = useGuardedLoad<HealerCfg>('healer', () => api.getHealerConfig());
-  return (
-    <LoadGate load={load} what="the Healer settings">
-      <HealerEditor models={models} config={load.data!} refresh={load.refresh} />
-    </LoadGate>
-  );
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load the Healer settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
+  return <HealerEditor models={models} config={load.data!} refresh={load.refresh} />;
 };
 
 const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: HealerCfg; refresh: () => Promise<void> }) => {

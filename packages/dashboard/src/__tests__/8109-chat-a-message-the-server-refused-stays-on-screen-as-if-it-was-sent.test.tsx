@@ -66,7 +66,7 @@ const typeAndSend = async (text: string) => {
   fireEvent.keyDown(box, { key: 'Enter' });
 };
 
-beforeEach(() => { resetFrames(); toasts().length = 0; });
+beforeEach(() => { resetFrames(); toasts().length = 0; vi.mocked(api).getCanvas.mockResolvedValue({ ok: true, data: null } as never); });
 afterEach(() => { vi.resetAllMocks(); });
 
 const box = () => screen.getByPlaceholderText('Message the Dojo') as HTMLTextAreaElement;

@@ -9,7 +9,6 @@ import { MemorySearch } from '../components/MemorySearch';
 import { BriefingView } from '../components/BriefingView';
 import { VaultEntryCard } from '../components/VaultEntryCard';
 import { VaultStats } from '../components/VaultStats';
-import { VaultLoadError } from '../components/VaultLoadError';
 import { ForensicSearchPanel } from '../components/ForensicSearchPanel';
 import { CredentialsPanel } from '../components/CredentialsPanel';
 import { ContactsPanel } from '../components/ContactsPanel';
@@ -318,7 +317,12 @@ export const Memory = () => {
       {mainTab === 'vault' && (
         <>
           <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />
-          {vaultError && <VaultLoadError message={vaultError} onRetry={loadVault} />}
+          {vaultError && (
+            <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+              Could not load vault entries: {vaultError}{' '}
+              <button type="button" className="btn btn--ghost" onClick={loadVault}>Retry</button>
+            </div>
+          )}
           {vaultLoading ? (
             <div className="stub"><p className="stub__line">Loading vault entries...</p></div>
           ) : vaultError ? null : vaultEntries.length === 0 ? (

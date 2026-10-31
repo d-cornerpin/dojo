@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SRC = path.resolve(__dirname, '..');
-const GUARD_MARKERS = /useGuardedLoad|useRequestGuard|LoadGate|SetupLoadFailed|loadFailed|useWarningThreshold/;
+const GUARD_MARKERS = /useGuardedLoad|useRequestGuard|loadFailed|useWarningThreshold/;
 
 /** Editors that read, hold, and write back. Each must show the guard's marker. */
 const GUARDED = [

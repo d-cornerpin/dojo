@@ -808,15 +808,6 @@ export const ModelsStep = () => {
 
 // The one "could not load" state for a wizard step (lib/load-guard.ts says why): a step whose saved
 // settings could not be read shows this, and no Save, so it cannot write defaults over the real ones.
-const SetupLoadFailed = ({ onRetry }: { onRetry: () => void }) => (
-  <div className="space-y-4">
-    <p className="text-sm text-cp-coral">
-      Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.
-    </p>
-    <button onClick={onRetry} className="px-4 py-2 text-ui text-sm font-medium rounded-lg glass-btn glass-btn-primary">Retry</button>
-  </div>
-);
-
 // ── Primary Agent ──
 
 export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
@@ -902,7 +893,14 @@ export const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => vo
     setSaved(true);
   };
 
-  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
+  if (loadFailed) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setLoadTry((n) => n + 1)}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -1014,7 +1012,14 @@ export const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void })
     setSaved(!refused);
   };
 
-  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
+  if (loadFailed) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setLoadTry((n) => n + 1)}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -1107,7 +1112,14 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     setSaved(!refused);
   };
 
-  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
+  if (loadFailed) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setLoadTry((n) => n + 1)}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -1205,7 +1217,14 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
     setSaved(r.ok);
   };
 
-  if (loadFailed) return <SetupLoadFailed onRetry={() => setLoadTry((n) => n + 1)} />;
+  if (loadFailed) {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load your saved settings for this step, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={() => setLoadTry((n) => n + 1)}>Retry</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

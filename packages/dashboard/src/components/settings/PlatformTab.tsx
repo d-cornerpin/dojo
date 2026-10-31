@@ -5,7 +5,6 @@
 // bytes are this header, the imports below and the `export` keyword(s).
 
 import { useGuardedLoad } from '../../lib/load-guard';
-import { LoadGate } from '../LoadGate';
 import { useState, useEffect } from 'react';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
@@ -342,7 +341,16 @@ export const OllamaSettings = () => {
     const r = await api.getSetting(key);
     return r.ok ? { ok: true as const, data: r.data.value } : r;
   });
-  return <LoadGate load={load} what="the Ollama setting"><OllamaSettingsEditor initial={load.data} /></LoadGate>;
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load the Ollama setting, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
+  return <OllamaSettingsEditor initial={load.data} />;
 };
 
 const OllamaSettingsEditor = ({ initial }: { initial: string | null }) => {
@@ -423,7 +431,16 @@ export const AgentLimitsSettings = () => {
     }
     return { ok: true as const, data: initial };
   });
-  return <LoadGate load={load} what="the capacity limits"><AgentLimitsEditor initial={load.data ?? {}} /></LoadGate>;
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load the capacity limits, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
+  return <AgentLimitsEditor initial={load.data ?? {}} />;
 };
 
 const AgentLimitsEditor = ({ initial }: { initial: Record<string, string> }) => {
@@ -495,7 +512,16 @@ const AgentLimitsEditor = ({ initial }: { initial: Record<string, string> }) => 
 
 export const SearchSettings = () => {
   const load = useGuardedLoad<{ provider?: string | null; hasKey: boolean }>('search-config', () => api.getSearchConfig());
-  return <LoadGate load={load} what="the search settings"><SearchSettingsEditor initial={load.data!} /></LoadGate>;
+  if (load.status === 'loading') return <div className="tile loading-state">Loading...</div>;
+  if (load.status === 'failed') {
+    return (
+      <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }} role="alert">
+        Could not load the search settings, so it can&apos;t be changed right now. Nothing has been changed.{' '}
+        <button type="button" className="btn btn--ghost" onClick={load.reload}>Retry</button>
+      </div>
+    );
+  }
+  return <SearchSettingsEditor initial={load.data!} />;
 };
 
 const SearchSettingsEditor = ({ initial }: { initial: { provider?: string | null; hasKey: boolean } }) => {
