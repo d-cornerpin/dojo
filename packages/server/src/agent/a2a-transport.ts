@@ -59,7 +59,7 @@ import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../wo
 // this, and what does it do when the drives are spent".
 import {
   JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
-  joinRedriveIsBlind, compileSteerText, compileAskerFromMeta, everyPieceLandedWithContent, engineRelayPreface,
+  joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
   releaseScaffoldCardsAfterRelay,
   type JoinDriveDecision,
 } from '../work/join-drive.js';
@@ -73,6 +73,7 @@ import { recordFloorGhost } from './v2/floor-ghost.js';
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
 import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall, ChannelKind } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
+import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
 import type { ReplyDestination } from './v2/reply-destination.js';
 import type { ToolOutcome } from './tool-outcome.js';

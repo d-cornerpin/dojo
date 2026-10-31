@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest';
 import '../../../prompt/registry/entries.js';
 import { getMessageEntries } from '../../../prompt/registry/registry.js';
 import { renderCounterpartyHeader, type TurnCounterparty } from '../counterparty.js';
-import { compileSteerText, compileAskerFromMeta } from '../../../work/join-drive.js';
+import { compileSteerText } from '../../../work/join-drive.js';
+import { compileAskerFromMeta } from '../../../work/compile-asker.js';
 import { startAckSteerText, START_ACK_STEER_TEXT } from '../steps/assemble/start-ack-door.js';
 import { computeTurnAddress, deliveryLabel } from '../turn-address.js';
 
