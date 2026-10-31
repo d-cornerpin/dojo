@@ -25,7 +25,7 @@ function pinnedToRule(purpose: string, question: string): boolean {
   } catch { return false; }
 }
 
-const modelProvenBetter = (s: QuestionScore | null): boolean =>
+export const modelProvenBetter = (s: QuestionScore | null): boolean =>
   !!s && s.modelAcc > s.ruleAcc && s.modelCI[0] > s.ruleCI[1];
 
 export function modeFor(purpose: string, question: string): Mode {

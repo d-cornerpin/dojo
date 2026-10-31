@@ -14,6 +14,17 @@ import type { Answer } from './decide.js';
 
 const logger = createLogger('decision-shadow');
 
+/** The one listener told which questions' score just changed (a truth joined it, or judged rows aged out), so a
+ *  switch is noticed the moment the evidence moves rather than at the next ask. `decision-switch.ts` installs it;
+ *  this file imports no policy (the policy imports this one). It never throws into the writer. */
+type ScoreListener = (questions: Array<{ purpose: string; question: string }>) => void;
+let scoreListener: ScoreListener | null = null;
+export function onScoreChanged(l: ScoreListener | null): void { scoreListener = l; }
+function scoreMoved(questions: Array<{ purpose: string; question: string }>): void {
+  if (!scoreListener || questions.length === 0) return;
+  try { scoreListener(questions); } catch (err) { logger.warn('a score listener failed', { error: err instanceof Error ? err.message : String(err) }); }
+}
+
 /**
  * The window the Healer's score report reads: one week, the report's longest existing look-back
  * (`healer/diagnostic.ts`, closed tasks over 7 days), so the report and the score speak of the same
@@ -32,13 +43,19 @@ export function rotateDecisionShadow(now: number = Date.now()): number {
   try {
     const before = now - 2 * SHADOW_REPORT_WINDOW_MS;
     const t = loadedTallies();
-    if (t) for (const r of judgedRows('created_at < ?', before)) tally(t, r, -1);   // the judged rows leaving the score
-    return getDb().prepare('DELETE FROM decision_shadow WHERE created_at < ?').run(before).changes;
+    const leaving = judgedRows('created_at < ?', before);
+    if (t) for (const r of leaving) tally(t, r, -1);   // the judged rows leaving the score
+    const gone = getDb().prepare('DELETE FROM decision_shadow WHERE created_at < ?').run(before).changes;
+    scoreMoved(distinctQuestions(leaving));   // a question whose evidence aged out may go back to shadow
+    return gone;
   } catch (err) {
     logger.warn('decision shadow rotation failed', { error: err instanceof Error ? err.message : String(err) });
     return 0;
   }
 }
+
+const distinctQuestions = (rows: Array<{ purpose: string; question: string }>): Array<{ purpose: string; question: string }> =>
+  [...new Map(rows.map((r) => [`${r.purpose}\u0000${r.question}`, { purpose: r.purpose, question: r.question }])).values()];
 
 export function recordShadow(row: {
   purpose: string; question: string; agentId?: string; turnId?: string; ruleSaid: unknown; modelSaid: Answer | null;
@@ -60,11 +77,13 @@ export function recordTruth(turnId: string, question: string, truth: unknown, sr
   const judged = JSON.stringify(truth ?? null);
   const t = loadedTallies();
   // The rows this truth judges join the in-memory score as they are written (fix round 1): one indexed read by turn.
-  const joining = t ? getDb().prepare(`SELECT purpose, question, rule_said, model_said FROM decision_shadow
-    WHERE turn_id = ? AND question = ? AND truth IS NULL AND model_said IS NOT NULL`).all(turnId, question) as Array<Omit<JudgedRow, 'truth'>> : [];
+  // Read even before the score is held: the switch listener needs to know which question's evidence moved.
+  const joining = getDb().prepare(`SELECT purpose, question, rule_said, model_said FROM decision_shadow
+    WHERE turn_id = ? AND question = ? AND truth IS NULL AND model_said IS NOT NULL`).all(turnId, question) as Array<Omit<JudgedRow, 'truth'>>;
   getDb().prepare(`UPDATE decision_shadow SET truth = ?, truth_src = ?, truth_at = ?
     WHERE turn_id = ? AND question = ? AND truth IS NULL`).run(judged, src, Date.now(), turnId, question);
   if (t) for (const r of joining) tally(t, { ...r, truth: judged }, 1);
+  scoreMoved(distinctQuestions(joining));
 }
 
 export interface QuestionScore {

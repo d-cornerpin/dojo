@@ -23,7 +23,8 @@
 // no request. Safety gates (the spec's Group C) never import this module nor reach it.
 //
 // WHAT IS NOT HERE: a truth source. `recordTruth` has no caller for these questions yet, so no question is
-// ever promoted to `model` by this release on its own; the rows are the evidence the policy will read.
+// ever promoted to `model` by this release on its own; the rows are the evidence the policy will read. When one
+// is, the switch is recorded and told by `decision-switch.ts` (both ways).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
@@ -31,6 +32,7 @@ import { getDb } from '../db/connection.js';
 import { decide, measuredDecideTimeoutMs, type Answer, type DecideOpts } from './decide.js';
 import { modeFor } from './decision-policy.js';
 import { recordShadow, scoreQuestion } from './decision-shadow.js';
+import './decision-switch.js';   // installs the listener that records and tells a question's switch
 import { installDecisionHooks, type Judgment, type JudgmentSpec, type Mode, type Verdict } from './decision-hooks.js';
 
 export type { Judgment, JudgmentSpec, Verdict } from './decision-hooks.js';
