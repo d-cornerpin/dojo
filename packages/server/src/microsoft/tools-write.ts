@@ -9,6 +9,7 @@ import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
 import { sendMarkedDraft } from './send-as-draft.js';
 import { getPrimaryAgentName } from '../config/platform.js';
+import { safeAttachmentName } from '../services/safe-attachment-name.js';
 import {
   type LocalAttachment,
   readLocalAttachments,
@@ -1553,7 +1554,9 @@ export async function executeMicrosoftWriteTool(
       const fs = await import('node:fs');
       const nodePath = await import('node:path');
 
-      const fileName = att.name ?? 'attachment';
+      // The name comes from the sender, so it is reduced to one path
+      // component: `../../x` must not move the save out of the uploads dir.
+      const fileName = safeAttachmentName(att.name, 'attachment');
       // Default save location is the agent's uploads dir (was
       // ~/Downloads/, which is OUTSIDE the transcribe_audio sandbox).
       // Lets the agent immediately pipe audio attachments through
@@ -1673,7 +1676,8 @@ export async function executeMicrosoftWriteTool(
       // 3. Save to disk in the agent's uploads dir by default (matching
       //    gmail_read_attachment / outlook_download_attachment), so
       //    transcribe_audio can read the path directly without a move.
-      const fileName = att.name ?? `teams-attachment-${attachmentId.slice(0, 12)}.bin`;
+      // Sender-chosen name, reduced to one path component (see Outlook above).
+      const fileName = safeAttachmentName(att.name, `teams-attachment-${attachmentId.slice(0, 12)}.bin`);
       const defaultDir = nodePath.join(homeDir(), '.dojo', 'uploads', agentId);
       fs.mkdirSync(defaultDir, { recursive: true });
       const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, fileName);

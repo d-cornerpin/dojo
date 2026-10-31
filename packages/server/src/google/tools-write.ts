@@ -12,6 +12,7 @@ import { executeGmailLabel } from './gmail-label.js';
 import { BATCH_MODIFY_IDS } from './gmail-limits.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { platformSendHeaderLines } from '../services/platform-sends.js';
+import { safeAttachmentName } from '../services/safe-attachment-name.js';
 import {
   type LocalAttachment,
   readLocalAttachments,
@@ -1391,7 +1392,9 @@ export async function executeGoogleWriteTool(
       const fs = await import('node:fs');
       const nodePath = await import('node:path');
 
-      const filenameArg = (args.filename as string | undefined) ?? `attachment-${attachmentId.slice(0, 12)}.bin`;
+      // The name usually copies the sender's file name, so it is reduced to
+      // one path component: `../../x` must not move the save out of the uploads dir.
+      const filenameArg = safeAttachmentName(args.filename as string | undefined, `attachment-${attachmentId.slice(0, 12)}.bin`);
       const defaultDir = nodePath.join(homeDir(), '.dojo', 'uploads', agentId);
       fs.mkdirSync(defaultDir, { recursive: true });
       const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, filenameArg);
