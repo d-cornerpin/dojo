@@ -43,7 +43,7 @@ export async function generateBriefing(
     if (leafSummaries.length === 0) {
       // No summaries at all, create a minimal briefing
       const content = 'No conversation history available for briefing generation.';
-      const id = await saveBriefing(agentId, content);
+      const id = saveBriefing(agentId, content);
       return { id, content, tokenCount: estimateTokens(content) };
     }
     summaryMaterial = leafSummaries.map(s =>
@@ -114,7 +114,7 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
     const agedSection = buildAgedWorkBriefSection(agentId);
     const content = agedSection ? `${result.content}\n\n${agedSection}` : result.content;
 
-    const id = await saveBriefing(agentId, content);
+    const id = saveBriefing(agentId, content);
     const tokenCount = estimateTokens(content);
 
     broadcast({
@@ -207,7 +207,7 @@ export function updateBriefing(agentId: string, content: string): void {
 
 // ── Helpers ──
 
-async function saveBriefing(agentId: string, content: string): Promise<string> {
+function saveBriefing(agentId: string, content: string): string {
   const db = getDb();
   const id = `brief_${uuidv4()}`;
   const tokenCount = estimateTokens(content);

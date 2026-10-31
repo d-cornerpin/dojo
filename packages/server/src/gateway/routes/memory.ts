@@ -279,6 +279,11 @@ memoryRouter.put('/:agentId/briefing', async (c) => {
       return c.json({ ok: false, error: 'Missing or invalid content field' }, 400);
     }
 
+    const agent = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId);
+    if (!agent) {
+      return c.json({ ok: false, error: 'Agent not found' }, 404);
+    }
+
     updateBriefing(agentId, body.content);
     return c.json({ ok: true, data: { updated: true } });
   } catch (err) {
