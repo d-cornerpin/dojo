@@ -26,7 +26,11 @@ describe('K33 — the Teams badge reads the stored name', () => {
   it('the chat page carries the record on every load path and the badge uses it', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'pages/Chat.tsx'), 'utf8');
     expect(src).toMatch(/inboundBadge\(inbound\.channel, inboundSenderName\(msg\.inboundMeta, inbound\.sender\)\)/);
-    expect(src.match(/inboundMeta: m\.inboundMeta \?\? null,/g)?.length, 'first load and load-more').toBe(2);
+    // One shared mapping (toMessage, in the catch-up hook file) carries the record; first load and
+    // load-more use it from the page, the reconnect catch-up from the hook.
+    const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks/useChatCatchUp.ts'), 'utf8');
+    expect(hook.match(/inboundMeta: m\.inboundMeta \?\? null,/g)?.length, 'the one shared mapping').toBe(1);
+    expect(src.match(/\.map\(toMessage\)/g)?.length, 'first load and load-more use it').toBe(2);
     expect(src).toMatch(/inboundMeta: e\.message\.inboundMeta \?\? null,/);
   });
 });

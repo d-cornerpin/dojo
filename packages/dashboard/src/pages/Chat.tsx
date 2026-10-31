@@ -30,6 +30,7 @@ import { ThinkingBubble } from '../components/ThinkingBubble';
 import { Dojo3Stage } from '../components/Dojo3Stage';
 import { PresenceProvider } from '../components/PresenceProvider';
 import { useAgentState } from '../hooks/useAgentScopedState';
+import { useChatCatchUp, toMessage } from '../hooks/useChatCatchUp';
 import { backfillUntilRenderable } from '../lib/chat-history-backfill';
 
 // ── Orb mood ──
@@ -816,7 +817,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (r.ok && r.data.value) setAgentName(r.data.value);
     });
   }, []);
-  const { subscribe } = useWebSocket();
+  const { subscribe, reconnectCount } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
   const statusFrameSeqRef = useRef(0); // frames heard for this agent: lets a load tell if its answer is stale
 
@@ -933,6 +934,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const messagesContentRef = useRef<HTMLDivElement>(null);
   useFollowGrowth(messagesContentRef, !loading, () => pinnedToBottomRef.current, scrollToBottom, AGENT_ID);
 
+  useChatCatchUp<ChatMessage>({
+    reconnectCount, agentId: AGENT_ID, agentIdRef, wordyMode, ready: !(techSession.active && !techSession.ready),
+    statusFrameSeqRef, setMessages, setIsWorking, setBackgroundStoppable, toChat: toMessage,
+  });
+
   // Load chat history
   useEffect(() => {
     // During a technique session, wait until the resume-vs-clear decision has
@@ -989,19 +995,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
           (oldest) => api.getChatHistory(AGENT_ID, 200, oldest, wordyMode), () => active);
         if (!loaded) return;
         setMessages(
-          loaded.map((m: Message) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            createdAt: m.createdAt,
-            modelId: m.modelId,
-            attachments: m.attachments,
-            source: m.source ?? null,
-            origin: m.origin,
-            inboundMeta: m.inboundMeta ?? null,
-            conversationId: m.conversationId,
-            displayKind: m.displayKind ?? null,
-          })),
+          loaded.map(toMessage),
         );
         setHasMore(result.data.length >= 50);
         // Fresh conversation load starts pinned to the bottom.
@@ -1036,18 +1030,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
     const result = await api.getChatHistory(AGENT_ID, 50, oldestId, wordyMode);
     if (result.ok && result.data.length > 0) {
-      const older = result.data.map((m: Message) => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        createdAt: m.createdAt,
-        attachments: m.attachments,
-        source: m.source ?? null,
-        origin: m.origin,
-        inboundMeta: m.inboundMeta ?? null,
-        conversationId: m.conversationId,
-        displayKind: m.displayKind ?? null,
-      }));
+      const older = result.data.map(toMessage);
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
 
