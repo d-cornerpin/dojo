@@ -109,3 +109,14 @@ describe('F4: more shapes', () => {
   });
 });
 
+describe('fix round 2', () => {
+  it('a long unbroken all-letter value after a credential name is blanked', () => {
+    const k = 'qwertyuiopasdfghjklzxcvbnmQWERTY';
+    expect(redactText(`api_key=${k}`)).not.toContain(k);
+    expect(redactText(`token: ${k}`)).not.toContain(k);
+    expect(redactText('password = defaultPassword')).toBe('password = defaultPassword');
+  });
+  it('a YAML value on the line after the name is blanked', () => {
+    expect(redactText(`password:\n  ${BODY}\nnext: 1`)).not.toContain(BODY);
+  });
+});

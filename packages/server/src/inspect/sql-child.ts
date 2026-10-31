@@ -68,12 +68,22 @@ const CHILD_SOURCE = `
       db.function('dojo_credential_key', { deterministic: true }, (k) => (typeof k === 'string' && !/_at$/i.test(k) && keyRules.some((r) => r.test(k)) ? 1 : 0));
       const cfg = db.prepare("SELECT name FROM pragma_table_info('config')").all().map((r) => r.name);
       if (cfg.includes('key') && cfg.includes('value')) {
-        db.exec('CREATE TEMP VIEW config AS SELECT ' + cfg.map((n) => (n === 'value' ? "CASE WHEN dojo_credential_key(key) THEN '<redacted-credential>' ELSE value END AS value" : '"' + n + '"')).join(', ') + ' FROM main.config');
-        // A view of the main schema that reads \`config\` would still reach the real table (names inside it
-        // resolve through the same temp-first search only when the view itself is a temp view), so each is
-        // re-made in temp with its own text.
+        // t285 fix round 2: a COPY, not a view. The copy lives in temp with its credential values already
+        // blanked, and the statement is then compiled and its bytecode read: any b-tree it would open in
+        // the MAIN database that belongs to the real config table (or an index of it) is refused, whatever
+        // spelling of the name reached it (schema-qualified, quoted, hidden behind comments, aliased).
+        // A view could not be told apart from the statement in that check, a copy can.
+        db.exec('CREATE TEMP TABLE config AS SELECT ' + cfg.map((n) => (n === 'value' ? "CASE WHEN dojo_credential_key(key) THEN '<redacted-credential>' ELSE value END AS value" : '"' + n + '"')).join(', ') + ' FROM main.config');
+        // A view of the main schema that reads config is re-made in temp, over the copy.
         for (const v of db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view'").all()) {
           try { db.exec(String(v.sql).replace(/^\\s*CREATE\\s+VIEW/i, 'CREATE TEMP VIEW')); } catch (e) { if (/config/i.test(String(v.sql))) throw new Error('a view of config could not be made safe: ' + e.message); }
+        }
+        const roots = new Set(db.prepare("SELECT rootpage FROM main.sqlite_master WHERE (type = 'table' AND name = 'config') OR (type = 'index' AND tbl_name = 'config')").all().map((r) => r.rootpage));
+        const inner = String(req.sql).replace(/^(\\s+|--[^\\n]*(\\n|$)|\\/\\*[\\s\\S]*?\\*\\/)+/, '').replace(/^explain(\\s+query\\s+plan)?\\s+/i, '');
+        for (const op of db.prepare('EXPLAIN ' + inner).all()) {
+          if ((op.opcode === 'OpenRead' || op.opcode === 'OpenWrite' || op.opcode === 'ReopenIdx') && op.p3 === 0 && roots.has(op.p2)) {
+            throw new Error('Refused: the statement reads the real config table; name config without a schema (from config, not main.config).');
+          }
         }
       }
       db.pragma('query_only = 1');

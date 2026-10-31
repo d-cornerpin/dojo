@@ -35,7 +35,7 @@ export function notAPairedCredential(v: string, match: string): boolean {
   if (notACredentialLiteral(v)) return true;
   const quoted = match.endsWith(`"`) || match.endsWith(`'`);
   if (quoted) return /^[a-z]+(?:_[a-z]+)+$/.test(v);
-  return /^[?:@]\w*$/.test(v) || /^[$({[`<]|^\/[^/]|^\/\^/.test(v) || /^[A-Za-z_$][A-Za-z_$]*$/.test(v) || v.length < 6;
+  return /^[?:@]\w*$/.test(v) || /^[$({[`<]|^\/[^/]|^\/\^/.test(v) || (/^[A-Za-z_$][A-Za-z_$]*$/.test(v) && (v.length <= 20 || v.includes('_'))) || v.length < 6;
 }
 
 const PAIR_VALUE = String.raw`(?:"([^"\n]*)"|'([^'\n]*)'|([^\s,;"'}\])]+))`;
@@ -62,5 +62,5 @@ export const INSPECT_PATTERNS: ReadonlyArray<InspectPattern> = [
   { name: 'credential-pair-escaped', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}\\"\s*:\s*\\"((?:[^"\\]|\\(?!"))+)\\"`, 'gi'), keep: notAPairedCredential },
   // A name that ENDS in a credential word, in JSON, `name=value` or `name: value`, any case.
   // Key and punctuation stay; `==`, `=>` and `=~` are comparisons, not assignments.
-  { name: 'credential-pair', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}["'\`]?[ \t]*[:=](?![=>~])[ \t]*${PAIR_VALUE}`, 'gi'), keep: notAPairedCredential },
+  { name: 'credential-pair', regex: new RegExp(String.raw`(?<![\w.-])${CREDENTIAL_NAME}["'\`]?[ \t]*[:=](?![=>~])(?:[ \t]*|[ \t]*\r?\n[ \t]+)${PAIR_VALUE}`, 'gi'), keep: notAPairedCredential },
 ];

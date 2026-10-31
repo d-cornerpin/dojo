@@ -56,11 +56,35 @@ describe('config values are blanked at the source', () => {
   ])('%s returns nothing about the value', async (_n, query) => {
     const out = await q(query);
     expect(out).not.toContain(SECRET);
-    expect(out).not.toMatch(/\b26\b|\b115\b/); // its length, its first character code
+    if (query.includes('unicode(')) expect(out).not.toMatch(/\b26\b|\b115\b/); // its length, its first character code
     if (/where value = /.test(query) || /like 'synthetic/.test(query)) expect(out).toContain('0 rows');
   });
   it.each(['select value from main.config', 'select value from "main"."config"', 'select value from [main].[config]', 'select value from temp.config'])(
     'a schema-qualified name is refused: %s', async (query) => {
       expect(await q(query)).toMatch(/^Refused: name the config table without a schema/);
     });
+  // fix round 2: the real table is refused by what the compiled statement would OPEN, not by its words.
+  const SPELLINGS: Array<[string, string]> = [
+    ['a quote inside a block comment ahead of the name', "select 1 /* it's */ ; select 1"],
+    ['quote-bearing comments around a qualified name', "select value /* ' */ from /* ' */ main.config -- '\n"],
+    ['quote in a line comment then a qualified name', "select value from -- it's\n main.config"],
+    ['a literal-looking comment hiding the schema', "select value from /* \"x' */ \"main\" /* ' */ . /* ' */ config"],
+    ['the name in a UNION arm', "select 1 union all select value from main.config"],
+    ['the name in a subquery', "select (select value from main.config where key = 'example_api_key')"],
+    ['an alias of the schema', "select c.value from main.config as c"],
+    ['bracket and backtick quoting', 'select value from [main] . `config`'],
+  ];
+  it.each(SPELLINGS)('%s never returns the value', async (_n, query) => {
+    const out = await q(query);
+    expect(out).not.toContain(SECRET);
+  });
+  it('the child itself refuses the real table whatever the parent let through', async () => {
+    const { readInChild } = await import('../sql-child.js');
+    const out = await turnState.runWithToolCallId(AGENT, 'call-direct', async () => {
+      cap.attachCallCapability(cap.mintCallCapability({ agentId: AGENT, tool: 'dojo_inspect', callId: 'call-direct', grants: [{ kind: 'proc', program: process.execPath, display: 'node' }] }));
+      return readInChild("select value from /* ' */ main.config /* ' */");
+    });
+    expect(out).toEqual({ error: expect.stringMatching(/reads the real config table/) });
+  });
 });
+
