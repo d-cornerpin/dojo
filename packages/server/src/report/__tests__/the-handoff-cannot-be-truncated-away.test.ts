@@ -95,8 +95,9 @@ import {
 } from '../bounds.js';
 import { COLLECTOR_CAPS } from '../window.js';
 import type { ToolCall } from '@dojo/shared';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo-handoff';
+const AGENT = `${FXID.n4}-handoff`;
 
 /** The engine's own numbers, read from the definition rather than copied into this file. */
 const CAP_TOKENS = toolDefinitions.find(d => d.name === 'dojo_report')!.maxResultTokens!;
@@ -138,7 +139,7 @@ function base(): void {
   const db = getDb();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-h', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-h', 'p-h', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-h', 'idle')").run(AGENT);
+  db.prepare(`INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, '${FX.n4}', 'm-h', 'idle')`).run(AGENT);
 }
 
 /** A log entry of a realistic weight (the dev box's `prompt cache usage` line is ~300 bytes). */

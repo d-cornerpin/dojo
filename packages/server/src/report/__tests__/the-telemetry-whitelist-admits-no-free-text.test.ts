@@ -6,6 +6,7 @@ import {
 } from '../telemetry-whitelist.js';
 import { buildTelemetry, type TelemetrySources } from '../telemetry-build.js';
 import { iso } from '../telemetry-coerce.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const KINDS = ['enum', 'count', 'millis', 'bytes', 'timestamp', 'ordinal', 'bool', 'version', 'digest'];
 
@@ -288,7 +289,7 @@ describe('(5) a version or digest is checked against its OWN declared shape', ()
     ['prose sentence', 'the model kept saying my wife Sarah was wrong'],
     ['absolute path', '/Users/someone/taxes.pdf'],
     ['windows path', 'C:\\Users\\dave\\taxes.pdf'],
-    ['email', 'yorvak@northwind.example'],
+    ['email', `${FXID.n11}@northwind.example`],
     ['quoted text', '"my password is hunter2"'],
     ['bare filename', 'taxes.pdf'],
     ['bare filename 2', 'Sarah-divorce-settlement.docx'],

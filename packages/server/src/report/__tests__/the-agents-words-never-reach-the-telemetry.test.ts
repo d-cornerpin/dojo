@@ -25,8 +25,9 @@ import { reportHandlers } from '../../agent/tools/cat/report.js';
 import { getReport, listOpenReports } from '../store.js';
 import { readBundle } from '../bundle.js';
 import type { ToolCall } from '@dojo/shared';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo-report-words';
+const AGENT = `${FXID.n4}-report-words`;
 
 /** The five markers, one per brief field. Nothing else in the tree contains them. */
 const MARK = {
@@ -49,7 +50,7 @@ beforeEach(() => {
   db.prepare('DELETE FROM dojo_reports').run();
   db.prepare("INSERT OR IGNORE INTO providers (id, name, type, auth_type) VALUES ('p-w', 'P', 'anthropic', 'none')").run();
   db.prepare("INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id) VALUES ('m-w', 'p-w', 'M', 'm')").run();
-  db.prepare("INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, 'Zargo', 'm-w', 'idle')").run(AGENT);
+  db.prepare(`INSERT OR IGNORE INTO agents (id, name, model_id, status) VALUES (?, '${FX.n4}', 'm-w', 'idle')`).run(AGENT);
 });
 
 /** Drive gather → draft and hand back the report id. */
