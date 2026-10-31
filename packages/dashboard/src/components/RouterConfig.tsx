@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
+import { useToast } from '../hooks/useToast';
 import { RouterUsage } from './RouterUsage';
 
 interface TierModel {
@@ -350,6 +351,7 @@ const DimensionRow = ({
 //   <id>  → a specific (ideally low-TTFT) model
 // Single-pulldown card matching the other model-picker cards.
 export const VoiceOpenerModelConfig = () => {
+  const toast = useToast();
   const [selectedId, setSelectedId] = useState('');
   const [models, setModels] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -375,17 +377,19 @@ export const VoiceOpenerModelConfig = () => {
 
   const handleSave = async () => {
     setSaving(true);
-    await api.setSetting('voice.opener_model', selectedId);
+    const res = await api.setSetting('voice.opener_model', selectedId);
     setSaving(false);
+    if (!res.ok) { toast.error(res.error || 'The opener model could not be saved.'); return; }
     flash();
   };
 
   // "Clear" returns to Auto (the Dojo's writer) — the unset default.
   const handleClear = async () => {
     setSaving(true);
-    await api.setSetting('voice.opener_model', '');
-    setSelectedId('');
+    const res = await api.setSetting('voice.opener_model', '');
     setSaving(false);
+    if (!res.ok) { toast.error(res.error || 'The opener model could not be saved.'); return; }
+    setSelectedId('');
     flash();
   };
 
