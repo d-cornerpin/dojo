@@ -14,6 +14,7 @@ import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
+import { restartAfterFailedImport } from './import-recovery.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -146,6 +147,7 @@ export async function performImport(
   // before Step 6 means no backup was taken, and reaching for an older `.dojo-backup-*`
   // some earlier run left behind would delete the user's live ~/.dojo.
   let ownBackup: string | null = null;
+  let servicesStopped = false, restartAttempted = false; // a failure after stop must restart, once
 
   try {
     // Step 2: Stream the encrypted payload out of the outer zip to disk,
@@ -227,6 +229,7 @@ export async function performImport(
 
     // Step 5b: Stop services
     broadcastProgress('services', 45, 'Stopping services...');
+    servicesStopped = true;
     await stopServices();
 
     // Close database connection so we can replace the file
@@ -353,6 +356,7 @@ export async function performImport(
 
     // Step 16: Restart services
     broadcastProgress('restart', 90, 'Restarting services...');
+    restartAttempted = true;
     await restartServices();
 
     // Step 17: Run post-migration checks. Cache the manifest first so the
@@ -370,20 +374,14 @@ export async function performImport(
 
     return { manifest, checks };
   } catch (err) {
-    // On failure, restore ONLY the backup THIS run made. A failure before Step 6 means
-    // no backup was taken, so the live ~/.dojo is still the user's real data: do not delete
-    // it, and do not reach for some older `.dojo-backup-*` another run left behind.
     if (ownBackup && fs.existsSync(ownBackup)) {
       try {
-        if (fs.existsSync(DOJO_DIR)) {
-          fs.rmSync(DOJO_DIR, { recursive: true, force: true });
-        }
+        if (fs.existsSync(DOJO_DIR)) fs.rmSync(DOJO_DIR, { recursive: true, force: true });
         fs.renameSync(ownBackup, DOJO_DIR);
         logger.info('Restored backup after failed import');
-      } catch (restoreErr) {
-        logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) });
-      }
+      } catch (restoreErr) { logger.error('Failed to restore backup', { error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }); }
     }
+    await restartAfterFailedImport({ servicesStopped, restartAttempted, restartServices });
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
     throw err;
