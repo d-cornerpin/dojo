@@ -832,11 +832,18 @@ export const Tracker = () => {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  // Switching projects while a load is in flight would otherwise let the old
+  // fetch answer last and redraw the board for a project that was left. Each
+  // run stamps itself and bails once a newer run has started.
+  const latestLoad = useRef(0);
+
   const loadData = useCallback(async () => {
+    const mine = ++latestLoad.current;
     const [projectsResult, agentsResult] = await Promise.all([
       api.getProjects(),
       api.getAgents(),
     ]);
+    if (mine !== latestLoad.current) return;
 
     if (projectsResult.ok) setProjects(projectsResult.data);
     if (agentsResult.ok) setAgents(agentsResult.data);
@@ -844,6 +851,7 @@ export const Tracker = () => {
     // Load tasks based on selected project
     const filter = selectedProjectId !== 'all' ? { projectId: selectedProjectId } : undefined;
     const tasksResult = await api.getTasks(filter);
+    if (mine !== latestLoad.current) return;
     if (tasksResult.ok) setTasks(tasksResult.data);
 
     setLoading(false);
