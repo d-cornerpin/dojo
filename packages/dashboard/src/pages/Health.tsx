@@ -385,7 +385,7 @@ export const Health = () => {
       </header>
 
       {pollFailed && health !== null && lastOk !== null && (
-        <div className="note--warn">Showing the last good reading from {formatTimeOnly(new Date(lastOk).toISOString())}; the latest check failed.</div>
+        <div className="note--warn">Showing the last good reading from {formatTimeOnly(new Date(Number(lastOk)).toISOString())}; the latest check failed.</div>
       )}
 
       {/* Stat tiles */}

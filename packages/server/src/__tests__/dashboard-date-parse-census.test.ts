@@ -62,6 +62,15 @@ const ALLOWLIST: ReadonlyArray<{ file: string; arg: string; why: string }> = [
       + '("YYYY-MM-DDTHH:MM", deliberately zone-less). It is what the PERSON typed in their own '
       + 'zone, not a server instant. Parsing it as UTC would be the bug; `new Date()` local '
       + 'parsing is correct here, and `.toISOString()` on the next line converts it for storage.',
+  },  {
+    file: '__tests__/the-export-file-is-named-for-todays-local-date.test.tsx',
+    arg: '2026, 9, 31, 23, 30',
+    why: "a local calendar date is the SUBJECT of this test (`localDateStamp` must read the LOCAL day), so the fixture is built from numeric local-time components on purpose; a UTC epoch would defeat the check. These are year/month/day/hour/minute numbers, not a string and not a server datetime.",
+  },
+  {
+    file: '__tests__/the-export-file-is-named-for-todays-local-date.test.tsx',
+    arg: '2026, 0, 1, 0, 5',
+    why: "a local calendar date is the SUBJECT of this test (`localDateStamp` must read the LOCAL day), so the fixture is built from numeric local-time components on purpose; a UTC epoch would defeat the check. These are year/month/day/hour/minute numbers, not a string and not a server datetime.",
   },
 ];
 
