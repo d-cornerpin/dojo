@@ -1948,17 +1948,9 @@ export const setUpdateChannel = async (channel: UpdateChannel): Promise<ApiRespo
   });
 };
 
-/** Where the current update or rollback stands, as the server's update-state marker reports it. */
-export interface UpdateEpisode {
-  phase: string;
-  targetVersion: string | null;
-  previousVersion: string | null;
-  failedReason: string | null;
-}
-
-export const getVersion = async (): Promise<ApiResponse<{ version: string; episode: UpdateEpisode | null }>> => {
-  return request<{ version: string; episode: UpdateEpisode | null }>('/update/version');
-};
+export interface UpdateEpisode { phase: string; targetVersion: string | null; previousVersion: string | null; failedReason: string | null }
+type VersionInfo = { version: string; episode: UpdateEpisode | null };
+export const getVersion = async (): Promise<ApiResponse<VersionInfo>> => request<VersionInfo>('/update/version');
 
 /**
  * What happened to the DATA backup on the last update that changed the database.

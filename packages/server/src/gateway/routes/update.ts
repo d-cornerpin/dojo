@@ -15,6 +15,7 @@ import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markBootingNew, readMarker } from '../../update-state.js';
 import { rollbackTargetPaths } from '../../update/rollback-target.js';
 import { installPlatformTree, newInstallWorkDir, runNpmInstall, acquireSwapLock } from '../../update/install-tree.js';
+import { episodeSummary } from '../../update-episode.js';
 // t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
 // never borrows the agent toolbox's capability facade (which would refuse it outright).
@@ -1008,15 +1009,7 @@ updateRouter.post('/channel', async (c) => {
 
 // ── Current version ──
 
-// `episode` is the update-state marker's plain summary, so a page that is waiting for a restart can
-// tell "the new build is still starting" from "the new build failed and the old one came back".
-updateRouter.get('/version', (c) => {
-  const m = readMarker();
-  const episode = m && m.phase !== 'idle'
-    ? { phase: m.phase, targetVersion: m.targetVersion, previousVersion: m.previousVersion, failedReason: m.failedReason }
-    : null;
-  return c.json({ ok: true, data: { version: getCurrentVersion(), episode } });
-});
+updateRouter.get('/version', (c) => c.json({ ok: true, data: { version: getCurrentVersion(), episode: episodeSummary() } }));
 
 // ── The DATA backup: did the last update leave a way back? ──
 //

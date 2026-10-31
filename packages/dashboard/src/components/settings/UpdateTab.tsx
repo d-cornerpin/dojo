@@ -8,7 +8,7 @@ import * as api from '../../lib/api';
 import { DataBackupNotice } from '../DataBackupNotice';
 import { DiskSpaceNotice } from '../DiskSpaceNotice';
 import { formatDateShort } from '../../lib/dates';
-import { waitForRestart } from '../../lib/wait-for-restart';
+import { useRestartWait } from '../../lib/use-restart-wait';
 
 
 // ── Update Tab ──
@@ -22,10 +22,7 @@ export const UpdateTab = () => {
   const [channel, setChannel] = useState<api.UpdateChannel>('stable');
   const [switchingChannel, setSwitchingChannel] = useState(false);
   const [dbBackup, setDbBackup] = useState<api.MigrationBackupOutcome | null>(null);
-  const [restartStatus, setRestartStatus] = useState<string | null>(null);
-  // Cancels the wait for the restarted server when this tab goes away.
-  const waitAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => waitAbort.current?.abort(), []);
+  const restart = useRestartWait();
 
   // Every path that writes the release info or the channel takes a ticket first and drops its own
   // answer if a newer request started meanwhile, so a slow old answer cannot undo a newer one.
@@ -83,22 +80,8 @@ export const UpdateTab = () => {
     const result = await api.applyUpdate();
     if (result.ok) {
       setUpdateResult(result.data.message);
-      const ac = new AbortController();
-      waitAbort.current = ac;
-      const outcome = await waitForRestart({
-        expectedVersion: result.data.newVersion ?? null,
-        previousVersion: result.data.previousVersion ?? updateInfo?.currentVersion ?? null,
-        signal: ac.signal,
-        onStatus: setRestartStatus,
-      });
-      if (outcome.state === 'ready') {
-        window.location.reload();
-      } else if (outcome.state === 'failed') {
-        setError(outcome.message);
-        setUpdateResult(null);
-        setRestartStatus(null);
-        setUpdating(false);
-      }
+      const failure = await restart.follow(result.data.newVersion ?? null, result.data.previousVersion ?? updateInfo?.currentVersion ?? null);
+      if (failure) { setError(failure); setUpdateResult(null); setUpdating(false); }
     } else {
       setError(result.error);
       setUpdating(false);
@@ -231,7 +214,7 @@ export const UpdateTab = () => {
         {updating && (
           <div className="text-xs text-ui/40">
             Downloading and installing update. The server will restart automatically. This page will reload when the new version is running.
-            {restartStatus && <div data-testid="restart-status">{restartStatus}</div>}
+            {restart.status && <div data-testid="restart-status">{restart.status}</div>}
           </div>
         )}
       </div>
@@ -250,9 +233,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
   const [rollingBack, setRollingBack] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [restartStatus, setRestartStatus] = useState<string | null>(null);
-  const waitAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => waitAbort.current?.abort(), []);
+  const restart = useRestartWait();
 
   const loadReleases = async () => {
     setLoading(true);
@@ -275,22 +256,8 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
     const r = await api.rollbackToVersion(tag);
     if (r.ok) {
       setResult(r.data.message);
-      const ac = new AbortController();
-      waitAbort.current = ac;
-      const outcome = await waitForRestart({
-        expectedVersion: r.data.newVersion ?? version,
-        previousVersion: r.data.previousVersion ?? currentVersion,
-        signal: ac.signal,
-        onStatus: setRestartStatus,
-      });
-      if (outcome.state === 'ready') {
-        window.location.reload();
-      } else if (outcome.state === 'failed') {
-        setError(outcome.message);
-        setResult(null);
-        setRestartStatus(null);
-        setRollingBack(null);
-      }
+      const failure = await restart.follow(r.data.newVersion ?? version, r.data.previousVersion ?? currentVersion);
+      if (failure) { setError(failure); setResult(null); setRollingBack(null); }
     } else {
       setError(r.error ?? 'Rollback failed');
       setRollingBack(null);
@@ -309,7 +276,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
       {result && (
         <div className="alert-banner alert-info text-sm">
           {result}
-          {restartStatus && rollingBack && <div data-testid="restart-status">{restartStatus}</div>}
+          {restart.status && rollingBack && <div data-testid="restart-status">{restart.status}</div>}
         </div>
       )}
       {error && (
