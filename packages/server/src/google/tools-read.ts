@@ -11,7 +11,7 @@ import { outsideSpan } from '../tools/external-content.js';
 import { googleRead } from './client.js';
 import { firstTabRange } from './sheets-first-tab.js';
 import { extractGmailBodyText } from './gmail-body.js';
-import { driveSearchQuery } from './drive-query.js';
+import { driveSearchQuery, withoutQuotedValues } from './drive-query.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 import { executeGmailSearch, fmtEmailDate, GMAIL_BASE } from './gmail-search.js';
 export { searchMailForAccount, type GoogleMailFetchItem } from './gmail-search.js';
@@ -642,8 +642,14 @@ export async function executeGoogleReadTool(
       const maxResults = (args.max_results as number) ?? 20;
       const verbose = args.verbose as boolean | undefined;
 
+      // Drive's `and` binds tighter than `or`, so a search with an either-or in it is bracketed before any
+      // `and` clause (the folder, then the Trash) joins it. Every test reads the search with its quoted values
+      // emptied: a word inside a value (`or`, `trashed`) is not syntax.
       let q = '';
-      if (driveQuery) q = driveSearchQuery(driveQuery);
+      if (driveQuery) {
+        q = driveSearchQuery(driveQuery);
+        if (/\bor\b/i.test(withoutQuotedValues(q))) q = `(${q})`;
+      }
       if (folderId) {
         const folderQ = `'${folderId}' in parents`;
         q = q ? `${q} and ${folderQ}` : folderQ;
@@ -651,7 +657,7 @@ export async function executeGoogleReadTool(
       // Drive lists trashed files unless the query says otherwise. A query that already
       // mentions trashed is the model's own and passes through; every other one excludes the Trash.
       if (!q) q = 'trashed = false';
-      else if (!/\btrashed\b/i.test(q)) q = /\bor\b/i.test(q) ? `(${q}) and trashed = false` : `${q} and trashed = false`;
+      else if (!/\btrashed\b/i.test(withoutQuotedValues(q))) q = `${q} and trashed = false`;
 
       const params = new URLSearchParams({
         q,

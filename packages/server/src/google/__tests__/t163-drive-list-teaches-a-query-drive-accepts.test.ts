@@ -46,7 +46,8 @@ describe('t163 B — a bare term becomes a full-text search', () => {
   it('a quote and a backslash in the term are escaped (a term can never close the string)', async () => {
     expect(await sentQ({ query: "O'Brien" })).toBe("fullText contains 'O\\'Brien' and trashed = false");
     expect(await sentQ({ query: 'C:\\temp' })).toBe("fullText contains 'C:\\\\temp' and trashed = false");
-    expect(await sentQ({ query: "x' or name contains 'y" })).toBe("(fullText contains 'x\\' or name contains \\'y') and trashed = false");
+    // 9901: the "or" is inside the one quoted value, so no brackets are needed (the value still cannot close).
+    expect(await sentQ({ query: "x' or name contains 'y" })).toBe("fullText contains 'x\\' or name contains \\'y' and trashed = false");
   });
 
   it('a bare term still composes with a folder', async () => {

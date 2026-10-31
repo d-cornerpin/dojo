@@ -14,8 +14,13 @@ const DRIVE_OPERATOR = new RegExp(`\\b(?:${FIELDS})\\s*(?:contains|has|!=|<=|>=|
 const QUOTED_VALUE = /'(?:[^'\\]|\\.)*'/g;
 
 /** True when the text already contains a Drive operator expression. */
+/** The query with every quoted value emptied, so a word inside a value (`or`, `trashed`) is not read as Drive syntax. */
+export function withoutQuotedValues(query: string): string {
+  return query.replace(QUOTED_VALUE, "''");
+}
+
 export function speaksDrive(query: string): boolean {
-  return DRIVE_OPERATOR.test(query.replace(QUOTED_VALUE, "''"));
+  return DRIVE_OPERATOR.test(withoutQuotedValues(query));
 }
 
 /** The `q` for a model-supplied query: Drive syntax as written, anything else a full-text search. */
