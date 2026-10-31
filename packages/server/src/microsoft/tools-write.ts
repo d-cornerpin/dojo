@@ -8,7 +8,18 @@ import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix, graphFetch } fr
 import { writeToolReceipt } from '../receipts/store.js';
 import { graphSendHeaders, recordPlatformSend } from '../services/platform-sends.js';
 import { toRfc3339WithOffset } from '../services/rfc3339-offset.js';
-import { sendMarkedDraft } from './send-as-draft.js';
+import { sendMarkedDraft, type DraftRecipients } from './send-as-draft.js';
+
+/** The recipients Graph put on the draft, as the note the agent reads (R4: always know who a message went to). Empty when Graph did not say. */
+function draftRecipientsNote(r: DraftRecipients | undefined): string {
+  if (!r || (r.to.length === 0 && r.cc.length === 0)) return '';
+  const cc = r.cc.length > 0 ? `; Cc: ${r.cc.join(', ')}` : '';
+  return `. To: ${r.to.join(', ')}${cc}`;
+}
+function draftRecipientsForReceipt(r: DraftRecipients | undefined): string | null {
+  const all = r ? [...r.to, ...r.cc] : [];
+  return all.length > 0 ? all.join(', ') : null;
+}
 import { getPrimaryAgentName } from '../config/platform.js';
 import { safeAttachmentName } from '../services/safe-attachment-name.js';
 import {
@@ -1069,11 +1080,11 @@ export async function executeMicrosoftWriteTool(
       // cheaply. Write an accepted-but-unverified receipt (D-4): the turn does
       // NOT fail and the gate passes on accepted=true, but it is honestly not
       // marked verified. See the DONE record for the stated limitation.
-      writeToolReceipt({ agentId, tool: 'outlook_reply', tier: 2, verified: false, basis: 'http-status', recipient: args.message_id as string, detail: { status: 202, accepted: true, note: 'reply target subject/recipient not re-fetched' } });
+      writeToolReceipt({ agentId, tool: 'outlook_reply', tier: 2, verified: false, basis: 'http-status', recipient: draftRecipientsForReceipt(result.recipients) ?? (args.message_id as string), detail: { status: 202, accepted: true, note: 'reply target subject not re-fetched' } });
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${attachSummary}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${draftRecipientsNote(result.recipients)}${attachSummary}`;
     }
 
     // ── T77b — THE DRAFT. The same two Graph shapes `outlook_send` / `outlook_reply`
@@ -1183,7 +1194,7 @@ export async function executeMicrosoftWriteTool(
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} new inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''} (original attachments preserved automatically)`;
-      return `Email forwarded to ${args.to}${attachSummary}`;
+      return `Email forwarded to ${draftRecipientsForReceipt(result.recipients) ?? args.to}${attachSummary}`;
     }
 
     case 'calendar_create_ms': {

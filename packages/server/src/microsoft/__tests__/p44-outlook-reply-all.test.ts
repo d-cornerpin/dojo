@@ -20,7 +20,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../tools/unified-read.js', () => ({ otherMailboxesCountSection: vi.fn(async () => '') }));
 
-import { msGraphWrite } from '../client.js';
+import { msGraphWrite, msGraphRead } from '../client.js';
 import { sendMarkedDraft } from '../send-as-draft.js';
 import { judgeOwnerEmail } from '../../services/mail-owner-intake.js';
 import { isPlatformSent } from '../../services/platform-sends.js';
@@ -84,5 +84,21 @@ describe('P44 — outlook_reply: the sender or everyone, as the agent chooses', 
     const out = await executeMicrosoftWriteTool('outlook_reply', { message_id: 'm1', body: 'ok', reply_all: true }, 'a1', 'A Worker');
     expect(out).toMatch(/^Error/);
     expect(vi.mocked(msGraphWrite).mock.calls.some((c) => String(c[1]).endsWith('/send'))).toBe(false);
+  });
+});
+
+describe('C4 (R4) — Outlook reply and forward results name who it went to, read back from the draft', () => {
+  const draft = { id: 'draft-1', internetMessageId: '<d@x>', toRecipients: [{ emailAddress: { name: 'Dana', address: 'dana@shop.example' } }], ccRecipients: [{ emailAddress: { address: 'lee@example.com' } }] };
+  it('outlook_reply names the draft\'s To and Cc', async () => {
+    vi.mocked(msGraphWrite).mockResolvedValue(ok(draft) as never);
+    const out = await executeMicrosoftWriteTool('outlook_reply', { message_id: 'm1', body: 'ok', reply_all: true }, 'a1', 'A Worker');
+    expect(out).toContain('To: Dana <dana@shop.example>');
+    expect(out).toContain('Cc: lee@example.com');
+  });
+  it('outlook_forward names the draft\'s recipients', async () => {
+    vi.mocked(msGraphWrite).mockResolvedValue(ok(draft) as never);
+    vi.mocked(msGraphRead).mockResolvedValue(ok({ value: [] }) as never);
+    const out = await executeMicrosoftWriteTool('outlook_forward', { message_id: 'm1', to: 'x@y.test' }, 'a1', 'A Worker');
+    expect(out).toContain('Dana <dana@shop.example>');
   });
 });
