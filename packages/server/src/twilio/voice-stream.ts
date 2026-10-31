@@ -85,6 +85,10 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
     logger.warn('Twilio WS sent non-JSON, ignoring', { previewLen: text.length });
     return;
   }
+  if (msg === null || typeof msg !== 'object' || typeof (msg as { event?: unknown }).event !== 'string') {
+    logger.warn('Twilio WS sent a frame with no event, ignoring');
+    return;
+  }
 
   switch (msg.event) {
     case 'connected':
@@ -92,6 +96,10 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
       return;
     case 'start': {
       const startMsg = msg;
+      if (!startMsg.start || typeof startMsg.start.callSid !== 'string') {
+        logger.warn('Twilio WS start frame without a call id, ignoring');
+        return;
+      }
       const callSid = startMsg.start.callSid;
       const streamSid = startMsg.streamSid;
       wsToCallSid.set(ws, callSid);
@@ -126,6 +134,7 @@ export async function handleVoiceStreamMessage(ws: WSContext, data: string | Arr
     }
     case 'media': {
       const frameMsg = msg;
+      if (!frameMsg.media) return;
       // Only process the inbound track (caller's audio). Twilio also
       // echoes back the outbound track in some configurations; ignore.
       if (frameMsg.media.track !== 'inbound') return;
