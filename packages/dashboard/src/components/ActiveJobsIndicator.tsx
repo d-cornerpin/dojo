@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { listActiveGenerationJobs, cancelGenerationJob, type GenJobDto } from '../lib/api';
+import { engineRoleOf, loadEngineRoleIds } from '../lib/engine-role-ids';
 import { formatElapsed } from '../lib/dates';
 
 // ════════════════════════════════════════
@@ -167,6 +168,8 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
     void refetch();
   }, [refetch, reconnectCount]); // a reconnect re-asks: job frames sent in the gap are gone
 
+  useEffect(() => { void loadEngineRoleIds(); }, [reconnectCount]);
+
   useEffect(() => {
     const unsubVideo = subscribe('video_job:update', (event) => {
       if (event.type !== 'video_job:update') return;
@@ -183,9 +186,9 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
     // in-flight signal; compaction (not an agent) emits engine:activity.
     const unsubStatus = subscribe('agent:status', (event) => {
       if (event.type !== 'agent:status') return;
-      if (event.agentId !== 'dreamer' && event.agentId !== 'healer') return;
-      const kind: EngineKind = event.agentId === 'dreamer' ? 'dreamer' : 'healer';
-      const label = event.agentId === 'dreamer'
+      const kind: EngineKind | null = engineRoleOf(event.agentId);
+      if (!kind) return;
+      const label = kind === 'dreamer'
         ? 'Dreaming (distilling memory)'
         : 'Healer running diagnostics';
       const who = event.agentId;
