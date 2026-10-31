@@ -13,6 +13,7 @@ import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
 import { readManifestFromZip, performImport, verifyArchive } from '../../migration/import.js';
 import { ImportAlreadyRunningError } from '../../migration/import-safety.js';
+import { bindImportCardMarker } from '../../migration/import-recovery.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { terminateAgent } from '../../agent/spawner.js';
@@ -24,6 +25,7 @@ import { createLogger } from '../../logger.js';
 import { homeDir } from '../../home.js';
 
 const logger = createLogger('migration-routes');
+bindImportCardMarker(fs, path.join(homeDir(), '.dojo-import-stuck.json')); // beside ~/.dojo, so the card outlives a restart
 
 // ONE mount, `/api/migration/*`, behind the owner's token (PHASE-0 T9).
 //

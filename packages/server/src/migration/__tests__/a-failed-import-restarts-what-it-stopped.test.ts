@@ -25,11 +25,12 @@ const migratePaths = vi.fn();
 vi.mock('../path-migration.js', () => ({ migratePaths: (...a: unknown[]) => migratePaths(...a) }));
 
 import { performImport } from '../import.js';
-import { importOwnerCards } from '../import-recovery.js';
+import { importOwnerCards, bindImportCardMarker } from '../import-recovery.js';
 import { runPostMigrationChecks } from '../checks.js';
 
 const PARENT = homeDir();
 const LIVE_DIR = path.join(PARENT, '.dojo');
+const MARKER = path.join(PARENT, '.dojo-import-stuck.json');
 const ZIP_PATH = path.join(PARENT, 'import.zip');
 
 /** A valid encrypted export (fake data): inner zip with one file, AES-256-CBC like the exporter. */
@@ -58,6 +59,7 @@ async function encryptPayloadForTest(password: string): Promise<[object, Buffer]
 function cleanup(): void {
   fs.rmSync(LIVE_DIR, { recursive: true, force: true });
   fs.rmSync(ZIP_PATH, { force: true });
+  fs.rmSync(MARKER, { force: true });
   for (const f of fs.readdirSync(PARENT)) {
     if (f.startsWith('.dojo-backup-')) fs.rmSync(path.join(PARENT, f), { recursive: true, force: true });
   }
@@ -77,6 +79,7 @@ function buildZip(manifest: object, payload?: Buffer): Promise<void> {
 }
 
 beforeEach(() => {
+  bindImportCardMarker(fs, MARKER);
   cleanup();
   fs.mkdirSync(LIVE_DIR, { recursive: true });
   fs.writeFileSync(path.join(LIVE_DIR, 'live.txt'), 'live');
@@ -173,6 +176,7 @@ describe('a failed import restarts what it stopped', () => {
     expect(caught?.message).toContain(path.join(PARENT, backup));
     expect(fs.readFileSync(path.join(PARENT, backup, 'live.txt'), 'utf-8')).toBe('live');
     expect(restart).not.toHaveBeenCalled();
+    expect(fs.existsSync(LIVE_DIR)).toBe(true); // ~/.dojo never vanishes
   });
 
   it('a restart that fails raises an owner card, which stands and is named in the error', async () => {
@@ -208,5 +212,34 @@ describe('a failed import restarts what it stopped', () => {
     await performImport(ZIP_PATH, 'pw', async () => {}, async () => {});
     expect(importOwnerCards()).toHaveLength(0);
     expect(cardEnded).toHaveBeenCalled();
+  });
+
+  it('the stuck-backup card survives a restart (marker beside ~/.dojo) until dismissed', async () => {
+    await buildZip(...(await encryptPayloadForTest('pw')));
+    migratePaths.mockImplementation(() => { throw new Error('migrate boom'); });
+    const real = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === LIVE_DIR && String(from).includes('.dojo-backup-')) throw new Error('rename denied');
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    try { await performImport(ZIP_PATH, 'pw', async () => {}, async () => {}); } catch { /* expected */ } finally { spy.mockRestore(); }
+    expect(fs.existsSync(MARKER)).toBe(true);
+    const backup = fs.readdirSync(PARENT).find((f) => f.startsWith('.dojo-backup-'))!;
+    // a restart forgets memory: ask the card source with a cleared memory by dismissing only the live copy
+    vi.resetModules();
+    const fresh = await import('../import-recovery.js');
+    fresh.bindImportCardMarker(fs, MARKER);
+    const cards = fresh.importOwnerCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].words).toContain(path.join(PARENT, backup));
+    cards[0].dismiss();
+    expect(fs.existsSync(MARKER)).toBe(false);
+    expect(fresh.importOwnerCards()).toHaveLength(0);
+  });
+
+  it('a marker whose backup is gone shows nothing and is removed', () => {
+    fs.writeFileSync(MARKER, JSON.stringify({ words: 'x', backupPath: path.join(PARENT, '.dojo-backup-gone') }));
+    expect(importOwnerCards()).toHaveLength(0);
+    expect(fs.existsSync(MARKER)).toBe(false);
   });
 });

@@ -29,6 +29,8 @@ export function putBackOwnBackup(fs: Fs, dojoDir: string, backup: string): { ok:
     if (fs.existsSync(dojoDir)) { fs.renameSync(dojoDir, aside); movedAside = true; }
     fs.renameSync(backup, dojoDir);
   } catch (e) {
+    // ~/.dojo must never vanish: put the live data we set aside back where it was.
+    if (movedAside) { try { fs.renameSync(aside, dojoDir); } catch { /* nothing more can be done */ } }
     return { ok: false, backup, reason: e instanceof Error ? e.message : String(e) };
   }
   if (movedAside) { try { fs.rmSync(aside, { recursive: true, force: true }); } catch { /* disposable; leave it */ } }
