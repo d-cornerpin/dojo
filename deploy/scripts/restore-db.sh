@@ -273,7 +273,18 @@ echo ""
 echo "Putting the backup in place..."
 rm -f "$DB-wal" "$DB-shm"
 if ! cp -f "$FROM" "$DB"; then
-    echo "REFUSING: the copy failed. Your database is unchanged."
+    echo "REFUSING: the copy failed part-way, so the database file may be cut off."
+    rm -f "$DB-wal" "$DB-shm"
+    if [ -n "$SAFETY" ] && [ -s "$SAFETY" ] && cp -f "$SAFETY" "$DB"; then
+        echo "  Your previous database has been put back from $SAFETY"
+    elif [ -z "$SAFETY" ]; then
+        rm -f "$DB"
+        echo "  There was no database before this run, so the cut-off file was removed."
+    else
+        echo "  COULD NOT PUT IT BACK. Your previous database is at:"
+        echo "      $SAFETY"
+        echo "  Copy it to $DB by hand before starting Dojo."
+    fi
     exit 1
 fi
 # A manual backup.sh copy may have kept its own tail; bring it along if it is there.
