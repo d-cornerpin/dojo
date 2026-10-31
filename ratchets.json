@@ -9607,7 +9607,7 @@
     "packages/server/src/agent/brokers/sudo-copy.ts": 168,
     "packages/server/src/agent/brokers/sudo-policy.ts": 1320,
     "packages/server/src/agent/brokers/sudo-probe.ts": 84,
-    "packages/server/src/agent/browser.ts": 426,
+    "packages/server/src/agent/browser.ts": 455,
     "packages/server/src/agent/destructive-gate.ts": 496,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/effects/fs.ts": 258,
