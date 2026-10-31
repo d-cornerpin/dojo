@@ -226,6 +226,8 @@ describe('P44 R2 — nothing but the provider-confirmed owner address is the own
     ['a look-alike address (stripped punctuation)', 'own-er@home.test', [AUTH_PASS('home.test')], () => ownerAccount('owner@home.test')],
     ['a look-alike domain', 'owner@home.test.evil.test', [AUTH_PASS('home.test.evil.test')], () => ownerAccount('owner@home.test')],
     ['a forged pass BELOW the provider\'s real failure', 'owner@home.test', ['mx.google.com; dmarc=fail header.from=home.test', 'mx.google.com; dmarc=pass header.from=home.test'], () => ownerAccount('owner@home.test')],
+    ['a pass planted inside a comment ahead of the real failure', 'owner@home.test', ['mx.google.com; spf=pass (;dmarc=pass header.from=home.test); dmarc=fail header.from=home.test'], () => ownerAccount('owner@home.test')],
+    ['a pass planted in a quoted envelope address ahead of the real failure', 'owner@home.test', ['mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=home.test@y.test"; dmarc=fail header.from=home.test'], () => ownerAccount('owner@home.test')],
     ['a pass written by some other server', 'owner@home.test', ['mail.evil.test; dmarc=pass header.from=home.test'], () => ownerAccount('owner@home.test')],
     ['an owner address that was disconnected', 'owner@home.test', [AUTH_PASS('home.test')], () => ownerAccount('owner@home.test', 0)],
     ['an agent-kind account\'s address', 'second@home.test', [AUTH_PASS('home.test')], () => ownerAccount('second@home.test', 1, 'agent')],
@@ -260,6 +262,16 @@ describe('P44 R2 — nothing but the provider-confirmed owner address is the own
     ownerAccount('owner@home.test');
     await mailArrives([mail('f4', 'owner@home.test', [AUTH_PASS('home.test')], { body: null })]);
     expect(storedRow('f4').meta.ownerWords).toBe('');
+  });
+});
+
+describe('P44 I2 — more than one From header', () => {
+  it('a second From header (any case) makes the email unconfirmed, whichever comes first', async () => {
+    ownerAccount('owner@home.test');
+    const m = mail('t1', 'owner@home.test', [AUTH_PASS('home.test')]);
+    m.headers.push({ name: 'FROM', value: 'someone@else.test' });
+    await mailArrives([m]);
+    NOT_OWNER('t1');
   });
 });
 

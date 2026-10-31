@@ -5,11 +5,12 @@ import { ownerEmailVerdict } from '../mail-owner-verdict.js';
 const h = (name: string, value: string) => ({ name, value });
 
 // Provider shapes as the mail servers write them. Gmail's `Authentication-Results`
-// carries the authserv-id; Exchange (Outlook) writes it with no authserv-id.
+// carries the authserv-id mx.google.com; Exchange Online writes its own *.outlook.com host. A header stamped by any
+// other server (or none) is never the provider's.
 const GMAIL_PASS =
   'mx.google.com; dkim=pass header.i=@example.org; spf=pass smtp.mailfrom=owner@example.org; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=example.org';
 const OUTLOOK_PASS =
-  'spf=pass smtp.mailfrom=example.org; dkim=pass header.d=example.org; dmarc=pass action=none header.from=example.org';
+  'DM6PR01MB1234.namprd01.prod.outlook.com; spf=pass smtp.mailfrom=example.org; dkim=pass header.d=example.org; dmarc=pass action=none header.from=example.org';
 
 const OWNER = 'owner@example.org';
 
@@ -201,5 +202,48 @@ describe('ownerEmailVerdict', () => {
       headers: [h('Authentication-Results', GMAIL_PASS)],
       ownerAddresses: ['  Owner@Example.org '],
     })).toEqual({ verdict: 'owner' });
+  });
+});
+
+// ── P44 fix round 1 (C1/I2/I5): only the provider's own, structured, single dmarc result counts ──
+describe('ownerEmailVerdict — the provider header is read as structure, never as text the sender chose', () => {
+  const judge = (provider: 'gmail' | 'outlook', value: string, extra: Array<{ name: string; value: string }> = [], from = 'Owner <owner@example.org>') =>
+    ownerEmailVerdict({ provider, from, headers: [...extra, h('Authentication-Results', value)], ownerAddresses: [OWNER] });
+  const unconfirmed = { verdict: 'unconfirmed' };
+
+  for (const [provider, id] of [['gmail', 'mx.google.com'], ['outlook', 'DM6PR01MB1234.namprd01.prod.outlook.com']] as const) {
+    it(`${provider}: a pass smuggled inside a comment ahead of a real fail is unconfirmed`, () => {
+      expect(judge(provider, `${id}; spf=pass smtp.mailfrom=x@y (;dmarc=pass header.from=example.org); dmarc=fail header.from=example.org`)).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: a pass smuggled inside a quoted envelope address ahead of a real fail is unconfirmed`, () => {
+      expect(judge(provider, `${id}; spf=pass smtp.mailfrom="a;dmarc=pass header.from=example.org@y.test"; dmarc=fail header.from=example.org`)).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: two dmarc results (pass first) are unconfirmed`, () => {
+      expect(judge(provider, `${id}; dmarc=pass header.from=example.org; dmarc=fail header.from=example.org`)).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: a header.from that only appears inside a comment is not read`, () => {
+      expect(judge(provider, `${id}; dmarc=pass (header.from=example.org)`)).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: header.from stated twice is unconfirmed`, () => {
+      expect(judge(provider, `${id}; dmarc=pass header.from=example.org header.from=example.org`)).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: a forged pass BELOW the provider's real failure is unconfirmed`, () => {
+      const forged = h('Authentication-Results', `${id}; dmarc=pass header.from=example.org`);
+      expect(ownerEmailVerdict({ provider, from: 'owner@example.org', headers: [h('Authentication-Results', `${id}; dmarc=fail header.from=example.org`), forged], ownerAddresses: [OWNER] })).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: a pass stamped by another server is unconfirmed`, () => {
+      expect(judge(provider, 'mail.evil.test; dmarc=pass header.from=example.org')).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: two From headers (any case) are unconfirmed`, () => {
+      expect(judge(provider, `${id}; dmarc=pass header.from=example.org`, [h('From', 'owner@example.org'), h('FROM', 'other@example.org')])).toMatchObject(unconfirmed);
+    });
+    it(`${provider}: one From header that is not the judged address is unconfirmed`, () => {
+      expect(judge(provider, `${id}; dmarc=pass header.from=example.org`, [h('From', 'other@example.org')])).toMatchObject(unconfirmed);
+    });
+  }
+
+  it('outlook: Exchange\'s own *.protection.outlook.com host counts; a header with no authserv-id does not', () => {
+    expect(judge('outlook', 'BN1PR01CA0001.namprd01.prod.outlook.com; dmarc=pass action=none header.from=example.org')).toEqual({ verdict: 'owner' });
+    expect(judge('outlook', 'dmarc=pass action=none header.from=example.org')).toMatchObject(unconfirmed);
   });
 });

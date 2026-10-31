@@ -50,47 +50,73 @@ function topLevelCommas(value: string): number {
   return count;
 }
 
+/** Is `id` Microsoft's own receiving server? Exchange Online stamps its result under an `*.outlook.com` host (or `mx.microsoft.com`). */
+function isMicrosoftAuthservId(id: string): boolean {
+  const host = id.toLowerCase();
+  return host === 'mx.microsoft.com' || host === 'outlook.com' || host.endsWith('.outlook.com');
+}
+
+/** The first token of the header: the authserv-id (a `version` number may follow it). Comments cannot precede it. */
+function authservId(value: string): string {
+  return (value.split(';')[0].trim().split(/\s+/)[0] ?? '').replace(/^"|"$/g, '');
+}
+
 /**
- * The provider's own authentication result, TOPMOST FIRST. For gmail only the topmost
- * `Authentication-Results` whose authserv-id is exactly `mx.google.com` counts; headers
- * further down, or with another authserv-id, are ignored (a sender or forwarder could forge
- * them). Exchange (outlook) writes its one header with no authserv-id, so its topmost
- * `Authentication-Results` is the answer.
+ * The provider's own authentication result: the TOPMOST `Authentication-Results` whose authserv-id is the
+ * provider's own receiving server (Gmail: exactly `mx.google.com`; Outlook: Microsoft's `*.outlook.com`).
+ * Headers further down, or stamped by any other server, are ignored (a sender or forwarder could write them).
+ * A message the provider stamped no result on has no such header, so it is unconfirmed (fail closed).
  */
 function findProviderHeader(provider: 'gmail' | 'outlook', headers: readonly MailHeader[]): MailHeader | null {
   for (const header of headers) {
     if (header.name.toLowerCase() !== 'authentication-results') continue;
-    if (provider === 'outlook') return header;
-    const authservId = header.value.split(';')[0].trim();
-    if (authservId.toLowerCase() === 'mx.google.com') return header;
+    const id = authservId(header.value);
+    if (provider === 'gmail' ? id.toLowerCase() === 'mx.google.com' : isMicrosoftAuthservId(id)) return header;
   }
   return null;
 }
 
 /**
- * The dmarc result word and its `header.from` domain from one header value, or null when no
- * segment starts with `dmarc=`. Only DMARC is read — DKIM and SPF results are never used.
+ * The header's top-level `;`-separated clauses with RFC 8601 comments `( ... )` removed and quoted strings
+ * emptied: text the sender chose (an envelope address, a DKIM identity) can sit inside either, so nothing in
+ * them is ever read as a method result or a property.
  */
-function parseDmarc(headerValue: string): { result: string; headerFrom: string | null } | null {
-  for (const segment of headerValue.split(';')) {
-    const s = segment.trim();
-    if (!s.startsWith('dmarc=')) continue;
-    const resultMatch = s.slice('dmarc='.length).match(/^\s*([^\s;]+)/);
-    const result = resultMatch ? resultMatch[1].toLowerCase() : '';
-    return { result, headerFrom: headerFromDomain(s) };
+function topLevelClauses(value: string): string[] {
+  const clauses: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quoted) {
+      if (ch === '\\') i++;
+      else if (ch === '"') quoted = false;
+      continue;
+    }
+    if (ch === '\\' && depth > 0) { i++; continue; }
+    if (depth > 0) { if (ch === '(') depth++; else if (ch === ')') depth--; continue; }
+    if (ch === '(') { depth++; continue; }
+    if (ch === '"') { quoted = true; cur += '""'; continue; }
+    if (ch === ';') { clauses.push(cur); cur = ''; continue; }
+    cur += ch;
   }
-  return null;
+  clauses.push(cur);
+  return clauses.map((c) => c.trim());
 }
 
-/** The domain after `header.from=` in the dmarc segment, or null when it is absent. The
- *  value may be followed by whitespace or `)` (a trailing `;` is already split away). */
-function headerFromDomain(segment: string): string | null {
-  const marker = 'header.from=';
-  const idx = segment.indexOf(marker);
-  if (idx < 0) return null;
-  const rest = segment.slice(idx + marker.length);
-  const match = rest.match(/^\s*([^\s);]+)/);
-  return match ? match[1] : null;
+/**
+ * The dmarc result word and its `header.from` domain, or null when the header does not hold EXACTLY ONE
+ * top-level `dmarc=` result with at most one `header.from=` (any other count or shape is unconfirmed).
+ * DKIM and SPF results are never used.
+ */
+function parseDmarc(headerValue: string): { result: string; headerFrom: string | null } | null {
+  const dmarc = topLevelClauses(headerValue).slice(1).filter((c) => /^dmarc\s*=/i.test(c));
+  if (dmarc.length !== 1) return null;
+  const clause = dmarc[0];
+  const result = clause.replace(/^dmarc\s*=\s*/i, '').match(/^[^\s;]*/)![0].toLowerCase();
+  const froms = [...clause.matchAll(/(?:^|\s)header\.from\s*=\s*([^\s;]*)/gi)];
+  if (froms.length > 1) return null;
+  return { result, headerFrom: froms.length === 1 ? froms[0][1].replace(/^"|"$/g, '') : null };
 }
 
 /**
@@ -114,6 +140,13 @@ export function ownerEmailVerdict(input: {
   if (address === null) return { verdict: 'unconfirmed', reason: 'from_not_single' };
 
   if (!owners.includes(address)) return { verdict: 'unconfirmed', reason: 'from_not_owner' };
+
+  // The provider's own header list must hold ONE From, and it must be the address being judged (a second From, in any
+  // letter case, is a message the provider's single-address check was not written for).
+  const fromHeaders = input.headers.filter((h) => h.name.toLowerCase() === 'from');
+  if (fromHeaders.length > 1 || (fromHeaders.length === 1 && singleAddress(fromHeaders[0].value) !== address)) {
+    return { verdict: 'unconfirmed', reason: 'from_not_single' };
+  }
 
   const auth = findProviderHeader(input.provider, input.headers);
   if (!auth) return { verdict: 'unconfirmed', reason: 'no_auth_header' };

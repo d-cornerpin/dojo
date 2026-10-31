@@ -50,7 +50,8 @@ export async function judgeOwnerEmail(i: OwnerEmailInput): Promise<OwnerEmailOut
   const claim = ownerEmailVerdict({ provider: i.provider, from: i.from, headers: [], ownerAddresses });
   if (claim.verdict === 'unconfirmed' && NOT_ABOUT_OWNER.has(claim.reason)) return { state: 'none' };
   const headers = await i.headers().catch(() => null);
-  if (!headers) return { state: 'unconfirmed' };
+  // The provider's list must show the From it judged: none at all is a list it did not really give.
+  if (!headers || !headers.some((h) => h.name.toLowerCase() === 'from')) return { state: 'unconfirmed' };
   if (ownerEmailVerdict({ provider: i.provider, from: i.from, headers, ownerAddresses }).verdict !== 'owner') return { state: 'unconfirmed' };
   const body = await i.newBody().catch(() => null);
   return { state: 'confirmed', words: body === null ? '' : newTextOf(body) };

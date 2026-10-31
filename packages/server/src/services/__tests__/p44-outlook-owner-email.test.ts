@@ -100,12 +100,13 @@ function readStored(id: string): { meta: Record<string, unknown>; content: strin
   return { meta: JSON.parse(row.inbound_meta) as Record<string, unknown>, content: row.content };
 }
 
-const PASS = (domain: string): string => `spf=pass smtp.mailfrom=${domain}; dkim=pass header.d=${domain}; dmarc=pass action=none header.from=${domain}`;
+const MS = 'BN1PR01CA0001.namprd01.prod.outlook.com';
+const PASS = (domain: string): string => `${MS}; spf=pass smtp.mailfrom=${domain}; dkim=pass header.d=${domain}; dmarc=pass action=none header.from=${domain}`;
 /** One poll row from `address`, and what the single detail read returns for it. */
 function arrives(id: string, address: string, auth: string[] | null | 'unavailable', html = '<div>Yes, close it.</div>'): Array<Record<string, unknown>> {
   if (auth !== 'unavailable') {
     details.set(id, {
-      internetMessageHeaders: [{ name: 'Received', value: 'from x' }, ...(auth ?? []).map((value) => ({ name: 'Authentication-Results', value }))],
+      internetMessageHeaders: [{ name: 'Received', value: 'from x' }, { name: 'From', value: address }, ...(auth ?? []).map((value) => ({ name: 'Authentication-Results', value }))],
       uniqueBody: { contentType: 'html', content: html },
     });
   }
@@ -176,10 +177,13 @@ describe('P44 Outlook R1 — the owner\'s confirmed email is the owner speaking'
 
 describe('P44 Outlook R2 — nothing but the confirmed owner address is the owner', () => {
   const cases: Array<[string, string, string[] | null | 'unavailable', () => void]> = [
-    ['dmarc=fail', 'owner@home.test', ['spf=pass; dmarc=fail action=none header.from=home.test'], () => ownerAccount('owner@home.test')],
+    ['dmarc=fail', 'owner@home.test', [`${MS}; spf=pass; dmarc=fail action=none header.from=home.test`], () => ownerAccount('owner@home.test')],
     ['no Authentication-Results header', 'owner@home.test', null, () => ownerAccount('owner@home.test')],
     ['a pass not aligned with the From domain', 'owner@home.test', [PASS('elsewhere.test')], () => ownerAccount('owner@home.test')],
     ['a look-alike address', 'own-er@home.test', [PASS('home.test')], () => ownerAccount('owner@home.test')],
+    ['a forged pass BELOW Exchange\'s real failure', 'owner@home.test', [`${MS}; dmarc=fail header.from=home.test`, `${MS}; dmarc=pass header.from=home.test`], () => ownerAccount('owner@home.test')],
+    ['a pass planted inside a comment ahead of the real failure', 'owner@home.test', [`${MS}; spf=pass (;dmarc=pass header.from=home.test); dmarc=fail header.from=home.test`], () => ownerAccount('owner@home.test')],
+    ['a pass with no Exchange authserv-id', 'owner@home.test', ['dmarc=pass action=none header.from=home.test'], () => ownerAccount('owner@home.test')],
     ['the headers could not be read', 'owner@home.test', 'unavailable', () => ownerAccount('owner@home.test')],
     ['a disconnected owner account', 'owner@home.test', [PASS('home.test')], () => ownerAccount('owner@home.test', 0)],
     ['an agent-kind account\'s address', 'second@home.test', [PASS('home.test')], () => ownerAccount('second@home.test', 1, 'agent')],
@@ -195,12 +199,29 @@ describe('P44 Outlook R2 — nothing but the confirmed owner address is the owne
 
   it('an unconfirmed owner address says so, and a stranger costs no extra read', async () => {
     ownerAccount('owner@home.test');
-    await outlookPoll(arrives('f2', 'owner@home.test', ['dmarc=fail header.from=home.test']));
+    await outlookPoll(arrives('f2', 'owner@home.test', [`${MS}; dmarc=fail header.from=home.test`]));
     expect(readStored('f2').content).toMatch(/could not confirm/);
     pollEndpoints = [];
     await outlookPoll(arrives('f3', 'stranger@y.test', [PASS('y.test')]));
     expect(pollEndpoints.some((e) => e.includes('internetMessageHeaders'))).toBe(false);
     NOT_OWNER('f3');
+  });
+});
+
+describe('P44 Outlook I2 — the raw From header is checked, not only Graph\'s parsed field', () => {
+  it('Graph says the owner but the raw headers carry a second From: not the owner', async () => {
+    ownerAccount('owner@home.test');
+    const rows = arrives('t1', 'owner@home.test', [PASS('home.test')]);
+    (details.get('t1') as { internetMessageHeaders: Array<{ name: string; value: string }> }).internetMessageHeaders.push({ name: 'from', value: 'someone@else.test' });
+    await outlookPoll(rows);
+    NOT_OWNER('t1');
+  });
+  it('the raw From names a different address than Graph\'s parsed field: not the owner', async () => {
+    ownerAccount('owner@home.test');
+    const rows = arrives('t2', 'owner@home.test', [PASS('home.test')]);
+    (details.get('t2') as { internetMessageHeaders: Array<{ name: string; value: string }> }).internetMessageHeaders.find((x) => x.name === 'From')!.value = 'someone@else.test';
+    await outlookPoll(rows);
+    NOT_OWNER('t2');
   });
 });
 
