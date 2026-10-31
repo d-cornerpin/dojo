@@ -131,19 +131,21 @@ const isUnauthorized = (response: Response, path: string): boolean => {
 
 /** Read the JSON envelope off a response the door already holds. */
 const readEnvelope = async <T>(response: Response): Promise<ApiResponse<T>> => {
+  const status = response.status;
   let text: string;
   try {
     text = await response.text();
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error', status };
   }
   if (!text) {
-    return { ok: false, error: `Empty response (status ${response.status})` };
+    return { ok: false, error: `Empty response (status ${status})`, status };
   }
   try {
-    return JSON.parse(text) as ApiResponse<T>;
+    const parsed = JSON.parse(text) as ApiResponse<T>;
+    return parsed && parsed.ok === false ? { ...parsed, status } : parsed;
   } catch {
-    return { ok: false, error: `Server error (status ${response.status})` };
+    return { ok: false, error: `Server error (status ${status})`, status };
   }
 };
 

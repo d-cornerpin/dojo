@@ -49,7 +49,7 @@ describe('verifying the remembered agent on load', () => {
   });
 
   it('drops the selection when the server says the agent is not found', async () => {
-    getAgent.mockResolvedValue({ ok: false, error: 'Agent not found' });
+    getAgent.mockResolvedValue({ ok: false, error: 'Agent not found', status: 404 });
     mount();
     await settle();
     expect(screen.getByTestId('id').textContent).toBe('p1');

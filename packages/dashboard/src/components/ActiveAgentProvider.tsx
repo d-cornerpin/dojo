@@ -107,8 +107,8 @@ export function ActiveAgentProvider({ children }: { children: ReactNode }) {
       if (verifying.current === id) verifying.current = null;
       /* A request that FAILED (network, server restarting) says nothing about the agent: keep the
        * selection and the device's memory, and ask once more shortly. Only a definite "not found"
-       * or a good answer saying the agent is gone drops it. */
-      if (!result.ok && !/not found/i.test(result.error)) {
+       * (HTTP 404) or a good answer saying the agent is gone drops it. */
+      if (!result.ok && result.status !== 404) {
         if (!retried) retryTimers.current.push(setTimeout(() => verify(id, true), RETRY_MS));
         return;
       }

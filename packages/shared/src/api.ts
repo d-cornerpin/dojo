@@ -13,6 +13,8 @@ export interface ApiSuccess<T> {
 export interface ApiError {
   ok: false;
   error: string;
+  /** HTTP status of the answer, when the request got one (absent for a dead network). */
+  status?: number;
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
