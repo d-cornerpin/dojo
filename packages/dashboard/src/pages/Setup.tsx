@@ -594,20 +594,24 @@ export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: {
   const [adding, setAdding] = useState<string | null>(null);
   const [addedCount, setAddedCount] = useState(0);
   const [searched, setSearched] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
-
   const latestSearch = useRef(0);
 
   const handleSearch = async () => {
-    if (!query.trim()) return;
+    if (searching || !query.trim()) return;
     const mine = ++latestSearch.current;
     setSearching(true);
     setSearched(true);
-    const result = await api.browseProviderModels(providerId, query.trim());
-    if (mine !== latestSearch.current) return; // a newer search owns the box now
-    if (result.ok) setResults(result.data);
-    else setResults([]);
-    setSearching(false);
+    setSearchError(null);
+    try {
+      const result = await api.browseProviderModels(providerId, query.trim());
+      if (mine !== latestSearch.current) return;
+      if (result.ok) setResults(result.data);
+      else setSearchError(result.error ?? 'The search did not work.');
+    } finally {
+      setSearching(false);
+    }
   };
 
   const handleAdd = async (model: api.BrowseModelResult) => {
@@ -653,6 +657,8 @@ export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: {
         </button>
       </div>
 
+      {searchError && <p className="text-xs text-cp-coral">{searchError}</p>}
+
       {results.length > 0 && (
         <div className="space-y-1.5 max-h-64 overflow-y-auto">
           {results.map((model) => (
@@ -678,7 +684,7 @@ export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: {
         </div>
       )}
 
-      {searched && results.length === 0 && !searching && (
+      {searched && results.length === 0 && !searching && !searchError && (
         <p className="text-xs text-ui/25 text-center py-2">No models found matching &ldquo;{query}&rdquo;</p>
       )}
 
