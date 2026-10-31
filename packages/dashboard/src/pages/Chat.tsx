@@ -839,6 +839,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
   turnKindRef.current = turnKind;
   const wordyModeRef = useRef(wordyMode);
   wordyModeRef.current = wordyMode;
+  // Which conversation (agent + feed mode) is on screen now: a slow older page checks it on return.
+  const viewKeyRef = useRef('');
+  viewKeyRef.current = `${AGENT_ID}:${wordyMode}`;
   // True when the current turn's streamed output must NOT render in the user's
   // chat (inter-agent turn, wordy mode off). Wordy mode deliberately surfaces
   // inter-agent activity, so it streams normally there.
@@ -1029,8 +1032,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const container = messagesContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
 
+    const startedFor = `${AGENT_ID}:${wordyMode}`;
     const result = await api.getChatHistory(AGENT_ID, 50, oldestId, wordyMode);
-    if (result.ok && result.data.length > 0) {
+    if (viewKeyRef.current !== startedFor) { setLoadingMore(false); return; }
+    if (!result.ok) {
+      // A failed request says nothing about history: leave hasMore so the next scroll retries.
+    } else if (result.data.length > 0) {
       const older = result.data.map(toMessage);
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
