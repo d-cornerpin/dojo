@@ -5,6 +5,7 @@ import type { WsEvent, AgentCreatedEvent, AgentStatusEvent, AgentTerminatedEvent
 import * as api from '../lib/api';
 import { formatDateShort } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { useToast } from '../hooks/useToast';
 import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
 import { PermissionsEditor, DEFAULT_SUBAGENT_PERMISSIONS, DEFAULT_SUBAGENT_TOOLS_POLICY } from '../components/PermissionsEditor';
@@ -649,6 +650,7 @@ const UngroupedSection = ({
   providerNameById: Record<string, string>;
   onReload: () => void;
 }) => {
+  const toast = useToast();
   const [dragOver, setDragOver] = useState(false);
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -656,7 +658,8 @@ const UngroupedSection = ({
     setDragOver(false);
     const agentId = e.dataTransfer.getData('agent-id');
     if (agentId) {
-      await api.assignAgentToGroupApi(agentId, null);
+      const res = await api.assignAgentToGroupApi(agentId, null);
+      if (!res.ok) toast.error(res.error ?? 'The agent could not be moved.');
       onReload();
     }
   };

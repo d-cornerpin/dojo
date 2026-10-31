@@ -24,6 +24,11 @@ vi.mock('../hooks/useWebSocket', async () => {
   const { fakeUseWebSocket } = await import('./helpers/frames');
   return { useWebSocket: fakeUseWebSocket, WebSocketProvider: ({ children }: { children: ReactElement }) => children };
 });
+vi.mock('../hooks/useToast', async () => {
+  const { fakeToast } = await import('./helpers/frames');
+  const stub = fakeToast();
+  return { useToast: () => stub.value, ToastProvider: ({ children }: { children: ReactElement }) => children, ToastContainer: () => null };
+});
 
 import { AgentCard } from '../components/AgentCard';
 import { ActiveAgentProvider } from '../components/ActiveAgentProvider';

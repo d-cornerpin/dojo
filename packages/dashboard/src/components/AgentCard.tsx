@@ -3,6 +3,7 @@ import { useState, useEffect, type CSSProperties } from 'react';
 import type { AgentDetail, Model } from '@dojo/shared';
 import * as api from '../lib/api';
 import { stopAffordance } from '../lib/stop-affordance';
+import { useToast } from '../hooks/useToast';
 import { useActiveAgent } from './ActiveAgentProvider';
 import { resolveAgentHue, ORB_PALETTE, CHAMPAGNE_HUE } from '../lib/agent-hue';
 
@@ -93,6 +94,7 @@ const formatUptime = (seconds: number): string => {
 export const AgentCard = ({ agent, models, providerNameById, onModelChanged, index = 0 }: AgentCardProps) => {
   const navigate = useNavigate();
   const { selectAgent, agentId: activeAgentId, primaryId } = useActiveAgent();
+  const toast = useToast();
   const [changingModel, setChangingModel] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -120,11 +122,18 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
   const parkedCause = agent.status === 'paused' ? agent.parkedCause ?? undefined : undefined;
 
   const pickColor = async (h: number) => {
+    const prev = hue;
     setLocalHue(h);
     setColorOpen(false);
     // Live-update the orb if this agent is the active one.
     if (activeAgentId === agent.id) selectAgent({ id: agent.id, name: agent.name, hue: h });
-    await api.updateAgentConfig(agent.id, { config: { orbHue: h } });
+    const res = await api.updateAgentConfig(agent.id, { config: { orbHue: h } });
+    if (!res.ok) {
+      // The server refused the colour: put the old one back on the card and the orb, and say why.
+      setLocalHue(prev);
+      if (activeAgentId === agent.id) selectAgent({ id: agent.id, name: agent.name, hue: prev });
+      toast.error(res.error ?? 'The colour could not be saved.');
+    }
   };
   const isAuto = agent.modelId === 'auto';
 
