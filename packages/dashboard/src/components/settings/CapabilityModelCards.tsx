@@ -173,9 +173,10 @@ export const CapabilityModelCard = ({
 
   const handleClear = async () => {
     setSaving(true);
-    await api.setSetting(settingKey, '');
-    setSelectedId('');
+    const res = await api.setSetting(settingKey, '');
     setSaving(false);
+    if (!res.ok) { toast.error(res.error ?? 'The model could not be cleared.'); return; }   // e.g. a memory-fit refusal
+    setSelectedId('');
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
