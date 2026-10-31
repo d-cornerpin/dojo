@@ -5,6 +5,7 @@ import * as api from '../lib/api';
 import type { AccessCatalog } from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { TechniqueSelector } from './TechniqueSelector';
+import { useGuardedLoad } from '../lib/load-guard';
 import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
 import { Check, Choice, Item, Row, Toggle, splitLabel } from './AccessControls';
 import { KnowsManifestItem, ManageManifestItems, ReachManifestItems } from './AccessManifest';
@@ -79,9 +80,6 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const toast = useToast();
   const stored = agent.effectiveGrants ?? null;
   const [draft, setDraft] = useState<AccessGrants | null>(stored ? clone(stored) : null);
-  const [catalog, setCatalog] = useState<AccessCatalog | null>(null);
-  const [google, setGoogle] = useState<AccountRow[]>([]);
-  const [microsoft, setMicrosoft] = useState<AccountRow[]>([]);
   const [saving, setSaving] = useState(false);
 
   // The legacy half, read once into the same shape the old card kept in twenty
@@ -104,19 +102,18 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const collapsed = isCollapsed('access');
   useContentChange(agent.effectiveGrants ?? null, (next) => setDraft(next ? clone(next) : null));
 
-  useEffect(() => {
-    const load = async () => {
-      const [cat, g, m] = await Promise.all([
-        api.getAccessCatalog(),
-        api.request<{ accounts: AccountRow[] }>('/google/status'),
-        api.request<{ accounts: AccountRow[] }>('/microsoft/status'),
-      ]);
-      if (cat.ok) setCatalog(cat.data);
-      if (g.ok) setGoogle((g.data.accounts ?? []).filter((a) => a.connected));
-      if (m.ok) setMicrosoft((m.data.accounts ?? []).filter((a) => a.connected));
-    };
-    load();
-  }, []);
+  // Each read goes through the shared load guard (lib/load-guard.ts): a failed read is "could not
+  // load", never "empty", and the controls that depend on it are not offered.
+  const catalogLoad = useGuardedLoad<AccessCatalog>('catalog', () => api.getAccessCatalog());
+  const accountsOf = (path: string) => async (): Promise<{ ok: true; data: AccountRow[] } | { ok: false; error: string }> => {
+    const r = await api.request<{ accounts: AccountRow[] }>(path);
+    return r.ok ? { ok: true, data: (r.data.accounts ?? []).filter((a) => a.connected) } : r;
+  };
+  const googleLoad = useGuardedLoad<AccountRow[]>('google', accountsOf('/google/status'));
+  const microsoftLoad = useGuardedLoad<AccountRow[]>('microsoft', accountsOf('/microsoft/status'));
+  const catalog = catalogLoad.data;
+  const google = googleLoad.data ?? [];
+  const microsoft = microsoftLoad.data ?? [];
 
   const labels = useMemo(() => (catalog?.categories ?? []).map((c) => c.label), [catalog]);
   const techniqueCatalog = useMemo(() => catalog?.techniques ?? [], [catalog]);
@@ -179,8 +176,17 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
   const reach = legacyReachSummary(legacy);
   const row = (key: string) => ({ collapsed: isCollapsed(key), onToggle: () => toggle(key) });
 
-  const accountRows = (provider: Provider, rows: AccountRow[]) => (
-    rows.length > 0
+  const accountRows = (provider: Provider, rows: AccountRow[], load: { status: string; reload: () => void }) => (
+    load.status === 'failed'
+      ? [(
+        <div className="fhelp" key="failed">
+          Could not load your connected {PROVIDER_LABEL[provider]} accounts, so their access can&apos;t be changed right now.{' '}
+          <button type="button" className="btn btn--sm" onClick={load.reload}>Retry</button>
+        </div>
+      )]
+      : load.status === 'loading'
+        ? [<div className="fhelp" key="loading">Loading your {PROVIDER_LABEL[provider]} accounts…</div>]
+        : rows.length > 0
       ? rows.map((r) => {
         const level = accountLevel(draft, provider, r);
         return (
@@ -252,8 +258,14 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
           label="How many tools"
           value={mode}
           options={[{ v: 'full', l: 'Full tool access' }, { v: 'individual', l: 'Individual tool access' }]}
-          onChange={(v) => edit(setToolMode(draft, v, labels))}
+          onChange={(v) => { if (catalog) edit(setToolMode(draft, v, labels)); }}
         />
+        {catalogLoad.status === 'failed' && (
+          <div className="fhelp">
+            Could not load the tool list, so tool groups can&apos;t be changed right now.{' '}
+            <button type="button" className="btn btn--sm" onClick={catalogLoad.reload}>Retry</button>
+          </div>
+        )}
         <div className="fhelp">
           {mode === 'full'
             ? 'Every tool group, including ones added by future updates.'
@@ -284,8 +296,8 @@ export const AccessPanel = ({ agent, onUpdated, manifestEditable, manifestNote }
           help="Transcripts and summaries from your voice recorder."
           control={<Toggle label="Plaud recordings" on={draft.integrations.plaud} onChange={(v) => edit(setPlaud(draft, v))} />}
         />
-        {accountRows('google', google)}
-        {accountRows('microsoft', microsoft)}
+        {accountRows('google', google, googleLoad)}
+        {accountRows('microsoft', microsoft, microsoftLoad)}
         {mailWriteWithoutSend(draft).map((w) => (
           <div className="note--warn" key={w.provider} style={{ marginTop: 10, marginBottom: 0 }}>
             {PROVIDER_LABEL[w.provider]} is granted read &amp; write, but the agent cannot send mail from it

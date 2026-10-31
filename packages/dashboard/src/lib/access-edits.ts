@@ -63,6 +63,9 @@ export const categoryChecked = (g: AccessGrants, label: string): boolean =>
  * until Save either way, so a mode flip the owner reverses costs nothing.
  */
 export function setToolMode(g: AccessGrants, mode: ToolMode, allLabels: string[]): AccessGrants {
+  // With no label list there is nothing to expand "every group" into; going Individual would write an
+  // empty list and strip every tool. Refuse (the panel also says why).
+  if (mode === 'individual' && g.tools.categories === '*' && allLabels.length === 0) return clone(g);
   const next = clone(g);
   next.tools.categories = mode === 'full'
     ? '*'
