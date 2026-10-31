@@ -28,9 +28,9 @@ cd $INSTALL_TEMP_Q && bash install.sh
 status=\$?
 echo ""
 if [[ \$status -ne 0 ]]; then
-    echo "❌ The installation did not finish (see the message above). Your existing Dojo, if you had one, was not changed."
+    echo "❌ The installation did not finish (see the message above)."
     echo ""
-    echo "You can run it again later:  cd $INSTALL_TEMP_Q && bash install.sh"
+    echo "You can run it again now:  cd $INSTALL_TEMP_Q && bash install.sh"
     exit \$status
 fi
 echo "✅ Installation complete. This window will close in 5 seconds..."
