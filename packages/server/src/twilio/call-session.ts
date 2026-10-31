@@ -259,9 +259,9 @@ export class CallSession {
       }
     })();
 
-    // Dev confidence ping: speak a short opener 1.5 s after the WS
-    // hands off so the caller hears SOMETHING within a couple seconds
-    // of "Connected" even if STT/agent paths aren't fully working yet.
+    // The inbound greeting: a short opener 1.5 s after the WS hands off, so the caller
+    // hears something at once. The inbound phone-mode prompt relies on it ("You already
+    // greeted with Hello there!"), so it is the designed greeting, not a leftover.
     // Inbound calls only - outbound flows already supply their own
     // opening_message via voice-outbound.
     if (this.direction === 'inbound') {
