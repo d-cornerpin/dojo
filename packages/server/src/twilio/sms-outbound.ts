@@ -81,9 +81,13 @@ export async function executeSmsSend(input: SmsSendInput, agentId: string): Prom
   // has accepted it, it cannot be called back; the executor tells the owner which happened.
   const slot = openAgentCall(agentId, 'turn');
   const result = await sendSms(to, body, from, slot.signal).finally(() => slot.release());
+  const stopped = slot.signal.aborted;
   if (!result.ok) {
     logger.warn('SMS send failed', { agentId, to, from, error: result.error });
-    return { ok: false, message: `SMS NOT sent - Twilio rejected the send: ${result.error}` };
+    if (stopped) {
+      return { ok: false, message: 'SMS NOT sent - the owner pressed Stop before it reached Twilio.' };
+    }
+    return { ok: false, message: `SMS NOT sent - the send failed: ${result.error}` };
   }
   return {
     ok: true,
