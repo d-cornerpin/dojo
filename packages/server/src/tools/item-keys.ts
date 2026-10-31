@@ -3,7 +3,7 @@
 // this task touch" is counted, never claimed. Reads touch nothing; a tool absent here touches nothing.
 //
 // A key is the provider's id prefixed by its kind ("gmail:msg:<id>", "gmail:thread:<id>",
-// "outlook:msg:<id>"), so a message and a conversation are never the same item.
+// "outlook:msg:<id>", "outlook:conv:<id>"), so a message and a conversation are never the same item.
 
 const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : typeof v === 'string' && v ? [v] : [];
 const uniq = (xs: string[]): string[] => [...new Set(xs)];
@@ -21,6 +21,13 @@ export function itemKeysOf(toolName: string, args: Record<string, unknown>): str
       ...strs(args.message_id).map((id) => `gmail:msg:${id}`),
       ...strs(args.thread_ids).map((id) => `gmail:thread:${id}`),
       ...strs(args.thread_id).map((id) => `gmail:thread:${id}`),
+    ]);
+  }
+  // The move tool alone can take the whole conversation instead of, or beside, one message.
+  if (name === 'outlook_move_to_folder') {
+    return uniq([
+      ...strs(args.message_id).map((id) => `outlook:msg:${id}`),
+      ...strs(args.conversation_id).map((id) => `outlook:conv:${id}`),
     ]);
   }
   if (OUTLOOK_MESSAGE_MUTATIONS.has(name)) return uniq(strs(args.message_id).map((id) => `outlook:msg:${id}`));
