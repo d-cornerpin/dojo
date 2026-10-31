@@ -1,0 +1,116 @@
+// ════════════════════════════════════════
+// SEND TOOLS NAME THEIR RECIPIENT (3.5, "who am I sending to")
+//
+// Two rules for every channel send tool (iMessage, SMS, email, Teams, phone):
+//
+//  1. A send with no recipient never runs. It never falls back, silently, to whoever this
+//     turn is talking to. The result says who the turn IS talking to and asks the agent to
+//     say who the message is for, so the agent always picks the person knowingly.
+//
+//  2. A send that went out says who it went to (name, channel) and whether that is the
+//     person this turn is talking to. The same fact for every channel, replacing the
+//     iMessage-only "SWITCH" note.
+//
+// Both read the turn's address (`turn-address.ts`). A2A is not here: `send_to_agent` already
+// takes an explicit agent and the header names the peer.
+// ════════════════════════════════════════
+
+import type { ChannelKind, ToolResult } from '@dojo/shared';
+import { turnContext } from '../turn-context.js';
+import { outboundChannelForTool, outboundRecipientForTool } from './outbound.js';
+import { describeAddressee, deliveryLabel, type TurnAddress } from './turn-address.js';
+import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
+import { addressesMatch } from '../../services/safe-senders.js';
+
+/** The send tools whose recipient is a plain argument, with the argument names that carry it. */
+const RECIPIENT_ARGS: Readonly<Record<string, readonly string[]>> = {
+  imessage_send: ['recipient', 'to', 'handle'],
+  sms_send: ['to', 'number', 'recipient'],
+  gmail_send: ['to'],
+  outlook_send: ['to'],
+};
+
+function baseName(name: string): string {
+  return name.startsWith('user_') ? name.slice('user_'.length) : name;
+}
+
+function namedRecipient(name: string, args: Record<string, unknown> | undefined): boolean {
+  const keys = RECIPIENT_ARGS[baseName(name)];
+  if (!keys) return true;
+  return keys.some((k) => {
+    const v = args?.[k];
+    return Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.trim() !== '';
+  });
+}
+
+/**
+ * Rule 1. Returns the refusal to hand back instead of running the send, or null when the
+ * call names a recipient (or is not a send tool with a plain recipient argument).
+ */
+export function refuseSendWithNoRecipient(
+  agentId: string,
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+  toolCallId: string,
+): ToolResult | null {
+  const base = baseName(toolName);
+  if (!(base in RECIPIENT_ARGS) || namedRecipient(base, args)) return null;
+  const talkingTo = describeAddressee(turnContext(agentId)?.address);
+  const content =
+    `${toolName} was NOT run: it needs a recipient, and it never defaults to the person this turn is talking to. ` +
+    `This turn is talking to: ${talkingTo}. ` +
+    `Tell me who this message is for by passing the recipient explicitly. If it is for the person this turn is ` +
+    `talking to, pass their address; if it is for someone else, name that person.`;
+  return { toolCallId, name: toolName, content, isError: true };
+}
+
+function sameAsAddressee(addr: TurnAddress, channel: string, recipient: string): boolean {
+  if (addr.kind !== 'person') return false;
+  if (channel === 'teams') return !!addr.inboundContext?.chatId && addr.inboundContext.chatId === recipient;
+  if (addr.senderId && addressesMatch(addr.senderId, recipient)) return true;
+  if (addr.isOwner) {
+    // The owner has no address on the dashboard; match them by the name the recipient resolves to.
+    const shown = resolveRecipientDisplay(channel as ChannelKind, recipient);
+    return shown === addr.name;
+  }
+  return false;
+}
+
+/**
+ * Rule 2. The note appended to a SUCCESSFUL send's result. Empty when the call named no
+ * recipient argument (a reply tool answers the thread it was given; its own result says so).
+ */
+export function recipientNoteFor(
+  agentId: string,
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+): string {
+  const channel = outboundChannelForTool(toolName);
+  if (channel === null) return '';
+  const raw = outboundRecipientForTool(toolName, args);
+  if (!raw) return '';
+  const addr = turnContext(agentId)?.address;
+  let shown = raw;
+  try { shown = resolveRecipientDisplay(channel as ChannelKind, raw); } catch { /* the raw handle is the honest fallback */ }
+  const who = shown === raw ? raw : `${shown} (${raw})`;
+  // Routed channels only: a turn whose reply stays in the dashboard needs no contrast.
+  if (!addr || !addr.routed) return ` Recipient: ${who}, by ${channel}.`;
+  if (sameAsAddressee(addr, channel, raw)) {
+    return ` Recipient: ${who}, by ${channel}. This is the person this turn is talking to.`;
+  }
+  return ` Recipient: ${who}, by ${channel}. This is NOT the person this turn is talking to (that is ${addr.name}); ` +
+    `your written reply still goes to ${addr.name}. Confirm this was intended.`;
+}
+
+/**
+ * On a routed turn, where the agent's written words go, for failure results ("the iMessage did
+ * not go through: ..."). From the turn's address. Null when the reply stays in the dashboard,
+ * where the dashboard wording is already true.
+ */
+export function routedReplyWords(agentId: string): string | null {
+  const addr = turnContext(agentId)?.address;
+  if (addr?.kind === 'person' && addr.routed) {
+    return `your written reply this turn goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there`;
+  }
+  return null;
+}

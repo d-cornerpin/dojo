@@ -56,6 +56,7 @@
 
 import { runWithToolCallId } from '../turn-state.js';
 import { turnContext } from '../turn-context.js';
+import { refuseSendWithNoRecipient, recipientNoteFor } from '../v2/send-recipient.js';
 import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from '../tool-outcome.js';
 export { toolResultOf, toolWasBlocked, type ToolOutcome } from '../tool-outcome.js';
 
@@ -174,7 +175,14 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   // `ToolResult`; the five-way is applied HERE, once, from `isError` + `errorCode` and
   // never from the prose — so a caller can tell "the platform refused" from "the tool
   // broke" without reading English, and cannot discard the answer (must-consume).
-  return classifyToolResult(await runWithToolCallId(agentId, toolCall.id, () => executeToolInCallContext(agentId, toolCall)));
+  return classifyToolResult(await runWithToolCallId(agentId, toolCall.id, async () => {
+    // 3.5: a send with no recipient does not run; a send that ran says who it went to.
+    const refused = refuseSendWithNoRecipient(agentId, toolCall.name, toolCall.arguments, toolCall.id);
+    if (refused) return refused;
+    const r = await executeToolInCallContext(agentId, toolCall);
+    if (!r.isError) r.content += recipientNoteFor(agentId, toolCall.name, toolCall.arguments);
+    return r;
+  }));
 }
 
 async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Promise<ToolResult> {

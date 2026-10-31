@@ -57,6 +57,8 @@ import { getDb } from '../../../db/connection.js';
 // edit rather than the identity of one agent on the box (census C1).
 import { mayUseChannel, mayReachOthersOn } from '../../access/read.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
+import { turnContext } from '../../turn-context.js';
+import { refuseSendWithNoRecipient, routedReplyWords } from '../../v2/send-recipient.js';
 import { checkPermission } from '../../permissions.js';
 import { sharePathGuard } from '../../path-guards.js';
 import { auditLog, permissionDeniedMessage, registerSharedFile } from '../util.js';
@@ -65,7 +67,7 @@ import { createPublicShare } from '../../../services/public-share.js';
 import { executeSmsSend } from '../../../twilio/sms-outbound.js';
 import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
 import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
-import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, getTurnScopedImRecipient, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
+import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';
@@ -482,43 +484,15 @@ export const commsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
 
-    // FA-C1: the omitted-recipient default resolves from the TURN-scoped
-    // iMessage counterparty ONLY. The stripped legacy last-inbound map
-    // (P5c) held whoever texted this agent most
-    // recently at INGEST time, decoupled from turn execution, so on a
-    // proactive/scheduled turn, or the owner on the dashboard saying "text me
-    // X", it could deliver the owner's message to a contact who happened to
-    // text moments earlier (third-party delivery of owner-directed content).
-    // A genuine iMessage-reply turn always publishes its counterparty to
-    // its `TurnContext`, so turn-scoped resolution keeps every real reply
-    // working while refusing to guess on a proactive send.
-    const inboundSender = getTurnScopedImRecipient(agentId);
-    let switchedFromInbound: string | null = null;
-
+    // 3.5: a send with no recipient NEVER falls back to this turn's counterparty. (The
+    // omitted-recipient default of FA-C1 went with this; the old default could send owner-meant
+    // words to a contact.) The executor refuses it before it gets here; this guard keeps a
+    // direct call honest too. The result names who the turn is talking to and asks who the
+    // message is for, so the agent always picks the person knowingly.
     if (!recipient) {
-      // No explicit recipient. If this turn is replying to an inbound
-      // iMessage, default to the actual sender of that inbound.
-      if (inboundSender) {
-        const match = findSafeSenderByAddress(safeRecords, inboundSender);
-        recipient = match?.address ?? inboundSender;
-      } else {
-        // No explicit recipient AND this turn is not replying to an inbound
-        // iMessage (proactive / scheduled / dashboard-initiated). There is no
-        // one to safely default to, so do NOT guess: make the model name a
-        // recipient explicitly.
-        const valid = safeRecords
-          .map(s => `${s.name} <${s.address}>`)
-          .join(', ');
-        content =
-          `iMessage NOT sent - no recipient was specified and this turn is not replying to an inbound iMessage, ` +
-          `so there is no one to default to. Re-call imessage_send with an explicit recipient: pass ` +
-          `recipient="+1XXXXXXXXXX" (the full number in +country-code form) or recipient="<contact name>" ` +
-          `exactly as it appears in Settings → Channels (iMessage card). ` +
-          `Valid recipients on this server: ${valid}.`;
-        isError = true;
-        auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no recipient and no turn-scoped inbound sender');
-        return { content, isError };
-      }
+      const refused = refuseSendWithNoRecipient(agentId, 'imessage_send', args, '');
+      auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no recipient named');
+      return { content: refused?.content ?? 'iMessage NOT sent - name the recipient.', isError: true };
     } else {
       const match = findSafeSenderByAddress(safeRecords, recipient);
       if (!match) {
@@ -535,13 +509,6 @@ export const commsHandlers: ToolHandlerMap = {
         return { content, isError };
       }
       recipient = match.address; // canonicalize formatting
-      if (inboundSender) {
-        const inboundMatch = findSafeSenderByAddress(safeRecords, inboundSender);
-        const inboundAddr = inboundMatch?.address ?? inboundSender;
-        if (inboundAddr !== recipient) {
-          switchedFromInbound = inboundAddr;
-        }
-      }
     }
 
     const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
@@ -613,13 +580,16 @@ export const commsHandlers: ToolHandlerMap = {
     const bridgeStatus = getIMBridgeStatus();
     if (!bridgeStatus.running) {
       const sms = getSmsReachability();
+      // 3.5: on a routed turn the written reply goes to that person on their channel; the
+      // dashboard-chat wording stays for a turn whose reply really does stay there.
+      const route = routedReplyWords(agentId);
       content =
         'iMessage bridge is currently disabled, so this message was NOT sent. ' +
         (sms.live
           ? `SMS IS live on this server (approved: ${describeSmsRecipients(sms)}) — send it with `
-            + 'sms_send instead. Only if that fails too should you tell the user and answer in '
-            + 'the dashboard chat. '
-          : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ') +
+            + (route ? `sms_send instead. Only if that fails too should you tell the user (${route}). ` : 'sms_send instead. Only if that fails too should you tell the user and answer in '
+            + 'the dashboard chat. ')
+          : (route ? `Tell the user that iMessage is turned off on this server: ${route}. ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +
         (bridgeStatus.enabled
           ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
           : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
@@ -696,7 +666,7 @@ export const commsHandlers: ToolHandlerMap = {
     if (!result.ok && result.sentFiles.length === 0 && !result.textSent) {
       content =
         'iMessage delivery failed at the system level - neither the imsg CLI nor AppleScript could deliver. ' +
-        'Tell the user the message did not go through, and respond in the dashboard chat instead. ' +
+        (routedReplyWords(agentId) ? `Tell the user the message did not go through (${routedReplyWords(agentId)}). ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +
         'The user can check System Settings - Privacy & Security - Automation to grant Messages access if AppleScript is the issue.';
       isError = true;
       auditLog(agentId, 'imessage_send', recipient, 'error', 'send returned false');
@@ -719,9 +689,6 @@ export const commsHandlers: ToolHandlerMap = {
     const attachSummary = attachmentPaths.length > 0
       ? ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}`
       : '';
-    const switchNote = switchedFromInbound
-      ? ` NOTE: this was a SWITCH - the inbound that triggered this turn came from ${switchedFromInbound}, but you sent to ${recipientLabel} instead. Confirm this was intentional.`
-      : '';
     // Audit detail captures the full sharing context so a later review
     // can answer "did the primary agent over-share with sender X?" without
     // reconstructing from chat history. We log the recipient's
@@ -736,15 +703,9 @@ export const commsHandlers: ToolHandlerMap = {
     if (recipientRecord) {
       auditDetailParts.push(`recipientLevel=${recipientRecord.sharing_level}`);
     }
-    if (inboundSender) {
-      auditDetailParts.push(
-        switchedFromInbound
-          ? `inboundSender=${inboundSender} (SWITCH)`
-          : `inboundSender=${inboundSender} (reply)`,
-      );
-    } else {
-      auditDetailParts.push('proactive');
-    }
+    // 3.5: the recipient note (who it went to, and whether that is the person this turn is
+    // talking to) is added to the result by the executor, for every channel.
+    auditDetailParts.push(turnContext(agentId)?.address?.kind === 'person' ? 'turn-has-addressee' : 'proactive');
     auditLog(agentId, 'imessage_send', recipient, 'success', auditDetailParts.join(' | '));
     // C26 tier 3: iMessage is honestly UNVERIFIABLE (only an AppleScript /
     // imsg exit code, no provider id exists). Write an exit-code receipt so
@@ -752,7 +713,7 @@ export const commsHandlers: ToolHandlerMap = {
     // imposes NO new gate requirement (tier-3-only turns are unchanged).
     // skipAudit: the rich over-share audit row above is the provenance row.
     writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient, sentText: message, detail: { textSent: result.textSent, attachmentsSent: result.sentFiles.length }, skipAudit: true });
-    content = `iMessage sent to ${recipientLabel}${attachSummary}.${switchNote}`;
+    content = `iMessage sent to ${recipientLabel}${attachSummary}.`;
     return { content, isError };
   },
 
