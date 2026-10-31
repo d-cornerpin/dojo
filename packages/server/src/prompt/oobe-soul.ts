@@ -82,10 +82,10 @@ export function composePrimarySoul(fields: OobeSoulFields, base: string = DEFAUL
 
   let soul = base;
   if (soul.includes(RULES_HEADING)) {
-    soul = soul.replace(RULES_HEADING, `${style}\n${RULES_HEADING}`);
+    soul = soul.replace(RULES_HEADING, () => `${style}\n${RULES_HEADING}`);
   }
   if (extraRules && soul.includes(CREDENTIALS_HEADING)) {
-    soul = soul.replace(CREDENTIALS_HEADING, `${extraRules}\n${CREDENTIALS_HEADING}`);
+    soul = soul.replace(CREDENTIALS_HEADING, () => `${extraRules}\n${CREDENTIALS_HEADING}`);
   }
   return soul;
 }

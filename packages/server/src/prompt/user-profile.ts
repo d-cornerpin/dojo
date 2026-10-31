@@ -85,7 +85,7 @@ export function userProfilePath(): string {
  */
 export function defaultUserProfile(): string {
   if (!ownerNameIsSet()) return DEFAULT_USER_MD;
-  return DEFAULT_USER_MD.replace(UNSET_NAME_LINE, `- Name: ${getOwnerName()}`);
+  return DEFAULT_USER_MD.replace(UNSET_NAME_LINE, () => `- Name: ${getOwnerName()}`);
 }
 
 /**
@@ -203,7 +203,7 @@ export function composeUserProfile(fields: OwnerProfileFields): string {
   // Start from the default. When the form gave no name, `defaultUserProfile()` still fills in
   // one the SETTINGS row recorded; when neither knows, "not recorded yet" stays.
   let md = name
-    ? DEFAULT_USER_MD.replace(UNSET_NAME_LINE, `- Name: ${name}`)
+    ? DEFAULT_USER_MD.replace(UNSET_NAME_LINE, () => `- Name: ${name}`)
     : defaultUserProfile();
 
   if (role) {
@@ -211,7 +211,7 @@ export function composeUserProfile(fields: OwnerProfileFields): string {
     const anchor = name ? `- Name: ${name}` : null;
     const nameLine = anchor && md.includes(anchor) ? anchor
       : md.split('\n').find((l) => /^-\s*Name:/.test(l));
-    if (nameLine) md = md.replace(nameLine, `${nameLine}\n- Role: ${role}`);
+    if (nameLine) md = md.replace(nameLine, () => `${nameLine}\n- Role: ${role}`);
   }
 
   if (prefs) {

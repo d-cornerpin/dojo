@@ -200,7 +200,7 @@ export function renameAgent(agentId: string, requestedName: string): RenameOutco
       // its mtime moves. "Unrelated souls untouched" is a control, and this line is it.
       if (replacements === 0) continue;
 
-      fs.writeFileSync(full, stored.replace(pattern, newName), 'utf-8');
+      fs.writeFileSync(full, stored.replace(pattern, () => newName), 'utf-8');
       souls.push({ file, replacements });
     } catch (err) {
       // A soul that could not be re-filled must be LOUD, and must not undo a rename that has

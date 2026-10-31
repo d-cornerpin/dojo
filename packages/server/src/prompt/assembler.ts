@@ -83,11 +83,11 @@ export function readPlatformTemplate(file: string): string | null {
  */
 function substitutePlatformNames(md: string): string {
   return md
-    .replace(/\{\{pm_agent_name\}\}/g, getPMAgentName())
-    .replace(/\{\{trainer_agent_name\}\}/g, getTrainerAgentName())
-    .replace(/\{\{imaginer_agent_name\}\}/g, getImaginerAgentName())
-    .replace(/\{\{primary_agent_name\}\}/g, getPrimaryAgentName())
-    .replace(/\{\{owner_name\}\}/g, getOwnerName());
+    .replace(/\{\{pm_agent_name\}\}/g, () => getPMAgentName())
+    .replace(/\{\{trainer_agent_name\}\}/g, () => getTrainerAgentName())
+    .replace(/\{\{imaginer_agent_name\}\}/g, () => getImaginerAgentName())
+    .replace(/\{\{primary_agent_name\}\}/g, () => getPrimaryAgentName())
+    .replace(/\{\{owner_name\}\}/g, () => getOwnerName());
 }
 
 /** Every placeholder `substitutePlatformNames` fills — declared once, so the substituter, the
