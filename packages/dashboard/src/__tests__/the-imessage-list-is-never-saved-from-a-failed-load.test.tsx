@@ -66,3 +66,59 @@ describe('the iMessage on/off switch read', () => {
     expect(setSetting).not.toHaveBeenCalled();
   });
 });
+
+// Owner ruling: the star (the owner entry) never moves on its own; removing it is a deliberate, confirmed act.
+const TWO = JSON.stringify([
+  { address: 'a@x.test', name: 'A', is_primary: true, sharing_level: 'open_book' },
+  { address: 'b@x.test', name: 'B', is_primary: false, sharing_level: 'dont_overshare' },
+]);
+
+describe('the owner star', () => {
+  const open = async () => {
+    getSetting.mockImplementation(async (k: string) => k === 'imessage_approved_senders' ? ok(TWO) : ok('true'));
+    const view = render(<IMBridgeSettings />);
+    await screen.findByText('a@x.test');
+    return view;
+  };
+
+  it('removing the starred owner (confirmed) leaves NO owner, says so to the server, and clears the legacy keys', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { container } = await open();
+    fireEvent.click(container.querySelectorAll('button.ml-2')[0] as HTMLElement);   // the x on the first (starred) row
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(setSetting).toHaveBeenCalled());
+    const [key, value, , opts] = setSetting.mock.calls[0];
+    expect(key).toBe('imessage_approved_senders');
+    expect(JSON.parse(value).map((s: { is_primary: boolean }) => s.is_primary)).toEqual([false]);
+    expect(opts).toEqual({ ownerChange: true });
+    await waitFor(() => expect(setSetting).toHaveBeenCalledWith('imessage_default_sender', ''));
+  });
+
+  it('declining the confirm removes nothing', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { container } = await open();
+    fireEvent.click(container.querySelectorAll('button.ml-2')[0] as HTMLElement);
+    expect(screen.getByText('a@x.test')).toBeTruthy();
+  });
+
+  it('removing a non-owner entry asks nothing and does not touch the owner', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { container } = await open();
+    fireEvent.click(container.querySelectorAll('button.ml-2')[1] as HTMLElement);
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(setSetting).toHaveBeenCalled());
+    const [, value, , opts] = setSetting.mock.calls[0];
+    expect(JSON.parse(value)).toHaveLength(1);
+    expect(opts).toEqual({ ownerChange: false });
+  });
+
+  it('a list that arrives with no starred entry is shown without an owner and saved without one', async () => {
+    const NONE = JSON.stringify([{ address: 'a@x.test', name: 'A', is_primary: false, sharing_level: 'dont_overshare' }]);
+    getSetting.mockImplementation(async (k: string) => k === 'imessage_approved_senders' ? ok(NONE) : ok('true'));
+    render(<IMBridgeSettings />);
+    fireEvent.click(await screen.findByText('Save'));
+    await waitFor(() => expect(setSetting).toHaveBeenCalled());
+    expect(JSON.parse(setSetting.mock.calls[0][1])[0].is_primary).toBe(false);
+  });
+});

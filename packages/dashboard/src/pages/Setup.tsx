@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
+import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 import { isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
@@ -1333,6 +1334,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
   const [loadTry, setLoadTry] = useState(0);
   // The exact stored list text this step was built on; the save names it so a stale list is refused.
   const baseRaw = useRef<string | null>(null);
+  const baseList = useRef<SetupSafeSender[]>([]);   // who the owner was when loaded / last saved
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
@@ -1359,7 +1361,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
       baseRaw.current = sendersRes.ok ? (sendersRes.data.value ?? null) : null;
       const configured = enRes.ok && enRes.data.value !== null;
       if (enRes.ok && enRes.data.value === 'true') setEnabled(true);
-      if (Array.isArray(parsed) && parsed.length > 0) setSenders(parsed as SetupSafeSender[]);
+      if (Array.isArray(parsed) && parsed.length > 0) { setSenders(parsed as SetupSafeSender[]); baseList.current = (parsed as SetupSafeSender[]).map(x => ({ ...x })); }
       if (configured) setSaved(true);
     })();
     return () => { cancelled = true; };
@@ -1393,10 +1395,9 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
   };
 
   const removeSender = (index: number) => {
-    const wasPrimary = senders[index].is_primary;
-    const updated = senders.filter((_, i) => i !== index);
-    if (wasPrimary && updated.length > 0) updated[0].is_primary = true;
-    setSenders(updated);
+    // The owner entry is removed only on purpose, and the star does not pass to anyone else.
+    if (senders[index].is_primary && !confirmRemoveOwner(senders[index].name || senders[index].address)) return;
+    setSenders(senders.filter((_, i) => i !== index));
     setSaved(false);
   };
 
@@ -1428,9 +1429,6 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
       return;
     }
     const normalized = senders.map(s => ({ ...s }));
-    if (normalized.length > 0 && !normalized.some(s => s.is_primary)) {
-      normalized[0].is_primary = true;
-    }
     for (const s of normalized) {
       if (s.is_primary) s.sharing_level = 'open_book';
     }
@@ -1442,16 +1440,17 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
     const primary = normalized.find(s => s.is_primary);
     const effectiveDefault = primary?.address ?? '';
     const listText = JSON.stringify(normalized);
-    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current);
+    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current, { ownerChange: ownerChanged(baseList.current, normalized) });
     if (!listResult.ok) {
       setError(listResult.error || 'Failed to save the approved senders.');
       setLoadTry((n) => n + 1);
       return;
     }
     baseRaw.current = listText;
+    baseList.current = normalized.map(x => ({ ...x }));
     const writes = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imessage_recipient', normalized[0]?.address ?? ''),
+      api.setSetting('imessage_recipient', primary?.address ?? ''),
       api.setSetting('imessage_default_sender', effectiveDefault),
     ]);
     const refused = writes.find((w) => !w.ok);

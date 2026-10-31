@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { useGuardedLoad } from '../lib/load-guard';
+import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
 
 // v2.7.24 — per-channel safe-sender allowlist (Gmail / Outlook / Teams).
 // Mirrors the iMessage safe-sender UX in Settings.tsx but trimmed: no
@@ -112,7 +113,7 @@ export const ChannelSafeSenders = ({
     setSaving(true);
     setError(null);
     const text = JSON.stringify(next);
-    const res = await api.setSetting(configKey, text, load.data.raw);
+    const res = await api.setSetting(configKey, text, load.data.raw, { ownerChange: ownerChanged(load.data.list, next) });
     setSaving(false);
     busy.current = false;
     if (res.ok) {
@@ -153,6 +154,8 @@ export const ChannelSafeSenders = ({
   };
 
   const handleRemove = async (address: string) => {
+    const entry = senders.find((s) => s.address === address);
+    if (entry?.is_primary && !confirmRemoveOwner(entry.name || entry.address)) return;
     await persist((current) => current.filter((s) => s.address !== address));
   };
 

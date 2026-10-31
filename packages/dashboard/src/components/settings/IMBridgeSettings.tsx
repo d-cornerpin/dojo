@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../../lib/api';
+import { ownerChanged, confirmRemoveOwner } from '../../lib/owner-star';
 
 
 // ── iMessage Bridge Settings ──
@@ -105,6 +106,7 @@ export const IMBridgeSettings = () => {
   const [loadFailed, setLoadFailed] = useState(false);
   // The exact stored list text the editor was built on; the save names it so the server can refuse a stale one.
   const baseRaw = useRef<string | null>(null);
+  const baseList = useRef<SafeSender[]>([]);   // the list as loaded or last saved: who the owner was
 
   const load = useCallback(async () => {
       setLoading(true);
@@ -154,8 +156,9 @@ export const IMBridgeSettings = () => {
         const legacyDefault = defaultResult.ok ? defaultResult.data.value : '';
         const idx = legacyDefault ? loaded.findIndex(s => s.address === legacyDefault) : -1;
         if (idx >= 0) loaded[idx].is_primary = true;
-        else loaded[0].is_primary = true;
+        // Otherwise the list has no owner and stays that way: the star never lands on the first entry on its own.
       }
+      baseList.current = loaded.map(s => ({ ...s }));
       setSenders(loaded);
       setLoading(false);
   }, []);
@@ -175,9 +178,7 @@ export const IMBridgeSettings = () => {
 
     // Ensure exactly one primary on save. If somehow none, mark the first.
     const normalized = senders.map(s => ({ ...s }));
-    if (normalized.length > 0 && !normalized.some(s => s.is_primary)) {
-      normalized[0].is_primary = true;
-    }
+    // (A list with no starred entry is saved with no owner; the star never moves on its own.)
     // Force every primary record's sharing_level to open_book at save time.
     // The UI locks the dropdown, but a stale or hand-edited record could
     // arrive with a throttled level on the primary - normalize defensively.
@@ -197,7 +198,7 @@ export const IMBridgeSettings = () => {
 
     // The list goes first, built on the text that was loaded. If the server says it moved, nothing else is written.
     const listText = JSON.stringify(normalized);
-    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current);
+    const listResult = await api.setSetting('imessage_approved_senders', listText, baseRaw.current, { ownerChange: ownerChanged(baseList.current, normalized) });
     if (!listResult.ok) {
       setError(listResult.error || 'Failed to save settings');
       setSaving(false);
@@ -205,12 +206,13 @@ export const IMBridgeSettings = () => {
       return;
     }
     baseRaw.current = listText;
+    baseList.current = normalized.map(s => ({ ...s }));
     const results = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
       // Keep legacy fields in sync so older code paths (and any external
       // tools that read them directly) keep working until everything reads
       // the new shape via the bridge helpers.
-      api.setSetting('imessage_recipient', normalized[0]?.address ?? ''),
+      api.setSetting('imessage_recipient', primary?.address ?? ''),
       api.setSetting('imessage_default_sender', primary?.address ?? ''),
     ]);
 
@@ -256,12 +258,9 @@ export const IMBridgeSettings = () => {
   };
 
   const removeSender = (index: number) => {
-    const wasPrimary = senders[index].is_primary;
-    const updated = senders.filter((_, i) => i !== index);
-    if (wasPrimary && updated.length > 0) {
-      updated[0].is_primary = true;
-    }
-    setSenders(updated);
+    // The owner entry is removed only on purpose, and the star does not pass to anyone else.
+    if (senders[index].is_primary && !confirmRemoveOwner(senders[index].name || senders[index].address)) return;
+    setSenders(senders.filter((_, i) => i !== index));
   };
 
   const setPrimary = (index: number) => {

@@ -88,3 +88,26 @@ describe('edits on a good load', () => {
     expect(getSetting).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('the owner entry on a channel list', () => {
+  const OWNED = JSON.stringify([{ ...entry('a@x.test'), is_primary: true }, entry('b@x.test')]);
+  it('removing it asks first, and says it is an owner change', async () => {
+    getSetting.mockResolvedValue({ ok: true, data: { key: 'k', value: OWNED } });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mount();
+    await screen.findByText('+ Add safe gmail sender');
+    fireEvent.click(screen.getAllByTitle(/^Remove /)[0]);
+    await waitFor(() => expect(setSetting).toHaveBeenCalled());
+    expect(confirm).toHaveBeenCalled();
+    expect(setSetting.mock.calls[0][3]).toEqual({ ownerChange: true });
+    expect(JSON.parse(setSetting.mock.calls[0][1]).some((s: { is_primary: boolean }) => s.is_primary)).toBe(false);
+  });
+  it('declining leaves everything alone', async () => {
+    getSetting.mockResolvedValue({ ok: true, data: { key: 'k', value: OWNED } });
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    mount();
+    await screen.findByText('+ Add safe gmail sender');
+    fireEvent.click(screen.getAllByTitle(/^Remove /)[0]);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+});

@@ -851,11 +851,14 @@ export const getSetting = async (key: string): Promise<ApiResponse<{ key: string
 };
 
 // `base` is for the safe-sender lists: the exact saved text this edit was built on (null = nothing
-// was saved). The server refuses the save if the stored list has moved since.
-export const setSetting = async (key: string, value: string, base?: string | null): Promise<ApiResponse<{ key: string; value: string }>> => {
+// was saved). The server refuses the save if the stored list has moved since. `ownerChange` says the
+// save adds, moves or removes the starred owner entry; the server refuses such a save without it.
+export const setSetting = async (
+  key: string, value: string, base?: string | null, opts?: { ownerChange?: boolean },
+): Promise<ApiResponse<{ key: string; value: string }>> => {
   return request<{ key: string; value: string }>(`/config/settings/${key}`, {
     method: 'PUT',
-    body: JSON.stringify(base === undefined ? { value } : { value, base }),
+    body: JSON.stringify(base === undefined ? { value } : { value, base, ...(opts?.ownerChange !== undefined ? { ownerChange: opts.ownerChange } : {}) }),
   });
 };
 
