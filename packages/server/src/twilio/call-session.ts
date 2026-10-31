@@ -765,16 +765,17 @@ export class CallSession {
     const transcriptText = this.transcript.length === 0
       ? null
       : this.transcript.map(t => `[${t.at}] ${t.speaker}: ${t.text}`).join('\n');
+    const endStatus = (reason === 'failed' || reason === 'no-answer' || reason === 'busy' || reason === 'canceled') ? reason : 'completed';
     try {
       getDb().prepare(`
         UPDATE twilio_call_log
-        SET status = 'completed',
+        SET status = ?,
             ended_at = datetime('now'),
             duration_seconds = ?,
             transcript = ?,
             ended_reason = ?
         WHERE id = ?
-      `).run(durationSeconds, transcriptText, reason, this.logRowId);
+      `).run(endStatus, durationSeconds, transcriptText, reason, this.logRowId);
     } catch (err) {
       logger.warn('CallSession final log update failed', {
         callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
