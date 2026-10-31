@@ -74,29 +74,62 @@ export function deadInstallWorkDirs(dojoDir: string): string[] {
   }).map((n) => path.join(dojoDir, n));
 }
 
-/** The swap lock, or the reason it is busy. A holder whose pid is dead is no holder. */
+/**
+ * The swap lock, or the reason it is busy. A holder whose pid is dead is no holder; one that exists
+ * but belongs to another user (EPERM) is alive. Taking over a dead holder's lock is atomic, the same
+ * as in rollback.sh and restore-db.sh: only the run that wins `mkdir <lock>.takeover` deletes the
+ * stale lock, and it re-reads the holder inside that exclusive section.
+ */
 export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string } {
   const lock = path.join(dojoDir, SWAP_LOCK);
   const pidFile = path.join(lock, 'pid');
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.mkdirSync(lock);
-      fs.writeFileSync(pidFile, String(process.pid));
-      return () => {
-        try { if (fs.readFileSync(pidFile, 'utf8').trim() === String(process.pid)) fs.rmSync(lock, { recursive: true, force: true }); } catch { /* gone */ }
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return { busy: `the install lock could not be taken (${(err as Error).message})` };
-      let holder: number | null = null;
-      try { holder = Number(fs.readFileSync(pidFile, 'utf8').trim()) || null; } catch { /* no pid yet */ }
-      if (holder !== null && pidAlive(holder)) return { busy: `another install or restore is already running (process ${holder})` };
-      // No pid at all: the holder writes it the instant after mkdir, so a pid-less lock is
-      // either being taken right now or was left by a script that predates the pid file.
-      if (holder === null && Date.now() - fs.statSync(lock).mtimeMs < 60_000) return { busy: 'another install or restore is just starting' };
-      fs.rmSync(lock, { recursive: true, force: true });
-    }
+  const takeover = `${lock}.takeover`;
+  const take = (): (() => void) => {
+    fs.writeFileSync(pidFile, String(process.pid));
+    return () => {
+      try { if (fs.readFileSync(pidFile, 'utf8').trim() === String(process.pid)) fs.rmSync(lock, { recursive: true, force: true }); } catch { /* gone */ }
+    };
+  };
+  // null: free or stale (take over). Otherwise the reason it is busy.
+  const busyReason = (): string | null => {
+    let holder: number | null = null;
+    try { holder = Number(fs.readFileSync(pidFile, 'utf8').trim()) || null; } catch { /* no pid yet */ }
+    if (holder !== null && pidAlive(holder)) return `another install or restore is already running (process ${holder})`;
+    // No pid at all: the holder writes it the instant after mkdir, so a pid-less lock is
+    // either being taken right now or was left by a script that predates the pid file.
+    try { if (holder === null && Date.now() - fs.statSync(lock).mtimeMs < 60_000) return 'another install or restore is just starting'; } catch { /* gone */ }
+    return null;
+  };
+  try {
+    fs.mkdirSync(lock);
+    return take();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return { busy: `the install lock could not be taken (${(err as Error).message})` };
   }
-  return { busy: 'the install lock could not be taken' };
+  const reason = busyReason();
+  if (reason !== null) return { busy: reason };
+  try {
+    fs.mkdirSync(takeover);
+  } catch {
+    // Someone else is taking over; a marker a crashed run left behind goes after a minute.
+    try {
+      if (Date.now() - fs.statSync(takeover).mtimeMs >= 60_000) {
+        const dead = `${takeover}.dead.${process.pid}`;
+        fs.renameSync(takeover, dead);
+        fs.rmSync(dead, { recursive: true, force: true });
+      }
+    } catch { /* another run got there first */ }
+    return { busy: 'another install or restore is taking over the lock' };
+  }
+  try {
+    const again = fs.existsSync(lock) ? busyReason() : null;
+    if (again !== null) return { busy: again };
+    fs.rmSync(lock, { recursive: true, force: true });
+    try { fs.mkdirSync(lock); } catch { return { busy: 'the install lock could not be taken' }; }
+    return take();
+  } finally {
+    try { fs.rmdirSync(takeover); } catch { /* already gone */ }
+  }
 }
 
 export function treeVersion(dir: string): string | null {

@@ -194,16 +194,40 @@ fi
 # a holder that is dead is cleared). Two restores at once once shared a safety-copy name and one
 # deleted the other's good copy of the current data.
 LOCK_DIR="$DOJO_DIR/rollback.lock"
+# A holder that EXISTS but belongs to another user ("Operation not permitted") is alive.
+lock_holder_alive() {
+    local out
+    out="$(kill -0 "$1" 2>&1)" && return 0
+    case "$out" in *"not permitted"*) return 0 ;; esac
+    return 1
+}
+# Taking the lock, and taking over a dead holder's, are both atomic: the only deleter of a stale
+# lock is the one run that wins `mkdir "$LOCK_DIR.takeover"`, and it re-reads the holder inside that
+# exclusive section. (Check-the-holder, delete, re-make let two or three runs through together.)
 take_lock() {
     mkdir -p "$DOJO_DIR" 2>/dev/null
     if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
-    local holder age
+    local holder age tk="$LOCK_DIR.takeover" got=1
     holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
-    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 1; fi
+    if [ -n "$holder" ] && lock_holder_alive "$holder"; then return 1; fi
     age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
     if [ -z "$holder" ] && [ "$age" -lt 60 ]; then return 1; fi
+    if ! mkdir "$tk" 2>/dev/null; then
+        # Someone else is taking over. A takeover marker a crashed run left behind goes after a minute.
+        age=$(( $(date +%s) - $(stat -f %m "$tk" 2>/dev/null || date +%s) ))
+        if [ "$age" -ge 60 ] && mv "$tk" "$tk.dead.$$" 2>/dev/null; then rm -rf "$tk.dead.$$"; fi
+        return 1
+    fi
+    holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
+    if [ -d "$LOCK_DIR" ] && { { [ -n "$holder" ] && lock_holder_alive "$holder"; } || { [ -z "$holder" ] && [ "$age" -lt 60 ]; }; }; then
+        rmdir "$tk" 2>/dev/null; return 1
+    fi
+    echo "   (Clearing a lock left by a process that is no longer running.)"
     rm -rf "$LOCK_DIR"
-    mkdir "$LOCK_DIR" 2>/dev/null && echo $$ > "$LOCK_DIR/pid"
+    if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; got=0; fi
+    rmdir "$tk" 2>/dev/null
+    return $got
 }
 if ! take_lock; then
     echo "REFUSING: another restore, install or rollback is running ($LOCK_DIR)."
