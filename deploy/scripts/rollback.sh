@@ -204,21 +204,40 @@ launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
 #    into place. Moves (not copies) so the swap is fast and uses no extra disk;
 #    older backups remain for a deeper rollback if needed.
 ts="$(date +%Y%m%d-%H%M%S)"
+failed_dir=""
+# Every step below leaves a platform folder in place or says plainly why not, and every exit path
+# loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
+# owner if that build will not run; with no folder it runs this script with --heal).
+reload_services() {
+    launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
+    launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+}
 if [ -d "$PLATFORM_DIR" ]; then
     failed_dir="$DOJO_DIR/platform.failed-${cur_ver}-${ts}"
     echo "   Preserving current build -> $(basename "$failed_dir")"
     if ! mv "$PLATFORM_DIR" "$failed_dir"; then
         echo "ERROR: could not move the current platform aside; aborting before any data loss."
-        launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
+        failed_dir=""
+        reload_services
         exit 1
     fi
 fi
 
 echo "   Restoring $target_ver..."
 if ! mv "$newest_backup" "$PLATFORM_DIR"; then
-    echo "ERROR: could not move the backup into place. The previous build is at:"
-    echo "       ${failed_dir:-<unchanged>}"
-    echo "       Restore it manually with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+    echo "ERROR: could not move the backup into place."
+    if [ -n "${failed_dir:-}" ] && [ -d "${failed_dir:-}" ]; then
+        if mv "$failed_dir" "$PLATFORM_DIR"; then
+            echo "   The previous build was put back, so Dojo is as it was. The backup is still at $(basename "$newest_backup")."
+        else
+            echo "   The previous build could not be put back either. It is at:"
+            echo "       $failed_dir"
+            echo "   Restore it manually with: mv \"$failed_dir\" \"$PLATFORM_DIR\""
+        fi
+    else
+        echo "   There was no previous build to put back."
+    fi
+    reload_services
     exit 1
 fi
 
