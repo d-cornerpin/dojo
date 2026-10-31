@@ -367,7 +367,7 @@ export async function createEntry(params: {
 
   // Check for semantic duplicates
   if (embeddingBuf) {
-    const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92, params.agentId);
+    const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92, params.agentId, params.namespace ?? null);
     if (duplicate) {
       // Compare the substance (date prefix + whitespace/case normalized away).
       const norm = (s: string) =>
@@ -769,6 +769,7 @@ async function findSemanticDuplicate(
   embeddingBuf: Buffer,
   threshold: number,
   agentId: string,
+  namespace: string | null,
 ): Promise<VaultEntry | null> {
   const newEmb = new Float32Array(
     embeddingBuf.buffer,
@@ -779,11 +780,20 @@ async function findSemanticDuplicate(
   // ⚠ THE WRITE PATH HAD THE SAME UNBOUNDED SHAPE, and it is arguably worse than the search's: every
   // `vault_remember` paid a full scan of the author's vault, with every row's embedding, before it
   // was allowed to save anything.
+  // A personal entry and a squad share are different memory spaces: each dedupes only within its own.
+  const conditions = ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'];
+  const dedupParams: unknown[] = [agentId];
+  if (namespace === null) {
+    conditions.push('namespace IS NULL');
+  } else {
+    conditions.push('namespace = ?');
+    dedupParams.push(namespace);
+  }
   const scan = await scanVaultCandidates({
     label: 'vault_dedup',
     queryEmbedding: newEmb,
-    conditions: ['is_obsolete = 0', 'embedding IS NOT NULL', 'agent_id = ?'],
-    params: [agentId],
+    conditions,
+    params: dedupParams,
     agentId,
     // ⚠ AND THIS ONE MATTERS MOST (fix round 1, I2): a global window that sat above this author's
     // newest row made the duplicate check see NOTHING, so the agent silently accumulated duplicates
