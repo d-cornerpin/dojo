@@ -7,7 +7,7 @@ describe('the provider-validate route reads prices through the one shared parser
   it('holds no inline copy of parsePrice', () => {
     expect(src).not.toMatch(/const parsePrice\s*=/);
   });
-  it('imports parsePrice from services/pricing-sync', () => {
-    expect(src).toMatch(/import \{ parsePrice \} from '\.\.\/\.\.\/services\/pricing-sync\.js';/);
+  it('imports parsePrice from services/price-per-million', () => {
+    expect(src).toMatch(/import \{ parsePrice \} from '\.\.\/\.\.\/services\/price-per-million\.js';/);
   });
 });

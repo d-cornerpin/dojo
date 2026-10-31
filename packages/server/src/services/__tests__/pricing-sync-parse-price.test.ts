@@ -35,7 +35,7 @@ vi.mock('../../logger.js', () => ({
   }),
 }));
 
-import { parsePrice } from '../pricing-sync.js';
+import { parsePrice } from '../price-per-million.js';
 
 describe('parsePrice — per-token text to $/M-tokens', () => {
   it('multiplies a per-token price up to per-million', () => {
