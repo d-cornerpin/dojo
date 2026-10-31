@@ -395,7 +395,7 @@ agentsRouter.put('/:id', async (c) => {
   if (typeof body.systemPrompt === 'string') {
     let storedPrompt: string;
     try { storedPrompt = readAgentPromptSurface(id); }
-    catch { return c.json({ ok: false, error: 'The saved prompt could not be read, so nothing was changed. Try again.' }, 500); }
+    catch (err) { noteRouteFailure(c, logger, err); return c.json({ ok: false, error: 'The saved prompt could not be read, so nothing was changed. Try again.' }, 500); }
     const refusal = refuseStaleWholeDocument('prompt', body.systemPrompt, body.systemPromptBase, storedPrompt);
     if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }

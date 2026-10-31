@@ -186,7 +186,7 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
   return normalized;
 }
 
-function readLegacyDefaultSender(): string | null {
+export function readLegacyDefaultSender(): string | null {
   try {
     const db = getDb();
     const row = db.prepare(`SELECT value FROM config WHERE key = 'imessage_default_sender'`).get() as { value: string } | undefined;
