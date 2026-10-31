@@ -74,12 +74,8 @@ export function deadInstallWorkDirs(dojoDir: string): string[] {
   }).map((n) => path.join(dojoDir, n));
 }
 
-/**
- * The swap lock, or the reason it is busy. A holder whose pid is dead is no holder; one that exists
- * but belongs to another user (EPERM) is alive. Taking over a dead holder's lock is atomic, the same
- * as in rollback.sh and restore-db.sh: only the run that wins `mkdir <lock>.takeover` deletes the
- * stale lock, and it re-reads the holder inside that exclusive section.
- */
+/** The swap lock, or the reason it is busy. A dead holder is no holder; another user's (EPERM) is alive.
+ *  Takeover is atomic as in rollback.sh: only the winner of `mkdir <lock>.takeover` deletes a stale lock. */
 export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string } {
   const lock = path.join(dojoDir, SWAP_LOCK);
   const pidFile = path.join(lock, 'pid');
@@ -95,8 +91,7 @@ export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string 
     let holder: number | null = null;
     try { holder = Number(fs.readFileSync(pidFile, 'utf8').trim()) || null; } catch { /* no pid yet */ }
     if (holder !== null && pidAlive(holder)) return `another install or restore is already running (process ${holder})`;
-    // No pid at all: the holder writes it the instant after mkdir, so a pid-less lock is
-    // either being taken right now or was left by a script that predates the pid file.
+    // No pid yet: the holder writes it right after mkdir (or a script that predates the pid file).
     try { if (holder === null && Date.now() - fs.statSync(lock).mtimeMs < 60_000) return 'another install or restore is just starting'; } catch { /* gone */ }
     return null;
   };
@@ -104,27 +99,24 @@ export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string 
   const clearOldMarker = (): boolean => {
     try {
       if (Date.now() - fs.statSync(takeover).mtimeMs < 60_000) return false;
-      const dead = `${takeover}.dead.${process.pid}`;
-      fs.renameSync(takeover, dead);
-      fs.rmSync(dead, { recursive: true, force: true });
+      fs.renameSync(takeover, `${takeover}.dead.${process.pid}`);
+      fs.rmSync(`${takeover}.dead.${process.pid}`, { recursive: true, force: true });
       return true;
     } catch { return false; }
   };
-  try {
-    fs.mkdirSync(lock);
-    const r = take();
-    clearOldMarker();
-    return r;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return { busy: `the install lock could not be taken (${(err as Error).message})` };
-  }
   // Two tries: the run that clears an old marker goes on to take over itself.
   for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(lock);
+      const r = take();
+      clearOldMarker();
+      return r;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return { busy: `the install lock could not be taken (${(err as Error).message})` };
+    }
     const reason = busyReason();
     if (reason !== null) return { busy: reason };
-    try {
-      fs.mkdirSync(takeover);
-    } catch {
+    try { fs.mkdirSync(takeover); } catch {
       if (clearOldMarker()) continue;
       return { busy: 'another install or restore is taking over the lock' };
     }
@@ -134,9 +126,7 @@ export function acquireSwapLock(dojoDir: string): (() => void) | { busy: string 
       fs.rmSync(lock, { recursive: true, force: true });
       try { fs.mkdirSync(lock); } catch { return { busy: 'the install lock could not be taken' }; }
       return take();
-    } finally {
-      try { fs.rmdirSync(takeover); } catch { /* already gone */ }
-    }
+    } finally { try { fs.rmdirSync(takeover); } catch { /* already gone */ } }
   }
   return { busy: 'the install lock could not be taken' };
 }
