@@ -52,13 +52,15 @@ describe('rollback.sh judges the restart by launchctl list', () => {
   it('exits 1 and names what is missing when launchd lists neither', () => {
     const r = run('rollback.sh', scratch([], 0));
     expect(r.status).toBe(1);
-    expect(r.out).toContain('launchd did not load the platform and the watchdog');
+    expect(r.out).toContain('The platform service did not start');
+    expect(r.out).toContain('The watchdog service did not start');
     expect(r.out).not.toContain('The server is restarting');
   });
   it('names only the watchdog when only the watchdog is missing', () => {
     const r = run('rollback.sh', scratch(['com.dojo.platform'], 0));
     expect(r.status).toBe(1);
-    expect(r.out).toContain('did not load the watchdog');
+    expect(r.out).toContain('The watchdog service did not start');
+    expect(r.out).not.toContain('The platform service did not start');
   });
   it('trusts the list, not the exit status of load', () => {
     expect(run('rollback.sh', scratch(BOTH, 1)).status).toBe(0);
