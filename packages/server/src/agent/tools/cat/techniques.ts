@@ -35,12 +35,15 @@ import {
 import { toolsLogger as logger } from '../util.js';
 import type { ToolHandlerMap } from '../handler.js';
 
+/** A technique write that did not happen. The write functions return plain refusal text, not always starting "Error". */
+const TECHNIQUE_WRITE_FAILED = /^(Error|Only|Refused|Technique ".*" not found|Technique ".*" is not in draft state)/;
+
 export const techniqueHandlers: ToolHandlerMap = {
   async save_technique({ agentId, args }) {
     const { executeSaveTechnique } = await import('../../../techniques/tools.js');
     const agentRow = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
     const content = executeSaveTechnique(agentId, agentRow?.name ?? agentId, agentRow?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') || content.startsWith('Only') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async use_technique({ agentId, args }) {
@@ -106,21 +109,21 @@ export const techniqueHandlers: ToolHandlerMap = {
     const { executePublishTechnique } = await import('../../../techniques/tools.js');
     const agentRow4 = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
     const content = executePublishTechnique(agentId, agentRow4?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') || content.startsWith('Only') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async update_technique({ agentId, args }) {
     const { executeUpdateTechnique } = await import('../../../techniques/tools.js');
     const agentRow5 = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
     const content = executeUpdateTechnique(agentId, agentRow5?.name ?? agentId, agentRow5?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') || content.startsWith('Only') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async submit_technique_for_review({ agentId, args }) {
     const { executeSubmitForReview } = await import('../../../techniques/tools.js');
     const sfrRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
     const content = executeSubmitForReview(agentId, sfrRow?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async delete_technique({ agentId, args }) {
@@ -167,14 +170,14 @@ export const techniqueHandlers: ToolHandlerMap = {
     const { executeTechniqueSetPlaceholder } = await import('../../../techniques/tools.js');
     const tspRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
     const content = executeTechniqueSetPlaceholder(agentId, tspRow?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async technique_finalize({ agentId, args }) {
     const { executeTechniqueFinalize } = await import('../../../techniques/tools.js');
     const tfRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
     const content = executeTechniqueFinalize(agentId, tfRow?.classification ?? 'apprentice', args);
-    return { content, isError: content.startsWith('Error') };
+    return { content, isError: TECHNIQUE_WRITE_FAILED.test(content) };
   },
 
   async technique_list_versions({ args }) {
