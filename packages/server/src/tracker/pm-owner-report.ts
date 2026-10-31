@@ -69,7 +69,6 @@ export function reportCirclingToOwner(taskId: string, title: string, agentId: st
       .get(taskId, taskId) as { n: number };
     if (episode.n !== 1) return; // this episode was already reported (or the verdict was not recorded)
 
-    const pmId = getPMAgentId();
     const name = agentId
       ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId
       : 'its agent';
@@ -79,21 +78,42 @@ export function reportCirclingToOwner(taskId: string, title: string, agentId: st
       + ` My read: ${reason.trim()}`
       + ` I'm sending ${name} word to change approach and I'll keep it moving; nothing for you to do unless you want to step in.`;
 
-    const id = uuidv4();
-    const row = insertMessageIfAbsent({ id, agentId: pmId, role: 'assistant', content, subjectKind: 'background', taskId });
-    if (!row) return;
-    broadcast({
-      type: 'chat:message', agentId: pmId,
-      message: {
-        id, agentId: pmId, role: 'assistant' as const, content,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
-      },
-    });
-    broadcast({ type: 'chat:chunk', agentId: pmId, messageId: id, content: '', done: true, modelId: null });
+    postToOwner(taskId, content);
     logger.info('PM told the owner a task is circling (once per episode)', { taskId, agentId });
   } catch (err) {
     logger.warn('PM circling report could not be written (the verdict still reaches the agent)', {
       taskId, error: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+function postToOwner(taskId: string, content: string): void {
+  const pmId = getPMAgentId();
+  const id = uuidv4();
+  const row = insertMessageIfAbsent({ id, agentId: pmId, role: 'assistant', content, subjectKind: 'background', taskId });
+  if (!row) return;
+  broadcast({
+    type: 'chat:message', agentId: pmId,
+    message: {
+      id, agentId: pmId, role: 'assistant' as const, content,
+      tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
+    },
+  });
+  broadcast({ type: 'chat:chunk', agentId: pmId, messageId: id, content: '', done: true, modelId: null });
+}
+
+/** The PM could not get a usable answer from its own model, twice in a row, on whether a task is circling.
+ *  Told once, in the PM's own voice on its chat line; the question is closed, not asked a third time. */
+export function reportEffortReviewStuckToOwner(taskId: string, title: string, agentId: string | null, lastProblem: string): void {
+  try {
+    const name = agentId
+      ? (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId
+      : 'its agent';
+    postToOwner(taskId, `I could not tell whether ${name} is making progress or going in circles on "${title}": `
+      + `my own review failed twice in a row (last problem: ${lastProblem.trim()}). `
+      + `I have stopped asking about it for now; it is yours to look at if it matters.`);
+    logger.info('PM told the owner an effort review could not be judged', { taskId, agentId });
+  } catch (err) {
+    logger.warn('PM effort-review report could not be written', { taskId, error: err instanceof Error ? err.message : String(err) });
   }
 }

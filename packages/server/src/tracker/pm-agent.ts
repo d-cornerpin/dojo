@@ -58,7 +58,7 @@ import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclin
 import { effortNoveltyLines } from './effort-ledger.js';
 import { taskLastMovedAt, agentIsLive } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
-import { reportCirclingToOwner } from './pm-owner-report.js';
+import { reportCirclingToOwner, reportEffortReviewStuckToOwner } from './pm-owner-report.js';
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 const logger = createLogger('pm-agent');
@@ -1185,6 +1185,7 @@ function buildEffortReviewPrompt(
   taskId: string,
   row: { title: string; goal: string | null; status: string; effort_calls: number; effort_reviewed_calls: number },
   assignedTo: string | null,
+  lastProblem: string | null = null,
 ): string {
   const delta = effortDelta(row);
   return [
@@ -1212,6 +1213,7 @@ function buildEffortReviewPrompt(
     `The "task_id" field in your reply MUST be exactly "${taskId}" — this is how the review `
       + 'confirms it is reading YOUR answer to THIS question, not some other message.',
     '',
+    ...(lastProblem ? [`Your last answer to this question could not be used: ${lastProblem}. Answer it again, fixing that.`, ''] : []),
     'Reply with ONLY a JSON object and nothing else — no tool calls, no other text:',
     `{"advancing": true or false, "reason": "one or two sentences", "task_id": "${taskId}"}`,
   ].join('\n');
@@ -1282,11 +1284,55 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
  * path (the `in_progress` loop below, `pendingCirclingVerdict` + `circlingPokeAlreadyDelivered`)
  * delivers rung 2 on whichever LATER sweep tick both guards actually allow it — the sweep runs
  * every 60s, so delivery is eventual by construction, never a spin.
- * No parseable verdict, or no PM model to ask: baseline untouched, nothing sent or recorded,
- * logged — the request stays pending and `runPMReview`'s next tick tries again. "A busy PM"
+ * No PM model to ask: baseline untouched, nothing sent or recorded, logged — the request stays pending.
+ * An unusable verdict (unparseable, or no answer in time) is recorded with its reason (`effort_review_failed`);
+ * the next ask carries it; a second in a row on the same request goes to the owner and closes the request. "A busy PM"
  * is no longer one of these cases (t123): a direct model call turns nothing and races nothing,
  * so the whole class of reviews lost to the busy-deferral is gone rather than merely rarer.
  */
+/** What was wrong with a reply that `parseEffortVerdict` could not use, in a sentence the PM can act on. */
+function whyUnusable(text: string | null | undefined): string {
+  if (!text || !text.trim()) return 'the reply was empty';
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return 'the reply was not a JSON object';
+  try {
+    const p = JSON.parse(match[0]) as Record<string, unknown>;
+    const missing = [
+      typeof p.advancing === 'boolean' ? null : '"advancing" (true or false)',
+      typeof p.reason === 'string' ? null : '"reason" (text)',
+      typeof p.task_id === 'string' ? null : '"task_id" (text)',
+    ].filter((m): m is string => m !== null);
+    return `the JSON object was missing or had the wrong type for ${missing.join(', ')}`;
+  } catch {
+    return 'the reply was not a valid JSON object';
+  }
+}
+
+/** The reason of the last failed verdict on this request (failures since it was filed), and how many in a row. */
+function failedVerdictsOnThisRequest(taskId: string): { count: number; lastReason: string | null } {
+  const rows = getDb().prepare(
+    `SELECT json_extract(payload, '$.reason') AS reason FROM work_events
+      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'effort_review_failed'
+        AND id > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'audit'
+                             AND json_extract(payload, '$.entry_kind') = 'effort_review_requested'), 0)
+      ORDER BY id DESC`,
+  ).all(taskId, taskId) as Array<{ reason: string | null }>;
+  return { count: rows.length, lastReason: rows[0]?.reason ?? null };
+}
+
+/**
+ * A verdict that could not be used is a fact about THIS request: record it with its reason (the next
+ * ask carries it). The second one in a row on the same request is not asked a third time: the owner
+ * is told through the PM's own chat line, and the request is closed the way a verdict closes it.
+ */
+function handFailedVerdict(taskId: string, title: string, assignedTo: string | null, reason: string): void {
+  writeTaskLog({ taskId, fromEntity: 'pm', entryKind: 'effort_review_failed', reason });
+  const { count } = failedVerdictsOnThisRequest(taskId);
+  if (count < 2) return;
+  reportEffortReviewStuckToOwner(taskId, title, assignedTo, reason);
+  advanceBaseline(taskId);
+}
+
 /** Reviews in flight, keyed by task id. See `runEffortReview`'s guard for why this exists. */
 const effortReviewsInFlight = new Set<string>();
 
@@ -1423,7 +1469,7 @@ async function runEffortReviewOnce(taskId: string): Promise<void> {
     return;
   }
 
-  const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to);
+  const prompt = buildEffortReviewPrompt(taskId, row, row.assigned_to, failedVerdictsOnThisRequest(taskId).lastReason);
   let replyText: string | null = null;
   try {
     const { callModel } = await import('../agent/model.js');
@@ -1446,15 +1492,17 @@ async function runEffortReviewOnce(taskId: string): Promise<void> {
     });
     replyText = r.content;
   } catch (err) {
-    logger.error('Effort review: the PM model did not answer; the request stays pending and retries next cycle', {
+    logger.error('Effort review: the PM model did not answer; the failure is recorded and the next ask carries it', {
       taskId, error: err instanceof Error ? err.message : String(err),
     });
+    handFailedVerdict(taskId, row.title, row.assigned_to, 'the answer did not arrive in time');
     return;
   }
 
   const verdict = parseEffortVerdict(replyText);
   if (!verdict) {
-    logger.warn('Effort review: the PM reply did not parse as a verdict; the request stays pending and retries next cycle', { taskId });
+    logger.warn('Effort review: the PM reply did not parse as a verdict; the failure is recorded and the next ask carries it', { taskId });
+    handFailedVerdict(taskId, row.title, row.assigned_to, whyUnusable(replyText));
     return;
   }
 

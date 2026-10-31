@@ -73,6 +73,9 @@ export type TaskLogEntryKind =
   // requiresResponse A2A landing inside the assignee's live turn) those guards exist to
   // prevent. The look is out-of-band; the poke never is.
   | 'effort_review_intervene'
+  // The PM's verdict on an effort review could not be used (unparseable, or no answer in time). `reason`
+  // says what was wrong; the next ask carries it, and two in a row on the same request go to the owner.
+  | 'effort_review_failed'
   // T10G: the two the spine names honestly. A PM blessing used to arrive here wearing a
   // `transition` label with `from_status = to_status`; it is a VERDICT and now says so.
   | 'claim_upheld'
