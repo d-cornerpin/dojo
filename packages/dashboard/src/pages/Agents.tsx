@@ -239,6 +239,7 @@ const TerminatedAgentRow = ({
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const pillClass = agent.status === 'terminated' ? 'pill--norm' : 'pill--down';
   const statusLabel = agent.status === 'terminated' ? 'Ended' : agent.status;
@@ -284,9 +285,14 @@ const TerminatedAgentRow = ({
                   className="btn btn--primary btn--sm"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    await api.purgeAgent(agent.id);
-                    onReload();
-                    setConfirmDelete(false);
+                    setDeleteError(null);
+                    const res = await api.purgeAgent(agent.id);
+                    if (res.ok) {
+                      onReload();
+                      setConfirmDelete(false);
+                    } else {
+                      setDeleteError(res.error);
+                    }
                   }}
                 >
                   Yes
@@ -294,7 +300,7 @@ const TerminatedAgentRow = ({
                 <button
                   type="button"
                   className="btn btn--sm"
-                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); setDeleteError(null); }}
                 >
                   No
                 </button>
@@ -309,6 +315,9 @@ const TerminatedAgentRow = ({
                 Delete
               </button>
             )
+          )}
+          {deleteError && (
+            <span role="alert" style={{ fontSize: 11, color: 'var(--dojo3-rust)' }}>{deleteError}</span>
           )}
           <span className="text-tertiary" style={{ fontSize: 11, marginLeft: 'auto' }}>
             Model: {agent.model?.name || 'None'} | Type: {agent.agentType}
