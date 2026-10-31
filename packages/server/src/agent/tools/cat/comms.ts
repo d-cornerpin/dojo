@@ -688,8 +688,13 @@ export const commsHandlers: ToolHandlerMap = {
     const recipientLabel = recipientRecord
       ? `${recipientRecord.name} (${recipientRecord.address})`
       : recipient;
+    // A "0/N" inside "sent … with 0/N attachment(s)" reads as a send that
+    // happened. When every file failed and only the words were re-sent alone,
+    // say the files did not go and what to do about it.
     const attachSummary = attachmentPaths.length > 0
-      ? ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}`
+      ? result.sentFiles.length === 0
+        ? ` as text only - NONE of the ${attachmentPaths.length} attachment(s) went out${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}. Tell the recipient the files did not arrive, or try again`
+        : ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}`
       : '';
     // Audit detail captures the full sharing context so a later review
     // can answer "did the primary agent over-share with sender X?" without
