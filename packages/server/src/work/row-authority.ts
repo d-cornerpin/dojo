@@ -40,6 +40,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPMAgent, isPrimaryAgent, getOwnerName, getPrimaryAgentId } from '../config/platform.js';
 import { turnContext } from '../agent/turn-context.js';
+import { currentAddress } from '../agent/v2/turn-address.js';
 import { recordMove } from './move-record.js';
 import { isTerminal, type Actor, type WorkState } from './store.js';
 import { pieceIdsExpr } from './validation-drive.js';
@@ -169,9 +170,19 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
 const who = (id: string): string => `agent ${id}`;
 
 function escalationPointer(actorId: string): string {
-  return isPrimaryAgent(actorId)
-    ? `If it should happen anyway, ask ${getOwnerName()} in your conversation and, if they say so, call again with user_quote set to their exact words.`
-    : `If it should happen anyway, tell the main agent (send_to_agent) so it can put the decision to ${getOwnerName()}.`;
+  if (!isPrimaryAgent(actorId)) {
+    return `If it should happen anyway, tell the main agent (send_to_agent) so it can put the decision to ${getOwnerName()}.`;
+  }
+  // Whose turn this is decides who the pointer can send the decision to. On a contact's turn,
+  // "ask the owner in your conversation" means ASK THE CONTACT — and their words can never
+  // clear ownerAskedInThisTurn (line 144), which proves the quote is in the OWNER's ask.
+  const addr = currentAddress(actorId);
+  if (addr && addr.kind === 'person' && !addr.isOwner) {
+    return `If it should happen anyway: this turn is with ${addr.name}, not ${getOwnerName()}, so do not put it to ${addr.name}. `
+      + `Leave it for ${getOwnerName()}'s own next message, or reach ${getOwnerName()} yourself on a channel you may use, `
+      + `and only call again with user_quote set to ${getOwnerName()}'s exact words.`;
+  }
+  return `If it should happen anyway, ask ${getOwnerName()} in your conversation and, if they say so, call again with user_quote set to their exact words.`;
 }
 
 // ── 1. EDIT RIGHTS (dec 3) ──────────────────────────────────────────────────────────────
