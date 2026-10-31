@@ -9592,7 +9592,7 @@
     "packages/dashboard/src/pages/Chat.tsx": 2103,
     "packages/dashboard/src/pages/Costs.tsx": 736,
     "packages/dashboard/src/pages/Health.tsx": 694,
-    "packages/dashboard/src/pages/Memory.tsx": 524,
+    "packages/dashboard/src/pages/Memory.tsx": 533,
     "packages/dashboard/src/pages/Settings.tsx": 193,
     "packages/dashboard/src/pages/Setup.tsx": 1889,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 402,
