@@ -62,7 +62,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/cat/comms.ts",
-  "line": "+ (route ? `sms_send instead. Only if that fails too should you tell ${route.name} (${route.where}). ` : 'sms_send instead. Only if that fails too should you tell the user and answer in '",
+  "line": "+ (route ? `sms_send instead. If that fails too, ${route.where}. ` : 'sms_send instead. Only if that fails too should you tell the user and answer in '",
   "reason": "the dashboard wording chosen only when the turn address says the reply stays in the dashboard"
  },
  {
@@ -72,7 +72,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/cat/comms.ts",
-  "line": ": (route ? `Tell ${route.name} that iMessage is turned off on this server: ${route.where}. ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +",
+  "line": ": (route ? `${route.down} ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +",
   "reason": "the dashboard wording chosen only when the turn address says the reply stays in the dashboard"
  },
  {
@@ -87,7 +87,7 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/tools/cat/comms.ts",
-  "line": "(route ? `Tell ${route.name} the message did not go through (${route.where}). ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +",
+  "line": "(route ? `${route.failed} ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +",
   "reason": "the dashboard wording chosen only when the turn address says the reply stays in the dashboard"
  },
  {
@@ -1722,7 +1722,17 @@ export const ALLOW: readonly AllowEntry[] = [
  },
  {
   "file": "agent/v2/send-recipient.ts",
-  "line": "return { name: addr.name, where: `your written reply cannot go to ${addr.name} by iMessage either while it is down, so it will stay in the dashboard chat` };",
-  "reason": "the failure words for a turn whose own reply goes by iMessage while the bridge is down: the reply really does stay in the dashboard chat (true as written)"
+  "line": "where: `your written reply will not reach ${name} by iMessage either; it stays in the dashboard chat`,",
+  "reason": "failure words for a turn whose own reply goes by iMessage while the iMessage bridge is down or a send failed: the reply really does stay in the dashboard chat (true as written)"
+ },
+ {
+  "file": "agent/v2/send-recipient.ts",
+  "line": "down: `You cannot reach ${name} by iMessage right now, and your written reply will not reach them either; it stays in the dashboard chat.`,",
+  "reason": "failure words for a turn whose own reply goes by iMessage while the iMessage bridge is down or a send failed: the reply really does stay in the dashboard chat (true as written)"
+ },
+ {
+  "file": "agent/v2/send-recipient.ts",
+  "line": "failed: `Your iMessage did not go through, and your written reply will not reach ${name} by iMessage either right now; it stays in the dashboard chat.`,",
+  "reason": "failure words for a turn whose own reply goes by iMessage while the iMessage bridge is down or a send failed: the reply really does stay in the dashboard chat (true as written)"
  }
 ];

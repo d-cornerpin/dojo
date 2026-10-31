@@ -23,6 +23,8 @@ import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { addressesMatch, isOwnerIMessageRecipient } from '../../services/safe-senders.js';
 import { getSafeSenders } from '../../services/imessage-bridge.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
+import { ownerEmailAddresses } from '../../services/owner-email-addresses.js';
+import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { currentLiveAddress } from './turn-address-live.js';
 
 /** The send tools whose recipient is a plain argument, with the argument names that carry it. */
@@ -87,9 +89,19 @@ function sameAsAddressee(addr: TurnAddress, channel: string, recipient: string):
   if (addr.kind !== 'person') return false;
   if (channel === 'teams') return !!addr.inboundContext?.chatId && addr.inboundContext.chatId === recipient;
   if (addr.senderId && addressesMatch(addr.senderId, recipient)) return true;
-  // The owner has no address of their own on the dashboard: the one owner rule decides, never a name.
-  if (addr.isOwner) { try { return isOwnerIMessageRecipient(recipient); } catch { return false; } }
-  return false;
+  // The owner has no address of their own on the dashboard: each channel's own owner rule decides, never a name.
+  return addr.isOwner && isOwnerOn(channel, recipient);
+}
+
+/** One function, dispatching by channel: email by the owner's connected user mailboxes, the rest by the one phone/iMessage owner rule. */
+export function isOwnerOn(channel: string, recipient: string): boolean {
+  try {
+    if (channel === 'email') {
+      const [clean] = ownerEmailAddresses([recipient]);
+      return !!clean && ownerMailboxes().some((m) => m.address === clean);
+    }
+    return isOwnerIMessageRecipient(recipient);
+  } catch { return false; }
 }
 
 /**
@@ -121,12 +133,19 @@ export function recipientNoteFor(
  * not go through: ..."). From the turn's address. Null when the reply stays in the dashboard,
  * where the dashboard wording is already true.
  */
-export function routedReplyWords(agentId: string): { name: string; where: string } | null {
+export function routedReplyWords(agentId: string): { name: string; where: string; down: string; failed: string } | null {
   const addr = currentLiveAddress(agentId);
   if (addr?.kind !== 'person' || !addr.routed) return null;
-  // The bridge being down also stops THIS turn's written reply when that reply goes by iMessage.
+  const name = addr.name;
+  // When this turn's own reply goes by iMessage, a down bridge (or a failed send) stops that reply too.
   if (addr.deliveryChannel === 'imessage') {
-    return { name: addr.name, where: `your written reply cannot go to ${addr.name} by iMessage either while it is down, so it will stay in the dashboard chat` };
+    return {
+      name,
+      where: `your written reply will not reach ${name} by iMessage either; it stays in the dashboard chat`,
+      down: `You cannot reach ${name} by iMessage right now, and your written reply will not reach them either; it stays in the dashboard chat.`,
+      failed: `Your iMessage did not go through, and your written reply will not reach ${name} by iMessage either right now; it stays in the dashboard chat.`,
+    };
   }
-  return { name: addr.name, where: `your written reply this turn goes to ${addr.name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there` };
+  const where = `your written reply this turn goes to ${name} by ${deliveryLabel(addr.deliveryChannel)}, so tell them there`;
+  return { name, where, down: `Tell ${name} that iMessage is turned off on this server: ${where}.`, failed: `Tell ${name} the message did not go through (${where}).` };
 }

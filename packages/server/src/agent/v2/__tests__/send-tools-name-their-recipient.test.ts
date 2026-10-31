@@ -133,8 +133,8 @@ describe('failure results say where the written reply goes, from the address', (
     const r = routedReplyWords(AGENT)!;
     expect(r.name).toBe('Pat Example');
     // The turn's own reply goes by iMessage, so a down bridge stops it too.
-    expect(r.where).toContain('cannot go to Pat Example by iMessage either');
-    expect(r.where).toContain('stay in the dashboard chat');
+    expect(r.where).toContain('will not reach Pat Example by iMessage either');
+    expect(r.where).toContain('stays in the dashboard chat');
   });
   it('a dashboard turn: nothing to say, the dashboard wording is already true', () => {
     turnWith(owner, 'dashboard');

@@ -479,7 +479,7 @@ describe('§1 reminder-silence', () => {
 // 3.5: the hand-off and reminder floors name who is waiting and where the written reply lands,
 // from the turn's address.
 describe('3.5 the floors read the turn address', () => {
-  const contactAddress = { kind: 'person', name: 'Pat Example', isOwner: false, deliveryChannel: 'imessage', routed: true };
+  const contactAddress = { kind: 'person', name: 'Pat Example', isOwner: false, boundChannel: 'imessage', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'imessage', routed: true };
   it('the hand-off floor names the waiting person and their channel', async () => {
     const out = await runHandoffFloors(handoffState(), classifyCtx({
       turnCtx: { conversationId: 'conv-1', servedWork: null, root: null, address: contactAddress },
@@ -496,7 +496,7 @@ describe('3.5 the floors read the turn address', () => {
       origin: { kind: 'agent', sourceMessageId: null, turn: TURN, convKey: 'ck-1' },
     });
     const out = await runHandoffFloors(baseState({ loopCount: 3 }), classifyCtx({
-      turnCtx: { conversationId: 'conv-1', root: null, servedWork: { taskKind: 'reminder', taskId }, address: { kind: 'engine', deliveryChannel: 'imessage' } },
+      turnCtx: { conversationId: 'conv-1', root: null, servedWork: { taskKind: 'reminder', taskId }, address: { kind: 'engine', isOwner: true, boundChannel: 'imessage', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'imessage' } },
     } as unknown as Partial<PostCallClassifyContext>), emptyReply());
     const c = nextSteer(out.state.steerQueue)!.content;
     expect(c).toContain('it goes to the owner by iMessage');

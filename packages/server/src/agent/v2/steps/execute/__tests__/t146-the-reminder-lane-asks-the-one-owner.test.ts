@@ -113,11 +113,11 @@ describe('the reminder lane reads the turn address for where the reminder lands'
     ]));
   });
   it('an away owner: the written reply reaches them by iMessage', () => {
-    const t = refusalWith({ kind: 'engine', deliveryChannel: 'imessage' });
+    const t = refusalWith({ kind: 'engine', isOwner: true, boundChannel: 'imessage', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'imessage' });
     expect(t).toContain('delivers it to the owner by iMessage');
     expect(t).not.toContain('watching the dashboard');
   });
   it('an owner at the dashboard: by the dashboard chat', () => {
-    expect(refusalWith({ kind: 'engine', deliveryChannel: 'dashboard' })).toContain('delivers it to the owner by the dashboard chat');
+    expect(refusalWith({ kind: 'engine', isOwner: true, boundChannel: 'dashboard', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'dashboard' })).toContain('delivers it to the owner by the dashboard chat');
   });
 });

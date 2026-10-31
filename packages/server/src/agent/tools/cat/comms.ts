@@ -588,9 +588,9 @@ export const commsHandlers: ToolHandlerMap = {
         'iMessage bridge is currently disabled, so this message was NOT sent. ' +
         (sms.live
           ? `SMS IS live on this server (approved: ${describeSmsRecipients(sms)}) — send it with `
-            + (route ? `sms_send instead. Only if that fails too should you tell ${route.name} (${route.where}). ` : 'sms_send instead. Only if that fails too should you tell the user and answer in '
+            + (route ? `sms_send instead. If that fails too, ${route.where}. ` : 'sms_send instead. Only if that fails too should you tell the user and answer in '
             + 'the dashboard chat. ')
-          : (route ? `Tell ${route.name} that iMessage is turned off on this server: ${route.where}. ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +
+          : (route ? `${route.down} ` : 'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ')) +
         (bridgeStatus.enabled
           ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
           : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
@@ -668,7 +668,7 @@ export const commsHandlers: ToolHandlerMap = {
       const route = routedReplyWords(agentId);
       content =
         'iMessage delivery failed at the system level - neither the imsg CLI nor AppleScript could deliver. ' +
-        (route ? `Tell ${route.name} the message did not go through (${route.where}). ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +
+        (route ? `${route.failed} ` : 'Tell the user the message did not go through, and respond in the dashboard chat instead. ') +
         'The user can check System Settings - Privacy & Security - Automation to grant Messages access if AppleScript is the issue.';
       isError = true;
       auditLog(agentId, 'imessage_send', recipient, 'error', 'send returned false');

@@ -19,6 +19,7 @@ import { persistEngineSteer } from '../../engine-steer.js';
 // T53: both floors steer through the RC-19 door, which owns the enqueue, the row, the advance.
 import { steerFireCount } from '../../steer-queue.js';
 import { replyChannelWords } from '../../turn-address.js';
+import { liveAddress } from '../../turn-address-live.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { MAX_FLOOR_STEER_ATTEMPTS, recordFloorGhost } from '../../floor-ghost.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
@@ -77,7 +78,7 @@ export async function runHandoffFloors(
     if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
       const again = handoffAttempts === 1;
       // 3.5: name who is waiting and where the written reply lands, from the turn's address.
-      const addr = turnCtx.address;
+      const addr = liveAddress(turnCtx.address);
       const who = addr?.kind === 'person' ? addr.name : null;
       const waiter = who ?? 'the user';
       const routeNote = who
@@ -168,8 +169,9 @@ export async function runHandoffFloors(
         if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
           // 3.5: the written reply on a reminder turn reaches the owner by the channel the turn's
           // address says (their phone when away, else the dashboard), not always "this conversation".
-          const remRoute = turnCtx.address
-            ? `as your reply (it goes to the owner by ${replyChannelWords(turnCtx.address)}; do NOT call imessage_send or any send tool)`
+          const liveAddr = liveAddress(turnCtx.address);
+          const remRoute = liveAddr
+            ? `as your reply (it goes to the owner by ${replyChannelWords(liveAddr)}; do NOT call imessage_send or any send tool)`
             : `directly in this conversation (do NOT call imessage_send or any send tool; the engine routes your reply)`;
           const steer = remAttempts === 1
             ? (

@@ -47,6 +47,7 @@ import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFiredAtLoop } from '../../steer-queue.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { deliveryLabel } from '../../turn-address.js';
+import { liveAddress } from '../../turn-address-live.js';
 
 const logger = createLogger('v2-loop');
 
@@ -61,7 +62,7 @@ export const START_ACK_STEER_TEXT =
  * With no person on the other end (or no address) it is the generic text above, unchanged.
  */
 export function startAckSteerText(turnCtx: TurnContext): string {
-  const addr = turnCtx.address;
+  const addr = liveAddress(turnCtx.address);
   if (!addr || addr.kind !== 'person') return START_ACK_STEER_TEXT;
   return `[Engine hint: ${addr.name} has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it (it reaches them by ${deliveryLabel(addr.deliveryChannel)}), then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]`;
 }
@@ -74,7 +75,7 @@ const START_ACK_REMINDER_TEXT =
 
 /** 3.5: the reminder names who is still waiting (the generic text when no person is). */
 function startAckReminderText(turnCtx: TurnContext): string {
-  const addr = turnCtx.address;
+  const addr = liveAddress(turnCtx.address);
   return addr?.kind === 'person' ? START_ACK_REMINDER_TEXT.replace('the user has', `${addr.name} has`) : START_ACK_REMINDER_TEXT;
 }
 

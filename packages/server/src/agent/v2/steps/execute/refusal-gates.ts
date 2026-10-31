@@ -25,6 +25,7 @@ import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyChannelWords, userWords } from '../../turn-address.js';
+import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
 import { A2A_SEND_CAP_PER_RECIPIENT } from './tool-sets.js';
 import type { ToolCall } from '@dojo/shared';
@@ -83,7 +84,7 @@ export function runRefusalGates(
           name: tc.name,
           content:
             `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
-            `Reminders are delivered to the owner: write it as your reply (the engine delivers it to the owner by ${replyChannelWords(turnCtx.address)}), ` +
+            `Reminders are delivered to the owner: write it as your reply (the engine delivers it to the owner by ${replyChannelWords(liveAddress(turnCtx.address))}), ` +
             `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
             `repeat the exact same send and it will go through.`,
           isError: true,
