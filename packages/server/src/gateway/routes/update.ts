@@ -3,7 +3,7 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
-import { exec, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,7 +28,8 @@ import {
 } from '../../update/disk-preflight.js';
 import { homeDir } from '../../home.js';
 
-const execAsync = promisify(exec);
+// No shell anywhere: every command is a program plus an argument array.
+const execFileAsync = promisify(execFile);
 
 // ── t114 (CENSUS U14) — THE UPDATE'S LONG LEGS ARE BOUNDED BY SILENCE ──
 //
@@ -210,7 +211,7 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
       // recursive deletes on large trees (node_modules has tens of
       // thousands of small files). Empty timeout - we want this to take
       // however long it needs; the caller controls flow via fire-and-forget.
-      await execAsync(`rm -rf "${b.path}"`, { timeout: 0 });
+      await execFileAsync('rm', ['-rf', b.path], { timeout: 0 });
       return b.name;
     }),
   );
@@ -806,10 +807,10 @@ async function downloadAndInstall(o: {
     const verdict = await verifyArtifactAgainstManifest(zipPath, await fetchArtifactManifest(o.manifestUrl));
     if (verdict.outcome === 'refused') return { ok: false, message: `REFUSED — ${verdict.reason}. ${kept}`, status: 502 };
 
-    // `-q`: `unzip -o` prints one line per file, and `execAsync` keeps everything a command
+    // `-q`: `unzip -o` prints one line per file, and `execFileAsync` keeps everything a command
     // prints in a buffer of about 1 MiB — a release tree long enough overflows it and fails an
     // unpack that went fine. Quiet, there is nothing per file to hold.
-    await execAsync(`unzip -q -o "${zipPath}" -d "${work}"`, { timeout: 60000 });
+    await execFileAsync('unzip', ['-q', '-o', zipPath, '-d', work], { timeout: 60000 });
     // The zip is dojo-platform/{platform,scripts,...}; only platform/ is the installed tree.
     const staged = path.join(work, 'dojo-platform', 'platform');
     if (!fs.existsSync(path.join(staged, 'package.json'))) {

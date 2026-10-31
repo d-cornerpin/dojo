@@ -26,14 +26,14 @@ const dojo = path.join(home, '.dojo');
 const platform = path.join(dojo, 'platform');
 
 /** Every `exec` command the code under test tried to run. */
-const { execCmds } = vi.hoisted(() => ({ execCmds: [] as string[] }));
+const { execCmds } = vi.hoisted(() => ({ execCmds: [] as string[][] }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>();
   // Records the command string, then calls back success — that callback is what the
   // promisified helper awaits, so nothing real is spawned or shell-executed.
   const exec = (...a: unknown[]): void => {
-    execCmds.push(String(a[0]));
+    execCmds.push([String(a[0]), ...(Array.isArray(a[1]) ? (a[1] as string[]) : [])]);
     const cb = a[a.length - 1] as (err: null, ...out: string[]) => void;
     queueMicrotask(() => cb(null, '', ''));
   };
@@ -42,7 +42,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     process.nextTick(() => child.emit('close', 0, null));
     return child;
   };
-  return { ...orig, default: { ...orig, exec, spawn }, exec, spawn };
+  return { ...orig, default: { ...orig, execFile: exec, spawn }, execFile: exec, spawn };
 });
 
 function cleanDojo(): void {
@@ -73,12 +73,11 @@ describe('the-update-unzip-prints-nothing', () => {
   it('the release is unpacked with `unzip -q -o`: no per-file line to overflow the exec buffer', async () => {
     const { applyUpdate } = await import('../../gateway/routes/update.js');
     await applyUpdate('stable');
-    const unpack = execCmds.find(c => c.includes('unzip'));
-    expect(unpack, 'the update unpacks the release with `unzip` through exec').toBeDefined();
-    // The flags between the program name and the zip path; the paths stay quoted untouched.
-    const head = unpack!.slice(0, unpack!.indexOf('"')).trim().split(/\s+/);
-    expect(head[0]).toBe('unzip');
-    expect(head.slice(1)).toContain('-q');
-    expect(head.slice(1)).toContain('-o');
+    const unpack = execCmds.find(c => c[0] === 'unzip');
+    expect(unpack, 'the update unpacks the release with `unzip` as a program and an argument array').toBeDefined();
+    expect(unpack!.slice(1)).toContain('-q');
+    expect(unpack!.slice(1)).toContain('-o');
+    // No shell line: the program is a bare name and every path is its own element.
+    expect(unpack!.every(a => !a.includes('"'))).toBe(true);
   }, 60_000);
 });
