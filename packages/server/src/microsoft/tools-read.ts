@@ -822,7 +822,9 @@ export async function executeMicrosoftReadTool(
     case 'outlook_inbox': {
       const maxResults = (args.max_results as number) ?? 10;
       const unreadOnly = args.unread_only === true;
-      const filter = unreadOnly ? "&$filter=isRead eq false" : '';
+      // Graph requires every $orderby property to appear in $filter first (HTTP 400
+      // InefficientFilter otherwise); the date test is simply "any date".
+      const filter = unreadOnly ? "&$filter=receivedDateTime ge 1900-01-01T00:00:00Z and isRead eq false" : '';
       const result = await msGraphRead(
         `me/mailFolders/inbox/messages?$top=${maxResults}${filter}&$orderby=receivedDateTime desc&$select=id,conversationId,from,subject,receivedDateTime,bodyPreview,isRead`,
         agentId, agentName, 'outlook_inbox', { maxResults, unreadOnly }, slot,
