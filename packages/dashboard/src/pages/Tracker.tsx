@@ -16,7 +16,7 @@ import { ModalShell } from '../components/ModalShell';
 
 // ── Task Detail Slide-Out Panel ──
 
-const TaskDetailPanel = ({
+export const TaskDetailPanel = ({
   task,
   agents,
   allTasks,
@@ -29,6 +29,7 @@ const TaskDetailPanel = ({
   onClose: () => void;
   onUpdate: () => void;
 }) => {
+  const toast = useToast();
   const [status, setStatus] = useState(task.status);
   const [priority, setPriority] = useState(task.priority);
   const [assignedTo, setAssignedTo] = useState(task.assignedTo || '');
@@ -55,13 +56,16 @@ const TaskDetailPanel = ({
     return () => { cancelled = true; };
   }, [task.id, task.updatedAt]);
 
-  const handleFieldUpdate = async (updates: Record<string, string | null | undefined>) => {
+  const handleFieldUpdate = async (updates: Record<string, string | null | undefined>): Promise<boolean> => {
     setSaving(true);
     const result = await api.updateTask(task.id, updates);
     if (result.ok) {
       onUpdate();
+    } else {
+      toast.error(result.error ?? 'The change could not be saved.');
     }
     setSaving(false);
+    return result.ok;
   };
 
   const handleAddNote = async () => {
@@ -77,6 +81,8 @@ const TaskDetailPanel = ({
       const logRes = await api.getTaskLog(task.id, { limit: 50 });
       if (logRes.ok) setLogEntries(logRes.data);
       onUpdate();
+    } else {
+      toast.error(result.error ?? 'That did not go through.');
     }
     setSaving(false);
   };
@@ -161,10 +167,12 @@ const TaskDetailPanel = ({
             <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Status</h3>
             <select
               value={status}
-              onChange={(e) => {
+              onChange={async (e) => {
+                const prevStatus = status;
                 const newStatus = e.target.value;
                 setStatus(newStatus as Task['status']);
-                handleFieldUpdate({ status: newStatus });
+                const ok = await handleFieldUpdate({ status: newStatus });
+                if (!ok) setStatus(prevStatus);
               }}
               disabled={saving}
               className="glass-select w-full"
@@ -196,6 +204,8 @@ const TaskDetailPanel = ({
                       const res = await api.userValidateTask(task.id);
                       if (res.ok) {
                         onUpdate();
+                      } else {
+                        toast.error(res.error ?? 'That did not go through.');
                       }
                       setSaving(false);
                     }}
@@ -217,10 +227,12 @@ const TaskDetailPanel = ({
             <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Priority</h3>
             <select
               value={priority}
-              onChange={(e) => {
+              onChange={async (e) => {
+                const prevPriority = priority;
                 const newPriority = e.target.value;
                 setPriority(newPriority as Task['priority']);
-                handleFieldUpdate({ priority: newPriority });
+                const ok = await handleFieldUpdate({ priority: newPriority });
+                if (!ok) setPriority(prevPriority);
               }}
               disabled={saving}
               className={`glass-select w-full ${priorityColors[priority] || ''}`}
@@ -236,10 +248,12 @@ const TaskDetailPanel = ({
             <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Assigned Agent</h3>
             <select
               value={assignedTo}
-              onChange={(e) => {
+              onChange={async (e) => {
+                const prevAgent = assignedTo;
                 const newAgent = e.target.value;
                 setAssignedTo(newAgent);
-                handleFieldUpdate({ assignedTo: newAgent || null });
+                const ok = await handleFieldUpdate({ assignedTo: newAgent || null });
+                if (!ok) setAssignedTo(prevAgent);
               }}
               disabled={saving}
               className="glass-select w-full"
