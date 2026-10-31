@@ -55,12 +55,17 @@ export const TechniqueDetail = () => {
   const navigate = useNavigate();
   const [technique, setTechnique] = useState<TechniqueData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
   const load = async () => {
     if (!id) return;
     const data = await api(`/${id}`);
     if (data.ok) setTechnique(data.data);
+    // The envelope carries no status (shared/src/api.ts), so the server's own
+    // words are the only not-found signal; any other failure is NOT "missing".
+    else if (!data.error.includes('not found')) setLoadError(data.error);
     setLoading(false);
   };
 
@@ -70,6 +75,18 @@ export const TechniqueDetail = () => {
     return <div className="stub"><p className="stub__line">Loading technique...</p></div>;
   }
   if (!technique) {
+    // A failed read that is not a not-found must not claim the technique is
+    // missing — same note the Techniques list draws for its own load failure.
+    if (loadError) {
+      return (
+        <div className="stub">
+          <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
+            Could not load this technique: {loadError}{' '}
+            <button type="button" className="btn btn--ghost" onClick={() => { void load(); }}>Retry</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="stub">
         <p className="stub__line" style={{ color: 'var(--dojo3-rust)' }}>Technique not found.</p>
@@ -92,17 +109,19 @@ export const TechniqueDetail = () => {
   ];
 
   const handlePublishToggle = async () => {
-    if (isPublished) {
-      await api(`/${id}`, { method: 'PUT', body: JSON.stringify({ state: 'draft' }) });
-    } else {
-      await api(`/${id}/publish`, { method: 'POST' });
-    }
+    setActionError(null);
+    const result = isPublished
+      ? await api(`/${id}`, { method: 'PUT', body: JSON.stringify({ state: 'draft' }) })
+      : await api(`/${id}/publish`, { method: 'POST' });
+    if (!result.ok) { setActionError(result.error); return; }
     load();
   };
 
   const handleDelete = async () => {
     if (!confirm('Delete this technique? This cannot be undone.')) return;
-    await api(`/${id}`, { method: 'DELETE' });
+    setActionError(null);
+    const result = await api(`/${id}`, { method: 'DELETE' });
+    if (!result.ok) { setActionError(result.error); return; }
     navigate('/techniques');
   };
 
@@ -142,6 +161,12 @@ export const TechniqueDetail = () => {
           </button>
         </div>
       </header>
+
+      {actionError && (
+        <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
+          {actionError}
+        </div>
+      )}
 
       {/* Tab strip — same .tabs pill rail as the rest of the redesign. */}
       <div className="toolbar">
