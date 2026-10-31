@@ -426,7 +426,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       // below still records the full blob (account, subject, provider message id).
       // INSERT OR IGNORE → insertMessageIfAbsent keeps the external_message_id
       // de-duplication exactly as it was.
-      insertInboundMessageIfAbsent({
+      const stored = insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',
@@ -437,33 +437,36 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         senderId: inboundMetaObj.sender,
         authorized: inboundMetaObj.authorized,
       });
-      recordInboundMeta(msgId, inboundMetaObj);
+      // 801: null = the row landed on a poll whose processed-list save was lost; the live frame is for a first sighting only, or the dashboard shows the same card twice.
+      if (stored !== null) {
+        recordInboundMeta(msgId, inboundMetaObj);
 
-      broadcast({
-        type: 'chat:message',
-        agentId: primaryId,
-        message: {
-          id: msgId,
+        broadcast({
+          type: 'chat:message',
           agentId: primaryId,
-          role: 'user' as const,
-          content,
-          // Carry the SAME structured inbound_meta into the live broadcast that
-          // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
-          // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
-          // Without it the live payload fell back to marker-parsing while
-          // refetch used inbound_meta, so a mailbox-notification's visibility
-          // could disagree between the live append and a page refresh.
-          // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
-          // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
-          conversationId,
-          inboundMeta: JSON.stringify(inboundMetaObj),
-          tokenCount: null,
-          modelId: null,
-          cost: null,
-          latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
+          message: {
+            id: msgId,
+            agentId: primaryId,
+            role: 'user' as const,
+            content,
+            // Carry the SAME structured inbound_meta into the live broadcast that
+            // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
+            // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
+            // Without it the live payload fell back to marker-parsing while
+            // refetch used inbound_meta, so a mailbox-notification's visibility
+            // could disagree between the live append and a page refresh.
+            // t106 — the same binding the insert used, on the wire too (R4 reads it live). Why:
+            // `services/__tests__/no-channel-inbound-frame-loses-its-conversation.test.ts`.
+            conversationId,
+            inboundMeta: JSON.stringify(inboundMetaObj),
+            tokenCount: null,
+            modelId: null,
+            cost: null,
+            latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
 
       notifiedIds.add(msg.id);
       persistNotifiedIds(nKey, notifiedIds);   // after each message, so a poll that throws later does not re-read it
