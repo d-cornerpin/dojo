@@ -70,9 +70,10 @@ vi.mock('../../../../gateway/ws.js', () => ({
 
 import { agentsHandlers } from '../agents.js';
 import { runMigrations } from '../../../../db/migrations.js';
+import { FX, FXID } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const SENDER = 'zargo';
-const TARGET = 'quilba';
+const SENDER = FXID.n4;
+const TARGET = FXID.n5;
 const GROUP = 'group-fictional-1';
 const THREAD = 'thread-fictional-1';
 
@@ -126,7 +127,7 @@ beforeEach(() => {
   db.prepare(
     `INSERT INTO agent_groups (id, name, created_by) VALUES (?, 'The Fictional Lane', ?)`,
   ).run(GROUP, SENDER);
-  for (const [id, name] of [[SENDER, 'Zargo'], [TARGET, 'Quilba'], ['tyndo', 'Tyndo']] as const) {
+  for (const [id, name] of [[SENDER, FX.n4], [TARGET, FX.n5], [FXID.n6, FX.n6]] as const) {
     db.prepare(
       `INSERT INTO agents (id, name, status, group_id, session_started_at)
        VALUES (?, ?, 'idle', ?, '1970-01-01')`,
@@ -161,7 +162,7 @@ describe('§1 a delivered peer hand-off writes its own receipt', () => {
       .toBe(SENDER);
     expect(row.recipient_id, 'the recipient is not the agent the work went to').toBe(TARGET);
     // The resolved display name, not the raw ref the model happened to type.
-    expect(row.recipient_display).toBe('Quilba');
+    expect(row.recipient_display).toBe(FX.n5);
   });
 
   it('the receipt and the ledger row are ONE send said twice, not two sends', async () => {
@@ -364,7 +365,7 @@ describe('§3 the group fan-out records every hop it actually made', () => {
     expect(rows.length, 'the fan-out recorded nothing, or folded N hops into one').toBe(2);
     expect(rows.every((r) => r.outcome === 'delivered')).toBe(true);
     expect(rows.every((r) => r.agent_id === SENDER)).toBe(true);
-    expect(rows.map((r) => r.recipient_id).sort()).toEqual([TARGET, 'tyndo'].sort());
+    expect(rows.map((r) => r.recipient_id).sort()).toEqual([TARGET, FXID.n6].sort());
   });
 
   it('one row per RECEIPT, one-for-one — the fan-out cannot drift between its two ledgers', async () => {
