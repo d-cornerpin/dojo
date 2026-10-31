@@ -196,13 +196,30 @@ function localEngineToSttModelKey(engine: LocalTranscriptionEngine): string {
   return engine === 'whisper' ? DEFAULT_WHISPER : 'moonshine-base';
 }
 
-// Detect whether a buffer is already a RIFF/WAVE PCM file we can hand
-// straight to the local engines. Saves a tmp ffmpeg round-trip for
-// the common case of agents uploading a WAV recording.
+// Detect whether a buffer is already a WAV in the exact shape the local engines read:
+// 16 kHz, mono, 16-bit PCM. Saves a tmp ffmpeg round-trip for that common case. Any other
+// WAV (44.1/48 kHz, stereo, 24-bit, float, damaged) must be converted: the engines would
+// either refuse it or read its samples at the wrong rate. The format chunk is found by
+// walking the RIFF chunks, since other chunks may sit before it.
 function isPcmWav(bytes: Buffer): boolean {
-  return bytes.length >= 12
-    && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
-    && bytes.subarray(8, 12).toString('ascii') === 'WAVE';
+  if (bytes.length < 12
+    || bytes.subarray(0, 4).toString('ascii') !== 'RIFF'
+    || bytes.subarray(8, 12).toString('ascii') !== 'WAVE') return false;
+  let pos = 12;
+  while (pos + 8 <= bytes.length) {
+    const id = bytes.subarray(pos, pos + 4).toString('ascii');
+    const size = bytes.readUInt32LE(pos + 4);
+    const body = pos + 8;
+    if (id === 'fmt ') {
+      if (body + 16 > bytes.length) return false;
+      return bytes.readUInt16LE(body) === 1
+        && bytes.readUInt16LE(body + 2) === 1
+        && bytes.readUInt32LE(body + 4) === 16000
+        && bytes.readUInt16LE(body + 14) === 16;
+    }
+    pos = body + size + (size % 2);
+  }
+  return false;
 }
 
 // Detect a video container by mime/extension. We strip the video track
