@@ -266,6 +266,14 @@ const STEPS_BY_PATH: Declaration[] = [
       + 'imports from here rather than growing its own copy.',
   },
   {
+    rel: 'packages/server/src/agent/v2/__tests__/route-text-inventory.ts',
+    verdict: 'step-aware',
+    why: 'DATA, NOT A WALK: the route-text inventory is a list of source lines, each tagged with the '
+      + 'file it lives in (many of them under `agent/v2/steps`). It reads no source and walks no '
+      + 'directory; the census test that consumes it does the reading, over every production file, '
+      + 'so a step package that moves is still scanned.',
+  },
+  {
     rel: 'packages/server/src/memory/__tests__/single-writer-conformance.test.ts',
     verdict: 'step-aware',
     why: 'IT MOVED FROM DRIVER_BY_PATH TO THIS LIST AT PHASE-6 CUT 9, AND THAT MOVE IS THE '
