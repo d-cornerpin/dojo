@@ -4,7 +4,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { createGroup, getGroups, getGroupDetail, updateGroup, deleteGroup, assignAgentToGroup, SYSTEM_GROUP_ID } from '../../agent/groups.js';
+import { createGroup, getGroups, getGroupDetail, updateGroup, findOtherGroupByName, deleteGroup, assignAgentToGroup, SYSTEM_GROUP_ID } from '../../agent/groups.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('routes:groups');
@@ -18,6 +18,8 @@ groupsRouter.post('/', async (c) => {
     description: z.string().optional(),
     color: z.string().optional(),
   }).parse(await c.req.json());
+
+  if (body.name.trim() === '') return c.json({ ok: false, error: 'A group needs a name.' }, 400);
 
   const group = createGroup(body.name, body.description ?? null, 'dashboard', body.color);
   return c.json({ ok: true, data: group }, 201);
@@ -45,6 +47,12 @@ groupsRouter.put('/:id', async (c) => {
     color: z.string().optional(),
     dreamerIgnore: z.boolean().optional(),
   }).parse(await c.req.json());
+
+  if (body.name !== undefined) {
+    body.name = body.name.trim();
+    if (body.name === '') return c.json({ ok: false, error: 'A group needs a name.' }, 400);
+    if (findOtherGroupByName(body.name, id)) return c.json({ ok: false, error: 'Another group already has that name.' }, 409);
+  }
 
   const updated = updateGroup(id, body);
   if (!updated) return c.json({ ok: false, error: 'Group not found' }, 404);

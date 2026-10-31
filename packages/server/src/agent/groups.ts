@@ -129,6 +129,12 @@ export function getGroupDetail(id: string): AgentGroupDetail | null {
   };
 }
 
+/** The id of a group other than `exceptId` that already has exactly this name, or null. */
+export function findOtherGroupByName(name: string, exceptId: string): string | null {
+  const row = getDb().prepare('SELECT id FROM agent_groups WHERE name = ? AND id != ?').get(name, exceptId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
 export function updateGroup(id: string, updates: { name?: string; description?: string; color?: string; dreamerIgnore?: boolean }): boolean {
   const db = getDb();
   const parts: string[] = ["updated_at = datetime('now')"];
