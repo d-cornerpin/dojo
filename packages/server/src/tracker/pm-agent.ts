@@ -58,7 +58,8 @@ import { effortDelta, advanceBaseline, EFFORT_REVIEW_DELTA_CALLS, pendingCirclin
 import { effortNoveltyLines } from './effort-ledger.js';
 import { taskLastMovedAt, agentIsLive } from './liveness.js';
 import { jobCarriedIds } from '../work/task-freshness.js';
-import { reportCirclingToOwner, reportEffortReviewStuckToOwner } from './pm-owner-report.js';
+import { reportCirclingToOwner } from './pm-owner-report.js';
+import { whyUnusable, failedVerdictsOnThisRequest, handFailedVerdict } from './effort-verdict-failures.js';
 import { unvalidatedBlockIssueText } from './block-review-facts.js';
 
 const logger = createLogger('pm-agent');
@@ -1290,49 +1291,6 @@ function parseEffortVerdict(text: string | null | undefined): { advancing: boole
  * is no longer one of these cases (t123): a direct model call turns nothing and races nothing,
  * so the whole class of reviews lost to the busy-deferral is gone rather than merely rarer.
  */
-/** What was wrong with a reply that `parseEffortVerdict` could not use, in a sentence the PM can act on. */
-function whyUnusable(text: string | null | undefined): string {
-  if (!text || !text.trim()) return 'the reply was empty';
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return 'the reply was not a JSON object';
-  try {
-    const p = JSON.parse(match[0]) as Record<string, unknown>;
-    const missing = [
-      typeof p.advancing === 'boolean' ? null : '"advancing" (true or false)',
-      typeof p.reason === 'string' ? null : '"reason" (text)',
-      typeof p.task_id === 'string' ? null : '"task_id" (text)',
-    ].filter((m): m is string => m !== null);
-    return `the JSON object was missing or had the wrong type for ${missing.join(', ')}`;
-  } catch {
-    return 'the reply was not a valid JSON object';
-  }
-}
-
-/** The reason of the last failed verdict on this request (failures since it was filed), and how many in a row. */
-function failedVerdictsOnThisRequest(taskId: string): { count: number; lastReason: string | null } {
-  const rows = getDb().prepare(
-    `SELECT json_extract(payload, '$.reason') AS reason FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'effort_review_failed'
-        AND id > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'audit'
-                             AND json_extract(payload, '$.entry_kind') = 'effort_review_requested'), 0)
-      ORDER BY id DESC`,
-  ).all(taskId, taskId) as Array<{ reason: string | null }>;
-  return { count: rows.length, lastReason: rows[0]?.reason ?? null };
-}
-
-/**
- * A verdict that could not be used is a fact about THIS request: record it with its reason (the next
- * ask carries it). The second one in a row on the same request is not asked a third time: the owner
- * is told through the PM's own chat line, and the request is closed the way a verdict closes it.
- */
-function handFailedVerdict(taskId: string, title: string, assignedTo: string | null, reason: string): void {
-  writeTaskLog({ taskId, fromEntity: 'pm', entryKind: 'effort_review_failed', reason });
-  const { count } = failedVerdictsOnThisRequest(taskId);
-  if (count < 2) return;
-  reportEffortReviewStuckToOwner(taskId, title, assignedTo, reason);
-  advanceBaseline(taskId);
-}
-
 /** Reviews in flight, keyed by task id. See `runEffortReview`'s guard for why this exists. */
 const effortReviewsInFlight = new Set<string>();
 
@@ -2965,90 +2923,5 @@ export function buildPokeMessage(
   }
 }
 
-// ── Dependency Checker ──
-
-export function checkDependencies(completedTaskId: string): void {
-  const db = getDb();
-
-  // Find tasks that depend on the completed task
-  const dependentTasks = db.prepare(`
-    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
-           w.agent_id AS assigned_to, w.depends_on AS depends_on,
-           w.scheduled_start AS scheduled_start, w.next_run_at AS next_run_at
-    FROM work w
-    WHERE ${taskScope('w')} AND w.state IN ('on_deck', 'blocked')
-      AND w.depends_on LIKE ?
-  `).all(`%${completedTaskId}%`) as Array<{
-    id: string;
-    title: string;
-    status: string;
-    assigned_to: string | null;
-    depends_on: string;
-    scheduled_start: number | null;
-    next_run_at: number | null;
-  }>;
-
-  for (const row of dependentTasks) {
-    let dependsOn: string[];
-    try {
-      dependsOn = JSON.parse(row.depends_on) as string[];
-    } catch {
-      continue;
-    }
-
-    // Check if this task actually depends on the completed task
-    if (!dependsOn.includes(completedTaskId)) continue;
-
-    // Check if ALL dependencies are now complete
-    const allDepsComplete = dependsOn.every(depId => {
-      const depTask = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status FROM work WHERE id = ?`).get(depId) as { status: string } | undefined;
-      return depTask?.status === 'complete';
-    });
-
-    if (allDepsComplete) {
-      // A dependency validating makes the task ELIGIBLE; it does not start it ahead of its own schedule.
-      // A task with a start still in the future waits on deck and the scheduler fires it then (it was only
-      // skipping it for the unmet dependency). v2.8.x rule for the rest: tasks without a future schedule
-      // land in 'in_progress' so they stay visible; 'on_deck' is reserved for scheduled-for-later.
-      const nowMs = Date.now();
-      const startsLater = (row.scheduled_start ?? 0) > nowMs || (row.next_run_at ?? 0) > nowMs;
-      if (startsLater) {
-        if (row.status !== 'on_deck') {
-          noteUnsettled(setTrackerStatus(row.id, 'on_deck', {
-            by: 'pm', actorId: getPMAgentId(),
-            reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)}); it waits for its own scheduled start`,
-          }), 'pm: dependencies cleared, task waits for its scheduled start', { taskId: row.id });
-        }
-      } else {
-        noteUnsettled(setTrackerStatus(row.id, 'in_progress', {
-          by: 'pm', actorId: getPMAgentId(),
-          reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
-        }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
-      }
-
-      logger.info('Task unblocked by dependency completion', {
-        taskId: row.id,
-        taskTitle: row.title,
-        completedDep: completedTaskId,
-      });
-
-      // Notify primary agent or the assigned agent
-      const recipient = row.assigned_to ?? getPrimaryAgentId();
-      const task = getTask(row.id);
-
-      if (task) {
-        const message = `Task "${task.title}" (${task.id}) is now unblocked. All dependencies are complete.`
-          + (startsLater ? ` It starts at its own scheduled time (${task.scheduledStart ?? 'later'}), not before.` : '') + '\n\n' +
-          `Priority: ${task.priority}\n` +
-          (task.description ? `Description: ${task.description}\n` : '') +
-          `Previously blocked on: ${dependsOn.join(', ')}`;
-
-        sendAgentMessage(getPMAgentId(), recipient, 'status', message, {
-          taskId: task.id,
-          event: 'unblocked',
-          completedDependency: completedTaskId,
-        });
-      }
-    }
-  }
-}
+// ── Dependency Checker ── (moved to `dependencies.ts`; re-exported so every caller keeps its import)
+export { checkDependencies } from './dependencies.js';
