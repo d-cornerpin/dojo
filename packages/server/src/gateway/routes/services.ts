@@ -373,7 +373,14 @@ servicesRouter.post('/tunnel/disable', (c) => {
 // POST /tunnel/token — save named tunnel token (and optionally the public URL)
 servicesRouter.post('/tunnel/token', async (c) => {
   const body = await c.req.json().catch(() => null);
-  if (!body?.token) return c.json({ ok: false, error: 'Token is required' }, 400);
+  if (typeof body?.token !== 'string' || body.token.trim() === '') {
+    return c.json({ ok: false, error: 'Token is required' }, 400);
+  }
+  // setNamedTunnelUrl trims, so a non-string url would throw AFTER the token is
+  // saved — check it before any write instead. null/undefined clear it.
+  if (body.url !== undefined && body.url !== null && typeof body.url !== 'string') {
+    return c.json({ ok: false, error: 'url must be text' }, 400);
+  }
   setTunnelToken(body.token);
   // v2.5.6 — same payload can carry the public URL the user configured in
   // Cloudflare's Published Application Routes. Optional. null/empty clears it.
@@ -384,6 +391,11 @@ servicesRouter.post('/tunnel/token', async (c) => {
 // POST /tunnel/named-url — set just the named-tunnel URL (no token change)
 servicesRouter.post('/tunnel/named-url', async (c) => {
   const body = await c.req.json().catch(() => null);
+  // setNamedTunnelUrl trims, so a non-string url would throw — check it first.
+  // null/undefined still clear it.
+  if (body?.url !== undefined && body?.url !== null && typeof body?.url !== 'string') {
+    return c.json({ ok: false, error: 'url must be text' }, 400);
+  }
   setNamedTunnelUrl(body?.url ?? null);
   return c.json({ ok: true, data: getTunnelStatus() });
 });
