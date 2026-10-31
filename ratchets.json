@@ -9530,6 +9530,13 @@
       "to": 311,
       "by": "3.5 who-am-i-sending-to fix round 1 (lane t281), 2026-10-31",
       "why": "+1: one argument: whether this agent's written reply is auto-routed at all (isPrimaryAgent). From here this file may only shrink."
+    },
+    {
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2136,
+      "to": 2138,
+      "by": "3.5 who-am-i-sending-to (lane t281), minors, 2026-10-31",
+      "why": "+2: the turn-scoped iMessage recipient is now read from the turn's address (one record of who the turn talks to) instead of a second bag field, which is deleted from turn-context.ts. From here this file may only shrink."
     }
   ],
   "maxNewFileLines": 400,
@@ -9791,7 +9798,7 @@
     "packages/server/src/services/generation-jobs.ts": 464,
     "packages/server/src/services/gmail-watcher.ts": 595,
     "packages/server/src/services/image-generation.ts": 474,
-    "packages/server/src/services/imessage-bridge.ts": 2136,
+    "packages/server/src/services/imessage-bridge.ts": 2138,
     "packages/server/src/services/local-standard.ts": 317,
     "packages/server/src/services/num-ctx-calculator.ts": 536,
     "packages/server/src/services/ollama-lock.ts": 467,
