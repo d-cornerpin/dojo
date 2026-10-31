@@ -58,7 +58,7 @@ export function stagePackageCopy(source: string, dojoDir: string): { work: strin
 
 export function discardWorkDir(work: string): void { fs.rmSync(work, { recursive: true, force: true }); }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
@@ -107,25 +107,17 @@ export function treeVersion(dir: string): string | null {
 
 // THE COPY MUST NOT OUTLIVE US. `cp -R` on a node_modules takes minutes, and a kill that
 // lands inside one used to reparent the child: it kept writing into the staging tree while
-// the NEXT start's clean-up deleted that same tree under it — the delete failed once, and
-// the folder then stayed beside a live install forever. So the copy runs in a process group
-// of its own (`detached: true`), and when this process ends the GROUP is killed with it —
-// the same discipline `agent/effects/proc-tree.ts` keeps for toolbox children (that helper's
-// agent-stop machinery has no place here, so this path holds its own two lines). A group
-// kill takes every grandchild too; an un-named child would leave any of them behind.
-// `unref()` is deliberately NOT called — it is precisely the "keep running when we die"
-// flag this fixes — and there is no timer: a copy that stops because it is over is settled
-// below, and the `exit` hook is the only killer. SIGKILL because at process exit there is
-// nothing left to escalate from.
+// the NEXT start's clean-up deleted that same tree under it. So the copy stays in OUR process
+// group (NOT `detached`): launchd ends an overrunning job with a SIGKILL to its whole group,
+// and no `exit` hook runs on a SIGKILL, so group membership is what takes the copy down with
+// the server. The `exit` hook covers the ordinary exit. `cp` has no grandchildren, so killing
+// the child is complete. `unref()` is deliberately NOT called, and there is no timer.
 function copyTree(argv: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('cp', argv, { detached: true });
-    const killGroup = (): void => {
-      if (child.pid === undefined) return;
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group already went with it */ }
-    };
-    process.once('exit', killGroup);
-    const settled = (fn: () => void): void => { process.off('exit', killGroup); fn(); };
+    const child = spawn('cp', argv);
+    const killChild = (): void => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+    process.once('exit', killChild);
+    const settled = (fn: () => void): void => { process.off('exit', killChild); fn(); };
     let stderr = '';
     child.stderr?.setEncoding('utf-8');
     child.stderr?.on('data', (chunk: string) => { stderr += chunk; });

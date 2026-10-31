@@ -12,8 +12,10 @@
 // Tested here: the clean-up removes every leftover it finds on EVERY start (case 1); an item it
 // could not remove gets its own log line and is simply retried at the next start (case 2); the
 // live platform folder and the update record itself are never touched (case 1, again); and the
-// copy child starts inside a process group that is killed when the server ends, so the orphan
-// that started the whole chain cannot exist (case 3).
+// copy child stays in the server's own process group (NOT detached) and is killed when the server
+// exits, so launchd's group kill on stop takes it too and the orphan cannot exist (case 3); and
+// a temp file whose writer is still alive (the watchdog records transitions at boot) is never
+// swept (case 4).
 //
 // The install root is a throwaway temporary folder of fake paths — never the real install.
 // ════════════════════════════════════════════════════════════════════════════════
@@ -39,6 +41,9 @@ vi.mock('../../../logger.js', () => {
 // expects on the parent's `exit` hook is a number it can name.
 const cpMocks = vi.hoisted(() => ({ spawn: vi.fn(), execFile: vi.fn(), exec: vi.fn() }));
 const FAKE_CP_PID = 41111;
+// A pid no process can have (above any real pid limit): its writer is certainly dead.
+const DEAD_PID = 2147483646;
+const childKills: string[] = [];
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>();
   return {
@@ -53,6 +58,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 function fakeCopyChild(): EventEmitter {
   const child = new EventEmitter() as EventEmitter & { pid: number; stdout: PassThrough; stderr: PassThrough };
   child.pid = FAKE_CP_PID;
+  (child as unknown as { kill: (sig: string) => boolean }).kill = (sig: string) => { childKills.push(sig); return true; };
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   setImmediate(() => child.emit('close', 0, null));
@@ -74,6 +80,7 @@ function makeBox(tag: string): string {
 
 beforeEach(() => {
   logLines.length = 0;
+  childKills.length = 0;
   cpMocks.spawn.mockReset().mockImplementation(() => fakeCopyChild());
   cpMocks.execFile.mockReset().mockImplementation((...args: unknown[]) => {
     const cb = args[args.length - 1] as (err: unknown, stdout?: string, stderr?: string) => void;
@@ -94,8 +101,8 @@ describe('a killed update leaves nothing behind', () => {
     fs.writeFileSync(path.join(dojo, 'platform.staging-abc-1', 'partial-copy.txt'), 'half a node_modules');
     fs.mkdirSync(path.join(dojo, 'platform.staging-abc-2', 'node_modules'), { recursive: true });
     fs.writeFileSync(path.join(dojo, 'platform.staging-abc-2', 'node_modules', 'left.js'), '');
-    fs.writeFileSync(path.join(dojo, 'update-state.json.123.a.tmp'), '{ "phase": "pe');
-    fs.writeFileSync(path.join(dojo, 'update-state.json.456.b.tmp'), '{ "phase": "pe');
+    fs.writeFileSync(path.join(dojo, `update-state.json.${DEAD_PID}.a.tmp`), '{ "phase": "pe');
+    fs.writeFileSync(path.join(dojo, `update-state.json.${DEAD_PID}.b.tmp`), '{ "phase": "pe');
     fs.writeFileSync(path.join(dojo, 'update-state.json'), JSON.stringify({ phase: 'idle' }));
     fs.writeFileSync(path.join(dojo, 'update-state.json.lock'), String(process.pid));
     fs.mkdirSync(path.join(dojo, 'platform', 'node_modules'), { recursive: true });
@@ -106,8 +113,8 @@ describe('a killed update leaves nothing behind', () => {
     expect(res.failed).toEqual([]);
     expect(fs.existsSync(path.join(dojo, 'platform.staging-abc-1'))).toBe(false);
     expect(fs.existsSync(path.join(dojo, 'platform.staging-abc-2'))).toBe(false);
-    expect(fs.existsSync(path.join(dojo, 'update-state.json.123.a.tmp'))).toBe(false);
-    expect(fs.existsSync(path.join(dojo, 'update-state.json.456.b.tmp'))).toBe(false);
+    expect(fs.existsSync(path.join(dojo, `update-state.json.${DEAD_PID}.a.tmp`))).toBe(false);
+    expect(fs.existsSync(path.join(dojo, `update-state.json.${DEAD_PID}.b.tmp`))).toBe(false);
     // The record, its lock, and the live tree stay exactly as they were.
     expect(JSON.parse(fs.readFileSync(path.join(dojo, 'update-state.json'), 'utf8'))).toEqual({ phase: 'idle' });
     expect(fs.existsSync(path.join(dojo, 'update-state.json.lock'))).toBe(true);
@@ -148,7 +155,7 @@ describe('a killed update leaves nothing behind', () => {
     expect(second.failed).toEqual([]);
   });
 
-  it('starts the copy so that it dies with the server', async () => {
+  it('keeps the copy in the server\'s own process group and kills it when the server exits', async () => {
     const dojo = makeBox('child');
     const live = path.join(dojo, 'platform');
     fs.mkdirSync(path.join(live, 'node_modules', 'some-dep'), { recursive: true });
@@ -179,24 +186,32 @@ describe('a killed update leaves nothing behind', () => {
     });
     expect(res.ok).toBe(true);
 
-    // The copy ran as a child of its own process group, so a kill of the group takes it down.
+    // The copy is NOT detached: it stays in the server's process group, so launchd's group kill
+    // on stop takes it down even when no exit hook can run (SIGKILL).
     const copies = cpMocks.spawn.mock.calls.filter((c) => c[0] === 'cp');
     expect(copies.length).toBeGreaterThan(0);
     expect(copies[0][1]).toEqual(['-Rc', path.join(live, 'node_modules'), path.join(staged, 'node_modules')]);
-    expect(copies[0][2]).toEqual(expect.objectContaining({ detached: true }));
+    expect(copies[0][2]?.detached).not.toBe(true);
 
     // A child that already closed must not leave its hook behind.
     expect(process.listenerCount('exit')).toBe(exitBaseline);
     onceSpy.mockRestore();
 
-    // And the hook the parent registered while the copy ran kills the copy's whole GROUP —
-    // a negative pid is how a group is named — so the orphan can never outlive the server.
+    // And the hook the parent registered while the copy ran kills the copy child itself.
     expect(exitHooks.length).toBeGreaterThan(0);
-    // Assert BEFORE restoring: `mockRestore` clears the recorded calls along with the
-    // implementation, so a restore-first would blind the assertion below it.
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     for (const hook of exitHooks) hook();
-    expect(killSpy).toHaveBeenCalledWith(-FAKE_CP_PID, 'SIGKILL');
-    killSpy.mockRestore();
+    expect(childKills).toContain('SIGKILL');
+  });
+
+  it('never sweeps a record temp file whose writer is still alive (the watchdog writes at boot)', async () => {
+    const dojo = makeBox('live-writer');
+    const live = path.join(dojo, `update-state.json.${process.pid}.0.tmp`);
+    const dead = path.join(dojo, `update-state.json.${DEAD_PID}.0.tmp`);
+    fs.writeFileSync(live, '{ "phase": "pe');
+    fs.writeFileSync(dead, '{ "phase": "pe');
+    const res = await cleanUpdateLeftovers(dojo);
+    expect(res.failed).toEqual([]);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(dead)).toBe(false);
   });
 });

@@ -14,7 +14,7 @@ import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markBootingNew, readMarker } from '../../update-state.js';
 import { rollbackTargetPaths } from '../../update/rollback-target.js';
-import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkDirs, acquireSwapLock } from '../../update/install-tree.js';
+import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkDirs, acquireSwapLock, pidAlive } from '../../update/install-tree.js';
 // t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
 // never borrows the agent toolbox's capability facade (which would refuse it outright).
@@ -229,13 +229,13 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
 
 /** Temp files the marker writer leaves when a kill lands between its temp write and its
  *  rename (`update-state.ts`'s `tempPath`). The record itself and its `.lock` cannot match. */
-const UPDATE_STATE_TMP = /^update-state\.json\..+\.tmp$/;
+const UPDATE_STATE_TMP = /^update-state\.json\.(\d+)\.(?:.+\.)?tmp$/;
 
 /**
  * EVERY start, before anything else: remove the leftovers of an update that was killed
  * mid-flight — work dirs whose installer process is gone (a live installer's own staging is
  * never named here, `deadInstallWorkDirs` keeps that), and marker temp files stranded beside
- * `update-state.json`. A removal that fails (a straggler still writing into the tree is the
+ * `update-state.json` whose writer process is gone. A removal that fails (a straggler still writing into the tree is the
  * case that used to wedge this forever) gets one log line of its own and is simply tried
  * again at the next start — no retry loop, no timer: every start sweeps again anyway. The
  * live `platform` folder and the current `update-state.json` can never match either pattern.
@@ -243,7 +243,12 @@ const UPDATE_STATE_TMP = /^update-state\.json\..+\.tmp$/;
 export async function cleanUpdateLeftovers(dojoDir: string): Promise<{ deleted: string[]; failed: string[] }> {
   const leftovers = [...deadInstallWorkDirs(dojoDir)];
   let tmps: string[] = [];
-  try { tmps = fs.readdirSync(dojoDir).filter((n) => UPDATE_STATE_TMP.test(n)).map((n) => path.join(dojoDir, n)); } catch { /* nothing to name */ }
+  try { tmps = fs.readdirSync(dojoDir).filter((n) => {
+      // Only a temp file whose writer is dead: the watchdog records transitions at boot and
+      // must not lose its temp file between its write and its rename.
+      const m = UPDATE_STATE_TMP.exec(n);
+      return m !== null && !pidAlive(Number(m[1]));
+    }).map((n) => path.join(dojoDir, n)); } catch { /* nothing to name */ }
   leftovers.push(...tmps);
   const names = leftovers.map((p) => path.basename(p));
   const deleted: string[] = [];
