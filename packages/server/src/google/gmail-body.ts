@@ -44,44 +44,125 @@ function collectOwnLeaves(part: GmailBodyPart, out: GmailBodyPart[]): void {
   if (!part.filename && !part.body?.attachmentId && part.body?.data) out.push(part);
 }
 
-// The quote container's opening tag, as the mail program itself writes it: the same marker whatever language
-// the reply is in, so the cut needs no word lists (unlike the one in mail-quoted-text.ts).
-const QUOTE_MARKERS: RegExp[] = [
-  /class="gmail_quote/i,                      // Gmail (also matches gmail_quote_container)
-  /^<blockquote\b[^>]*\btype="cite"/i,        // Apple Mail, Thunderbird
-  /\bid="(?:divRplyFwdMsg|appendonsend)"/i,   // Outlook
-  /class="moz-cite-prefix"/i,                 // Thunderbird
-  /class="yahoo_quoted"/i,                    // Yahoo
-  /^<blockquote\b/i,                          // last resort: a quote block is a blockquote in every program
-];
+// ── Where the mail program put its quote ────────────────────────────────────────────────────────────────────────────
+// The mail program marks its quote in the html with language-free markup, so the cut needs no word lists (unlike the
+// one in mail-quoted-text.ts). The tags are read with an attribute-aware scan (a quoted value may hold `>`; values
+// may be double-quoted, single-quoted or bare; `class` is a list), never by matching text inside a raw tag.
+//   'wrap'   the element holds the whole quoted thread (Gmail, Yahoo, a blockquote): what follows its end is NOT quote.
+//   'header' only the "who wrote this" block: what follows may be the quoted thread itself, so nothing after it is
+//            trusted (except a blockquote that directly follows a Thunderbird citation line, which is its thread).
+interface HtmlTag { start: number; end: number; name: string; closing: boolean; selfClosing: boolean; attrs: Map<string, string> }
+type QuoteKind = 'wrap' | 'header';
 
-// The start of the first opening tag carrying one of the markers; -1 when the html carries none.
-function quoteContainerStart(html: string): number {
-  for (const m of html.matchAll(/<[a-z][^>]*>/gi)) {
-    if (QUOTE_MARKERS.some((re) => re.test(m[0]))) return m.index;
+const TAG = /<(\/?)([a-z][a-z0-9:-]*)((?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=`]+))?)*)\s*(\/?)>/gi;
+const ATTR = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>=`]+)))?/g;
+
+function scanTags(html: string): HtmlTag[] {
+  const tags: HtmlTag[] = [];
+  for (const m of html.matchAll(TAG)) {
+    const attrs = new Map<string, string>();
+    for (const a of m[3].matchAll(ATTR)) attrs.set(a[1].toLowerCase(), a[2] ?? a[3] ?? a[4] ?? '');
+    tags.push({ start: m.index, end: m.index + m[0].length, name: m[2].toLowerCase(), closing: m[1] === '/', selfClosing: m[4] === '/', attrs });
+  }
+  return tags;
+}
+
+function quoteKind(t: HtmlTag): QuoteKind | null {
+  if (t.closing) return null;
+  if (t.name === 'blockquote') return 'wrap';
+  const classes = (t.attrs.get('class') ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (classes.some((c) => c.startsWith('gmail_quote') || c === 'yahoo_quoted')) return 'wrap';
+  if (classes.includes('moz-cite-prefix')) return 'header';
+  const id = (t.attrs.get('id') ?? '').toLowerCase();
+  return id === 'divrplyfwdmsg' || id === 'appendonsend' ? 'header' : null;
+}
+
+/** The index just past the closing tag of the element opened by tags[i], or -1 when it never closes. */
+function elementEnd(tags: HtmlTag[], i: number): number {
+  if (tags[i].selfClosing) return tags[i].end;
+  let depth = 0;
+  for (let j = i; j < tags.length; j++) {
+    if (tags[j].name !== tags[i].name || tags[j].selfClosing) continue;
+    depth += tags[j].closing ? -1 : 1;
+    if (depth === 0) return tags[j].end;
   }
   return -1;
 }
 
-/** P44: the text the sender wrote in the message's own body part — the first text/plain, else the first text/html with its
- *  tags stripped — and never the text of an attached or forwarded-as-attachment message. '' when there is none.
- *  A reply from a mail program in another language quotes under a header line the word-list cut does not know, so when the
- *  html part carries a quote container the mail program itself wrote, the owner's text is cut there. The direction of
- *  error is one-way: this only ever makes the owner's words shorter, never adds — with no marker in the html the result
- *  is exactly as before, and a marker that leaves nothing above the quote gives '' rather than a fallback to the plain
- *  part, which carries the quote. */
+// A marker word anywhere in the html that no scanned tag carries (broken or odd markup) means the quote was not found.
+const MARKER_WORD = /gmail_quote|moz-cite-prefix|yahoo_quoted|divRplyFwdMsg|appendonsend|<blockquote/i;
+
+type HtmlSplit =
+  | { found: false; unreadable: boolean }
+  | { found: true; head: string; tail: string | null };
+
+/** The html above the first quote marker, and the html after the quote ends (null when that cannot be told). */
+function splitAtQuote(html: string): HtmlSplit {
+  const tags = scanTags(html);
+  const i = tags.findIndex((t) => quoteKind(t) !== null);
+  if (i < 0) return { found: false, unreadable: MARKER_WORD.test(html) };
+  let end = elementEnd(tags, i);
+  if (quoteKind(tags[i]) === 'header') {
+    // Only a Thunderbird citation line directly followed by its blockquote has a known end.
+    const next = tags.findIndex((t) => t.start >= (end < 0 ? Infinity : end));
+    const direct = end >= 0 && next >= 0 && tags[next].name === 'blockquote' && !tags[next].closing && html.slice(end, tags[next].start).trim() === '';
+    end = direct && (tags[i].attrs.get('class') ?? '').toLowerCase().includes('moz-cite-prefix') ? elementEnd(tags, next) : -1;
+  }
+  const tail = end < 0 ? null : html.slice(end);
+  // Another quote below the first means interleaved replies: where the owner's words end is a guess.
+  const more = end >= 0 && tags.some((t) => t.start >= end && quoteKind(t) !== null);
+  return { found: true, head: html.slice(0, tags[i].start), tail: more ? null : tail };
+}
+
+// The same text compared across the plain and html renderings: entities decoded, every whitespace run one space.
+const ENTITY = /&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos|nbsp));/gi;
+const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+function normalise(text: string): string {
+  return text
+    .replace(ENTITY, (_m, dec, hex, name) => (name ? NAMED[name.toLowerCase()] : String.fromCodePoint(dec ? Number(dec) : parseInt(hex, 16))))
+    .replace(/\s+/g, ' ').trim();
+}
+
+/** Plain text, bottom-posted: an optional single attribution line, a `>` quote block, then the owner's words. The text
+ *  below the block, or null when the shape is anything else (words above the quote, words between quoted runs). */
+function plainBottomPost(plain: string): string | null {
+  const lines = plain.split(/\r?\n/);
+  const isQuote = (l: string): boolean => l.trimStart().startsWith('>');
+  const first = lines.findIndex(isQuote);
+  if (first < 0) return null;
+  const last = lines.length - 1 - [...lines].reverse().findIndex(isQuote);
+  if (lines.slice(0, first).filter((l) => l.trim() !== '').length > 1) return null;
+  if (lines.slice(first, last + 1).some((l) => l.trim() !== '' && !isQuote(l))) return null;
+  const tail = lines.slice(last + 1).join('\n').trim();
+  return tail === '' ? null : tail;
+}
+
+/** P44: the text the sender newly wrote in the message's own body part, and never the text of an attached or
+ *  forwarded-as-attachment message. '' when there is none.
+ *  When the html carries a quote container the mail program itself wrote, the owner's text is cut there: what is above
+ *  it, or (a bottom-posted reply, nothing above) what is below the quoted block when the block's end is known. The result
+ *  is accepted only when it is also present in the plain part, the part the owner reads (compared after normalising
+ *  whitespace and entities); otherwise the plain part is returned and the caller's English cut applies. A quote the scan
+ *  could not read gives '' (the owner door refuses empty words), never a fall back to text that carries the quote. */
 export function extractOwnGmailText(payload: GmailBodyPart | null | undefined): string {
   if (!payload) return '';
   const leaves: GmailBodyPart[] = [];
   collectOwnLeaves(payload, leaves);
   const type = (p: GmailBodyPart) => (p.mimeType ?? '').toLowerCase();
   const htmlPart = leaves.find((p) => type(p) === 'text/html');
+  const plainPart = leaves.find((p) => type(p) === 'text/plain');
   const html = htmlPart ? decode(htmlPart.body!.data!) : '';
+  const plain = plainPart ? decode(plainPart.body!.data!) : null;
   if (htmlPart) {
-    const cut = quoteContainerStart(html);
-    if (cut >= 0) return stripHtmlTags(html.slice(0, cut)); // '' = the owner wrote nothing new above the quote.
+    const split = splitAtQuote(html);
+    if (split.found || split.unreadable) {
+      if (!split.found) return '';
+      let own = stripHtmlTags(split.head);
+      if (own === '' && split.tail !== null) own = stripHtmlTags(split.tail);
+      if (plain === null || normalise(plain).includes(normalise(own))) return own;
+      return plain;
+    }
   }
-  const plain = leaves.find((p) => type(p) === 'text/plain');
-  if (plain) return decode(plain.body!.data!);
+  if (plain !== null) return plainBottomPost(plain) ?? plain;
   return htmlPart ? stripHtmlTags(html) : '';
 }
