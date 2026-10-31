@@ -18,7 +18,7 @@ const handlers = {
     let content = '';
     let isError = false;
     if (!isPlaudConnected()) {
-      content = 'Plaud is not connected. Ask the user to connect Plaud from Settings → Integrations → Plaud.';
+      content = 'Plaud is not connected. Ask the owner to connect Plaud from Settings → Integrations → Plaud.';
       isError = true;
       return { content, isError };
     }

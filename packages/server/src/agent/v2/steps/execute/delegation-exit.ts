@@ -18,6 +18,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
+import { userWords, replyChannelWords } from '../../turn-address.js';
 import { createLogger } from '../../../../logger.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { ExecuteContext } from './index.js';
@@ -160,7 +161,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
       // any "fix" would be the engine reading the model's sentence and judging its content,
       // which is the standing prose-classification ban. Recorded, not forgotten.
       const exitSteer =
-        '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';
+        `[Engine hint: you delegated work on ${userWords(ctx.turnCtx.address)}'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, as your reply (it goes to ${userWords(ctx.turnCtx.address)} by ${replyChannelWords(ctx.turnCtx.address)}): if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]`;
       // HL3: the RC-19 door — this exit bypasses every turn-ending floor, so nothing else
       // on the turn records that the status line was asked for.
       state = persistEngineSteer(state, { agentId, content: exitSteer, turnNumber, floor: 'delegation-exit', atLoop: state.loopCount }, { broadcast });

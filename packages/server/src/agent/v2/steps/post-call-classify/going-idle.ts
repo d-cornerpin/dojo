@@ -24,6 +24,7 @@ import { STATE_TO_STATUS_SQL, taskScope } from '../../../../work/tracker-view.js
 import { advance, type AgentTurnState } from '../../state.js';
 import { enqueueSteer, steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
+import { userWords } from '../../turn-address.js';
 import { argsForResult } from './args-for-result.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import { continueTheJob } from './job-continues.js';
@@ -77,8 +78,8 @@ export async function runGoingIdle(
             `[System: you just added a note to "${titleShort}" (${nudgedTaskId.slice(0, 8)}) but did not say what comes next. ` +
             `That task is STILL in_progress. If you have more work to do on it, KEEP GOING - call your next tool now, do not end the turn. ` +
             `If you are genuinely waiting on something (user input, an external response, a scheduled time), say so explicitly: ` +
-            `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling the user what you are waiting for. ` +
-            `Silently going idle after a work_note leaves the user with no idea what is happening.]`
+            `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling ${userWords(turnCtx.address)} what you are waiting for. ` +
+            `Silently going idle after a work_note leaves ${userWords(turnCtx.address)} with no idea what is happening.]`
           );
           // RC-19: via persistEngineSteer so the nudge reaches the model
           // (the steer queue) AND keeps its dashboard row. The prior bare

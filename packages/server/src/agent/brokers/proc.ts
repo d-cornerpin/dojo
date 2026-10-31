@@ -127,7 +127,7 @@ function sensitiveReadDeny(reason: string, basis: 'ladder-parity' | 'bypass-hard
     basis,
     'exec-sensitive-read',
     reason,
-    `[BLOCKED] exec refused: ${reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,
+    `[BLOCKED] exec refused: ${reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the person you are talking to, those values live in process memory only, not in agent context.`,
   );
 }
 
@@ -305,7 +305,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
       'ladder-parity',
       'exec-sensitive-read',
       scan.reason,
-      `[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`,
+      `[BLOCKED] exec refused: ${scan.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the person you are talking to, those values live in process memory only, not in agent context.`,
     );
   }
 

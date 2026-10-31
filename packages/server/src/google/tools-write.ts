@@ -1638,7 +1638,7 @@ export async function executeGoogleWriteTool(
       const uploadOwnerNote = data?.id
         ? await shareCreatedFileWithOwner(data.id, kind, slot, resolved.account.email, agentId, agentName)
         : '';
-      const uploadTrailer = uploadLink ? '\n\nGive the user this link so they can open the file.' : '';
+      const uploadTrailer = uploadLink ? '\n\nGive the person you are talking to this link so they can open the file.' : '';
       return `File uploaded to Drive${data?.name ? `: ${data.name}` : ''}${data?.id ? ` (ID: ${data.id})` : ''}${uploadLink ? `\nLink: ${uploadLink}` : ''}${uploadOwnerNote}${uploadTrailer}`;
     }
 
@@ -1652,7 +1652,7 @@ export async function executeGoogleWriteTool(
       if (!folder.ok) return `Error creating folder: ${folder.error}`;
       const folderUrl = `https://drive.google.com/drive/folders/${folder.id}`;
       const folderOwnerNote = await shareCreatedFileWithOwner(folder.id, kind, slot, resolved.account.email, agentId, agentName);
-      return `Folder "${folderName}" ready (ID: ${folder.id})\nLink: ${folderUrl}${folderOwnerNote}\n\nGive the user this link so they can open the folder.`;
+      return `Folder "${folderName}" ready (ID: ${folder.id})\nLink: ${folderUrl}${folderOwnerNote}\n\nGive the person you are talking to this link so they can open the folder.`;
     }
 
     case 'drive_share': {
@@ -1828,7 +1828,7 @@ export async function executeGoogleWriteTool(
       const docOwnerNote = docId
         ? await shareCreatedFileWithOwner(docId, kind, slot, resolved.account.email, agentId, agentName)
         : '';
-      const docTrailer = docLink ? '\n\nGive the user this link so they can open the doc.' : '';
+      const docTrailer = docLink ? '\n\nGive the person you are talking to this link so they can open the doc.' : '';
       return `Google Doc "${title}" created${docId ? ` (ID: ${docId})` : ''}${docLink ? `\nLink: ${docLink}` : ''}${docOwnerNote}${docTrailer}`;
     }
 
@@ -1919,7 +1919,7 @@ export async function executeGoogleWriteTool(
       const sheetOwnerNote = sheetId
         ? await shareCreatedFileWithOwner(sheetId, kind, slot, resolved.account.email, agentId, agentName)
         : '';
-      const sheetTrailer = sheetLink ? '\n\nGive the user this link so they can open the sheet.' : '';
+      const sheetTrailer = sheetLink ? '\n\nGive the person you are talking to this link so they can open the sheet.' : '';
       return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetHeaderNote}${sheetOwnerNote}${sheetTrailer}`;
     }
 

@@ -103,6 +103,7 @@ import { submitVideoJob } from '../../../services/video-generation.js';
 import type { ToolHandler, ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
 import { turnContext } from '../../turn-context.js';
+import { userWords, currentAddress } from '../../v2/turn-address.js';
 import { outsideSpan } from '../../../tools/external-content.js';
 
 const handlers = {
@@ -137,7 +138,7 @@ const handlers = {
       content =
         `No image-generation model is configured. ` +
         `Go to Settings → Dojo → Image Generation Model and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
-        `Tell the user image generation is unavailable until this is configured, do not retry.`;
+        `Tell ${userWords(currentAddress(agentId))} image generation is unavailable until this is configured, do not retry.`;
       isError = true;
       return { content, isError };
     }
@@ -538,7 +539,7 @@ const handlers = {
       const callerCaps = callerModel?.model_id ? getModelCapabilities(callerModel.model_id) : [];
       if (callerCaps.length > 0 && !callerCaps.includes('vision')) {
         visionTail =
-          `\n\nNote: your current model does NOT support image input. The image will be delivered to the user as an attachment and the user will see it; you will NOT see it. ` +
+          `\n\nNote: your current model does NOT support image input. The image will be delivered to ${userWords(currentAddress(agentId))} as an attachment and ${userWords(currentAddress(agentId))} will see it; you will NOT see it. ` +
           `Acknowledge delivery with a short message ("here's the image you asked for" or similar) but do NOT describe what is "in" the image as if you can see it, anything you write about its visual contents will be a hallucination.`;
       }
     } catch { /* skip tail on lookup failure */ }
@@ -582,8 +583,8 @@ const handlers = {
       : getEffectiveAudioGenModel();
     if (!modelChoice) {
       content = isMusic
-        ? `No music-generation model is configured. Go to Settings → Models → Music Generation Model and pick a music-capable model (e.g. Google Lyria). Tell the user music generation is unavailable until this is configured, do not retry.`
-        : `No audio-generation model is configured. Go to Settings → Models → Audio Generation Model and pick an audio-capable model. Tell the user audio generation is unavailable until this is configured, do not retry.`;
+        ? `No music-generation model is configured. Go to Settings → Models → Music Generation Model and pick a music-capable model (e.g. Google Lyria). Tell ${userWords(currentAddress(agentId))} music generation is unavailable until this is configured, do not retry.`
+        : `No audio-generation model is configured. Go to Settings → Models → Audio Generation Model and pick an audio-capable model. Tell ${userWords(currentAddress(agentId))} audio generation is unavailable until this is configured, do not retry.`;
       isError = true;
       return { content, isError };
     }
@@ -641,7 +642,7 @@ const handlers = {
       content =
         `No video-generation model is configured. ` +
         `Go to Settings → Models → Video Generation Model and pick a video-capable model. ` +
-        `Tell the user video generation is unavailable until this is configured, do not retry.`;
+        `Tell ${userWords(currentAddress(agentId))} video generation is unavailable until this is configured, do not retry.`;
       isError = true;
       return { content, isError };
     }
@@ -704,7 +705,7 @@ const handlers = {
       auditLog(agentId, 'video_create', null, 'error', submit.error);
       content =
         `Video generation could not be started: ${submit.error}\n\n` +
-        `Tell the user briefly that the video couldn't be started. Do not retry automatically.`;
+        `Tell ${userWords(currentAddress(agentId))} briefly that the video couldn't be started. Do not retry automatically.`;
       isError = true;
       return { content, isError };
     }
@@ -898,7 +899,7 @@ const handlers = {
     if (result.text.length > 0) {
       content =
         `Transcription of "${filename}" (engine: ${result.apiModelId}).\n` +
-        `If you paste the transcript to the user, paste it verbatim INSIDE a fenced \`\`\`source/transcript ... \`\`\` block. Do not paraphrase the words unless the user asks for a summary.\n\n` +
+        `If you paste the transcript to ${userWords(currentAddress(agentId))}, paste it verbatim INSIDE a fenced \`\`\`source/transcript ... \`\`\` block. Do not paraphrase the words unless ${userWords(currentAddress(agentId))} asks for a summary.\n\n` +
         `\`\`\`source/transcript\n${outsideSpan(result.text)}\n\`\`\``;   // v3.5 K33: only the words are outside text
     } else {
       content = `Transcription of "${filename}" (engine: ${result.apiModelId}): no detectable speech.`;
