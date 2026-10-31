@@ -145,3 +145,33 @@ describe('a safe-sender save that changes who the owner is', () => {
     expect((await put(k, { value: withOwner('me@x.test'), base: v1 })).status).toBe(200);
   });
 });
+
+// Review fix 1: "who is the owner" is judged by the ONE reader (parseSafeSenders), on both sides. A box whose
+// stored list is a bare-address list, or has no star but the legacy default-sender key names an entry, saves
+// normally when the dashboard writes that same owner back with its star.
+describe('the owner check uses the same reader as everything else', () => {
+  const k = 'imessage_approved_senders';
+  const setRaw = (key: string, v: string) => mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)").run(key, v);
+
+  it('a bare-address list saves when the dashboard writes its first entry back starred', async () => {
+    const bare = JSON.stringify(['+15550001', '+15550002']);
+    setRaw(k, bare);
+    const res = await put(k, { value: withOwner('+15550001', '+15550002'), base: bare, ownerChange: false });
+    expect(res.status).toBe(200);
+  });
+  it('an unstarred list whose legacy key names the second entry saves with that entry starred', async () => {
+    const raw = withOwner(null, '+15550001', '+15550002');
+    setRaw(k, raw);
+    setRaw('imessage_default_sender', '+15550002');
+    const body = JSON.stringify([
+      { address: '+15550001', name: '+15550001', is_primary: false, sharing_level: 'dont_overshare' },
+      { address: '+15550002', name: '+15550002', is_primary: true, sharing_level: 'open_book' },
+    ]);
+    expect((await put(k, { value: body, base: raw, ownerChange: false })).status).toBe(200);
+  });
+  it('moving the star off the bare list\'s first entry still needs the flag', async () => {
+    const bare = JSON.stringify(['+15550001', '+15550002']);
+    setRaw(k, bare);
+    expect((await put(k, { value: withOwner('+15550002', '+15550001'), base: bare })).status).toBe(409);
+  });
+});

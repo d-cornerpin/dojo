@@ -2379,14 +2379,11 @@ configRouter.put('/settings/:key', async (c) => {
     }
     // Who the OWNER is changes only on purpose: a save that adds, moves or removes the starred entry must
     // say so (`ownerChange: true`). Deleting a row, or any other edit, never moves the star as a side effect.
-    const owners = (raw: string | null): string => {
-      try {
-        const list = JSON.parse(raw || '[]');
-        return (Array.isArray(list) ? list : [])
-          .filter((e) => e && typeof e === 'object' && (e as { is_primary?: unknown }).is_primary === true)
-          .map((e) => String((e as { address?: unknown }).address ?? '').trim().toLowerCase()).sort().join('|');
-      } catch { return ''; }
-    };
+    // Judged by the ONE reader every other part of the platform uses, on both sides - so a bare-address list,
+    // or an unstarred list whose legacy default-sender key names an entry, has the owner it is read as having.
+    const { parseSafeSenders } = await import('../../services/safe-senders.js');
+    const owners = (raw: string | null): string =>
+      parseSafeSenders(raw).filter((e) => e.is_primary).map((e) => e.address.trim().toLowerCase()).sort().join('|');
     if (owners(body.value) !== owners(stored) && body.ownerChange !== true) {
       return c.json({ ok: false, error: 'This change would add, move or remove the owner entry. Change the owner on purpose (star the entry, or confirm removing it) and save again.' }, 409);
     }
