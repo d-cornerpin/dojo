@@ -31,5 +31,8 @@ export const engineRoleOf = (agentId: string): EngineRole | null => {
   return null;
 };
 
+/** The configured id of a role, or null when it is not known (never a guess). */
+export const engineRoleId = (role: EngineRole): string | null => known?.[role] ?? null;
+
 /** For tests: forget what was read. */
 export const resetEngineRoleIds = (): void => { known = null; inflight = null; };

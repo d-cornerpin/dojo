@@ -1817,7 +1817,7 @@ export interface DreamReport {
 export interface DreamingConfig {
   modelId: string | null;
   dreamTime: string;
-  dreamMode: 'full' | 'light' | 'off';
+  dreamMode: 'full' | 'light';
 }
 
 export const getVaultEntries = async (params?: {

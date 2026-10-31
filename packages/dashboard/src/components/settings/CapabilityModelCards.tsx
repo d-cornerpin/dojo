@@ -8,10 +8,11 @@
 // bytes are this header, the imports below and the `export` keyword(s).
 
 import { useGuardedLoad } from '../../lib/load-guard';
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import type { Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
+import { engineRoleId, loadEngineRoleIds } from '../../lib/engine-role-ids';
 import { formatDate } from '../../lib/dates';
 import { SummaryCheckNotice } from './SummaryCheckNotice';
 
@@ -401,6 +402,8 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
   const primaryProviderName = config.primaryProviderName ?? null;
   const healerProviderName = config.healerProviderName ?? null;
   const toast = useToast();
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
     api.getHealerDiagnostic().then((diagResult) => {
@@ -429,20 +432,16 @@ const HealerEditor = ({ models, config, refresh }: { models: Model[]; config: He
     setRunning(true);
     const result = await api.triggerHealerRun();
     if (result.ok) {
-      // Poll until the Healer finishes, matched BY CONFIGURED ID and never by display name (2026-09-26 owner rule).
+      // Wait until the Healer finishes, matched BY CONFIGURED ID (never a name or a guess). No count: it
+      // follows the Healer's own status until it is not working, or the card goes away.
       if (result.data.llmTriggered) {
-        const healerAgentId = await api.getSetting('healer_agent_id').then(r => (r.ok && r.data.value ? r.data.value : 'healer'));
-        const pollForCompletion = async () => {
-          for (let i = 0; i < 60; i++) { // Poll for up to 5 minutes
-            await new Promise(r => setTimeout(r, 5000));
-            const agents = await api.getAgents();
-            if (agents.ok) {
-              const healer = agents.data.find((a: { id: string; status: string }) => a.id === healerAgentId && a.status === 'working');
-              if (!healer) break; // the Healer finished or was terminated
-            }
-          }
-        };
-        await pollForCompletion();
+        await loadEngineRoleIds();
+        const healerAgentId = engineRoleId('healer');
+        while (healerAgentId && mounted.current) {
+          await new Promise(r => setTimeout(r, 5000));
+          const agents = await api.getAgents();
+          if (agents.ok && !agents.data.some((a: { id: string; status: string }) => a.id === healerAgentId && a.status === 'working')) break;
+        }
       }
       // Refresh diagnostic
       const diagResult = await api.getHealerDiagnostic();
