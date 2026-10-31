@@ -82,7 +82,7 @@ export const RouterTab = () => {
   const handleTest = async (prompt: string) => {
     const result = await api.testRouter(prompt);
     if (result.ok) return result.data;
-    return null;
+    return { error: result.error ?? 'The router test could not be run.' };
   };
 
   if (loading) return <div className="loading-state">Loading...</div>;

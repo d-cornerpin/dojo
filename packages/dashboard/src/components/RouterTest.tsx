@@ -9,7 +9,7 @@ interface RouterTestResult {
 }
 
 interface RouterTestProps {
-  onTest: (prompt: string) => Promise<RouterTestResult | null>;
+  onTest: (prompt: string) => Promise<RouterTestResult | { error: string }>;
 }
 
 export const RouterTest = ({ onTest }: RouterTestProps) => {
@@ -17,13 +17,22 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<RouterTestResult | null>(null);
 
+  const [error, setError] = useState<string | null>(null);
+
   const handleTest = async () => {
     if (!prompt.trim()) return;
     setTesting(true);
     setResult(null);
-    const res = await onTest(prompt.trim());
-    setResult(res);
-    setTesting(false);
+    setError(null);
+    try {
+      const res = await onTest(prompt.trim());
+      if ('error' in res) setError(res.error);
+      else setResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -48,6 +57,8 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
       >
         {testing ? 'Testing...' : 'Test'}
       </button>
+
+      {error && <p className="mt-3 text-xs text-cp-coral">Test failed: {error}</p>}
 
       {result && (
         <div className="mt-4 space-y-4">
