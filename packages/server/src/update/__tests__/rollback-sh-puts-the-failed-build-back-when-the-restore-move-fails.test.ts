@@ -4,7 +4,7 @@
 // unset-variable abort inside the error message when there had been no platform folder at all.
 // The REAL script runs against a scratch HOME with stub `launchctl` and `mv` (no real launchd).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -96,4 +96,100 @@ describe('rollback.sh when the move of the backup into place fails', () => {
     const v = JSON.parse(fs.readFileSync(path.join(dojo, 'platform', 'package.json'), 'utf-8')).version;
     expect(v).toBe('3.1.17');
   });
+});
+
+// Review FIXES 3, 4, 7 (rollback.sh): no nesting, no false "as it was", a launchctl failure is not
+// "Rolled back", and a TERM/INT/HUP does not leave the services unloaded.
+describe('rollback.sh edge cases found in review', () => {
+  const pkgVersion = (d: string): string | null => {
+    try { return JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf-8')).version; } catch { return null; }
+  };
+
+  it('a leftover platform.failed-<version>-<time> folder is never reused or nested into', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    makeBuild(path.join(dojo, 'platform.failed-3.1.18-20260101-000000'), '3.1.99-old-failure');
+    fs.writeFileSync(path.join(binDir, 'date'), '#!/bin/sh\ncase "$1" in +%Y%m%d-%H%M%S) echo 20260101-000000;; *) exec /bin/date "$@";; esac\n', { mode: 0o755 });
+    installFailingMv();
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(pkgVersion(path.join(dojo, 'platform'))).toBe('3.1.18');
+    expect(pkgVersion(path.join(dojo, 'platform.failed-3.1.18-20260101-000000'))).toBe('3.1.99-old-failure');
+    expect(fs.existsSync(path.join(dojo, 'platform', 'platform.failed-3.1.18-20260101-000000'))).toBe(false);
+    expect(out).toContain('Dojo is as it was');
+  });
+
+  it('a partial platform folder left by the failed restore is moved aside before the running build goes back', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nfor last; do :; done\nsrc="$1"\n' +
+      'case "$(basename "$src")" in platform.backup-*) case "$last" in */platform) mkdir -p "$last"; echo half > "$last/partial.txt"; exit 1;; esac;; esac\n' +
+      'exec /bin/mv "$@"\n', { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(pkgVersion(path.join(dojo, 'platform'))).toBe('3.1.18');
+    expect(fs.existsSync(path.join(dojo, 'platform', 'platform.failed-3.1.18'))).toBe(false);
+    expect(fs.readdirSync(dojo).some((f) => f.startsWith('platform.partial-'))).toBe(true);
+    expect(out).toContain('Dojo is as it was');
+  });
+
+  it('never says "as it was" when the build that came back has no package.json', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    // Both moves "work" but leave an empty folder: the running build is lost to the stub.
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nfor last; do :; done\ncase "$last" in */platform) mkdir -p "$last"; exit 0;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(out).not.toContain('Dojo is as it was');
+    expect(out).not.toContain('Rolled back');
+  });
+
+  it('a restore that "succeeds" into a folder that is not the expected build is not reported as rolled back', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    fs.writeFileSync(path.join(binDir, 'mv'),
+      '#!/bin/sh\nfor last; do :; done\nsrc="$1"\ncase "$(basename "$src")" in platform.backup-*) case "$last" in */platform) mkdir -p "$last"; exit 0;; esac;; esac\nexec /bin/mv "$@"\n', { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).toBe(1);
+    expect(out).not.toContain('Rolled back');
+  });
+
+  it('a failed launchctl load is not reported as "Rolled back"', () => {
+    makeBuild(path.join(dojo, 'platform'), '3.1.18');
+    makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+    fs.writeFileSync(path.join(binDir, 'launchctl'),
+      `#!/bin/sh\necho "$@" >> "${path.join(home, 'launchctl.log')}"\ncase "$1 $2" in "load "*watchdog*) exit 1;; esac\nexit 0\n`, { mode: 0o755 });
+    const { code, out } = run();
+    expect(code).not.toBe(0);
+    expect(out).not.toContain('Rolled back');
+    expect(out).toContain('watchdog');
+  });
+
+  for (const sig of ['TERM', 'INT', 'HUP'] as const) {
+    it(`SIG${sig} between stopping and starting reloads both services`, async () => {
+      makeBuild(path.join(dojo, 'platform'), '3.1.18');
+      makeBuild(path.join(dojo, 'platform.backup-3.1.17'), '3.1.17');
+      // The first mv blocks long enough for the signal to arrive.
+      fs.writeFileSync(path.join(binDir, 'mv'),
+        `#!/bin/sh\ntouch "${path.join(home, 'mv.started')}"\nsleep 2\nexec /bin/mv "$@"\n`, { mode: 0o755 });
+      const child = spawn('bash', [SCRIPT], {
+        env: { ...process.env, HOME: home, DOJO_HOME: home, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        stdio: 'ignore', detached: true,
+      });
+      const closed = new Promise<void>((resolve) => child.on('close', () => resolve()));
+      for (let i = 0; i < 250 && !fs.existsSync(path.join(home, 'mv.started')); i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(fs.existsSync(path.join(home, 'mv.started'))).toBe(true);
+      process.kill(child.pid!, `SIG${sig}`);
+      await closed;
+      const log = launchLog();
+      const loads = log.filter((l) => l.startsWith('load '));
+      expect(loads.some((l) => l.includes('com.dojo.platform.plist'))).toBe(true);
+      expect(loads.some((l) => l.includes('com.dojo.watchdog.plist'))).toBe(true);
+      expect(fs.existsSync(path.join(dojo, 'rollback.lock'))).toBe(false);
+    });
+  }
 });

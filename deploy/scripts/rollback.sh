@@ -50,7 +50,19 @@ if ! take_lock; then
     echo "ERROR: another install or rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
     exit 1
 fi
-trap '[ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"' EXIT
+# The EXIT trap also runs on TERM, INT and HUP (a person, a shutdown or a hang-up): if the services
+# were stopped and not yet started again, it starts them, so a signal never leaves Dojo and the
+# watchdog both unloaded. SIGKILL cannot be trapped; that gap is covered by `--heal`, which the
+# watchdog runs at the next login (it clears the dead lock and restores), not by this script.
+services_down=0
+on_exit() {
+    if [ "${services_down:-0}" = 1 ]; then reload_services; fi
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"
+}
+trap on_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 # A field of the update-state marker, read with sed (node may be what is broken).
 marker_field() {
@@ -199,6 +211,7 @@ echo "   Restoring $(basename "$newest_backup") — $selection_reason."
 echo "   Stopping services..."
 launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
 launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+services_down=1
 
 # 3. Set the current (failed) build aside for diagnosis, then move the backup
 #    into place. Moves (not copies) so the swap is fast and uses no extra disk;
@@ -208,12 +221,26 @@ failed_dir=""
 # Every step below leaves a platform folder in place or says plainly why not, and every exit path
 # loads BOTH services again on whatever folder is there (the watchdog is what notices and tells the
 # owner if that build will not run; with no folder it runs this script with --heal).
+# Returns 1 and names the service when a load fails.
 reload_services() {
-    launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
-    launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+    local rc=0 svc
+    services_down=0
+    for svc in platform watchdog; do
+        if ! launchctl load "$LAUNCH_DIR/com.dojo.$svc.plist" 2>/dev/null; then
+            echo "   The $svc service did not start (launchctl load failed for com.dojo.$svc.plist)."
+            rc=1
+        fi
+    done
+    return $rc
+}
+# A name that does not exist yet, so nothing is ever moved INTO an old folder.
+unique_path() {
+    local p="$1" n=1
+    while [ -e "$p" ]; do p="$1-$$-$n"; n=$((n + 1)); done
+    printf '%s' "$p"
 }
 if [ -d "$PLATFORM_DIR" ]; then
-    failed_dir="$DOJO_DIR/platform.failed-${cur_ver}-${ts}"
+    failed_dir="$(unique_path "$DOJO_DIR/platform.failed-${cur_ver}-${ts}")"
     echo "   Preserving current build -> $(basename "$failed_dir")"
     if ! mv "$PLATFORM_DIR" "$failed_dir"; then
         echo "ERROR: could not move the current platform aside; aborting before any data loss."
@@ -224,10 +251,24 @@ if [ -d "$PLATFORM_DIR" ]; then
 fi
 
 echo "   Restoring $target_ver..."
-if ! mv "$newest_backup" "$PLATFORM_DIR"; then
+# The restore counts only when the move worked AND the folder in place is the build we meant.
+if mv "$newest_backup" "$PLATFORM_DIR" && [ -f "$PLATFORM_DIR/package.json" ] \
+   && [ "$(tree_version "$PLATFORM_DIR")" = "$target_ver" ]; then
+    :
+else
     echo "ERROR: could not move the backup into place."
+    # A partial or wrong folder left at platform/ must not swallow the running build.
+    put_back_ok=1
+    if [ -e "$PLATFORM_DIR" ]; then
+        partial_dir="$(unique_path "$DOJO_DIR/platform.partial-${ts}")"
+        if mv "$PLATFORM_DIR" "$partial_dir"; then
+            echo "   A partly restored folder was set aside at $(basename "$partial_dir")."
+        else
+            put_back_ok=0
+        fi
+    fi
     if [ -n "${failed_dir:-}" ] && [ -d "${failed_dir:-}" ]; then
-        if mv "$failed_dir" "$PLATFORM_DIR"; then
+        if [ "$put_back_ok" = 1 ] && mv "$failed_dir" "$PLATFORM_DIR" && [ -f "$PLATFORM_DIR/package.json" ]; then
             echo "   The previous build was put back, so Dojo is as it was. The backup is still at $(basename "$newest_backup")."
         else
             echo "   The previous build could not be put back either. It is at:"
@@ -243,8 +284,10 @@ fi
 
 # 4. Restart.
 echo "   Starting services..."
-launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
-launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+if ! reload_services; then
+    echo "❌ The build was rolled back to $target_ver, but a service above did not start. Run the rollback again or restart Dojo from the menu bar."
+    exit 1
+fi
 
 echo "✅ Rolled back to $target_ver. The server is restarting."
 if [ -n "${failed_dir:-}" ]; then
