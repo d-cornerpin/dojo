@@ -888,6 +888,11 @@ const tableOfHandlers: ToolHandlerMap = {
   async "work_schedule:pause"({ agentId, args }) {
     let content = '';
     let isError = false;
+    // The dispatcher reaches this op when `action` is missing too (it must pick an op); a missing
+    // action must not quietly pause the owner's task, so ask instead of guessing.
+    if (typeof args.action !== 'string' || args.action.trim().toLowerCase() !== 'pause') {
+      return { content: 'Error: work_schedule needs action: "pause", "resume" or "resolve_missed". Nothing was changed.', isError: true };
+    }
     const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
     if (tpsErr) { content = tpsErr; isError = true; return { content, isError }; }
     if (args.mark_complete === true) await remeasureTask(agentId, closeTargetOf(agentId, args.task_id));

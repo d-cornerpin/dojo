@@ -84,7 +84,7 @@ export type WorkOp = (typeof WORK_OPS)[number];
 
 const WORK_OP_SET: ReadonlySet<string> = new Set<string>(WORK_OPS);
 
-/** True when a string is one of the 23 operation ids. */
+/** True when a string is one of the 24 operation ids. */
 export function isWorkOp(op: string): op is WorkOp {
   return WORK_OP_SET.has(op);
 }
@@ -224,6 +224,8 @@ export function workOperation(name: string | undefined | null, args?: Args): Wor
       // §7.2 mapping had to break: `tracker_resolve_missed_runs` already took a
       // parameter called `action`, whose value could be "pause").
       if (has(args, 'resolution')) return 'work_schedule:resolve_missed';
+      // No action at all also lands here (an op must be chosen); the handler refuses it
+      // rather than pausing, because pausing is the one choice that changes the task.
       return 'work_schedule:pause';
     }
   }

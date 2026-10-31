@@ -122,7 +122,7 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
     const id = taskIdFrom(await call('work_open:task', { measure: MEASURE, ...recurring }));
     seedDelivery();
     countMeasure.mockResolvedValueOnce({ ok: true, count: 9 });
-    const out = await call('work_schedule:pause', { task_id: id, mark_complete: true });
+    const out = await call('work_schedule:pause', { action: 'pause', task_id: id, mark_complete: true });
     expect(out.content).toMatch(/^Refused: work_schedule\(action="pause", mark_complete=true\) on a measured task\. .*still returns 9 messages/);
     expect(out.content).toContain('work_update(action="status", status="complete", remainder=');
     expect(out.isError).toBe(true);
@@ -135,7 +135,7 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
     const id = taskIdFrom(await call('work_open:task', { measure: MEASURE, ...recurring }));
     seedDelivery();
     countMeasure.mockResolvedValueOnce({ ok: true, count: 0 });
-    const out = await call('work_schedule:pause', { task_id: id, mark_complete: true });
+    const out = await call('work_schedule:pause', { action: 'pause', task_id: id, mark_complete: true });
     expect(out.content).not.toMatch(/Refused/);
     expect(out.content).toMatch(/\[FILED\]|marked complete/);   // the door's own close, as for any task
   });
@@ -143,7 +143,7 @@ describe('A4-I2: the schedule door and the project door hold the same rule', () 
   it('a plain pause (no mark_complete) never reads the measure', async () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 9 });
     const id = taskIdFrom(await call('work_open:task', { measure: MEASURE, ...recurring }));
-    expect((await call('work_schedule:pause', { task_id: id })).content).toMatch(/Schedule paused/);
+    expect((await call('work_schedule:pause', { action: 'pause', task_id: id })).content).toMatch(/Schedule paused/);
     expect(countMeasure).toHaveBeenCalledTimes(1);
   });
 
