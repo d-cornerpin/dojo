@@ -198,8 +198,8 @@ describe('P44 R1 — the owner\'s email, confirmed by the provider, is the owner
     expect(meta.authorized).toBe(true);
     expect(meta.ownerWords).toBe('Yes, close it.');
     expect(content).toContain('[OWNER EMAIL]');
-    expect(fenceRanges(content)).toEqual([]);
-    expect(content).toContain('Yes, close it.');
+    expect(fenceRanges(content)).toHaveLength(1);   // the subject only
+    expect(outside(content)).toContain('Yes, close it.');
     expect(content, 'quoted older text is not in the owner\'s words').not.toContain('I will close the task now');
   });
 

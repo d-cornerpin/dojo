@@ -99,9 +99,12 @@ export function mailNoticeContent(m: { provider: 'GMAIL' | 'OUTLOOK'; accountSuf
     return head + (group ? `[OWNER EMAIL] ${owner} sent an email that reached your mailbox ${m.account}. ${where}` : `[OWNER EMAIL] ${owner} emailed you (the agent) at ${m.account}. `) +
       `The mail provider confirmed it came from ${owner}'s own address, so what ${owner} wrote is ${owner}'s words, as if ${owner} had texted them. Earlier quoted text is left out; read the whole email with \`${m.toolHint}\` if you need it. It was sent ${sent}.\n\n` +
       (group ? decide : '') +
-      `Subject: ${m.subject}\nDate: ${m.date}\n` +
-      (words ? `${words}\n` : `${owner} added no words of their own (a forward with no comment, or a reply that only quotes). What the email carries is other people's text:\n` +
-        fenceExternal('email', `a new email in ${m.account}`, `Preview: ${m.snippet}`) + '\n') +
+      // The subject can carry other people's words (a "Fwd:" or "Re:" keeps the original sender's), so it is always inside the
+      // outside-text fence; only the owner's new body words are ever unfenced.
+      `Date: ${m.date}\n` +
+      (words ? fenceExternal('email', `the subject of an email in ${m.account}`, `Subject: ${m.subject}`) + `\n${words}\n`
+        : `${owner} added no words of their own (a forward with no comment, or a reply that only quotes). What the email carries is other people's text:\n` +
+          fenceExternal('email', `a new email in ${m.account}`, `Subject: ${m.subject}\nPreview: ${m.snippet}`) + '\n') +
       `Message ID: ${m.messageId}\n`;
   }
   // t141: no "surface it" steer — the EVENTS lane marks each notice NEW or HANDLED (OR-V333-SET 7).
