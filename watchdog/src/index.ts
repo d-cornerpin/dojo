@@ -30,6 +30,7 @@ import {
 } from './alert-ledger.js';
 import { diskFloorBytes, toGb } from './disk-floor.js';
 import { decideSwapHeal, interruptedUpdateText, claimInterruptedNotice } from './swap-heal.js';
+import { chooseOwnerRecipient, type ApprovedSender } from './owner-recipient.js';
 
 // ── Config ──
 
@@ -115,9 +116,7 @@ function clearCachedRecipient(): void {
 // (env override or the legacy default-sender) is used only if it matches an approved sender;
 // otherwise we fall back to the approved PRIMARY (the owner). If nothing is approved, return ''
 // (send nothing) rather than text an unvalidated recipient.
-const normAddr = (s: string): string => String(s ?? '').toLowerCase().replace(/[^a-z0-9@.]/g, '').replace(/^1(\d{10})$/, '$1');
 
-type ApprovedSender = { address: string; is_primary?: boolean };
 // Distinguish a live-read FAILURE (DB missing / locked / corrupted / query threw) from a SUCCESSFUL
 // read that returned an empty allowlist (owner approves nobody). FA-W2 needs this split: only the
 // failure path may fall back to the last-known-good cache; a successful-empty read is a deliberate
@@ -147,7 +146,8 @@ function getApprovedSenders(): ApprovedSendersRead {
     const parsed = JSON.parse(value);
     const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.senders) ? parsed.senders : []);
     const senders = arr
-      .map((s: unknown) => (typeof s === 'string' ? { address: s } : (s as ApprovedSender)))
+      // A bare-address list keeps its documented old meaning: the first entry is the owner.
+      .map((s: unknown, i: number) => (typeof s === 'string' ? { address: s, is_primary: i === 0 } : (s as ApprovedSender)))
       .filter((s: { address?: string }) => !!s.address) as ApprovedSender[];
     return { ok: true, senders };
   } catch {
@@ -193,9 +193,13 @@ function getImessageRecipient(): string {
         return row?.value ?? '';
       } catch { return ''; }
     })();
-  const resolved = (candidate && approved.some((s) => normAddr(s.address) === normAddr(candidate)))
-    ? candidate
-    : (approved.find((s) => s.is_primary) ?? approved[0]).address;
+  const resolved = chooseOwnerRecipient(approved, candidate);
+  if (!resolved) {
+    // No starred owner (the owner removed it on purpose): text nobody, and keep no stale recipient.
+    clearCachedRecipient();
+    log('warn', 'no owner is starred on the iMessage list; the watchdog will not text anyone');
+    return '';
+  }
 
   // Refresh the last-known-good cache on every successful resolution that yields a recipient. The
   // cache therefore only ever holds a validated, approved address.
