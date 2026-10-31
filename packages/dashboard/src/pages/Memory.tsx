@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Summary } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { VaultEntry, VaultStats as VaultStatsType } from '../lib/api';
@@ -42,6 +42,9 @@ export const Memory = () => {
   const [vaultSearch, setVaultSearchText] = useState('');
   const [dreaming, setDreaming] = useState(false);
   const [dreamReports, setDreamReports] = useState<api.DreamReport[]>([]);
+  // Always points at the latest loaders, so a dream finishing reloads with the search
+  // words and filter on screen now, not the ones from when the subscription was made.
+  const dreamRefresh = useRef<() => void>(() => {});
 
   // Action states
   const [compacting, setCompacting] = useState(false);
@@ -102,10 +105,7 @@ export const Memory = () => {
         // The briefing view will handle its own refresh
       }
     });
-    const unsubDream = subscribe('dream:complete', () => {
-      loadVault();
-      loadDreamReports();
-    });
+    const unsubDream = subscribe('dream:complete', () => { dreamRefresh.current(); });
     return () => {
       unsubCompaction();
       unsubBriefing();
@@ -133,6 +133,7 @@ export const Memory = () => {
     const result = await api.getDreamHistory(5);
     if (result.ok) setDreamReports(result.data);
   }, []);
+  dreamRefresh.current = () => { loadVault(); loadDreamReports(); };
 
   useEffect(() => {
     if (mainTab === 'vault') loadVault();
