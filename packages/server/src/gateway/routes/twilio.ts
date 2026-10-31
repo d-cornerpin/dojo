@@ -496,7 +496,8 @@ twilioRouter.delete('/safe-senders/voice/:address', (c) => {
 // ── Recent calls (basic call log surface, step 9 will expand) ──
 
 twilioRouter.get('/calls/recent', (c) => {
-  const limit = Math.max(1, Math.min(200, Number(c.req.query('limit') ?? 50)));
+  const rawLimit = Number(c.req.query('limit') ?? 50);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50;
   const rows = getDb().prepare(`
     SELECT id, call_sid, direction, from_number, to_number, status, handler,
            started_at, ended_at, duration_seconds, agent_id, transcript, ended_reason
