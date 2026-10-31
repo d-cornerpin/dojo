@@ -17,6 +17,7 @@ import { DojoTutorial } from '../components/DojoTutorial';
 // FENG-SHUI-THEME-SPEC.md. Primary-action button text IS themed (uses
 // var(--btn-primary-text) / var(--btn-success-text)).
 import { ImportWizard } from '../components/ImportWizard';
+import { LaunchButton } from '../components/SetupLaunchButton';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
@@ -1644,7 +1645,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
 
 // ── Google Workspace ──
 
-const WorkspaceStep = () => {
+export const WorkspaceStep = () => {
   const [connected, setConnected] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -1733,9 +1734,12 @@ const WorkspaceStep = () => {
       </button>
 
       {connecting && (
-        <p className="text-xs text-ui/25">
-          Complete the sign-in in the browser window that opened. This page will update automatically.
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-ui/25">
+            Complete the sign-in in the browser window that opened. This page will update automatically.
+          </p>
+          <button onClick={() => setConnecting(false)} className="btn btn--sm">Cancel</button>
+        </div>
       )}
 
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
@@ -1870,25 +1874,5 @@ const CompleteStep = () => {
       </p>
       {showTutorial && <DojoTutorial onClose={() => setShowTutorial(false)} />}
     </div>
-  );
-};
-
-// ── Launch ──
-
-const LaunchButton = () => {
-  const navigate = useNavigate();
-  const [launching, setLaunching] = useState(false);
-
-  const handleLaunch = async () => {
-    setLaunching(true);
-    await api.completeSetup();
-    navigate('/');
-  };
-
-  return (
-    <button onClick={handleLaunch} disabled={launching}
-      className="btn btn--primary disabled:opacity-30 disabled:cursor-not-allowed">
-      {launching ? 'Entering…' : 'Enter'}
-    </button>
   );
 };
