@@ -41,10 +41,17 @@ export const PlaudSettings = () => {
   const toast = useToast();
   const { subscribe } = useWebSocket();
   const loadedRef = useRef(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Only the newest status answer is applied: an older, slower one must not undo a newer one.
+  const loadSeq = useRef(0);
 
   const loadStatus = async () => {
+    const seq = ++loadSeq.current;
     const result = await api.getPlaudStatus();
+    if (seq !== loadSeq.current) return;
+    if (!result.ok) { setLoadError(result.error); return; }
     if (result.ok) {
+      setLoadError(null);
       setStatus(result.data);
       if (result.data.loginInProgress && result.data.loginUrl) {
         setAuthUrl(result.data.loginUrl);
@@ -109,7 +116,13 @@ export const PlaudSettings = () => {
   };
 
   const handleCancel = async () => {
-    await api.cancelPlaudConnect();
+    const result = await api.cancelPlaudConnect();
+    if (!result.ok) {
+      // The sign-in is still running on the box: keep showing it.
+      toast.error(`Cancel failed: ${result.error}`);
+      loadStatus();
+      return;
+    }
     setConnecting(false);
     setAuthUrl(null);
     toast.info('Plaud connect cancelled.');
@@ -132,7 +145,13 @@ export const PlaudSettings = () => {
     return (
       <div className="tile">
         <h3 className="scard__title">Plaud</h3>
-        <p className="text-xs text-ui/40 mt-2">Loading…</p>
+        {loadError ? (
+          <div className="mt-2 space-y-2">
+            <p className="text-xs text-ui/55">Could not load Plaud status: {loadError}</p>
+            <button onClick={loadStatus} className="px-3 py-2 glass-btn text-sm rounded-lg transition-colors">Retry</button>
+          </div>
+        ) : null}
+        {!loadError && <p className="text-xs text-ui/40 mt-2">Loading…</p>}
       </div>
     );
   }
