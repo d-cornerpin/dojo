@@ -18,7 +18,7 @@ import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChec
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { terminateAgent } from '../../agent/spawner.js';
 import { getDb, closeDb } from '../../db/connection.js';
-import { runMigrations } from '../../db/migrations.js';
+import { reopenDatabaseAfterImport } from '../../migration/after-import.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
 import { broadcast } from '../ws.js';
 import { createLogger } from '../../logger.js';
@@ -202,8 +202,8 @@ migrationRouter.post('/import', async (c) => {
     };
 
     const restartServices = async () => {
-      // Re-initialize database connection and run migrations
-      runMigrations();
+      // Re-initialize database connection, run migrations, and the one-time owner conversion
+      await reopenDatabaseAfterImport();
     };
 
     const { manifest, checks } = await performImport(tmpPath, password, stopServices, restartServices, currentAuth);
