@@ -1876,11 +1876,13 @@ async function sendIMessageWithAttachmentInner(
   // Preferred path: imsg (single bubble, caption rides the file).
   if (imsg) {
     try {
+      // The caption is cleaned like every other iMessage text; one that cleans to nothing sends the file bare.
+      const cleanCaption = caption ? sanitizeForIMessage(caption) : '';
       const args = ['send', '--to', recipient];
-      if (caption) args.push('--text', caption);
+      if (cleanCaption) args.push('--text', cleanCaption);
       args.push('--file', filePath, '--service', 'imessage');
       await runMessagesProgram(imsg, args, { timeout: 30000, agentId: opts.agentId });
-      logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(caption) });
+      logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(cleanCaption) });
       return 'sent';
     } catch (err) {
       const stopped = byTheStop(err);
