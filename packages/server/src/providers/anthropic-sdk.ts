@@ -4,6 +4,7 @@
 // We send system prompt + messages and get text back.
 // ════════════════════════════════════════
 
+import { isOfferedTool } from '../agent/text-tool-fallback.js';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { createSdkStopReasonTracker } from './sdk-stop-reason.js';
@@ -66,17 +67,17 @@ ${toolDescriptions}`;
 
 /**
  * Parse tool calls from the model's text response.
- * Looks for <tool_call> XML blocks.
+ * Looks for <tool_call> XML blocks; with `offeredNames`, only calls to those tools are taken.
  */
-export function parseToolCallsFromText(text: string): { cleanText: string; toolCalls: ParsedToolCall[] } {
+export function parseToolCallsFromText(text: string, offeredNames?: string[]): { cleanText: string; toolCalls: ParsedToolCall[] } {
   const toolCalls: ParsedToolCall[] = [];
   let cleanText = text;
-
+  const offered = offeredNames ? new Set(offeredNames) : null;
   const toolCallRegex = /<tool_call>\s*<name>([\s\S]*?)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_call>/g;
   let match;
-
   while ((match = toolCallRegex.exec(text)) !== null) {
     const name = match[1].trim();
+    if (offered && !isOfferedTool(offered, name)) continue;
     let args: Record<string, unknown> = {};
     try {
       args = JSON.parse(match[2].trim());
@@ -90,7 +91,6 @@ export function parseToolCallsFromText(text: string): { cleanText: string; toolC
       arguments: args,
     });
 
-    // Remove the tool call block from the clean text
     cleanText = cleanText.replace(match[0], '').trim();
   }
 
@@ -573,7 +573,7 @@ export async function callAnthropicViaSdk(params: {
   }
 
   // Parse tool calls from response text
-  const { cleanText, toolCalls } = parseToolCallsFromText(fullResponse);
+  const { cleanText, toolCalls } = parseToolCallsFromText(fullResponse, (tools ?? []).map(t => t.name));
 
   logger.info('Agent SDK call complete', {
     model: sdkModel,

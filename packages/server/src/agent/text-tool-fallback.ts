@@ -10,6 +10,13 @@ const logger = createLogger('text-tool-fallback');
 const TRIGGERS = ['<invoke name="', '<tool_call>', '<|tool_call>', '<function_call'];
 const FENCED = /```json\s*(\{[\s\S]*?\})\s*```/g;
 
+/** The one rule for both text-call paths: a call is taken only when its name was offered on this call. */
+export function isOfferedTool(offered: ReadonlySet<string>, name: string): boolean {
+  if (offered.has(name)) return true;
+  logger.debug('Text tool call skipped: not a tool this call offered', { tool: name });
+  return false;
+}
+
 export function extractTextToolCalls(
   fullText: string,
   offeredNames: Iterable<string>,
@@ -21,10 +28,7 @@ export function extractTextToolCalls(
     return { toolCalls, cleanText: fullText };
   }
   const pushIfOffered = (name: string, args: Record<string, unknown>): void => {
-    if (!offered.has(name)) {
-      logger.debug('Text tool call skipped: not a tool this call offered', { tool: name });
-      return;
-    }
+    if (!isOfferedTool(offered, name)) return;
     toolCalls.push({ id: `text_tool_${Date.now()}_${toolCalls.length}`, name, arguments: args });
   };
 

@@ -30,7 +30,8 @@ const assistant = (text: string, extra: Record<string, unknown> = {}, top: Recor
 const run = () => callAnthropicViaSdk({
   agentId: 'a1', apiModelId: 'claude-sonnet-4-5', systemPrompt: 's',
   messages: [{ role: 'user', content: 'go' }],
-});
+  tools: [{ name: 'file_read', description: 'd', input_schema: { type: 'object', properties: {} } }], // a call parses only for an offered tool
+} as never);
 
 beforeEach(() => {
   stream.messages = [];
