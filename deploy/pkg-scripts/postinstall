@@ -2,7 +2,8 @@
 # Post-install script for the .pkg installer
 # Opens a single Terminal window to run the install visibly
 
-INSTALL_TEMP="/tmp/dojo-install"
+INSTALL_TEMP="${DOJO_PKG_INSTALL_TEMP:-/tmp/dojo-install}"
+LAUNCHER="${DOJO_PKG_LAUNCHER:-/tmp/dojo-run-install.sh}"
 
 # Get the real user (not root)
 REAL_USER="${USER}"
@@ -13,23 +14,33 @@ fi
 # Make install script executable
 chmod +x "$INSTALL_TEMP/install.sh" 2>/dev/null
 
-# Write a launcher script that the user's Terminal will run
-cat > /tmp/dojo-run-install.sh << 'LAUNCHER'
+# Write a launcher script that the user's Terminal will run. The install folder is filled in
+# here and quoted (it can hold spaces under an override), so the launcher runs — and re-points
+# at — the same folder postinstall was told to use.
+INSTALL_TEMP_Q=$(printf '%q' "$INSTALL_TEMP")
+cat > "$LAUNCHER" << LAUNCHER
 #!/bin/bash
 clear
 echo ""
 echo "🥋 Agent D.O.J.O. — Installing..."
 echo ""
-cd /tmp/dojo-install && bash install.sh
+cd $INSTALL_TEMP_Q && bash install.sh
+status=\$?
 echo ""
+if [[ \$status -ne 0 ]]; then
+    echo "❌ The installation did not finish (see the message above). Your existing Dojo, if you had one, was not changed."
+    echo ""
+    echo "You can run it again later:  cd $INSTALL_TEMP_Q && bash install.sh"
+    exit \$status
+fi
 echo "✅ Installation complete. This window will close in 5 seconds..."
 sleep 5
 osascript -e 'tell application "Terminal" to close (every window whose name contains "dojo-run-install")' &
 exit 0
 LAUNCHER
-chmod +x /tmp/dojo-run-install.sh
+chmod +x "$LAUNCHER"
 
 # Open Terminal with the launcher (as the real user, single window)
-sudo -u "$REAL_USER" open -a Terminal /tmp/dojo-run-install.sh
+sudo -u "$REAL_USER" open -a Terminal "$LAUNCHER"
 
 exit 0
