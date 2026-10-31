@@ -377,10 +377,8 @@ export async function runPersistAssistant(
   // only (a dashboard turn already renders the files in its bubble above).
   if (queuedAttachments.length > 0 && counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
     try {
-      const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
-      for (const att of queuedAttachments as Array<{ path?: string }>) {
-        if (att.path) await sendIMessageWithAttachment(counterparty.senderId, att.path, '');
-      }
+      const { textFilesToRequester } = await import('../text-files-to-requester.js');
+      await textFilesToRequester(agentId, counterparty.senderId, queuedAttachments as Array<{ path?: string; filename?: string }>);
     } catch (err) {
       logger.warn('A-1: reply-attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
     }

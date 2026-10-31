@@ -335,10 +335,8 @@ export async function runNoReply(
           // already rendered them in the bubble).
           if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
             try {
-              const { sendIMessageWithAttachment } = await import('../../../../services/imessage-bridge.js');
-              for (const att of noReplyAttachments as Array<{ path?: string }>) {
-                if (att.path) await sendIMessageWithAttachment(counterparty.senderId, att.path, '');
-              }
+              const { textFilesToRequester } = await import('../text-files-to-requester.js');
+              await textFilesToRequester(agentId, counterparty.senderId, noReplyAttachments as Array<{ path?: string; filename?: string }>);
             } catch (err) {
               logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
             }
