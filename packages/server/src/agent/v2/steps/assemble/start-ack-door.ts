@@ -72,6 +72,12 @@ export function startAckSteerText(turnCtx: TurnContext): string {
 const START_ACK_REMINDER_TEXT =
   '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]';
 
+/** 3.5: the reminder names who is still waiting (the generic text when no person is). */
+function startAckReminderText(turnCtx: TurnContext): string {
+  const addr = turnCtx.address;
+  return addr?.kind === 'person' ? START_ACK_REMINDER_TEXT.replace('the user has', `${addr.name} has`) : START_ACK_REMINDER_TEXT;
+}
+
 export interface StartAckDoorInput {
   readonly agentId: string;
   readonly turnNumber: number;
@@ -154,7 +160,7 @@ export function runStartAckLadder(
     turnCtx.startAckSteersInjected = 2;
     state = persistEngineSteer(state, {
       agentId, turnNumber, floor: 'start-ack-reminder', atLoop: state.loopCount,
-      content: START_ACK_REMINDER_TEXT,
+      content: startAckReminderText(turnCtx),
     }, { broadcast });
     logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
       agentId, turnNumber,

@@ -228,3 +228,13 @@ export function replyChannelWords(addr: TurnAddress | undefined): string {
 export function addresseeByChannel(addr: TurnAddress | undefined): string | null {
   return addr?.kind === 'person' ? `${addr.name} by ${deliveryLabel(addr.deliveryChannel)}` : null;
 }
+
+/**
+ * The noun for "the person this turn is talking to" in an engine text: their name on a person
+ * turn, "the user" when no human is on the other end or there is no address. `cap` is for the
+ * start of a sentence. Possessive: `${userWords(a)}'s`.
+ */
+export function userWords(addr: TurnAddress | undefined, cap = false): string {
+  if (addr?.kind === 'person') return addr.name;
+  return cap ? 'The user' : 'the user';
+}
