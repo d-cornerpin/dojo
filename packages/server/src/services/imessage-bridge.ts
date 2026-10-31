@@ -1040,26 +1040,41 @@ export async function processInboundIMessage(
     senderId: inboundMetaObj.sender,
     authorized: inboundMetaObj.authorized,
   };
+  let persisted: ReturnType<typeof insertMessageIfAbsent> = null;
   db.transaction(() => {
     // `conversationId` stays spelled in the write itself: identity is stamped
     // ATOMICALLY with the row (OR4), and the serve-boundary conformance walk reads
     // exactly this statement.
-    insertMessageIfAbsent({ ...inboundRow, conversationId });
-    recordInboundMeta(msgId, inboundMetaObj);
-    if (input.staleSentAtIso) {
-      // P5c: the reply-vs-note decision, made structurally at ingest. A stale
-      // reconnect replay is a NOTE: visible in history and claimable as
-      // context by later turns, but swept from the waiting set so the drain
-      // never owes it a turn of its own (no days-late auto-reply).
-      sweepById(msgId);
+    persisted = insertMessageIfAbsent({ ...inboundRow, conversationId });
+    if (persisted !== null) {
+      recordInboundMeta(msgId, inboundMetaObj);
+      if (input.staleSentAtIso) {
+        // P5c: the reply-vs-note decision, made structurally at ingest. A stale
+        // reconnect replay is a NOTE: visible in history and claimable as
+        // context by later turns, but swept from the waiting set so the drain
+        // never owes it a turn of its own (no days-late auto-reply).
+        sweepById(msgId);
+      }
     }
     if (advanceRowId !== null) {
+      // The cursor moves even when the insert was the designed no-op: an old text
+      // re-inserted under a fresh ROWID (the guid ring forgot it, the unique index
+      // did not) still has to be passed, or the poll re-reads it forever.
       db.prepare(`
         INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
         ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
       `).run(String(advanceRowId), String(advanceRowId));
     }
   })();
+
+  if (persisted === null) {
+    // The unique index said this guid is already stored: the text is already on
+    // the dashboard and has had its turn (or will, from the row that IS there).
+    // A broadcast for an id that was never stored would render a bubble that
+    // vanishes on reload, and a wake would burn a turn on a replay.
+    logger.info('Inbound iMessage already stored (same guid), not shown or woken again', { rowid: advanceRowId });
+    return { outcome: 'dispatched', reply: null, messageId: msgId };
+  }
 
   // Everything below is POST-COMMIT: the row is durable and (for the poll loop)
   // the cursor advanced, so a failure here must never look like a persist
