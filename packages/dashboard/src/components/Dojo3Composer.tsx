@@ -77,6 +77,10 @@ export function Dojo3Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moteRafRef = useRef<number | null>(null);
   const moteNodeRef = useRef<HTMLDivElement | null>(null);
+  /* Mirror of `pendingFiles` for `addFiles`, which must read the already-staged
+     files OUTSIDE the state updater (see there). */
+  const pendingRef = useRef(pendingFiles);
+  pendingRef.current = pendingFiles;
 
   const voice = useVoiceMode({ agentId });
   const dojoOrb = useDojoOrb();
@@ -243,26 +247,52 @@ export function Dojo3Composer({
   }, [voice.notice, toastInfo]);
 
   /* ---- file handling ---- */
+  /* Who gets in is decided BEFORE the updater, not inside it. React may run an
+     updater twice (StrictMode), and this one used to call `URL.createObjectURL`
+     in there: every extra run minted a preview address nothing would revoke.
+     The files already staged come from `pendingRef` for the same reason. */
   const addFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
-    setPendingFiles((prev) => {
-      const newPending: PendingFile[] = [];
-      let totalSize = prev.reduce((sum, pf) => sum + pf.file.size, 0);
-      for (const file of fileArray) {
-        if (file.size > MAX_FILE_SIZE) continue;
-        totalSize += file.size;
-        if (totalSize > MAX_TOTAL_SIZE) break;
-        const pf: PendingFile = { file };
-        if (IMAGE_TYPES.has(file.type)) pf.previewUrl = URL.createObjectURL(file);
-        newPending.push(pf);
+    const accepted: PendingFile[] = [];
+    const overSize: string[] = []; // too big by itself (1 GB)
+    const overTotal: string[] = []; // no room left in the message (2 GB)
+    let totalSize = pendingRef.current.reduce((sum, pf) => sum + pf.file.size, 0);
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      if (file.size > MAX_FILE_SIZE) { overSize.push(file.name); continue; }
+      if (totalSize + file.size > MAX_TOTAL_SIZE) {
+        // This file and everything after it are not attached — the budget is
+        // full. Name them all instead of letting them vanish.
+        overTotal.push(...fileArray.slice(i).map((f) => f.name));
+        break;
       }
-      return [...prev, ...newPending];
-    });
+      totalSize += file.size;
+      const pf: PendingFile = { file };
+      if (IMAGE_TYPES.has(file.type)) pf.previewUrl = URL.createObjectURL(file);
+      accepted.push(pf);
+    }
+    if (accepted.length > 0) {
+      pendingRef.current = [...pendingRef.current, ...accepted]; // a second call before the next render must see these
+      setPendingFiles((prev) => [...prev, ...accepted]);
+    }
     // Files are staged — return to the text composer so the user can type a
     // message; the attachments show as tiny thumbnails next to the input.
     setMode('text');
-    dojoOrb.setEmotion('success');
-  }, [dojoOrb]);
+    // A refusal nobody hears is a file that vanished (task 970): name what
+    // did not make it and the limit that stopped it.
+    if (overSize.length > 0) {
+      toastWarning(overSize.length === 1
+        ? `${overSize[0]} is over the 1 GB limit`
+        : `${overSize.length} files were not attached (over the size limit)`);
+    }
+    if (overTotal.length > 0) {
+      toastWarning(overTotal.length === 1
+        ? `${overTotal[0]} would go over the 2 GB total limit`
+        : `${overTotal.length} files were not attached (over the 2 GB total limit)`);
+    }
+    // The success smile is for a file that actually landed.
+    if (accepted.length > 0) dojoOrb.setEmotion('success');
+  }, [dojoOrb, setPendingFiles, setMode, toastWarning]);
 
   const removeFile = useCallback((index: number) => {
     setPendingFiles((prev) => {
