@@ -319,6 +319,8 @@ export function renderOtherCalendarsSection(
 export interface MailboxCount {
   source: UnifiedSource;
   count: number;
+  /** True when the count hit the per-mailbox page limit, so the real total may be higher. */
+  atLeast?: boolean;
 }
 
 /**
@@ -343,7 +345,7 @@ export function renderOtherMailboxesCount(
   const nonzero = counts.filter(c => c.count > 0);
   const lines: string[] = [];
   if (nonzero.length > 0) {
-    const parts = nonzero.map(c => `${c.count} in ${formatSourceLabel(c.source, ambiguous)}`);
+    const parts = nonzero.map(c => `${c.count}${c.atLeast ? '+' : ''} in ${formatSourceLabel(c.source, ambiguous)}`);
     lines.push(`Also matching in other connected mailboxes: ${parts.join(', ')}. Call email_search to see them together.`);
   }
   if (empty.length > 0) {
@@ -715,7 +717,7 @@ export async function otherMailboxesCountSection(
       failed.push({ label: r.acc.label, error: r.error ?? 'unknown error' });
       continue;
     }
-    if (r.count > 0) counts.push({ source: r.acc.source, count: r.count });
+    if (r.count > 0) counts.push({ source: r.acc.source, count: r.count, atLeast: r.count >= perMailboxLimit });
     else emptySurfaces.push(r.acc.source);
   }
 
