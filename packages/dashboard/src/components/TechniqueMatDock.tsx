@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTechniqueSession, type CanvasState } from './TechniqueSessionProvider';
 import { useRightDock } from './RightDockProvider';
+import { isEnterNotComposing } from '../lib/enter-key';
 
 /*
  * The Technique Mat, rendered inside the right dock while a technique-build
@@ -122,7 +123,7 @@ export function TechniqueMatDock() {
             <input
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addTag())}
+              onKeyDown={(e) => isEnterNotComposing(e) && (e.preventDefault(), addTag())}
               placeholder="Add tag..."
               className="glass-input px-3 py-1.5 text-xs flex-1"
             />

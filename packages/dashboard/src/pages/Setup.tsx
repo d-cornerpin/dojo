@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { ownerChanged, confirmRemoveOwner } from '../lib/owner-star';
+import { isEnterNotComposing } from '../lib/enter-key';
 import { isPickableAgentModel, defaultRoleModel, saveRoleAgent } from '../lib/role-models';
 import { AUTOMATION_SEND_HINT } from '../lib/automation-permission';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
@@ -639,7 +640,7 @@ export const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          onKeyDown={(e) => isEnterNotComposing(e) && handleSearch()}
           placeholder="Search models... (e.g., claude, llama, gpt, mistral)"
           className="flex-1 glass-input"
         />
@@ -1598,7 +1599,7 @@ export const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }
                 <label className="text-xs text-ui/40 block">Brief description</label>
                 <input type="text" value={newDescription}
                   onChange={(e) => setNewDescription(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && addSender()}
+                  onKeyDown={(e) => isEnterNotComposing(e) && addSender()}
                   placeholder="e.g., spouse, teammate, project collaborator"
                   className="glass-input text-sm w-full" />
               </div>

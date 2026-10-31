@@ -15,6 +15,7 @@ import { CredentialsPanel } from '../components/CredentialsPanel';
 import { ContactsPanel } from '../components/ContactsPanel';
 import { ModalShell } from '../components/ModalShell';
 import { formatDate } from '../lib/dates';
+import { isEnterNotComposing } from '../lib/enter-key';
 
 type RightPanel = 'detail' | 'search' | 'briefing' | 'none';
 type MainTab = 'dag' | 'vault' | 'dreams' | 'forensic' | 'credentials' | 'contacts';
@@ -267,7 +268,7 @@ export const Memory = () => {
                 aria-label="Search vault"
                 value={vaultSearch}
                 onChange={(e) => setVaultSearchText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && loadVault()}
+                onKeyDown={(e) => isEnterNotComposing(e) && loadVault()}
               />
             </>
           )}

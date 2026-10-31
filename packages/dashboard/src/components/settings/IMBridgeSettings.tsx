@@ -8,6 +8,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { fullDiskAccessInstructions, fullDiskAccessWhy, FULL_DISK_ACCESS_VERIFY } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { ownerChanged, confirmRemoveOwner } from '../../lib/owner-star';
+import { isEnterNotComposing } from '../../lib/enter-key';
 
 
 // ── iMessage Bridge Settings ──
@@ -469,7 +470,7 @@ export const IMBridgeSettings = () => {
                     type="text"
                     value={newDescription}
                     onChange={(e) => setNewDescription(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && addSender()}
+                    onKeyDown={(e) => isEnterNotComposing(e) && addSender()}
                     placeholder="e.g., spouse, teammate, project collaborator"
                     className="glass-input text-sm w-full"
                   />

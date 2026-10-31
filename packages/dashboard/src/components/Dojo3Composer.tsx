@@ -20,6 +20,7 @@ import { usePresence } from './PresenceProvider';
 import { composerStopControl } from '../lib/stop-affordance';
 import { useAgentState } from '../hooks/useAgentScopedState';
 import { formatFileSize, truncateName, useRestoredDraft, type RefusedDraft } from './composer-restore';
+import { isPlainEnter } from '../lib/enter-key';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
 // 1 GB per file, 2 GB per message. Mirrors ChatInput's caps for early UI
@@ -431,7 +432,7 @@ export function Dojo3Composer({
   }, [input, pendingFiles, restored.kept, uploading, agentId, launchMote, dojoOrb, onSend]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (isPlainEnter(e)) {
       e.preventDefault();
       void handleSend();
     }

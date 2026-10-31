@@ -9,6 +9,7 @@ import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { parseUtc } from '../../lib/dates';
 import { formatCost } from '../../lib/model-cost';
+import { isEnterNotComposing } from '../../lib/enter-key';
 import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
 import {
@@ -58,7 +59,7 @@ export const BrowseModels = ({ providerId, providerName, onModelAdded }: { provi
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          onKeyDown={(e) => isEnterNotComposing(e) && handleSearch()}
           placeholder="Search models... (e.g., claude, llama, gpt)"
           className="glass-input flex-1"
         />

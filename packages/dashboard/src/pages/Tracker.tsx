@@ -4,6 +4,7 @@ import type { Project, Task, AgentDetail } from '@dojo/shared';
 import type { WsEvent, TrackerTaskUpdatedEvent, TrackerProjectUpdatedEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
+import { isEnterNotComposing } from '../lib/enter-key';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
 import { cardMover } from './tracker-card-move';
@@ -524,7 +525,7 @@ const CreateProjectModal = ({
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Add a task..."
-                onKeyDown={(e) => e.key === 'Enter' && addTask()}
+                onKeyDown={(e) => isEnterNotComposing(e) && addTask()}
                 className="glass-input flex-1"
               />
               <select

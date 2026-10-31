@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
+import { isEnterNotComposing } from '../lib/enter-key';
 
 // Forensic memory search panel — substring search across vault, summaries,
 // projects, tasks, and scratchpads. Operator-grade cleanup tool for the
@@ -146,7 +147,7 @@ export const ForensicSearchPanel = () => {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void handleSearch()}
+            onKeyDown={(e) => isEnterNotComposing(e) && void handleSearch()}
             placeholder="exact substring to search for"
             className="glass-input flex-1"
           />
