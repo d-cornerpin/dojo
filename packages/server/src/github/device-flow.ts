@@ -181,6 +181,8 @@ async function pollUntilAnswered(flow: Flow): Promise<void> {
     if (verdict.kind === 'wait') { intervalMs = verdict.intervalMs; continue; }
     if (verdict.kind === 'stop') { fail(flow, verdict.message); return; }
     const login = await fetchLogin(verdict.accessToken);
+    // The owner may have cancelled, or pressed Connect again, while the name lookup was out.
+    if (flow.cancelled || current !== flow) return;
     saveGithubAccount(login, verdict.accessToken, verdict.scope);
     if (current === flow) current = null;
     logger.info('GitHub connected', { login, scope: verdict.scope });
