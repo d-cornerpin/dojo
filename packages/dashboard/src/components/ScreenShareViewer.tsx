@@ -46,6 +46,8 @@ export function ScreenShareViewer() {
   const [savePref, setSavePref] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [error, setError] = useState('');
+  // A refused save/forget: drawn beside the buttons in every status (the `error` text is for failed connects).
+  const [noteError, setNoteError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(1); // 1 = fit; >1 = zoomed in
   const zoomRef = useRef(1);
@@ -140,7 +142,12 @@ export function ScreenShareViewer() {
         const toSave = pendingSaveRef.current;
         pendingSaveRef.current = null;
         if (toSave) {
-          void saveVncPassword(toSave).then((r) => { if (r.ok) setHasSaved(true); });
+          void saveVncPassword(toSave).then((r) => {
+            if (r.ok) setHasSaved(true);
+            else setNoteError(`Connected, but the password could not be saved: ${r.error}`);
+          }).catch((e: unknown) => {
+            setNoteError(`Connected, but the password could not be saved: ${e instanceof Error ? e.message : String(e)}`);
+          });
         }
       });
       rfb.addEventListener('disconnect', (ev: Event) => {
@@ -183,7 +190,7 @@ export function ScreenShareViewer() {
           // The saved password was refused: forget it so the next Reconnect asks for it again.
           savedPasswordRef.current = null;
           setHasSaved(false);
-          void forgetVncPassword();
+          void forgetStored();
           retryNoteRef.current = 'Your saved password no longer works. Enter it again.';
           setSavePref(true);
         } else if (submittedRef.current) {
@@ -241,11 +248,21 @@ export function ScreenShareViewer() {
     if (next) { try { rfb.focus(); } catch { /* ignore */ } }
   };
 
-  const forgetSaved = () => {
-    void forgetVncPassword();
-    savedPasswordRef.current = null;
-    setHasSaved(false);
+  // Ask the vault to forget the password; only a yes clears it from the screen. A refusal keeps
+  // the "Forget password" button and says why, because the next connect would auto-fill it again.
+  const forgetStored = async () => {
+    setNoteError('');
+    try {
+      const r = await forgetVncPassword();
+      if (r.ok) { savedPasswordRef.current = null; setHasSaved(false); return; }
+      setHasSaved(true);
+      setNoteError(`The saved password could not be forgotten: ${r.error}`);
+    } catch (e) {
+      setHasSaved(true);
+      setNoteError(`The saved password could not be forgotten: ${e instanceof Error ? e.message : String(e)}`);
+    }
   };
+  const forgetSaved = () => { void forgetStored(); };
 
   const cancel = () => {
     clearTimer();
@@ -254,6 +271,7 @@ export function ScreenShareViewer() {
   };
 
   const reconnect = () => {
+    setNoteError('');
     clearTimer();
     try { rfbRef.current?.disconnect(); } catch { /* ignore */ }
     setPassword('');
@@ -281,6 +299,7 @@ export function ScreenShareViewer() {
         {status === 'credential' && <span className="text-xs text-ui/55">VNC password required</span>}
         {status === 'disconnected' && <span className="text-xs text-ui/55">Disconnected</span>}
         {status === 'error' && <span className="text-xs" style={{ color: '#e88' }}>{error || 'Connection error'}</span>}
+        {noteError && <span className="text-xs" style={{ color: '#e88' }}>{noteError}</span>}
 
         {status === 'connected' && (
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
