@@ -36,7 +36,7 @@ function runBackupBlock(env: Record<string, string>): { status: number | null; o
   const from = script.indexOf('# Backup data');
   const to = script.indexOf('# Remove launchd plists');
   if (from < 0 || to <= from) throw new Error('uninstall.sh no longer has its backup block where this test cuts it');
-  const cut = `DOJO_DIR="$HOME/.dojo"\n${script.slice(from, to)}\necho BLOCK_PASSED`;
+  const cut = `DOJO_DIR="$HOME/.dojo"\nLAUNCH_DIR="$HOME/Library/LaunchAgents"\n${script.slice(from, to)}\necho BLOCK_PASSED`;
   const r = spawnSync('/bin/bash', ['-c', cut], {
     env: { ...env, HOME: scratch },
     encoding: 'utf-8',
@@ -120,6 +120,86 @@ describe('the uninstaller keeps data unless it is backed up', () => {
     writeSecrets();
     const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
     expect(status).toBe(1);
-    expect(out).toContain('secrets file could not be copied');
+    expect(out).toContain('nothing was removed');
+    expect(out).toContain('secrets.yaml');
+  });
+
+  // Review FIX 1: a copy that is CUT SHORT (disk full) leaves a non-empty, broken file; every copy's
+  // exit status counts, and the saved database must pass a check.
+  it('refuses when the database copy writes half the file and then fails (disk full)', () => {
+    const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
+    fs.writeFileSync(path.join(bin, 'sqlite3'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'cp'),
+      '#!/bin/bash\nfor last; do :; done\nsrc="${@: -2:1}"\n' +
+      'case "$src" in */dojo.db) head -c 100 "$src" > "$last/dojo.db"; exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+    const db = openWalDb(50); db.close();
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    expect(out).toContain('nothing was removed');
+    expect(out).not.toContain('BLOCK_PASSED');
+  });
+
+  it('refuses when a saved database fails the integrity check, even though the copy exited 0', () => {
+    const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
+    // sqlite3: the backup command "succeeds" but writes a torn file; quick_check then reports damage.
+    fs.writeFileSync(path.join(bin, 'sqlite3'),
+      '#!/bin/bash\ncase "$*" in *quick_check*) echo "database disk image is malformed";; *) f="$(printf %s "$2" | sed "s/.*\'\\(.*\\)\'/\\1/")"; head -c 50 "$1" > "$f";; esac\nexit 0\n', { mode: 0o755 });
+    const db = openWalDb(50); db.close();
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    expect(out).toContain('nothing was removed');
+  });
+
+  it('refuses when the prompts folder cannot be copied', () => {
+    const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
+    fs.writeFileSync(path.join(bin, 'cp'),
+      '#!/bin/bash\ncase "$*" in */prompts*) exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+    fs.mkdirSync(path.join(dojo, 'prompts'), { recursive: true });
+    fs.writeFileSync(path.join(dojo, 'prompts', 'a.md'), 'x');
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    expect(out).toContain('nothing was removed');
+    expect(out).toContain('prompts');
+  });
+
+  it('refuses when the techniques folder cannot be copied', () => {
+    const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
+    fs.writeFileSync(path.join(bin, 'cp'),
+      '#!/bin/bash\ncase "$*" in */techniques*) exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+    fs.mkdirSync(path.join(dojo, 'techniques'), { recursive: true });
+    fs.writeFileSync(path.join(dojo, 'techniques', 'a.md'), 'x');
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    expect(out).toContain('techniques');
+  });
+
+  it('refuses when the -wal file cannot be copied (fallback path)', () => {
+    const bin = fs.mkdtempSync(path.join(scratch, 'bin-'));
+    fs.writeFileSync(path.join(bin, 'sqlite3'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'cp'),
+      '#!/bin/bash\ncase "$*" in *dojo.db-wal*) exit 1;; esac\nexec /bin/cp "$@"\n', { mode: 0o755 });
+    const db = openWalDb(5);
+    writeSecrets();
+    const { status } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    db.close();
+    expect(status).toBe(1);
+  });
+
+  // Review FIX 2: a refusal must leave Dojo and the watchdog RUNNING, and say so.
+  it('on any refusal, loads both services again and says Dojo was started again', () => {
+    const { bin } = failingShims();
+    const log = path.join(scratch, 'launchctl.log');
+    fs.writeFileSync(path.join(bin, 'launchctl'), `#!/bin/bash\necho "$@" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+    writeSecrets();
+    const { status, out } = runBackupBlock({ PATH: `${bin}:/usr/bin:/bin` });
+    expect(status).toBe(1);
+    const lines = fs.readFileSync(log, 'utf-8').trim().split('\n');
+    expect(lines.some((l) => l.includes('load') && l.includes('com.dojo.platform.plist'))).toBe(true);
+    expect(lines.some((l) => l.includes('load') && l.includes('com.dojo.watchdog.plist'))).toBe(true);
+    expect(out).toContain('Dojo has been started again; nothing was changed.');
   });
 });

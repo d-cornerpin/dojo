@@ -29,34 +29,50 @@ launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
 # Backup data
 BACKUP_DIR="$HOME/dojo-backup-$(date +%Y%m%d-%H%M%S)"
 echo "💾 Backing up data to $BACKUP_DIR..."
-mkdir -p "$BACKUP_DIR"
+# A refusal must leave the box running: the services were stopped above, so every "nothing was
+# removed" exit starts both again first and says so.
+restart_services() {
+  launchctl load "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null
+  launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null
+  echo "   Dojo has been started again; nothing was changed."
+}
+copy_failed=""
+mkdir -p "$BACKUP_DIR" || copy_failed="$copy_failed backup-folder"
 if [ -f "$DOJO_DIR/data/dojo.db" ]; then
-  command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$DOJO_DIR/data/dojo.db" ".backup '$BACKUP_DIR/dojo.db'" 2>/dev/null || {
+  # Every step's exit status counts: a copy cut short by a full disk leaves a non-empty, broken
+  # file, so "the file exists" proves nothing. The saved database must also pass a check.
+  db_ok=0
+  if command -v sqlite3 >/dev/null 2>&1 && sqlite3 "$DOJO_DIR/data/dojo.db" ".backup '$BACKUP_DIR/dojo.db'" 2>/dev/null; then
+    db_ok=1
+  else
     rm -f "$BACKUP_DIR/dojo.db"
-    cp "$DOJO_DIR/data/dojo.db" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$DOJO_DIR/data/dojo.db-wal" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$DOJO_DIR/data/dojo.db-shm" "$BACKUP_DIR/" 2>/dev/null || true
-  }
+    if cp "$DOJO_DIR/data/dojo.db" "$BACKUP_DIR/" 2>/dev/null; then
+      db_ok=1
+      for ext in -wal -shm; do
+        if [ -e "$DOJO_DIR/data/dojo.db$ext" ]; then
+          cp "$DOJO_DIR/data/dojo.db$ext" "$BACKUP_DIR/" 2>/dev/null || db_ok=0
+        fi
+      done
+      [ "$(wc -c < "$BACKUP_DIR/dojo.db" 2>/dev/null | tr -d ' ')" = "$(wc -c < "$DOJO_DIR/data/dojo.db" | tr -d ' ')" ] || db_ok=0
+    fi
+  fi
+  if [ "$db_ok" = 1 ] && [ ! -s "$BACKUP_DIR/dojo.db" ]; then db_ok=0; fi
+  if [ "$db_ok" = 1 ] && command -v sqlite3 >/dev/null 2>&1; then
+    [ "$(sqlite3 "$BACKUP_DIR/dojo.db" 'PRAGMA quick_check' 2>/dev/null | head -1)" = "ok" ] || db_ok=0
+  fi
+  [ "$db_ok" = 1 ] || copy_failed="$copy_failed dojo.db"
 fi
-cp "$DOJO_DIR/secrets.yaml" "$BACKUP_DIR/" 2>/dev/null || true
-cp -r "$DOJO_DIR/prompts" "$BACKUP_DIR/" 2>/dev/null || true
-cp -r "$DOJO_DIR/techniques" "$BACKUP_DIR/" 2>/dev/null || true
-if [ -f "$DOJO_DIR/data/dojo.db" ] && [ ! -s "$BACKUP_DIR/dojo.db" ]; then
-  echo "❌ Your database could not be copied to $BACKUP_DIR, so nothing was removed."
-  echo "   Free some disk space or fix the folder's permissions, then run the uninstaller again."
-  exit 1
-fi
-if [ -f "$DOJO_DIR/secrets.yaml" ] && [ ! -s "$BACKUP_DIR/secrets.yaml" ]; then
-  echo "❌ Your secrets file could not be copied to $BACKUP_DIR, so nothing was removed."
-  exit 1
-fi
+for item in secrets.yaml prompts techniques; do
+  if [ -e "$DOJO_DIR/$item" ]; then
+    cp -R "$DOJO_DIR/$item" "$BACKUP_DIR/" 2>/dev/null || copy_failed="$copy_failed $item"
+  fi
+done
 
 # Everything else the person made lives under ~/.dojo too (uploads, the rest of data/, memory files,
 # custom voice imports, loose technique scripts, ...). Copy every top-level entry except app code
 # the installer puts back (platform, update backups and set-aside builds, watchdog, scripts, bin,
 # logs, the icon, the lock) and what was saved above. A folder this list does not know about is
 # copied, never skipped. If ANY copy fails, nothing is removed.
-copy_failed=""
 for entry in "$DOJO_DIR"/* "$DOJO_DIR"/.[!.]*; do
   [ -e "$entry" ] || continue
   name="$(basename "$entry")"
@@ -88,6 +104,7 @@ done
 if [ -n "$copy_failed" ]; then
   echo "❌ These parts of your data could not be copied to $BACKUP_DIR, so nothing was removed:$copy_failed"
   echo "   Free some disk space or fix the folder's permissions, then run the uninstaller again."
+  restart_services
   exit 1
 fi
 
