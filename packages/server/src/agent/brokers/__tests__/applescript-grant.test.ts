@@ -32,6 +32,7 @@ import { authorizeSystemControl } from '../index.js';
 import { resolveCommandArg } from '../resolve.js';
 import { PRIMARY_AGENT_PERMISSIONS } from '../../manifest.js';
 import type { PermissionManifest } from '@dojo/shared';
+import { FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const base = {
   file_read: '*', file_write: '*', file_delete: 'none', exec_allow: [], exec_deny: [],
@@ -83,7 +84,7 @@ describe('T3 INBOUND (b) — `system_control:\'*\'` stops meaning AppleScript', 
     // The positive test the posture requires beside the flip. If this fails the
     // owner's own agent just lost AppleScript.
     expect(PRIMARY_AGENT_PERMISSIONS.system_control).toContain('applescript');
-    expect(mayRunAppleScript(PRIMARY_AGENT_PERMISSIONS, 'zargo')).toBe(true);
+    expect(mayRunAppleScript(PRIMARY_AGENT_PERMISSIONS, FXID.n4)).toBe(true);
   });
 
   it('THE HEALER GAINS NOTHING — it never held `\'*\'`, so the flip is silent for it', () => {
