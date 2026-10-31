@@ -102,7 +102,7 @@ export async function executeCredentialTool(
       if (records.length === 0) {
         // t120: named the verb but not its shape, so the one outcome whose next call is
         // unambiguous was the vaguest message in the family.
-        return 'No credentials stored. When the user provides one, save it with credential_add(service_name="short-name", credentials={"api_key": "..."}).';
+        return 'No credentials stored. When the person you are talking to provides one, save it with credential_add(service_name="short-name", credentials={"api_key": "..."}).';
       }
       const lines = records.map(r => {
         const desc = r.description ? ` - ${r.description}` : '';
@@ -129,7 +129,7 @@ export async function executeCredentialTool(
         return (
           `No credential found for service "${serviceName}" — the name is case-sensitive. ` +
           `Call credential_list() to see the names that ARE stored. If this value has not been ` +
-          `saved yet, ask the user for it and store it with ` +
+          `saved yet, ask the person you are talking to for it and store it with ` +
           `credential_add(service_name="${serviceName}", credentials={…}). Do not retry this read ` +
           `with the same name — it will fail the same way until something is stored under it.`
         );

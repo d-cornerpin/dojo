@@ -22,6 +22,7 @@ import { clearSteerQueueFor, steerFired, type SteerFloorId } from '../../steer-q
 import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -233,7 +234,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       }, agentId);
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'empty-response', atLoop: state.loopCount,
-        content: "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]",
+        content: `[System: You returned an empty response. Please respond to ${userWords(ctx.turnCtx.address)}'s last message or call a tool to continue your task. If you are finished, say so clearly.]`,
       }, { broadcast });
       return continueLoop(state);
     }

@@ -2505,7 +2505,7 @@ describe('runV2Turn integration', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const EMPTY_RESPONSE_NUDGE =
-  "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]";
+  "[System: You returned an empty response. Please respond to TestUser's last message or call a tool to continue your task. If you are finished, say so clearly.]";
 
 /** The assembled shape a mid-turn steer has to survive: … assistant tool_use, tool-result carrier. */
 function toolResultTail(): Array<Record<string, unknown>> {

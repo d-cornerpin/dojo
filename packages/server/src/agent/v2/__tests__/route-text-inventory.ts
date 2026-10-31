@@ -183,54 +183,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "A=currentAddress(agentId); import { userWords, currentAddress } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
-  "id": "S021",
-  "file": "agent/tools/cat/agents.ts",
-  "line": 1046,
-  "old": "`If you are blocked, say so in your reply so the user can act.`;",
-  "new": "`If you are blocked, say so in your reply so the person you are talking to can act.`;",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S022",
-  "file": "agent/tools/cat/comms.ts",
-  "line": 405,
-  "old": "`Tell the user they need to open Settings → Channels and toggle \"Allow sending email\" ON for ${acctLabel}, then retry. ` +",
-  "new": "`Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle \"Allow sending email\" ON for ${acctLabel}, then retry. ` +",
-  "how": "A=currentAddress(agentId); the ACTOR is the owner, the person told is the addressee"
- },
- {
-  "id": "S023",
-  "file": "agent/tools/cat/comms.ts",
-  "line": 444,
-  "old": "content = 'No iMessage safe senders are configured on this server. Tell the user to add contacts in Settings → Channels (iMessage card) if they want you to text someone.';",
-  "new": "content = `No iMessage safe senders are configured on this server. Tell ${userWords(currentAddress(agentId))} that the owner can add contacts in Settings → Channels (iMessage card) if they want you to text someone.`;",
-  "how": "A=currentAddress(agentId); the ACTOR is the owner, the person told is the addressee"
- },
- {
-  "id": "S024",
-  "file": "agent/tools/cat/comms.ts",
-  "line": 455,
-  "old": "`Pick the contact that best matches what the user said. To iMessage them, ` +",
-  "new": "`Pick the contact that best matches what the person you are talking to said. To iMessage them, ` +",
-  "how": "static wording, no plumbing"
- },
- {
-  "id": "S025",
-  "file": "agent/tools/cat/comms.ts",
-  "line": 457,
-  "old": "`If two or more contacts plausibly fit, ask the user which one they meant before sending. ` +",
-  "new": "`If two or more contacts plausibly fit, ask ${userWords(currentAddress(agentId))} which one they meant before sending. ` +",
-  "how": "A=currentAddress(agentId) (agentId is the handler param); import userWords, currentAddress from agent/v2/turn-address.js"
- },
- {
-  "id": "S026",
-  "file": "agent/tools/cat/comms.ts",
-  "line": 506,
-  "old": "`If you need to text someone new, the user has to add them in Settings → Channels (iMessage card) first.`;",
-  "new": "`If you need to text someone new, the owner has to add them in Settings → Channels (iMessage card) first.`;",
-  "how": "static: the actor is the owner; no address needed"
- },
- {
   "id": "S027",
   "file": "agent/tools/cat/media.ts",
   "line": 140,
@@ -380,46 +332,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "line": 214,
   "old": "`If you genuinely need different information, ask the user a direct question instead.`,",
   "new": "`If you genuinely need different information, ask the person you are talking to a direct question instead.`,",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S046",
-  "file": "agent/v2/classifiers/provider.ts",
-  "line": 107,
-  "old": "'Tell the user the image exceeded the model size limit and ask for a smaller one.',",
-  "new": "'Tell the person you are talking to the image exceeded the model size limit and ask for a smaller one.',",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S047",
-  "file": "agent/v2/classifiers/provider.ts",
-  "line": 120,
-  "old": "guidance: 'Mention to the user that not all images were processed.',",
-  "new": "guidance: 'Mention to the person you are talking to that not all images were processed.',",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S048",
-  "file": "agent/v2/classifiers/provider.ts",
-  "line": 170,
-  "old": "guidance: 'Rephrase or tell the user you cannot help with this.',",
-  "new": "guidance: 'Rephrase or tell the person you are talking to you cannot help with this.',",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S049",
-  "file": "agent/v2/classifiers/provider.ts",
-  "line": 182,
-  "old": "guidance: 'Apologize to the user and ask them to try again.',",
-  "new": "guidance: 'Apologize to the person you are talking to and ask them to try again.',",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S050",
-  "file": "agent/v2/classifiers/provider.ts",
-  "line": 204,
-  "old": "\"Continue without trying to look at images. If the user asked you to analyze an image and you have a path to it, describe what you can infer from the filename, surrounding text, or metadata — or tell the user this model can't see images and they may want to switch.\",",
-  "new": "\"Continue without trying to look at images. If the person you are talking to asked you to analyze an image and you have a path to it, describe what you can infer from the filename, surrounding text, or metadata — or tell the person you are talking to this model can't see images and they may want to switch.\",",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
@@ -655,14 +567,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S080",
-  "file": "agent/v2/steps/post-call-classify/empty-response.ts",
-  "line": 236,
-  "old": "content: \"[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]\",",
-  "new": "content: `[System: You returned an empty response. Please respond to ${userWords(ctx.turnCtx.address)}'s last message or call a tool to continue your task. If you are finished, say so clearly.]`,",
-  "how": "A=ctx.turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
   "id": "S081",
   "file": "agent/v2/steps/post-call-classify/going-idle.ts",
   "line": 80,
@@ -895,22 +799,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
-  "id": "S110",
-  "file": "credentials/tools.ts",
-  "line": 105,
-  "old": "return 'No credentials stored. When the user provides one, save it with credential_add(service_name=\"short-name\", credentials={\"api_key\": \"...\"}).';",
-  "new": "return 'No credentials stored. When the person you are talking to provides one, save it with credential_add(service_name=\"short-name\", credentials={\"api_key\": \"...\"}).';",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S111",
-  "file": "credentials/tools.ts",
-  "line": 132,
-  "old": "`saved yet, ask the user for it and store it with ` +",
-  "new": "`saved yet, ask the person you are talking to for it and store it with ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S112",
   "file": "credentials/write-doors.ts",
   "line": 44,
@@ -1063,43 +951,11 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S133",
-  "file": "services/transcription.ts",
-  "line": 394,
-  "old": "'No transcription model is configured. Go to Settings → Models → Transcription Model and pick either a local engine (Whisper / Moonshine) or a cloud model. Tell the user transcription is unavailable until this is configured — do not retry.',",
-  "new": "'No transcription model is configured. Go to Settings → Models → Transcription Model and pick either a local engine (Whisper / Moonshine) or a cloud model. Tell the person you are talking to transcription is unavailable until this is configured — do not retry.',",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S134",
   "file": "tools/categories.ts",
   "line": 298,
   "old": "lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\\'t have the full string, call the source tool again.');",
   "new": "lines.push('- **When sharing a URL or file path with the person you are talking to**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\\'t have the full string, call the source tool again.');",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S135",
-  "file": "tools/name-help.ts",
-  "line": 331,
-  "old": "? 'Ask the user to update this agent\\'s permissions, or call complete_task(status=\"blocked\").'",
-  "new": "? 'Ask the owner to update this agent\\'s permissions, or call complete_task(status=\"blocked\").'",
-  "how": "static wording: changing agent permissions is the OWNER's act"
- },
- {
-  "id": "S136",
-  "file": "tools/name-help.ts",
-  "line": 332,
-  "old": ": 'Ask the user to update this agent\\'s permissions, use send_to_agent to reach an agent with broader permissions, or tell the user you are blocked.';",
-  "new": ": 'Ask the owner to update this agent\\'s permissions, use send_to_agent to reach an agent with broader permissions, or tell the person you are talking to you are blocked.';",
-  "how": "static wording: the owner changes permissions; the person on the turn is the one told 'blocked'"
- },
- {
-  "id": "S137",
-  "file": "tools/name-help.ts",
-  "line": 350,
-  "old": "'Retry the call once; if it fails again the same way, report the tool name to the user rather than guessing at a workaround.',",
-  "new": "'Retry the call once; if it fails again the same way, report the tool name to the person you are talking to rather than guessing at a workaround.',",
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {

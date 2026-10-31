@@ -180,7 +180,7 @@ describe('describeNameFailure — unknown names never get permission wording (R7
   });
 
   it('never tells the agent to say it is blocked', () => {
-    expect(text).not.toMatch(/tell the user you are blocked/i);
+    expect(text).not.toMatch(/tell the person you are talking to you are blocked/i);
   });
 
   it('offers user_gmail_label as the suggestion', () => {
@@ -213,7 +213,7 @@ describe('describeNameFailure — an agent that cannot self-complete gets the no
 
   it('points at send_to_agent / telling the user instead of complete_task', () => {
     expect(text).toMatch(/send_to_agent/);
-    expect(text).toMatch(/tell the user you are blocked/);
+    expect(text).toMatch(/tell the person you are talking to you are blocked/);
     expect(text).not.toMatch(/complete_task/);
   });
 });
@@ -318,10 +318,10 @@ describe('describeNameFailure — an all-allowed input never returns "" (T80 fix
     expect(text).toMatch(/retry/i);
   });
 
-  it('tells the agent to report the tool name to the user, not guess a workaround', () => {
+  it('tells the agent to report the tool name to the person you are talking to, not guess a workaround', () => {
     const allowed = new Set(['some_allowed_tool']);
     const text = describeNameFailure(['some_allowed_tool'], allowed, allowed);
-    expect(text).toMatch(/report the tool name to the user/i);
+    expect(text).toMatch(/report the tool name to the person you are talking to/i);
   });
 
   it('never uses naming or permission wording for the all-allowed case', () => {

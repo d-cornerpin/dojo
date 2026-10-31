@@ -391,7 +391,7 @@ export async function transcribeAudio(req: TranscribeAudioRequest): Promise<Tran
       ok: false,
       code: 'NO_MODEL_CONFIGURED',
       error:
-        'No transcription model is configured. Go to Settings → Models → Transcription Model and pick either a local engine (Whisper / Moonshine) or a cloud model. Tell the user transcription is unavailable until this is configured — do not retry.',
+        'No transcription model is configured. Go to Settings → Models → Transcription Model and pick either a local engine (Whisper / Moonshine) or a cloud model. Tell the person you are talking to transcription is unavailable until this is configured — do not retry.',
     };
   }
 

@@ -1043,7 +1043,7 @@ export const agentsHandlers: ToolHandlerMap = {
       content =
         `complete_task ends a spawned agent's lifecycle and is not available to a persistent agent. ` +
         `To mark tracker work done use work_update(action="status", task_id=..., status="complete"). ` +
-        `If you are blocked, say so in your reply so the user can act.`;
+        `If you are blocked, say so in your reply so the person you are talking to can act.`;
       isError = true;
       return { content, isError };
     }

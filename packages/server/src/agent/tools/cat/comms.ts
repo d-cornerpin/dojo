@@ -73,6 +73,7 @@ import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';
 import type { ToolHandlerMap } from '../handler.js';
 import { homeDir } from '../../../home.js';
+import { userWords, currentAddress } from '../../v2/turn-address.js';
 
 export const commsHandlers: ToolHandlerMap = {
   async "share_file"({ agentId, args }) {
@@ -402,7 +403,7 @@ export const commsHandlers: ToolHandlerMap = {
           content =
             `Refused: ${acctLabel} has "Allow sending email" turned OFF on the ${channelLabel} integration. ` +
             `Safe senders are only useful on a slot that can actually auto-reply, so adding them here would be misleading. ` +
-            `Tell the user they need to open Settings → Channels and toggle "Allow sending email" ON for ${acctLabel}, then retry. ` +
+            `Tell ${userWords(currentAddress(agentId))} that the owner needs to open Settings → Channels and toggle "Allow sending email" ON for ${acctLabel}, then retry. ` +
             `Don't try this call again until they confirm they've turned it on.`;
           isError = true;
           auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
@@ -436,12 +437,12 @@ export const commsHandlers: ToolHandlerMap = {
     return { content, isError };
   },
 
-  async "imessage_list_contacts"() {
+  async "imessage_list_contacts"({ agentId }) {
     let content = '';
     let isError = false;
     const all = getSafeSenders();
     if (all.length === 0) {
-      content = 'No iMessage safe senders are configured on this server. Tell the user to add contacts in Settings → Channels (iMessage card) if they want you to text someone.';
+      content = `No iMessage safe senders are configured on this server. Tell ${userWords(currentAddress(agentId))} that the owner can add contacts in Settings → Channels (iMessage card) if they want you to text someone.`;
       isError = false;
       return { content, isError };
     }
@@ -452,9 +453,9 @@ export const commsHandlers: ToolHandlerMap = {
     });
     content =
       `${all.length} safe sender(s) configured:\n${lines.join('\n')}\n\n` +
-      `Pick the contact that best matches what the user said. To iMessage them, ` +
+      `Pick the contact that best matches what the person you are talking to said. To iMessage them, ` +
       `call imessage_send with recipient="<address>" (the angle-bracketed value above). ` +
-      `If two or more contacts plausibly fit, ask the user which one they meant before sending. ` +
+      `If two or more contacts plausibly fit, ask ${userWords(currentAddress(agentId))} which one they meant before sending. ` +
       `Honor each contact's sharing_level when deciding what to share.`;
     isError = false;
     return { content, isError };
@@ -503,7 +504,7 @@ export const commsHandlers: ToolHandlerMap = {
           `iMessage NOT sent - recipient "${recipient}" is not on the safe-sender allowlist. ` +
           `Valid recipients on this server: ${valid}. ` +
           `If you meant to reply to the person who just messaged you, OMIT the recipient argument and the tool will default to them automatically. ` +
-          `If you need to text someone new, the user has to add them in Settings → Channels (iMessage card) first.`;
+          `If you need to text someone new, the owner has to add them in Settings → Channels (iMessage card) first.`;
         isError = true;
         auditLog(agentId, 'imessage_send', recipient, 'denied', 'recipient not in allowlist');
         return { content, isError };

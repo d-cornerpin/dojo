@@ -328,8 +328,8 @@ export function describeNameFailure(requested: string[], allowed: Set<string>, k
     const plural = notAllowedNames.length > 1;
     const canSelfComplete = allowed.has('complete_task');
     const escalation = canSelfComplete
-      ? 'Ask the user to update this agent\'s permissions, or call complete_task(status="blocked").'
-      : 'Ask the user to update this agent\'s permissions, use send_to_agent to reach an agent with broader permissions, or tell the user you are blocked.';
+      ? 'Ask the owner to update this agent\'s permissions, or call complete_task(status="blocked").'
+      : 'Ask the owner to update this agent\'s permissions, use send_to_agent to reach an agent with broader permissions, or tell the person you are talking to you are blocked.';
     sentences.push(
       `${plural ? 'These tools exist but are not accessible to this agent' : 'This tool exists but is not accessible to this agent'}: ${notAllowedNames.join(', ')}. ` +
       'This is a permission issue, not a format issue: the tool(s) may exist for other agents but are not on this agent\'s allow list, or a permission filter is stripping them ' +
@@ -347,7 +347,7 @@ export function describeNameFailure(requested: string[], allowed: Set<string>, k
     sentences.push(
       `${plural ? 'These tool names appear allowed for this agent' : 'This tool name appears allowed for this agent'} but failed to dispatch: ${allowedNames.join(', ')}. ` +
       'This is an engine defect, not a naming or permission problem: the tool is on this agent\'s allow list and should have run. ' +
-      'Retry the call once; if it fails again the same way, report the tool name to the user rather than guessing at a workaround.',
+      'Retry the call once; if it fails again the same way, report the tool name to the person you are talking to rather than guessing at a workaround.',
     );
   }
 

@@ -104,7 +104,7 @@ export function classifyRecoverableProviderError(
       kind: 'image_too_large_post_sips',
       userFacingReason: 'an attached image was too large for the model even after compression',
       guidance:
-        'Tell the user the image exceeded the model size limit and ask for a smaller one.',
+        'Tell the person you are talking to the image exceeded the model size limit and ask for a smaller one.',
       context: { /* filename plumbed in by recovery.ts if available */ },
     };
   }
@@ -117,7 +117,7 @@ export function classifyRecoverableProviderError(
     return {
       kind: 'image_too_many',
       userFacingReason: 'the request had too many images for the model',
-      guidance: 'Mention to the user that not all images were processed.',
+      guidance: 'Mention to the person you are talking to that not all images were processed.',
     };
   }
 
@@ -167,7 +167,7 @@ export function classifyRecoverableProviderError(
     return {
       kind: 'refusal',
       userFacingReason: 'the model declined the request',
-      guidance: 'Rephrase or tell the user you cannot help with this.',
+      guidance: 'Rephrase or tell the person you are talking to you cannot help with this.',
     };
   }
 
@@ -179,7 +179,7 @@ export function classifyRecoverableProviderError(
     return {
       kind: 'provider_garbage',
       userFacingReason: 'the provider sent a malformed response',
-      guidance: 'Apologize to the user and ask them to try again.',
+      guidance: 'Apologize to the person you are talking to and ask them to try again.',
     };
   }
 
@@ -201,7 +201,7 @@ export function classifyRecoverableProviderError(
       kind: 'vision_mismatch',
       userFacingReason: 'the configured model does not support image input',
       guidance:
-        "Continue without trying to look at images. If the user asked you to analyze an image and you have a path to it, describe what you can infer from the filename, surrounding text, or metadata — or tell the user this model can't see images and they may want to switch.",
+        "Continue without trying to look at images. If the person you are talking to asked you to analyze an image and you have a path to it, describe what you can infer from the filename, surrounding text, or metadata — or tell the person you are talking to this model can't see images and they may want to switch.",
     };
   }
 
