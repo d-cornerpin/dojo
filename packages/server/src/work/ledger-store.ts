@@ -90,11 +90,17 @@ export function setMeasure(workId: string, measure: Measure, count: MeasureCount
 }
 
 /** A task's measure was re-read. `remaining` null on the row = it could not be read at `at`. The
- *  first successful reading of a measure that could not be read when it was set becomes its start. */
-export function recordMeasured(workId: string, count: MeasureCount, at: number): void {
+ *  first successful reading of a measure that could not be read when it was set becomes its start.
+ *  `opts.keepStoredOnFailure` (the turn end's re-count, `post-call-classify/job-turn-end.ts`): a
+ *  failed reading is still said on the record, but the row keeps the reading it held — the job and
+ *  the close gate read that row, and one failed sweep must not end the job or free a close. The
+ *  close door's re-read never passes it: NULL there is the ruling (an outage never refuses a close). */
+export function recordMeasured(
+  workId: string, count: MeasureCount, at: number, opts?: { keepStoredOnFailure?: boolean },
+): void {
   const row = getDb().prepare('SELECT measure_initial FROM work WHERE id = ?').get(workId) as { measure_initial: number | null } | undefined;
   const initial = row?.measure_initial ?? (count.ok ? count.count : null);
-  writeMeasured(workId, count.ok ? count.count : null, at, initial ?? undefined);
+  if (count.ok || !opts?.keepStoredOnFailure) writeMeasured(workId, count.ok ? count.count : null, at, initial ?? undefined);
   appendMeasured(workId, count, initial, at);
 }
 

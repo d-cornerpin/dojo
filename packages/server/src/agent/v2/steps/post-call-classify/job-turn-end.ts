@@ -91,7 +91,7 @@ export async function readJobAtPassEnd(state: AgentTurnState, ctx: Pick<PostCall
   const facts = storedFacts(state, ctx.agentId, ctx.db);
   if (facts?.measure && facts.momentum && ctx.result.toolCalls.length === 0) {
     const count = await countMeasure(facts.measure, ctx.agentId, ctx.agent.name ?? ctx.agentId);
-    recordMeasured(facts.taskId, count, Date.now());
+    recordMeasured(facts.taskId, count, Date.now(), { keepStoredOnFailure: true });
     if (count.ok) facts.remaining = count.count;
   }
   memo.set(ctx.agentId, { key: passKey(state), facts });
