@@ -369,7 +369,9 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
       SELECT MIN(created_at) as earliest FROM cost_records
     `).get() as { earliest: string | null };
     if (earliest.earliest) {
-      days = Math.max(1, Math.ceil((Date.now() - new Date(earliest.earliest).getTime()) / (1000 * 60 * 60 * 24)));
+      // created_at is zoneless `datetime('now')` UTC text; read it as UTC so the
+      // day count does not depend on the box's own zone.
+      days = Math.max(1, Math.ceil((Date.now() - new Date(earliest.earliest.replace(' ', 'T') + 'Z').getTime()) / (1000 * 60 * 60 * 24)));
     }
   }
 
