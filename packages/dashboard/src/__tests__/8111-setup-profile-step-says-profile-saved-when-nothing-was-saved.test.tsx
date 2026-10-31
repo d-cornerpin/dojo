@@ -16,7 +16,7 @@ vi.mock('../lib/api', async () => {
 });
 
 import * as api from '../lib/api';
-import { YourProfileStep } from '../pages/Setup';
+import { YourProfileStep } from '../pages/SetupProfileStep';
 
 const fillAndSave = () => {
   const onReady = vi.fn();

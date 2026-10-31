@@ -6,6 +6,7 @@ import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useToast } from '../hooks/useToast';
+import { cardMover } from './tracker-card-move';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { OverrideQueuePanel } from '../components/OverrideQueuePanel';
 import { TaskRunHistory } from '../components/TaskRunHistory';
@@ -846,20 +847,7 @@ export const Tracker = () => {
     };
   }, [subscribe]);
 
-  const handleStatusChange = async (taskId: string, newStatus: Task['status']) => {
-    // Optimistic update — move card immediately
-    const before = tasks.find((t) => t.id === taskId);
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } : t)),
-    );
-
-    const result = await api.updateTask(taskId, { status: newStatus });
-    if (!result.ok) {
-      // Put back only this card; other cards may have been updated meanwhile.
-      setTasks((prev) => prev.map((t) => (t.id === taskId && before ? { ...t, status: before.status, updatedAt: before.updatedAt } : t)));
-      toast.error(result.error ?? 'That move was not allowed.');
-    }
-  };
+  const handleStatusChange = cardMover(tasks, setTasks, toast.error);
 
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null;
 

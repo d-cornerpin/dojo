@@ -8,6 +8,7 @@ import type { Provider, Model } from '@dojo/shared';
 import * as api from '../../lib/api';
 import { useToast } from '../../hooks/useToast';
 import { parseUtc } from '../../lib/dates';
+import { formatCost } from '../../lib/model-cost';
 import { VoiceOpenerModelConfig } from '../RouterConfig';
 import { ProviderModelGroup } from './ModelRows';
 import {
@@ -45,12 +46,6 @@ export const BrowseModels = ({ providerId, providerName, onModelAdded }: { provi
     setResults(prev => prev.filter(r => r.apiModelId !== apiModelId));
     setPricingModalModel(null);
     onModelAdded();
-  };
-
-  const formatCost = (cost: number | null) => {
-    if (cost === null || cost === 0) return 'Free';
-    if (cost < 0.01) return `$${cost.toFixed(4)}`;
-    return `$${cost.toFixed(2)}`;
   };
 
   return (
