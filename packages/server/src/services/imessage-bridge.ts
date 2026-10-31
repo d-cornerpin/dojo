@@ -1714,8 +1714,8 @@ export function checkImsgHealth(): void {
   }
 }
 
-/** What one send came to. `cut`: the owner's Stop ended it, and it may already have gone out. */
-type SendResult = 'sent' | 'failed' | 'cut' | 'not-started';
+/** What one send came to. `cut`: the owner's Stop ended it, and it may already have gone out. `caption-failed`: the file was delivered but its words were not. */
+type SendResult = 'sent' | 'failed' | 'cut' | 'not-started' | 'caption-failed';
 const STOP_DETAIL = {
   cut: "cut off by the owner's Stop (it may already have gone out)",
   // Fix round 1: a send the standing Stop kept from starting certainly did not go out.
@@ -1848,7 +1848,10 @@ function attachmentDoor(recipient: string, filePath: string, caption: string | u
         channel: 'imessage',
         tool: 'imessage-attachment-door',
         recipientId: recipient,
-        detail: result === 'sent' ? file : result === 'failed' ? `${file} failed on every path` : `${file} ${STOP_DETAIL[result]}`,
+        detail: result === 'sent' ? file
+          : result === 'failed' ? `${file} failed on every path`
+          : result === 'caption-failed' ? `${file} delivered but its caption failed`
+          : `${file} ${STOP_DETAIL[result]}`,
       }), 'imessage: attachment door crossing', { recipient, ok: result === 'sent' });
       return result;
     },
@@ -1910,6 +1913,7 @@ async function sendIMessageWithAttachmentInner(
       const captionOk = await sendIMessage(recipient, caption, opts);
       if (!captionOk) {
         logger.warn('attachment caption send failed (the file itself was delivered)', { recipient, filePath });
+        return 'caption-failed';
       }
     }
     return 'sent';
@@ -1979,6 +1983,9 @@ async function sendIMessageWithAttachmentsInner(
     if (result === 'sent') {
       sentFiles.push(filePaths[i]);
       if (i === 0 && caption) textSent = true;
+    } else if (result === 'caption-failed') {
+      // The file is delivered (never sent again); its words were not, so the final retry below sends them alone.
+      sentFiles.push(filePaths[i]);
     } else if (result === 'cut' || result === 'not-started') {
       // The owner pressed Stop: nothing more goes out, not the next file and not the text alone.
       return { ok: false, sentFiles, failedFiles: [...failedFiles, ...filePaths.slice(i)], textSent };
