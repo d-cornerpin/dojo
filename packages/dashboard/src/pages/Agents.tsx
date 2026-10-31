@@ -343,7 +343,7 @@ export const Agents = () => {
       api.getAgents(),
       api.getGroups(),
     ]);
-    if (agentResult.ok) setAgents(agentResult.data);
+    if (agentResult.ok) { setAgents(agentResult.data); setError(null); }
     else setError(agentResult.error);
     if (groupResult.ok) setGroups(groupResult.data);
   };
@@ -437,7 +437,7 @@ export const Agents = () => {
 
   if (loading) return <div className="loading-state">Loading...</div>;
 
-  if (error) {
+  if (error && agents.length === 0) {
     return (
       <div className="stub">
         <p className="stub__line" style={{ color: 'var(--dojo3-rust)' }}>{error}</p>
@@ -457,6 +457,8 @@ export const Agents = () => {
           <button type="button" className="btn btn--primary" onClick={() => setShowCreate(true)}>+ Recruit Agent</button>
         </div>
       </header>
+
+      {error && <div className="note--warn">Could not refresh the agent list: {error}</div>}
 
       {/* Ollama model concurrency warnings, one per over-limit provider */}
       {ollamaWarnings.length > 0 && (
