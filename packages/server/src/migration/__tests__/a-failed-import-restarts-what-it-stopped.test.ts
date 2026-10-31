@@ -26,6 +26,7 @@ vi.mock('../path-migration.js', () => ({ migratePaths: (...a: unknown[]) => migr
 
 import { performImport } from '../import.js';
 import { importOwnerCards } from '../import-recovery.js';
+import { runPostMigrationChecks } from '../checks.js';
 
 const PARENT = homeDir();
 const LIVE_DIR = path.join(PARENT, '.dojo');
@@ -148,7 +149,6 @@ describe('a failed import restarts what it stopped', () => {
 
   it('a failure AFTER a good restart (checks throw) is not rolled back', async () => {
     await buildZip(...(await encryptPayloadForTest('pw')));
-    const { runPostMigrationChecks } = await import('../checks.js');
     (runPostMigrationChecks as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('checks boom'));
     const restart = vi.fn(async () => {});
     await expect(performImport(ZIP_PATH, 'pw', async () => {}, restart)).resolves.toBeTruthy();

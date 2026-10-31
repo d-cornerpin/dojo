@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
 import { readManifestFromZip, performImport, verifyArchive } from '../../migration/import.js';
+import { ImportAlreadyRunningError } from '../../migration/import-safety.js';
 import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
 import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { terminateAgent } from '../../agent/spawner.js';
@@ -209,7 +210,7 @@ migrationRouter.post('/import', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Import failed', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
+    return c.json({ ok: false, error: msg }, err instanceof ImportAlreadyRunningError ? 409 : 500);
   } finally {
     if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }

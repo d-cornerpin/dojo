@@ -2854,8 +2854,7 @@ configRouter.post('/agent-sdk/verify', async (c) => {
 // The dashboard asks here on load and on every reconnect. There is no store of cards: each is
 // RE-DERIVED from the alert state its owner already keeps (budget and balance latches, the
 // error loop's paused row, the Healer's durable state, the memory, account, watcher and
-// rate-limit records), in the words the
-// text carried (as the door scrubs them). Dismissing stamps that incident's own row, so it stays
+// rate-limit records), in the words the text carried (as the door scrubs them). Dismissing stamps that incident's own row, so it stays
 // dismissed across reloads and restarts, and a NEW incident is a new card.
 const ownerCards = () => [
   ...budgetOwnerCards(), ...balanceOwnerCards(), ...agentOwnerCards(), ...healerOwnerCards(), ...memoryOwnerCards(),

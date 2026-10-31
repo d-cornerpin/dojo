@@ -15,7 +15,7 @@ import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
 import { restartAfterFailedImport, noteBackupStuck, clearImportCard } from './import-recovery.js';
-import { putBackOwnBackup } from './import-safety.js';
+import { putBackOwnBackup, acquireImportLock } from './import-safety.js';
 import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -118,7 +118,7 @@ export async function verifyArchive(
 
 // ── Import ──
 
-export async function performImport(
+async function runImport(
   // PATH to the export zip on disk (see readManifestFromZip on why not a Buffer).
   zipPath: string,
   password: string,
@@ -360,36 +360,34 @@ export async function performImport(
     await restartServices();   // from here the import is COMMITTED: nothing below rolls it back
     clearImportCard();
 
-    // Step 17: Run post-migration checks. Cache the manifest first so the
-    // dependency installer and the wizard's "re-check" can re-run checks later
-    // (after deps install / after the user does a manual action) without the zip.
-    // The import is committed: a failure here is logged, never rolled back.
+    // Step 17: post-migration checks (the manifest is cached first for later re-checks). The import
+    // is committed: a failure here is logged, never rolled back.
     let checks: PostMigrationCheck[] = [];
     try {
       setLastManifest(manifest);
       broadcastProgress('checks', 95, 'Checking dependencies...');
       checks = await runPostMigrationChecks(manifest);
       broadcastProgress('complete', 100, 'Import complete!');
-    } catch (postErr) { logger.error('Post-import checks failed after a good import', { error: postErr instanceof Error ? postErr.message : String(postErr) }); }
-    logger.info('Import complete');
+    } catch (postErr) { logger.error('Post-import checks failed after a good import', { error: String(postErr) }); }
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* temp only */ }
-
+    logger.info('Import complete');
     return { manifest, checks };
   } catch (err) {
-    // Close the handle BEFORE the tree under it is swapped; the restart below re-opens it.
-    if (servicesStopped) { try { closeDb(); } catch { /* already closed */ } }
-    let stuck: string | null = null; // the owner words, set when the data could not be put back: do NOT restart
-    if (ownBackup && fs.existsSync(ownBackup)) {
-      const back = putBackOwnBackup(DOJO_DIR, ownBackup);
-      if (back.ok) logger.info('Restored backup after failed import');
-      else { logger.error('Failed to restore backup', { error: back.reason }); stuck = noteBackupStuck(back.backup); }
-    }
+    if (servicesStopped) { try { closeDb(); } catch { /* already closed */ } } // before the tree under it is swapped
+    let stuck: string | null = null; // owner words when the data could not be put back: do NOT restart
+    const back = ownBackup && fs.existsSync(ownBackup) ? putBackOwnBackup(fs, DOJO_DIR, ownBackup) : null;
+    if (back && !back.ok) { logger.error('Failed to restore backup', { error: back.reason }); stuck = noteBackupStuck(back.backup); }
     stuck ??= await restartAfterFailedImport({ servicesStopped, restartServices });
-
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (stuck !== null) throw new Error(`${err instanceof Error ? err.message : String(err)} ${stuck}`, { cause: err });
     throw err;
   }
+}
+
+/** One import at a time: a second one is refused (ImportAlreadyRunningError) before it touches anything. */
+export async function performImport(...args: Parameters<typeof runImport>): ReturnType<typeof runImport> {
+  const release = acquireImportLock(fs, path.join(homeDir(), '.dojo-import.lock'));
+  try { return await runImport(...args); } finally { release(); }
 }
 
 // ── Helpers ──
