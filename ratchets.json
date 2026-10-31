@@ -9769,7 +9769,7 @@
     "packages/server/src/github/issues.ts": 473,
     "packages/server/src/google/auth.ts": 777,
     "packages/server/src/google/tools-forms.ts": 823,
-    "packages/server/src/google/tools-read.ts": 902,
+    "packages/server/src/google/tools-read.ts": 933,
     "packages/server/src/google/tools-slides.ts": 3040,
     "packages/server/src/google/tools-write.ts": 2096,
     "packages/server/src/healer/approval-routing.ts": 513,
