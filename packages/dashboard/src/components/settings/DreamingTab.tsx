@@ -18,8 +18,10 @@ export const DreamingTab = () => {
   const [models, setModels] = useState<Model[]>([]);
   const [dreamModelId, setDreamModelId] = useState('');
   const [dreamTime, setDreamTime] = useState('03:00');
-  const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
+  const [dreamMode, setDreamMode] = useState<'full' | 'light' | 'off'>('full');
   const [loading, setLoading] = useState(true);
+  // Save stays off until the stored settings were read: guessing 'full' could turn an off dreamer on.
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);   // v3.5: the server's refusal, shown
@@ -37,7 +39,8 @@ export const DreamingTab = () => {
       if (configResult.ok) {
         setDreamModelId(configResult.data.modelId ?? '');
         setDreamTime(configResult.data.dreamTime);
-        setDreamMode(configResult.data.dreamMode === 'off' ? 'full' : configResult.data.dreamMode);
+        setDreamMode(configResult.data.dreamMode);
+        setConfigLoaded(true);
       }
       if (modelsResult.ok) {
         setModels(modelsResult.data.filter(isPickableAgentModel));
@@ -131,6 +134,7 @@ export const DreamingTab = () => {
             {([
               { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
               { value: 'light', label: 'Light Dream', desc: 'Extract memories + vault maintenance only, no technique identification' },
+              { value: 'off', label: 'Off', desc: 'Do not run the nightly dream' },
             ] as const).map((option) => (
               <label key={option.value} className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -150,11 +154,18 @@ export const DreamingTab = () => {
           </div>
         </div>
 
+        {dreamMode === 'off' && (
+          <p className="text-[10px] text-ui/25">Dreaming is off; these apply when you turn it back on.</p>
+        )}
+        {!configLoaded && (
+          <div className="alert-banner alert-error">Could not read the saved dreaming settings, so Save is disabled.</div>
+        )}
+
         <div className="srow pt-2 flex-wrap">
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !configLoaded}
             className="btn btn--primary btn--sm"
           >
             {saving ? 'Saving...' : 'Save'}
