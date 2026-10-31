@@ -20,6 +20,15 @@ const logger = createLogger('vault-store');
 
 const MAX_ENTRY_TOKENS = 500;
 
+/** The one length rule for a saved fact: over 500 tokens is cut to 2000 characters plus a pointer line. Create and edit both use it. */
+export function capEntryContent(content: string): string {
+  if (estimateTokens(content) > MAX_ENTRY_TOKENS) {
+    const maxChars = MAX_ENTRY_TOKENS * 4;
+    return content.slice(0, maxChars) + '\n[Truncated -- consider creating a technique for longer procedures]';
+  }
+  return content;
+}
+
 // W3-4: agent_id used by the dashboard vault API (gateway/routes/vault.ts)
 // for owner-authored entries. These form a deliberate OWNER scope: visible to
 // every agent's recall (the owner writes facts FOR their agents), while
@@ -349,11 +358,7 @@ export async function createEntry(params: {
   const id = uuidv4();
 
   // Enforce 500 token max
-  let content = params.content;
-  if (estimateTokens(content) > MAX_ENTRY_TOKENS) {
-    const maxChars = MAX_ENTRY_TOKENS * 4;
-    content = content.slice(0, maxChars) + '\n[Truncated -- consider creating a technique for longer procedures]';
-  }
+  const content = capEntryContent(params.content);
 
   // Generate embedding
   let embeddingBuf: Buffer | null = null;
@@ -435,6 +440,7 @@ export function updateEntry(id: string, updates: {
   const db = getDb();
   const sets: string[] = ['updated_at = datetime(\'now\')'];
   const params: unknown[] = [];
+  if (updates.content !== undefined) updates = { ...updates, content: capEntryContent(updates.content) };
 
   if (updates.content !== undefined) {
     sets.push('content = ?');

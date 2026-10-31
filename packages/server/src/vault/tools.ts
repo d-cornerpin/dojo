@@ -12,6 +12,9 @@ import { obligationShape } from '../work/obligation-memory.js';
 import { detectCredentialContent } from './credential-gate.js';
 import { entryShape } from '../memory/shape-judgment.js';
 
+/** The kinds a saved fact may have. The agent tool and the dashboard check against this one list. */
+export const VAULT_ENTRY_TYPES: readonly string[] = ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'];
+
 const logger = createLogger('vault-tools');
 
 // ── vault_remember ──
@@ -157,9 +160,8 @@ export async function executeVaultRemember(
   if (!content) return 'Error: content is required.';
   if (!type) return 'Error: type is required (fact, preference, decision, procedure, relationship, event, or note).';
 
-  const validTypes = ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'];
-  if (!validTypes.includes(type)) {
-    return `Error: type must be one of: ${validTypes.join(', ')}`;
+  if (!VAULT_ENTRY_TYPES.includes(type)) {
+    return `Error: type must be one of: ${VAULT_ENTRY_TYPES.join(', ')}`;
   }
 
   // Refuse to stash technique content. Techniques are mutable on disk

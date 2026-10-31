@@ -23,6 +23,7 @@ import { runDreamingCycle, getDreamingConfig, setDreamingConfig } from '../../va
 import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
 import { markConversationProcessed } from '../../vault/store.js';
 import { routeFailure } from './route-failure.js';
+import { VAULT_ENTRY_TYPES } from '../../vault/tools.js';
 import { getDb } from '../../db/connection.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel } from '../../agent/main-model-floor.js';
 import { refuseBadClockTime } from '../../config/clock-time.js';
@@ -59,6 +60,9 @@ vaultRouter.post('/entries', async (c) => {
   if (!content || !type) {
     return c.json({ ok: false, error: 'content and type are required' }, 400);
   }
+  if (typeof type !== 'string' || !VAULT_ENTRY_TYPES.includes(type)) {
+    return c.json({ ok: false, error: `type must be one of: ${VAULT_ENTRY_TYPES.join(', ')}` }, 400);
+  }
 
   try {
     const entry = await createEntry({
@@ -79,6 +83,12 @@ vaultRouter.post('/entries', async (c) => {
 
 vaultRouter.put('/entries/:id', async (c) => {
   const body = await c.req.json();
+  if (body.confidence !== undefined && !(typeof body.confidence === 'number' && Number.isFinite(body.confidence) && body.confidence >= 0 && body.confidence <= 1)) {
+    return c.json({ ok: false, error: 'confidence must be a number from 0 to 1' }, 400);
+  }
+  if (body.content !== undefined && (typeof body.content !== 'string' || body.content.trim() === '')) {
+    return c.json({ ok: false, error: 'content must be non-empty text' }, 400);
+  }
   const updated = updateEntry(c.req.param('id'), {
     content: body.content,
     tags: body.tags,
