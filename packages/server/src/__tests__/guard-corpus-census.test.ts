@@ -274,6 +274,14 @@ const STEPS_BY_PATH: Declaration[] = [
       + 'rather than letting a clause go quiet.',
   },
   {
+    rel: 'packages/server/src/services/__tests__/t138-every-owner-notice-has-a-class.test.ts',
+    verdict: 'step-aware',
+    why: 'IT NAMES A STEP FILE AS A TABLE KEY, NOT AS A CORPUS: the census lists every owner-notice '
+      + 'caller by the file it lives in (one of them under `agent/v2/steps/finalize`). The corpus it '
+      + 'scans is a walk of the whole of `packages/server/src`, which follows moved code by '
+      + 'construction, and a caller that moves out of the named file fails as a stale entry.',
+  },
+  {
     rel: 'packages/server/src/agent/v2/__tests__/route-text-inventory.ts',
     verdict: 'step-aware',
     why: 'DATA, NOT A WALK: the route-text inventory is a list of source lines, each tagged with the '

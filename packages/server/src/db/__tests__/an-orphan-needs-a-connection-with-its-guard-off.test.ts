@@ -225,7 +225,7 @@ const DECLARED_OPENERS: Record<string, { readonly: boolean; reason: string }> = 
       + 'closed, to stamp one config key. INSERT only (an OR REPLACE against `config`, which '
       + 'is a parent of nothing), so it cannot delete a parent row.',
   },
-  'migration/path-migration.ts': {
+  'migration/path-migration-db.ts': {
     readonly: false,
     reason: 'Rewrites $HOME references inside a body taken from ANOTHER MACHINE, and opens '
       + 'that file itself deliberately — routing it through the singleton would target the '
