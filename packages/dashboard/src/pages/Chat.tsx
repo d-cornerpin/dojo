@@ -1830,7 +1830,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
       if (result.ok) {
         setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
+      } else {
+        toast.error('The new conversation started but the page could not reload it. Refresh the page.');
       }
+    } else {
+      toast.error(res.error);
     }
   };
 
