@@ -31,9 +31,12 @@ export const BrowseModels = ({ providerId, providerName, onModelAdded }: { provi
   // is confirmed from inside the modal so the user can pull/enter a price.
   const [pricingModalModel, setPricingModalModel] = useState<api.BrowseModelResult | null>(null);
   const latestSearch = useRef(0);
+  const inFlightQuery = useRef('');
 
   const handleSearch = async () => {
-    if (searching || !query.trim()) return;
+    // Same words already on their way: ignore Enter. Different words: the newer search takes over.
+    if (!query.trim() || (searching && inFlightQuery.current === query.trim())) return;
+    inFlightQuery.current = query.trim();
     const mine = ++latestSearch.current;
     setSearching(true);
     setSearched(true);
@@ -44,7 +47,7 @@ export const BrowseModels = ({ providerId, providerName, onModelAdded }: { provi
       if (result.ok) setResults(result.data);
       else setSearchError(result.error ?? 'The search did not work.');
     } finally {
-      setSearching(false);
+      if (mine === latestSearch.current) setSearching(false);
     }
   };
 
