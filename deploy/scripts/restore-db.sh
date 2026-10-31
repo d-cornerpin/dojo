@@ -189,6 +189,30 @@ if [ -n "$LIVE" ]; then
     exit 1
 fi
 
+# ── 1b. One restore, install or rollback at a time ──
+# The same lock rollback.sh and the installer take (mkdir is atomic; it holds its holder's pid, and
+# a holder that is dead is cleared). Two restores at once once shared a safety-copy name and one
+# deleted the other's good copy of the current data.
+LOCK_DIR="$DOJO_DIR/rollback.lock"
+take_lock() {
+    mkdir -p "$DOJO_DIR" 2>/dev/null
+    if mkdir "$LOCK_DIR" 2>/dev/null; then echo $$ > "$LOCK_DIR/pid"; return 0; fi
+    local holder age
+    holder="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 1; fi
+    age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s) ))
+    if [ -z "$holder" ] && [ "$age" -lt 60 ]; then return 1; fi
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" 2>/dev/null && echo $$ > "$LOCK_DIR/pid"
+}
+if ! take_lock; then
+    echo "REFUSING: another restore, install or rollback is running ($LOCK_DIR)."
+    echo "Wait for it to finish, then run this again. Nothing has been changed."
+    exit 1
+fi
+release_lock() { [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK_DIR"; }
+trap release_lock EXIT
+
 # ── 2. Choose the candidate ──
 if [ "$FROM" = "__latest__" ]; then
     FROM="$(collect | grep -v '/dojo-replaced-[^/]*$' | head -1)"
@@ -243,10 +267,10 @@ fi
 mkdir -p "$AUTO_BACKUPS"
 SAFETY=""
 if [ -f "$DB" ]; then
-    SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP.db"
+    SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP-$$.db"
     # Two restores inside one second must not share a name: the second would overwrite the
     # first safety copy, which may be the only copy of the data that restore replaced.
-    n=1; while [ -e "$SAFETY" ]; do n=$((n+1)); SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP-$n.db"; done
+    n=1; while [ -e "$SAFETY" ]; do n=$((n+1)); SAFETY="$AUTO_BACKUPS/dojo-replaced-$STAMP-$$-$n.db"; done
     echo ""
     echo "Copying your CURRENT database aside first..."
     # The copy counts only when it is WHOLE. A snapshot must exit 0 and pass quick_check. A plain

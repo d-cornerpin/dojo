@@ -4,7 +4,7 @@
 // The REAL script runs against a scratch HOME with stub `launchctl`, a `sqlite3` wrapper whose
 // `VACUUM INTO` fails (as on a full disk) and a `cp` wrapper that can write half a file and fail.
 import { describe, it, expect, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -98,5 +98,45 @@ describe('restore-db.sh keeps a WHOLE copy of the current database or refuses', 
     const home = scratch({ vacuumFails: false, cpMode: 'real' });
     expect(run(home).status).toBe(0);
     expect(marker(home)).toBe('pre');
+  });
+});
+
+// Two restores started at once used to share one safety name and one of them deleted the other's good
+// copy. The restore now takes the same lock rollback.sh uses, so the second run refuses.
+describe('restore-db.sh takes the shared lock', () => {
+  it('two runs at once: one refuses, and the copy holding the current data survives', async () => {
+    const home = scratch({ vacuumFails: false, cpMode: 'real' });
+    // The snapshot step of every run is slow enough for the second run to start inside it.
+    fs.writeFileSync(path.join(home, 'bin', 'sqlite3'),
+      `#!/bin/sh\ncase "$*" in *"VACUUM INTO"*) sleep 1;; esac\nexec "${realSqlite}" "$@"\n`, { mode: 0o755 });
+    const env = { PATH: `${path.join(home, 'bin')}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`, HOME: home, DOJO_PORT: '1' };
+    const go = (): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+      const c = spawn('/bin/bash', [SCRIPT, '--latest', '--yes'], { env });
+      let out = '';
+      c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });
+      c.on('close', (status) => resolve({ status, out }));
+    });
+    const a = go();
+    await new Promise((r) => setTimeout(r, 300));
+    const b = go();
+    const [ra, rb] = await Promise.all([a, b]);
+    const refused = [ra, rb].filter((r) => r.status === 1);
+    expect(refused.length).toBe(1);
+    expect(refused[0].out).toContain('another restore');
+    expect(marker(home)).toBe('pre');
+    const kept = copies(home);
+    expect(kept.length).toBe(1);
+    const db = new Database(path.join(home, '.dojo', 'data', 'backups', kept[0]), { readonly: true });
+    expect((db.prepare('select v from which').get() as { v: string }).v).toBe('current');
+    db.close();
+    expect(fs.existsSync(path.join(home, '.dojo', 'rollback.lock'))).toBe(false);
+  });
+
+  it('a lock left by a dead process is cleared and the restore goes on', () => {
+    const home = scratch({ vacuumFails: false, cpMode: 'real' });
+    const lock = path.join(home, '.dojo', 'rollback.lock');
+    fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, 'pid'), '2147483646');
+    expect(run(home).status).toBe(0);
+    expect(fs.existsSync(lock)).toBe(false);
   });
 });
