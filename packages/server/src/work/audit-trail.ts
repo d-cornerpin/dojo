@@ -71,6 +71,9 @@ export function appendAuditEntry(workId: string, actor: string, f: AuditEntryFie
   });
 }
 
+/** The ladder clock's open-stretch marker (`work/ladder-clock.ts`): bookkeeping, never shown in the trail. */
+export const LADDER_HELD_ENTRY = 'ladder_held';
+
 /**
  * THE TRAIL, as one ordered projection over three spine sources:
  *
@@ -114,7 +117,7 @@ export function readAuditTrail(
             ${jx('note')} AS note, ${jx('evidence_json')} AS evidence_json,
             e.created_at AS created_at
        FROM work_events e
-      WHERE e.work_id = ? AND e.kind = '${AUDIT_KIND}'`,
+      WHERE e.work_id = ? AND e.kind = '${AUDIT_KIND}' AND ${jx('entry_kind')} IS NOT '${LADDER_HELD_ENTRY}'`,
     `SELECT e.id, e.work_id, e.actor, 'transition',
             ${STATE_TO_STATUS_SQL(jx('from'))}, ${STATE_TO_STATUS_SQL(jx('to'))},
             ${jx('reason')}, NULL, ${underNote(jx('note'), movedSummary)}, ${jx('evidence_ref')}, e.created_at

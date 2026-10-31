@@ -1,6 +1,6 @@
 import { getDb } from '../db/connection.js';
 import { appendWorkEvent } from './store.js';
-import { AUDIT_KIND } from './audit-trail.js';
+import { AUDIT_KIND, LADDER_HELD_ENTRY } from './audit-trail.js';
 
 // THE LADDER'S CLOCK (t151) — split from `poke-ladder.ts`, which keeps the rung and the pokes.
 //
@@ -10,8 +10,9 @@ import { AUDIT_KIND } from './audit-trail.js';
 // the first call to the last park). The idle clock is the task's age, so the first sweep after the
 // job found the whole job's length as idleness and sent the TOP rung — an escalation "after 2 pokes"
 // with none on the record (t143 live walk, items 3 and 10). Time spent behind the agent's own work
-// is not time the task sat ignored. The sweep that first leaves a task alone notes the instant
-// (process memory: a stretch is as long as the process that observed it); the first sweep that may
+// is not time the task sat ignored. The sweep that first leaves a task alone writes the instant
+// down as ONE `ladder_held` marker row on the task's own record (so a restart in the middle of a long job
+// resumes the stretch, never re-counts it as idleness; the marker is hidden from the task log); the first sweep that may
 // poke again closes the stretch, and a stretch that was long enough to have mattered (as long as the
 // ladder's own first rung) is written to the task's record as ONE `resumed` row. The ladder's idle is
 // its age minus the closed stretches. Nothing is counted, nothing is a dial; shorter stretches are
@@ -19,23 +20,37 @@ import { AUDIT_KIND } from './audit-trail.js';
 
 export const LADDER_RESUMED_ENTRY = 'ladder_resumed';
 
-const heldSince = new Map<string, number>();
+/** The open stretch's marker for this task, if the sweep is holding it. */
+function openMarker(workId: string): { id: number; since: number } | null {
+  const row = getDb().prepare(
+    `SELECT id, COALESCE(json_extract(payload, '$.held_since'), created_at) AS since
+       FROM work_events
+      WHERE work_id = ? AND kind = ? AND json_extract(payload, '$.entry_kind') = ?
+      ORDER BY id LIMIT 1`,
+  ).get(workId, AUDIT_KIND, LADDER_HELD_ENTRY) as { id: number; since: number } | undefined;
+  return row ?? null;
+}
 
-/** The sweep is leaving this task alone because its assignee is busy. Remembered from the first sweep. */
-export function holdLadder(workId: string): void {
-  if (!heldSince.has(workId)) heldSince.set(workId, Date.now());
+/** The sweep is leaving this task alone because its assignee is busy. Remembered from the first sweep,
+ *  across restarts: the marker is on the task's record. */
+export function holdLadder(workId: string, actorId: string): void {
+  if (openMarker(workId)) return;
+  appendWorkEvent(workId, AUDIT_KIND, actorId, {
+    entry_kind: LADDER_HELD_ENTRY, from_status: null, to_status: null,
+    reason: null, action_taken: null, note: null, evidence_json: null, held_since: Date.now(),
+  });
 }
 
 /** The sweep may poke this task again. Closes an open stretch; writes it down when it was a long one. */
 export function resumeLadder(workId: string, actorId: string, longEnoughMs: number): void {
-  const since = heldSince.get(workId);
-  if (since === undefined) return;
-  heldSince.delete(workId);
-  if (Date.now() - since < longEnoughMs) return;
+  const marker = openMarker(workId);
+  if (!marker) return;
+  getDb().prepare('DELETE FROM work_events WHERE id = ?').run(marker.id);
+  if (Date.now() - marker.since < longEnoughMs) return;
   appendWorkEvent(workId, AUDIT_KIND, actorId, {
     entry_kind: LADDER_RESUMED_ENTRY, from_status: null, to_status: null,
     reason: 'the assignee is free again; the idle clock did not run while it was working',
-    action_taken: null, note: null, evidence_json: null, held_since: since,
+    action_taken: null, note: null, evidence_json: null, held_since: marker.since,
   });
 }
 
