@@ -213,6 +213,15 @@ export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
 export const STREAM_FIRST_CHUNK_TIMEOUT_ERROR = 'model first-chunk timeout';
 
 /**
+ * R7 (owner ruling, 2026-10-31: "retry a model answer cut off without 'finished'"). An OpenAI-style stream that
+ * ends with no `finish_reason` on any chunk was hung up on mid-answer: the answer is NOT complete. It used to be
+ * returned as a normal `end_turn` (half an answer shipped as the whole). It is raised as this retryable cut
+ * instead, and the v2 loop's single same-model retry (model-call.ts) gives the person the whole answer.
+ */
+export const STREAM_NO_FINISH_ERROR = 'model stream ended without a finish signal';
+class StreamEndedUnfinished extends Error {}
+
+/**
  * Which timeout phrase this abort deserves. The one decision point, so the four throw sites
  * across both transports cannot come to disagree — the same discipline
  * `streamWasCutByWatchdog` applies to "was this the watchdog or the user".
@@ -2525,12 +2534,17 @@ async function callOpenAIModel(
     // this check and the catch's; it carries the retry phrase so even that reads correctly.
     //
     // SCOPE, stated so it is not mistaken for more: this speaks for the WATCHDOG's abort and
-    // nothing else. A server that closes the connection mid-answer still ends the loop
-    // normally with partial text, exactly as it did before — that is a different signal with
-    // a different fix, and inventing a bound for it here would be guessing.
+    // nothing else. A server that closes the connection mid-answer is a different signal (no
+    // `finish_reason` arrived) and is raised just below as STREAM_NO_FINISH_ERROR (R7).
     // ════════════════════════════════════════════════════════════════════════════════════
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
       throw new Error(`${streamTimeoutPhrase(watchdog, patience)}: the stream ended on the watchdog's abort, which the SDK did not raise`);
+    }
+
+    // R7: no finish_reason on any chunk = the provider hung up mid-answer. A user's own stop keeps its partial
+    // (the abort signal is theirs); anything else is a cut answer and is never shipped as a finished one.
+    if (providerFinishReason === null && !params.abortSignal?.aborted) {
+      throw new StreamEndedUnfinished(`${STREAM_NO_FINISH_ERROR}: the provider closed the stream before saying the answer was finished`);
     }
 
     // Finalize tool calls
@@ -2733,6 +2747,13 @@ async function callOpenAIModel(
     };
   } catch (err) {
     watchdog.finish();
+    if (err instanceof StreamEndedUnfinished) {
+      recordProviderError(modelInfo.providerId);
+      logger.warn(`OpenAI call ended without a finish signal: ${err.message}`, {
+        model: modelInfo.apiModelId, providerId: modelInfo.providerId,
+      }, agentId);
+      throw new AgentError(err.message, agentId, { code: 'MODEL_CALL_FAILED', retryable: true });
+    }
     if (streamWasCutByWatchdog(watchdog, params.abortSignal)) {
       // The WATCHDOG aborted (never the user's stop; that leaves timedOut()
       // false or shows on the external signal). Translate to the retryable
