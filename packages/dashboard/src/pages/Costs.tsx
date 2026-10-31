@@ -94,7 +94,7 @@ const OpenRouterBudget = () => {
 
   const handleSaveThreshold = async () => {
     const val = parseFloat(threshold);
-    if (isNaN(val) || val < 0) return;
+    if (isNaN(val) || val < 0) { setThresholdError('Enter 0 or more.'); return; }
     setThresholdError(null);
     setSavingThreshold(true);
     const res = await api.request('/config/openrouter/threshold', {
@@ -193,7 +193,7 @@ const DeepSeekBudget = () => {
 
   const handleSaveThreshold = async () => {
     const val = parseFloat(threshold);
-    if (isNaN(val) || val < 0) return;
+    if (isNaN(val) || val < 0) { setThresholdError('Enter 0 or more.'); return; }
     setThresholdError(null);
     setSavingThreshold(true);
     const res = await api.request('/config/deepseek/threshold', {
@@ -271,6 +271,7 @@ const DeepSeekBudget = () => {
 const PricingSyncBadge = () => {
   const [status, setStatus] = useState<api.LitellmSyncStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const result = await api.getPricingSyncStatus();
@@ -281,8 +282,10 @@ const PricingSyncBadge = () => {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    setRefreshError(null);
     const result = await api.runPricingSync();
     if (result.ok) setStatus(result.data);
+    else setRefreshError(result.error);
     setRefreshing(false);
   };
 
@@ -304,6 +307,7 @@ const PricingSyncBadge = () => {
         {failed && when && <span className="bad">Failed {when}{status?.lastError ? ` · ${status.lastError}` : ''}</span>}
         {!ok && !failed && <span>Has not run yet</span>}
       </span>
+      {refreshError && <span className="bad">Refresh failed: {refreshError}</span>}
       <button
         type="button"
         className="btn btn--sm"
