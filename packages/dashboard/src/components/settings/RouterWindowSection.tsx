@@ -7,7 +7,7 @@
 // and tools alone would not fit. Saved on release through the existing settings door, like the voice
 // sliders (`VoiceTab.tsx`).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as api from '../../lib/api';
 
 export interface RouterWindowData {
@@ -26,13 +26,19 @@ export const RouterWindowSection = ({ routerWindow }: { routerWindow: RouterWind
   const [value, setValue] = useState(routerWindow?.tokens ?? 0);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { setValue(routerWindow?.tokens ?? 0); }, [routerWindow?.tokens]);
+  // The window the server holds right now (the prop is only the value at load; a save changes what is stored).
+  const stored = useRef(routerWindow?.tokens ?? 0);
+  useEffect(() => { stored.current = routerWindow?.tokens ?? 0; setValue(routerWindow?.tokens ?? 0); }, [routerWindow?.tokens]);
 
   const save = async (): Promise<void> => {
+    if (routerWindow === null || value === stored.current) return;
     setError(null); setSaved(false);
-    const res = await api.setSetting('router.context_window', String(value));
-    if (res.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); }
-    else { setError(res.error); setValue(routerWindow?.tokens ?? 0); }
+    // At the top the window is unset (the server reads '' as unset and follows the floor), so a release
+    // that returns here keeps "unset = the top" instead of pinning today's floor as a fixed number.
+    const next = value >= routerWindow.floorTokens ? '' : String(value);
+    const res = await api.setSetting('router.context_window', next);
+    if (res.ok) { stored.current = value; setSaved(true); setTimeout(() => setSaved(false), 1500); }
+    else { setError(res.error); setValue(stored.current); }
   };
 
   return (
