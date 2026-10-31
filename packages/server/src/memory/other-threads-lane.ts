@@ -61,6 +61,7 @@ import { recordedInstant } from './message-stamp.js';
 import { listChannelStatuses } from '../services/capability-registry.js';
 import { toolCategoryGranted } from '../agent/access/read.js';
 import { renderTokens, loopTailExtraTokens } from './lanes.js';
+import { withChannel } from './thread-channel.js';
 import { layOutInRoom, unlistedThreadsLine } from './other-threads-room.js';
 
 const logger = createLogger('other-threads-lane');
@@ -130,8 +131,7 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
   const entry = (r: typeof rows[number], label: string): OtherThread => ({
     conversationId: r.conversation_id, label, channel: r.channel, lastAtMs: r.last_at, theySpokeLast: r.last_role === 'user',
   });
-  const waiting: OtherThread[] = [];
-  const touched: OtherThread[] = [];
+  const waiting: OtherThread[] = [], touched: OtherThread[] = [];
   for (const r of rows) {
     const isWaiting = r.last_role === 'user';
     const isTouched = since !== null && r.last_at > since;
@@ -146,7 +146,7 @@ export function readOtherThreads(agentId: string, currentConversationId: string 
     // about whose, which is worse than silence because it invites a guess — and a guess about who
     // is waiting on the other end is the failure this whole lane is repairing.
     if (!label || label === r.channel) continue;
-    (isWaiting ? waiting : touched).push(entry(r, label));
+    (isWaiting ? waiting : touched).push(entry(r, withChannel(label, r.channel)));
   }
   named.push(...waiting, ...touched);   // each group is already newest first
 

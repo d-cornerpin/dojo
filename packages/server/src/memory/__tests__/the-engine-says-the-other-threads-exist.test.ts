@@ -70,6 +70,7 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   buildOtherThreadsInjection, readOtherThreads, renderOtherThreads,
 } from '../other-threads-lane.js';
+import { withChannel } from '../thread-channel.js';
 import { recalledRowLabel } from '../party-label.js';
 // ⚠ NOT A PATH. `guard-corpus-census.test.ts` refuses a guard that reaches into `agent/v2/steps` by
 // hand: six copies of that walk existed before the GUARD-AUDIT and they are why the corpus drifted.
@@ -495,5 +496,39 @@ describe('§7 the route sentence is grant-aware', () => {
     withThread();
     // `routeSentence` catches, falls back to "nothing granted", and the THREAD still prints.
     expect(buildOtherThreadsInjection(AGENT, SERVED)).toContain('a contact (imessage)');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §8 — T282. EVERY ROW NAMES ITS CHANNEL (the owner's law: agents always know which channel they are on).
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§8 every thread line names its channel', () => {
+  const rowsOf = (): string[] => buildOtherThreadsInjection(AGENT, SERVED)!.split('\n').filter((l) => /^\d+\. /.test(l));
+
+  it('the owner on iMessage reads "<owner> via iMessage"', () => {
+    seedConversation('conv-own-im', { channel: 'imessage', counterpartyId: 'owner' });
+    seedMessage({ conversationId: 'conv-own-im', role: 'user', content: 'x', atMs: hoursAgo(2) });
+    const rows = rowsOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain('the owner via iMessage — last activity');
+  });
+
+  it('the owner on email reads "<owner> via email"', () => {
+    seedConversation('conv-own-em', { channel: 'email', counterpartyId: 'owner' });
+    seedMessage({ conversationId: 'conv-own-em', role: 'user', content: 'x', atMs: hoursAgo(2) });
+    expect(rowsOf()[0]).toContain('the owner via email — last activity');
+  });
+
+  it('a contact thread is unchanged: channel once, never doubled', () => {
+    seedConversation('conv-im', { channel: 'imessage', counterpartyId: 'x', counterpartyName: 'a contact' });
+    seedMessage({ conversationId: 'conv-im', role: 'user', content: 'x', atMs: hoursAgo(2) });
+    const row = rowsOf()[0];
+    expect(row).toContain('a contact (imessage) — last activity');
+    expect(row).not.toContain(' via ');
+  });
+
+  it('an unknown channel falls back to its own id, never blank', () => {
+    expect(withChannel('the owner', 'carrier-pigeon')).toBe('the owner via carrier-pigeon');
   });
 });
