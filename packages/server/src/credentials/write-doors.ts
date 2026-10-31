@@ -41,7 +41,7 @@ export interface StoredRowFacts {
 export function missingRefusal(serviceName: string, verb: string): string {
   const next = verb === 'credential_update'
     ? `Nothing has been stored under that name yet, so there is no value to replace. If this is a ` +
-      `credential the user has just handed you, store it with ` +
+      `credential the person you are talking to has just handed you, store it with ` +
       `credential_add(service_name="${serviceName}", credentials={…}) — no overwrite flag is needed ` +
       `for a name that is free. If you expected it to exist, call credential_list() to see the names ` +
       `that ARE stored; the name is case-sensitive.`
@@ -62,7 +62,7 @@ export function missingRefusal(serviceName: string, verb: string): string {
 export function undecryptableRefusal(serviceName: string): string {
   return (
     `Credential "${serviceName}" cannot be decrypted (the master key was likely rotated), so its ` +
-    `stored value is unrecoverable. Ask the user for a replacement value, then call ` +
+    `stored value is unrecoverable. Ask the person you are talking to for a replacement value, then call ` +
     `credential_add(service_name="${serviceName}", credentials={…}, overwrite=true) to seal the new ` +
     `one under the same name. Do not retry this read — it will fail the same way every time.`
   );
@@ -80,11 +80,11 @@ export function deleteRefusal(serviceName: string, row: StoredRowFacts): string 
   return (
     `"${serviceName}" is a stored credential — created ${row.created_at}${by}${changed}. ` +
     `Deleting it is permanent: the value is gone, there is no recycle bin and no prior version. ` +
-    `If the user explicitly asked you to remove this credential, call ` +
+    `If the person you are talking to explicitly asked you to remove this credential, call ` +
     `credential_delete(service_name="${serviceName}", confirm=true) and the deletion will be recorded. ` +
     `If you are only replacing its value, do NOT delete it — call ` +
     `credential_update(service_name="${serviceName}", credentials={…}, overwrite=true) instead, which keeps ` +
-    `the row's history of who created it and when. If you are unsure, ask the user before removing anything.`
+    `the row's history of who created it and when. If you are unsure, ask the person you are talking to before removing anything.`
   );
 }
 
@@ -99,7 +99,7 @@ export function overwriteRefusal(serviceName: string, row: StoredRowFacts, verb:
   return (
     `A credential is already stored under "${serviceName}" — created ${row.created_at}${by}${changed}. ` +
     `Replacing it destroys the stored value permanently; there is no prior version and no undo. ` +
-    `If the user has genuinely handed you a replacement for THIS credential, call ` +
+    `If the person you are talking to has genuinely handed you a replacement for THIS credential, call ` +
     `${verb}(service_name="${serviceName}", credentials={…}, overwrite=true) and the overwrite will be ` +
     `recorded. If you are storing a DIFFERENT service's key, pick a service_name that is not taken — ` +
     `credential_list() shows which names are in use. ` +
@@ -108,7 +108,7 @@ export function overwriteRefusal(serviceName: string, row: StoredRowFacts, verb:
     // the only branch whose right answer is "write nothing at all".
     `If you think the value already stored here is the same one you were about to write, do NOT ` +
     `write it again: call credential_get(service_name="${serviceName}") to confirm it is there. ` +
-    `If you are unsure which of these this is, ask the user before writing anything.`
+    `If you are unsure which of these this is, ask the person you are talking to before writing anything.`
   );
 }
 

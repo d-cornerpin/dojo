@@ -23,7 +23,7 @@ describe('t196 (A4) - the two steers that were untagged', () => {
   it('false-delivery-claim carries the author head', () => {
     const text = refusedDeliverySteer({ quoted: 'no such recipient' } as never);
     expect(text).toMatch(TAGGED);
-    expect(text).toContain('You told the user that went out');
+    expect(text).toContain('You told the person you are talking to that went out');
   });
 });
 

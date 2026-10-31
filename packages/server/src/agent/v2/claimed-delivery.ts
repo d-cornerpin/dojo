@@ -202,7 +202,7 @@ export function claimedDeliverySteer(d: ClaimedDeliveryFires): string {
     return (
       `[System: your reply says you got that to ${d.recipient}, but this turn's delivery record for ` +
       `${d.recipient} is "${d.failedOutcome}" — the send did NOT land. Either retry the send with the ` +
-      `correct tool, or tell the user plainly that it has not gone through yet. Do not leave a claim ` +
+      `correct tool, or tell the person you are talking to plainly that it has not gone through yet. Do not leave a claim ` +
       `standing that the delivery record contradicts.]`
     );
   }
@@ -213,6 +213,6 @@ export function claimedDeliverySteer(d: ClaimedDeliveryFires): string {
     `open ${o.kind === 'ask' ? 'message from them' : 'promise you recorded'}${what} with no delivery ` +
     `recorded against it (${o.id}). If you ALREADY sent it, say so plainly and carry on — the record ` +
     `will catch up. If you have NOT, send it now with the correct tool (send_to_agent for another ` +
-    `agent, imessage_send / the email-send tool for a person) before telling the user it is done.]`
+    `agent, imessage_send / the email-send tool for a person) before telling the person you are talking to it is done.]`
   );
 }

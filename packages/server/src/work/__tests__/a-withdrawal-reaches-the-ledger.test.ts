@@ -278,7 +278,7 @@ describe('§3 the in-flight arm is LIVE, and it never eats the turn\'s tool call
     const src = sourceOf('../../agent/v2/steps/post-call-classify/owed-interrupt.ts');
     const body = src.slice(src.indexOf('const inFlightPrompt = ('), src.indexOf('\n      );', src.indexOf('const inFlightPrompt = (')));
     expect(body).toContain('work_close_request(action="commitment", disposition="dropped"');
-    expect(body).toContain("note=\"<the user's own words>\"");
+    expect(body).toContain("note=\"<${userWords(turnCtx.address)}'s own words>\"");
     // the id is SUPPLIED: the serving ask is `claimed` and so is absent from the OPEN WORK block
     expect(src).toContain("const servingAskId = turnCtx.root?.kind === 'ask'");
     expect(body).toContain('id="${servingAskId}"');

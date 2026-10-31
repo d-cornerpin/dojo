@@ -357,7 +357,7 @@ function computeFilteredTools(agentId: string, sudoPolicy: SudoPolicy): ToolDefi
     // not name a tool they don't have.
     const blockedHint = canSelfComplete
       ? 'use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked")'
-      : 'use send_to_agent to ask an agent with broader permissions, or tell the user you are blocked';
+      : 'use send_to_agent to ask an agent with broader permissions, or tell the person you are talking to you are blocked';
     filtered = filtered.map(t => {
       if (t.name !== 'exec') return t;
       return {

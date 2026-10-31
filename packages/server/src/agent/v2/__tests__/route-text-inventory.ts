@@ -103,36 +103,12 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording: connecting an integration is the OWNER's act"
  },
  {
-  "id": "S038",
-  "file": "agent/tools/surface.ts",
-  "line": 360,
-  "old": ": 'use send_to_agent to ask an agent with broader permissions, or tell the user you are blocked';",
-  "new": ": 'use send_to_agent to ask an agent with broader permissions, or tell the person you are talking to you are blocked';",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S039",
   "file": "agent/tools/util.ts",
   "line": 227,
   "old": "steps.push('Or tell the user you are blocked so they can act');",
   "new": "steps.push(`Or tell ${userWords(currentAddress(agentId))} you are blocked so they can act`);",
   "how": "A=currentAddress(agentId); convert the quoted literal to a template string"
- },
- {
-  "id": "S040",
-  "file": "agent/v2/claimed-delivery.ts",
-  "line": 205,
-  "old": "`correct tool, or tell the user plainly that it has not gone through yet. Do not leave a claim ` +",
-  "new": "`correct tool, or tell the person you are talking to plainly that it has not gone through yet. Do not leave a claim ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S041",
-  "file": "agent/v2/claimed-delivery.ts",
-  "line": 216,
-  "old": "`agent, imessage_send / the email-send tool for a person) before telling the user it is done.]`",
-  "new": "`agent, imessage_send / the email-send tool for a person) before telling the person you are talking to it is done.]`",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
   "id": "S042",
@@ -263,36 +239,12 @@ export const SWEEP: readonly SweepEntry[] = [
   "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
-  "id": "S070",
-  "file": "agent/v2/refused-delivery.ts",
-  "line": 108,
-  "old": "return '[System: You told the user that went out, and the only tool this turn that could have sent it '",
-  "new": "return '[System: You told the person you are talking to that went out, and the only tool this turn that could have sent it '",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
   "id": "S074",
   "file": "agent/v2/steps/execute/delegation-exit.ts",
   "line": 163,
   "old": "'[Engine hint: you delegated work on the user\\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';",
   "new": "`[Engine hint: you delegated work on ${userWords(ctx.turnCtx.address)}'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, as your reply (it goes to ${userWords(ctx.turnCtx.address)} by ${replyChannelWords(ctx.turnCtx.address)}): if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]`;",
   "how": "A=ctx.turnCtx.address; import { userWords, replyChannelWords } from '../../turn-address.js'. Keep the rest of the literal exactly as it is today."
- },
- {
-  "id": "S075",
-  "file": "agent/v2/steps/execute/refusal-gates.ts",
-  "line": 146,
-  "old": "`  (c) Send the user a direct question if you need clarification.\\n` +",
-  "new": "`  (c) Send ${userWords(turnCtx.address)} a direct question if you need clarification.\\n` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S076",
-  "file": "agent/v2/steps/execute/refusal-gates.ts",
-  "line": 278,
-  "old": "`Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.\\n\\n` +",
-  "new": "`Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.\\n\\n` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
  },
  {
   "id": "S081",
@@ -309,94 +261,6 @@ export const SWEEP: readonly SweepEntry[] = [
   "old": "`Silently going idle after a work_note leaves the user with no idea what is happening.]`",
   "new": "`Silently going idle after a work_note leaves ${userWords(turnCtx.address)} with no idea what is happening.]`",
   "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S087",
-  "file": "agent/v2/steps/post-call-classify/owed-interrupt.ts",
-  "line": 176,
-  "old": "`[System] While you were working, the user also sent: ${quoted}. ` +",
-  "new": "`[System] While you were working, ${userWords(turnCtx.address)} also sent: ${quoted}. ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S088",
-  "file": "agent/v2/steps/post-call-classify/owed-interrupt.ts",
-  "line": 178,
-  "old": "`and a second answer from you now would reach the user as a duplicate.${laterTurnRelease} ` +",
-  "new": "`and a second answer from you now would reach ${userWords(turnCtx.address)} as a duplicate.${laterTurnRelease} ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S089",
-  "file": "agent/v2/steps/post-call-classify/owed-interrupt.ts",
-  "line": 180,
-  "old": "`Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +",
-  "new": "`Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; ${userWords(turnCtx.address)} already has it. ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S090",
-  "file": "agent/v2/steps/post-call-classify/owed-interrupt.ts",
-  "line": 202,
-  "old": "`[System] While you are working, the user also sent: ${quoted}. ` +",
-  "new": "`[System] While you are working, ${userWords(turnCtx.address)} also sent: ${quoted}. ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S091",
-  "file": "agent/v2/steps/post-call-classify/owed-interrupt.ts",
-  "line": 207,
-  "old": "`, note=\"<the user's own words>\"). ` +",
-  "new": "`, note=\"<${userWords(turnCtx.address)}'s own words>\"). ` +",
-  "how": "A=turnCtx.address; import { userWords } from the turn-address module (agent/v2/turn-address.js, relative path); text keeps 'the user' when there is no person (no code branch needed)"
- },
- {
-  "id": "S112",
-  "file": "credentials/write-doors.ts",
-  "line": 44,
-  "old": "`credential the user has just handed you, store it with ` +",
-  "new": "`credential the person you are talking to has just handed you, store it with ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S113",
-  "file": "credentials/write-doors.ts",
-  "line": 65,
-  "old": "`stored value is unrecoverable. Ask the user for a replacement value, then call ` +",
-  "new": "`stored value is unrecoverable. Ask the person you are talking to for a replacement value, then call ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S114",
-  "file": "credentials/write-doors.ts",
-  "line": 83,
-  "old": "`If the user explicitly asked you to remove this credential, call ` +",
-  "new": "`If the person you are talking to explicitly asked you to remove this credential, call ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S115",
-  "file": "credentials/write-doors.ts",
-  "line": 87,
-  "old": "`the row's history of who created it and when. If you are unsure, ask the user before removing anything.`",
-  "new": "`the row's history of who created it and when. If you are unsure, ask the person you are talking to before removing anything.`",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S116",
-  "file": "credentials/write-doors.ts",
-  "line": 102,
-  "old": "`If the user has genuinely handed you a replacement for THIS credential, call ` +",
-  "new": "`If the person you are talking to has genuinely handed you a replacement for THIS credential, call ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- },
- {
-  "id": "S117",
-  "file": "credentials/write-doors.ts",
-  "line": 111,
-  "old": "`If you are unsure which of these this is, ask the user before writing anything.`",
-  "new": "`If you are unsure which of these this is, ask the person you are talking to before writing anything.`",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
  },
  {
   "id": "S120",

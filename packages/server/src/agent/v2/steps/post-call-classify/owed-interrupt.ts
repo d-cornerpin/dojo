@@ -19,6 +19,7 @@ import { steerFired } from '../../steer-queue.js';
 import { getOwedMidTurnArrivals } from '../../counterparty.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
+import { userWords } from '../../turn-address.js';
 
 const logger = createLogger('v2-loop');
 
@@ -173,11 +174,11 @@ export async function runOwedInterrupt(
       const laterTurnRelease =
         ` (If you are reading this on a LATER turn, that turn IS ${itsTheir} turn — answer ${itThem} normally.)`;
       const afterReplyPrompt = (
-        `[System] While you were working, the user also sent: ${quoted}. ` +
+        `[System] While you were working, ${userWords(turnCtx.address)} also sent: ${quoted}. ` +
         `Do NOT answer ${itThem} in this turn — ${isAre} queued and will be served on ${itsTheir} own turn next, ` +
-        `and a second answer from you now would reach the user as a duplicate.${laterTurnRelease} ` +
+        `and a second answer from you now would reach ${userWords(turnCtx.address)} as a duplicate.${laterTurnRelease} ` +
         `Do not re-run the tools you used for the main task; that work is done and delivered. ` +
-        `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +
+        `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; ${userWords(turnCtx.address)} already has it. ` +
         `If what they sent CANCELS or CHANGES work you are still doing, stop that work now and record it; otherwise finish this turn without adding anything.`
       );
       // ── T32 LEG B1 — THE IN-FLIGHT FORM, and it is a DIFFERENT INSTRUCTION, not a reworded
@@ -199,12 +200,12 @@ export async function runOwedInterrupt(
       // that ask — so it says it, and the door accepts a claimed ask for `dropped` (leg B2).
       const servingAskId = turnCtx.root?.kind === 'ask' && turnCtx.root.id ? `ask:${turnCtx.root.id}` : null;
       const inFlightPrompt = (
-        `[System] While you are working, the user also sent: ${quoted}. ` +
+        `[System] While you are working, ${userWords(turnCtx.address)} also sent: ${quoted}. ` +
         `Nothing has reached them yet this turn. Do NOT answer ${itThem} in this turn — ${isAre} queued and will be served on ${itsTheir} own turn next.${laterTurnRelease} ` +
         `What this changes is the work you are doing RIGHT NOW: if it cancels or replaces that work, STOP — do not finish it and do not deliver its answer, ` +
         `and record the cancellation with work_close_request(action="commitment", disposition="dropped"` +
         `${servingAskId ? `, id="${servingAskId}"` : ', id=<the id in [brackets] from your OPEN WORK block>'}` +
-        `, note="<the user's own words>"). ` +
+        `, note="<${userWords(turnCtx.address)}'s own words>"). ` +
         `If it only adds to the work, carry on and cover it when its turn comes. ` +
         `Whatever you say in your one reply this turn, do not deliver the cancelled task's answer as though they had not spoken.`
       );

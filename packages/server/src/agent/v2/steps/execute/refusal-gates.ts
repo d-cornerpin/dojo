@@ -24,7 +24,7 @@ import { closeOutGateDecision } from '../../stale-work-ids.js';
 import { compileOwedGateDecision } from '../../compile-owed-gate.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
-import { replyChannelWords } from '../../turn-address.js';
+import { replyChannelWords, userWords } from '../../turn-address.js';
 import { createLogger } from '../../../../logger.js';
 import { A2A_SEND_CAP_PER_RECIPIENT } from './tool-sets.js';
 import type { ToolCall } from '@dojo/shared';
@@ -143,7 +143,7 @@ export function runRefusalGates(
         `Pick a different next action:\n` +
         `  (a) Continue the work from that result: the next item or step, or \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
         `  (b) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
-        `  (c) Send the user a direct question if you need clarification.\n` +
+        `  (c) Send ${userWords(turnCtx.address)} a direct question if you need clarification.\n` +
         `  (d) Only if the work is done: work_update(action="status", status='complete', result='...', evidence=[...]).\n\n` +
         ENGINE_BLOCK_ESCAPE_HATCH;
       state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
@@ -275,7 +275,7 @@ export function runRefusalGates(
       `Say where they stand before any other tool: work_note(task_id, notes="what is next") if you are continuing; ` +
       `work_update(action="status", status="paused"|"blocked") if you are waiting; status="complete" only if one is done. ` +
       `After any one of those the gate stands down for this turn and "${tc.name}" works normally. ` +
-      `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.\n\n` +
+      `Results already delivered to ${userWords(turnCtx.address)} must NOT be repeated; after your tracker call, reply [no-reply] unless ${userWords(turnCtx.address)} asked something new.\n\n` +
       ENGINE_BLOCK_ESCAPE_HATCH
     );
     try {
