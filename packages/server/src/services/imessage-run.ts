@@ -67,8 +67,6 @@ export function getImsgPath(): string | null {
 /** An inbound HEIC photo, as JPEG (vision models don't accept HEIC), via macOS's built-in `sips`.
  *  Moved here unchanged from the bridge (E19b). Throws on failure; 30 s is generous for any iPhone photo. */
 export function convertHeicToJpeg(srcPath: string, destPath: string): void {
-  execSync(
-    `sips -s format jpeg ${JSON.stringify(srcPath)} --out ${JSON.stringify(destPath)}`,
-    { stdio: 'pipe', timeout: 30_000 },
-  );
+  // Argument array, no shell: the file name comes from the sender's phone and no shell may read it.
+  execFileSync('/usr/bin/sips', ['-s', 'format', 'jpeg', srcPath, '--out', destPath], { stdio: 'pipe', timeout: 30_000 });
 }
