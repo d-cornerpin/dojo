@@ -48,13 +48,14 @@ vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage }));
 import { runMigrations } from '../../db/migrations.js';
 import { onAgentInjured } from '../injury-recovery.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../agent/stream-patience.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const HEALER = 'healer';
 
 function seed(db: Database.Database): void {
   db.prepare(
-    "INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'error'), (?, 'Healer', 'idle')",
+    `INSERT INTO agents (id, name, status) VALUES (?, '${FX.n4}', 'error'), (?, 'Healer', 'idle')`,
   ).run(AGENT, HEALER);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('healer_agent_id', ?)").run(HEALER);
 }

@@ -40,9 +40,10 @@ vi.mock('../../memory/message-store.js', () => ({ insertMessageIfAbsent: vi.fn((
 vi.mock('../../services/imessage-bridge.js', () => ({ sendAlert: vi.fn() }));
 
 import { runMigrations } from '../../db/migrations.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const HEALER = 'healer';
-const TARGET = 'zorbik';
+const TARGET = FXID.n8;
 
 // The literal phrase `classifyError` (injury-recovery.ts) matches for the size-class
 // (declared-patience) injury bucket — copied here for the same reason every other test fixture
@@ -55,7 +56,7 @@ const CORRUPTION_LAST_ERROR = 'invalid_request: tool_use_id mismatch, messages.0
 
 function seedAgents(db: Database.Database): void {
   db.prepare(
-    "INSERT INTO agents (id, name, status) VALUES (?, 'Zorbik', 'error'), (?, 'Healer', 'idle')",
+    `INSERT INTO agents (id, name, status) VALUES (?, '${FX.n8}', 'error'), (?, 'Healer', 'idle')`,
   ).run(TARGET, HEALER);
   db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('healer_agent_id', ?)").run(HEALER);
 }
