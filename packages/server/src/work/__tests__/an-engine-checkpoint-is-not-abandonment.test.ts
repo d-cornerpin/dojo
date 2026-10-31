@@ -35,6 +35,7 @@ import { pendingCirclingVerdict } from '../../tracker/effort-governor.js';
 import { taskScope } from '../tracker-view.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../task-freshness.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
  *  Here the trigger is the owner's ask `msg-job`, which opened the job's task (or project). */
@@ -46,7 +47,7 @@ function park(reason: 'turn-budget' | 'tool-loop', turnNumber = 5, ask: string |
   try { const n = noteEngineCheckpoint(AGENT, reason); registerTimerWake(AGENT); return n; } finally { endTurnContext(AGENT); endJobRun(AGENT); }
 }
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const OTHER_AGENT = 'dreamer';
 const T = 1_700_000_000_000;
 const CLOSE_OUT_IDLE_MINUTES = 10;

@@ -52,8 +52,9 @@ vi.mock('../../logger.js', () => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { openAsk, claimAsk, openDelegationJoin, landPiece, settlePieceWithoutResult } from '../store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const THREAD = 'thread-aaaaaaaa-1111';
 
 /** The trigger the box carried on 2026-07-29: no `root_kind` arm, so it bites join pieces. */
@@ -105,7 +106,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

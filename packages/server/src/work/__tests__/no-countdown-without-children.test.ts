@@ -51,8 +51,9 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, openDelegationJoin, phantomCountdownCensus, clearPhantomCountdowns, joinState,
 } from '../store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const NOW = 1786000000000;
 
@@ -92,7 +93,7 @@ beforeEach(() => {
   deliverySeq = 0;
   runMigrations();
   d.pragma('foreign_keys = ON');
-  d.prepare(`INSERT INTO agents (id, name, status) VALUES (?, 'Zargo', 'idle')`).run(AGENT);
+  d.prepare(`INSERT INTO agents (id, name, status) VALUES (?, '${FX.n4}', 'idle')`).run(AGENT);
   d.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
      VALUES (?, ?, 'dashboard', 'owner')`,

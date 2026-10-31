@@ -1,8 +1,8 @@
 // UX-REPAIR ROUND 11 · T43 leg (c) — A PUNT CANNOT SILENTLY SATISFY THE JOIN
 //
 // ── THE RECORDED INCIDENT (round-11 S5-A) ──
-// HarnessBot delegated research to quilba, the PM, who holds no web tools. Quilba punted the
-// work to zargo and replied to HarnessBot with a hand-off note. `landPiece` settled her piece
+// HarnessBot delegated research to FXID.n5, the PM, who holds no web tools. FX.n5 punted the
+// work to FXID.n4 and replied to HarnessBot with a hand-off note. `landPiece` settled her piece
 // `done` on that note — "the delegated piece came back" — the countdown reached zero with ONE
 // research stream in hand, and the compile steer told the model the pieces were back. ~6m20s
 // were then spent recovering by hand.
@@ -45,16 +45,17 @@ import {
   openAsk, claimAsk, openDelegationJoin, findJoinChildByThread, landPiece,
   joinState, joinPieces, repointJoinPieceToHandOff, threadHopCount, THREAD_HOP_CAP,
 } from '../store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** The delegator — the join is theirs, and it stays theirs. */
 const OWNER_AGENT = 'harnessbot';
 /** The assignee who is handing the work on. */
-const PUNTER = 'quilba';
+const PUNTER = FXID.n5;
 /** The agent the work actually goes to. */
-const DOER = 'zargo';
+const DOER = FXID.n4;
 
-const T_ASSIGN = 'thread-aaaaaaaa-1111';   // HarnessBot -> quilba
-const T_HANDOFF = 'thread-bbbbbbbb-2222';  // quilba -> zargo
+const T_ASSIGN = 'thread-aaaaaaaa-1111';   // HarnessBot -> FXID.n5
+const T_HANDOFF = 'thread-bbbbbbbb-2222';  // FXID.n5 -> FXID.n4
 const T_OTHER = 'thread-cccccccc-3333';
 
 const row = (id: string): Record<string, unknown> =>
@@ -109,8 +110,8 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, 'Quilba', 'idle', '1970-01-01'),
-            (?, 'Zargo', 'idle', '1970-01-01')`,
+     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, '${FX.n5}', 'idle', '1970-01-01'),
+            (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(OWNER_AGENT, PUNTER, DOER);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
@@ -174,7 +175,7 @@ describe('the join edge follows the work', () => {
     repointJoinPieceToHandOff({
       childId, handOffSender: PUNTER, newThreadId: T_HANDOFF, newAssignee: DOER,
     });
-    // This is exactly the lookup `landReplyOnJoin` makes when zargo's answer arrives to quilba.
+    // This is exactly the lookup `landReplyOnJoin` makes when FXID.n4's answer arrives to FXID.n5.
     expect(findJoinChildByThread(PUNTER, T_HANDOFF)?.id).toBe(childId);
     // The old edge is gone: a late note from the punter on the original thread no longer
     // finds a piece to settle.
@@ -188,7 +189,7 @@ describe('the join edge follows the work', () => {
     });
     const settled = landPiece(findJoinChildByThread(PUNTER, T_HANDOFF)!.id, {
       deliveryId: seedDelivery('d-real', { agent_id: PUNTER }),
-      content: 'Zargo: option A wins on price, option B on support.',
+      content: `${FX.n4}: option A wins on price, option B on support.`,
       messageId: null, actorId: DOER,
     });
     expect(settled.result.kind).toBe('applied');

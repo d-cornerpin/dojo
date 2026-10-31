@@ -59,9 +59,10 @@ import {
 } from '../join-drive.js';
 import { compileOwedAfterRedrive, stillCompileOwed } from '../../agent/v2/compile-owed-gate.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
-const PEER_A = 'tyndo';
+const PEER_A = FXID.n6;
 const PEER_B = 'healer';
 const CONV = '616f857b-2026-44f3-b64e-943032f913ec';
 /** S5's own turns: 4899 delegated, 4902 is the later turn that composed. */
@@ -176,7 +177,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, 'Tyndo', 'idle', '1970-01-01'), (?, 'Healer', 'idle', '1970-01-01')`,
+     VALUES (?, 'HarnessBot', 'idle', '1970-01-01'), (?, '${FX.n6}', 'idle', '1970-01-01'), (?, 'Healer', 'idle', '1970-01-01')`,
   ).run(AGENT, PEER_A, PEER_B);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

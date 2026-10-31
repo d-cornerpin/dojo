@@ -65,8 +65,9 @@ import {
   validationQueueOrderExpr,
   type DoorbellRing,
 } from '../validation-drive.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
@@ -156,7 +157,7 @@ describe('THE DOORBELL — "so and so says they got this done"', () => {
   it('NEGATIVE CONTROL: an AUTHORITY close rings NOTHING — Key 2 is already turned', () => {
     seedWork('w4');
     const r = transition('w4', {
-      to: 'done', by: 'pm', actorId: 'quilba', claim: 'authoritative',
+      to: 'done', by: 'pm', actorId: FXID.n5, claim: 'authoritative',
       reason: 'PM validated the close', resultDeliveryId: 'd-1',
     });
     expect(r.kind).toBe('applied');

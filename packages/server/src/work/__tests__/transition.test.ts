@@ -24,8 +24,9 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { transition, rejectClaim, revertCount, isTerminal } from '../store.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
@@ -365,11 +366,11 @@ describe('reopening settled work needs an authority', () => {
 describe('effects run INSIDE, once, on every applied path', () => {
   it('writes exactly one transition event carrying the full story', () => {
     seedWork('w1');
-    transition('w1', { to: 'claimed', by: 'agent', reason: 'mine', actorId: 'zargo', claimedByTurn: 3 });
+    transition('w1', { to: 'claimed', by: 'agent', reason: 'mine', actorId: FXID.n4, claimedByTurn: 3 });
     const ev = events('w1');
     expect(ev).toHaveLength(1);
     expect(ev[0].kind).toBe('transition');
-    expect(ev[0].actor).toBe('zargo');
+    expect(ev[0].actor).toBe(FXID.n4);
     const payload = JSON.parse(ev[0].payload!) as Record<string, unknown>;
     expect(payload).toMatchObject({ from: 'open', to: 'claimed', by: 'agent', reason: 'mine' });
   });

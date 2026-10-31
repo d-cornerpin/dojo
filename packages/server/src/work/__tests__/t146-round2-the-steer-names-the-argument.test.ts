@@ -8,9 +8,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { ownerVerdictNudgeText } from '../validation-drive.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const TASK = '77cba094-e823-4c22-88d4-bea9645b3191';
-const nudge = (agentName = 'HarnessBot', ownerName = 'Yorvak'): string => ownerVerdictNudgeText({
+const nudge = (agentName = 'HarnessBot', ownerName = FX.n11): string => ownerVerdictNudgeText({
   taskId: TASK, title: 'Synthesize the Squarespace and WordPress research into one rundown',
   status: 'in_progress', agentName, ownerName, boundMin: 5,
 });

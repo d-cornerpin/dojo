@@ -62,12 +62,13 @@ import {
   abandonUnservableAsks, unservableOpenAskCensus, askIdForMessage, openAsk,
 } from '../store.js';
 import { selfWakeStandDown, humanAsksOpen } from '../work-reaper.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const SRC = path.join(REPO, 'packages/server/src');
 const read = (rel: string): string => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 
 /** The shape the iMessage bridge hands the writer, verbatim in the fields that matter:

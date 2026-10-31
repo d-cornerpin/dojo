@@ -39,8 +39,9 @@ import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, ENGINE_RELAY_BOUND, JOIN_DRIVE_ENTRY,
   recordJoinDrive, nextJoinDriveRung, everyPieceLandedWithContent, engineRelayPreface,
 } from '../join-drive.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const ASK = 'ask:relay-rung';
 
 /** Spend the whole redrive rung, exactly as `resolveCompilePendingJoins` spends it. */
@@ -59,7 +60,7 @@ beforeEach(() => {
   mockDb.current = db;
   runMigrations();
   db.pragma('foreign_keys = ON');
-  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
+  db.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`).run(AGENT);
   db.prepare(
     `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent,
                        wakes, closes_thread, opened_at, updated_at, title)
@@ -138,7 +139,7 @@ describe('T48: "every piece landed with content" is STRUCTURE, never a reading o
     // The prose-classification ban: T43c re-points the join edge on a DECLARED hand-off, so an
     // outstanding hand-off is a piece that never settled. This predicate does not read words.
     expect(everyPieceLandedWithContent([
-      { state: 'done', content: 'I passed this to zargo.' },
+      { state: 'done', content: `I passed this to ${FXID.n4}.` },
       { state: 'done', content: 'the actual research' },
     ])).toBe(true);
   });

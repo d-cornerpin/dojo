@@ -65,8 +65,9 @@ import {
   noteValidatorSilence, resetValidatorSilenceEpisode,
 } from '../validation-drive.js';
 import { pendingCloseRequestExpr, unvalidatedCloseExpr } from '../tracker-view.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 const BOUND_MS = 5 * 60_000;
 
@@ -125,7 +126,7 @@ beforeEach(() => {
   runMigrations();
   broadcasts.length = 0;
   resetValidatorSilenceEpisode();
-  mockDb.current.prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')").run(AGENT, 'Zargo');
+  mockDb.current.prepare("INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')").run(AGENT, FX.n4);
 });
 
 describe('the card can see that a close was requested', () => {
@@ -228,7 +229,7 @@ describe('the ordering law can no longer hold a row in permanent silence', () =>
     expect(unvalidatedClose('w7')).toBe(1);
     // SELF-HEAL: a validator that comes back still closes this row through the normal door.
     const res = transition('w7', {
-      to: 'done', by: 'pm', actorId: 'quilba', claim: 'authoritative',
+      to: 'done', by: 'pm', actorId: FXID.n5, claim: 'authoritative',
       reason: 'brief verified', resultDeliveryId: seedDelivery('d7'),
     });
     expect(res.kind).toBe('applied');
@@ -238,9 +239,9 @@ describe('the ordering law can no longer hold a row in permanent silence', () =>
 
 describe('repeated validator silence reaches the owner', () => {
   it('says it ONCE per episode, through the existing toast machinery', async () => {
-    await noteValidatorSilence(2, 'zargo');
-    await noteValidatorSilence(2, 'zargo');
-    await noteValidatorSilence(3, 'zargo');
+    await noteValidatorSilence(2, FXID.n4);
+    await noteValidatorSilence(2, FXID.n4);
+    await noteValidatorSilence(3, FXID.n4);
 
     const toasts = broadcasts.filter((b) => b.type === 'chat:error');
     expect(toasts).toHaveLength(1);
@@ -249,16 +250,16 @@ describe('repeated validator silence reaches the owner', () => {
   });
 
   it('says nothing while the validator is ruling, and re-arms after it goes quiet again', async () => {
-    await noteValidatorSilence(0, 'zargo');
+    await noteValidatorSilence(0, FXID.n4);
     expect(broadcasts.filter((b) => b.type === 'chat:error')).toHaveLength(0);
 
-    await noteValidatorSilence(1, 'zargo');
+    await noteValidatorSilence(1, FXID.n4);
     expect(broadcasts.filter((b) => b.type === 'chat:error')).toHaveLength(1);
 
     // The validator rules again: the episode ends.
-    await noteValidatorSilence(0, 'zargo');
+    await noteValidatorSilence(0, FXID.n4);
     // And a NEW stall is a NEW episode — one more toast, not silence forever.
-    await noteValidatorSilence(1, 'zargo');
+    await noteValidatorSilence(1, FXID.n4);
     expect(broadcasts.filter((b) => b.type === 'chat:error')).toHaveLength(2);
   });
 });

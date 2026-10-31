@@ -61,8 +61,9 @@ import {
   MAX_RUN_DELIVER_STEERS, RUN_STATUS_UNDELIVERED, RUN_DELIVER_STEER_MARKER,
   RUN_DELIVER_STAND_DOWN_MARKER, recordRunDeliverSteer, runDriveCount,
 } from '../run-deliver-drive.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const W = 'sched-reminder';
 const RUN_OPENED = 1786369522069; // 2026-08-10 13:45:22Z, the incident's own instant
@@ -72,7 +73,7 @@ const db = (): Database.Database => mockDb.current!;
 function seedAgent(): void {
   db().prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db().prepare(
     `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)

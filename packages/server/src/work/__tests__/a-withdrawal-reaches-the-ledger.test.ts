@@ -64,8 +64,9 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openCommitment } from '../store.js';
 import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const db = (): Database.Database => mockDb.current!;
 const here = path.dirname(url.fileURLToPath(import.meta.url));
@@ -100,7 +101,7 @@ beforeEach(() => {
   mockDb.current = d;
   runMigrations();
   d.pragma('foreign_keys = ON');
-  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`).run(AGENT);
+  d.prepare(`INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`).run(AGENT);
   d.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
 });
 

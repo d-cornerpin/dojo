@@ -88,8 +88,9 @@ vi.mock('../../logger.js', () => ({
 import { runMigrations } from '../../db/migrations.js';
 import { openAsk, claimAsk, appendWorkEvent } from '../store.js';
 import { settleAsk, MAX_ASK_RE_SERVES, RE_SERVE_MARKER } from '../ask-settlement.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 /** An ask the agent has picked up, with `serves` hand-backs already spent on its own log. */
 function seedAskWithSpentLadder(serves: number): string {
@@ -125,7 +126,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

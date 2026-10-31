@@ -46,8 +46,9 @@ import {
   COMMITMENT_AGING_DAYS, openObligations, agedObligations,
 } from '../store.js';
 import { buildOpenWorkInjection, buildAgedWorkBriefSection } from '../obligations.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const rowFor = (id: string): Record<string, unknown> | undefined =>

@@ -41,8 +41,9 @@ import { transition, type WorkKind } from '../store.js';
 import { validatedExpr } from '../tracker-view.js';
 import { upholdClaim } from '../tracker-store.js';
 import { closeRefusalTextForTest } from '../../tracker/tools.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T = 1_700_000_000_000;
 
 function seedWork(id: string, over: Record<string, unknown> = {}): void {

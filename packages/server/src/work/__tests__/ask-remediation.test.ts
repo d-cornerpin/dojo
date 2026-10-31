@@ -45,8 +45,9 @@ import {
 } from '../store.js';
 import { remediateAskLedger, REMEDIATION_ACTOR } from '../ask-remediation.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 
 const db = (): Database.Database => mockDb.current!;
@@ -137,7 +138,7 @@ beforeEach(() => {
   runMigrations();
   d.pragma('foreign_keys = ON');
   d.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   d.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)

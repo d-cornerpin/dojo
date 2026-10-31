@@ -47,8 +47,9 @@ import {
   staleOverrideRequests,
   PENDING_OVERRIDE_COUNT_SQL,
 } from '../override-requests.js';
+import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const OTHER = 'dana';
 const T = 1_700_000_000_000;
 

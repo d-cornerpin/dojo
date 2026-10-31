@@ -81,9 +81,10 @@ import { POKE_THRESHOLDS } from '../../tracker/pm-agent.js';
 import { STREAM_FIRST_CHUNK_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS } from '../../agent/stream-patience.js';
 import { sweepUnvalidatedTasksForUserEscalation } from '../../scheduler/runner.js';
 import { setTaskStatusResult } from '../../tracker/schema.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** Fictional throughout (G1): no real agent or person names reach a shipped surface. */
-const ASSIGNEE = 'zargo';
+const ASSIGNEE = FXID.n4;
 const PRIMARY = 'primary';
 const PM = 'pm';
 
@@ -187,7 +188,7 @@ beforeEach(() => {
   // the write is REFUSED and swallowed by that function's own non-fatal catch — which is
   // precisely the failure shape this lane is about, so the harness must not reproduce it by
   // accident and then read the silence as a result.
-  for (const [id, name] of [[PRIMARY, 'Primary'], [ASSIGNEE, 'Zargo'], [PM, 'PM']]) {
+  for (const [id, name] of [[PRIMARY, 'Primary'], [ASSIGNEE, FX.n4], [PM, 'PM']]) {
     mockDb.current.prepare(
       `INSERT INTO agents (id, name, status) VALUES (?, ?, 'idle')`,
     ).run(id, name);
@@ -617,7 +618,7 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
     title: 'wire up the greenhouse sensor',
     status: 'blocked',
     since: '2026-10-06 11:04',
-    agentName: 'Zargo',
+    agentName: FX.n4,
     steers: 2,
     failures: 0,
     blockedValidated: false,
@@ -672,8 +673,8 @@ describe('§5 the owner is told what is blocked, since when, and what was tried'
   });
 
   it('says what the platform itself tried, and counts attempts not sweep passes', () => {
-    expect(ownerEscalationAlertLine({ ...base, steers: 1 })).toContain('asked Zargo once');
-    expect(ownerEscalationAlertLine({ ...base, steers: 2 })).toContain('asked Zargo 2 times');
+    expect(ownerEscalationAlertLine({ ...base, steers: 1 })).toContain(`asked ${FX.n4} once`);
+    expect(ownerEscalationAlertLine({ ...base, steers: 2 })).toContain(`asked ${FX.n4} 2 times`);
   });
 
   it('the failure clause is omitted at zero rather than printed as a reassurance', () => {

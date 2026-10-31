@@ -46,6 +46,7 @@ import {
 import { renderRecallLane, type RecallLaneContext } from '../../memory/recall-lane.js';
 import { dismissCommitment, transition } from '../store.js';
 import { executeVaultRemember } from '../../vault/tools.js';
+import { FX } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 't17-agent';
 
@@ -113,21 +114,21 @@ const LIVE_CORPUS_NON_OBLIGATION = [
   'orbit biscuit kfw2e8',
   'orbit biscuit 3ttlh3',
   'orbit biscuit g6iega',
-  '[2026-08-05] t14-calm arm2: piece delivered by Zargo, codeword CALM-ARM2.',
+  `[2026-08-05] t14-calm arm2: piece delivered by ${FX.n4}, codeword CALM-ARM2.`,
   'Remember this exact phrase : "orbit biscuit 439cdv"',
   '[2026-08-05] Codeword piece one (from HarnessWorker-0001, thread 25e47f29, received Aug 5 2026): TB5WORD-TB59YG6Z',
-  '[2026-08-06] Codeword ECHO-XSE7-33 delivered by Zargo (re-send) thread a2a00afd (closed, no reply).',
+  `[2026-08-06] Codeword ECHO-XSE7-33 delivered by ${FX.n4} (re-send) thread a2a00afd (closed, no reply).`,
   '[2026-08-06] orbit biscuit idpw8d',
   'Remember this exact phrase : "orbit biscuit zth1yw"',
   '[2026-08-06] Remember this exact phrase : "orbit biscuit u5ygd5"',
-  '[2026-08-06] Solar-battery 4e520793: summary delivered Yorvak chat 14:56 UTC (74681ab2); fd35e92d/2028bb17/b3bd894a auto-closed, retries Task not found.',
+  `[2026-08-06] Solar-battery 4e520793: summary delivered ${FX.n11} chat 14:56 UTC (74681ab2); fd35e92d/2028bb17/b3bd894a auto-closed, retries Task not found.`,
   '[2026-08-06] For your records: my beekeeping club membership number is BEE-YGD5-42.',
   'Remember this exact phrase : "orbit biscuit wf6qe5"',
-  '[2026-08-09] Yorvak\'s beekeeping club membership number is BEE-VNAD-42.',
-  '[2026-08-09] Yorvak\'s locker code at the north gym is GYM-O1VNAD-DC2.',
-  '[2026-08-10] T7 status probe ran on Aug 9, 2026 (logged per Yorvak\'s request via HarnessBot\'s task "Log T7 status probe").',
-  '[2026-08-10] Asana brief (Zargo 8/10, thr 49ca907e): Free=2-user cap; Starter $10.99/u/mo ann (3 seats ≈$395/yr); Advanced ≈$900/yr; 1-assignee; 2-3 team: heavy.',
-  '[2026-08-10] Pick: Squarespace Core ~$276/yr — zero maintenance; WordPress only if heavy SEO/customization + maintenance budget. Sources: Tyndo 1a952a39, Zargo 34430191.',
+  `[2026-08-09] ${FX.n11}\'s beekeeping club membership number is BEE-VNAD-42.`,
+  `[2026-08-09] ${FX.n11}\'s locker code at the north gym is GYM-O1VNAD-DC2.`,
+  `[2026-08-10] T7 status probe ran on Aug 9, 2026 (logged per ${FX.n11}\'s request via HarnessBot\'s task "Log T7 status probe").`,
+  `[2026-08-10] Asana brief (${FX.n4} 8/10, thr 49ca907e): Free=2-user cap; Starter $10.99/u/mo ann (3 seats ≈$395/yr); Advanced ≈$900/yr; 1-assignee; 2-3 team: heavy.`,
+  `[2026-08-10] Pick: Squarespace Core ~$276/yr — zero maintenance; WordPress only if heavy SEO/customization + maintenance budget. Sources: ${FX.n6} 1a952a39, ${FX.n4} 34430191.`,
   'My car is at 86,900 miles and the oil change is due at 87,500.',
 ];
 
@@ -153,7 +154,7 @@ describe('§1 obligation shape is narrow enough to refuse on', () => {
     // "due" is a fact about the world; a third party's future act is not the agent's
     // obligation; a past delivery is a record, not a promise.
     expect(obligationShape('My car is at 86,900 miles and the oil change is due at 87,500.')).toBeNull();
-    expect(obligationShape('Yorvak will send the address when he has it.')).toBeNull();
+    expect(obligationShape(`${FX.n11} will send the address when he has it.`)).toBeNull();
     expect(obligationShape('Bob promised to send his address.')).toBeNull();
     expect(obligationShape('Delivered the roof quote to Bob on Aug 1.')).toBeNull();
     expect(obligationShape('The user prefers a follow-up email over a call.')).toBeNull();
@@ -201,7 +202,7 @@ describe('§2 a vault line is resolved against the spine before it is believed',
   });
 
   it('a non-obligation line is never resolved at all', () => {
-    expect(obligationVerdict('Yorvak\'s locker code at the north gym is GYM-O1VNAD-DC2.').kind)
+    expect(obligationVerdict(`${FX.n11}\'s locker code at the north gym is GYM-O1VNAD-DC2.`).kind)
       .toBe('not-an-obligation');
   });
 

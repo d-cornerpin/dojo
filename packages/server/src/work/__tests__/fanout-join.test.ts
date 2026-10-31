@@ -61,8 +61,9 @@ import {
 // vocabulary is (`{verdict}` instead of `{kind}`), and each gained the tightening the
 // authority brings: the children must have settled and the receipt must postdate the join.
 import { settleAskOnJoin, reopenJoinForLateAnswer } from '../ask-settlement.js';
+import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const T1 = 'thread-aaaaaaaa-1111';
 const T2 = 'thread-bbbbbbbb-2222';
 const T3 = 'thread-cccccccc-3333';
@@ -110,7 +111,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   db.prepare(
     `INSERT INTO agents (id, name, status, session_started_at)
-     VALUES (?, 'Zargo', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01')`,
+     VALUES (?, '${FX.n4}', 'idle', '1970-01-01'), ('ana', 'Ana', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
