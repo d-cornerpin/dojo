@@ -37,6 +37,7 @@ authRouter.post('/login', async (c) => {
 
     c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
     c.header('Set-Cookie', `csrf=${csrfToken}; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
+    c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
     return c.json({ ok: true, data: { token, csrfToken } });
   }
 
@@ -54,6 +55,7 @@ authRouter.post('/login', async (c) => {
   c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
   c.header('Set-Cookie', `csrf=${csrfToken}; Path=/; SameSite=Strict; Max-Age=86400`, { append: true });
   logger.info('Successful login');
+  c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache');
   return c.json({ ok: true, data: { token, csrfToken } });
 });
 

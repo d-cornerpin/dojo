@@ -234,6 +234,7 @@ setupRouter.post('/complete', async (c) => {
 
   logger.info('Setup completed');
 
+  c.header('Cache-Control', 'no-store'); c.header('Pragma', 'no-cache'); // the body carries a session token
   return c.json({ ok: true, data: { token } });
 });
 

@@ -12,7 +12,7 @@ import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { readLastMigrationBackup } from '../../db/migration-backup.js';
-import { markBootingNew } from '../../update-state.js';
+import { markBootingNew, readMarker } from '../../update-state.js';
 import { installPlatformTree, newInstallWorkDir, runNpmInstall, deadInstallWorkDirs, acquireSwapLock } from '../../update/install-tree.js';
 // t114 (census U14): the updater's long subprocesses are bounded by SILENCE, not by a flat
 // total. The mechanism takes an already-spawned child, so this route keeps its own spawn and
@@ -162,6 +162,29 @@ function sortNewestFirst(list: BackupInfo[]): BackupInfo[] {
   });
 }
 
+/**
+ * THE COPY A ROLLBACK WOULD RESTORE, chosen the way `deploy/scripts/rollback.sh` chooses it: the
+ * backup the update episode recorded (`backupDir` in the update marker) while it is still a whole
+ * build, otherwise the newest `platform.backup-*` by parsed version. A cleanup never deletes it,
+ * whatever `keep` says (t286).
+ */
+function rollbackTargetPath(): string | null {
+  try {
+    const recorded = readMarker()?.backupDir;
+    if (recorded && path.dirname(recorded) === DOJO_DIR && path.basename(recorded).startsWith(BACKUP_PREFIX)
+      && fs.existsSync(path.join(recorded, 'package.json'))) return recorded;
+  } catch { /* an unreadable marker falls through to the name scan, as rollback.sh does */ }
+  return sortNewestFirst(listPlatformBackups())[0]?.path ?? null;
+}
+
+function backupsToPrune(keep: number): BackupInfo[] {
+  const target = rollbackTargetPath();
+  return [
+    ...sortNewestFirst(listPlatformBackups()).slice(keep),
+    ...sortNewestFirst(listFailedBuilds()).slice(keep),
+  ].filter(b => b.path !== target);
+}
+
 // Async pruning: shell out to `rm -rf` (much faster than fs.rmSync since
 // it's native C and doesn't block the event loop) and run targets in
 // parallel. Returns a promise that resolves when all deletions complete.
@@ -175,8 +198,7 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
   //                        the disk. Same schedule, same keep count.
   //   platform.staging-* , work dirs whose installer died (t197); a live installer's never.
   const toDelete = [
-    ...sortNewestFirst(listPlatformBackups()).slice(keep),
-    ...sortNewestFirst(listFailedBuilds()).slice(keep),
+    ...backupsToPrune(keep),
     ...deadInstallWorkDirs(DOJO_DIR).map(p => ({ name: path.basename(p), path: p, mtimeMs: 0, version: '' })),
   ];
   const deleted: string[] = [];
@@ -1171,6 +1193,10 @@ updateRouter.post('/backups/cleanup', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as { keep?: number }));
+  // The newest rollback copy is never cleaned away (t286): a request that would remove it is refused.
+  if (typeof body.keep === 'number' && body.keep < 1) {
+    return c.json({ ok: false, error: 'The newest rollback copy is always kept, so at least 1 backup must be kept.' }, 400);
+  }
   const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : MAX_BACKUPS_TO_KEEP;
 
   // Snapshot the target count up front so the dashboard can show progress
@@ -1179,7 +1205,7 @@ updateRouter.post('/backups/cleanup', async (c) => {
   // builds, FA-D5), so count both or the progress number under-reports.
   const backupCount = listPlatformBackups().length;
   const failedCount = listFailedBuilds().length;
-  const targetCount = Math.max(0, backupCount - keep) + Math.max(0, failedCount - keep);
+  const targetCount = backupsToPrune(keep).length;
 
   if (targetCount === 0) {
     return c.json({

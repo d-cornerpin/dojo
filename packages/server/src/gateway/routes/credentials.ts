@@ -24,6 +24,14 @@ const logger = createLogger('credentials-routes');
 
 export const credentialsRouter = new Hono<AppEnv>();
 
+// Nothing from this router may be kept by a browser, proxy or cache: the reveal carries a decrypted
+// secret in its body. Set after the handler so every response (errors included) carries it (t286).
+credentialsRouter.use('*', async (c, next) => {
+  await next();
+  c.res.headers.set('Cache-Control', 'no-store');
+  c.res.headers.set('Pragma', 'no-cache');
+});
+
 credentialsRouter.get('/', (c) => {
   const records = listCredentials().map(r => ({
     id: r.id,

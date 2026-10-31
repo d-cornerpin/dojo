@@ -65,3 +65,29 @@ describe('a clean-up that does not say how many to keep keeps two', () => {
     expect(fs.readdirSync(path.join(home, '.dojo'))).toEqual(['platform.backup-3.3.2']);
   });
 });
+
+describe('t286: a clean-up never deletes the copy a rollback would restore', () => {
+  const postRaw = async (body: unknown) => {
+    const { updateRouter } = await import('../../gateway/routes/update.js');
+    return updateRouter.request('/backups/cleanup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  };
+  it('keep=0 is refused with the error shape and nothing is deleted', async () => {
+    makeBackups('3.3.1', '3.3.2');
+    const res = await postRaw({ keep: 0 });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { ok: boolean; error: string };
+    expect(j.ok).toBe(false);
+    expect(j.error).toMatch(/newest rollback copy is always kept/);
+    expect(fs.readdirSync(path.join(home, '.dojo')).sort()).toEqual(['platform.backup-3.3.1', 'platform.backup-3.3.2']);
+  });
+  it('the copy the update marker recorded (what rollback.sh restores first) survives even when older than keep allows', async () => {
+    makeBackups('3.3.0', '3.3.1', '3.3.2');
+    const recorded = path.join(home, '.dojo', 'platform.backup-3.3.0');
+    fs.writeFileSync(path.join(recorded, 'package.json'), '{"version":"3.3.0"}');
+    fs.writeFileSync(path.join(home, '.dojo', 'update-state.json'), JSON.stringify({ phase: 'failed-permanently', backupDir: recorded }));
+    await postRaw({ keep: 1 });
+    await settle();
+    expect(fs.existsSync(recorded)).toBe(true);
+    expect(fs.existsSync(path.join(home, '.dojo', 'platform.backup-3.3.1'))).toBe(false);
+  });
+});
