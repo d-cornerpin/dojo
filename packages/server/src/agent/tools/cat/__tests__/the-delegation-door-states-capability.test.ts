@@ -137,16 +137,16 @@ describe('list_agents carries capability, in both modes', () => {
   for (const verbose of [false, true]) {
     it(`${verbose ? 'verbose' : 'compact'}: the PM's line says she cannot do web research`, async () => {
       const out = await listAgents(verbose);
-      const quilba = lineFor(out, FX.n5);
-      expect(quilba, 'the fact the delegation choice needed').toMatch(/web research/);
-      expect(quilba, 'and it is stated as an ABSENCE, not left to inference').toMatch(/no:[^\n]*web research/);
+      const lineN5 = lineFor(out, FX.n5);
+      expect(lineN5, 'the fact the delegation choice needed').toMatch(/web research/);
+      expect(lineN5, 'and it is stated as an ABSENCE, not left to inference').toMatch(/no:[^\n]*web research/);
     });
 
     it(`${verbose ? 'verbose' : 'compact'}: the capable worker's line says he CAN`, async () => {
       const out = await listAgents(verbose);
-      const zargo = lineFor(out, FX.n4);
-      expect(zargo).toMatch(/can:[^\n]*web research/);
-      expect(zargo, 'nothing on the delegable list is missing for him').not.toMatch(/no:/);
+      const lineN4 = lineFor(out, FX.n4);
+      expect(lineN4).toMatch(/can:[^\n]*web research/);
+      expect(lineN4, 'nothing on the delegable list is missing for him').not.toMatch(/no:/);
     });
   }
 });
@@ -158,23 +158,23 @@ describe('list_agents carries capability, in both modes', () => {
 describe('the line is derived from the real grant source', () => {
   it('granting the PM web tools flips her line, with no code change', async () => {
     grants.set(PM, ['send_to_agent', 'work_open', 'web_search']);
-    const quilba = lineFor(await listAgents(false), FX.n5);
-    expect(quilba).toMatch(/can:[^\n]*web research/);
-    expect(quilba, 'she still has no email/calendar/files/messaging').toMatch(/no:/);
+    const lineN5 = lineFor(await listAgents(false), FX.n5);
+    expect(lineN5).toMatch(/can:[^\n]*web research/);
+    expect(lineN5, 'she still has no email/calendar/files/messaging').toMatch(/no:/);
   });
 
   it('revoking the worker\'s web tools flips HIS line, with no code change', async () => {
     grants.set(WORKER, ['send_to_agent', 'gmail_send']);
-    const zargo = lineFor(await listAgents(false), FX.n4);
-    expect(zargo).toMatch(/no:[^\n]*web research/);
-    expect(zargo).toMatch(/can:[^\n]*email/);
+    const lineN4 = lineFor(await listAgents(false), FX.n4);
+    expect(lineN4).toMatch(/no:[^\n]*web research/);
+    expect(lineN4).toMatch(/can:[^\n]*email/);
   });
 
   it('an agent with none of the delegable capabilities says so once, not five times', async () => {
     grants.set(PM, []);
-    const quilba = lineFor(await listAgents(false), FX.n5);
-    expect(quilba).toMatch(/no: web research, email, calendar, files, messaging people/);
-    expect(quilba).not.toMatch(/can:/);
+    const lineN5 = lineFor(await listAgents(false), FX.n5);
+    expect(lineN5).toMatch(/no: web research, email, calendar, files, messaging people/);
+    expect(lineN5).not.toMatch(/can:/);
   });
 
   it('the door reads getFilteredTools — a grant list nobody seeded reads as no capability', async () => {
@@ -200,10 +200,10 @@ describe('the line is derived from the real grant source', () => {
 describe('a capability the door gates on a CHANNEL needs the channel grant', () => {
   it('⚠ ADVERTISED `imessage_send` + NO CHANNEL GRANT READS AS CANNOT', async () => {
     setChannels(WORKER, false);
-    const zargo = lineFor(await listAgents(false), FX.n4);
-    expect(zargo, 'the surface still advertises it').toContain(FX.n4);
-    expect(zargo).toMatch(/no:[^\n]*messaging people/);
-    expect(zargo, 'and the surface-derived capabilities are unaffected').toMatch(/can:[^\n]*web research/);
+    const lineN4 = lineFor(await listAgents(false), FX.n4);
+    expect(lineN4, 'the surface still advertises it').toContain(FX.n4);
+    expect(lineN4).toMatch(/no:[^\n]*messaging people/);
+    expect(lineN4, 'and the surface-derived capabilities are unaffected').toMatch(/can:[^\n]*web research/);
   });
 
   it('the grant flips it back, with no change to the advertised list', async () => {
@@ -258,8 +258,8 @@ describe('every category the capability table points at still exists', () => {
       grants.set(PM, [rep[capLabel]]);
       // A2: `messaging people` also needs the channel grant its wall reads.
       if (capLabel === 'messaging people') setChannels(PM, true);
-      const quilba = lineFor(await listAgents(false), FX.n5);
-      expect(quilba, `${capLabel} via ${rep[capLabel]}`).toMatch(
+      const lineN5 = lineFor(await listAgents(false), FX.n5);
+      expect(lineN5, `${capLabel} via ${rep[capLabel]}`).toMatch(
         new RegExp(`can: ${capLabel.replace(/ /g, ' ')}(;|$)`),
       );
     }
@@ -272,13 +272,13 @@ describe('every category the capability table points at still exists', () => {
 
 describe('the rest of the door is untouched', () => {
   it('compact still leads with name, id, status, classification', async () => {
-    const quilba = lineFor(await listAgents(false), FX.n5);
-    expect(quilba.startsWith(`- ${FX.n5} (${PM}), ready, sensei`)).toBe(true);
+    const lineN5 = lineFor(await listAgents(false), FX.n5);
+    expect(lineN5.startsWith(`- ${FX.n5} (${PM}), ready, sensei`)).toBe(true);
   });
 
   it('verbose still leads with name, ID:, status, classification', async () => {
-    const quilba = lineFor(await listAgents(true), FX.n5);
-    expect(quilba.startsWith(`- ${FX.n5} (ID: ${PM}), ready, sensei`)).toBe(true);
+    const lineN5 = lineFor(await listAgents(true), FX.n5);
+    expect(lineN5.startsWith(`- ${FX.n5} (ID: ${PM}), ready, sensei`)).toBe(true);
   });
 
   it('the injured/paused warning still fires, unchanged', async () => {
@@ -291,8 +291,8 @@ describe('the rest of the door is untouched', () => {
   it('a group name still renders, and the capability clause does not displace it', async () => {
     mockDb.current!.prepare(`INSERT INTO agent_groups (id, name) VALUES ('g1', 'Research squad')`).run();
     mockDb.current!.prepare(`UPDATE agents SET group_id='g1' WHERE id=?`).run(WORKER);
-    const zargo = lineFor(await listAgents(false), FX.n4);
-    expect(zargo).toContain('group: Research squad');
-    expect(zargo).toMatch(/can:/);
+    const lineN4 = lineFor(await listAgents(false), FX.n4);
+    expect(lineN4).toContain('group: Research squad');
+    expect(lineN4).toMatch(/can:/);
   });
 });

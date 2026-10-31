@@ -271,7 +271,7 @@ describe('what the owner reads is unchanged', () => {
       actionTaken: 'notes attached', reason: 'because', note: 'the prose',
     });
     const line = formatEntryLine(listTaskLog('w1')[0]);
-    expect(line).toMatch(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[agent:zargo\] \[observation\]/);
+    expect(line).toMatch(new RegExp(`^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] \\[agent:${FXID.n4}\\] \\[observation\\]`));
     expect(line).toContain('notes attached');
     expect(line).toContain('reason: because');
     expect(line).toContain('the prose');

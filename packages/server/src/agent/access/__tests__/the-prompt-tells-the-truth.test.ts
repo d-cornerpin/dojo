@@ -65,7 +65,7 @@ vi.mock('../../../config/platform.js', async () => {
     isImaginerAgent: () => false,
     getPrimaryAgentId: () => 'primary',
     getPrimaryAgentName: () => 'Primary',
-    getOwnerName: () => 'Yorvak',
+    getOwnerName: () => FX.n11,
   };
 });
 

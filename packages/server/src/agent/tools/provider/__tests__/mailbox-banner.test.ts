@@ -31,12 +31,12 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { FX } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { FX, FXID } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 vi.mock('../../../../db/connection.js', () => ({
-  getDb: () => ({ prepare: () => ({ get: () => ({ name: 'zargo' }), run: () => undefined }) }),
+  getDb: () => ({ prepare: () => ({ get: () => ({ name: FXID.n4 }), run: () => undefined }) }),
 }));
-vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => 'Yorvak' }));
+vi.mock('../../../../config/platform.js', () => ({ isPrimaryAgent: () => true, isPMAgent: () => false, getOwnerName: () => FX.n11 }));
 vi.mock('../../util.js', () => ({ auditLog: () => undefined }));
 
 // The header resolves the address through the SAME resolver the tool used, so

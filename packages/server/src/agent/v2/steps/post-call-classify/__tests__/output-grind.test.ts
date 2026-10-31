@@ -327,6 +327,6 @@ describe('SWEEP CORE-2 item 1 — the PM inherits the grind rung, driven', () =>
 
   it('the rung is keyed on the CALL, never on who made it — no agent is named anywhere in it', () => {
     const src = readFileSync(path.resolve(__dirname, '../empty-response.ts'), 'utf8');
-    expect(src).not.toMatch(/isPMAgent|getPMAgentId|pm_agent_id|'quilba'/);
+    expect(src).not.toMatch(new RegExp(`isPMAgent|getPMAgentId|pm_agent_id|'${FXID.n5}'`));
   });
 });

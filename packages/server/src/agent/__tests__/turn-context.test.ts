@@ -237,8 +237,8 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
   });
 
   it('one agent\'s bag is not another\'s', () => {
-    const zargo = openTurnContext(FXID.n4);
-    zargo.kind = 'user';
+    const bagN4 = openTurnContext(FXID.n4);
+    bagN4.kind = 'user';
     openTurnContext(FXID.n5);
     expect(turnContext(FXID.n5)!.kind).toBeUndefined();
     endTurnContext(FXID.n5);
