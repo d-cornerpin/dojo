@@ -134,6 +134,7 @@ export function ScreenShareViewer() {
       armTimer('Could not reach the screen-sharing service. Is Screen Sharing enabled on the Mac?');
 
       rfb.addEventListener('connect', () => {
+        if (cancelled) return; // a closing old connection must not disturb the current one
         clearTimer();
         connectedRef.current = true;
         setStatus('connected');
@@ -151,6 +152,7 @@ export function ScreenShareViewer() {
         }
       });
       rfb.addEventListener('disconnect', (ev: Event) => {
+        if (cancelled) return; // a closing old connection must not disturb the current one
         clearTimer();
         if (connectedRef.current) {
           setStatus('disconnected');
@@ -161,6 +163,7 @@ export function ScreenShareViewer() {
         }
       });
       rfb.addEventListener('credentialsrequired', (ev: Event) => {
+        if (cancelled) return; // a closing old connection must not disturb the current one
         clearTimer();
         const types = (ev as CustomEvent).detail?.types;
         const wantsUsername = Array.isArray(types) ? types.includes('username') : true;
@@ -184,6 +187,7 @@ export function ScreenShareViewer() {
         setStatus('credential');
       });
       rfb.addEventListener('securityfailure', (ev: Event) => {
+        if (cancelled) return; // a closing old connection must not disturb the current one
         clearTimer();
         const reason = (ev as CustomEvent).detail?.reason;
         if (triedSavedRef.current && !submittedRef.current) {
