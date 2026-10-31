@@ -10,6 +10,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { handleIMCommand } from './imessage-commands.js';
+import { tellAgentWhatDojoSent } from '../agent/dojo-voice.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { activeRuns, agentStartTimes } from '../agent/shared-state.js';
 import { turnContext } from '../agent/turn-context.js';
@@ -530,13 +531,13 @@ let recentGuidsLoaded = false;
 // already running, the message is persisted + queued behind that turn (the
 // runtime serializes per agent), which used to mean pure silence for up to a
 // whole turn. Send ONE deterministic engine ack per sender per running turn
-// so the person knows they were heard. Engine send, never a model turn.
+// so the person knows they were heard. Engine send, never a model turn; it is labelled "Dojo:" and the agent is told.
 const BUSY_ACK_TURN_AGE_MS = 60_000;
-const BUSY_ACK_TEXT = 'On it. I am mid-task right now, I will get back to you shortly.';
+const BUSY_ACK_TEXT = 'Dojo: your message arrived, but the agent is in the middle of a longer task. It will get to your message when that turn ends.';
 // agentId -> the running turn (identified by its start timestamp) + senders acked for it
 const busyAckState = new Map<string, { turnStartedAt: number; ackedSenders: Set<string> }>();
 
-function maybeSendBusyAck(agentId: string, sender: string): void {
+export function maybeSendBusyAck(agentId: string, sender: string): void {
   // Only when a turn is ALREADY running (checked before we dispatch this
   // message, so our own dispatch can't trip it) and it's older than 60s.
   if (!activeRuns.has(agentId)) return;
@@ -558,6 +559,8 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
     { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
     () => sendIMessage(sender, BUSY_ACK_TEXT),
   );
+  // OR-ENGINE-LABELLED: the agent is told exactly what the Dojo sent on its behalf.
+  tellAgentWhatDojoSent({ agentId, recipient: sender, text: BUSY_ACK_TEXT, why: 'because your turn was still running when their text arrived' });
   // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
   // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
