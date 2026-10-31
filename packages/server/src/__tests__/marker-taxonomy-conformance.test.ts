@@ -41,6 +41,7 @@ import {
   PROMPT_HISTORY_EXCLUDED_PREFIXES,
   promptHistoryMarkerSqlClauses,
 } from '@dojo/shared';
+import { FXID } from '../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PKGS = path.join(__dirname, '..', '..', '..');
 const ROOTS = ['server/src', 'shared/src', 'dashboard/src'];
@@ -151,8 +152,8 @@ describe('E18 drift 4 — thread ids are not hex', () => {
   });
 
   it('still parses a hex id, and the envelope regex agrees with the thread regex', () => {
-    expect(parseA2AThreadShort('[A2A:REPLY thread:9006a872 from:quilba] x')).toBe('9006a872');
-    const m = A2A_ENVELOPE_RE.exec('[A2A:REPLY thread:bp0atnn9 from:quilba] x');
+    expect(parseA2AThreadShort(`[A2A:REPLY thread:9006a872 from:${FXID.n5}] x`)).toBe('9006a872');
+    const m = A2A_ENVELOPE_RE.exec(`[A2A:REPLY thread:bp0atnn9 from:${FXID.n5}] x`);
     expect(m?.[2]).toBe('bp0atnn9');
     expect(A2A_THREAD_RE.exec('thread:bp0atnn9]')?.[1]).toBe('bp0atnn9');
   });
