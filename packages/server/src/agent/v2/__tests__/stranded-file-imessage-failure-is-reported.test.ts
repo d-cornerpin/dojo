@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const sendFileMock = vi.hoisted(() => vi.fn());
 const sendAlertMock = vi.hoisted(() => vi.fn(async () => {}));
+const noticeMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../logger.js', () => {
   const noop = (): void => {};
@@ -16,6 +17,7 @@ vi.mock('../../pending-attachments.js', () => ({
   drainPendingAttachmentsWithCaptions: () => ({ attachments: [{ filename: 'report.pdf', path: '/tmp/fake/report.pdf' }], captions: [] }),
 }));
 vi.mock('../../../credentials/secret-fields.js', () => ({ redactHandedCredentials: (_a: string, t: string) => t }));
+vi.mock('../../agent-notice.js', () => ({ postAgentNotice: noticeMock }));
 vi.mock('../../../services/imessage-bridge.js', () => ({
   sendIMessageWithAttachment: sendFileMock,
   sendAlert: sendAlertMock,
@@ -35,7 +37,7 @@ const ctx = () => ({
 const run = () => surfaceStrandedAttachments({} as never, ctx()).catch(() => undefined);
 
 describe('a stranded file that does not reach iMessage', () => {
-  beforeEach(() => { sendFileMock.mockReset(); sendAlertMock.mockClear(); });
+  beforeEach(() => { sendFileMock.mockReset(); sendAlertMock.mockClear(); noticeMock.mockClear(); });
   void advance;
 
   it('is reported when the send answers no', async () => {
@@ -43,12 +45,17 @@ describe('a stranded file that does not reach iMessage', () => {
     await run();
     expect(sendAlertMock).toHaveBeenCalledTimes(1);
     expect(sendAlertMock.mock.calls[0][1]).toBe('notice');
+    // the agent is told too, naming the file, so its reply does not claim it arrived
+    expect(noticeMock).toHaveBeenCalledTimes(1);
+    expect(noticeMock.mock.calls[0][0].toAgentId).toBe('agent-1');
+    expect(noticeMock.mock.calls[0][0].brief).toContain('report.pdf');
   });
 
   it('is reported when the send throws', async () => {
     sendFileMock.mockRejectedValue(new Error('imsg down'));
     await run();
     expect(sendAlertMock).toHaveBeenCalledTimes(1);
+    expect(noticeMock).toHaveBeenCalledTimes(1);
   });
 
   it('says nothing extra when the file landed', async () => {
@@ -56,5 +63,6 @@ describe('a stranded file that does not reach iMessage', () => {
     await run();
     expect(sendFileMock).toHaveBeenCalledTimes(1);
     expect(sendAlertMock).not.toHaveBeenCalled();
+    expect(noticeMock).not.toHaveBeenCalled();
   });
 });
