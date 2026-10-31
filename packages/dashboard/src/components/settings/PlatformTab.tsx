@@ -490,7 +490,7 @@ const RemoteAccessSettings = () => {
                 {status.mode === 'quick' && <span className="text-[10px] text-ui/25">Quick Tunnel</span>}
                 {status.mode === 'named' && <span className="text-[10px] text-ui/25">Named Tunnel</span>}
                 <span className="toolbar__spacer" />
-                {status.url && <span className="link" onClick={copyUrl}>Copy</span>}
+                {status.url && <button type="button" className="link" onClick={copyUrl}>Copy</button>}
               </div>
               {status.url && (
                 <a href={status.url} target="_blank" rel="noopener noreferrer" className="mono-url" style={{ display: 'block', marginTop: 6 }}>{status.url}</a>

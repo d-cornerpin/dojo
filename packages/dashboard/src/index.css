@@ -3673,7 +3673,7 @@
 .dojo3-stage .rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .dojo3-stage .rows .k { font: 400 11.5px/1 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
 .dojo3-stage .rows .v { font: 500 11.5px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-2); font-variant-numeric: tabular-nums; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dojo3-stage .link { color: var(--dojo3-amber-ink); font: 500 11px/1 var(--dojo3-font-mono); letter-spacing: .08em; cursor: pointer; }
+.dojo3-stage .link { color: var(--dojo3-amber-ink); font: 500 11px/1 var(--dojo3-font-mono); letter-spacing: .08em; cursor: pointer; background: none; border: 0; padding: 0; }
 .dojo3-stage .link:hover { color: var(--dojo3-amber-deep); }
 .dojo3-stage .mono-url { font: 500 11.5px/1.4 var(--dojo3-font-mono); color: var(--dojo3-green-ink); letter-spacing: .01em; word-break: break-all; }
 
