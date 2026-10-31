@@ -130,6 +130,14 @@ function listFiles(dirPath: string): string[] {
 
 // ── Export ──
 
+// The final zip's path. The date alone is NOT unique: a second export the same
+// day (a second tab, a retry) would open the same path and truncate the file a
+// first request is still streaming. The random suffix gives every export its
+// own file; the route shows the owner a clean `dojo-export-<date>.zip` name.
+export function exportOutputPath(date: string): string {
+  return path.join(os.tmpdir(), `dojo-export-${date}-${crypto.randomBytes(4).toString('hex')}.zip`);
+}
+
 export async function createExport(password: string): Promise<{ filePath: string; manifest: ExportManifest }> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-export-'));
 
@@ -218,7 +226,7 @@ export async function createExport(password: string): Promise<{ filePath: string
     // Step 12: Create final zip with manifest (unencrypted) + encrypted payload
     // (streamed from disk, not buffered).
     const date = new Date().toISOString().split('T')[0];
-    const outputPath = path.join(os.tmpdir(), `dojo-export-${date}.zip`);
+    const outputPath = exportOutputPath(date);
     await createFinalZip(outputPath, manifest, payloadEncPath);
 
     broadcastProgress('complete', 100, 'Export complete!');

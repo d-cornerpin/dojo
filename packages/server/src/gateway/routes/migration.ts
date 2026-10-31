@@ -60,7 +60,7 @@ migrationRouter.post('/export', async (c) => {
     const fs = await import('node:fs');
     const stat = fs.statSync(filePath);
     const stream = fs.createReadStream(filePath);
-    const fileName = filePath.split('/').pop() ?? 'dojo-export.zip';
+    const fileName = `dojo-export-${new Date().toISOString().split('T')[0]}.zip`;
 
     c.header('Content-Type', 'application/zip');
     c.header('Content-Disposition', `attachment; filename="${fileName}"`);
