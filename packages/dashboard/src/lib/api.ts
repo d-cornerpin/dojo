@@ -1948,8 +1948,16 @@ export const setUpdateChannel = async (channel: UpdateChannel): Promise<ApiRespo
   });
 };
 
-export const getVersion = async (): Promise<ApiResponse<{ version: string }>> => {
-  return request<{ version: string }>('/update/version');
+/** Where the current update or rollback stands, as the server's update-state marker reports it. */
+export interface UpdateEpisode {
+  phase: string;
+  targetVersion: string | null;
+  previousVersion: string | null;
+  failedReason: string | null;
+}
+
+export const getVersion = async (): Promise<ApiResponse<{ version: string; episode: UpdateEpisode | null }>> => {
+  return request<{ version: string; episode: UpdateEpisode | null }>('/update/version');
 };
 
 /**

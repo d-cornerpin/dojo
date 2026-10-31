@@ -1008,8 +1008,14 @@ updateRouter.post('/channel', async (c) => {
 
 // ── Current version ──
 
+// `episode` is the update-state marker's plain summary, so a page that is waiting for a restart can
+// tell "the new build is still starting" from "the new build failed and the old one came back".
 updateRouter.get('/version', (c) => {
-  return c.json({ ok: true, data: { version: getCurrentVersion() } });
+  const m = readMarker();
+  const episode = m && m.phase !== 'idle'
+    ? { phase: m.phase, targetVersion: m.targetVersion, previousVersion: m.previousVersion, failedReason: m.failedReason }
+    : null;
+  return c.json({ ok: true, data: { version: getCurrentVersion(), episode } });
 });
 
 // ── The DATA backup: did the last update leave a way back? ──
