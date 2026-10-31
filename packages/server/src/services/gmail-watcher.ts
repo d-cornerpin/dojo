@@ -28,7 +28,7 @@ import { addressesMatch } from './imessage-bridge.js';
 import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
 import { gmailAddressingFacts } from './mail-inbound-facts.js';
 import { persistNotifiedIds } from './notified-ids.js';
-import { judgeGmailOwnerEmail } from './mail-owner-intake.js';
+import { judgeGmailOwnerEmail, ownerEmailCommandNote } from './mail-owner-intake.js';
 import { mailNoticeContent } from '../tools/inbound-fences.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError, watcherFailingOnRecord, watchedForMail } from './watcher-status.js';
 
@@ -394,7 +394,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const isDirectToAgent = ownerMail.state === 'confirmed' || (kind === 'agent' && !!fromAddr
         && getGmailSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr)));
       const content = mailNoticeContent({ provider: 'GMAIL', accountSuffix, account: notifyAccount, ownerName, kind, fromAddr, from, subject, date, snippet,
-        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail });
+        messageId: msg.id, directToAgent: isDirectToAgent, toolHint, addressing: mailAddressing, ownerEmail })
+        + await ownerEmailCommandNote(ownerMail);
 
       const msgId = uuidv4();
       // P5: email conversation identity = provider + sender + THREAD, so two

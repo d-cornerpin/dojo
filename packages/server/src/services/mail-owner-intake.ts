@@ -20,6 +20,7 @@
 import { getDb } from '../db/connection.js';
 import { ownerMailboxes } from './owner-mailboxes.js';
 import { ownerEmailVerdict, type MailHeader } from './mail-owner-verdict.js';
+import { isOwnerCommandText } from './owner-command-words.js';
 import { newTextOf } from './mail-quoted-text.js';
 import { stripHtmlTags } from '../agent/html-text.js';
 import { extractOwnGmailText, type GmailBodyPart } from '../google/gmail-body.js';
@@ -126,4 +127,18 @@ export function judgeOutlookOwnerEmail(a: { kind: 'agent' | 'user'; placement: O
     return { headers, meeting, body: typeof content !== 'string' ? null : d.uniqueBody?.contentType?.toLowerCase() === 'html' ? stripHtmlTags(content) : content };
   })();
   return judgeOwnerEmail({ provider: 'outlook', kind: a.kind, placement: a.placement, from: a.fromAddress, deliveryRef: `outlook:${a.accountId}:${a.messageId}`, headers: async () => (await once()).headers, newBody: async () => (await once()).body, isMeeting: async () => (await once()).meeting });
+}
+
+/**
+ * R24: when the owner's confirmed email carries a command or an approval ("yes <id>", "status", ...), run it through the same
+ * handler a text reaches, and give back the note the agent reads about it (the agent speaks to the owner; the platform does not).
+ * Empty when the email is not a confirmed owner email or its words are not a command.
+ */
+export async function ownerEmailCommandNote(ownerMail: OwnerEmailOutcome): Promise<string> {
+  if (ownerMail.state !== 'confirmed' || !isOwnerCommandText(ownerMail.words)) return '';
+  try {
+    const { handleConfirmedOwnerEmailWords } = await import('./imessage-commands.js');
+    const result = await handleConfirmedOwnerEmailWords(ownerMail.words);
+    return result ? `\n\n[Dojo: the owner's words in this email were a command or an approval, and the Dojo carried it out as it does for a text. Its result: "${result}" Tell the owner in your own words.]` : '';
+  } catch { return ''; }
 }

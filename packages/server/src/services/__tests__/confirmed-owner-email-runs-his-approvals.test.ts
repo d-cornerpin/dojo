@@ -1,0 +1,48 @@
+// C12 (R24): a confirmed owner email counts as the owner speaking, including his approvals ("yes <id>"): its words
+// reach the same command/approval handler a text reaches. The watchers append `ownerEmailCommandNote` to the notice.
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const resolveHealerProposal = vi.fn(() => ({ ok: true }));
+vi.mock('../../gateway/routes/healer.js', () => ({ resolveHealerProposal: (...a: unknown[]) => (resolveHealerProposal as (...x: unknown[]) => unknown)(...a) }));
+vi.mock('../../db/connection.js', () => ({
+  getDb: () => ({ prepare: () => ({ all: () => [{ id: 'abc12345-0000' }], get: () => undefined, run: () => ({ changes: 0 }) }) }),
+  closeDb: vi.fn(), getDbPath: () => ':memory:',
+}));
+
+import { ownerEmailCommandNote } from '../mail-owner-intake.js';
+
+beforeEach(() => resolveHealerProposal.mockClear());
+
+describe('C12 — a confirmed owner email runs his approvals like a text', () => {
+  it('"yes <id>" in a confirmed owner email approves the pending proposal and tells the agent', async () => {
+    const note = await ownerEmailCommandNote({ state: 'confirmed', words: 'Yes abc123' });
+    expect(resolveHealerProposal).toHaveBeenCalledWith({ id: 'abc12345-0000', action: 'approve', note: null });
+    expect(note).toMatch(/Approved/);
+    expect(note).toMatch(/Tell the owner in your own words/);
+  });
+
+  it('"no <id>" denies it', async () => {
+    await ownerEmailCommandNote({ state: 'confirmed', words: 'no abc123' });
+    expect(resolveHealerProposal).toHaveBeenCalledWith({ id: 'abc12345-0000', action: 'deny', note: null });
+  });
+
+  it('ordinary words are no command: nothing runs, no note', async () => {
+    expect(await ownerEmailCommandNote({ state: 'confirmed', words: 'Please close the ticket, thanks' })).toBe('');
+    expect(resolveHealerProposal).not.toHaveBeenCalled();
+  });
+
+  it('an unconfirmed owner address never runs anything', async () => {
+    expect(await ownerEmailCommandNote({ state: 'unconfirmed', reason: 'check_failed' })).toBe('');
+    expect(await ownerEmailCommandNote({ state: 'none' })).toBe('');
+    expect(resolveHealerProposal).not.toHaveBeenCalled();
+  });
+});
+
+describe('C12 — both mail watchers use it', () => {
+  it('gmail-watcher and outlook-watcher append the command note to the notice they store', async () => {
+    const { readFileSync } = await import('node:fs');
+    for (const f of ['gmail-watcher.ts', 'outlook-watcher.ts']) {
+      expect(readFileSync(new URL(`../${f}`, import.meta.url), 'utf8'), f).toMatch(/\+ await ownerEmailCommandNote\(ownerMail\)/);
+    }
+  });
+});
