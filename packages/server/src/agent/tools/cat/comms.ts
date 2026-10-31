@@ -509,7 +509,7 @@ export const commsHandlers: ToolHandlerMap = {
         content =
           `iMessage NOT sent - recipient "${recipient}" is not on the safe-sender allowlist. ` +
           `Valid recipients on this server: ${valid}. ` +
-          `If you meant to reply to the person who just messaged you, OMIT the recipient argument and the tool will default to them automatically. ` +
+          `If you meant to reply to the person who just messaged you, just write your reply: the engine delivers it. To text someone, name them in recipient. ` +
           `If you need to text someone new, the owner has to add them in Settings → Channels (iMessage card) first.`;
         isError = true;
         auditLog(agentId, 'imessage_send', recipient, 'denied', 'recipient not in allowlist');

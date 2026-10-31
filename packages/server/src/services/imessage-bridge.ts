@@ -917,8 +917,8 @@ export async function processInboundIMessage(
       (senderRecord.description ? ` - ${senderRecord.description}` : '')
     : sender;
   const replyHint = senderRecord
-    ? `To reply, call imessage_send with recipient="${senderRecord.address}" (or omit recipient and it defaults to this same person). Do NOT pass any other safe-sender's address - that would send to the wrong person.`
-    : `To reply, call imessage_send with recipient="${sender}" (or omit recipient to reply to this same person automatically).`;
+    ? `To reply, call imessage_send with recipient="${senderRecord.address}", or just write your reply and the engine delivers it. Do NOT pass any other safe-sender's address - that would send to the wrong person.`
+    : `To reply, call imessage_send with recipient="${sender}", or just write your reply and the engine delivers it.`;
   const policyLine = senderRecord
     ? buildSharingPolicyLine(senderRecord, safeSenders)
     : `SHARING POLICY: Unknown sender - this address matched the bridge filter but isn't on the saved safe-sender list. Be cautious; share only what's directly asked. If in doubt, ask the primary user before responding.`;
