@@ -41,7 +41,6 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   const heartbeatTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dismountedRef = useRef(false);
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_MS);
-  const consecutiveFailsRef = useRef(0);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [reconnectCount, setReconnectCount] = useState(0);
   const hasConnectedRef = useRef(false);
@@ -118,7 +117,6 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
         if (hasConnectedRef.current) setReconnectCount((n) => n + 1);
         hasConnectedRef.current = true;
         reconnectDelayRef.current = INITIAL_RECONNECT_MS;
-        consecutiveFailsRef.current = 0;
         resetHeartbeatTimer();
       };
 
@@ -169,16 +167,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
           return;
         }
 
-        // Track consecutive failures — if we fail 5 times without ever connecting,
-        // the token is probably bad. Redirect to login.
-        consecutiveFailsRef.current++;
-        if (consecutiveFailsRef.current >= 5) {
-          setStatus('disconnected');
-          localStorage.removeItem('dojo_token');
-          window.location.href = '/login';
-          return;
-        }
-
+        // Only 1008 above and connect()'s expiry check prove a bad token; a down server just closes, so keep retrying.
         if (!dismountedRef.current) {
           setStatus('disconnected');
           // Reconnect with exponential backoff
