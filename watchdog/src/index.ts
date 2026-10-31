@@ -23,7 +23,7 @@ import {
   emptyState,
   readState,
   persistState,
-  shouldSendAlert as shouldSendAlertIn,
+  claimAlert as claimAlertIn,
   markAlertResolved as markAlertResolvedIn,
   type WatchdogState,
 } from './alert-ledger.js';
@@ -244,8 +244,8 @@ function saveState(): void {
   }
 }
 
-function shouldSendAlert(alertKey: string): boolean {
-  const send = shouldSendAlertIn(state, alertKey);
+function claimAlertFor(alertKey: string, recipient: string): boolean {
+  const send = claimAlertIn(state, alertKey, recipient);
   if (send) saveState();
   return send;
 }
@@ -656,7 +656,7 @@ async function probeProviderReachable(url: string, method: 'GET' | 'HEAD'): Prom
 // FA-W4(a) / D-G: alert the owner on a SUSTAINED outage of an ENABLED provider (not just
 // platform-process-down). Cheap and independent: HTTP reachability only, no API key, no LLM. A
 // provider must fail PROVIDER_FAILURE_THRESHOLD straight cycles before alerting; per-provider alert
-// keys (`provider_down:<id>`) reuse the existing shouldSendAlert cooldown and markAlertResolved
+// keys (`provider_down:<id>`) reuse the existing claimAlertFor cooldown and markAlertResolved
 // recovery. Local providers (e.g. Ollama) are probed like any other, the alert text just notes they
 // run on this machine.
 async function checkProviders(): Promise<void> {
@@ -726,12 +726,10 @@ async function checkSystemMemory(): Promise<void> {
   if (freePercent < 10) {
     log('warn', 'System memory low', { freeMb, freePercent: freePercent.toFixed(1) });
 
-    if (shouldSendAlert('memory_low')) {
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        await sendSmartAlert(imRecipient, `Watchdog: System memory low, ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
-        recordAlert(`Memory low: ${freeMb}MB`);
-      }
+    const imRecipient = getImessageRecipient();
+    if (claimAlertFor('memory_low', imRecipient)) {
+      await sendSmartAlert(imRecipient, `Watchdog: System memory low, ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
+      recordAlert(`Memory low: ${freeMb}MB`);
     }
   } else {
     // Memory is fine, send recovery if it was previously alerting
@@ -759,17 +757,15 @@ async function checkDiskSpace(): Promise<void> {
       log('warn', 'Disk space critically low', {
         availableGb: availableGb.toFixed(2), floorGb: floorGb.toFixed(2), binding: floor.binding,
       });
-      if (shouldSendAlert('disk_low')) {
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          // The owner is told WHICH answer set the number, in plain words: a threshold he cannot
-          // account for is a threshold he learns to ignore.
-          const because = floor.binding === 'backup'
-            ? ` This box needs about ${floorGb.toFixed(1)}GB free to keep making a database backup before it updates.`
-            : '';
-          await sendSmartAlert(imRecipient, `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free.${because} Will follow up when resolved.`);
-          recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB (floor ${floorGb.toFixed(1)}GB, ${floor.binding})`);
-        }
+      const imRecipient = getImessageRecipient();
+      if (claimAlertFor('disk_low', imRecipient)) {
+        // The owner is told WHICH answer set the number, in plain words: a threshold he cannot
+        // account for is a threshold he learns to ignore.
+        const because = floor.binding === 'backup'
+          ? ` This box needs about ${floorGb.toFixed(1)}GB free to keep making a database backup before it updates.`
+          : '';
+        await sendSmartAlert(imRecipient, `Watchdog: Disk space low, ${availableGb.toFixed(1)}GB free.${because} Will follow up when resolved.`);
+        recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB (floor ${floorGb.toFixed(1)}GB, ${floor.binding})`);
       }
     } else {
       resolveAndTell('disk_low', `Watchdog: Disk space recovered, ${availableGb.toFixed(1)}GB free.`);
@@ -799,12 +795,10 @@ async function checkDatabaseIntegrity(): Promise<void> {
     const status = result[0]?.integrity_check ?? 'unknown';
     if (status !== 'ok') {
       log('error', 'Database integrity check FAILED', { status });
-      if (shouldSendAlert('db_integrity')) {
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
-          recordAlert(`DB integrity: ${status}`);
-        }
+      const imRecipient = getImessageRecipient();
+      if (claimAlertFor('db_integrity', imRecipient)) {
+        await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed, ${status}`);
+        recordAlert(`DB integrity: ${status}`);
       }
     } else {
       markAlertResolved('db_integrity');
@@ -945,18 +939,16 @@ async function maybeAutoRollback(): Promise<boolean> {
       previousVersion: marker.previousVersion,
       rollbackCount: marker.rollbackCount,
     });
-    if (shouldSendAlert('auto_rollback_failed')) {
+    if (claimAlertFor('auto_rollback_failed', imRecipient)) {
       const because = decision.reason === 'migration'
         ? 'the update had already changed the database, so undoing just the app could make things worse'
         : 'putting the previous version back once did not fix it, and trying again is not safe';
-      if (imRecipient) {
-        await sendSmartAlert(
-          imRecipient,
-          `Watchdog: a Dojo update failed to start and I did NOT undo it automatically because ${because}. ` +
-          `The box may keep restarting. Please open the Dojo dashboard and restore a previous version, or reach out for help. I will keep watching.`,
-        );
-        recordAlert('Auto-rollback escalated to failed-permanently');
-      }
+      await sendSmartAlert(
+        imRecipient,
+        `Watchdog: a Dojo update failed to start and I did NOT undo it automatically because ${because}. ` +
+        `The box may keep restarting. Please open the Dojo dashboard and restore a previous version, or reach out for help. I will keep watching.`,
+      );
+      recordAlert('Auto-rollback escalated to failed-permanently');
     }
     return true;
   }
@@ -973,7 +965,7 @@ async function maybeAutoRollback(): Promise<boolean> {
   // rollback), and a duplicate cycle sees rollbackCount and will not spawn twice. Alert the owner
   // BEFORE spawning, because rollback.sh unloads this watchdog's launchd job and could cut a slow
   // send short.
-  if (shouldSendAlert('auto_rollback') && imRecipient) {
+  if (claimAlertFor('auto_rollback', imRecipient)) {
     const toVer = marker.previousVersion ? ` (${marker.previousVersion})` : '';
     await sendSmartAlert(
       imRecipient,
@@ -1012,7 +1004,7 @@ async function maybeHealSwap(): Promise<boolean> {
     return false;
   }
   log('error', 't197: the platform folder is missing; repairing the cut-off swap', { finishes: heal.finishes });
-  if (to && shouldSendAlert('platform_missing')) { await sendSmartAlert(to, heal.text); recordAlert(`Platform folder missing: ${heal.finishes}`); }
+  if (claimAlertFor('platform_missing', to)) { await sendSmartAlert(to, heal.text); recordAlert(`Platform folder missing: ${heal.finishes}`); }
   if (heal.finishes !== 'nothing-to-restore') spawnRollbackDetached(ROLLBACK_SCRIPT, logHealSpawnError, ['--heal']);
   return true;
 }
@@ -1092,9 +1084,9 @@ async function runCheck(): Promise<void> {
       }
     }
 
-    if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT && shouldSendAlert('platform_down')) {
+    if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
       const imRecipient = getImessageRecipient();
-      if (imRecipient) {
+      if (claimAlertFor('platform_down', imRecipient)) {
         await sendSmartAlert(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`);
         recordAlert(`Platform down: ${consecutiveFailures} checks failed`);
       }
@@ -1102,11 +1094,11 @@ async function runCheck(): Promise<void> {
 
     // FA-W3(b): the auto-restart did NOT fix it. Once we have attempted at least one restart AND
     // the platform is STILL unhealthy beyond the grace window, tell the owner in plain language
-    // that manual attention is needed. One text per cooldown via shouldSendAlert; the restart
+    // that manual attention is needed. One text per cooldown via claimAlertFor; the restart
     // cadence above is untouched.
-    if (restartAttempts > 0 && failuresSinceRestart >= RESTART_GRACE_FAILURES && shouldSendAlert('platform_restart_failed')) {
+    if (restartAttempts > 0 && failuresSinceRestart >= RESTART_GRACE_FAILURES) {
       const imRecipient = getImessageRecipient();
-      if (imRecipient) {
+      if (claimAlertFor('platform_restart_failed', imRecipient)) {
         await sendSmartAlert(imRecipient, `Watchdog: I automatically restarted the Dojo platform ${restartAttempts} time(s) but it is still down after ${consecutiveFailures} failed checks. It needs manual attention.`);
         recordAlert(`Auto-restart did not fix platform: ${consecutiveFailures} failed checks, ${restartAttempts} restart(s)`);
       }

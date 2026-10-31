@@ -126,6 +126,17 @@ export function shouldSendAlert(state: WatchdogState, alertKey: string, nowMs: n
 }
 
 /**
+ * `shouldSendAlert`, but only when there is someone to tell. With no recipient it
+ * answers no and leaves `state` untouched, so an alert that could not be sent is
+ * not recorded as "already told" (which would silence it for the whole cooldown
+ * and leave a later recovery text with no DOWN before it).
+ */
+export function claimAlert(state: WatchdogState, alertKey: string, recipient: string, nowMs: number = Date.now()): boolean {
+  if (!recipient) return false;
+  return shouldSendAlert(state, alertKey, nowMs);
+}
+
+/**
  * Retire an active alert. Returns true exactly once per incident — when the
  * alert WAS active — which is the caller's signal to send the recovery message.
  *
