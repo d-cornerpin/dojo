@@ -582,6 +582,17 @@ function encodeHeaderValue(value: string): string {
   return `=?utf-8?B?${Buffer.from(value, 'utf-8').toString('base64')}?=`;
 }
 
+// To/Cc/Bcc: only a display name may be an encoded word; the address and the commas stay plain.
+function encodeAddressHeader(value: string): string {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return splitAddressList(value).map((entry) => {
+    const m = entry.match(/^(.*?)\s*(<[^>]*>)$/s);
+    const name = m ? m[1].replace(/^"(.*)"$/s, '$1') : '';
+    if (!m || /^[\x00-\x7F]*$/.test(name)) return entry;
+    return `${encodeHeaderValue(name)} ${m[2]}`;
+  }).join(', ');
+}
+
 function chunkBase64(b64: string, width = 76): string {
   return b64.match(new RegExp(`.{1,${width}}`, 'g'))?.join('\r\n') ?? b64;
 }
@@ -600,10 +611,10 @@ function buildRfc2822Email(
   },
 ): string {
   const headers: string[] = [];
-  headers.push(`To: ${encodeHeaderValue(to)}`, ...platformSendHeaderLines());   // P44: every send carries a recorded id
+  headers.push(`To: ${encodeAddressHeader(to)}`, ...platformSendHeaderLines());   // P44: every send carries a recorded id
   headers.push(`Subject: ${encodeHeaderValue(subject)}`);
-  if (options?.cc) headers.push(`Cc: ${encodeHeaderValue(options.cc)}`);
-  if (options?.bcc) headers.push(`Bcc: ${encodeHeaderValue(options.bcc)}`);
+  if (options?.cc) headers.push(`Cc: ${encodeAddressHeader(options.cc)}`);
+  if (options?.bcc) headers.push(`Bcc: ${encodeAddressHeader(options.bcc)}`);
   if (options?.inReplyTo) headers.push(`In-Reply-To: ${options.inReplyTo}`);
   if (options?.references) headers.push(`References: ${options.references}`);
 
