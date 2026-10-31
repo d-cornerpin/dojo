@@ -1164,6 +1164,8 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   const [selectedModel, setSelectedModel] = useState('');
   const [dreamTime, setDreamTime] = useState('03:00');
   const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
+  // The stored mode is only rewritten when the owner picks one here; otherwise it is left exactly as stored.
+  const [modeTouched, setModeTouched] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1198,7 +1200,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
   }, [loadTry]);
 
   const handleSave = async () => {
-    const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime, dreamMode });
+    const r = await api.updateDreamingConfig({ modelId: selectedModel || undefined, dreamTime, ...(modeTouched ? { dreamMode } : {}) });
     setError(r.ok ? null : r.error);   // the server's refusal, never "saved"
     setSaved(r.ok);
   };
@@ -1257,7 +1259,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
               type="radio"
               name="setupDreamMode"
               checked={dreamMode === 'full'}
-              onChange={() => { setDreamMode('full'); setSaved(false); }}
+              onChange={() => { setDreamMode('full'); setModeTouched(true); setSaved(false); }}
               className="mt-1 accent-cp-amber"
             />
             <div>
@@ -1274,7 +1276,7 @@ export const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void })
               type="radio"
               name="setupDreamMode"
               checked={dreamMode === 'light'}
-              onChange={() => { setDreamMode('light'); setSaved(false); }}
+              onChange={() => { setDreamMode('light'); setModeTouched(true); setSaved(false); }}
               className="mt-1 accent-cp-amber"
             />
             <div>
