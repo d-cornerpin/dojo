@@ -29,6 +29,35 @@ function eventTitle(summary: string | undefined | null): string {
   return typeof summary === 'string' && summary.trim() !== '' ? summary : NO_TITLE;
 }
 
+// With `includeTabsContent=true` every tab's content sits at tabs[].documentTab.body.content, and a
+// tab may nest childTabs (same shape). Depth-first: a tab, then its children. A document with a
+// single tab keeps today's bare output; with more, each tab's text is introduced by its title so a
+// multi-tab document never reads as only its first tab. Returns undefined when the response has no
+// tabs, so the caller falls back to the legacy `body`.
+interface DocTab {
+  tabProperties?: { title?: string };
+  documentTab?: { body?: { content?: DocBlock[] } };
+  childTabs?: DocTab[];
+}
+
+function docTabsToText(tabs: DocTab[] | undefined): string | undefined {
+  if (!tabs || tabs.length === 0) return undefined;
+  const flat: DocTab[] = [];
+  const walk = (list: DocTab[]) => {
+    for (const tab of list) {
+      flat.push(tab);
+      if (tab.childTabs?.length) walk(tab.childTabs);
+    }
+  };
+  walk(tabs);
+  if (flat.length === 1) return docBlocksToText(flat[0].documentTab?.body?.content);
+  return flat.map((tab) => {
+    const title = tab.tabProperties?.title;
+    const name = typeof title === 'string' && title.trim() !== '' ? title : 'Untitled tab';
+    return `=== Tab: ${name} ===\n${docBlocksToText(tab.documentTab?.body?.content)}`;
+  }).join('');
+}
+
 // ── Tool Definitions (unchanged) ──
 
 export const googleReadToolDefinitions: ToolDefinition[] = [
@@ -765,14 +794,16 @@ export async function executeGoogleReadTool(
 
     case 'docs_read': {
       const docId = args.document_id as string;
-      const url = `${DOCS_BASE}/${encodeURIComponent(docId)}`;
+      // Without includeTabsContent=true the API fills only the legacy `body` (the FIRST tab)
+      // and leaves `tabs` empty.
+      const url = `${DOCS_BASE}/${encodeURIComponent(docId)}?includeTabsContent=true`;
       const result = await googleRead(url, agentId, agentName, 'docs_read', { documentId: docId }, slot);
       if (!result.ok) return `Error reading Google Doc: ${result.error}`;
 
-      const data = result.data as { title?: string; body?: { content?: DocBlock[] } };
+      const data = result.data as { title?: string; body?: { content?: DocBlock[] }; tabs?: DocTab[] };
       const title = data?.title ?? 'Untitled';
 
-      const text = docBlocksToText(data?.body?.content);
+      const text = docTabsToText(data?.tabs) ?? docBlocksToText(data?.body?.content);
       const paged = applyTextPagination(
         text || '(empty document)',
         'docs_read',
