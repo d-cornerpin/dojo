@@ -32,6 +32,7 @@ import { isPastFirstRun } from '../../config/setup-state.js';
 import { refuseSmallMainModel, refuseUnfitLocalModel, passesMainModelFloor, MAIN_MODEL_SETTING_KEYS, LOCAL_MODEL_SETTING_KEYS } from '../../agent/main-model-floor.js';
 import { parsePrice } from '../../services/price-per-million.js';
 import { refuseBadClockTime, CLOCK_TIME_SETTING_KEYS } from '../../config/clock-time.js';
+import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readUserProfile, writeUserProfile, composeUserProfile, userProfileIsEngineSeeded } from '../../prompt/user-profile.js';
 import { ownerMailboxes } from '../../services/owner-mailboxes.js';
 import { TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUS_SQL } from '../../services/media-job-status.js';
@@ -2560,6 +2561,15 @@ configRouter.put('/identity/:file', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body.content !== 'string') {
     return c.json({ ok: false, error: 'content string is required' }, 400);
+  }
+
+  // Saved whole: it must be built on the text the page read (`base`), and a blank is never silently saved over a real one.
+  {
+    const current = entry.filename === 'USER.md'
+      ? readUserProfile()
+      : (() => { try { return fs.readFileSync(path.join(PROMPTS_DIR, entry.filename), 'utf-8'); } catch { return entry.defaultContent; } })();
+    const refusal = refuseStaleWholeDocument('document', body.content, body.base, current);
+    if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }
 
   // The dashboard edit door for USER.md — the SAME door the OOBE writes through, which is what

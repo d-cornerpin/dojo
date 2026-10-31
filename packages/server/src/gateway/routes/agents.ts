@@ -11,6 +11,7 @@ import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
@@ -382,14 +383,8 @@ agentsRouter.put('/:id', async (c) => {
   // built on (`systemPromptBase`, the text the page read); if the stored one has moved the save is refused
   // and nothing is written. A caller that names no base may not replace a saved prompt with a blank one.
   if (typeof body.systemPrompt === 'string') {
-    const storedPrompt = readAgentPromptSurface(id);
-    if (typeof body.systemPromptBase === 'string') {
-      if (body.systemPromptBase !== storedPrompt) {
-        return c.json({ ok: false, error: 'This prompt changed since you loaded it, so it was not saved. Reload it and make your change again.' }, 409);
-      }
-    } else if (!body.systemPrompt.trim() && storedPrompt.trim()) {
-      return c.json({ ok: false, error: 'A blank prompt was not saved over the existing one. Reload the page and try again.' }, 400);
-    }
+    const refusal = refuseStaleWholeDocument('prompt', body.systemPrompt, body.systemPromptBase, readAgentPromptSurface(id));
+    if (refusal) return c.json({ ok: false, error: refusal.error }, refusal.status);
   }
 
   const updates: string[] = [];
