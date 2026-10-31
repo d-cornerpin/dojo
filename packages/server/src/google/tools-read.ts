@@ -536,6 +536,7 @@ export async function executeGoogleReadTool(
       if (!data?.messages || data.messages.length === 0) return unreadOnly ? 'No unread messages in inbox.' : 'Inbox is empty.';
 
       const details: string[] = [];
+      const unfetched: string[] = [];
       for (const msg of data.messages.slice(0, maxResults)) {
         const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
         const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, slot);
@@ -547,9 +548,17 @@ export async function executeGoogleReadTool(
           const date = headers.find(h => h.name === 'Date')?.value ?? '';
           const unread = msgData?.labelIds?.includes('UNREAD') ? ' [UNREAD]' : '';
           details.push(`${unread}ID: ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${fmtEmailDate(date)}`);
+        } else {
+          unfetched.push(msg.id);
         }
       }
-      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.messages.length} messages):\n\n${details.map((item) => outsideSpan(item)).join('\n')}`;
+      // Failed detail fetches must stay visible: name the ids so the worker can read them itself.
+      const total = data.messages.length;
+      if (details.length === 0) return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} has ${total} message(s) but could not fetch details (ids ${unfetched.join(', ')}); try again.`;
+      const note = unfetched.length > 0
+        ? `\n\nNote: ${unfetched.length} of ${total} messages on this page could not be fetched and are not shown (ids ${unfetched.join(', ')}); read one with gmail_read(message_id=<id>) or check the inbox again.`
+        : '';
+      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${total} messages):\n\n${details.map((item) => outsideSpan(item)).join('\n')}${note}`;
     }
 
     case 'calendar_agenda': {
