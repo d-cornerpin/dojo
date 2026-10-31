@@ -193,7 +193,7 @@ describe('the sites ask through the seam and the credential gate stands alone', 
     expect(src).not.toMatch(/FILLER_PATTERNS/);
   });
   it('A22: the rebuild asks `spanWorthJudged` where it compared the 120-character floor', () => {
-    expect(read('memory/summary-rebuild.ts')).toMatch(/!await spanWorthJudged\(flag\.agentId, flag\.id, input, proseChars\(input\) >= MIN_PROSE_CHARS\)/);
+    expect(read('memory/summary-rebuild.ts')).toMatch(/!await \(await import\('\.\/shape-judgment\.js'\)\)\.spanWorthJudged\(flag\.agentId, flag\.id, input, proseChars\(input\) >= MIN_PROSE_CHARS\)/);
   });
   it('the credential patterns moved out of tools.ts whole; the gate file imports nothing', () => {
     expect(read('vault/tools.ts')).not.toMatch(/CREDENTIAL_PATTERNS/);

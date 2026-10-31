@@ -38,6 +38,7 @@ import { isPrivateAddress } from '../net-guard.js';
 import { isSudoLine, mentionsPrivilegeToken } from '../brokers/sudo-policy.js';
 import { INBOUND_ROUTING_PURPOSE } from '../v2/classifiers/inbound-routing.js';
 import { MEMORY_SHAPE_PURPOSE } from '../../memory/shape-judgment.js';
+import { ENGINE_STEPS_REL } from '../v2/__tests__/engine-sources.js';
 
 const SRC = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -67,7 +68,7 @@ const EXEMPT_EDGES: Array<{ from: string; to: string; why: string }> = [
   // The reply-claim floors (v3.5 C1) ask the model what the agent's own REPLY claims. They run after a model call, inside
   // the runtime the gates also import; a reply is never a gate's input (the ledger still decides what was sent or saved).
   ...['reply-floors', 'no-reply', 'promise-floor'].map((f) => ({
-    from: `agent/v2/steps/post-call-classify/${f}.ts`, to: 'agent/v2/reply-claims.ts', why: 'the nine reply-claim floors; a reply is no gate\'s input and the ledger still decides.',
+    from: `${ENGINE_STEPS_REL}/post-call-classify/${f}.ts`, to: 'agent/v2/reply-claims.ts', why: 'the nine reply-claim floors; a reply is no gate\'s input and the ledger still decides.',
   })),
   { from: 'memory/out-of-view-fold.ts', to: 'memory/summary-check.ts', why: 'reads whether a summary was refused (a ledger read) from the B4 summary check; a summary is not a gate\'s input.' },
 ];

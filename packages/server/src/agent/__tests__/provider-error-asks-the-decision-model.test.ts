@@ -119,7 +119,7 @@ describe('model mode (proven on measured accuracy)', () => {
 describe('the recovery cascade reads the class through the seam', () => {
   it('`recoverFromError` computes its facts with `judgeProviderError` over the error text', () => {
     const src = readFileSync(fileURLToPath(new URL('../v2/recovery.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/await judgeProviderError\([^\n]*\n\s+error instanceof AgentError && error\.provider \? error\.provider : classifyProviderError\(error\), fullErrText, agentId\)\)\.facts/);
+    expect(src).toMatch(/await \(await import\('\.\.\/provider-error-judgment\.js'\)\)\.judgeProviderError\([^\n]*\n\s+error instanceof AgentError && error\.provider \? error\.provider : classifyProviderError\(error\), fullErrText, agentId\)\)\.facts/);
   });
   it('the rule itself is untouched: the words still classify as they did', () => {
     expect(classifyProviderErrorText('429 Too Many Requests').class).toBe('rate_limit');

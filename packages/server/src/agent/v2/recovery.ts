@@ -39,7 +39,6 @@ import {
 import { setAgentStatus, writeAgentLastError } from '../agent-status.js';
 import { tryHonestStopRecovery } from './honest-stop.js';
 import type { AgentTurnState } from './state.js';
-import { judgeProviderError } from '../provider-error-judgment.js';
 import {
   formatErrorForHuman,
   formatTierBNoteForAgent,
@@ -197,7 +196,7 @@ export async function recoverFromError(
   const agentId = state.agentId;
   // PHASE-4 T5: what the provider actually said, read ONCE and handed to every step below.
   // The model layer attaches it when it raises; anything else is classified here.
-  const facts = (await judgeProviderError(   // v3.5 C3: the decision model is asked alongside, where the words were all there was
+  const facts = (await (await import('../provider-error-judgment.js')).judgeProviderError(   // v3.5 C3: the decision model is asked alongside, where the words were all there was
     error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error), fullErrText, agentId)).facts;
 
   // 0. Rate limit / overloaded that the background decay retry manager already

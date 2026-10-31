@@ -167,7 +167,7 @@ function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string,
   const patienceMs = measuredDecideTimeoutMs(stateForModel, questions.length);
   const opts: DecideOpts = acts
     ? { purpose: PURPOSE, agentId, turnId, onFailure, patienceMs }
-    : { purpose: PURPOSE, turnId, onFailure, background: true, patienceMs };
+    : { purpose: PURPOSE, turnId, onFailure, background: true, patienceMs, staleWhen: () => asked.get(agentId)?.key !== messageId };   // a newer reply replaced this one: nothing needs its answer
   const logRows = (answers: Record<string, Answer> | null): void => {
     for (const q of questions) recordShadow({ purpose: PURPOSE, question: q, agentId, turnId, ruleSaid: ruleSaid[q], modelSaid: answers?.[q] ?? null });
   };
@@ -175,7 +175,7 @@ function ask(state: AgentTurnState, ctx: PostCallClassifyContext, reply: string,
     .catch(() => { failure = 'threw'; return null; })
     .then((answers) => {
       entry.answers = answers;
-      noted(answers ? null : failure ?? 'transport', agentId);
+      if (failure !== 'superseded') noted(answers ? null : failure ?? 'transport', agentId);   // dropped for a newer reply: no outage
       logRows(answers);   // a call that gave no answer still leaves its rows: the rule's answer, no model answer
     })
     .catch((err) => {

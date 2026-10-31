@@ -42,7 +42,12 @@ interface WaitedAsk extends DecideCommon { background?: false; agentId?: string 
  *  the calls ahead of it, and its patience counts from when its TURN comes — t268 measured that clocks spent queued
  *  lost most shadow verdicts of a busy fold, and nobody is waiting on it while it queues. It CANNOT name an agent, so
  *  it never opens a turn-scoped slot and never makes an idle agent look live. */
-interface BackgroundAsk extends DecideCommon { background: true; agentId?: never }
+interface BackgroundAsk extends DecideCommon {
+  background: true; agentId?: never;
+  /** A real signal that nothing needs this answer any more (the agent has a newer reply): asked when the ask's turn
+   *  comes, and if true the ask is dropped unsent (failure class `superseded`). Never a timer. */
+  staleWhen?: () => boolean;
+}
 export type DecideOpts = WaitedAsk | BackgroundAsk;
 
 /** Ollama's documented limit for one `/v1/systemone` request. */
@@ -74,7 +79,7 @@ const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
 
 /** `patience`: the caller stopped waiting (`patienceMs`); `stopped`: the owner's Stop cut it, queued or in flight. */
-export type FailureClass = 'too_many_questions' | 'too_large' | 'http' | 'timeout' | 'transport' | 'parse' | 'patience' | 'stopped';
+export type FailureClass = 'too_many_questions' | 'too_large' | 'http' | 'timeout' | 'transport' | 'parse' | 'patience' | 'stopped' | 'superseded';
 function fail(cls: FailureClass, opts: DecideOpts, detail?: string): null {
   const now = Date.now();
   if (now - (lastLogged.get(cls) ?? 0) >= LOG_EVERY_MS) {
@@ -150,11 +155,13 @@ export async function decide(
   const cuts: Cuts = { stop: slot?.signal ?? null, patience };
   const leave = [cuts.stop, cuts.patience].filter((x): x is AbortSignal => x !== null);
   try {
+    // A caller that waits goes ahead of every background ask not yet started; a background ask whose newer-reply signal
+    // has fired is dropped when its turn comes (`decide-queue.ts`).
     const turn = await inTurn(leave.length === 0 ? null : AbortSignal.any(leave), () => {
       cuts.patience ??= AbortSignal.timeout(opts.patienceMs);
       return sent(provider, request, stateChars, names, questions, opts, cuts);
-    });
-    if (turn.left) return fail(cutBy(null, cuts) ?? 'patience', opts, 'left the queue unsent');
+    }, { background: opts.background === true, stale: opts.background ? opts.staleWhen : undefined });
+    if (turn.left) return fail(cutBy(null, cuts) ?? (opts.background && opts.staleWhen?.() ? 'superseded' : 'patience'), opts, 'left the queue unsent');
     return turn.value;
   } finally {
     slot?.release();
