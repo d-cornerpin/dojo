@@ -26,7 +26,8 @@ vi.mock('../imessage-bridge.js', async () => {
   return { parseSafeSenders: real.parseSafeSenders, reloadApprovedSenders: () => {} };
 });
 
-const { ownerIMessageRecords, isOwnerIMessageRecipient, iMessageListHasHumanOwner, parseSafeSenders } = await import('../safe-senders.js');
+const { ownerIMessageRecords, isOwnerIMessageRecipient, parseSafeSenders } = await import('../safe-senders.js');
+const { iMessageListHasHumanOwner } = await import('../imessage-owner-gate.js');
 const { resolveRecipient } = await import('../../twilio/approved-number.js');
 
 const AGENT = '+15550199999';

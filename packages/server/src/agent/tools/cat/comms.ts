@@ -68,7 +68,7 @@ import { executeSmsSend } from '../../../twilio/sms-outbound.js';
 import { isEmailSendingEnabled, getGoogleWorkspaceConfig } from '../../../google/auth.js';
 import { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } from '../../../microsoft/auth.js';
 import { parseSafeSenders, reloadApprovedSenders, getSafeSenders, getIMBridgeStatus, findSafeSenderByAddress, sendIMessageWithAttachments } from '../../../services/imessage-bridge.js';
-import { iMessageListHasHumanOwner } from '../../../services/safe-senders.js';
+import { iMessageListHasHumanOwner } from '../../../services/imessage-owner-gate.js';
 import { getSmsReachability, describeSmsRecipients } from '../../../services/capability-registry.js';
 import { queuePendingAttachments } from '../../pending-attachments.js';
 import { syncSafeSenderToContacts } from '../../../contacts/from-safe-senders.js';

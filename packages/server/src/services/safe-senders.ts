@@ -170,9 +170,7 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
     const promoteIdx = legacyDefault
       ? normalized.findIndex(s => addressesMatch(s.address, legacyDefault))
       : -1;
-    // Only the human's own setting names an owner: the older single-recipient key. A list of
-    // object records with nobody flagged and no match has NO owner; the first entry is never
-    // promoted (an agent-written entry must not become the owner by sitting first).
+    // Never promote by position: no flag and no legacy-key match means no owner.
     if (promoteIdx >= 0) normalized[promoteIdx].is_primary = true;
   } else if (primaries.length > 1) {
     let seen = false;
@@ -287,22 +285,6 @@ export function isOwnerIMessageRecipient(recipient: string | null | undefined): 
     return ownerIMessageRecords().some((owner) => recipient === owner.address
       || recipientIdsMatch(recipient, owner.address)
       || recipientIdsMatch(recipient, owner.name));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Has the human set an iMessage owner IN THE LIST? True when a stored record is flagged as the
- * owner, or the list is the older bare-address form (first address = owner, written only by the
- * Settings screen). The older single-recipient key alone is not enough: adding any entry to an
- * empty list would end the bridge's fallback that keeps that owner reachable. The agent's
- * add_safe_sender asks this before it writes.
- */
-export function iMessageListHasHumanOwner(): boolean {
-  try {
-    const row = getDb().prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
-    return parseSafeSenders(row?.value ?? null).some((s) => s.is_primary)
   } catch {
     return false;
   }
