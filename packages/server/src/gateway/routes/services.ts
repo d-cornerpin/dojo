@@ -381,7 +381,7 @@ servicesRouter.post('/tunnel/token', async (c) => {
   if (body.url !== undefined && body.url !== null && typeof body.url !== 'string') {
     return c.json({ ok: false, error: 'url must be text' }, 400);
   }
-  setTunnelToken(body.token);
+  setTunnelToken(body.token.trim());
   // v2.5.6 — same payload can carry the public URL the user configured in
   // Cloudflare's Published Application Routes. Optional. null/empty clears it.
   if (body.url !== undefined) setNamedTunnelUrl(body.url);
