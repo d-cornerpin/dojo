@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket';
-import { getAgents, listActiveGenerationJobs, type GenJobDto } from '../../lib/api';
+import { listActiveGenerationJobs, type GenJobDto } from '../../lib/api';
+import { useOrbReconnectRecovery } from './useOrbReconnectRecovery';
 import { useDojoOrb } from './OrbProvider';
 import type { OrbTaskName } from './dojoOrbEngine';
 
@@ -19,8 +20,8 @@ import type { OrbTaskName } from './dojoOrbEngine';
  * the task. chat:error nudges the orb to a "confused" demeanor.
  */
 
-type EngineKind = 'compaction' | 'dreamer' | 'healer';
-interface EngineItem { id: string; kind: EngineKind; }
+import type { EngineItem } from './useOrbReconnectRecovery';
+type EngineKind = EngineItem['kind'];
 
 function jobToTask(kind: GenJobDto['kind']): OrbTaskName {
   return kind === 'music' ? 'song' : kind;
@@ -61,28 +62,7 @@ export function useOrbActivity(): void {
     sync();
   }, [sync]);
 
-  // Frames sent while the socket was down are gone: after a reconnect, forget the engine items
-  // we were holding and rebuild them from what the agents are doing now.
-  const seenReconnect = useRef(reconnectCount);
-  const latestEngineRead = useRef(0);
-  useEffect(() => {
-    if (seenReconnect.current === reconnectCount) return;
-    seenReconnect.current = reconnectCount;
-    const mine = ++latestEngineRead.current;
-    engineRef.current = [];
-    sync();
-    void refetch();
-    void (async () => {
-      const r = await getAgents();
-      if (mine !== latestEngineRead.current || !r.ok) return;
-      const working: EngineItem[] = [];
-      for (const a of r.data) {
-        if ((a.id === 'dreamer' || a.id === 'healer') && a.status === 'working') working.push({ id: a.id, kind: a.id });
-      }
-      engineRef.current = [...working, ...engineRef.current.filter((it) => !working.some((w) => w.id === it.id))];
-      sync();
-    })();
-  }, [reconnectCount, refetch, sync]);
+  useOrbReconnectRecovery(reconnectCount, engineRef, sync, refetch);
 
   useEffect(() => {
     void refetch();
