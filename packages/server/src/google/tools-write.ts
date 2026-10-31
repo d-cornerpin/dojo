@@ -60,7 +60,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     reachesPeople: true,
     description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments, same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     effects: [
-      { kind: 'send', from: 'derived:the sender of args.message_id' },
+      { kind: 'send', from: 'derived:the Reply-To or sender of args.message_id' },
       { kind: 'fs_read', from: 'args.attachments[]' },
     ],
     input_schema: {
@@ -1253,7 +1253,7 @@ export async function executeGoogleWriteTool(
       }
       writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: true, basis: 'provider-id', providerId: replyData.id, threadId: replyData.threadId ?? threadId ?? null, recipient: replyTo, detail: { status: 'sent' } });
 
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}${gmailAttachSummary(inline.length, overflow.length)}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}. To: ${replyTo}${replyCc ? `; Cc: ${replyCc}` : ''}${gmailAttachSummary(inline.length, overflow.length)}`;
     }
 
     // ── T77b — THE DRAFT. Same message, same thread, a different endpoint. ──
@@ -1293,8 +1293,9 @@ export async function executeGoogleWriteTool(
       const prepared = await gmailAttachmentsWithOverflow(args.attachments as string[] | undefined, args.body as string, agentId, agentName, slot);
       if (!prepared.ok) return prepared.error;
 
+      const draftCc = (args.cc as string | undefined) ?? replyCc;
       const raw = buildRfc2822Email(to, subject, prepared.body, {
-        cc: (args.cc as string | undefined) ?? replyCc,
+        cc: draftCc,
         bcc: args.bcc as string | undefined,
         ...(msgIdHeader ? { inReplyTo: msgIdHeader, references: msgIdHeader } : {}),
         attachments: prepared.inline,
@@ -1310,7 +1311,7 @@ export async function executeGoogleWriteTool(
       const where = resolved.account.email ? `${resolved.account.email}'s Drafts folder` : 'the Drafts folder';
       const threaded = threadId ? ' on the existing thread' : '';
       const idNote = draftData?.id ? ` Draft id: ${draftData.id}.` : '';
-      return `Draft saved in ${where}${threaded}, addressed to ${to} with subject "${subject}"${gmailAttachSummary(prepared.inline.length, prepared.overflowCount)}. NOTHING HAS BEEN SENT — it stays in Drafts until a person opens it and presses Send.${idNote}`;
+      return `Draft saved in ${where}${threaded}, addressed to ${to}${draftCc ? ` (Cc: ${draftCc})` : ''} with subject "${subject}"${gmailAttachSummary(prepared.inline.length, prepared.overflowCount)}. NOTHING HAS BEEN SENT — it stays in Drafts until a person opens it and presses Send.${idNote}`;
     }
 
     case 'gmail_forward': {

@@ -493,6 +493,7 @@ export async function executeGoogleReadTool(
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
       const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
+      const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to')?.value ?? '';
 
       const body = extractGmailBodyText(data?.payload);
 
@@ -511,7 +512,7 @@ export async function executeGoogleReadTool(
       );
 
       // v3.5 K33: the headers and the body are the sender's; the paging trailer and the attachment list's call are the platform's.
-      let output = `${outsideSpan(`From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\nDate: ${fmtEmailDate(date)}`)}\n\n${pagedBody}`;
+      let output = `${outsideSpan(`From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}${replyToHeader ? `\nReply-To: ${replyToHeader}` : ''}\nSubject: ${subject}\nDate: ${fmtEmailDate(date)}`)}\n\n${pagedBody}`;
       if (attachments.length > 0) {
         const lines = attachments.map(a => {
           const name = a.filename || '(unnamed)';
