@@ -55,6 +55,7 @@ vi.mock('../../../../../logger.js', () => ({
 import { runMigrations } from '../../../../../db/migrations.js';
 import { scheduleCompletionReport } from '../close-the-loop.js';
 import type { FinalizeContext } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = 'harnessbot';
 const CONV = 'conv-owner';
@@ -153,7 +154,7 @@ describe('a completion the owner already has does not ride the event', () => {
 
   it('an iMessage receipt is owner-evidence too — the routed channel, not just the dashboard', async () => {
     const t = Date.now() - 5 * 60_000;
-    delivery('d-im', { channel: 'imessage', tool: 'auto-route', recipientId: 'Yorvak' });
+    delivery('d-im', { channel: 'imessage', tool: 'auto-route', recipientId: FX.n11 });
     doneTask('task-im', 'd-im', Date.now(), t);
 
     await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
@@ -179,7 +180,7 @@ describe('POSITIVE CONTROL — the ack-and-ghost fix is not narrowed', () => {
   it('a receipt on the PEER lane is not owner evidence: the event still fires, byte-identical', async () => {
     const t = Date.now() - 5 * 60_000;
     delivery('d-a2a', {
-      channel: 'a2a', tool: 'send_to_agent', recipientId: 'quilba',
+      channel: 'a2a', tool: 'send_to_agent', recipientId: FXID.n5,
     });
     doneTask('task-a2a', 'd-a2a', Date.now(), t);
 

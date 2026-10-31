@@ -70,8 +70,9 @@ import { userRequestedCloseWantsReply } from '../../execute/result-notes.js';
 import { substantiveReplySince } from '../../../answered-edge.js';
 import type { AgentTurnState } from '../../../state.js';
 import type { FinalizeContext } from '../index.js';
+import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 const CONV = 'conv-1';
 const START_ACK_INTENT = 'engine_start_ack';
 const STAMPED_ACK = 'On it — pulling current HubSpot pricing to finish the comparison.';
@@ -140,7 +141,7 @@ beforeEach(() => {
   runMigrations();
   db.pragma('foreign_keys = ON');
   db.prepare(
-    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, 'Zargo', 'idle', '1970-01-01')`,
+    `INSERT INTO agents (id, name, status, session_started_at) VALUES (?, '${FX.n4}', 'idle', '1970-01-01')`,
   ).run(AGENT);
   db.prepare(
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,

@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { engineText } from '../../../__tests__/engine-sources.js';
 import Database from 'better-sqlite3';
+import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -55,7 +56,7 @@ const { openTurnContext, endTurnContext } = await import('../../../../turn-conte
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER = path.resolve(HERE, '..', '..', '..', 'loop.ts');
 
-const AGENT = 'zargo';
+const AGENT = FXID.n4;
 
 function ctxFor(overrides: Record<string, unknown> = {}): Parameters<typeof runFinalize>[1] {
   const turnCtx = openTurnContext(AGENT);
@@ -110,7 +111,7 @@ beforeEach(() => {
       result TEXT, opened_at INTEGER, closed_at INTEGER, repeat_interval TEXT,
       source_message_id TEXT, root_kind TEXT);
   `);
-  db.prepare("INSERT INTO agents VALUES ('zargo', 'working', 0)").run();
+  db.prepare(`INSERT INTO agents VALUES ('${FXID.n4}', 'working', 0)`).run();
   mockDb.current = db;
 });
 
