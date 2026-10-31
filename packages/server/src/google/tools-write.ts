@@ -738,7 +738,7 @@ function replyAllRecipients(from: string, to: string, cc: string, ownEmail: stri
   return { to: keptTo.join(', '), cc: keptCc.join(', ') };
 }
 
-async function gmailReplyContext(
+export async function gmailReplyContext(
   messageId: string,
   replyAll: boolean,
   agentId: string,
@@ -753,10 +753,10 @@ async function gmailReplyContext(
 
   const origData = orig.data as { threadId: string; payload?: { headers?: Array<{ name: string; value: string }> } };
   const headers = origData?.payload?.headers ?? [];
-  const from = headers.find(h => h.name === 'From')?.value ?? '';
-  const to = headers.find(h => h.name === 'To')?.value ?? '';
-  const cc = headers.find(h => h.name === 'Cc')?.value ?? '';
-  const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
+  const from = headers.find(h => h.name.toLowerCase() === 'from')?.value ?? '';
+  const to = headers.find(h => h.name.toLowerCase() === 'to')?.value ?? '';
+  const cc = headers.find(h => h.name.toLowerCase() === 'cc')?.value ?? '';
+  const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value ?? '';
   const replyToHeader = headers.find(h => h.name.toLowerCase() === 'reply-to')?.value ?? '';
   const recipients = replyAll
     ? replyAllRecipients(from, to, cc, ownEmail, replyToHeader || from)
@@ -767,8 +767,8 @@ async function gmailReplyContext(
       threadId: origData.threadId,
       replyTo: recipients.to,
       replyCc: recipients.cc,
-      replySubject: subject.startsWith('Re:') ? subject : `Re: ${subject}`,
-      msgIdHeader: headers.find(h => h.name === 'Message-ID')?.value ?? '',
+      replySubject: /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`,
+      msgIdHeader: headers.find(h => h.name.toLowerCase() === 'message-id')?.value ?? '',
     },
   };
 }
