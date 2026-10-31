@@ -67,6 +67,7 @@ describe('the census: no engine text names a person or a route on its own withou
 describe('TASK 6 SWEEP LIST: texts still to be reworded (each case is EXPECTED TO FAIL until its line is swept)', () => {
   // `it.fails` passes while the old words are still in the file. Once the line has been reworded
   // the case starts failing: delete that entry from SWEEP in route-text-inventory.ts.
+  if (SWEEP.length === 0) it('every listed site has been reworded (nothing left to sweep)', () => { expect(SWEEP).toHaveLength(0); });
   for (const s of SWEEP) {
     it.fails(`${s.id} ${s.file}: no longer says the old words (see the sweep list: new = ${s.new.slice(0, 70)})`, () => {
       const lines = fs.readFileSync(path.join(SRC, s.file), 'utf8').split('\n').map((l) => l.trim());

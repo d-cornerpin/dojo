@@ -22,14 +22,6 @@ export interface SweepEntry { readonly id: string; readonly file: string; readon
 export interface AllowEntry { readonly file: string; readonly line: string; readonly reason: string }
 
 export const SWEEP: readonly SweepEntry[] = [
- {
-  "id": "S142",
-  "file": "vault/tools.ts",
-  "line": 268,
-  "old": "`then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +",
-  "new": "`then call vault_remember again. (If the person you are talking to told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +",
-  "how": "static wording, no plumbing: names the role and points the agent at the [Turn context] block, which names the person"
- }
 ];
 
 export const ALLOW: readonly AllowEntry[] = [
